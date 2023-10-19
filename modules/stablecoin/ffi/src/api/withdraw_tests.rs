@@ -192,8 +192,21 @@ fn execute(fixture: &Fixture, amount: u128) {
         .collect();
     let [owner, position, vault, destination, accumulator, redemption, parameters, clock]: [_; 8] =
         inputs.try_into().expect("eight inputs");
+    assert_eq!(
+        plan["signingRequirements"],
+        json!([true, false, false, false, false, false, false, false])
+    );
     assert!(!vault.is_authorized);
     assert!(!destination.is_authorized);
+    let unchanged_inputs = [
+        owner.clone(),
+        vault.clone(),
+        destination.clone(),
+        accumulator.clone(),
+        redemption.clone(),
+        parameters.clone(),
+        clock.clone(),
+    ];
     let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
     let Instruction::WithdrawCollateral { amount } =
         borsh::from_slice(&words).expect("instruction")
@@ -218,6 +231,14 @@ fn execute(fixture: &Fixture, amount: u128) {
     let mut expected = fixture.position.clone();
     expected.collateral_amount -= amount;
     assert_eq!(actual, expected);
+    for (post, input) in posts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, post)| (index != 1).then_some(post))
+        .zip(&unchanged_inputs)
+    {
+        assert_eq!(post_account(post, PROGRAM), input.account);
+    }
     let [call] = calls.as_slice() else {
         panic!("one chained transfer");
     };
@@ -395,7 +416,37 @@ fn withdrawal_does_not_floor_fractional_debt_or_narrow_wide_projections() {
 }
 
 #[test]
-fn zero_and_zero_debt_skip_projections_but_not_frozen_or_structural_guards() {
+fn frozen_zero_debt_withdrawal_executes_partial_full_and_zero_amounts() {
+    let mut fixture = Fixture::new(1_000, 0);
+    fixture.parameters.is_frozen = true;
+    for amount in [0, 100, 1_000] {
+        execute(&fixture, amount);
+    }
+    error(
+        fixture.request(json!("1001")),
+        "withdraw_amount_exceeds_collateral",
+    );
+}
+
+#[test]
+fn frozen_withdrawal_rejects_any_normalized_debt_even_for_zero_amount() {
+    for debt in [1, 100] {
+        let mut fixture = Fixture::new(1_000, debt);
+        fixture.parameters.is_frozen = true;
+        for amount in [0, 100] {
+            error(
+                fixture.request(json!(amount.to_string())),
+                "protocol_frozen",
+            );
+            fixture.parameters.is_frozen = false;
+            execute(&fixture, amount);
+            fixture.parameters.is_frozen = true;
+        }
+    }
+}
+
+#[test]
+fn zero_and_zero_debt_skip_projections_but_keep_freeze_and_structural_guards() {
     let mut zero = Fixture::new(1, 100);
     zero.now = START + 7_000_000;
     zero.redemption.redemption_rate_per_millisecond =
@@ -405,10 +456,14 @@ fn zero_and_zero_debt_skip_projections_but_not_frozen_or_structural_guards() {
     zero.parameters.is_frozen = true;
     error(zero.request(json!("0")), "protocol_frozen");
     let mut settled = Fixture::new(50, 0);
+    settled.parameters.is_frozen = true;
     settled.parameters.stability_fee_per_millisecond = FIXED_POINT_ONE * 2;
     settled.redemption.redemption_rate_per_millisecond =
         FIXED_POINT_ONE + RATE_DELTA_CLAMP.unsigned_abs();
     settled.now = START + 60_000_000;
+    execute(&settled, 50);
+    settled.redemption.redemption_rate_per_millisecond =
+        FIXED_POINT_ONE - RATE_DELTA_CLAMP.unsigned_abs();
     execute(&settled, 50);
     let mut invalid = settled.request(json!("0"));
     invalid.clock.id = account_id_hex(id(90));
@@ -454,6 +509,7 @@ fn withdrawal_rejects_inconsistent_live_balance_snapshots_before_submission() {
     // cases deliberately violate a single-snapshot balance invariant to model
     // the live adapter's independent RPC reads, not an impossible ledger state.
     let mut stale_vault = Fixture::new(1, 0);
+    stale_vault.parameters.is_frozen = true;
     stale_vault.vault_balance = 0;
     stale_vault.destination_balance = 1;
     error(
@@ -461,6 +517,7 @@ fn withdrawal_rejects_inconsistent_live_balance_snapshots_before_submission() {
         "insufficient_vault_balance",
     );
     let mut stale_destination = Fixture::new(1, 0);
+    stale_destination.parameters.is_frozen = true;
     stale_destination.destination_balance = u128::MAX;
     error(
         stale_destination.request(json!("1")),
@@ -469,8 +526,12 @@ fn withdrawal_rejects_inconsistent_live_balance_snapshots_before_submission() {
 }
 
 #[test]
-fn withdrawal_rejects_wrong_position_vault_and_destination_bindings() {
-    let fixture = Fixture::new(130, 100);
+fn withdrawal_rejects_wrong_position_vault_and_destination_bindings_while_frozen() {
+    let mut fixture = Fixture::new(130, 0);
+    fixture.parameters.is_frozen = true;
+    let mut wrong_owner = fixture.request(json!("0"));
+    wrong_owner.owner_id = account_id_hex(id(90));
+    error(wrong_owner, "position_pda_mismatch");
     for alias in [id(20), fixture.position.vault_account_id] {
         let mut invalid = fixture.request(json!("0"));
         invalid.user_collateral_holding_id = account_id_hex(alias);
@@ -535,8 +596,9 @@ fn withdrawal_rejects_wrong_position_vault_and_destination_bindings() {
 }
 
 #[test]
-fn withdrawal_validates_all_required_reads_even_without_health_projections() {
-    let fixture = Fixture::new(130, 0);
+fn withdrawal_validates_all_required_reads_while_frozen_without_health_projections() {
+    let mut fixture = Fixture::new(130, 0);
+    fixture.parameters.is_frozen = true;
     let data_errors = [
         "invalid_position_data",
         "invalid_position_vault",
@@ -590,5 +652,25 @@ fn withdrawal_validates_all_required_reads_even_without_health_projections() {
             };
             error(request, expected);
         }
+    }
+}
+
+#[test]
+fn frozen_zero_debt_withdrawal_validates_position_and_global_program_owners() {
+    let mut fixture = Fixture::new(130, 0);
+    fixture.parameters.is_frozen = true;
+    for index in 0..4 {
+        let mut request = fixture.request(json!("1"));
+        let read = [
+            &mut request.position,
+            &mut request.stability_fee_accumulator,
+            &mut request.redemption_price_state,
+            &mut request.protocol_parameters,
+        ]
+        .into_iter()
+        .nth(index)
+        .expect("read");
+        read.account.as_mut().expect("account").program_owner = account_id_hex(id(90));
+        error(request, "stablecoin_program_mismatch");
     }
 }

@@ -1949,7 +1949,7 @@ fn withdraw_with_globals(
 #[test]
 #[should_panic(expected = "ProtocolParameters account ID does not match expected PDA derivation")]
 fn withdraw_collateral_rejects_protocol_parameters_at_wrong_address() {
-    let mut parameters = protocol_parameters_account(false);
+    let mut parameters = protocol_parameters_account(true);
     parameters.account_id = AccountId::new([0xC0u8; 32]);
     withdraw_with_globals(
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
@@ -1968,7 +1968,7 @@ fn withdraw_collateral_rejects_accumulator_at_wrong_address() {
     withdraw_with_globals(
         accumulator,
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
     );
 }
 
@@ -1980,14 +1980,14 @@ fn withdraw_collateral_rejects_redemption_price_state_at_wrong_address() {
     withdraw_with_globals(
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         redemption,
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
     );
 }
 
 #[test]
 #[should_panic(expected = "ProtocolParameters account must be owned by the stablecoin program")]
 fn withdraw_collateral_rejects_protocol_parameters_owned_by_another_program() {
-    let mut parameters = protocol_parameters_account(false);
+    let mut parameters = protocol_parameters_account(true);
     parameters.account.program_owner = AccountId::new([9u8; 32]);
     withdraw_with_globals(
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
@@ -2009,11 +2009,89 @@ fn withdraw_collateral_rejects_vault_holding_for_other_definition() {
         token_holding_account(destination_holding_id(), other_definition, 0),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
+}
+
+#[test]
+fn withdraw_collateral_frozen_zero_debt_validates_global_data_and_ownership() {
+    // Deliberately malformed global accounts must fail before the exception is evaluated.
+    for index in 0..3 {
+        for malformed_data in [false, true] {
+            let mut globals = [
+                crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+                crate::test_support::redemption_price_state_account(NOW),
+                protocol_parameters_account(true),
+            ];
+            if malformed_data {
+                globals[index].account.data = Data::default();
+            } else {
+                globals[index].account.program_owner = TOKEN_PROGRAM_ID;
+            }
+            let [accumulator, redemption, parameters] = globals;
+            let failure = std::panic::catch_unwind(|| {
+                withdraw_with_globals(accumulator, redemption, parameters);
+            })
+            .expect_err("invalid global must not qualify for frozen withdrawal");
+            let message = failure
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| failure.downcast_ref::<&str>().copied())
+                .expect("string panic");
+            let expected = if malformed_data {
+                [
+                    "StabilityFeeAccumulator must decode",
+                    "RedemptionPriceState must decode",
+                    "ProtocolParameters must decode",
+                ][index]
+            } else {
+                "account must be owned by the stablecoin program"
+            };
+            assert!(message.contains(expected), "unexpected panic: {message}");
+        }
+    }
+}
+
+#[test]
+fn withdraw_collateral_frozen_zero_debt_requires_the_initialized_system_clock() {
+    let mut wrong_clock = clock_account(NOW);
+    wrong_clock.account_id = owner_id();
+    let uninitialized_clock = AccountWithMetadata {
+        account: Account::default(),
+        ..clock_account(NOW)
+    };
+    for (clock, expected) in [
+        (
+            wrong_clock,
+            "Clock account must be the system CLOCK_01 account",
+        ),
+        (uninitialized_clock, "Clock account must be initialized"),
+    ] {
+        let failure = std::panic::catch_unwind(|| {
+            crate::withdraw_collateral::withdraw_collateral(
+                owner_account(),
+                init_position_account(1_000, 0),
+                vault_account_with(1_000),
+                destination_holding_account(),
+                crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+                crate::test_support::redemption_price_state_account(NOW),
+                protocol_parameters_account(true),
+                clock,
+                STABLECOIN_PROGRAM_ID,
+                100,
+            );
+        })
+        .expect_err("invalid clock must block frozen withdrawal");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .expect("string panic");
+        assert!(message.contains(expected), "unexpected panic: {message}");
+    }
 }
 
 #[test]
@@ -2087,13 +2165,104 @@ fn withdraw_collateral_fails_one_unit_below_the_ratio() {
 }
 
 #[test]
-#[should_panic(expected = "Protocol is frozen")]
-fn withdraw_collateral_rejects_when_frozen() {
-    withdraw(
-        init_position_account(1_000, 0),
-        protocol_parameters_account(true),
-        100,
-    );
+fn withdraw_collateral_rejects_frozen_positions_with_any_debt() {
+    for debt in [1, 100] {
+        for amount in [0, 100] {
+            let failure = std::panic::catch_unwind(|| {
+                withdraw(
+                    init_position_account(1_000, debt),
+                    protocol_parameters_account(true),
+                    amount,
+                );
+            })
+            .expect_err("frozen debt must block even a zero-amount withdrawal");
+            assert_eq!(failure.downcast_ref::<&str>(), Some(&"Protocol is frozen"));
+        }
+    }
+}
+
+#[test]
+fn withdraw_collateral_frozen_zero_debt_allows_partial_full_and_zero_amounts() {
+    for amount in [0, 100, 1_000] {
+        let inputs = [
+            owner_account(),
+            init_position_account(1_000, 0),
+            vault_account_with(1_000),
+            destination_holding_account(),
+            crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+            crate::test_support::redemption_price_state_account(NOW),
+            protocol_parameters_account(true),
+            clock_account(NOW),
+        ];
+        let [owner, position, vault, destination, accumulator, redemption, parameters, clock] =
+            inputs.clone();
+        let (posts, calls) = crate::withdraw_collateral::withdraw_collateral(
+            owner,
+            position,
+            vault,
+            destination,
+            accumulator,
+            redemption,
+            parameters,
+            clock,
+            STABLECOIN_PROGRAM_ID,
+            amount,
+        );
+        let mut expected = Position::try_from(&inputs[1].account.data).expect("position");
+        expected.collateral_amount -= amount;
+        assert_eq!(
+            Position::try_from(posts[1].post_data()).expect("position"),
+            expected
+        );
+        assert_eq!(posts.len(), inputs.len());
+        for (index, (post, input)) in posts.iter().zip(&inputs).enumerate() {
+            if index != 1 {
+                assert_eq!(post.post_account(STABLECOIN_PROGRAM_ID), input.account);
+            }
+        }
+        assert_eq!(
+            calls,
+            vec![ChainedCall::new(
+                TOKEN_PROGRAM_ID,
+                vec![vault_id(), destination_holding_id()],
+                &token_core::Instruction::Transfer {
+                    amount_to_transfer: amount
+                },
+            )
+            .with_pda_seeds(vec![compute_position_vault_pda_seed(position_id())])]
+        );
+    }
+}
+
+#[test]
+fn withdraw_collateral_frozen_zero_debt_skips_zero_price_and_saturated_fee_projections() {
+    // Both rates are within the controller clamp; old state can project the
+    // price to zero or saturate wide arithmetic without preventing a debt-free exit.
+    for rate in [
+        FIXED_POINT_ONE - stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
+        FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
+    ] {
+        let elapsed = 60_000_000;
+        let mut parameters = protocol_parameters_account(true);
+        let mut data = ProtocolParameters::try_from(&parameters.account.data).expect("parameters");
+        data.stability_fee_per_millisecond = FIXED_POINT_ONE * 2;
+        parameters.account.data = Data::from(&data);
+        let (posts, _) = crate::withdraw_collateral::withdraw_collateral(
+            owner_account(),
+            init_position_account(1_000, 0),
+            vault_account_with(1_000),
+            destination_holding_account(),
+            crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW - elapsed),
+            redemption_state_with(rate, NOW - elapsed),
+            parameters,
+            clock_account(NOW),
+            STABLECOIN_PROGRAM_ID,
+            1_000,
+        );
+        let position = Position::try_from(posts[1].post_data()).expect("position");
+        assert_eq!(position.collateral_amount, 0);
+        assert_eq!(position.normalized_debt_amount, 0);
+    }
 }
 
 #[test]
@@ -2120,7 +2289,7 @@ fn withdraw_collateral_rejects_uninitialized_accumulator() {
         destination_holding_account(),
         crate::test_support::uninitialized(crate::test_support::accumulator_id()),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2137,7 +2306,7 @@ fn withdraw_collateral_rejects_uninitialized_redemption_price_state() {
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::uninitialized(crate::test_support::redemption_price_state_id()),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2270,7 +2439,7 @@ fn withdraw_collateral_requires_owner_authorization() {
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2287,7 +2456,7 @@ fn withdraw_collateral_rejects_uninitialized_position() {
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2306,7 +2475,7 @@ fn withdraw_collateral_rejects_position_owned_by_other_program() {
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2325,7 +2494,7 @@ fn withdraw_collateral_rejects_wrong_position_address() {
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2344,7 +2513,7 @@ fn withdraw_collateral_rejects_wrong_vault_address() {
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2368,7 +2537,7 @@ fn withdraw_collateral_rejects_user_holding_for_other_definition() {
         destination,
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2390,7 +2559,7 @@ fn withdraw_collateral_rejects_uninitialized_user_holding() {
         destination,
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2411,7 +2580,7 @@ fn withdraw_collateral_rejects_user_holding_with_wrong_token_program() {
         destination,
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2428,7 +2597,7 @@ fn withdraw_collateral_rejects_overdraw() {
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         200,
@@ -2738,7 +2907,7 @@ fn withdraw_collateral_rejects_position_with_stale_owner_field() {
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
@@ -2755,7 +2924,7 @@ fn withdraw_collateral_rejects_position_with_stale_vault_field() {
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
-        protocol_parameters_account(false),
+        protocol_parameters_account(true),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,

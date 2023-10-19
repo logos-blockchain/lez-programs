@@ -52,7 +52,8 @@ pub struct ProtocolParameters {
     pub minimum_milliseconds_between_rate_updates: u64,
     /// Reject oracle observations older than this (RFP R3 staleness gate).
     pub maximum_oracle_price_age_milliseconds: u64,
-    /// `true` blocks `open_position`, `generate_debt`, `withdraw_collateral`.
+    /// `true` blocks `open_position`, `generate_debt`, and `withdraw_collateral`
+    /// for positions with nonzero normalized debt. Debt-free withdrawals remain allowed.
     pub is_frozen: bool,
 }
 
