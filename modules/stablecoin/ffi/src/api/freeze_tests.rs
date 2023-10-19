@@ -328,7 +328,11 @@ fn related_plans(parameters: &ProtocolParameters) -> Vec<(&'static str, bool, St
     open["positionNonce"] = json!("8");
     vec![
         ("open", true, open_position_plan(typed(&open))),
-        ("withdraw", true, withdraw_collateral_plan(typed(&common))),
+        (
+            "withdraw_debt_free",
+            false,
+            withdraw_collateral_plan(typed(&common)),
+        ),
         ("generate", true, generate_debt_plan(typed(&common))),
         ("deposit", false, deposit_collateral_plan(typed(&common))),
         ("repay", false, repay_debt_plan(typed(&common))),
