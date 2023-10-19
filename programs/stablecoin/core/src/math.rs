@@ -85,6 +85,57 @@ pub fn oracle_price_to_fixed_point(oracle_price: u128) -> u128 {
     scaled.try_into().unwrap_or(u128::MAX)
 }
 
+/// Amounts applied by a repayment after projecting the current accumulator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Repayment {
+    /// Stablecoins burned, at most the caller's signed maximum.
+    pub amount_to_burn: u128,
+    /// Normalized debt removed, at most the position's outstanding debt.
+    pub normalized_debt_decrement: u128,
+}
+
+/// Cap a signed repayment maximum at the current cost to clear the position.
+///
+/// Full repayment burns `ceil(normalized_debt * current_accumulator / ONE)`;
+/// partial repayment burns the maximum and rounds its normalized decrement
+/// down. Wide products decide which branch applies before narrowing the full
+/// cost, so partial repayments remain possible when that cost exceeds `u128`.
+/// A debt-free position still returns a zero burn for any maximum.
+///
+/// # Panics
+/// - `current_accumulator == 0`.
+#[must_use]
+pub fn compute_repayment(
+    maximum_amount: u128,
+    normalized_debt: u128,
+    current_accumulator: u128,
+) -> Repayment {
+    assert!(current_accumulator != 0, "repayment: accumulator is zero");
+    let authorized = U256::from(maximum_amount)
+        .checked_mul(U256::from(FIXED_POINT_ONE))
+        .expect("two u128 factors fit U256");
+    let outstanding = U256::from(normalized_debt)
+        .checked_mul(U256::from(current_accumulator))
+        .expect("two u128 factors fit U256");
+    if authorized >= outstanding {
+        // The comparison proves this ceiling is <= maximum_amount and fits u128.
+        Repayment {
+            amount_to_burn: mul_div_ceil(normalized_debt, current_accumulator, FIXED_POINT_ONE),
+            normalized_debt_decrement: normalized_debt,
+        }
+    } else {
+        // The floor is strictly below normalized_debt and therefore fits u128.
+        Repayment {
+            amount_to_burn: maximum_amount,
+            normalized_debt_decrement: mul_div(
+                maximum_amount,
+                FIXED_POINT_ONE,
+                current_accumulator,
+            ),
+        }
+    }
+}
+
 /// Compute `per_millisecond_rate^milliseconds_elapsed` in fixed-point semantics, where
 /// `per_millisecond_rate == FIXED_POINT_ONE` represents `1.0`.
 ///
@@ -392,6 +443,48 @@ mod tests {
     #[should_panic(expected = "mul_div_ceil: division by zero")]
     fn mul_div_ceil_panics_on_zero_divisor() {
         let _ = mul_div_ceil(1, 1, 0);
+    }
+
+    #[test]
+    fn repayment_caps_full_burn_and_preserves_partial_rounding() {
+        for (maximum, debt, accumulator, burn, decrement) in [
+            (101, 100, FIXED_POINT_ONE, 100, 100),
+            (100, 100, FIXED_POINT_ONE * 3 / 2, 100, 66),
+            (150, 100, FIXED_POINT_ONE * 3 / 2, 150, 100),
+            (151, 100, FIXED_POINT_ONE * 3 / 2, 150, 100),
+            (152, 100, FIXED_POINT_ONE * 3 / 2, 150, 100),
+            (u128::MAX, 100, FIXED_POINT_ONE * 3 / 2, 150, 100),
+            (1, 1, FIXED_POINT_ONE * 3 / 2, 1, 0),
+            (2, 1, FIXED_POINT_ONE * 3 / 2, 2, 1),
+            (0, 100, FIXED_POINT_ONE, 0, 0),
+            (u128::MAX, 0, FIXED_POINT_ONE, 0, 0),
+            (u128::MAX, u128::MAX, FIXED_POINT_ONE, u128::MAX, u128::MAX),
+            // Arithmetic-only boundary fixtures: full debt need not fit u128.
+            (
+                u128::MAX,
+                u128::MAX,
+                FIXED_POINT_ONE * 2,
+                u128::MAX,
+                u128::MAX / 2,
+            ),
+            (u128::MAX, u128::MAX, u128::MAX, u128::MAX, FIXED_POINT_ONE),
+        ] {
+            assert_eq!(
+                compute_repayment(maximum, debt, accumulator),
+                Repayment {
+                    amount_to_burn: burn,
+                    normalized_debt_decrement: decrement
+                },
+                "maximum={maximum}, debt={debt}, accumulator={accumulator}",
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "repayment: accumulator is zero")]
+    fn repayment_rejects_an_invalid_zero_accumulator_even_without_debt() {
+        // Explicitly violates the initialized accumulator invariant.
+        let _ = compute_repayment(0, 0, 0);
     }
 
     #[test]
