@@ -2374,8 +2374,8 @@ LOGOS_TEST(repay_debt_rejects_bad_requests_reads_and_planner_errors) {
         assertError(module.repayDebt(request), "bad_request");
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
-    for (const std::string& error : {"invalid_numeric_value", "repay_amount_exceeds_debt",
-                                    "insufficient_stablecoin_balance", "repayment_arithmetic_error",
+    for (const std::string& error : {"invalid_numeric_value", "insufficient_stablecoin_balance",
+                                    "repayment_arithmetic_error",
                                     "stablecoin_definition_mismatch", "invalid_stablecoin_definition",
                                     "invalid_user_stablecoin_holding", "invalid_clock"}) {
         LogosTestContext context("stablecoin_module");

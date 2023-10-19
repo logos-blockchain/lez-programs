@@ -146,7 +146,7 @@ fn error(request: RepayDebtPlanRequest, expected: &str) {
 #[test]
 fn repay_plan_pins_instruction_pdas_signers_and_guest_idl() {
     let request = request(json!("151"));
-    let plan = repay_debt_plan(request.clone()).expect("floor delta is 100, so 151 is allowed");
+    let plan = repay_debt_plan(request.clone()).expect("maximum 151 covers the capped burn of 150");
     assert_eq!(plan["programId"], request.stablecoin_program_id);
     assert_eq!(
         plan["accountIds"],
@@ -232,9 +232,47 @@ fn repay_plan_pins_instruction_pdas_signers_and_guest_idl() {
 }
 
 #[test]
-fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
-    for (amount, remaining) in [(0, 100), (1, 100), (100, 34), (150, 0), (151, 0)] {
-        let request = request(json!(amount.to_string()));
+fn repay_plan_executes_capped_burn_and_floor_debt_change_while_frozen() {
+    for (amount, debt, accumulator, balance, burn, remaining) in [
+        (0, 100, FIXED_POINT_ONE * 3 / 2, 150, 0, 100),
+        (1, 100, FIXED_POINT_ONE * 3 / 2, 150, 1, 100),
+        (100, 100, FIXED_POINT_ONE * 3 / 2, 150, 100, 34),
+        (150, 100, FIXED_POINT_ONE * 3 / 2, 150, 150, 0),
+        (151, 100, FIXED_POINT_ONE * 3 / 2, 150, 150, 0),
+        (152, 100, FIXED_POINT_ONE * 3 / 2, 150, 150, 0),
+        (u128::MAX, 100, FIXED_POINT_ONE * 3 / 2, 150, 150, 0),
+        (101, 100, FIXED_POINT_ONE, 101, 100, 0),
+        (1, 1, FIXED_POINT_ONE * 3 / 2, 3, 1, 1),
+        (2, 1, FIXED_POINT_ONE * 3 / 2, 3, 2, 0),
+        (u128::MAX, 0, FIXED_POINT_ONE, 0, 0, 0),
+    ] {
+        let mut request = request(json!(amount.to_string()));
+        let mut state = position(&request);
+        state.normalized_debt_amount = debt;
+        replace_data(&mut request.position, Data::from(&state));
+        replace_data(
+            &mut request.stability_fee_accumulator,
+            Data::from(&StabilityFeeAccumulator {
+                accumulated_rate_at_last_accrual: accumulator,
+                last_accrued_at: NOW,
+            }),
+        );
+        replace_data(
+            &mut request.user_stablecoin_holding,
+            Data::from(&TokenHolding::Fungible {
+                definition_id: compute_stablecoin_definition_pda(PROGRAM),
+                balance,
+            }),
+        );
+        replace_data(
+            &mut request.stablecoin_definition,
+            Data::from(&TokenDefinition::Fungible {
+                name: String::from("Stablecoin"),
+                total_supply: balance,
+                metadata_id: None,
+                authority: None,
+            }),
+        );
         let plan = repay_debt_plan(request.clone()).expect("valid repayment");
         let reads = [
             &request.position,
@@ -273,6 +311,15 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
         else {
             panic!("expected repayment");
         };
+        assert_eq!(
+            amount,
+            request
+                .amount
+                .as_str()
+                .expect("maximum")
+                .parse::<u128>()
+                .expect("u128")
+        );
         let (posts, calls) = stablecoin_program::repay_debt::repay_debt(
             owner,
             position_input,
@@ -299,7 +346,7 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
         else {
             panic!("expected burn");
         };
-        assert_eq!(amount_to_burn, amount);
+        assert_eq!(amount_to_burn, burn);
         let [definition_id, holding_id] = call.pre_state_ids.as_slice() else {
             panic!("two burn accounts");
         };
@@ -323,7 +370,7 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
             holding,
             TokenHolding::Fungible {
                 definition_id: compute_stablecoin_definition_pda(PROGRAM),
-                balance: u128::MAX - amount,
+                balance: balance - burn,
             }
         );
         let definition = TokenDefinition::try_from(
@@ -331,10 +378,22 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
         )
         .expect("definition");
         assert!(
-            matches!(definition, TokenDefinition::Fungible { total_supply, .. } if total_supply == u128::MAX - amount)
+            matches!(definition, TokenDefinition::Fungible { total_supply, .. } if total_supply == balance - burn)
         );
     }
-    error(request(json!("152")), "repay_amount_exceeds_debt");
+}
+
+#[test]
+fn repay_plan_rejects_when_capped_burn_exceeds_balance_by_one() {
+    let mut request = request(json!(u128::MAX.to_string()));
+    replace_data(
+        &mut request.user_stablecoin_holding,
+        Data::from(&TokenHolding::Fungible {
+            definition_id: compute_stablecoin_definition_pda(PROGRAM),
+            balance: 149,
+        }),
+    );
+    error(request, "insufficient_stablecoin_balance");
 }
 
 #[test]
@@ -388,9 +447,9 @@ fn repay_plan_projects_current_fees_and_reports_unrepresentable_arithmetic() {
     let mut state = position(&request);
     state.normalized_debt_amount = 1_000_000_000_000;
     replace_data(&mut request.position, Data::from(&state));
-    error(request.clone(), "repay_amount_exceeds_debt");
-    // One millisecond at a permitted fee rate moves this large amount across
-    // the overpayment boundary. Using the stored anchor would reject it.
+    repay_debt_plan(request.clone()).expect("maximum covers the current capped burn");
+    // One millisecond at a permitted fee rate moves the cost to clear the debt.
+    // The original maximum must survive both snapshot projections.
     let mut parameters = ProtocolParameters::try_from(
         &decode_account(&request.protocol_parameters)
             .expect("account")
@@ -411,7 +470,14 @@ fn repay_plan_projects_current_fees_and_reports_unrepresentable_arithmetic() {
         )
         .expect("clock"),
     );
-    repay_debt_plan(request.clone()).expect("projected accumulator determines the boundary");
+    let plan = repay_debt_plan(request.clone()).expect("projected capped burn fits");
+    let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
+    assert!(matches!(
+        borsh::from_slice::<Instruction>(&words).expect("instruction"),
+        Instruction::RepayDebt {
+            amount: 1_500_000_000_002
+        }
+    ));
 
     // The upper representable anchor can arise from accumulated fees. Even a
     // rate just above one makes its next narrow projection unrepresentable.

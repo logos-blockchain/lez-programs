@@ -286,8 +286,8 @@ malformed decimals, and values outside `u64`/`u128` return
 
 ### `repayDebt(request)`
 
-Burns the requested stablecoins and reduces an existing Position's normalized
-debt. Required request fields:
+Burns up to a signed maximum of stablecoins and reduces an existing Position's
+normalized debt. Required request fields:
 
 | Field | Type |
 | --- | --- |
@@ -302,20 +302,31 @@ program ID, reads current Protocol Parameters, Position, stablecoin definition,
 source holding, Stability Fee Accumulator, and canonical `CLOCK_01`, and validates
 their identities, owners, exact data, and token bindings. Both `ownerId` and
 `userStablecoinHoldingId` must be public accounts controlled by the active wallet;
-both sign, including for zero amounts. The source holding must cover `amount`.
+both sign, including for zero amounts. `amount` is the maximum burn authorized
+by the caller and is encoded unchanged, including full-width `u128` decimal
+strings. Preflight checks that the holding covers the estimated actual burn;
+the maximum itself may exceed the holding balance.
 
 Account order is owner, Position, stablecoin definition, source stablecoin
-holding, Stability Fee Accumulator, Protocol Parameters, `CLOCK_01`. The program
-burns exactly `amount` and reduces normalized debt by
-`floor(amount * FIXED_POINT_ONE / current_accumulator)`. The accumulator uses
-the current canonical clock, saturating elapsed time and the seven-day window
-clamp. The floored reduction must not exceed remaining normalized debt.
-Repayment remains available while frozen and reads no redemption price,
-collateral vault, or market-price oracle.
+holding, Stability Fee Accumulator, Protocol Parameters, `CLOCK_01`. At execution,
+the program burns `min(amount, ceil(normalized_debt * current_accumulator /
+FIXED_POINT_ONE))`. When the maximum covers this ceiling, normalized debt becomes
+zero and the unused buffer stays in the holding. Otherwise it burns `amount` and
+reduces normalized debt by `floor(amount * FIXED_POINT_ONE / current_accumulator)`.
+The accumulator uses the current canonical clock, saturating elapsed time and the
+seven-day window clamp. Repayment remains available while frozen and reads no
+redemption price, collateral vault, or market-price oracle.
 
-A positive burn can reduce normalized debt by zero; it is not rejected as dust
-or rounded up. The API does not cap the amount to a separately floored nominal
-debt value and does not offer automatic repay-all behavior. Decimal strings are
+The execution-time debt may exceed the preflight quote as fees accrue. A buffer
+clears debt only if it covers the execution-time ceiling; otherwise repayment is
+partial. If the actual burn exceeds the holding balance, Token rejects the whole
+transaction atomically. Reread confirmed position and token balances before
+reporting closure or the amount spent.
+
+A partial burn can reduce normalized debt by zero; it is not rejected as dust or
+rounded up. Full repayment rounds the burn up by less than one raw unit to avoid
+forgiving fractional debt. An already debt-free position burns zero for any valid
+maximum; all account and authorization checks still apply. Decimal strings are
 the portable exact format. Floats, negative amounts, malformed decimals, and
 values outside `u64`/`u128` are rejected.
 
@@ -323,8 +334,8 @@ Preflight errors include `invalid_numeric_value`, `position_pda_mismatch`,
 `position_owner_mismatch`, `position_nonce_mismatch`,
 `stablecoin_definition_mismatch`, `invalid_stablecoin_definition`,
 `invalid_user_stablecoin_holding`, `token_program_mismatch`,
-`insufficient_stablecoin_balance`, `repay_amount_exceeds_debt`, and
-`repayment_arithmetic_error` for unrepresentable program arithmetic.
+`insufficient_stablecoin_balance` and `repayment_arithmetic_error` for
+unrepresentable program arithmetic.
 Missing initialization returns `not_initialized`; malformed or missing reads
 and missing public wallet signers prevent submission. Success returns
 `{status: "ok", error: "", transactionId: "..."}`. Wallet rejection or transport

@@ -485,32 +485,42 @@ NOT applied in: `deposit_collateral` (strictly improves it), `repay_debt` (stric
 
 ### 6.3 Normalized-debt deltas with directional rounding
 
-```rust
-// generate_debt: increase normalized_debt by amount-divided-by-accumulator,
-// ROUND UP — the borrower received exactly `amount` stablecoins, and we want their
-// nominal_debt (= normalized × accumulator) to grow by AT LEAST `amount`. Rounding
-// up the normalized increment guarantees that. Protocol stays whole.
-let delta = mul_div_ceil(amount, FIXED_POINT_ONE, current_accumulator);
-position.normalized_debt_amount = position.normalized_debt_amount.checked_add(delta)?;
+Borrowing increases normalized debt by
+`ceil(amount * FIXED_POINT_ONE / current_accumulator)`: the borrower receives
+exactly `amount`, so the corresponding exact nominal debt must grow by at least
+that much.
 
-// repay_debt: decrease normalized_debt by amount-divided-by-accumulator,
-// ROUND DOWN — the borrower burned exactly `amount` stablecoins, and we want their
-// nominal_debt to shrink by AT MOST `amount`. Rounding the decrement down means
-// their debt drops slightly less than they paid; the rounding remainder becomes
-// extra fee credit for the protocol.
-let delta = mul_div_floor(amount, FIXED_POINT_ONE, current_accumulator);
-position.normalized_debt_amount = position.normalized_debt_amount.checked_sub(delta)?;
-// `checked_sub` panicking covers overrepay.
+For repayment, the unchanged `amount: u128` argument is the **maximum burn the
+caller authorizes**. Let `M` be that maximum, `N` the current normalized debt,
+`A` the accumulator projected at the execution-time clock, and `R = FIXED_POINT_ONE`:
+
+```text
+full_cost = ceil(N * A / R)
+actual_burn = min(M, full_cost)
+normalized_decrement = N                    if M * R >= N * A
+                       floor(M * R / A)     otherwise
+normalized_debt_after = N - normalized_decrement
 ```
 
-**In plain English:** integer math has to drop fractions somewhere. We always drop them in the direction that keeps the protocol whole.
+The implementation compares the products in `U256` before narrowing results.
+It calculates `full_cost` as a `u128` only when the maximum covers it; partial
+repayments remain possible even when the total nominal debt exceeds `u128::MAX`.
 
-- **`generate_debt` rounds UP.** User gets exactly `amount` stablecoins; their nominal debt grows by `≥ amount`. They owe slightly more than they walked away with → protocol's total debt ≥ total supply.
-- **`repay_debt` rounds DOWN.** User burns exactly `amount` stablecoins; their nominal debt shrinks by `≤ amount`. They paid `amount` but debt only dropped by ≤ that → protocol keeps the rounding remainder as fee credit.
+- **Partial repayment rounds the debt reduction DOWN.** It burns exactly `M`;
+  the exact nominal debt reduction is at most `M`. A small positive burn can
+  remove zero normalized units, preserving the existing dust behavior.
+- **Full repayment rounds the burn UP.** It removes all `N` normalized units and
+  burns only `ceil(N * A / R)`. The ceiling exceeds exact fractional debt by less
+  than one raw token unit; the unused signed buffer remains in the user's holding.
 
-Net effect: the protocol's "implicit fee credit" (`Σ nominal_debt − total_supply`, see §7 invariant 7) can only grow over time, never shrink. The integer dust always sticks to the protocol's side.
+Rounding never reduces exact debt by more than the amount burned. Repayment
+burns tokens; it does not transfer the rounding remainder to a treasury or create
+a fee-credit account.
 
-**Dust trade-off on full repay.** Because we round the decrement down, fully clearing a position can require burning slightly more than the nominal debt (≤ one accumulator unit of overpayment). v1 accepts this. UX-side, the SDK can either show "exact" + "with dust buffer" amounts, or expose a `repay_all` helper that picks the right number off-chain.
+**Execution-time buffers.** A maximum computed from an earlier snapshot clears
+the debt only if it covers the ceiling at execution. If fees push the debt above
+the maximum, the transaction repays partially. Clients should reread confirmed
+position debt and token balances before reporting closure or actual spend.
 
 ### 6.4 PI controller (`update_redemption_rate`)
 
@@ -1043,6 +1053,9 @@ flowchart TD
 
 **Signature:** `fn repay_debt(amount: u128);`
 
+`amount` is the maximum stablecoin burn authorized by the caller. The program
+caps the actual burn at the ceiling of outstanding debt at execution time (§6.3).
+
 **Inputs (7 accounts):**
 
 1. `owner` — authorized.
@@ -1055,13 +1068,19 @@ flowchart TD
 
 **Outputs:**
 
-- `position.normalized_debt_amount` ← `old − ⌊amount × FIXED_POINT_ONE / current_accumulator⌋` (round DOWN, § 6.3); `checked_sub` panics on overrepay.
-- `stablecoin_definition.total_supply` ← `old − amount`.
-- `user_stablecoin_holding.balance` ← `old − amount`.
+- `actual_burn = min(amount, ceil(old_normalized_debt × current_accumulator / FIXED_POINT_ONE))`.
+- `position.normalized_debt_amount` ← `0` if the maximum covers the full ceiling;
+  otherwise `old − floor(amount × FIXED_POINT_ONE / current_accumulator)`.
+- `stablecoin_definition.total_supply` ← `old − actual_burn`.
+- `user_stablecoin_holding.balance` ← `old − actual_burn`.
 
-**Chained calls:** `Token::Burn { amount_to_burn: amount }` · accounts: `[stablecoin_definition, user_stablecoin_holding (user-authorized)]` · no PDA seeds.
+**Chained calls:** `Token::Burn { amount_to_burn: actual_burn }` · accounts: `[stablecoin_definition, user_stablecoin_holding (user-authorized)]` · no PDA seeds.
 
-**Panics if:** `owner.is_authorized = false`; `user_stablecoin_holding.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; overrepay (`⌊amount × FIXED_POINT_ONE / current_accumulator⌋ > position.normalized_debt_amount`, mirroring the floor decrement of §6.3 / the output above). Allowed when frozen.
+**Panics if:** `owner.is_authorized = false`; `user_stablecoin_holding.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; unrepresentable accumulator projection. The chained Token burn rejects insufficient balance or supply, reverting the entire transaction. A maximum above debt or holding balance is valid when the actual burn fits. Allowed when frozen.
+
+A zero maximum, or any valid maximum on a debt-free position, still validates all
+accounts and emits one zero-amount Token burn. Read confirmed debt after execution:
+a buffer smaller than the execution-time ceiling leaves a partial balance.
 
 ```mermaid
 flowchart TD
@@ -1070,11 +1089,12 @@ flowchart TD
         a4[user_stablecoin_holding<br/>auth + init] ~~~ a5[stability_fee_accumulator<br/>read] ~~~ a6[protocol_parameters<br/>read] ~~~ a7[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
-        p1[position<br/>normalized_debt -= floor amt/acc] ~~~ p2[stablecoin_definition<br/>total_supply -= amount] ~~~ p3[user_stablecoin_holding<br/>balance -= amount]
+        p1[position, zero if fully covered;, otherwise subtract floor M×R/A] ~~~ p2[stablecoin_definition, total_supply -= actual_burn] ~~~ p3[user_stablecoin_holding, balance -= actual_burn]
     end
-    In --> Ins((repay_debt<br/>amount))
-    Ins --> Post
-    Ins -.chained.-> C1[Token::Burn amount<br/>auth via user]
+    In --> Ins((repay_debt, maximum M))
+    Ins --> Cap[actual_burn = min M, ceil N×A/R]
+    Cap --> Post
+    Cap -.chained.-> C1[Token::Burn actual_burn, auth via user]
 ```
 
 ### 10.9 `close_position`
@@ -1228,8 +1248,9 @@ flowchart TD
 - **Frozen + stale oracle.** `withdraw_collateral` blocked (frozen). `generate_debt` blocked twice (frozen + stale). `deposit_collateral`, `repay_debt`, `close_position` work. Anyone can still call `accrue_stability_fee` (rate-independent).
 - **Admin tightens `minimum_collateralization_ratio`.** Existing positions with healthy-old-ratio but underwater-new-ratio cannot `generate_debt` or `withdraw_collateral`. They CAN `deposit_collateral` to recover, or `repay_debt` to reduce their debt.
 - **Position re-open at same nonce after close.** Fails — the vault PDA at `hash(position_id)` lingers from before. By design — pick a fresh nonce (intentional limitation). See § 14.
-- **Overrepay on `repay_debt`.** Panics via `checked_sub`; protects against user error sending more burn than nominal debt at this instant.
-- **Dust on full repay.** Because the decrement is rounded down (§6.3), burning exactly the current nominal debt may leave a tiny `normalized_debt_amount` residue (≤ one accumulator unit). To fully clear, users overpay by a tiny amount (≤ accumulator × 1 raw unit). Off-chain SDK computes the right number; if it picks too small, `repay_debt` still succeeds but the position isn't closeable until another small repay.
+- **Repayment maximum above debt.** `repay_debt` burns only the ceiling of execution-time debt, clears normalized debt, and retains the unused buffer. The maximum may exceed the holding balance if the actual burn fits. If Token cannot burn the actual amount, all state changes roll back.
+- **Dust and timing on repayment.** Partial repayments keep the downward-rounded debt reduction (§6.3). Full repayment burns the ceiling, avoiding forgiveness of fractional raw-unit debt. A buffer is sufficient only when it covers debt at execution; if fees accrue past it, the program burns at most the maximum and leaves positive debt. Reread confirmed debt before withdrawing everything or reporting the position clear.
+- **Repaying a debt-free position.** Any valid maximum burns zero, including `u128::MAX` with an empty holding. Account, signer, clock, and projection checks still apply, and the zero-amount chained burn remains present.
 - **Zero-amount instructions.** `deposit_collateral(0)`, `withdraw_collateral(0)`, `generate_debt(0)`, `repay_debt(0)`: all valid no-ops at the protocol level (chained Token call is also a no-op). Saves the caller from having to short-circuit.
 
 ## 12. Out of scope (per RFP)
@@ -1275,6 +1296,10 @@ Two end-to-end walkthroughs showing how the relevant fields change over time. Nu
 
 Alice opens a collateralized position, borrows stablecoin, holds for ~1 year, accrues fees, repays everything, withdraws her collateral, and closes the position.
 
+Amounts in this walkthrough are displayed in token units with 18 decimals;
+transaction amounts, balances, and normalized debt are stored in raw units
+(multiplied by `10^18`). The repayment calculation below uses raw units explicitly.
+
 **Setup (t = 0, just after a long-running protocol)**
 
 - `ProtocolParameters`: `stability_fee_per_millisecond` set for ~5%/year, `minimum_collateralization_ratio = 1.5 × FIXED_POINT_ONE`, oracle wired to a TWAP producer.
@@ -1292,15 +1317,17 @@ Alice opens a collateralized position, borrows stablecoin, holds for ~1 year, ac
 
 No oracle / accumulator / redemption-price reads in this op — opening a fresh position with no debt is "deposit_collateral plus a PDA claim".
 
-**Step 2 — t = 10s: Alice initializes her stablecoin holding (separate Token-program tx, not shown), then calls `generate_debt(amount = 200)`**
+**Step 2 — same clock timestamp, t = 0s: Alice initializes her stablecoin holding (separate Token-program tx, not shown), then calls `generate_debt(amount = 200 × 10^18)`**
 
-State of globals at t=10s:
-- `current_accumulated_rate(t=10) ≈ 1.0 × FIXED_POINT_ONE` (negligible drift in 10 seconds).
-- `current_redemption_price(t=10) ≈ 0.5 × FIXED_POINT_ONE`.
+State of globals at t=0s:
+
+- `current_accumulated_rate = 1.0 × FIXED_POINT_ONE`.
+- `current_redemption_price = 0.5 × FIXED_POINT_ONE`.
 - Oracle is fresh.
 
 Computation:
-- `delta_normalized = ⌈200 × FIXED_POINT_ONE / current_accumulator⌉ ≈ ⌈200⌉ = 200` (no rounding loss yet).
+
+- `delta_normalized = ceil(200 × 10^18 × FIXED_POINT_ONE / current_accumulator) = 200 × 10^18` (exactly 200 token units).
 - Collateralization check: `collateral_value_in_stablecoin = 600 / 0.5 = 1200`; `required = 200 × 1.5 = 300`; `1200 ≥ 300` ✓.
 
 | Account | Field | Before | After |
@@ -1321,20 +1348,31 @@ Globals look like (after the year of pokes):
 - `StabilityFeeAccumulator.accumulated_rate_at_last_accrual ≈ 1.0513 × FIXED_POINT_ONE`, `last_accrued_at = 365 days`.
 - `RedemptionPriceState`: the controller has drifted it based on observed market vs target. For this scenario, say it ended at `0.502 × FIXED_POINT_ONE`.
 
-**Step 4 — t = 365 days + 1s: Alice acquires ~10.3 extra stablecoin from the market (e.g., buys from another user who borrowed) and calls `repay_debt(amount = 211)`**
+**Step 4 — t = 365 days + 1s: Alice acquires 11 extra stablecoin from another borrower and calls `repay_debt(amount = 211 × 10^18)`**
 
-Computation:
-- `current_accumulator ≈ 1.0513 × FIXED_POINT_ONE` (no new accrue in 1s).
-- `delta_normalized = ⌊211 × FIXED_POINT_ONE / 1.0513×FIXED_POINT_ONE⌋ = ⌊200.7⌋ = 200`.
-- `position.normalized_debt_amount := 200 − 200 = 0`. Cleared.
+For this arithmetic example, suppose the projected accumulator at execution is
+exactly `1.0513 × FIXED_POINT_ONE`. It includes elapsed time since the last accrual;
+a stored anchor alone does not fix the execution-time debt.
 
-| Account | Field | Before | After |
+Computation in raw units:
+
+- `N = 200 × 10^18`, `A = 1.0513 × FIXED_POINT_ONE`, signed maximum `M = 211 × 10^18`.
+- `full_cost = ceil(N × A / FIXED_POINT_ONE) = 210260000000000000000`.
+- `actual_burn = min(211000000000000000000, 210260000000000000000) = 210260000000000000000`.
+- The maximum covers the full cost, so `normalized_debt_amount := 0`.
+- `unused_buffer = 211000000000000000000 − 210260000000000000000 = 740000000000000000`.
+
+| Account | Field | Before (token units) | After (token units) |
 |---|---|---|---|
 | `position` | normalized_debt_amount | 200 | 0 |
-| `stablecoin_definition` | total_supply | S + 200 | S − 11 (net) |
-| Alice's stablecoin holding | balance | 211 | 0 |
+| `stablecoin_definition` | total_supply | S + 200 | S − 10.26 (net) |
+| Alice's stablecoin holding | balance | 211 | 0.74 |
 
-Alice slightly overpaid (211 nominal vs 210.26 owed). The extra 0.74 went to the protocol as fee credit (this is the rounding remainder; in real magnitudes it's negligible).
+The unused 0.74 stays in Alice's holding. The program burns 210.26 from her
+balance and supply; it transfers no buffer or fee proceeds to a treasury. This
+maximum clears debt at the assumed execution-time accumulator. If fees move the
+ceiling above 211 tokens before execution, repayment is partial instead; Alice
+checks confirmed debt before proceeding.
 
 **Step 5 — t = 365 days + 2s: `withdraw_collateral(amount = 600)`**
 
@@ -1357,8 +1395,8 @@ Alice slightly overpaid (211 nominal vs 210.26 owed). The extra 0.74 went to the
 
 **Net result over the year:**
 
-- Alice locked 600 collateral, borrowed 200 stablecoin, repaid 211 stablecoin. Net cost: ~11 stablecoin (the protocol's accrued stability fee).
-- The protocol's "accumulated fee credit" gap (§7 invariant 7) grew by ~11 over the year just from Alice's position. Over thousands of positions, this is the fee revenue the protocol implicitly holds. Surplus extraction is a future-RFP capability (§14).
+- Alice locked 600 collateral, borrowed 200 stablecoin, and burned 210.26 stablecoin to repay. Net cost: 10.26 stablecoin in accrued debt; the unused 0.74 remains hers.
+- Repayment reduced total supply by 210.26. The burn did not mint or credit fee revenue to a treasury; surplus extraction remains a future-RFP capability (§14).
 
 ### 16.2 Emergency freeze
 

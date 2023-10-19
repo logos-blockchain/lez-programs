@@ -1352,7 +1352,7 @@ LOGOS_TEST(real_ffi_position_health_rechecks_fractional_debt_while_frozen) {
     LOGOS_ASSERT_EQ(module.positionHealth(invalid)["error"].get<std::string>(), std::string("invalid_numeric_value"));
 }
 
-LOGOS_TEST(real_ffi_repay_debt_preserves_large_amounts_and_frozen_preflight) {
+LOGOS_TEST(real_ffi_repay_debt_preserves_maximum_above_balance_and_frozen_preflight) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
     LogosTestContext context("stablecoin_module");
@@ -1376,10 +1376,12 @@ LOGOS_TEST(real_ffi_repay_debt_preserves_large_amounts_and_frozen_preflight) {
     const json addresses = json::parse(address_result.get()).at("value");
     const std::string position_id = addresses["positionIdHex"].get<std::string>();
     const std::string vault_id = addresses["vaultIdHex"].get<std::string>();
+    // The requested maximum exceeds the entire supply and holding balance.
+    // The live debt costs exactly 150 to clear, so Rust preflight must accept it.
     const std::string definition = "00" + std::string("04000000") + bytesHex("Coin")
-        + u128Le(maximum) + "00" + "00";
-    const std::string holding = "00" + definition_id + u128Le(maximum);
-    const std::string position = positionData(CALLER_ID_HEX, vault_id, 7, "1000", maximum);
+        + u128Le("150") + "00" + "00";
+    const std::string holding = "00" + definition_id + u128Le("150");
+    const std::string position = positionData(CALLER_ID_HEX, vault_id, 7, "1000", "100");
     const std::string protocol = protocolData(true);
     const std::string accumulator = accumulatorData("1500000000000000000000000000", DUE);
     const std::string clock = clockData(DUE);
@@ -1412,6 +1414,11 @@ LOGOS_TEST(real_ffi_repay_debt_preserves_large_amounts_and_frozen_preflight) {
         stablecoin_repay_debt_plan(payload.c_str()), &stablecoin_free);
     LOGOS_ASSERT_TRUE(planned != nullptr);
     const json plan = json::parse(planned.get()).at("value");
+    // Borsh retains the signed u128 maximum, rather than the preflight burn quote.
+    LOGOS_ASSERT_EQ(plan["instruction"].size(), 17);
+    for (std::size_t index = 1; index < 17; ++index) {
+        LOGOS_ASSERT_EQ(plan["instruction"][index], 255);
+    }
     LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
         submissionArguments(plan, {0, 3}, PROGRAM_ID_HEX)));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 6);

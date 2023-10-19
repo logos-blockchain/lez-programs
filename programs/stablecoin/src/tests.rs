@@ -1388,15 +1388,39 @@ fn repay_debt_rejects_an_unbound_stablecoin_definition() {
 }
 
 #[test]
-#[should_panic(expected = "Repay amount exceeds outstanding normalized debt")]
-fn repay_debt_rejects_overrepay_against_the_floored_delta() {
-    repay(
-        init_position_account(1_000, 10),
-        stablecoin_definition_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
-        protocol_parameters_account(false),
-        11,
-    );
+fn repay_debt_caps_burn_at_current_debt_while_frozen_or_active() {
+    for frozen in [false, true] {
+        for maximum in [150, 151, 152, u128::MAX] {
+            let original = init_position_account(1_000, 100);
+            let (posts, calls) = repay(
+                original.clone(),
+                stablecoin_definition_account(),
+                crate::test_support::accumulator_account(FIXED_POINT_ONE * 3 / 2, NOW),
+                protocol_parameters_account(frozen),
+                maximum,
+            );
+            let mut expected = Position::try_from(&original.account.data).expect("position");
+            expected.normalized_debt_amount = 0;
+            assert_eq!(
+                Position::try_from(posts[1].post_data()).expect("position"),
+                expected
+            );
+            assert_eq!(posts.len(), 7);
+            assert_eq!(
+                calls,
+                vec![ChainedCall::new(
+                    TOKEN_PROGRAM_ID,
+                    vec![
+                        stablecoin_definition_account().account_id,
+                        user_stablecoin_holding_account(1_000).account_id
+                    ],
+                    &token_core::Instruction::Burn {
+                        amount_to_burn: 150
+                    },
+                )],
+            );
+        }
+    }
 }
 
 #[test]
@@ -2702,18 +2726,34 @@ fn repay_debt_rejects_holding_for_other_definition() {
 }
 
 #[test]
-#[should_panic(expected = "Repay amount exceeds outstanding normalized debt")]
-fn repay_debt_rejects_overrepay() {
-    crate::repay_debt::repay_debt(
+fn repay_debt_without_debt_burns_zero_even_with_a_maximum_above_balance() {
+    let (posts, calls) = crate::repay_debt::repay_debt(
         owner_account(),
-        init_position_account(500, 100),
+        init_position_account(500, 0),
         stablecoin_definition_account(),
-        user_stablecoin_holding_account(1_000),
+        user_stablecoin_holding_account(0),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
-        200,
+        u128::MAX,
+    );
+    assert_eq!(
+        Position::try_from(posts[1].post_data())
+            .expect("position")
+            .normalized_debt_amount,
+        0
+    );
+    assert_eq!(
+        calls,
+        vec![ChainedCall::new(
+            TOKEN_PROGRAM_ID,
+            vec![
+                stablecoin_definition_account().account_id,
+                user_stablecoin_holding_account(0).account_id
+            ],
+            &token_core::Instruction::Burn { amount_to_burn: 0 },
+        )]
     );
 }
 

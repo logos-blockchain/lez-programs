@@ -381,7 +381,10 @@ mod stablecoin {
         ))
     }
 
-    /// Repay `amount` of outstanding stablecoin debt against an existing position.
+    /// Repay outstanding debt, burning at most the signed `amount` of stablecoins.
+    ///
+    /// Execution caps the burn at the ceiling of current debt, retaining any
+    /// unused buffer. Partial repayments round the normalized decrement down.
     ///
     /// # Errors
     /// Returns the host program's panic-converted error if any precondition
