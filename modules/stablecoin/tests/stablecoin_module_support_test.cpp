@@ -97,6 +97,10 @@ LOGOS_TEST(wallet_submission_response_requires_success_and_full_hash) {
 }
 
 LOGOS_TEST(ffi_error_mapping_preserves_only_public_codes) {
+    for (const std::string& error : {"invalid_debt_limits", "debt_below_minimum",
+             "debt_ceiling_exceeded", "total_debt_arithmetic_error", "unsupported_account_schema"}) {
+        LOGOS_ASSERT_EQ(stablecoin_module::detail::stableFfiError(error), error);
+    }
     LOGOS_ASSERT_EQ(
         stablecoin_module::detail::stableFfiError("invalid_numeric_value"),
         std::string("invalid_numeric_value"));

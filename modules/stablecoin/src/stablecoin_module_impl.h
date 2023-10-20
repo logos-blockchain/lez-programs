@@ -78,7 +78,8 @@ public:
     /// `initialControllerProportionalGain`, `initialControllerIntegralGain`,
     /// `initialMinimumCollateralizationRatio`,
     /// `minimumMillisecondsBetweenRateUpdates`,
-    /// `maximumOraclePriceAgeMilliseconds`, `initialRedemptionPrice`, and
+    /// `maximumOraclePriceAgeMilliseconds`, `initialRedemptionPrice`,
+    /// `minimumDebtAmount`, `debtCeiling`, and
     /// `stablecoinName`. Integer values accept exact decimal strings or JSON
     /// integers; JSON floats are rejected. The deployed program header signs
     /// initialization; `adminId` selects the initial administrator.
@@ -133,6 +134,11 @@ public:
     /// Sets `newRatio` (u128) in the inclusive native 1.1x..10x band.
     /// `adminId` must be the current public wallet admin. Allowed while frozen.
     LogosMap setMinimumCollateralizationRatio(const LogosMap& request);
+
+    /// Sets raw stablecoin atomic-unit `minimumDebtAmount` and `debtCeiling`.
+    /// Requires `0 < minimumDebtAmount <= debtCeiling` and the current `adminId`.
+    /// Allowed while frozen; existing debt may exceed the new ceiling.
+    LogosMap setDebtLimits(const LogosMap& request);
 
     /// Sets non-negative i128 `newProportionalGain` and `newIntegralGain` atomically,
     /// without resetting redemption state. Requires the current `adminId`.

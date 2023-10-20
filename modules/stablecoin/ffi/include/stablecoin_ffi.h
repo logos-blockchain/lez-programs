@@ -247,6 +247,14 @@ char *stablecoin_freeze_plan(const char *request_json);
 char *stablecoin_unfreeze_plan(const char *request_json);
 
 /**
+ * Builds the current-admin plan for an atomic debt-limit update.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_debt_limits_plan(const char *request_json);
+
+/**
  * Releases a string returned by a `stablecoin_*` operation.
  *
  * # Safety

@@ -24,6 +24,9 @@ use token_core::TokenHolding;
 /// (§6.6), and the repayment is priced at the persisted accumulator and its
 /// decrement taken off `total_normalized_debt`.
 ///
+/// A nonzero normalized decrement must leave zero debt or meet the exact accrued
+/// position floor. The global ceiling never restricts repayment.
+///
 /// Allowed while the protocol is frozen — repaying only improves the protocol's
 /// position (§7). `stablecoin_definition` is pinned against
 /// `ProtocolParameters.stablecoin_definition_id`.
@@ -44,6 +47,8 @@ use token_core::TokenHolding;
 ///   its canonical PDA, or does not decode.
 /// - `clock` is not the initialized system `CLOCK_01` account.
 /// - Projecting the accumulator exceeds the supported arithmetic range.
+/// - The capped decrement exceeds the aggregate normalized-debt counter.
+/// - A nonzero decrement leaves positive debt below the configured floor.
 #[allow(
     clippy::too_many_arguments,
     reason = "the eight account inputs mirror the spec §10.8 ABI"
@@ -163,7 +168,16 @@ pub fn repay_debt(
         .total_normalized_debt
         .checked_sub(repayment.normalized_debt_decrement)
         .expect("Total normalized debt underflow");
-
+    if repayment.normalized_debt_decrement != 0 {
+        assert!(
+            stablecoin_core::debt_limits::meets_debt_floor(
+                new_debt,
+                current_accumulator,
+                parameters.minimum_debt_amount,
+            ),
+            "Position debt is below minimum_debt_amount"
+        );
+    }
     let updated_position = Position {
         owner_account_id: position_data.owner_account_id,
         position_nonce: position_data.position_nonce,
