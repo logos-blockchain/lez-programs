@@ -121,7 +121,8 @@ pub enum Instruction {
     /// Run one tick of the redemption-rate controller and re-anchor the
     /// redemption price. Permissionless, but strict: panics if called within
     /// `minimum_milliseconds_between_rate_updates` of the last update, or if the
-    /// market-price oracle is stale or reports a zero price. Allowed while frozen.
+    /// market-price oracle is future-dated, stale, or reports a zero price.
+    /// Allowed while frozen.
     ///
     /// Required accounts (5), in order:
     /// 1. `caller` — authorized; not retained anywhere.
@@ -137,14 +138,14 @@ pub enum Instruction {
     ///
     /// ALWAYS performs the fee accrual (like [`Instruction::AccrueStabilityFee`]).
     /// Performs the redemption update (like [`Instruction::UpdateRedemptionRate`])
-    /// ONLY if its interval is due AND the oracle is fresh AND the oracle price is
-    /// non-zero; otherwise it SKIPS that half without panicking. Allowed while
-    /// frozen, like the individual pokes.
+    /// ONLY if its interval is due AND the oracle is not future-dated and is fresh
+    /// AND the oracle price is non-zero; otherwise it SKIPS that half without panicking. Allowed
+    /// while frozen, like the individual pokes.
     ///
     /// Panics ONLY on: `caller` not authorized; any of `protocol_parameters` /
     /// `stability_fee_accumulator` / `redemption_price_state` uninitialized, wrong
     /// owner, or at the wrong PDA; oracle id mismatch; wrong clock account. It does
-    /// NOT panic on a not-yet-due interval or a stale / zero oracle.
+    /// NOT panic on a not-yet-due interval or a future-dated / stale / zero oracle.
     ///
     /// Required accounts (6), in order — the union of the two standalone pokes:
     /// 1. `caller` — authorized; not retained anywhere.
@@ -243,7 +244,7 @@ pub enum Instruction {
     /// Required accounts (4), in order:
     /// 1. `owner` — authorized.
     /// 2. `position` — initialized, owned by `self_program_id`, at its `(owner, position_nonce)`
-    ///    PDA. Cleared to `Account::default()`.
+    ///    PDA. Its data is cleared; ownership and nonce remain unchanged.
     /// 3. `vault` — initialized, read-only; must equal `Position.vault_account_id` and hold a zero
     ///    balance.
     /// 4. `protocol_parameters` — initialized, read-only; at its canonical PDA.

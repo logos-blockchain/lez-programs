@@ -17,9 +17,9 @@ use crate::math::FIXED_POINT_ONE;
 /// integrator. Placeholder pending the §15 simulation tuning pass.
 pub const INTEGRAL_CLAMP: i128 = (FIXED_POINT_ONE as i128) * 1_000_000;
 
-/// Per-update rate-adjustment clamp (rate-explosion guard), per spec §8:
-/// `± FIXED_POINT_ONE / 100_000` — about ±0.001% per call, so even a
-/// once-per-second keeper cadence caps near ±1%/s.
+/// Clamp on the new per-millisecond factor's deviation from one, per spec §8:
+/// `± FIXED_POINT_ONE / 100_000` — ±0.001% per millisecond. The factor
+/// compounds every millisecond, independently of the keeper's update cadence.
 ///
 /// Placeholder pending the §15 simulation tuning pass.
 pub const RATE_DELTA_CLAMP: i128 = (FIXED_POINT_ONE / 100_000) as i128;
@@ -188,6 +188,50 @@ mod tests {
             "rate should fall; got {}",
             output.redemption_rate_per_millisecond,
         );
+    }
+
+    #[test]
+    fn high_oracle_price_example_matches_documented_drift_and_collateralization() {
+        use alloy_primitives::U512;
+
+        use crate::{
+            collateralization::collateralization_values, math::compute_current_redemption_price,
+        };
+
+        let initial_price = FIXED_POINT_ONE / 2;
+        let output = run_controller_tick(
+            initial_price,
+            FIXED_POINT_ONE,
+            0,
+            (FIXED_POINT_ONE / 10_000) as i128,
+            0,
+            100_000,
+        );
+        assert_eq!(output.controller_integral_term, 0);
+        assert_eq!(
+            output.redemption_rate_per_millisecond,
+            999_990_000_000_000_000_000_000_000
+        );
+        let projected = compute_current_redemption_price(
+            initial_price,
+            output.redemption_rate_per_millisecond,
+            0,
+            100_000,
+        );
+        assert_eq!(projected, 183_938_800_883_286_135_519_258_546);
+
+        let token_unit = 10_u128.pow(18);
+        let health = |price| {
+            collateralization_values(
+                100 * token_unit,
+                200 * token_unit,
+                U512::from(FIXED_POINT_ONE),
+                U512::from(price),
+                FIXED_POINT_ONE * 3 / 2,
+            )
+        };
+        assert!(!health(initial_price).is_collateralized());
+        assert!(health(projected).is_collateralized());
     }
 
     #[test]

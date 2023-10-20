@@ -1157,6 +1157,19 @@ fn poke_plans_pin_instruction_words_accounts_and_caller_only_signing() {
 
 #[test]
 fn strict_update_plan_reuses_quote_gate_order() {
+    for timestamp in [POKE_NOW + 1, u64::MAX] {
+        let mut future = update_request(false);
+        future.market_price_oracle = poke_oracle_read(FIXED_POINT_ONE, timestamp);
+        assert_error(update_redemption_rate_plan(future), "oracle_future");
+    }
+    let mut future_combined = update_request(false);
+    future_combined.market_price_oracle = poke_oracle_read(0, POKE_NOW + 1);
+    future_combined.redemption_price_state = poke_redemption_read(POKE_NOW);
+    assert_error(
+        update_redemption_rate_plan(future_combined),
+        "oracle_future",
+    );
+
     let mut stale = update_request(false);
     stale.market_price_oracle = poke_oracle_read(FIXED_POINT_ONE, POKE_NOW - 51);
     assert_error(update_redemption_rate_plan(stale), "oracle_stale");
@@ -1180,6 +1193,12 @@ fn strict_update_plan_reuses_quote_gate_order() {
 
 #[test]
 fn refresh_plan_keeps_controller_quote_gates_soft() {
+    for timestamp in [POKE_NOW + 1, u64::MAX] {
+        let mut future = refresh_request(false);
+        future.market_price_oracle = poke_oracle_read(FIXED_POINT_ONE, timestamp);
+        assert!(refresh_globals_plan(future).is_ok());
+    }
+
     let mut stale = refresh_request(false);
     stale.market_price_oracle = poke_oracle_read(FIXED_POINT_ONE, POKE_NOW - 51);
     assert!(refresh_globals_plan(stale).is_ok());
@@ -1191,6 +1210,29 @@ fn refresh_plan_keeps_controller_quote_gates_soft() {
     let mut too_soon = refresh_request(false);
     too_soon.redemption_price_state = poke_redemption_read(POKE_NOW - 49);
     assert!(refresh_globals_plan(too_soon).is_ok());
+}
+
+#[test]
+fn update_plan_accepts_current_and_exact_maximum_age_observations() {
+    for timestamp in [POKE_NOW, POKE_NOW - 50] {
+        let mut request = update_request(false);
+        request.market_price_oracle = poke_oracle_read(FIXED_POINT_ONE, timestamp);
+        let plan = ok(update_redemption_rate_plan(request));
+        assert_eq!(
+            plan["accountIds"],
+            json!([
+                account_id_hex(id(15)),
+                account_id_hex(compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID)),
+                account_id_hex(compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID)),
+                account_id_hex(id(5)),
+                account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID),
+            ])
+        );
+        assert!(matches!(
+            decode_instruction(&plan["instruction"]),
+            Instruction::UpdateRedemptionRate
+        ));
+    }
 }
 
 #[test]

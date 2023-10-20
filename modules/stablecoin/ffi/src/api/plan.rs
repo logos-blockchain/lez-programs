@@ -426,6 +426,7 @@ fn require_ready_quote(quote: &Value) -> Result<(), StablecoinApiError> {
         .and_then(|error| error.get("code"))
         .and_then(Value::as_str);
     let code = match blocker {
+        Some("oracle_future") => "oracle_future",
         Some("oracle_stale") => "oracle_stale",
         Some("oracle_price_zero") => "oracle_price_zero",
         Some("rate_update_too_soon") => "rate_update_too_soon",

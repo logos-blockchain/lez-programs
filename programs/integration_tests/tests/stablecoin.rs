@@ -2968,3 +2968,83 @@ fn stablecoin_refresh_globals_advances_both_then_fee_only_when_oracle_stale() {
     // Redemption half skipped without panicking — byte-identical to pass 1.
     assert_eq!(redemption_after_second, redemption_after_first);
 }
+
+#[test]
+fn stablecoin_future_oracle_rejects_strict_update_but_allows_fee_only_refresh() {
+    use stablecoin_core::math::{compute_current_accumulated_rate, FIXED_POINT_ONE};
+
+    let start = 1_700_000_000_000;
+    let now = start + 600_000;
+    let mut state = initialize_protocol(
+        start,
+        i128::try_from(FIXED_POINT_ONE).expect("FIXED_POINT_ONE fits i128"),
+    );
+    let redemption_id = compute_redemption_price_state_pda(Ids::stablecoin_program());
+    let accumulator_id = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
+    let parameters_id = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    let redemption_before = state.get_account_by_id(redemption_id);
+    let accumulator_before = read_accumulator(&state);
+
+    // The initialized protocol deliberately trusts this alternative producer,
+    // whose owner is [9; 32]. This fixture models a misbehaving configured
+    // producer; the canonical TWAP does not normally emit future timestamps.
+    state.force_insert_account(
+        Ids::oracle(),
+        Accounts::oracle_with(
+            Ids::stablecoin_definition_pda(),
+            Ids::collateral_definition(),
+            FIXED_POINT_ONE / 4,
+            now + 1,
+        ),
+    );
+
+    assert_rejected_with(
+        submit_poke(
+            &mut state,
+            now,
+            2,
+            stablecoin_core::Instruction::UpdateRedemptionRate,
+            vec![
+                parameters_id,
+                redemption_id,
+                Ids::oracle(),
+                CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ],
+        ),
+        "Market price oracle observation is dated in the future",
+        "strict controller update with a future observation",
+    );
+    assert_eq!(state.get_account_by_id(redemption_id), redemption_before);
+    assert_eq!(read_accumulator(&state), accumulator_before);
+
+    submit_poke(
+        &mut state,
+        now,
+        2,
+        stablecoin_core::Instruction::RefreshGlobals,
+        vec![
+            parameters_id,
+            accumulator_id,
+            redemption_id,
+            Ids::oracle(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+    )
+    .expect("combined refresh must accrue fees despite the future observation");
+    assert_eq!(state.get_account_by_id(redemption_id), redemption_before);
+    let accumulator_after = read_accumulator(&state);
+    assert_eq!(accumulator_after.last_accrued_at, now);
+    assert_eq!(
+        accumulator_after.accumulated_rate_at_last_accrual,
+        compute_current_accumulated_rate(
+            accumulator_before.accumulated_rate_at_last_accrual,
+            protocol_config::STABILITY_FEE_PER_MILLISECOND,
+            accumulator_before.last_accrued_at,
+            now,
+        )
+    );
+    assert!(
+        accumulator_after.accumulated_rate_at_last_accrual
+            > accumulator_before.accumulated_rate_at_last_accrual
+    );
+}
