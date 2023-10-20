@@ -132,6 +132,37 @@ fn update_parameters(
     (state_diffs, vec![])
 }
 
+/// Update both debt limits atomically, in raw stablecoin atomic units.
+///
+/// Lowering the ceiling below current accrued debt stops new borrowing. Raising
+/// the floor can restrict partial repayment of existing positions; settlement to
+/// zero remains allowed. Neither change rewrites positions or the debt counter.
+///
+/// # Panics
+/// Invalid globals, missing admin authorization, or limits outside
+/// `0 < minimum_debt_amount <= debt_ceiling`.
+pub fn set_debt_limits(
+    admin: AccountWithMetadata,
+    protocol_parameters: AccountWithMetadata,
+    stablecoin_program_id: AccountId,
+    minimum_debt_amount: u128,
+    debt_ceiling: u128,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
+    update_parameters(
+        admin,
+        protocol_parameters,
+        stablecoin_program_id,
+        |parameters| {
+            assert!(
+                stablecoin_core::debt_limits::valid_debt_limits(minimum_debt_amount, debt_ceiling),
+                "Debt limits require 0 < minimum_debt_amount <= debt_ceiling"
+            );
+            parameters.minimum_debt_amount = minimum_debt_amount;
+            parameters.debt_ceiling = debt_ceiling;
+        },
+    )
+}
+
 /// Retune the minimum collateralization ratio (spec §10.11).
 ///
 /// Tightening can leave existing positions retroactively under-collateralized:
@@ -904,5 +935,78 @@ mod tests {
             new_oracle_account(),
             STABLECOIN_PROGRAM_ID,
         );
+    }
+    #[test]
+    fn debt_limits_update_atomically_and_validate_authority_and_bounds() {
+        let (post, calls) =
+            set_debt_limits(admin_account(), params(), STABLECOIN_PROGRAM_ID, 20, 20);
+        assert!(calls.is_empty());
+        let after = decoded(&post[1]);
+        assert_eq!((after.minimum_debt_amount, after.debt_ceiling), (20, 20));
+        assert_eq!(
+            ProtocolParameters {
+                minimum_debt_amount: before().minimum_debt_amount,
+                debt_ceiling: before().debt_ceiling,
+                ..after
+            },
+            before()
+        );
+        for (minimum, ceiling) in [(0, 100), (10, 9)] {
+            assert!(std::panic::catch_unwind(|| set_debt_limits(
+                admin_account(),
+                params(),
+                STABLECOIN_PROGRAM_ID,
+                minimum,
+                ceiling,
+            ))
+            .is_err());
+        }
+        let mut unsigned = admin_account();
+        unsigned.is_authorized = false;
+        let mut impostor = admin_account();
+        impostor.account_id = freeze_authority_id();
+        for signer in [unsigned, impostor] {
+            assert!(std::panic::catch_unwind(|| set_debt_limits(
+                signer,
+                params(),
+                STABLECOIN_PROGRAM_ID,
+                1,
+                100,
+            ))
+            .is_err());
+        }
+        let mut wrong_address = params();
+        wrong_address.account_id = AccountId::new([0xC0; 32]);
+        let mut wrong_owner = params();
+        wrong_owner.account.program_owner = AccountId::new([0xC1; 32]);
+        for parameters in [wrong_address, wrong_owner] {
+            assert!(std::panic::catch_unwind(|| set_debt_limits(
+                admin_account(),
+                parameters,
+                STABLECOIN_PROGRAM_ID,
+                1,
+                100,
+            ))
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn fee_setter_preserves_nonzero_aggregate_above_ceiling() {
+        let mut parameters = parameters_at(OLD_RATE);
+        let mut parameter_data =
+            ProtocolParameters::try_from(&parameters.account.data).expect("params");
+        parameter_data.debt_ceiling = 100;
+        parameters.account.data = Data::from(&parameter_data);
+        let mut accumulator = accumulator_account(ACCUMULATOR_ANCHOR, T0);
+        let mut accumulator_data =
+            StabilityFeeAccumulator::try_from(&accumulator.account.data).expect("accumulator");
+        accumulator_data.total_normalized_debt = 100;
+        accumulator.account.data = Data::from(&accumulator_data);
+        let (post, _) = set_rate(admin_account(), parameters, accumulator, NOW, NEW_RATE);
+        let after = StabilityFeeAccumulator::try_from(post[2].post_data()).expect("accumulator");
+        assert_eq!(after.total_normalized_debt, 100);
+        assert_eq!(after.schema_version, stablecoin_core::GLOBAL_SCHEMA_VERSION);
+        assert!(after.accumulated_rate_at_last_accrual > ACCUMULATOR_ANCHOR);
     }
 }

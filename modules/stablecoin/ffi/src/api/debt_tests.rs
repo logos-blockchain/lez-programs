@@ -88,6 +88,9 @@ impl Fixture {
                 opened_at: START,
             },
             parameters: ProtocolParameters {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                minimum_debt_amount: 1,
+                debt_ceiling: u128::MAX,
                 admin_account_id: id(1),
                 freeze_authority_account_id: id(2),
                 stablecoin_definition_id: compute_stablecoin_definition_pda(PROGRAM),
@@ -102,9 +105,10 @@ impl Fixture {
                 is_frozen: false,
             },
             accumulator: StabilityFeeAccumulator {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                total_normalized_debt: debt,
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE * 3 / 2,
                 last_accrued_at: START,
-                total_normalized_debt: 0,
             },
             redemption: RedemptionPriceState {
                 redemption_price_at_last_update: FIXED_POINT_ONE,
@@ -264,6 +268,22 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
     let mut expected = fixture.position.clone();
     expected.normalized_debt_amount += expected_delta;
     assert_eq!(actual, expected);
+    let total = StabilityFeeAccumulator::try_from(
+        &post_account(posts.get(5).expect("accumulator post"), PROGRAM).data,
+    )
+    .expect("accumulator");
+    // Borrowing accrues first, so the persisted anchor moves to `now`.
+    let mut expected_accumulator = fixture.accumulator.clone();
+    expected_accumulator.accumulated_rate_at_last_accrual =
+        stablecoin_core::math::compute_current_accumulated_rate(
+            fixture.accumulator.accumulated_rate_at_last_accrual,
+            fixture.parameters.stability_fee_per_millisecond,
+            fixture.accumulator.last_accrued_at,
+            fixture.now,
+        );
+    expected_accumulator.last_accrued_at = fixture.now;
+    expected_accumulator.total_normalized_debt += expected_delta;
+    assert_eq!(total, expected_accumulator);
     // Any accrued fees are minted to the surplus holding first; the borrow is last.
     let call = calls.last().expect("a chained mint");
     assert_eq!(call.program_account_id, TOKEN_PROGRAM);
@@ -534,6 +554,7 @@ fn borrowing_rejects_debt_supply_and_cross_snapshot_balance_overflow() {
     let mut fixture = Fixture::new(u128::MAX, u128::MAX);
     error(fixture.request(json!("1")), "normalized_debt_overflow");
     fixture.position.normalized_debt_amount = 0;
+    fixture.accumulator.total_normalized_debt = 0;
     fixture.supply = u128::MAX;
     error(fixture.request(json!("1")), "stablecoin_supply_overflow");
     // Definition was read before another mint; destination was read afterward.
@@ -680,4 +701,44 @@ fn borrowing_validates_all_seven_reads_even_for_zero_amount() {
             error(request, expected);
         }
     }
+}
+
+#[test]
+fn borrowing_checks_exact_floor_and_aggregate_ceiling() {
+    let mut fixture = Fixture::new(1_000, 0);
+    fixture.parameters.minimum_debt_amount = 2;
+    // N=1 at A=1.5Q is below floor 2, despite ceiling nominal display rounding.
+    error(fixture.request(json!("1")), "debt_below_minimum");
+    execute(&fixture, 2, 2);
+    fixture.accumulator.accumulated_rate_at_last_accrual = FIXED_POINT_ONE;
+    execute(&fixture, 2, 2);
+    fixture.parameters.debt_ceiling = 10;
+    // A second modeled position already owes seven normalized units.
+    fixture.accumulator.total_normalized_debt = 7;
+    execute(&fixture, 3, 3);
+    error(fixture.request(json!("4")), "debt_ceiling_exceeded");
+    fixture.accumulator.accumulated_rate_at_last_accrual = FIXED_POINT_ONE * 3 / 2;
+    fixture.accumulator.total_normalized_debt = 0;
+    fixture.parameters.debt_ceiling = 2;
+    // Minting 2 rounds normalized delta up to 2, whose accrued debt is 3.
+    error(fixture.request(json!("2")), "debt_ceiling_exceeded");
+}
+
+#[test]
+fn borrowing_zero_is_allowed_above_ceiling_and_raised_floor() {
+    let mut fixture = Fixture::new(1_000, 10);
+    fixture.parameters.minimum_debt_amount = 20;
+    fixture.parameters.debt_ceiling = 20;
+    fixture.accumulator.total_normalized_debt = 30;
+    execute(&fixture, 0, 0);
+    error(fixture.request(json!("1")), "debt_below_minimum");
+    error(fixture.request(json!("10")), "debt_ceiling_exceeded");
+}
+
+#[test]
+fn aggregate_counter_overflow_is_reported_without_constructing_mint_plan() {
+    let mut fixture = Fixture::new(1_000, 0);
+    // Intentionally inconsistent snapshot: a corrupt aggregate near the numeric limit.
+    fixture.accumulator.total_normalized_debt = u128::MAX;
+    error(fixture.request(json!("1")), "total_debt_arithmetic_error");
 }

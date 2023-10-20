@@ -46,6 +46,8 @@ mod stablecoin {
         maximum_oracle_price_age_milliseconds: u64,
         initial_redemption_price: u128,
         stablecoin_name: String,
+        minimum_debt_amount: u128,
+        debt_ceiling: u128,
     ) -> SpelResult {
         let (post_states, chained_calls) =
             stablecoin_program::initialize_program::initialize_program(
@@ -69,6 +71,8 @@ mod stablecoin {
                     maximum_oracle_price_age_milliseconds,
                     initial_redemption_price,
                     stablecoin_name: &stablecoin_name,
+                    minimum_debt_amount,
+                    debt_ceiling,
                 },
             );
         Ok(spel_framework::SpelOutput::execute(
@@ -699,5 +703,23 @@ mod stablecoin {
             post_states,
             chained_calls,
         ))
+    }
+
+    /// Update raw atomic-unit debt limits; requires 0 < minimum <= ceiling.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error for invalid limits or admin.
+    #[instruction]
+    pub fn set_debt_limits(
+        ctx: ProgramContext,
+        #[account(signer)] admin: AccountWithMetadata,
+        #[account(mut)] protocol_parameters: AccountWithMetadata,
+        minimum_debt_amount: u128,
+        debt_ceiling: u128,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::admin::set_debt_limits(
+            admin, protocol_parameters, ctx.self_account_id, minimum_debt_amount, debt_ceiling,
+        );
+        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
     }
 }

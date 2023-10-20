@@ -150,7 +150,7 @@ pub(crate) fn accrue_fees(
         accumulator: StabilityFeeAccumulator {
             accumulated_rate_at_last_accrual: current,
             last_accrued_at: now,
-            total_normalized_debt: accumulator.total_normalized_debt,
+            ..accumulator.clone()
         },
         accrued_fees,
     }

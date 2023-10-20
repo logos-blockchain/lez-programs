@@ -19,6 +19,7 @@
     - [4.3 `RedemptionPriceState`](#43-redemptionpricestate)
     - [4.4 `Position`](#44-position)
     - [4.5 External account shapes](#45-external-account-shapes-read-only-reused)
+    - [4.6 Schema and deployment compatibility](#46-schema-and-deployment-compatibility)
 5. [Constants and conventions](#5-constants-and-conventions)
     - [5.1 Fixed point](#51-fixed-point)
     - [5.2 `compound_rate`](#52-compound_rate)
@@ -30,6 +31,8 @@
     - [6.3 Normalized-debt deltas with directional rounding](#63-normalized-debt-deltas-with-directional-rounding)
     - [6.4 PI controller](#64-pi-controller-update_redemption_rate)
     - [6.5 Debt-accrual terminology](#65-debt-accrual-terminology-quick-reference)
+    - [6.6 Fee accrual and the surplus mint](#66-fee-accrual-and-the-surplus-mint)
+    - [6.7 Debt limits and aggregate accounting](#67-debt-limits-and-aggregate-accounting)
 7. [Cross-instruction invariants](#7-cross-instruction-invariants)
 8. [Bound choices](#8-bound-choices)
 9. [Instruction set](#9-instruction-set)
@@ -51,6 +54,8 @@
     - [10.9 `close_position`](#109-close_position)
     - [10.10–10.16 Admin parameter updates](#1010-1016-admin-parameter-updates)
     - [10.17–10.18 `freeze` / `unfreeze`](#1017-1018-freeze--unfreeze)
+    - [10.19 `reset_redemption_rate_controller`](#1019-reset_redemption_rate_controller)
+    - [10.20 `set_debt_limits`](#1020-set_debt_limits)
 11. [Edge cases](#11-edge-cases)
 12. [Out of scope](#12-out-of-scope-per-rfp)
 13. [Forward integration](#13-forward-integration)
@@ -123,7 +128,7 @@ flowchart TB
 
 A walkthrough of who calls what and what changes when. Detailed mechanics are in §10; this is the overall flow.
 
-**Day 0 — setup.** The deployer publishes the program binary, then calls `initialize_program` (§10.1). That one call creates all five program-owned accounts: the stablecoin `TokenDefinition` (via a chained `Token::NewFungibleDefinition`), its required paired master holding (empty), the `ProtocolParameters` account, and the two state-tracking accounts (`StabilityFeeAccumulator` and `RedemptionPriceState`). The same call sets which collateral and oracle the protocol uses, picks the admin and freeze-authority accounts, and stores the initial redemption price, fee rate, controller gains, safety ratio, and timing parameters. Once it returns, the protocol exists and users can start interacting.
+**Day 0 — setup.** The deployer publishes the program binary, then calls `initialize_program` (§10.1). That one call creates all five program-owned accounts: the stablecoin `TokenDefinition` (via a chained `Token::NewFungibleDefinition`), its required paired master holding (empty), the `ProtocolParameters` account, and the two state-tracking accounts (`StabilityFeeAccumulator` and `RedemptionPriceState`). The same call sets which collateral and oracle the protocol uses, picks the admin and freeze-authority accounts, and stores the initial redemption price, fee rate, controller gains, safety ratio, timing parameters, and explicit position debt floor and global debt ceiling. Aggregate normalized debt starts at zero. Once it returns, the protocol exists and users can start interacting.
 
 **Day 0 — launching before a market exists (as RAI does).** The stablecoin has no market price until someone trades it, and the TWAP oracle that will report that price can only be created from an AMM pool that holds stablecoin. The design breaks that circle the way RAI does: the deployer fixes the starting redemption price, and the market price only ever *steers* it.
 
@@ -141,7 +146,7 @@ If the oracle's final address is not known at launch, bind any placeholder addre
 
 These two are usually run by keeper bots. A LEZ transaction carries a single instruction, so a keeper that wants to advance both globals at once calls the combined `refresh_globals` poke (§10.3a); otherwise it sends `accrue_stability_fee` and `update_redemption_rate` as two separate transactions. They cost gas but earn no reward — anyone with money in the protocol wants the globals fresh before they act.
 
-**A user opens a position and borrows.** A user picks a `position_nonce` (any integer — 0, 7, whatever) and calls `open_position` (§10.4) with some collateral. Two accounts get created: their `Position` (at `hash(owner, nonce)`, owned by the stablecoin program, starting with zero debt) and a `PositionVault` (at `hash(position)`, owned by the Token Program) that holds the collateral tokens. They can then call `generate_debt` (§10.7) to mint stablecoin into their own holding. The mint increases the position's normalized debt; the collateralization check prevents over-borrowing; the call fails if the protocol is frozen.
+**A user opens a position and borrows.** A user picks a `position_nonce` (any integer — 0, 7, whatever) and calls `open_position` (§10.4) with some collateral. Two accounts get created: their `Position` (at `hash(owner, nonce)`, owned by the stablecoin program, starting with zero debt) and a `PositionVault` (at `hash(position)`, owned by the Token Program) that holds the collateral tokens. They can then call `generate_debt` (§10.7) to mint stablecoin into their own holding. The mint increases the position's normalized debt and the aggregate by the same amount; exact debt-floor and debt-ceiling checks constrain borrowing alongside collateralization; the call fails if the protocol is frozen.
 
 **Time passes; debt grows; users adjust.** As keepers advance the fee multiplier, every position's debt grows even though no per-position write happens (the RAI accumulator approach, §6.1). Users can:
 
@@ -151,7 +156,7 @@ These two are usually run by keeper bots. A LEZ transaction carries a single ins
 
 **Closing out.** When a position's debt and collateral are both zero, `close_position` (§10.9) clears the `Position` account. This does **not** free the nonce for reuse: the vault PDA at `hash(position_id)` lingers (the Token Program has no `CloseHolding`), so reopening at the same `(owner, nonce)` always fails `open_position`'s vault-uninitialized check — the user must pick a fresh nonce. See §11 and §14.
 
-**Admin tunes parameters.** The admin can change the stability fee (which auto-applies any pending interest first so the new rate doesn't apply retroactively), tighten or loosen the collateralization ratio, change the controller gains, point at a different oracle, adjust the timing intervals, or rotate the admin / freeze-authority handles. None of these touch any position directly. The admin CANNOT touch a position, mint or burn stablecoin, reset the redemption price, or change the stablecoin / collateral definitions — those are fixed at setup. The admin or the freeze authority CAN return the controller to rest (`reset_redemption_rate_controller`, §10.19): the rate goes back to `1.0` and the integral to `0`, but the price stays where it currently projects.
+**Admin tunes parameters.** The admin can change the stability fee (which auto-applies any pending interest first so the new rate doesn't apply retroactively), tighten or loosen the collateralization ratio, change the controller gains, point at a different oracle, adjust the timing intervals or debt limits, or rotate the admin / freeze-authority handles. None of these touch any position directly. The admin CANNOT touch a position, mint or burn stablecoin, reset the redemption price, or change the stablecoin / collateral definitions — those are fixed at setup. The admin or the freeze authority CAN return the controller to rest (`reset_redemption_rate_controller`, §10.19): the rate goes back to `1.0` and the integral to `0`, but the price stays where it currently projects.
 
 **Emergency.** If something goes wrong (a broken oracle, an exploit in progress), the freeze authority calls `freeze` (§10.17). That sets `is_frozen = true` in `ProtocolParameters`. After that, operations that increase risk (`open_position`, `generate_debt`, `withdraw_collateral`) fail; operations that reduce risk (`deposit_collateral`, `repay_debt`, `close_position`), keeper updates, and admin changes still work so users can pay down debt and operators can fix the problem. The admin may point at a clean oracle via `set_market_price_oracle`, and the freeze authority calls `unfreeze` to resume normal operation.
 
@@ -161,15 +166,15 @@ Five single-instance accounts hold all the globally-shared state. Each is a PDA 
 
 **`ProtocolParameters`** — PDA seed `"PROTOCOL_PARAMETERS"`, owned by the stablecoin program.
 
-*Holds:* admin handle, freeze-authority handle, stability fee, controller gains, minimum collateralization ratio, polling-interval parameters, frozen flag, oracle id, and the bound stablecoin / collateral definition ids.
+*Holds:* schema version, admin handle, freeze-authority handle, stability fee, controller gains, minimum collateralization ratio, polling-interval parameters, frozen flag, oracle id, bound stablecoin / collateral definition ids, minimum debt amount, and global debt ceiling.
 
 *Why:* single source of truth for protocol configuration. Kept separate from the dynamic state (`StabilityFeeAccumulator`, `RedemptionPriceState`) so that admin parameter changes don't contend with permissionless pokes — different writers touch different accounts.
 
 **`StabilityFeeAccumulator`** — PDA seed `"STABILITY_FEE_ACCUMULATOR"`, owned by the stablecoin program.
 
-*Holds:* the compounded stability-fee rate at the last accrual, plus the wall-clock timestamp of that accrual.
+*Holds:* schema version, the compounded stability-fee rate at the last accrual, the wall-clock timestamp of that accrual, and total normalized debt across all live positions.
 
-*Why:* implements the RAI accumulator trick (§6.1) — instead of writing interest into every position on every accrual, we maintain one global multiplier. Each position's nominal debt is then `normalized_debt × accumulator`, computed lazily at read time. It also carries `total_normalized_debt`, so each accrual can mint the fees on the whole debt to the surplus holding (§6.6). Read by every debt-touching op; written by every instruction that accrues (§6.6).
+*Why:* implements the RAI accumulator trick (§6.1) — instead of writing interest into every position on every accrual, we maintain one global multiplier. Each position's nominal debt is then `normalized_debt × accumulator`, computed lazily at read time. It also carries `total_normalized_debt`, so each accrual can mint the fees on the whole debt to the surplus holding (§6.6), and the borrowing ceiling is checked against it (§6.7). Read by every debt-touching op; written by every instruction that accrues (§6.6).
 
 **`RedemptionPriceState`** — PDA seed `"REDEMPTION_PRICE_STATE"`, owned by the stablecoin program.
 
@@ -190,7 +195,7 @@ Five single-instance accounts hold all the globally-shared state. Each is a PDA 
 *Why this exists at all:* a Token-Program-API artifact. `Token::NewFungibleDefinition` always creates a definition AND a paired holding in the same call, and mints `total_supply` units into that holding. There's no variant that creates a definition alone. We pass `total_supply = 0` — our stablecoin starts with **zero** supply because every coin in existence must come from a user calling `generate_debt` against real collateral (a non-zero initial supply would be free, unbacked money). The master holding is therefore born empty. Because it is a deterministic stablecoin-program PDA at a known address, it doubles as the surplus holding that fee accruals mint into (§6.6).
 
 
-**Why split the globals?** Each one has exactly one writer family:
+**Why split the globals?** Each account groups related state and writers:
 
 - `ProtocolParameters` ← `initialize_program`, admin `set_*`, `freeze` / `unfreeze`.
 - `StabilityFeeAccumulator` ← `initialize_program`, `accrue_stability_fee`, `refresh_globals` (fee half), `set_stability_fee_per_millisecond` (auto-accrues inline), and `generate_debt` / `repay_debt` (accrue first, then adjust `total_normalized_debt`).
@@ -246,6 +251,8 @@ Constants and conventions appear first (§ 5); these types reference them.
 ```rust
 #[account_type]
 pub struct ProtocolParameters {
+    /// Global account schema version. Must equal 2.
+    pub schema_version: u8,
     /// Authority required for every parameter-update and admin-rotation instruction.
     pub admin_account_id: AccountId,
     /// Authority required for `freeze` / `unfreeze`.
@@ -276,6 +283,10 @@ pub struct ProtocolParameters {
     /// `deposit_collateral` / `repay_debt` / `close_position` / pokes / admin / freeze ops
     /// remain available so users can deleverage out and operators can re-tune.
     pub is_frozen: bool,
+    /// Minimum positive accrued position debt, in raw stablecoin atomic units.
+    pub minimum_debt_amount: u128,
+    /// Global accrued-debt limit for admitting new borrowing, in raw atomic units.
+    pub debt_ceiling: u128,
 }
 ```
 
@@ -284,6 +295,8 @@ pub struct ProtocolParameters {
 ```rust
 #[account_type]
 pub struct StabilityFeeAccumulator {
+    /// Global account schema version. Must equal 2.
+    pub schema_version: u8,
     /// Accumulator at `last_accrued_at`. Initialized to `FIXED_POINT_ONE`.
     /// Updated on accrual via `anchor * compound_rate(stability_fee_per_millisecond, Δt)`.
     pub accumulated_rate_at_last_accrual: u128,
@@ -345,6 +358,42 @@ pub struct Position {
   - **Scale:** `price` is `Q64.64` (`price / 2^64` raw collateral units per raw stablecoin unit; `twap_oracle_core::PRICE_FRACTIONAL_BITS`), not `FIXED_POINT_ONE`-scaled. Every producer must use this encoding. The controller converts it with `oracle_price_to_fixed_point` (`price × FIXED_POINT_ONE / 2^64`, rounded down, saturating at `u128::MAX`) before comparing it with the redemption price (§6.4).
 - `TokenDefinition::Fungible` from `token_core` — stablecoin (PDA-derived under us; owned by Token Program) and collateral (externally created).
 - `TokenHolding::Fungible` from `token_core` — vault and user holdings.
+
+### 4.6 Schema and deployment compatibility
+
+`ProtocolParameters` and `StabilityFeeAccumulator` use schema version **2**.
+Borsh writes `schema_version: u8` first, preserves the previous fields' relative
+order, and appends the new debt fields exactly as shown above. Integers are
+little-endian with no padding: parameters occupy **274 bytes** and the accumulator
+**41 bytes**. `Position` and `RedemptionPriceState` retain their layouts.
+Canonical runtime and module decoders reject legacy layouts, unsupported versions,
+truncated data, and trailing bytes. JSON account reads include the schema version,
+limits, and aggregate counter; numeric account values are decimal strings in the module.
+
+This is a **fresh-deployment** schema and initialization ABI. The initializer
+requires both debt limits; old initializer payloads are rejected. Existing
+instruction tags remain unchanged, with `SetDebtLimits` appended at Borsh tag 19.
+There is no automatic in-place migration: token supply cannot reconstruct the
+sum of historical normalized position debts, and an unaudited caller-provided
+total must not reset that accounting. Keep clients for existing deployments on
+their matching schema and ABI.
+
+Rebuild the release guest binary and IDL before deployment. Refresh the deployed
+program header ID, all derived PDAs, module configuration, and deployment manifest
+together. `scripts/deploy-stablecoin.sh` requires operator-selected
+`STABLECOIN_MINIMUM_DEBT_AMOUNT` and `STABLECOIN_DEBT_CEILING` before sending any
+transaction. Supply unsigned decimal `u128` values in **raw stablecoin atomic
+units**, with `0 < minimum <= ceiling`; neither has an economic default. The script
+records `schemaVersion`, `minimumDebtAmount`, and `debtCeiling` in its manifest.
+For example, after choosing amounts appropriate to the deployment:
+
+```bash
+STABLECOIN_ADMIN=admin STABLECOIN_ORACLE_SOURCE=oracle-source \
+  COLLATERAL_DEFINITION=collateral-definition \
+  STABLECOIN_MINIMUM_DEBT_AMOUNT="$MINIMUM_DEBT_ATOMIC_UNITS" \
+  STABLECOIN_DEBT_CEILING="$DEBT_CEILING_ATOMIC_UNITS" \
+  scripts/deploy-stablecoin.sh
+```
 
 ## 5. Constants and conventions
 
@@ -670,6 +719,59 @@ if accrued_fees > 0:
 
 **In plain English:** when fees accrue, the protocol prints exactly the coins the borrowers now owe on top of what they borrowed, and keeps them in its own holding. Supply always matches total debt (RFP R1), so the coins needed to repay everything exist. Today the surplus just accumulates; spending it — RAI auctions it for its governance token — is RFP-014's job (§14).
 
+### 6.7 Debt limits and aggregate accounting
+
+Let `Q = FIXED_POINT_ONE`, `A` be the accumulator accrued to the execution
+clock (§6.6), `N` a position's normalized debt, and `T` the stored
+`total_normalized_debt`. Both configured limits are raw stablecoin atomic
+units; they are not RAY-scaled values. Initialization and `set_debt_limits` require
+`0 < minimum_debt_amount <= debt_ceiling`. Zero is not a disable sentinel; use
+`freeze` to stop borrowing.
+
+Mint and repay keep the directional rounding in §6.3. Update `N` and `T` by the
+same checked normalized delta in one transaction. After a nonzero change to `N`,
+require:
+
+```text
+N_after == 0 || N_after * A >= minimum_debt_amount * Q
+```
+
+Every positive mint must additionally satisfy:
+
+```text
+T_after * A <= debt_ceiling * Q
+```
+
+Each comparison uses exact `U256` products of `u128` operands; it does not round
+nominal debt first. For example, `N = 1`, `A = 1.5Q`, minimum 2 fails the floor,
+even though rounding nominal debt upward would display 2. The ceiling includes
+mint normalization rounding and all accrued position debt, not just the requested
+mint or token supply.
+
+The ceiling is a **borrowing admission limit**. Interest and an admin lowering
+the ceiling can put existing debt above it. Accrual, `refresh_globals`, fee-rate
+changes, and otherwise valid repayments remain allowed; positive borrowing fails
+until its resulting aggregate fits the ceiling. A floor increase can leave
+existing positions below the new floor: subsequent positive borrowing must reach
+it, and a debt-reducing repayment must leave zero debt or debt at/above the floor.
+This deliberately restricts partial repayment for those positions.
+
+Zero-amount debt calls retain existing validation and no-op behavior. A positive
+repayment whose floored normalized delta is zero also retains its existing burn
+behavior: it changes neither `N` nor `T` and triggers no debt-change floor check.
+The existing repayment amount contract still applies; these limits add neither
+overpayment capping nor automatic repay-all behavior. Any otherwise valid
+repayment that clears normalized debt passes the floor, including while frozen.
+
+Opening debt-free positions and closing settled positions leave `T` unchanged.
+Deposits and withdrawals impose no new debt-limit gate. Accrual paths preserve
+`T` exactly while advancing the multiplier and timestamp. Direct Token Program
+burns change supply without reducing `T` or creating borrowing headroom. Future
+liquidation must subtract extinguished normalized debt from the same counter.
+All position, aggregate, and chained-token changes commit or fail together;
+competing transactions must revalidate the shared writable accumulator. Module
+preflight uses these same comparisons but remains advisory until execution.
+
 ## 7. Cross-instruction invariants
 
 These are properties the protocol maintains across every state-changing instruction. Violations indicate a bug.
@@ -690,6 +792,12 @@ These are properties the protocol maintains across every state-changing instruct
 
 8. **Frozen ⇒ debt-extending ops blocked.** `is_frozen = true` implies `open_position`, `generate_debt`, `withdraw_collateral` all panic. Other ops continue to work.
 
+9. **Aggregate normalized debt.** `total_normalized_debt` equals the sum of every live position's `normalized_debt_amount`. Mint and repay apply identical normalized deltas to both; other existing instructions preserve the total.
+
+10. **Debt-change floor.** A successful nonzero normalized-debt change leaves zero debt or satisfies the exact floor inequality in §6.7. Admin floor increases do not rewrite existing positions.
+
+11. **Borrowing admission ceiling.** Each successful positive mint satisfies the exact aggregate ceiling inequality in §6.7. Accrual and admin changes may put existing accrued debt above the ceiling.
+
 ## 8. Bound choices
 
 | Constant / parameter | Bound | Rationale |
@@ -707,6 +815,7 @@ These are properties the protocol maintains across every state-changing instruct
 | `maximum_oracle_price_age_milliseconds` | `1 ≤ x ≤ 86_400_000` | Stale beyond a day is obviously bad; aggressive freshness is a tuning parameter. |
 | `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` | `604_800_000` (7 days) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Seven days is the top of the range the design considered — it maximises tolerance of keeper neglect and stays far from overflow for any *realistic* rate (a ~5%/yr fee is `1 + 1.5×10^-12` per ms, giving a `1.0009×` factor over the full window; overflow needs a rate above ~`1 + 4×10^-8` per ms). `RATE_DELTA_CLAMP` (`1 ± 10^-11` per ms) and `MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (`1 + 2.2×10^-11` per ms) are both well inside that threshold. Constant in v1. |
 | `initial_redemption_price` | `MINIMUM_REDEMPTION_PRICE ≤ x ≤ MAXIMUM_REDEMPTION_PRICE` | Admin chooses an initial value reflecting the launch peg target, inside the controller's price bounds. |
+| `minimum_debt_amount`, `debt_ceiling` | `0 < minimum_debt_amount <= debt_ceiling <= u128::MAX` | Explicit operator-selected raw stablecoin atomic units; position floor and global borrowing admission ceiling (§6.7). |
 
 All bounds enforced in `initialize_program` and the corresponding `set_*` instruction.
 
@@ -737,8 +846,8 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 | 4 | `open_position` | owner | blocked | Claim Position PDA + vault PDA, deposit initial collateral. |
 | 5 | `deposit_collateral` | owner | ok | Add collateral to an existing position. |
 | 6 | `withdraw_collateral` | owner | blocked | Remove collateral, subject to collateralization. |
-| 7 | `generate_debt` | owner | blocked | Accrue, then mint stablecoin and increase normalized debt, subject to collateralization. Does not read the oracle. |
-| 8 | `repay_debt` | owner | ok | Burn stablecoin, decrease normalized debt. |
+| 7 | `generate_debt` | owner | blocked | Accrue, then mint stablecoin and increase position and aggregate normalized debt, subject to collateralization, floor, and ceiling. Does not read the oracle. |
+| 8 | `repay_debt` | owner | ok | Burn stablecoin, decrease position and aggregate normalized debt; changed debt must meet the floor or reach zero. |
 | 9 | `close_position` | owner | ok | Clear Position PDA when debt = 0 and collateral = 0. Vault lingers (see § 14). |
 
 ### 9.4 Admin parameter updates
@@ -752,6 +861,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 | 14 | `set_timing_parameters` | admin | Update the two timing fields atomically. |
 | 15 | `set_admin` | admin | One-step admin rotation. |
 | 16 | `set_freeze_authority` | admin | One-step freeze authority rotation. |
+| 19 | `set_debt_limits` | admin | Update the debt floor and ceiling atomically; no scan or rewrite of positions. |
 
 ### 9.5 Emergency
 
@@ -780,6 +890,8 @@ fn initialize_program(
     maximum_oracle_price_age_milliseconds: u64,
     initial_redemption_price: u128,
     stablecoin_name: String,
+    minimum_debt_amount: u128,
+    debt_ceiling: u128,
 );
 ```
 
@@ -797,8 +909,8 @@ fn initialize_program(
 
 **Outputs:**
 
-- `protocol_parameters` (claimed PDA): all `ProtocolParameters` fields written from the params (including `admin_account_id = admin.account_id`, `is_frozen = false`).
-- `stability_fee_accumulator` (claimed PDA): `accumulated_rate_at_last_accrual = FIXED_POINT_ONE`, `last_accrued_at = now`.
+- `protocol_parameters` (claimed PDA): all `ProtocolParameters` fields written from the params (including `schema_version = 2`, `admin_account_id = admin.account_id`, `is_frozen = false`, and both explicit debt limits).
+- `stability_fee_accumulator` (claimed PDA): `schema_version = 2`, `accumulated_rate_at_last_accrual = FIXED_POINT_ONE`, `last_accrued_at = now`, `total_normalized_debt = 0`.
 - `redemption_price_state` (claimed PDA): `redemption_price_at_last_update = initial_redemption_price`, `redemption_rate_per_millisecond = FIXED_POINT_ONE`, `controller_integral_term = 0`, `last_updated_at = now`.
 - `stablecoin_definition` (claimed via chained): `TokenDefinition::Fungible { name: stablecoin_name, total_supply: 0, metadata_id: None }`, owned by Token Program.
 - `stablecoin_master_holding` (claimed via chained): `TokenHolding::Fungible { definition_id: stablecoin_definition.account_id, balance: 0 }`, owned by Token Program.
@@ -842,6 +954,7 @@ flowchart TD
 - `stability_fee_accumulator.accumulated_rate_at_last_accrual` ← `anchor × compound_rate(stability_fee_per_millisecond, now − last_accrued_at) / FIXED_POINT_ONE`
 - `stability_fee_accumulator.last_accrued_at` ← `now`
 - `stablecoin_master_holding.balance` and `stablecoin_definition.total_supply` ← `old + accrued_fees` (chained Mint, §6.6).
+- `schema_version` and `total_normalized_debt` remain unchanged. Debt above the ceiling does not block accrual.
 
 **Chained calls:** the §6.6 surplus `Token::Mint`, when `accrued_fees > 0`.
 
@@ -911,7 +1024,7 @@ A convenience poke that advances **both** globals in one instruction. Because a 
 
 **Behavior:**
 
-- **Fee half** — always rolls the accumulator forward exactly as §10.2 (there is no fee-accrual interval gate). Never depends on the oracle.
+- **Fee half** — always rolls the accumulator forward exactly as §10.2 (there is no fee-accrual interval gate), preserving schema version and aggregate normalized debt. Never depends on the oracle or enforces the borrowing ceiling.
 - **Redemption half** — if `now − redemption_price_state.last_updated_at ≥ minimum_milliseconds_between_rate_updates` **and** the oracle has a usable observation (it exists, decodes, and quotes the stablecoin in collateral) **and** it is fresh (`now − oracle.timestamp ≤ maximum_oracle_price_age_milliseconds`) **and** `oracle.price > 0`: run the PI controller and re-anchor exactly as §10.3. Else: skip (no write). The "no usable observation" case covers launch, before the bound oracle exists (§3 "Day 0").
 - The fee half always runs; if the redemption half skips, the call just advances the accumulator alone.
 
@@ -1064,7 +1177,7 @@ flowchart TD
 3. `stablecoin_definition` — initialized, writable (chained Mint); must equal `protocol_parameters.stablecoin_definition_id`.
 4. `user_stablecoin_holding` — initialized; `definition_id = stablecoin_definition.account_id`; same Token Program. NOT required to be authorized (Mint destination).
 5. `stablecoin_master_holding` — the surplus holding, as §10.2.
-6. `stability_fee_accumulator` — initialized, writable (accrued first, §6.6).
+6. `stability_fee_accumulator` — initialized, writable (accrued first, §6.6); aggregate normalized debt changes with the position.
 7. `redemption_price_state` — initialized, read-only.
 8. `protocol_parameters` — initialized, read-only.
 9. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
@@ -1073,14 +1186,14 @@ There is no oracle input: as in RAI, borrowing never reads the market price (§3
 
 **Outputs:**
 
-- `stability_fee_accumulator` ← accrued to `now` (§6.6); `total_normalized_debt` ← `old + delta`.
+- `stability_fee_accumulator` ← accrued to `now` (§6.6); `total_normalized_debt` ← `old + delta`. Check the exact post-debt floor and, for positive minting, the aggregate ceiling (§6.7) before constructing the mint.
 - `position.normalized_debt_amount` ← `old + delta`, where `delta = ⌈amount × FIXED_POINT_ONE / current_accumulator⌉` (round UP, § 6.3) and `current_accumulator` is the freshly persisted one.
 - `stablecoin_definition.total_supply` ← `old + accrued_fees + amount` (chained Mints).
 - `stablecoin_master_holding.balance` ← `old + accrued_fees`; `user_stablecoin_holding.balance` ← `old + amount`.
 
 **Chained calls:** the §6.6 surplus `Token::Mint` (when `accrued_fees > 0`), then `Token::Mint { amount_to_mint: amount }` · accounts: `[stablecoin_definition (auth via stablecoin program PDA seed), user_stablecoin_holding]` · pda_seeds: `[stablecoin_definition_seed]`.
 
-**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; the surplus accounts fail §10.2's checks; `protocol_parameters.is_frozen = true`; the redemption price projects to **zero** (§6.2); collateralization check (§ 6.2) fails post-mint; arithmetic overflow.
+**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; the surplus accounts fail §10.2's checks; `protocol_parameters.is_frozen = true`; the redemption price projects to **zero** (§6.2); collateralization check (§ 6.2) fails post-mint; debt floor or ceiling check (§6.7) fails; position or aggregate arithmetic overflow.
 
 ```mermaid
 flowchart TD
@@ -1089,7 +1202,7 @@ flowchart TD
         a6[stability_fee_accumulator<br/>write, accrued] ~~~ a7[redemption_price_state<br/>read] ~~~ a8[protocol_parameters<br/>read] ~~~ a9[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
-        p1[position<br/>normalized_debt += ceil amt/acc<br/>collateralization check] ~~~ p2[stablecoin_definition<br/>total_supply += amount] ~~~ p3[user_stablecoin_holding<br/>balance += amount]
+        p1[position, normalized_debt += ceil amt/acc, collateralization check] ~~~ p2[stablecoin_definition, total_supply += amount] ~~~ p3[user_stablecoin_holding, balance += amount] ~~~ p4[stability_fee_accumulator, total += same normalized delta]
     end
     In --> Ins((generate_debt<br/>amount))
     Ins --> Post
@@ -1107,20 +1220,20 @@ flowchart TD
 3. `stablecoin_definition` — initialized, writable (chained Burn); must equal `protocol_parameters.stablecoin_definition_id`.
 4. `user_stablecoin_holding` — authorized, initialized; `definition_id = stablecoin_definition.account_id`; same Token Program.
 5. `stablecoin_master_holding` — the surplus holding, as §10.2.
-6. `stability_fee_accumulator` — initialized, writable (accrued first, §6.6).
+6. `stability_fee_accumulator` — initialized, writable (accrued first, §6.6); aggregate normalized debt changes with the position.
 7. `protocol_parameters` — initialized, read-only.
 8. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Outputs:**
 
-- `stability_fee_accumulator` ← accrued to `now` (§6.6); `total_normalized_debt` ← `old − delta`.
+- `stability_fee_accumulator` ← accrued to `now` (§6.6); `total_normalized_debt` ← `old − delta`. A nonzero delta must leave zero debt or meet the exact floor (§6.7). The ceiling does not constrain repayment.
 - `position.normalized_debt_amount` ← `old − delta`, where `delta = ⌊amount × FIXED_POINT_ONE / current_accumulator⌋` (round DOWN, § 6.3) at the freshly persisted accumulator; `checked_sub` panics on overrepay.
 - `stablecoin_definition.total_supply` ← `old + accrued_fees − amount`.
 - `stablecoin_master_holding.balance` ← `old + accrued_fees`; `user_stablecoin_holding.balance` ← `old − amount`.
 
 **Chained calls:** the §6.6 surplus `Token::Mint` (when `accrued_fees > 0`), then `Token::Burn { amount_to_burn: amount }` · accounts: `[stablecoin_definition, user_stablecoin_holding (user-authorized)]` · no PDA seeds.
 
-**Panics if:** `owner.is_authorized = false`; `user_stablecoin_holding.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; overrepay (`⌊amount × FIXED_POINT_ONE / current_accumulator⌋ > position.normalized_debt_amount`, mirroring the floor decrement of §6.3 / the output above). Allowed when frozen.
+**Panics if:** `owner.is_authorized = false`; `user_stablecoin_holding.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; overrepay (`⌊amount × FIXED_POINT_ONE / current_accumulator⌋ > position.normalized_debt_amount`, mirroring the floor decrement of §6.3 / the output above); aggregate underflow; nonzero debt change leaves positive debt below the floor. Allowed when frozen and when aggregate accrued debt exceeds the ceiling.
 
 ```mermaid
 flowchart TD
@@ -1129,7 +1242,7 @@ flowchart TD
         a5[stablecoin_master_holding<br/>write, chained] ~~~ a6[stability_fee_accumulator<br/>write, accrued] ~~~ a7[protocol_parameters<br/>read] ~~~ a8[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
-        p1[position<br/>normalized_debt -= floor amt/acc] ~~~ p2[stablecoin_definition<br/>total_supply -= amount] ~~~ p3[user_stablecoin_holding<br/>balance -= amount]
+        p1[position, normalized_debt -= floor amt/acc] ~~~ p2[stablecoin_definition, total_supply -= amount] ~~~ p3[user_stablecoin_holding, balance -= amount] ~~~ p4[stability_fee_accumulator, total -= same normalized delta]
     end
     In --> Ins((repay_debt<br/>amount))
     Ins --> Post
@@ -1187,6 +1300,8 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 | `minimum_collateralization_ratio` | param to init | yes — `set_minimum_collateralization_ratio` |
 | `minimum_milliseconds_between_rate_updates` | param to init | yes — `set_timing_parameters` (bundled) |
 | `maximum_oracle_price_age_milliseconds` | param to init | yes — `set_timing_parameters` (bundled) |
+| `minimum_debt_amount`, `debt_ceiling` | required params to init | yes — `set_debt_limits` atomically (§10.20) |
+| `total_normalized_debt` | always `0` at init | mint/repay only; never directly settable by admin |
 | `is_frozen` | always `false` at init | toggled by `freeze` / `unfreeze` (freeze_authority, not admin) |
 | `redemption_price_at_last_update` | param to init (initial price) | **not directly settable by admin** — only drifts via `update_redemption_rate` (controller) |
 | `redemption_rate_per_millisecond` | always `FIXED_POINT_ONE` at init | controller-managed (only `update_redemption_rate` writes it) |
@@ -1202,6 +1317,7 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 - Tune the minimum collateralization ratio. Tightening leaves existing positions retroactively under-collateralized — they can `deposit_collateral` or `repay_debt` to recover, but cannot `withdraw_collateral` or `generate_debt` until they're back above the new ratio.
 - Rotate the market-price oracle to a new account (validates the new oracle's base/quote pair, does not pin its `program_owner` — so any producer that emits an `OraclePriceAccount` with the right shape works).
 - Tune the timing parameters (rate-update interval, oracle staleness threshold).
+- Tune both debt limits atomically (§10.20); lowering the ceiling can halt new borrowing, and raising the floor can restrict partial repayment.
 
 **What admin CANNOT do:**
 
@@ -1219,7 +1335,7 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 
 #### Shared skeleton
 
-All seven share the same skeleton:
+These seven setters and `set_debt_limits` (§10.20) share the same skeleton:
 
 **Inputs (2 base + 0-4 extras):**
 
@@ -1228,7 +1344,7 @@ All seven share the same skeleton:
 
 Extras are per-instruction, listed in the table below. Only
 `set_stability_fee_per_millisecond` references time, so it is the only setter
-that takes the `clock` account (§ 5.4); the other six omit it.
+that takes the `clock` account (§ 5.4); the other seven omit it.
 
 **Output:** exactly the field(s) listed below are overwritten on `protocol_parameters`; everything else unchanged.
 
@@ -1317,6 +1433,32 @@ flowchart TD
     Ins --> Post
 ```
 
+### 10.20 `set_debt_limits`
+
+**Signature:** `fn set_debt_limits(minimum_debt_amount: u128, debt_ceiling: u128);`
+
+**Inputs (2 accounts):** authorized current `admin`, then initialized writable
+canonical `protocol_parameters`. Existing ownership, PDA, and admin-handle checks
+apply. Only the admin signs; accumulator access and token calls are unnecessary.
+The instruction remains available while frozen.
+
+Require `0 < minimum_debt_amount <= debt_ceiling`, then replace both fields
+atomically while preserving all other parameters. The values are raw stablecoin
+atomic units. Allow a ceiling below current accrued debt and a floor above
+existing position debts. No positions are scanned or rewritten: the new limits
+apply to subsequent debt changes as described in §6.7. In particular, a floor
+increase may prevent partial repayment unless its remaining debt meets the new
+floor; otherwise a valid repayment must clear debt completely. Full repayment
+remains subject to the existing normalization and amount rules.
+
+`SetDebtLimits` is appended to both instruction declarations at tag **20**, after
+`ResetRedemptionRateController`;
+existing tags and debt-operation account order remain unchanged. The C++ module
+exposes `setDebtLimits(request)` with `adminId`, `feePayerId`,
+`minimumDebtAmount`, and `debtCeiling`. Use decimal strings for portable exact
+`u128` input. Module planners run the same exact limit comparisons as the runtime;
+execution rechecks live global state before committing either debt or token changes.
+
 ## 11. Edge cases
 
 - **Empty position** (`collateral_amount = 0`, `normalized_debt_amount = 0`) — valid intermediate state. `withdraw_collateral` with `amount = 0` is a no-op. `close_position` is the only path that clears the account.
@@ -1325,8 +1467,9 @@ flowchart TD
 - **Frozen + stale oracle.** `withdraw_collateral` and `generate_debt` blocked (frozen). `deposit_collateral`, `repay_debt`, `close_position` work. Anyone can still call `accrue_stability_fee` (rate-independent).
 - **Admin tightens `minimum_collateralization_ratio`.** Existing positions with healthy-old-ratio but underwater-new-ratio cannot `generate_debt` or `withdraw_collateral`. They CAN `deposit_collateral` to recover, or `repay_debt` to reduce their debt.
 - **Position re-open at same nonce after close.** Fails — the vault PDA at `hash(position_id)` lingers from before. By design — pick a fresh nonce (intentional limitation). See § 14.
+- **Debt limits change.** A ceiling below current accrued debt blocks positive borrowing but allows accrual and valid repayments. A raised floor leaves existing debt untouched and restricts its next normalized-debt change to the new floor or zero (§6.7). Deposits and withdrawals add no floor/ceiling gate.
 - **Overrepay on `repay_debt`.** Panics via `checked_sub`; protects against user error sending more burn than nominal debt at this instant.
-- **Dust on full repay.** Because the decrement is rounded down (§6.3), burning exactly the current nominal debt may leave a tiny `normalized_debt_amount` residue (≤ one accumulator unit). To fully clear, users overpay by a tiny amount (≤ accumulator × 1 raw unit). Off-chain SDK computes the right number; if it picks too small, `repay_debt` still succeeds but the position isn't closeable until another small repay.
+- **Dust on full repay.** Because the decrement is rounded down (§6.3), burning the rounded-down nominal debt may leave normalized debt. A debt-changing repayment leaving positive accrued debt below the floor now fails. Clients must choose an amount whose existing normalization rules clear the position or leave debt at/above the floor; this change does not add overpayment capping or a repay-all instruction.
 - **Zero-amount instructions.** `deposit_collateral(0)`, `withdraw_collateral(0)`, `generate_debt(0)`, `repay_debt(0)`: all valid no-ops at the protocol level (chained Token call is also a no-op). Saves the caller from having to short-circuit.
 
 ## 12. Out of scope (per RFP)
@@ -1340,7 +1483,7 @@ flowchart TD
 
 ## 13. Forward integration
 
-- **RFP-014 (Liquidation & Auction Engine).** Adds an external "liquidator" program that, when a position falls under `minimum_collateralization_ratio`, may seize its collateral and clear its debt. Cleanest fit: a new instruction `liquidate_position` callable by the liquidator program (gated by checking the position's collateralization), or by extending the existing instructions to support a `liquidate_only_path`. Either way, this design's `normalized_debt_amount` and `current_accumulator` carry over directly. Surplus accounting (the gap of § 7 invariant 7) materializes here when auctions land.
+- **RFP-014 (Liquidation & Auction Engine).** Adds an external "liquidator" program that, when a position falls under `minimum_collateralization_ratio`, may seize its collateral and clear its debt. Cleanest fit: a new instruction `liquidate_position` callable by the liquidator program (gated by checking the position's collateralization), or by extending the existing instructions to support a `liquidate_only_path`. Either way, this design's `normalized_debt_amount` and `current_accumulator` carry over directly; any extinguished normalized debt must also be subtracted from `total_normalized_debt`. Surplus accounting (the gap of § 7 invariant 7) materializes here when auctions land.
 - **RFP-001 (Admin Authority).** When RFP-001 ships, `admin_account_id` either points at the admin program's account (and any `set_*` instruction's `admin` input is that account being authorized by that program) or this RFP grows a wrapper. Either way it's a local change: `set_*` instructions become "admin authority program authorizes this account" rather than "this account is `is_authorized`". No data-model migration needed.
 - **RFP-002 (Freeze Authority).** Same pattern for `freeze_authority_account_id`.
 - **Mini-app / CLI / SDK.** Read the on-chain accounts directly to display: position-level collateralization, redemption price drift, projected outcomes (these are SDK functions over the same math in § 6). The deshield-interact-reshield privacy pattern is the SDK's responsibility; the program is unaware of whether callers are ephemeral or persistent.
@@ -1374,8 +1517,8 @@ Alice opens a collateralized position, borrows stablecoin, holds for ~1 year, ac
 
 **Setup (t = 0, just after a long-running protocol)**
 
-- `ProtocolParameters`: `stability_fee_per_millisecond` set for ~5%/year, `minimum_collateralization_ratio = 1.5 × FIXED_POINT_ONE`, oracle wired to a TWAP producer.
-- `StabilityFeeAccumulator`: `accumulated_rate_at_last_accrual = 1.0 × FIXED_POINT_ONE`, `last_accrued_at = 0` (assume keepers will catch up).
+- `ProtocolParameters`: `schema_version = 2`, `stability_fee_per_millisecond` set for ~5%/year, `minimum_collateralization_ratio = 1.5 × FIXED_POINT_ONE`, oracle wired to a TWAP producer. This scenario assumes operator-selected limits admitting the illustrated debt changes; its amounts are examples, not deployment defaults.
+- `StabilityFeeAccumulator`: `schema_version = 2`, `accumulated_rate_at_last_accrual = 1.0 × FIXED_POINT_ONE`, `last_accrued_at = 0`, `total_normalized_debt = 0` (assume keepers will catch up). Mint and repay below update the aggregate by exactly the same normalized delta as Alice's position; accrual preserves it.
 - `RedemptionPriceState`: `redemption_price_at_last_update = 0.5 × FIXED_POINT_ONE` (collateral-per-stablecoin), `redemption_rate_per_millisecond = FIXED_POINT_ONE`, `controller_integral_term = 0`.
 - Alice's collateral holding: `balance = 1000`. Alice's stablecoin holding: doesn't exist yet (she'll initialize it before `generate_debt`).
 
