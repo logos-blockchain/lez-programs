@@ -26,6 +26,9 @@ use token_core::TokenHolding;
 /// The §6.2 collateralization invariant is checked *after* the mint, against the
 /// accumulator and redemption price projected forward to the clock timestamp.
 /// The oracle is read for its staleness gate only; its price is not used.
+/// A positive mint must meet the exact accrued position floor and global ceiling.
+/// The same normalized delta is added to the position and aggregate counter; the
+/// accumulator's fee anchor and timestamp remain unchanged.
 ///
 /// # Panics
 /// - `owner` is not authorized.
@@ -41,7 +44,8 @@ use token_core::TokenHolding;
 /// - `user_stablecoin_holding` is uninitialized, owned by a different Token Program than the
 ///   definition, or holds a different definition.
 /// - `clock` is not the initialized system `CLOCK_01` account.
-/// - The debt addition overflows, or §6.2 fails post-mint.
+/// - Position or aggregate debt addition overflows, or §6.2 fails post-mint.
+/// - A positive mint leaves debt below the floor or aggregate debt above the ceiling.
 #[allow(
     clippy::too_many_arguments,
     reason = "the nine account inputs mirror the spec §10.7 ABI"
@@ -164,6 +168,35 @@ pub fn generate_debt(
         .checked_add(debt_delta)
         .expect("Position normalized_debt_amount overflow");
 
+    let new_total = accumulator
+        .total_normalized_debt_amount
+        .checked_add(debt_delta)
+        .expect("Total normalized debt overflow");
+    if debt_delta != 0 {
+        assert!(
+            stablecoin_core::debt_limits::meets_debt_floor(
+                new_debt,
+                current_accumulator,
+                parameters.minimum_debt_amount,
+            ),
+            "Position debt is below minimum_debt_amount"
+        );
+    }
+    if amount != 0 {
+        assert!(
+            stablecoin_core::debt_limits::within_debt_ceiling(
+                new_total,
+                current_accumulator,
+                parameters.debt_ceiling,
+            ),
+            "Global debt ceiling exceeded"
+        );
+    }
+    let updated_accumulator = StabilityFeeAccumulator {
+        total_normalized_debt_amount: new_total,
+        ..accumulator
+    };
+
     let updated_position = Position {
         normalized_debt_amount: new_debt,
         ..position_data
@@ -200,7 +233,11 @@ pub fn generate_debt(
         AccountStateDiff::new(position, BalanceDiff::Add(0), Data::from(&updated_position)),
         AccountStateDiff::unchanged(stablecoin_definition),
         AccountStateDiff::unchanged(user_stablecoin_holding),
-        AccountStateDiff::unchanged(stability_fee_accumulator),
+        AccountStateDiff::new(
+            stability_fee_accumulator,
+            BalanceDiff::Add(0),
+            Data::from(&updated_accumulator),
+        ),
         AccountStateDiff::unchanged(redemption_price_state),
         AccountStateDiff::unchanged(market_price_oracle),
         AccountStateDiff::unchanged(protocol_parameters),

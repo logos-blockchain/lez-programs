@@ -6,6 +6,7 @@ use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
     compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
     compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda,
+    debt_limits::{meets_debt_floor, valid_debt_limits},
     math::{compute_current_accumulated_rate, mul_div, FIXED_POINT_ONE},
     Instruction,
 };
@@ -76,6 +77,11 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
         return Err(StablecoinApiError::new("invalid_stablecoin_name"));
     }
 
+    let minimum_debt_amount = parse_u128(&request.minimum_debt_amount)?;
+    let debt_ceiling = parse_u128(&request.debt_ceiling)?;
+    if !valid_debt_limits(minimum_debt_amount, debt_ceiling) {
+        return Err(StablecoinApiError::new("invalid_debt_limits"));
+    }
     let instruction = Instruction::InitializeProgram {
         freeze_authority_account_id: freeze_authority,
         initial_stability_fee_per_millisecond,
@@ -86,6 +92,8 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
         maximum_oracle_price_age_milliseconds,
         initial_redemption_price,
         stablecoin_name: request.stablecoin_name,
+        minimum_debt_amount,
+        debt_ceiling,
     };
 
     plan_response(
@@ -309,18 +317,34 @@ pub fn repay_debt_plan(request: RepayDebtPlanRequest) -> StablecoinResult {
     let now = clock_timestamp(&request.clock)?;
     // Use the exact narrow arithmetic executed by repay_debt, including its time
     // clamp. Convert its unrepresentable projections into a fallible API result.
-    let debt_delta = std::panic::catch_unwind(|| {
+    let (current_accumulator, debt_delta) = std::panic::catch_unwind(|| {
         let current_accumulator = compute_current_accumulated_rate(
             accumulator.accumulated_rate_at_last_accrual,
             parameters.stability_fee_per_millisecond,
             accumulator.last_accrued_at,
             now,
         );
-        mul_div(amount, FIXED_POINT_ONE, current_accumulator)
+        (
+            current_accumulator,
+            mul_div(amount, FIXED_POINT_ONE, current_accumulator),
+        )
     })
     .map_err(|_| StablecoinApiError::new("repayment_arithmetic_error"))?;
     if debt_delta > position.normalized_debt_amount {
         return Err(StablecoinApiError::new("repay_amount_exceeds_debt"));
+    }
+    accumulator
+        .total_normalized_debt_amount
+        .checked_sub(debt_delta)
+        .ok_or_else(|| StablecoinApiError::new("total_debt_arithmetic_error"))?;
+    if debt_delta != 0
+        && !meets_debt_floor(
+            position.normalized_debt_amount - debt_delta,
+            current_accumulator,
+            parameters.minimum_debt_amount,
+        )
+    {
+        return Err(StablecoinApiError::new("debt_below_minimum"));
     }
 
     plan_response(

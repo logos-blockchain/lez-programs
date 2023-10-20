@@ -58,6 +58,9 @@ impl Fixture {
                 opened_at: u64::MAX,
             },
             parameters: ProtocolParameters {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                minimum_debt_amount: 1,
+                debt_ceiling: u128::MAX,
                 admin_account_id: id(1),
                 freeze_authority_account_id: id(2),
                 stablecoin_definition_id: id(3),
@@ -72,6 +75,8 @@ impl Fixture {
                 is_frozen: true,
             },
             accumulator: StabilityFeeAccumulator {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                total_normalized_debt_amount: debt,
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
                 last_accrued_at: START,
             },

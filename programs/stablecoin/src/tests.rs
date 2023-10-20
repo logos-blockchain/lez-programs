@@ -90,6 +90,9 @@ fn protocol_parameters_account_for(
             program_owner: STABLECOIN_PROGRAM_ID,
             balance: 0,
             data: Data::from(&ProtocolParameters {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                minimum_debt_amount: 1,
+                debt_ceiling: u128::MAX,
                 admin_account_id: AccountId::new([0xA0u8; 32]),
                 freeze_authority_account_id: AccountId::new([0xFEu8; 32]),
                 stablecoin_definition_id: stablecoin_definition_id(),
@@ -1004,6 +1007,15 @@ fn fresh_oracle() -> AccountWithMetadata {
     crate::test_support::oracle_account(NOW, ORACLE_PRICE)
 }
 
+fn accumulator_with_debt(anchor: u128, total: u128) -> AccountWithMetadata {
+    let mut account = crate::test_support::accumulator_account(anchor, NOW);
+    let mut accumulator = stablecoin_core::StabilityFeeAccumulator::try_from(&account.account.data)
+        .expect("valid accumulator");
+    accumulator.total_normalized_debt_amount = total;
+    account.account.data = Data::from(&accumulator);
+    account
+}
+
 fn unit_accumulator() -> AccountWithMetadata {
     crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW)
 }
@@ -1311,11 +1323,11 @@ fn repay(
 }
 
 #[test]
-fn repay_debt_echoes_the_three_new_accounts() {
+fn repay_debt_updates_accumulator_and_echoes_other_globals() {
     let (post_states, _) = repay(
         init_position_account(1_000, 300),
         stablecoin_definition_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(false),
         100,
     );
@@ -1323,8 +1335,8 @@ fn repay_debt_echoes_the_three_new_accounts() {
     assert_eq!(post_states.len(), 7);
     assert_eq!(
         post_states[4].post_account(STABLECOIN_PROGRAM_ID),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW).account,
-        "accumulator must be echoed unchanged"
+        accumulator_with_debt(FIXED_POINT_ONE, 200).account,
+        "accumulator tracks the same normalized decrement as the position"
     );
     assert_eq!(
         post_states[5].post_account(STABLECOIN_PROGRAM_ID),
@@ -1345,7 +1357,7 @@ fn repay_debt_rounds_the_normalized_delta_down() {
     let (post_states, _) = repay(
         init_position_account(1_000, 300),
         stablecoin_definition_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE * 3, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE * 3, 300),
         protocol_parameters_account(false),
         100,
     );
@@ -1360,7 +1372,7 @@ fn repay_debt_is_allowed_while_frozen() {
     let (post_states, chained_calls) = repay(
         init_position_account(1_000, 300),
         stablecoin_definition_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(true),
         100,
     );
@@ -1381,7 +1393,7 @@ fn repay_debt_rejects_an_unbound_stablecoin_definition() {
     repay(
         init_position_account(1_000, 300),
         definition,
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(false),
         100,
     );
@@ -1393,7 +1405,7 @@ fn repay_debt_rejects_overrepay_against_the_floored_delta() {
     repay(
         init_position_account(1_000, 10),
         stablecoin_definition_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 10),
         protocol_parameters_account(false),
         11,
     );
@@ -1405,7 +1417,7 @@ fn repay_debt_rejects_uninitialized_protocol_parameters() {
     repay(
         init_position_account(1_000, 300),
         stablecoin_definition_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         AccountWithMetadata {
             account: Account::default(),
             is_authorized: false,
@@ -1760,12 +1772,15 @@ fn withdraw(
     parameters: AccountWithMetadata,
     amount: u128,
 ) -> (Vec<lee_core::program::AccountStateDiff>, Vec<ChainedCall>) {
+    let total = Position::try_from(&position.account.data)
+        .expect("valid position")
+        .normalized_debt_amount;
     crate::withdraw_collateral::withdraw_collateral(
         owner_account(),
         position,
         init_vault_account(),
         destination_holding_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, total),
         crate::test_support::redemption_price_state_account(NOW),
         parameters,
         clock_account(NOW),
@@ -1806,7 +1821,7 @@ fn withdraw_collateral_rejects_a_redemption_price_that_projects_to_zero() {
         init_position_account(500_000, 300),
         init_vault_account(),
         destination_holding_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         redemption_state_with(
             FIXED_POINT_ONE - stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
             NOW - elapsed,
@@ -1830,7 +1845,7 @@ fn withdraw_collateral_of_zero_is_a_no_op_for_an_indebted_position() {
         init_position_account(500_000, 300),
         init_vault_account(),
         destination_holding_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         redemption_state_with(
             FIXED_POINT_ONE - stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
             NOW - elapsed,
@@ -1859,7 +1874,7 @@ fn withdraw_collateral_succeeds_when_the_projected_price_exceeds_u128() {
         init_position_account(1_000_000_000_000, 1),
         init_vault_account(),
         destination_holding_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         redemption_state_with(
             FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
             NOW - elapsed,
@@ -1885,7 +1900,7 @@ fn withdraw_collateral_rejects_when_the_projected_price_exceeds_the_collateral()
         init_position_account(1_000, 1),
         init_vault_account(),
         destination_holding_account(),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 1),
         redemption_state_with(
             FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
             NOW - elapsed,
@@ -2447,7 +2462,7 @@ fn repay_debt_decreases_debt_and_emits_burn() {
         init_position_account(initial_collateral, initial_debt),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(holding_balance),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, initial_debt),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2512,7 +2527,7 @@ fn repay_debt_allows_full_repayment() {
         init_position_account(500, debt),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, debt),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2531,7 +2546,7 @@ fn repay_debt_allows_zero_amount() {
         init_position_account(500, initial_debt),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, initial_debt),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2561,7 +2576,7 @@ fn repay_debt_requires_owner_authorization() {
         init_position_account(500, 300),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2595,7 +2610,7 @@ fn repay_debt_rejects_position_owned_by_other_program() {
         position,
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2613,7 +2628,7 @@ fn repay_debt_rejects_wrong_position_address() {
         position,
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2631,7 +2646,7 @@ fn repay_debt_requires_user_holding_authorization() {
         init_position_account(500, 300),
         stablecoin_definition_account(),
         holding,
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2652,7 +2667,7 @@ fn repay_debt_rejects_uninitialized_user_holding() {
         init_position_account(500, 300),
         stablecoin_definition_account(),
         holding,
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2672,7 +2687,7 @@ fn repay_debt_rejects_holding_with_different_token_program() {
         init_position_account(500, 300),
         stablecoin_definition_account(),
         holding,
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2693,7 +2708,7 @@ fn repay_debt_rejects_holding_for_other_definition() {
         init_position_account(500, 300),
         stablecoin_definition_account(),
         holding,
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2709,7 +2724,7 @@ fn repay_debt_rejects_overrepay() {
         init_position_account(500, 100),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 100),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -2773,10 +2788,267 @@ fn repay_debt_rejects_position_with_stale_owner_field() {
         }),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
-        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        accumulator_with_debt(FIXED_POINT_ONE, 300),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
+}
+
+// Debt-limit admission and aggregate-accounting contracts.
+fn parameters_with_debt_limits(minimum: u128, ceiling: u128) -> AccountWithMetadata {
+    let mut account = protocol_parameters_account(false);
+    let mut parameters = ProtocolParameters::try_from(&account.account.data).expect("parameters");
+    parameters.minimum_debt_amount = minimum;
+    parameters.debt_ceiling = ceiling;
+    account.account.data = Data::from(&parameters);
+    account
+}
+
+fn debt_after(post: &[lee_core::program::AccountStateDiff]) -> (u128, u128) {
+    (
+        Position::try_from(post[1].post_data())
+            .expect("position")
+            .normalized_debt_amount,
+        stablecoin_core::StabilityFeeAccumulator::try_from(post[4].post_data())
+            .expect("accumulator")
+            .total_normalized_debt_amount,
+    )
+}
+
+#[test]
+fn mint_floor_boundaries_and_aggregate_change_are_exact() {
+    for amount in [9, 10, 11] {
+        let result = std::panic::catch_unwind(|| {
+            generate(
+                init_position_account(1_000, 0),
+                unit_accumulator(),
+                fresh_oracle(),
+                parameters_with_debt_limits(10, 100),
+                amount,
+            )
+        });
+        if amount < 10 {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(debt_after(&result.expect("admitted").0), (amount, amount));
+        }
+    }
+}
+
+#[test]
+fn mint_fractional_floor_and_rounding_ceiling_cannot_be_bypassed() {
+    let accumulator = FIXED_POINT_ONE * 3 / 2;
+    // Minting one produces N=1: exact accrued debt 1.5 is below floor2.
+    assert!(std::panic::catch_unwind(|| generate(
+        init_position_account(1_000, 0),
+        accumulator_with_debt(accumulator, 0),
+        fresh_oracle(),
+        parameters_with_debt_limits(2, 100),
+        1,
+    ))
+    .is_err());
+    // The same 1.5 debt exceeds ceiling1 despite only one token being minted.
+    assert!(std::panic::catch_unwind(|| generate(
+        init_position_account(1_000, 0),
+        accumulator_with_debt(accumulator, 0),
+        fresh_oracle(),
+        parameters_with_debt_limits(1, 1),
+        1,
+    ))
+    .is_err());
+    let (post, _) = generate(
+        init_position_account(1_000, 0),
+        accumulator_with_debt(accumulator, 0),
+        fresh_oracle(),
+        parameters_with_debt_limits(3, 3),
+        2,
+    );
+    assert_eq!(debt_after(&post), (2, 2));
+}
+
+#[test]
+fn repay_floor_boundaries_include_zero_and_fractional_remainders() {
+    for (amount, expected) in [(9, Some(11)), (10, Some(10)), (11, None), (20, Some(0))] {
+        let result = std::panic::catch_unwind(|| {
+            repay(
+                init_position_account(1_000, 20),
+                stablecoin_definition_account(),
+                accumulator_with_debt(FIXED_POINT_ONE, 20),
+                parameters_with_debt_limits(10, 100),
+                amount,
+            )
+        });
+        match expected {
+            Some(debt) => assert_eq!(debt_after(&result.expect("repay allowed").0), (debt, debt)),
+            None => assert!(result.is_err()),
+        }
+    }
+    assert!(std::panic::catch_unwind(|| repay(
+        init_position_account(1_000, 2),
+        stablecoin_definition_account(),
+        accumulator_with_debt(FIXED_POINT_ONE * 3 / 2, 2),
+        parameters_with_debt_limits(2, 100),
+        2,
+    ))
+    .is_err());
+    let (post, _) = repay(
+        init_position_account(1_000, 2),
+        stablecoin_definition_account(),
+        accumulator_with_debt(FIXED_POINT_ONE * 3 / 2, 2),
+        parameters_with_debt_limits(2, 100),
+        3,
+    );
+    assert_eq!(debt_after(&post), (0, 0));
+}
+
+#[test]
+fn raised_floor_preserves_zero_delta_operations_and_requires_settlement_or_floor() {
+    let parameters = parameters_with_debt_limits(4, 100);
+    let (post, _) = generate(
+        init_position_account(1_000, 1),
+        accumulator_with_debt(FIXED_POINT_ONE, 1),
+        fresh_oracle(),
+        parameters.clone(),
+        0,
+    );
+    assert_eq!(debt_after(&post), (1, 1));
+    let (post, _) = repay(
+        init_position_account(1_000, 1),
+        stablecoin_definition_account(),
+        accumulator_with_debt(FIXED_POINT_ONE, 1),
+        parameters.clone(),
+        0,
+    );
+    assert_eq!(debt_after(&post), (1, 1));
+    // Positive burn with zero normalized delta deliberately retains old behavior.
+    let (post, calls) = repay(
+        init_position_account(1_000, 1),
+        stablecoin_definition_account(),
+        accumulator_with_debt(FIXED_POINT_ONE * 3, 1),
+        parameters.clone(),
+        1,
+    );
+    assert_eq!(debt_after(&post), (1, 1));
+    assert_eq!(calls.len(), 1);
+    assert!(std::panic::catch_unwind(|| generate(
+        init_position_account(1_000, 1),
+        accumulator_with_debt(FIXED_POINT_ONE, 1),
+        fresh_oracle(),
+        parameters.clone(),
+        2
+    ))
+    .is_err());
+    let (post, _) = generate(
+        init_position_account(1_000, 1),
+        accumulator_with_debt(FIXED_POINT_ONE, 1),
+        fresh_oracle(),
+        parameters,
+        3,
+    );
+    assert_eq!(debt_after(&post), (4, 4));
+}
+
+#[test]
+fn global_ceiling_accounts_for_other_positions_and_preserves_fee_anchor() {
+    // Two live positions hold normalized debt20 and30; this operation changes only the first.
+    let accumulator = accumulator_with_debt(FIXED_POINT_ONE, 50);
+    let (post, _) = generate(
+        init_position_account(1_000, 20),
+        accumulator.clone(),
+        fresh_oracle(),
+        parameters_with_debt_limits(10, 60),
+        10,
+    );
+    assert_eq!(debt_after(&post), (30, 60));
+    let after = stablecoin_core::StabilityFeeAccumulator::try_from(post[4].post_data())
+        .expect("accumulator");
+    assert_eq!(after.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
+    assert_eq!(after.last_accrued_at, NOW);
+    assert_eq!(after.schema_version, stablecoin_core::GLOBAL_SCHEMA_VERSION);
+    assert!(std::panic::catch_unwind(|| generate(
+        init_position_account(1_000, 20),
+        accumulator,
+        fresh_oracle(),
+        parameters_with_debt_limits(10, 60),
+        11
+    ))
+    .is_err());
+    let (post, _) = repay(
+        init_position_account(1_000, 20),
+        stablecoin_definition_account(),
+        accumulator_with_debt(FIXED_POINT_ONE, 50),
+        parameters_with_debt_limits(10, 30),
+        10,
+    );
+    assert_eq!(
+        debt_after(&post),
+        (10, 40),
+        "repayment allowed while above lowered ceiling"
+    );
+}
+
+#[test]
+fn aggregate_overflow_and_corrupt_underflow_fail_before_token_calls() {
+    // The remaining aggregate debt belongs to other positions; adding one cannot fit.
+    assert!(std::panic::catch_unwind(|| generate(
+        init_position_account(1_000, 1),
+        accumulator_with_debt(FIXED_POINT_ONE, u128::MAX),
+        fresh_oracle(),
+        parameters_with_debt_limits(1, u128::MAX),
+        1
+    ))
+    .is_err());
+    // Intentionally corrupt counter: T=1 violates T=sum(N) for this N=2 position.
+    assert!(std::panic::catch_unwind(|| repay(
+        init_position_account(1_000, 2),
+        stablecoin_definition_account(),
+        accumulator_with_debt(FIXED_POINT_ONE, 1),
+        parameters_with_debt_limits(1, 100),
+        2
+    ))
+    .is_err());
+}
+
+#[test]
+fn fee_accrual_above_ceiling_preserves_total_and_allows_repayment() {
+    let mut parameters = parameters_with_debt_limits(1, 100);
+    let mut value = ProtocolParameters::try_from(&parameters.account.data).expect("params");
+    value.stability_fee_per_millisecond = FIXED_POINT_ONE * 2;
+    parameters.account.data = Data::from(&value);
+    let accumulator = accumulator_with_debt(FIXED_POINT_ONE, 100);
+    let (post, _) = crate::accrue_stability_fee::accrue_stability_fee(
+        owner_account(),
+        parameters.clone(),
+        accumulator,
+        clock_account(NOW + 1),
+        STABLECOIN_PROGRAM_ID,
+    );
+    let after = stablecoin_core::StabilityFeeAccumulator::try_from(post[2].post_data())
+        .expect("accumulator");
+    assert_eq!(after.total_normalized_debt_amount, 100);
+    assert_eq!(after.accumulated_rate_at_last_accrual, FIXED_POINT_ONE * 2);
+    assert!(!stablecoin_core::debt_limits::within_debt_ceiling(
+        100,
+        after.accumulated_rate_at_last_accrual,
+        100
+    ));
+    // At the same accrued rate, mint admission fails; partial repayment remains valid.
+    assert!(std::panic::catch_unwind(|| generate(
+        init_position_account(1_000, 100),
+        accumulator_with_debt(FIXED_POINT_ONE * 2, 100),
+        fresh_oracle(),
+        parameters.clone(),
+        1
+    ))
+    .is_err());
+    let (post, _) = repay(
+        init_position_account(1_000, 100),
+        stablecoin_definition_account(),
+        accumulator_with_debt(FIXED_POINT_ONE * 2, 100),
+        parameters,
+        20,
+    );
+    assert_eq!(debt_after(&post), (90, 90));
 }

@@ -112,6 +112,7 @@ pub(crate) fn advance_fee_accumulator(
             now,
         ),
         last_accrued_at: now,
+        ..accumulator.clone()
     };
 
     Data::from(&updated)

@@ -24,6 +24,9 @@ fn id(seed: u8) -> AccountId {
 
 fn parameters() -> ProtocolParameters {
     ProtocolParameters {
+        schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+        minimum_debt_amount: 1,
+        debt_ceiling: u128::MAX,
         admin_account_id: id(1),
         freeze_authority_account_id: id(2),
         stablecoin_definition_id: compute_stablecoin_definition_pda(PROGRAM),
@@ -312,7 +315,7 @@ fn related_plans(parameters: &ProtocolParameters) -> Vec<(&'static str, bool, St
         "stablecoinDefinition": read_value(definition_id, TOKEN_PROGRAM, Data::from(&TokenDefinition::Fungible {
             name: String::from("Stablecoin"), total_supply: 0, metadata_id: None, authority: Some(definition_id) })),
         "stabilityFeeAccumulator": read_value(compute_stability_fee_accumulator_pda(PROGRAM), PROGRAM,
-            Data::from(&StabilityFeeAccumulator { accumulated_rate_at_last_accrual: FIXED_POINT_ONE, last_accrued_at: 1_000 })),
+            Data::from(&StabilityFeeAccumulator { schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION, total_normalized_debt_amount: 0, accumulated_rate_at_last_accrual: FIXED_POINT_ONE, last_accrued_at: 1_000 })),
         "redemptionPriceState": read_value(compute_redemption_price_state_pda(PROGRAM), PROGRAM,
             Data::from(&RedemptionPriceState { redemption_price_at_last_update: FIXED_POINT_ONE,
                 redemption_rate_per_millisecond: FIXED_POINT_ONE, controller_integral_term: 0, last_updated_at: 1_000 })),

@@ -12,6 +12,15 @@ The Qt-free C++ adapter handles live wallet reads and transaction submission.
 `stablecoin_ffi` owns exact account decoding, PDA derivation, request
 validation, and `stablecoin_core::Instruction` serialization.
 
+Version 0.2 targets fresh deployments with global account schema version 2.
+Protocol Parameters and Stability Fee Accumulator include `schemaVersion`;
+legacy or unsupported schemas fail with `unsupported_account_schema`. The
+initialization ABI now requires explicit debt limits. Existing deployments need
+their matching older client; there is no automatic in-place migration or safe
+way to infer aggregate normalized debt from token supply. Rebuild the program
+and refresh its deployment ID, PDAs, IDL, module configuration and deployment
+manifest together.
+
 ## API
 
 Every method returns a stable envelope. Success starts with:
@@ -45,14 +54,18 @@ configured binary's ImageID, or empty when no binary is configured.
 
 Reads the singleton Protocol Parameters account through
 `lez_core`, verifies its PDA and owner, and exactly decodes its
-data. All `u128`, `i128`, and `u64` values are returned as decimal strings.
+data. Numeric values, including `schemaVersion`, `minimumDebtAmount` and
+`debtCeiling`, are returned as decimal strings. The two limits are raw stablecoin
+atomic units, not RAY-scaled values.
 
 ### `stabilityFeeAccumulator()`
 
 Reads the singleton Stability Fee Accumulator account through `lez_core`,
 verifies its PDA and owner, and exactly decodes its stored snapshot. The result
 includes the account ID in base58 and lowercase hexadecimal form plus
-`accumulatedRateAtLastAccrual` and `lastAccruedAt` as decimal strings. It does
+`schemaVersion`, `accumulatedRateAtLastAccrual`, `lastAccruedAt`, and
+`totalNormalizedDebtAmount` as decimal strings. The total is the sum of all live
+positions’ normalized debt; direct token burns do not decrease it. It does
 not project the accumulator to the current time.
 
 ### `positionAccount(request)`
@@ -95,7 +108,8 @@ and the canonical `CLOCK_01` account through `lez_core`. It verifies each
 stablecoin singleton's PDA, owner, and data before projecting both current
 values at the clock account's Unix-millisecond timestamp.
 
-The result contains `accumulatedRateAtLastAccrual`, `lastAccruedAt`,
+The result contains `schemaVersion`, `minimumDebtAmount`, `debtCeiling`,
+`totalNormalizedDebtAmount`, `accumulatedRateAtLastAccrual`, `lastAccruedAt`,
 `redemptionPriceAtLastUpdate`, `lastUpdatedAt`, `currentAccumulatedRate`,
 `currentRedemptionPrice`, and `projectedAt`. Every value is an exact decimal
 string. Projection uses saturating timestamp subtraction and the on-chain
@@ -208,6 +222,8 @@ Required request fields:
 | `maximumOraclePriceAgeMilliseconds` | exact `u64` decimal |
 | `initialRedemptionPrice` | exact `u128` decimal |
 | `stablecoinName` | string accepted by the Stablecoin Program |
+| `minimumDebtAmount` | required positive `u128`, raw stablecoin atomic units |
+| `debtCeiling` | required `u128`, at least `minimumDebtAmount`, raw stablecoin atomic units |
 | `feePayerId` | funded public wallet account that pays the transaction fee |
 
 The module verifies all five derived target PDAs are uninitialized, validates
@@ -217,6 +233,9 @@ transactions, so `feePayerId` must name a funded account in the connected
 wallet: the admin itself or a separate account, which co-signs the fee. A
 non-signing participant is rejected with `invalid_fee_payer`. Success adds
 `transactionId` to the response envelope.
+
+Initialization stores schema version 2 and zero aggregate normalized debt. No
+economic limit defaults are supplied; invalid pairs return `invalid_debt_limits`.
 
 Pass numeric values as decimal strings. JSON integers are accepted when their
 exact value survives parsing. JSON floating-point values are always rejected.
@@ -310,6 +329,11 @@ burns exactly `amount` and reduces normalized debt by
 `floor(amount * FIXED_POINT_ONE / current_accumulator)`. The accumulator uses
 the current canonical clock, saturating elapsed time and the seven-day window
 clamp. The floored reduction must not exceed remaining normalized debt.
+The writable accumulator total decreases by the same normalized delta as the
+position, without changing its rate anchor or timestamp. A nonzero debt change
+must leave zero debt or satisfy the exact floor
+`newNormalizedDebt * currentAccumulator >= minimumDebtAmount * FIXED_POINT_ONE`.
+Repayment may reduce debt while aggregate accrued debt exceeds the ceiling.
 Repayment remains available while frozen and reads no redemption price,
 collateral vault, or market-price oracle.
 
@@ -324,7 +348,8 @@ Preflight errors include `invalid_numeric_value`, `position_pda_mismatch`,
 `stablecoin_definition_mismatch`, `invalid_stablecoin_definition`,
 `invalid_user_stablecoin_holding`, `token_program_mismatch`,
 `insufficient_stablecoin_balance`, `repay_amount_exceeds_debt`, and
-`repayment_arithmetic_error` for unrepresentable program arithmetic.
+`repayment_arithmetic_error` for unrepresentable program arithmetic,
+`debt_below_minimum`, and `total_debt_arithmetic_error`.
 Missing initialization returns `not_initialized`; malformed or missing reads
 and missing public wallet signers prevent submission. Success returns
 `{status: "ok", error: "", transactionId: "..."}`. Wallet rejection or transport
@@ -418,7 +443,16 @@ Debt pricing uses the native narrow accumulator algorithm, including each
 ```text
 normalizedDebtDelta = ceil(amount * FIXED_POINT_ONE / currentAccumulator)
 newNormalizedDebt = oldNormalizedDebt + normalizedDebtDelta
+newTotalNormalizedDebt = oldTotalNormalizedDebt + normalizedDebtDelta
 ```
+
+Positive borrowing must meet both exact U256 comparisons:
+`newNormalizedDebt * currentAccumulator >= minimumDebtAmount * FIXED_POINT_ONE`
+and `newTotalNormalizedDebt * currentAccumulator <= debtCeiling * FIXED_POINT_ONE`.
+The writable accumulator total changes atomically with position debt; its anchor
+and timestamp stay unchanged. The ceiling includes accrued debt and normalization
+rounding. Interest may raise existing accrued debt above the ceiling, after which
+new borrowing fails until debt falls or the admin raises the ceiling.
 
 Checked, non-panicking arithmetic reports unrepresentable pricing and debt
 addition through stable errors. The wide projected redemption price must be
@@ -432,7 +466,8 @@ Stable errors include `protocol_frozen`, `oracle_stale`, `oracle_future`,
 `debt_pricing_arithmetic_error`, `normalized_debt_overflow`,
 `redemption_price_zero`, `position_undercollateralized`,
 `invalid_stablecoin_mint_authority`, `stablecoin_supply_overflow`,
-`stablecoin_balance_overflow` and the existing numeric/identity/token errors.
+`stablecoin_balance_overflow`, `debt_below_minimum`, `debt_ceiling_exceeded`,
+`total_debt_arithmetic_error` and the existing numeric/identity/token errors.
 Failed preflight submits nothing. Success returns
 `{status: "ok", error: "", transactionId: "..."}`; wallet rejection or transport
 failure returns `wallet_submission_failed` without a successful ID or retry.
@@ -540,7 +575,7 @@ and `clock` account-read envelopes to the public request. Free responses with
 
 ### Admin parameter and role setters
 
-All six methods accept `adminId` (base58 or hexadecimal account ID) and the
+All seven methods accept `adminId` (base58 or hexadecimal account ID) and the
 additional fields below. Numeric fields accept exact decimal strings or
 lossless JSON integers; floating-point values and out-of-type values are
 rejected. Decimal strings are the portable format for integers above `2^53`,
@@ -549,6 +584,7 @@ including the full `u128`/`i128` domain before the native bands are applied.
 | Method | Additional fields | Native limits / behavior |
 | --- | --- | --- |
 | `setMinimumCollateralizationRatio(request)` | `newRatio` (`u128`) | Inclusive `1.1 * FIXED_POINT_ONE ..= 10 * FIXED_POINT_ONE` |
+| `setDebtLimits(request)` | `minimumDebtAmount`, `debtCeiling` (`u128`) | Raw stablecoin atomic units; `0 < minimumDebtAmount <= debtCeiling` |
 | `setControllerGains(request)` | `newProportionalGain`, `newIntegralGain` (`i128`) | Either sign; magnitude caps `1000 * FIXED_POINT_ONE` and `FIXED_POINT_ONE` respectively |
 | `setTimingParameters(request)` | `newMinimumMillisecondsBetweenRateUpdates`, `newMaximumOraclePriceAgeMilliseconds` (`u64`) | Each inclusive `1 ..= 86_400_000` milliseconds |
 | `setAdmin(request)` | `newAdminId` (account ID) | Immediate one-step rotation; new holder is an instruction value, not a signer |
@@ -557,11 +593,11 @@ including the full `u128`/`i128` domain before the native bands are applied.
 
 Each invocation reads current Protocol Parameters, verifies canonical PDA,
 stablecoin ownership and exact data, and requires the currently stored admin to
-be a public signer in the active wallet. Only that admin signs. All six setters
+be a public signer in the active wallet. Only that admin signs. All seven setters
 remain available while frozen and read no clock, accumulator or redemption
 state. They do not automatically advance globals.
 
-Account order for the first five setters is admin (read-only, signer), Protocol
+Account order for the six setters without an oracle is admin (read-only, signer), Protocol
 Parameters (writable, nonsigner). Oracle replacement appends the replacement
 oracle as the third read-only, nonsigner account and uses the zero-argument
 `SetMarketPriceOracle` instruction, not an oracle-ID payload. Every `init` flag
@@ -573,6 +609,15 @@ redemption state. Both timing values also change atomically. Each setter changes
 only its named fields, preserving unrelated parameters. Tightening the ratio
 does not scan existing positions or prevent the update; affected positions may
 need deposits or repayment before borrowing or withdrawing again.
+
+`setDebtLimits` changes both limits atomically. Lowering the ceiling below current
+accrued debt is allowed and stops further borrowing. Raising the floor can leave
+existing positions below it: their next positive borrowing must reach the floor,
+and debt-reducing repayment must clear debt or remain at/above the new floor.
+Zero calls and positive burns with zero normalized reduction retain existing
+behavior. Deposits, withdrawals, debt-free opening and settled closing do not
+enforce these limits. Freeze remains the way to stop all borrowing; zero is not
+a disable sentinel.
 
 Role replacement IDs accept base58/hex, need not belong to the current wallet,
 and are not read or required to co-sign. Admin and freeze-authority handles may
@@ -590,18 +635,20 @@ producer, including a stale or zero observation, is accepted. Wrong asset pairs,
 missing or malformed account data fail preflight.
 
 Stable errors include `admin_mismatch`, `collateralization_ratio_out_of_band`,
-`controller_gains_out_of_band`, `timing_parameters_out_of_band`, and existing
+`controller_gains_out_of_band`, `timing_parameters_out_of_band`,
+`invalid_debt_limits`, and existing
 numeric, account-read, PDA, ownership and oracle-data/asset errors. Failed
 preflight submits nothing. Success returns
 `{status: "ok", error: "", transactionId: "..."}`. Wallet rejection or transport
 failure returns `wallet_submission_failed` without a successful ID or retry.
 
-The Rust API exports six `set_*_plan` functions and their typed `Set*PlanRequest`
+The Rust API exports seven `set_*_plan` functions and their typed `Set*PlanRequest`
 types, sharing `AdminPlanContext`. The JSON C ABI request is flat: add
 `stablecoinProgramId` and `protocolParameters` to the public request; oracle
 replacement also needs the `newOracle` account-read envelope. C entrypoints are
 `stablecoin_set_minimum_collateralization_ratio_plan`,
-`stablecoin_set_controller_gains_plan`, `stablecoin_set_timing_parameters_plan`,
+`stablecoin_set_debt_limits_plan`, `stablecoin_set_controller_gains_plan`,
+`stablecoin_set_timing_parameters_plan`,
 `stablecoin_set_admin_plan`, `stablecoin_set_freeze_authority_plan`, and
 `stablecoin_set_market_price_oracle_plan`. Release response allocations with
 `stablecoin_free`.

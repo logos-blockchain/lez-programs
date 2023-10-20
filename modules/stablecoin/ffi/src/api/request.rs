@@ -137,6 +137,8 @@ pub struct InitializeProgramPlanRequest {
     pub maximum_oracle_price_age_milliseconds: Value,
     pub initial_redemption_price: Value,
     pub stablecoin_name: String,
+    pub minimum_debt_amount: Value,
+    pub debt_ceiling: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -312,4 +314,14 @@ pub struct GenerateDebtPlanRequest {
     pub market_price_oracle: AccountRead,
     pub protocol_parameters: AccountRead,
     pub clock: AccountRead,
+}
+
+/// Atomically replace both borrowing limits, in raw stablecoin atomic units.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetDebtLimitsPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub minimum_debt_amount: Value,
+    pub debt_ceiling: Value,
 }
