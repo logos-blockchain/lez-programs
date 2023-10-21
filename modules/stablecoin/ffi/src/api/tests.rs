@@ -978,7 +978,7 @@ fn initialize_plan_round_trips_all_boundary_values_and_exact_account_contract() 
     assert_eq!(
         plan["accountIds"],
         json!([
-            admin,
+            program_id_hex(),
             account_id_hex(compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID)),
             account_id_hex(compute_stability_fee_accumulator_pda(STABLECOIN_PROGRAM_ID)),
             account_id_hex(compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID)),
@@ -1004,6 +1004,7 @@ fn initialize_plan_round_trips_all_boundary_values_and_exact_account_contract() 
         maximum_oracle_price_age_milliseconds,
         initial_redemption_price,
         stablecoin_name,
+        initial_admin_account_id,
     } = decode_instruction(&plan["instruction"])
     else {
         panic!("expected InitializeProgram");
@@ -1012,6 +1013,8 @@ fn initialize_plan_round_trips_all_boundary_values_and_exact_account_contract() 
         account_id_hex(freeze_authority_account_id),
         freeze_authority
     );
+    assert_eq!(account_id_hex(initial_admin_account_id), admin);
+    assert_ne!(admin, program_id_hex());
     assert_eq!(initial_stability_fee_per_millisecond, u128::MAX);
     assert_eq!(initial_controller_proportional_gain, i128::MIN);
     assert_eq!(initial_controller_integral_gain, i128::MAX);

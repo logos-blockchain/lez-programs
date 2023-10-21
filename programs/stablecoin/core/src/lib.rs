@@ -63,7 +63,7 @@ pub enum Instruction {
     /// is already initialized.
     ///
     /// Required accounts (9), in order:
-    /// 1. `admin` — authorized; becomes `ProtocolParameters.admin_account_id`.
+    /// 1. `deployment_authority` — authorized; must be the executing deployed header account.
     /// 2. `protocol_parameters` — uninitialized, PDA at
     ///    `compute_protocol_parameters_pda(self_program_id)`.
     /// 3. `stability_fee_accumulator` — uninitialized, PDA at
@@ -106,6 +106,8 @@ pub enum Instruction {
         initial_redemption_price: u128,
         /// Name baked into the stablecoin's `TokenDefinition::Fungible`.
         stablecoin_name: String,
+        /// Initial admin selected by the deployment authority; need not sign bootstrap.
+        initial_admin_account_id: AccountId,
     },
     /// Advance the stability-fee accumulator to the clock's timestamp.
     /// Permissionless and idempotent — there is no minimum-interval throttle;
@@ -694,8 +696,20 @@ mod instruction_tests {
             maximum_oracle_price_age_milliseconds: 900_000,
             initial_redemption_price: FIXED_POINT_ONE / 2,
             stablecoin_name: "test-stable".to_owned(),
+            initial_admin_account_id: AccountId::new([0xA0; 32]),
         };
         let encoded = borsh::to_vec(&original).expect("serialize");
+        assert_eq!(encoded.first(), Some(&0), "initialization keeps tag zero");
+        let legacy_payload_len = encoded.len() - 32;
+        assert_eq!(
+            &encoded[legacy_payload_len..],
+            &[0xA0; 32],
+            "initial admin is appended to the existing payload"
+        );
+        assert!(
+            borsh::from_slice::<Instruction>(&encoded[..legacy_payload_len]).is_err(),
+            "the previous initialization ABI must not decode"
+        );
         let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         match decoded {
             Instruction::InitializeProgram {
@@ -708,6 +722,7 @@ mod instruction_tests {
                 maximum_oracle_price_age_milliseconds,
                 initial_redemption_price,
                 stablecoin_name,
+                initial_admin_account_id,
             } => {
                 assert_eq!(freeze_authority_account_id, AccountId::new([0xFF; 32]));
                 assert_eq!(
@@ -724,6 +739,7 @@ mod instruction_tests {
                 assert_eq!(maximum_oracle_price_age_milliseconds, 900_000);
                 assert_eq!(initial_redemption_price, FIXED_POINT_ONE / 2);
                 assert_eq!(stablecoin_name, "test-stable");
+                assert_eq!(initial_admin_account_id, AccountId::new([0xA0; 32]));
             }
             _ => panic!("decoded into wrong variant"),
         }

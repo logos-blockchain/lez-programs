@@ -86,12 +86,13 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
         maximum_oracle_price_age_milliseconds,
         initial_redemption_price,
         stablecoin_name: request.stablecoin_name,
+        initial_admin_account_id: admin,
     };
 
     plan_response(
         program_id,
         [
-            admin,
+            program_id,
             compute_protocol_parameters_pda(program_id),
             compute_stability_fee_accumulator_pda(program_id),
             compute_redemption_price_state_pda(program_id),

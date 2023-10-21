@@ -20,9 +20,9 @@ use stablecoin_core::{
 use token_core::TokenDefinition;
 use twap_oracle_core::OraclePriceAccount;
 
-// --- Unpacked numerical parameters -------------------------------------------
+// --- Unpacked initialization parameters --------------------------------------
 
-/// Numerical parameters for [`initialize_program`]. Bundled to keep the host
+/// Initialization parameters for [`initialize_program`]. Bundled to keep the host
 /// function's argument count manageable; this is a parameter bag, not state.
 #[derive(Debug)]
 pub struct InitializeProgramParams<'a> {
@@ -35,6 +35,7 @@ pub struct InitializeProgramParams<'a> {
     pub maximum_oracle_price_age_milliseconds: u64,
     pub initial_redemption_price: u128,
     pub stablecoin_name: &'a str,
+    pub initial_admin_account_id: AccountId,
 }
 
 // --- Host function ----------------------------------------------------------
@@ -49,7 +50,7 @@ pub struct InitializeProgramParams<'a> {
     reason = "the nine account inputs + program id + parameter bag mirror the on-chain instruction ABI; collapsing them further would obscure it"
 )]
 pub fn initialize_program(
-    admin: AccountWithMetadata,
+    deployment_authority: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     stability_fee_accumulator: AccountWithMetadata,
     redemption_price_state: AccountWithMetadata,
@@ -62,7 +63,14 @@ pub fn initialize_program(
     params: InitializeProgramParams<'_>,
 ) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     // 1. Authorization
-    assert!(admin.is_authorized, "Admin authorization is missing");
+    assert!(
+        deployment_authority.is_authorized,
+        "Deployment authority authorization is missing"
+    );
+    assert_eq!(
+        deployment_authority.account_id, stablecoin_program_id,
+        "Deployment authority must be the executing program header"
+    );
 
     // 2. Target PDAs must be uninitialized
     assert_eq!(
@@ -193,7 +201,7 @@ pub fn initialize_program(
 
     // 8. Build the new global states
     let protocol_parameters_value = ProtocolParameters {
-        admin_account_id: admin.account_id,
+        admin_account_id: params.initial_admin_account_id,
         freeze_authority_account_id: params.freeze_authority_account_id,
         stablecoin_definition_id: stablecoin_definition.account_id,
         collateral_definition_id: collateral_definition.account_id,
@@ -231,7 +239,7 @@ pub fn initialize_program(
     let stablecoin_master_holding_id = stablecoin_master_holding.account_id;
 
     let state_diffs = vec![
-        AccountStateDiff::unchanged(admin),
+        AccountStateDiff::unchanged(deployment_authority),
         AccountStateDiff::new(
             protocol_parameters,
             BalanceDiff::Add(0),
@@ -281,7 +289,10 @@ pub fn initialize_program(
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 mod tests {
-    use lee_core::account::Nonce;
+    use lee_core::{
+        account::Nonce,
+        program::{ProgramHeader, PROGRAM_LOADER_ACCOUNT_ID},
+    };
 
     use super::*;
     use crate::StateDiffExt;
@@ -324,11 +335,24 @@ mod tests {
         compute_stablecoin_master_holding_pda(STABLECOIN_PROGRAM_ID)
     }
 
-    fn admin_account() -> AccountWithMetadata {
+    fn deployment_authority_account() -> AccountWithMetadata {
         AccountWithMetadata {
-            account: Account::default(),
+            account: Account {
+                program_owner: PROGRAM_LOADER_ACCOUNT_ID,
+                balance: 42,
+                data: Data::try_from(
+                    ProgramHeader {
+                        image_id: [0xAA; 8],
+                        program_first_segment: AccountId::new([0xBB; 32]),
+                        immutable: true,
+                    }
+                    .to_bytes(),
+                )
+                .expect("header data fits"),
+                nonce: Nonce(7),
+            },
             is_authorized: true,
-            account_id: admin_id(),
+            account_id: STABLECOIN_PROGRAM_ID,
         }
     }
 
@@ -409,12 +433,13 @@ mod tests {
             maximum_oracle_price_age_milliseconds: 900_000,
             initial_redemption_price: FIXED_POINT_ONE / 2,
             stablecoin_name: "test-stable",
+            initial_admin_account_id: admin_id(),
         }
     }
 
     fn invoke(params: InitializeProgramParams<'_>) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
         initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
             uninit(redemption_id()),
@@ -510,12 +535,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Admin authorization is missing")]
-    fn requires_admin_authorization() {
-        let mut admin = admin_account();
-        admin.is_authorized = false;
+    #[should_panic(expected = "Deployment authority authorization is missing")]
+    fn requires_deployment_authority_authorization() {
+        let mut deployment_authority = deployment_authority_account();
+        deployment_authority.is_authorized = false;
         let _ = initialize_program(
-            admin,
+            deployment_authority,
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
             uninit(redemption_id()),
@@ -530,12 +555,51 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "Deployment authority must be the executing program header")]
+    fn rejects_unrelated_authorized_account() {
+        let mut unrelated = deployment_authority_account();
+        unrelated.account_id = admin_id();
+        let _ = initialize_program(
+            unrelated,
+            uninit(protocol_parameters_id()),
+            uninit(accumulator_id()),
+            uninit(redemption_id()),
+            uninit(stablecoin_def_id()),
+            uninit(master_holding_id()),
+            collateral_definition_account(),
+            oracle_account(),
+            clock_account(),
+            STABLECOIN_PROGRAM_ID,
+            ok_params(),
+        );
+    }
+
+    #[test]
+    fn preserves_deployment_header() {
+        let (post_states, _) = invoke(ok_params());
+        assert_eq!(
+            post_states[0],
+            AccountStateDiff::unchanged(deployment_authority_account())
+        );
+    }
+
+    #[test]
+    fn deployment_header_can_be_selected_as_initial_admin() {
+        let mut params = ok_params();
+        params.initial_admin_account_id = STABLECOIN_PROGRAM_ID;
+        let (post_states, _) = invoke(params);
+        let decoded = ProtocolParameters::try_from(post_states[1].post_data()).expect("decode");
+        assert_eq!(decoded.admin_account_id, STABLECOIN_PROGRAM_ID);
+        assert_eq!(post_states.len(), 9);
+    }
+
+    #[test]
     #[should_panic(expected = "ProtocolParameters account must be uninitialized")]
     fn rejects_initialized_protocol_parameters() {
         let mut pp = uninit(protocol_parameters_id());
         pp.account.program_owner = STABLECOIN_PROGRAM_ID;
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             pp,
             uninit(accumulator_id()),
             uninit(redemption_id()),
@@ -555,7 +619,7 @@ mod tests {
         let mut acc = uninit(accumulator_id());
         acc.account.program_owner = STABLECOIN_PROGRAM_ID;
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             acc,
             uninit(redemption_id()),
@@ -575,7 +639,7 @@ mod tests {
         let mut rp = uninit(redemption_id());
         rp.account.program_owner = STABLECOIN_PROGRAM_ID;
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
             rp,
@@ -595,7 +659,7 @@ mod tests {
         let mut sd = uninit(stablecoin_def_id());
         sd.account.program_owner = TOKEN_PROGRAM_ID;
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
             uninit(redemption_id()),
@@ -615,7 +679,7 @@ mod tests {
         let mut mh = uninit(master_holding_id());
         mh.account.program_owner = TOKEN_PROGRAM_ID;
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
             uninit(redemption_id()),
@@ -636,7 +700,7 @@ mod tests {
     fn rejects_wrong_protocol_parameters_pda() {
         let pp = uninit(AccountId::new([0xDE; 32]));
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             pp,
             uninit(accumulator_id()),
             uninit(redemption_id()),
@@ -656,7 +720,7 @@ mod tests {
     )]
     fn rejects_wrong_accumulator_pda() {
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             uninit(AccountId::new([0xDE; 32])),
             uninit(redemption_id()),
@@ -676,7 +740,7 @@ mod tests {
         let mut clock = clock_account();
         clock.account_id = AccountId::new([0xC1; 32]);
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
             uninit(redemption_id()),
@@ -694,7 +758,7 @@ mod tests {
     #[should_panic(expected = "Collateral definition account must be initialized")]
     fn rejects_uninitialized_collateral_definition() {
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
             uninit(redemption_id()),
@@ -712,7 +776,7 @@ mod tests {
     #[should_panic(expected = "Market price oracle account must be initialized")]
     fn rejects_uninitialized_oracle() {
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
             uninit(redemption_id()),
@@ -736,7 +800,7 @@ mod tests {
         decoded.base_asset = AccountId::new([0xBA; 32]);
         oracle.account.data = Data::from(&decoded);
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
             uninit(redemption_id()),
@@ -760,7 +824,7 @@ mod tests {
         decoded.quote_asset = AccountId::new([0xCC; 32]);
         oracle.account.data = Data::from(&decoded);
         let _ = initialize_program(
-            admin_account(),
+            deployment_authority_account(),
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
             uninit(redemption_id()),
