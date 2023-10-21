@@ -74,14 +74,14 @@ This document is the design for the **on-chain program**. The CLI, mini-app, and
 | Decision | Choice | Rationale |
 |---|---|---|
 | Spec scope | Full on-chain program end-state | Every instruction, account type, controller math, oracle interface, admin/freeze hooks. CLI/mini-app/SDK get separate specs. |
-| Instance model | Single deployment = one stablecoin + one collateral | Matches RFP's RAI framing and singular phrasing. Adding a second collateral means deploying the program again as a separate instance with its own distinct stablecoin. |
+| Instance model | One deployed header account ID = one stablecoin + one collateral | Identical bytecode can be deployed at another header account ID to create an independent instance with distinct PDAs and its own stablecoin. |
 | Stablecoin ownership | Program-owned PDA, created by `initialize_program` | Mint/Burn chained calls authorize via the stablecoin program PDA seed. Single source of truth. |
 | Position addressing | PDA seed = `(owner_account_id, position_nonce)` | Multiple positions per owner. Matches RAI / DAI / Liquity. |
 | Launch | RAI-style: the market-price oracle only steers the redemption rate | `initialize_program` sets the redemption price and may bind an oracle address that does not exist yet. Borrowing never reads the market price, so the protocol works from day one; the controller waits (rate `1.0`) until the oracle exists. See "Day 0" below. |
 | Price model | Single oracle quoting stablecoin in collateral units; redemption price in collateral-per-stablecoin | One oracle read on the hot path. Closed-loop unit system; no external reference asset. Single point of failure mitigated by staleness gate + freeze authority. |
 | Fee accrual | RAI accumulator with surplus mint (`SAFEEngine.updateAccumulatedRate`) | Fees grow as the `accumulated_rate` multiplier, and every accrual mints `total_normalized_debt × Δaccumulator` to the protocol's surplus holding (§6.6). Supply therefore keeps pace with total nominal debt (RFP R1); `generate_debt` / `repay_debt` accrue first, like RAI's proxies calling `taxSingle`. |
 | Rate plumbing | Lazy globals + permissionless pokes | Position ops read but don't write globals → no contention. Concurrent permissionless `accrue_stability_fee` and `update_redemption_rate` don't conflict. |
-| Authority model | Inline `admin_account_id` and `freeze_authority_account_id` in `ProtocolParameters` | Adapts trivially to RFP-001 / RFP-002 when they land. |
+| Authority model | Deployed header authorizes bootstrap; selected `admin_account_id` and `freeze_authority_account_id` are stored in `ProtocolParameters` | The header controller chooses the initial authorities. Subsequent operations use the stored admin and freeze authority. |
 | Lifecycle granularity | Granular per-op + `close_position` | Six position-facing instructions, each with a single state transition. |
 | Oracle producer | Decoupled — struct only (`OraclePriceAccount`), not program | Producer is configurable via `set_market_price_oracle`; we don't pin `program_owner`. Multi-oracle redundancy (RFP soft requirement) achievable later by pointing at an aggregator that itself produces an `OraclePriceAccount`. |
 
@@ -123,7 +123,7 @@ flowchart TB
 
 A walkthrough of who calls what and what changes when. Detailed mechanics are in §10; this is the overall flow.
 
-**Day 0 — setup.** The deployer publishes the program binary, then calls `initialize_program` (§10.1). That one call creates all five program-owned accounts: the stablecoin `TokenDefinition` (via a chained `Token::NewFungibleDefinition`), its required paired master holding (empty), the `ProtocolParameters` account, and the two state-tracking accounts (`StabilityFeeAccumulator` and `RedemptionPriceState`). The same call sets which collateral and oracle the protocol uses, picks the admin and freeze-authority accounts, and stores the initial redemption price, fee rate, controller gains, safety ratio, and timing parameters. Once it returns, the protocol exists and users can start interacting.
+**Day 0 — setup.** The deployer publishes the program binary at a header account whose authorization capability they control, then calls `initialize_program` (§10.1) with that header authorized. The header signature commits the chosen initial admin, freeze authority, and configuration; the selected admin need not sign bootstrap. That one call creates all five program-owned accounts: the stablecoin `TokenDefinition` (via a chained `Token::NewFungibleDefinition`), its required paired master holding (empty), the `ProtocolParameters` account, and the two state-tracking accounts (`StabilityFeeAccumulator` and `RedemptionPriceState`). The same call sets which collateral and oracle the protocol uses, picks the admin and freeze-authority accounts, and stores the initial redemption price, fee rate, controller gains, safety ratio, and timing parameters. Once it returns, the protocol exists and users can start interacting.
 
 **Day 0 — launching before a market exists (as RAI does).** The stablecoin has no market price until someone trades it, and the TWAP oracle that will report that price can only be created from an AMM pool that holds stablecoin. The design breaks that circle the way RAI does: the deployer fixes the starting redemption price, and the market price only ever *steers* it.
 
@@ -157,7 +157,7 @@ These two are usually run by keeper bots. A LEZ transaction carries a single ins
 
 ### 3.1 Program-owned global singletons (created by `initialize_program`)
 
-Five single-instance accounts hold all the globally-shared state. Each is a PDA derived from the stablecoin program id and a constant seed string, so addresses are deterministic per deployment.
+Five single-instance accounts hold all the globally-shared state. Each is a PDA derived from the stablecoin deployed header account ID and a constant seed string, so addresses are deterministic per instance. Deploying the same ELF/ImageID at a second header creates a separate PDA namespace.
 
 **`ProtocolParameters`** — PDA seed `"PROTOCOL_PARAMETERS"`, owned by the stablecoin program.
 
@@ -720,7 +720,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 
 | # | Instruction | Caller | One-line |
 |---|---|---|---|
-| 1 | `initialize_program` | admin (one-shot) | Create all five global PDAs (three native + the stablecoin definition and its paired master holding, both via chained `Token::NewFungibleDefinition`), bind collateral + oracle + initial params, set initial redemption price. |
+| 1 | `initialize_program` | deployed header authority (one-shot) | Create all five global PDAs (three native + the stablecoin definition and its paired master holding, both via chained `Token::NewFungibleDefinition`), bind collateral + oracle + initial params, set initial redemption price. |
 
 ### 9.2 Permissionless pokes
 
@@ -780,12 +780,17 @@ fn initialize_program(
     maximum_oracle_price_age_milliseconds: u64,
     initial_redemption_price: u128,
     stablecoin_name: String,
+    initial_admin_account_id: AccountId,
 );
 ```
 
+`initial_admin_account_id` selects the stored admin independently of the header and freeze authority. It may equal the header itself without adding a duplicate account input. After bootstrap, the header has no extra admin rights: admin instructions require the stored admin's authorization.
+
+Bootstrap requires control of the deployed header's authorization capability, including when reusing an uninitialized deployment. A factory may authorize its header PDA through the existing delegated PDA mechanism. An initialized instance cannot be initialized again. Deploy the fixed binary, matching IDL, and updated clients together: the appended admin argument changes the initialization payload, and old payloads are rejected. Other instruction encodings, stored account layouts, and PDA seeds remain unchanged. Existing immutable deployments retain their original code; this change does not recover a previously selected or hijacked admin.
+
 **Inputs (9 accounts):**
 
-1. `admin` — authorized, becomes `ProtocolParameters.admin_account_id`. Pre-state unchanged.
+1. `deployment_authority` — authorized; its full account ID must equal the executing deployed header account ID. Header data, ownership, and balance remain unchanged by the program; normal runtime signer nonce advancement still applies.
 2. `protocol_parameters` — uninitialized, PDA-to-claim (`hash(program_id, "PROTOCOL_PARAMETERS")`).
 3. `stability_fee_accumulator` — uninitialized, PDA-to-claim.
 4. `redemption_price_state` — uninitialized, PDA-to-claim.
@@ -797,7 +802,7 @@ fn initialize_program(
 
 **Outputs:**
 
-- `protocol_parameters` (claimed PDA): all `ProtocolParameters` fields written from the params (including `admin_account_id = admin.account_id`, `is_frozen = false`).
+- `protocol_parameters` (claimed PDA): all `ProtocolParameters` fields written from the params (including `admin_account_id = initial_admin_account_id`, `is_frozen = false`).
 - `stability_fee_accumulator` (claimed PDA): `accumulated_rate_at_last_accrual = FIXED_POINT_ONE`, `last_accrued_at = now`.
 - `redemption_price_state` (claimed PDA): `redemption_price_at_last_update = initial_redemption_price`, `redemption_rate_per_millisecond = FIXED_POINT_ONE`, `controller_integral_term = 0`, `last_updated_at = now`.
 - `stablecoin_definition` (claimed via chained): `TokenDefinition::Fungible { name: stablecoin_name, total_supply: 0, metadata_id: None }`, owned by Token Program.
@@ -807,12 +812,12 @@ fn initialize_program(
 
 1. `Token::NewFungibleDefinition { name: stablecoin_name, total_supply: 0 }` · accounts: `[stablecoin_definition, stablecoin_master_holding]` (both authorized via their respective stablecoin-program PDA seeds).
 
-**Panics if:** `admin.is_authorized = false`; any of the five target PDAs already initialized; `collateral_definition` uninitialized or not `TokenDefinition::Fungible`; `market_price_oracle` base/quote mismatch; any numerical param outside its sane band (§ 8).
+**Panics if:** `deployment_authority.is_authorized = false` or its account ID differs from the executing header; any of the five target PDAs already initialized; `collateral_definition` uninitialized or not `TokenDefinition::Fungible`; `market_price_oracle` base/quote mismatch; any numerical param outside its sane band (§ 8).
 
 ```mermaid
 flowchart TD
     subgraph In["Inputs (9)"]
-        a1[admin<br/>auth] ~~~ a2[protocol_parameters<br/>uninit] ~~~ a3[stability_fee_accumulator<br/>uninit] ~~~ a4[redemption_price_state<br/>uninit]
+        a1[deployment_authority, executing header, auth] ~~~ a2[protocol_parameters, uninit] ~~~ a3[stability_fee_accumulator, uninit] ~~~ a4[redemption_price_state, uninit]
         a5[stablecoin_definition<br/>uninit] ~~~ a6[stablecoin_master_holding<br/>uninit] ~~~ a7[collateral_definition<br/>init, read] ~~~ a8[market_price_oracle<br/>init, read] ~~~ a9[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]

@@ -107,6 +107,14 @@ impl Keys {
     fn freeze_authority() -> PrivateKey {
         PrivateKey::try_new([45; 32]).expect("valid private key")
     }
+
+    fn deployment_authority() -> PrivateKey {
+        PrivateKey::try_new([46; 32]).expect("valid private key")
+    }
+
+    fn second_deployment_authority() -> PrivateKey {
+        PrivateKey::try_new([47; 32]).expect("valid private key")
+    }
 }
 
 impl Ids {
@@ -117,11 +125,17 @@ impl Ids {
         AccountId::from(token_methods::TOKEN_ID)
     }
 
-    /// The program's account id: since v0.2.5 a program is addressed by its deployed
-    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
-    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    /// The deployed header has its own signing key, independent of the ELF's ImageID.
     fn stablecoin_program() -> AccountId {
-        AccountId::from(stablecoin_methods::STABLECOIN_ID)
+        AccountId::from(&PublicKey::new_from_private_key(
+            &Keys::deployment_authority(),
+        ))
+    }
+
+    fn second_stablecoin_program() -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(
+            &Keys::second_deployment_authority(),
+        ))
     }
 
     fn collateral_definition() -> AccountId {
@@ -412,14 +426,16 @@ fn seed_clock(state: &mut V03State, timestamp: u64) {
 // v0.2.5 deleted `ProgramDeploymentTransaction`; deployment is now the `program_loader`
 // pseudo-program's WriteSegment/CreateHeader flow. `with_programs` seeds each program in the
 // shape that flow produces — a loader-owned header plus its segment — without making every
-// test drive a deployment. The header lands at `AccountId::from(program.id())`, so a program's
-// account id stays derivable from its ELF here.
+// test drive a deployment. Copy the stablecoin header to a keyed address so bootstrap
+// authorization uses a real signature; retain the valid loader-owned header and segment.
 fn deploy_programs(state: &mut V03State) {
     *state = std::mem::take(state).with_programs([
         Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF"),
         Program::new(stablecoin_methods::STABLECOIN_ELF.to_vec().into())
             .expect("valid stablecoin ELF"),
     ]);
+    let header = state.get_account_by_id(AccountId::from(stablecoin_methods::STABLECOIN_ID));
+    state.force_insert_account(Ids::stablecoin_program(), header);
 }
 
 fn state_for_stablecoin_tests() -> V03State {
@@ -1713,34 +1729,11 @@ mod protocol_config {
     pub(super) const INITIAL_REDEMPTION_PRICE: u128 = FIXED_POINT_ONE / 2;
 }
 
-/// Deploys both programs and runs `InitializeProgram` at `now`, leaving a fully
-/// bootstrapped protocol. Shared by the init test and all three poke tests.
-///
-/// `controller_proportional_gain` is a parameter because the poke tests need a
-/// live controller (a zero gain pins the redemption rate at `FIXED_POINT_ONE`,
-/// which would make the update assertions vacuous).
-fn initialize_protocol(now: u64, controller_proportional_gain: i128) -> V03State {
-    initialize_protocol_with_oracle(now, controller_proportional_gain, true)
-}
-
-/// [`initialize_protocol`], optionally binding the market-price oracle's address
-/// without creating it — the RAI-style launch, where the oracle only exists once
-/// the stablecoin trades (spec §3.2).
-fn initialize_protocol_with_oracle(
-    now: u64,
-    controller_proportional_gain: i128,
-    oracle_exists: bool,
-) -> V03State {
-    use stablecoin_core::math::FIXED_POINT_ONE;
-
-    // `V03State::new()` no longer auto-creates the clock account; seed CLOCK_01 with this
-    // timestamp, which initialize_program reads as `now` to anchor the accumulator and
-    // redemption-price state.
+/// Deploys both programs with fresh globals and valid external bootstrap inputs.
+fn uninitialized_protocol(now: u64, oracle_exists: bool) -> V03State {
     let mut state = V03State::new();
     seed_clock(&mut state, now);
     deploy_programs(&mut state);
-
-    // Externally-created collateral definition + market-price oracle.
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1754,11 +1747,8 @@ fn initialize_protocol_with_oracle(
             ),
         );
     }
-    // Seed the admin (the initialize + poke signer) as a non-default-owned account. A
-    // default-owned signer works on its first sign (pre-state is still Account::default()),
-    // but once its nonce bumps the spel-framework output filter drops it (non-default state
-    // + default owner + no claim), tripping DeclaredAccountMissingFromOutput on the next tx
-    // (the pokes). A non-default owner keeps it in every diff. Same fix as Ids::owner().
+    // The selected admin signs subsequent pokes and setters. A non-default owner
+    // keeps this unchanged account in the framework's output after nonce advances.
     state.force_insert_account(
         Ids::admin(),
         Account {
@@ -1766,44 +1756,80 @@ fn initialize_protocol_with_oracle(
             ..Account::default()
         },
     );
+    state
+}
 
-    let instruction = stablecoin_core::Instruction::InitializeProgram {
+fn initialize_instruction(
+    initial_admin_account_id: AccountId,
+    controller_proportional_gain: i128,
+) -> stablecoin_core::Instruction {
+    stablecoin_core::Instruction::InitializeProgram {
         freeze_authority_account_id: Ids::freeze_authority(),
         initial_stability_fee_per_millisecond: protocol_config::STABILITY_FEE_PER_MILLISECOND,
         initial_controller_proportional_gain: controller_proportional_gain,
         initial_controller_integral_gain: 0,
-        initial_minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
+        initial_minimum_collateralization_ratio: stablecoin_core::math::FIXED_POINT_ONE * 3 / 2,
         minimum_milliseconds_between_rate_updates:
             protocol_config::MINIMUM_MILLISECONDS_BETWEEN_RATE_UPDATES,
         maximum_oracle_price_age_milliseconds:
             protocol_config::MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS,
         initial_redemption_price: protocol_config::INITIAL_REDEMPTION_PRICE,
         stablecoin_name: String::from("test-stable"),
-    };
+        initial_admin_account_id,
+    }
+}
 
-    let message = public_transaction::Message::try_new(
-        Ids::stablecoin_program(),
-        vec![
-            Ids::admin(),
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-            compute_redemption_price_state_pda(Ids::stablecoin_program()),
-            Ids::stablecoin_definition_pda(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            Ids::collateral_definition(),
+fn initialize_accounts(
+    program_id: AccountId,
+    deployment_authority: AccountId,
+    oracle_id: AccountId,
+) -> Vec<AccountId> {
+    vec![
+        deployment_authority,
+        compute_protocol_parameters_pda(program_id),
+        compute_stability_fee_accumulator_pda(program_id),
+        compute_redemption_price_state_pda(program_id),
+        compute_stablecoin_definition_pda(program_id),
+        compute_stablecoin_master_holding_pda(program_id),
+        Ids::collateral_definition(),
+        oracle_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    ]
+}
+
+/// Boots the protocol with the header's signature and a separately selected admin.
+/// The controller gain lets poke tests exercise a live controller.
+fn initialize_protocol(now: u64, controller_proportional_gain: i128) -> V03State {
+    initialize_protocol_with_oracle(now, controller_proportional_gain, true)
+}
+
+/// [`initialize_protocol`], optionally binding the market-price oracle's address
+/// without creating it — the RAI-style launch, where the oracle only exists once
+/// the stablecoin trades (spec §3.2).
+fn initialize_protocol_with_oracle(
+    now: u64,
+    controller_proportional_gain: i128,
+    oracle_exists: bool,
+) -> V03State {
+    let mut state = uninitialized_protocol(now, oracle_exists);
+    let header_before = state.get_account_by_id(Ids::stablecoin_program());
+    submit(
+        &mut state,
+        &mut 1,
+        now,
+        initialize_accounts(
+            Ids::stablecoin_program(),
+            Ids::stablecoin_program(),
             Ids::oracle(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![current_nonce(&state, Ids::admin())],
-        instruction,
-    )
-    .expect("valid initialize_program message");
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::admin()]);
-    let tx = PublicTransaction::new(message, witness_set);
-    state
-        .transition_from_public_transaction(&tx, 1, now)
-        .expect("initialize_program must succeed");
-
+        ),
+        vec![(&Keys::deployment_authority(), Ids::stablecoin_program())],
+        initialize_instruction(Ids::admin(), controller_proportional_gain),
+        "initialize_program",
+    );
+    let header_after = state.get_account_by_id(Ids::stablecoin_program());
+    assert_eq!(header_after.data, header_before.data);
+    assert_eq!(header_after.program_owner, header_before.program_owner);
+    assert_eq!(header_after.balance, header_before.balance);
     state
 }
 
@@ -2208,19 +2234,34 @@ fn try_submit(
     signers: Vec<(&PrivateKey, AccountId)>,
     instruction: stablecoin_core::Instruction,
 ) -> Result<(), LeeError> {
+    try_submit_to_program(
+        state,
+        block,
+        now,
+        Ids::stablecoin_program(),
+        accounts,
+        signers,
+        instruction,
+    )
+}
+
+fn try_submit_to_program(
+    state: &mut V03State,
+    block: &mut u64,
+    now: u64,
+    program_id: AccountId,
+    accounts: Vec<AccountId>,
+    signers: Vec<(&PrivateKey, AccountId)>,
+    instruction: stablecoin_core::Instruction,
+) -> Result<(), LeeError> {
     seed_clock(state, now);
     let nonces = signers
         .iter()
         .map(|(_, id)| current_nonce(state, *id))
         .collect();
     let keys: Vec<&PrivateKey> = signers.iter().map(|(key, _)| *key).collect();
-    let message = public_transaction::Message::try_new(
-        Ids::stablecoin_program(),
-        accounts,
-        nonces,
-        instruction,
-    )
-    .expect("valid message");
+    let message = public_transaction::Message::try_new(program_id, accounts, nonces, instruction)
+        .expect("valid message");
     let witness_set = public_transaction::WitnessSet::for_message(&message, &keys);
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, *block, now)?;
@@ -2894,6 +2935,225 @@ fn stablecoin_initialize_program_creates_globals_and_stablecoin_definition() {
         TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
             panic!("expected Fungible holding")
         }
+    }
+}
+
+/// Checks only protocol state: rejected transactions may still charge fees or
+/// advance signer nonces under the runtime's settlement rules.
+fn assert_globals_uninitialized(state: &V03State, program_id: AccountId) {
+    for account_id in [
+        compute_protocol_parameters_pda(program_id),
+        compute_stability_fee_accumulator_pda(program_id),
+        compute_redemption_price_state_pda(program_id),
+        compute_stablecoin_definition_pda(program_id),
+        compute_stablecoin_master_holding_pda(program_id),
+    ] {
+        assert_eq!(state.get_account_by_id(account_id), Account::default());
+    }
+}
+
+#[test]
+fn stablecoin_initialize_requires_header_signature_and_remains_one_shot() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let now = OPEN_POSITION_NOW;
+    let mut block = 1;
+    let mut state = uninitialized_protocol(now, true);
+    let header_id = Ids::stablecoin_program();
+    let header_before = state.get_account_by_id(header_id);
+
+    // An unrelated account has a valid transaction signature and supplies valid
+    // PDAs, collateral and oracle. Its key still cannot bootstrap this header.
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            now,
+            initialize_accounts(header_id, Ids::admin(), Ids::oracle()),
+            vec![(&Keys::admin(), Ids::admin())],
+            initialize_instruction(Ids::admin(), 0),
+        ),
+        "Deployment authority must be the executing program header",
+        "initialization by an unrelated signer",
+    );
+    assert_globals_uninitialized(&state, header_id);
+
+    // Naming the correct header while only the selected admin signs must fail
+    // the guest's signer constraint, before the host can initialize anything.
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            now,
+            initialize_accounts(header_id, header_id, Ids::oracle()),
+            vec![(&Keys::admin(), Ids::admin())],
+            initialize_instruction(Ids::admin(), 0),
+        ),
+        "Account 'deployment_authority' (index 0) must be a signer",
+        "unsigned header with a signed initial admin",
+    );
+    assert_globals_uninitialized(&state, header_id);
+
+    submit(
+        &mut state,
+        &mut block,
+        now,
+        initialize_accounts(header_id, header_id, Ids::oracle()),
+        vec![(&Keys::deployment_authority(), header_id)],
+        initialize_instruction(Ids::admin(), 0),
+        "legitimate initialization after rejected attempts",
+    );
+    assert_eq!(read_parameters(&state).admin_account_id, Ids::admin());
+    assert_eq!(
+        read_parameters(&state).freeze_authority_account_id,
+        Ids::freeze_authority()
+    );
+    let header_after = state.get_account_by_id(header_id);
+    assert_eq!(header_after.data, header_before.data);
+    assert_eq!(header_after.program_owner, header_before.program_owner);
+    assert_eq!(header_after.balance, header_before.balance);
+
+    let initialized_parameters = read_parameters(&state);
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            now,
+            initialize_accounts(header_id, header_id, Ids::oracle()),
+            vec![(&Keys::deployment_authority(), header_id)],
+            initialize_instruction(header_id, 0),
+        ),
+        "AccountAlreadyInitialized { account_index: 1 }",
+        "reinitialization by the header controller",
+    );
+    assert_eq!(read_parameters(&state), initialized_parameters);
+
+    // Bootstrap authority does not confer a permanent second admin role.
+    let parameters_id = compute_protocol_parameters_pda(header_id);
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            now,
+            vec![header_id, parameters_id],
+            vec![(&Keys::deployment_authority(), header_id)],
+            stablecoin_core::Instruction::SetMinimumCollateralizationRatio {
+                new_ratio: FIXED_POINT_ONE * 2,
+            },
+        ),
+        "Signer is not the protocol's admin",
+        "header controller acting as admin",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        now,
+        vec![Ids::admin(), parameters_id],
+        vec![(&Keys::admin(), Ids::admin())],
+        stablecoin_core::Instruction::SetMinimumCollateralizationRatio {
+            new_ratio: FIXED_POINT_ONE * 2,
+        },
+        "selected admin setter",
+    );
+    assert_eq!(
+        read_parameters(&state).minimum_collateralization_ratio,
+        FIXED_POINT_ONE * 2
+    );
+}
+
+#[test]
+fn stablecoin_initialize_can_select_header_as_admin() {
+    let now = OPEN_POSITION_NOW;
+    let mut state = uninitialized_protocol(now, true);
+    let header_id = Ids::stablecoin_program();
+    let accounts = initialize_accounts(header_id, header_id, Ids::oracle());
+    assert_eq!(accounts.iter().filter(|id| **id == header_id).count(), 1);
+    submit(
+        &mut state,
+        &mut 1,
+        now,
+        accounts,
+        vec![(&Keys::deployment_authority(), header_id)],
+        initialize_instruction(header_id, 0),
+        "initialization with the header as initial admin",
+    );
+    assert_eq!(read_parameters(&state).admin_account_id, header_id);
+}
+
+#[test]
+fn stablecoin_same_bytecode_has_independent_header_authorities_and_globals() {
+    let now = OPEN_POSITION_NOW;
+    let mut block = 2;
+    let mut state = initialize_protocol(now, 0);
+    let first_header = Ids::stablecoin_program();
+    let second_header = Ids::second_stablecoin_program();
+    let second_oracle = AccountId::new([0x71; 32]);
+    let first_parameters = read_parameters(&state);
+
+    // Same loader header bytes and segment chain, separate controlled address.
+    let mut header = state.get_account_by_id(first_header);
+    header.nonce = Nonce(0);
+    state.force_insert_account(second_header, header);
+    assert_eq!(
+        state.get_program_image_id(first_header),
+        state.get_program_image_id(second_header)
+    );
+    state.force_insert_account(
+        second_oracle,
+        Accounts::oracle_init(
+            compute_stablecoin_definition_pda(second_header),
+            Ids::collateral_definition(),
+        ),
+    );
+
+    assert_rejected_with(
+        try_submit_to_program(
+            &mut state,
+            &mut block,
+            now,
+            second_header,
+            initialize_accounts(second_header, first_header, second_oracle),
+            vec![(&Keys::deployment_authority(), first_header)],
+            initialize_instruction(Ids::admin(), 0),
+        ),
+        "Deployment authority must be the executing program header",
+        "first header controller bootstrapping the second header",
+    );
+    assert_globals_uninitialized(&state, second_header);
+
+    try_submit_to_program(
+        &mut state,
+        &mut block,
+        now,
+        second_header,
+        initialize_accounts(second_header, second_header, second_oracle),
+        vec![(&Keys::second_deployment_authority(), second_header)],
+        initialize_instruction(Ids::owner(), 7),
+    )
+    .expect("second header controller initializes its own instance");
+    let second_parameters = stablecoin_core::ProtocolParameters::try_from(
+        &state
+            .get_account_by_id(compute_protocol_parameters_pda(second_header))
+            .data,
+    )
+    .expect("valid second ProtocolParameters");
+    assert_eq!(second_parameters.admin_account_id, Ids::owner());
+    assert_eq!(second_parameters.controller_proportional_gain, 7);
+    assert_eq!(second_parameters.market_price_oracle_id, second_oracle);
+    assert_eq!(read_parameters(&state), first_parameters);
+
+    for derive in [
+        compute_protocol_parameters_pda,
+        compute_stability_fee_accumulator_pda,
+        compute_redemption_price_state_pda,
+        compute_stablecoin_definition_pda,
+        compute_stablecoin_master_holding_pda,
+    ] {
+        let first_id = derive(first_header);
+        let second_id = derive(second_header);
+        assert_ne!(first_id, second_id);
+        assert_ne!(state.get_account_by_id(first_id), Account::default());
+        assert_ne!(state.get_account_by_id(second_id), Account::default());
     }
 }
 
