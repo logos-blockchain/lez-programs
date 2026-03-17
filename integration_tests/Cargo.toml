@@ -1,0 +1,14 @@
+[package]
+name = "integration_tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nssa = { workspace = true }
+nssa_core = { workspace = true, features = ["host"] }
+amm_core = { workspace = true }
+token_core = { workspace = true }
+ata_core = { workspace = true }
+token-methods = { path = "../token/methods" }
+amm-methods = { path = "../amm/methods" }
+ata-methods = { path = "../ata/methods" }

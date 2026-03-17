@@ -1,0 +1,9 @@
+[package]
+name = "ata_program"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", features = ["host"] }
+ata_core = { path = "core" }
+token_core = { path = "../token/core" }

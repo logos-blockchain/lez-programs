@@ -1,0 +1,176 @@
+{
+  "version": "0.1.0",
+  "name": "token",
+  "instructions": [
+    {
+      "name": "transfer",
+      "accounts": [
+        {
+          "name": "sender",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "recipient",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount_to_transfer",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "new_fungible_definition",
+      "accounts": [
+        {
+          "name": "definition_target_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "holding_target_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "total_supply",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "new_definition_with_metadata",
+      "accounts": [
+        {
+          "name": "definition_target_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "holding_target_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "metadata_target_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "new_definition",
+          "type": {
+            "defined": "NewTokenDefinition"
+          }
+        },
+        {
+          "name": "metadata",
+          "type": {
+            "defined": "Box"
+          }
+        }
+      ]
+    },
+    {
+      "name": "initialize_account",
+      "accounts": [
+        {
+          "name": "definition_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "account_to_initialize",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "burn",
+      "accounts": [
+        {
+          "name": "definition_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount_to_burn",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "mint",
+      "accounts": [
+        {
+          "name": "definition_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount_to_mint",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "print_nft",
+      "accounts": [
+        {
+          "name": "master_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "printed_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    }
+  ],
+  "instruction_type": "token_core::Instruction"
+}

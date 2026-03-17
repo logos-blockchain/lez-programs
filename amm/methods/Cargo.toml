@@ -1,0 +1,14 @@
+[package]
+name = "amm-methods"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+risc0-build = "=3.0.5"
+
+[dependencies]
+risc0-zkvm = { version = "=3.0.5", features = ["std"] }
+amm_core = { path = "../core" }
+
+[package.metadata.risc0]
+methods = ["guest"]

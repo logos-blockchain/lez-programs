@@ -1,0 +1,37 @@
+[workspace]
+members = [
+    "token/core",
+    "token",
+    "token/methods",
+    "amm/core",
+    "amm",
+    "amm/methods",
+    "ata/core",
+    "ata",
+    "ata/methods",
+    "integration_tests",
+]
+exclude = [
+    "token/methods/guest",
+    "amm/methods/guest",
+    "ata/methods/guest",
+]
+resolver = "2"
+
+[workspace.dependencies]
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", features = ["host"] }
+nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", features = ["test-utils"] }
+token_core = { path = "token/core" }
+token_program = { path = "token" }
+amm_core = { path = "amm/core" }
+amm_program = { path = "amm" }
+ata_core = { path = "ata/core" }
+ata_program = { path = "ata" }
+serde = { version = "1.0", features = ["derive"] }
+borsh = { version = "1.0", features = ["derive"] }
+risc0-zkvm = { version = "=3.0.5" }
+serde_json = "1.0"
+tokio = { version = "1.28.2", features = ["net", "rt-multi-thread", "sync", "macros"] }
+
+[patch."https://github.com/logos-blockchain/lssa.git"]
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git" }

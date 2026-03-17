@@ -1,0 +1,239 @@
+{
+  "version": "0.1.0",
+  "name": "amm",
+  "instructions": [
+    {
+      "name": "new_definition",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_definition_lp",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_lp",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "token_a_amount",
+          "type": "u128"
+        },
+        {
+          "name": "token_b_amount",
+          "type": "u128"
+        },
+        {
+          "name": "amm_program_id",
+          "type": "program_id"
+        }
+      ]
+    },
+    {
+      "name": "add_liquidity",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_definition_lp",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_lp",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "min_amount_liquidity",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_to_add_token_a",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_to_add_token_b",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "remove_liquidity",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_definition_lp",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_lp",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "remove_liquidity_amount",
+          "type": "u128"
+        },
+        {
+          "name": "min_amount_to_remove_token_a",
+          "type": "u128"
+        },
+        {
+          "name": "min_amount_to_remove_token_b",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "swap",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "swap_amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "min_amount_out",
+          "type": "u128"
+        },
+        {
+          "name": "token_definition_id_in",
+          "type": "account_id"
+        }
+      ]
+    }
+  ],
+  "instruction_type": "amm_core::Instruction"
+}

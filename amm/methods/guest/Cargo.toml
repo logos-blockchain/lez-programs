@@ -1,0 +1,23 @@
+[package]
+name = "amm-guest"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[patch."https://github.com/logos-blockchain/lssa.git"]
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git" }
+
+[[bin]]
+name = "amm"
+path = "src/bin/amm.rs"
+
+[dependencies]
+spel-framework = { git = "https://github.com/0x-r4bbit/spel.git", branch = "fix/nssa-v03-compat", package = "spel-framework" }
+nssa_core = { git = "https://github.com/logos-blockchain/lssa.git", rev = "767b5afd388c7981bcdf6f5b5c80159607e07e5b" }
+risc0-zkvm = { version = "=3.0.5", default-features = false }
+amm_core = { path = "../../core" }
+amm_program = { path = "../..", package = "amm_program" }
+token_core = { path = "../../../token/core" }
+serde = { version = "1.0", features = ["derive"] }
+borsh = "1.5"
