@@ -11,7 +11,7 @@ Essential programs for the **Logos Execution Zone (LEZ)** — a zkVM-based execu
   cargo install cargo-risczero
   cargo risczero install
   ```
-- **SPEL toolchain** — provides `spel-cli` tools. Install from [logos-co/spel](https://github.com/logos-co/spel).
+- **SPEL toolchain** — provides `spel` and `wallet` CLI tools. Install from [logos-co/spel](https://github.com/logos-co/spel).
 - **LEZ** — provides `wallet` CLI. Install from [logos-blockchain/logos-execution-zone](https://github.com/logos-blockchain/logos-execution-zone)
 
 ## Build & Test
@@ -67,10 +67,10 @@ wallet deploy-program amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/a
 To inspect the `ProgramId` of a built binary:
 
 ```bash
-spel-cli inspect <path-to-binary>
+spel inspect <path-to-binary>
 ```
 
-## Interacting with Programs via `spel-cli`
+## Interacting with Programs via `spel`
 
 ### Generate an IDL
 
@@ -78,15 +78,15 @@ The IDL describes the program's instructions and can be used to interact with a 
 
 ```bash
 # Example
-spel-cli generate-idl token/methods/guest/src/bin/token.rs > token/token-idl.json
-spel-cli generate-idl amm/methods/guest/src/bin/amm.rs > amm/amm-idl.json
+spel generate-idl token/methods/guest/src/bin/token.rs > token/token-idl.json
+spel generate-idl amm/methods/guest/src/bin/amm.rs > amm/amm-idl.json
 ```
 
 ### Invoke Instructions
 
-Use `spel-cli --idl <IDL> <INSTRUCTION> [ARGS...]` to call a deployed program instruction:
+Use `spel --idl <IDL> <INSTRUCTION> [ARGS...]` to call a deployed program instruction:
 
 ```bash
-spel-cli --idl token/token-idl.json <instruction> [args...]
-spel-cli --idl amm/amm-idl.json <instruction> [args...]
+spel --idl token/token-idl.json <instruction> [args...]
+spel --idl amm/amm-idl.json <instruction> [args...]
 ```

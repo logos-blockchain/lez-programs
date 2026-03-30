@@ -36,22 +36,22 @@ Built binaries output to: `<program>/methods/guest/target/riscv32im-risc0-zkvm-e
 ## IDL Generation
 
 ```bash
-spel-cli generate-idl token/methods/guest/src/bin/token.rs > token/token-idl.json
-spel-cli generate-idl amm/methods/guest/src/bin/amm.rs > amm/amm-idl.json
+spel generate-idl token/methods/guest/src/bin/token.rs > token/token-idl.json
+spel generate-idl amm/methods/guest/src/bin/amm.rs > amm/amm-idl.json
 ```
 
 ## Deployment
 
-`wallet` and `spel-cli` are CLI tools that ship with the [SPEL](https://github.com/logos-co/spel.git) toolchain. `wallet` requires `NSSA_WALLET_HOME_DIR` to point to a directory containing the wallet config.
+`wallet` and `spel` are CLI tools that ship with the [SPEL](https://github.com/logos-co/spel.git) toolchain. `wallet` requires `NSSA_WALLET_HOME_DIR` to point to a directory containing the wallet config.
 
-**Note:** `spel-cli` and `wallet` may use different versions of the wallet package. If `spel-cli --idl <IDL> <PROGRAM_FUNCTION> ...` fails, ensure `seq_poll_timeout_millis` is set in the wallet config at `~/.nssa/wallet`.
+**Note:** `spel` and `wallet` may use different versions of the wallet package. If `spel --idl <IDL> <PROGRAM_FUNCTION> ...` fails, ensure `seq_poll_timeout_millis` is set in the wallet config at `~/.nssa/wallet`.
 
 ```bash
 # Deploy a program binary to the sequencer
 wallet deploy-program <path-to-binary>
 
 # Inspect the ProgramId of a built binary
-spel-cli inspect <path-to-binary>
+spel inspect <path-to-binary>
 ```
 
 ## Workspace Structure
