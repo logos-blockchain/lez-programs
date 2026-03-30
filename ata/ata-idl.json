@@ -1,0 +1,102 @@
+{
+  "version": "0.1.0",
+  "name": "ata",
+  "instructions": [
+    {
+      "name": "create",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "token_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "ata_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "ata_program_id",
+          "type": "program_id"
+        }
+      ]
+    },
+    {
+      "name": "transfer",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "sender_ata",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "recipient",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "ata_program_id",
+          "type": "program_id"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "burn",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "holder_ata",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "token_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "ata_program_id",
+          "type": "program_id"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
+    }
+  ],
+  "instruction_type": "ata_core::Instruction"
+}
