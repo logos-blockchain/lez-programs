@@ -1,6 +1,6 @@
 use std::num::NonZeroU128;
 
-use amm_core::{compute_liquidity_token_pda_seed, PoolDefinition};
+use amm_core::{assert_supported_fee_tier, compute_liquidity_token_pda_seed, PoolDefinition};
 use nssa_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall},
@@ -22,6 +22,7 @@ pub fn add_liquidity(
     // 1. Fetch Pool state
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("Add liquidity: AMM Program expects valid Pool Definition Account");
+    assert_supported_fee_tier(pool_def_data.fees);
 
     assert_eq!(
         vault_a.account_id, pool_def_data.vault_a_id,

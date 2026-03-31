@@ -28,6 +28,7 @@ mod amm {
         user_holding_lp: AccountWithMetadata,
         token_a_amount: u128,
         token_b_amount: u128,
+        fees: u128,
         amm_program_id: ProgramId,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::new_definition::new_definition(
@@ -41,6 +42,7 @@ mod amm {
             user_holding_lp,
             NonZeroU128::new(token_a_amount).expect("token_a_amount must be nonzero"),
             NonZeroU128::new(token_b_amount).expect("token_b_amount must be nonzero"),
+            fees,
             amm_program_id,
         );
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))

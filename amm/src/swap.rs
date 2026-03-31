@@ -1,3 +1,4 @@
+use amm_core::assert_supported_fee_tier;
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
@@ -12,6 +13,7 @@ fn validate_swap_setup(
 ) -> PoolDefinition {
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("AMM Program expects a valid Pool Definition Account");
+    assert_supported_fee_tier(pool_def_data.fees);
 
     assert!(pool_def_data.active, "Pool is inactive");
     assert_eq!(

@@ -1,8 +1,9 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
-    compute_pool_pda, compute_vault_pda, PoolDefinition, MINIMUM_LIQUIDITY,
+    assert_supported_fee_tier, compute_liquidity_token_pda, compute_liquidity_token_pda_seed,
+    compute_lp_lock_holding_pda, compute_pool_pda, compute_vault_pda, PoolDefinition,
+    MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
@@ -22,6 +23,7 @@ pub fn new_definition(
     user_holding_lp: AccountWithMetadata,
     token_a_amount: NonZeroU128,
     token_b_amount: NonZeroU128,
+    fees: u128,
     amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     // Verify token_a and token_b are different
@@ -68,6 +70,7 @@ pub fn new_definition(
         compute_lp_lock_holding_pda(amm_program_id, pool.account_id),
         "LP lock holding Account ID does not match PDA"
     );
+    assert_supported_fee_tier(fees);
 
     // TODO: return here
     // Verify that Pool Account is not active
@@ -113,7 +116,7 @@ pub fn new_definition(
         liquidity_pool_supply: initial_lp,
         reserve_a: token_a_amount.into(),
         reserve_b: token_b_amount.into(),
-        fees: 0u128, // TODO: we assume all fees are 0 for now.
+        fees,
         active: true,
     };
 

@@ -64,6 +64,10 @@
           "type": "u128"
         },
         {
+          "name": "fees",
+          "type": "u128"
+        },
+        {
           "name": "amm_program_id",
           "type": "program_id"
         }
