@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use ata_core::{compute_ata_seed, get_associated_token_account_id};
 use nssa_core::account::{Account, AccountId, AccountWithMetadata, Data};
 use token_core::{TokenDefinition, TokenHolding};
