@@ -5,16 +5,13 @@ edition = "2021"
 
 [workspace]
 
-[patch."https://github.com/logos-blockchain/lssa.git"]
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git" }
-
 [[bin]]
 name = "ata"
 path = "src/bin/ata.rs"
 
 [dependencies]
-spel-framework = { git = "https://github.com/0x-r4bbit/spel.git", branch = "fix/nssa-v03-compat", package = "spel-framework" }
-nssa_core = { git = "https://github.com/logos-blockchain/lssa.git", rev = "767b5afd388c7981bcdf6f5b5c80159607e07e5b" }
+spel-framework = { git = "https://github.com/logos-co/spel.git", rev = "57201f64b4542bb3f592bc9a0aa654c47aa908a6", package = "spel-framework" }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "ffcbc15972adbf557939bf3e2852af276422631b" }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
 ata_core = { path = "../../core" }
 ata_program = { path = "../..", package = "ata_program" }
