@@ -4,8 +4,9 @@ use std::num::NonZero;
 
 use amm_core::{
     compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
-    compute_pool_pda, compute_vault_pda, compute_vault_pda_seed, PoolDefinition, FEE_TIER_BPS_1,
-    FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5, MINIMUM_LIQUIDITY,
+    compute_pool_pda, compute_vault_pda, compute_vault_pda_seed, PoolDefinition,
+    FEE_BPS_DENOMINATOR, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5,
+    MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
@@ -103,6 +104,16 @@ impl BalanceForTests {
         200
     }
 
+    fn effective_swap_in_a() -> u128 {
+        BalanceForTests::add_max_amount_a() * (FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
+            / FEE_BPS_DENOMINATOR
+    }
+
+    fn effective_swap_in_b() -> u128 {
+        BalanceForTests::add_max_amount_b() * (FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
+            / FEE_BPS_DENOMINATOR
+    }
+
     fn add_max_amount_a_low() -> u128 {
         10
     }
@@ -178,13 +189,13 @@ impl BalanceForTests {
     }
 
     fn swap_amount_out_b() -> u128 {
-        (BalanceForTests::vault_b_reserve_init() * BalanceForTests::add_max_amount_a())
-            / (BalanceForTests::vault_a_reserve_init() + BalanceForTests::add_max_amount_a())
+        (BalanceForTests::vault_b_reserve_init() * BalanceForTests::effective_swap_in_a())
+            / (BalanceForTests::vault_a_reserve_init() + BalanceForTests::effective_swap_in_a())
     }
 
     fn swap_amount_out_a() -> u128 {
-        (BalanceForTests::vault_a_reserve_init() * BalanceForTests::add_max_amount_b())
-            / (BalanceForTests::vault_b_reserve_init() + BalanceForTests::add_max_amount_b())
+        (BalanceForTests::vault_a_reserve_init() * BalanceForTests::effective_swap_in_b())
+            / (BalanceForTests::vault_b_reserve_init() + BalanceForTests::effective_swap_in_b())
     }
 
     fn add_delta_lp_successful() -> u128 {
@@ -276,7 +287,10 @@ impl ChainedCallForTests {
     }
 
     fn cc_swap_exact_output_token_a_test_1() -> ChainedCall {
-        let swap_amount: u128 = 498;
+        // reserve_in=1000, amount_out=166, fee=30bps
+        // required_effective_in = ceil(1000 * 166 / 334) = 498
+        // deposit = ceil(498 * 10000 / 9970) = 500
+        let swap_amount: u128 = 500;
 
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
@@ -329,7 +343,10 @@ impl ChainedCallForTests {
     }
 
     fn cc_swap_exact_output_token_b_test_2() -> ChainedCall {
-        let swap_amount: u128 = 200;
+        // reserve_in=500, amount_out=285, fee=30bps
+        // required_effective_in = ceil(500 * 285 / 715) = 200
+        // deposit = ceil(200 * 10000 / 9970) = 201
+        let swap_amount: u128 = 201;
 
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
@@ -341,6 +358,36 @@ impl ChainedCallForTests {
                 amount_to_transfer: swap_amount,
             },
         )
+    }
+
+    fn cc_swap_rounding_boundary_token_a_in() -> ChainedCall {
+        ChainedCall::new(
+            TOKEN_PROGRAM_ID,
+            vec![
+                AccountWithMetadataForTests::user_holding_a(),
+                AccountWithMetadataForTests::vault_a_init(),
+            ],
+            &token_core::Instruction::Transfer {
+                amount_to_transfer: 3,
+            },
+        )
+    }
+
+    fn cc_swap_rounding_boundary_token_b_out() -> ChainedCall {
+        let mut vault_b_auth = AccountWithMetadataForTests::vault_b_init();
+        vault_b_auth.is_authorized = true;
+
+        ChainedCall::new(
+            TOKEN_PROGRAM_ID,
+            vec![vault_b_auth, AccountWithMetadataForTests::user_holding_b()],
+            &token_core::Instruction::Transfer {
+                amount_to_transfer: 1,
+            },
+        )
+        .with_pda_seeds(vec![compute_vault_pda_seed(
+            IdForTests::pool_definition_id(),
+            IdForTests::token_b_definition_id(),
+        )])
     }
 
     fn cc_add_token_a() -> ChainedCall {
@@ -885,6 +932,29 @@ impl AccountWithMetadataForTests {
         }
     }
 
+    fn pool_definition_swap_rounding_boundary_init() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: ProgramId::default(),
+                balance: 0u128,
+                data: Data::from(&PoolDefinition {
+                    definition_token_a_id: IdForTests::token_a_definition_id(),
+                    definition_token_b_id: IdForTests::token_b_definition_id(),
+                    vault_a_id: IdForTests::vault_a_id(),
+                    vault_b_id: IdForTests::vault_b_id(),
+                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
+                    liquidity_pool_supply: MINIMUM_LIQUIDITY,
+                    reserve_a: 1_000,
+                    reserve_b: 1_000,
+                    fees: FEE_TIER_BPS_30,
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::pool_definition_id(),
+        }
+    }
+
     fn pool_definition_init_reserve_a_zero() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
@@ -1024,6 +1094,9 @@ impl AccountWithMetadataForTests {
     }
 
     fn pool_definition_swap_exact_output_test_1() -> AccountWithMetadata {
+        // swap token_a in for 166 token_b out, fee=30bps
+        // reserve_a: 1000 + 500 = 1500 (gross deposit, see
+        // cc_swap_exact_output_token_a_test_1) reserve_b: 500  - 166 = 334
         AccountWithMetadata {
             account: Account {
                 program_owner: ProgramId::default(),
@@ -1035,7 +1108,7 @@ impl AccountWithMetadataForTests {
                     vault_b_id: IdForTests::vault_b_id(),
                     liquidity_pool_id: IdForTests::token_lp_definition_id(),
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: 1498_u128,
+                    reserve_a: 1500_u128,
                     reserve_b: 334_u128,
                     fees: BalanceForTests::fee_tier(),
                 }),
@@ -1059,8 +1132,31 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_id: IdForTests::token_lp_definition_id(),
                     liquidity_pool_supply: BalanceForTests::lp_supply_init(),
                     reserve_a: 715_u128,
-                    reserve_b: 700_u128,
+                    reserve_b: 701_u128,
                     fees: BalanceForTests::fee_tier(),
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::pool_definition_id(),
+        }
+    }
+
+    fn pool_definition_swap_rounding_boundary_post() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: ProgramId::default(),
+                balance: 0_u128,
+                data: Data::from(&PoolDefinition {
+                    definition_token_a_id: IdForTests::token_a_definition_id(),
+                    definition_token_b_id: IdForTests::token_b_definition_id(),
+                    vault_a_id: IdForTests::vault_a_id(),
+                    vault_b_id: IdForTests::vault_b_id(),
+                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
+                    liquidity_pool_supply: MINIMUM_LIQUIDITY,
+                    reserve_a: 1003_u128,
+                    reserve_b: 999_u128,
+                    fees: FEE_TIER_BPS_30,
                 }),
                 nonce: Nonce(0),
             },
@@ -1106,6 +1202,29 @@ impl AccountWithMetadataForTests {
                     liquidity_pool_supply: BalanceForTests::add_lp_supply_successful(),
                     reserve_a: BalanceForTests::vault_a_add_successful(),
                     reserve_b: BalanceForTests::vault_b_add_successful(),
+                    fees: BalanceForTests::fee_tier(),
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::pool_definition_id(),
+        }
+    }
+
+    fn pool_definition_init_low_balances() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: ProgramId::default(),
+                balance: 0u128,
+                data: Data::from(&PoolDefinition {
+                    definition_token_a_id: IdForTests::token_a_definition_id(),
+                    definition_token_b_id: IdForTests::token_b_definition_id(),
+                    vault_a_id: IdForTests::vault_a_id(),
+                    vault_b_id: IdForTests::vault_b_id(),
+                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
+                    liquidity_pool_supply: MINIMUM_LIQUIDITY,
+                    reserve_a: BalanceForTests::vault_a_reserve_low(),
+                    reserve_b: BalanceForTests::vault_b_reserve_low(),
                     fees: BalanceForTests::fee_tier(),
                 }),
                 nonce: Nonce(0),
@@ -1344,6 +1463,40 @@ fn test_call_add_liquidity_zero_balance_2() {
 
 #[should_panic(expected = "Vaults' balances must be at least the reserve amounts")]
 #[test]
+fn test_call_add_liquidity_vault_a_balance_below_reserve() {
+    let _post_states = add_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init_low(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::add_max_amount_b(),
+    );
+}
+
+#[should_panic(expected = "Vaults' balances must be at least the reserve amounts")]
+#[test]
+fn test_call_add_liquidity_vault_b_balance_below_reserve() {
+    let _post_states = add_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init_low(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::add_max_amount_b(),
+    );
+}
+
+#[should_panic(expected = "Vaults' balances must be at least the reserve amounts")]
+#[test]
 fn test_call_add_liquidity_vault_insufficient_balance_1() {
     let _post_states = add_liquidity(
         AccountWithMetadataForTests::pool_definition_init(),
@@ -1353,9 +1506,9 @@ fn test_call_add_liquidity_vault_insufficient_balance_1() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
-        NonZero::new(BalanceForTests::add_max_amount_a()).unwrap(),
+        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
+        BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
-        BalanceForTests::add_min_amount_lp(),
     );
 }
 
@@ -1370,9 +1523,9 @@ fn test_call_add_liquidity_vault_insufficient_balance_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
-        NonZero::new(BalanceForTests::add_max_amount_a()).unwrap(),
+        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
+        BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
-        BalanceForTests::add_min_amount_lp(),
     );
 }
 
@@ -2052,6 +2205,84 @@ fn test_call_swap_below_min_out() {
     );
 }
 
+#[should_panic(expected = "Effective swap amount should be nonzero")]
+#[test]
+fn test_call_swap_effective_amount_zero() {
+    let _post_states = swap_exact_input(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        1,
+        0,
+        IdForTests::token_a_definition_id(),
+    );
+}
+
+#[should_panic(expected = "Withdraw amount should be nonzero")]
+#[test]
+fn test_call_swap_output_rounds_to_zero() {
+    let _post_states = swap_exact_input(
+        AccountWithMetadataForTests::pool_definition_init_low_balances(),
+        AccountWithMetadataForTests::vault_a_init_low(),
+        AccountWithMetadataForTests::vault_b_init_low(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        2,
+        0,
+        IdForTests::token_a_definition_id(),
+    );
+}
+
+#[should_panic(expected = "Withdraw amount is less than minimal amount out")]
+#[test]
+fn test_call_swap_exact_input_rejects_amount_that_rounds_down_below_target_output() {
+    let _post_states = swap_exact_input(
+        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        2,
+        1,
+        IdForTests::token_a_definition_id(),
+    );
+}
+
+#[test]
+fn test_call_swap_exact_input_accepts_smallest_amount_for_rounded_boundary() {
+    let (post_states, chained_calls) = swap_exact_input(
+        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        3,
+        1,
+        IdForTests::token_a_definition_id(),
+    );
+
+    let pool_post = post_states[0].clone();
+
+    assert_eq!(
+        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_post().account,
+        *pool_post.account()
+    );
+
+    let chained_call_a = chained_calls[0].clone();
+    let chained_call_b = chained_calls[1].clone();
+
+    assert_eq!(
+        chained_call_a,
+        ChainedCallForTests::cc_swap_rounding_boundary_token_a_in()
+    );
+    assert_eq!(
+        chained_call_b,
+        ChainedCallForTests::cc_swap_rounding_boundary_token_b_out()
+    );
+}
+
 #[test]
 fn test_call_swap_chained_call_successful_1() {
     let (post_states, chained_calls) = swap_exact_input(
@@ -2314,6 +2545,74 @@ fn call_swap_exact_output_chained_call_successful_2() {
     assert_eq!(
         chained_call_b,
         ChainedCallForTests::cc_swap_exact_output_token_b_test_2()
+    );
+}
+
+// The minimum effective input for exact_amount_out=166 on the 1000/500 pool is 498.
+// After fee rounding, the true minimum gross input is 500, so 499 must be rejected.
+#[should_panic(expected = "Required input exceeds maximum amount in")]
+#[test]
+fn call_swap_exact_output_fee_enforced() {
+    let _post_states = swap_exact_output(
+        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        166_u128, // exact_amount_out: token_b
+        499_u128, // max_amount_in: still one short after fee rounding
+        IdForTests::token_a_definition_id(),
+    );
+}
+
+// On a 1000/1000 pool at 0.3%, exact_amount_out = 1 requires gross input 3.
+// max_amount_in = 2 must be rejected because the exact-input path would round
+// 2 down to effective_in = 1 and still produce 0 output.
+#[should_panic(expected = "Required input exceeds maximum amount in")]
+#[test]
+fn call_swap_exact_output_rejects_max_in_that_rounds_down_below_target_output() {
+    let _post_states = swap_exact_output(
+        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        1,
+        2,
+        IdForTests::token_a_definition_id(),
+    );
+}
+
+#[test]
+fn call_swap_exact_output_accepts_smallest_max_in_for_rounded_boundary() {
+    let (post_states, chained_calls) = swap_exact_output(
+        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        1,
+        3,
+        IdForTests::token_a_definition_id(),
+    );
+
+    let pool_post = post_states[0].clone();
+
+    assert_eq!(
+        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_post().account,
+        *pool_post.account()
+    );
+
+    let chained_call_a = chained_calls[0].clone();
+    let chained_call_b = chained_calls[1].clone();
+
+    assert_eq!(
+        chained_call_a,
+        ChainedCallForTests::cc_swap_rounding_boundary_token_a_in()
+    );
+    assert_eq!(
+        chained_call_b,
+        ChainedCallForTests::cc_swap_rounding_boundary_token_b_out()
     );
 }
 
@@ -2869,7 +3168,7 @@ fn remove_liquidity_overflow_protection() {
     );
 }
 
-#[should_panic(expected = "reserve * amount_in overflows u128")]
+#[should_panic(expected = "reserve * effective_amount_in overflows u128")]
 #[test]
 fn swap_exact_input_overflow_protection() {
     let large_reserve: u128 = u128::MAX / 2 + 1;
@@ -2924,7 +3223,8 @@ fn swap_exact_input_overflow_protection() {
         account_id: IdForTests::vault_b_id(),
     };
 
-    // Swap token_a in: withdraw_amount = reserve_b * swap_amount_in / (reserve_a + swap_amount_in)
+    // Swap token_a in: withdraw_amount = reserve_b * effective_amount_in / (reserve_a +
+    // effective_amount_in) With fee_bps=30: effective_amount_in = 3 * 9970 / 10000 = 2
     // reserve_b is large, so reserve_b * 2 overflows
     let _result = swap_exact_input(
         pool,
@@ -2932,7 +3232,7 @@ fn swap_exact_input_overflow_protection() {
         vault_b,
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
-        2,
+        3,
         1,
         IdForTests::token_a_definition_id(),
     );

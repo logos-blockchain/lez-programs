@@ -1,6 +1,9 @@
 use std::num::NonZeroU128;
 
-use amm_core::{assert_supported_fee_tier, compute_liquidity_token_pda_seed, PoolDefinition};
+use amm_core::{
+    assert_supported_fee_tier, compute_liquidity_token_pda_seed, read_vault_fungible_balances,
+    PoolDefinition,
+};
 use nssa_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall},
@@ -44,33 +47,9 @@ pub fn add_liquidity(
         "Both max-balances must be nonzero"
     );
 
-    // 2. Determine deposit amount
-    let vault_b_token_holding = token_core::TokenHolding::try_from(&vault_b.account.data)
-        .expect("Add liquidity: AMM Program expects valid Token Holding Account for Vault B");
-    let token_core::TokenHolding::Fungible {
-        definition_id: _,
-        balance: vault_b_balance,
-    } = vault_b_token_holding
-    else {
-        panic!(
-            "Add liquidity: AMM Program expects valid Fungible Token Holding Account for Vault B"
-        );
-    };
+    let (vault_a_balance, vault_b_balance) =
+        read_vault_fungible_balances("Add liquidity", &vault_a, &vault_b);
 
-    let vault_a_token_holding = token_core::TokenHolding::try_from(&vault_a.account.data)
-        .expect("Add liquidity: AMM Program expects valid Token Holding Account for Vault A");
-    let token_core::TokenHolding::Fungible {
-        definition_id: _,
-        balance: vault_a_balance,
-    } = vault_a_token_holding
-    else {
-        panic!(
-            "Add liquidity: AMM Program expects valid Fungible Token Holding Account for Vault A"
-        );
-    };
-
-    assert!(pool_def_data.reserve_a != 0, "Reserves must be nonzero");
-    assert!(pool_def_data.reserve_b != 0, "Reserves must be nonzero");
     assert!(
         vault_a_balance >= pool_def_data.reserve_a,
         "Vaults' balances must be at least the reserve amounts"
@@ -80,7 +59,10 @@ pub fn add_liquidity(
         "Vaults' balances must be at least the reserve amounts"
     );
 
-    // Calculate actual_amounts
+    // 2. Determine deposit amount
+    assert!(pool_def_data.reserve_a != 0, "Reserves must be nonzero");
+    assert!(pool_def_data.reserve_b != 0, "Reserves must be nonzero");
+
     let ideal_a: u128 = pool_def_data
         .reserve_a
         .checked_mul(max_amount_to_add_token_b)

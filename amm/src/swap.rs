@@ -1,4 +1,6 @@
-use amm_core::{assert_supported_fee_tier, MINIMUM_LIQUIDITY};
+use amm_core::{
+    assert_supported_fee_tier, read_vault_fungible_balances, FEE_BPS_DENOMINATOR, MINIMUM_LIQUIDITY,
+};
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
@@ -28,31 +30,13 @@ fn validate_swap_setup(
         "Vault B was not provided"
     );
 
-    let vault_a_token_holding = token_core::TokenHolding::try_from(&vault_a.account.data)
-        .expect("AMM Program expects a valid Token Holding Account for Vault A");
-    let token_core::TokenHolding::Fungible {
-        definition_id: _,
-        balance: vault_a_balance,
-    } = vault_a_token_holding
-    else {
-        panic!("AMM Program expects a valid Fungible Token Holding Account for Vault A");
-    };
+    let (vault_a_balance, vault_b_balance) =
+        read_vault_fungible_balances("Validate swap setup", vault_a, vault_b);
 
     assert!(
         vault_a_balance >= pool_def_data.reserve_a,
         "Reserve for Token A exceeds vault balance"
     );
-
-    let vault_b_token_holding = token_core::TokenHolding::try_from(&vault_b.account.data)
-        .expect("AMM Program expects a valid Token Holding Account for Vault B");
-    let token_core::TokenHolding::Fungible {
-        definition_id: _,
-        balance: vault_b_balance,
-    } = vault_b_token_holding
-    else {
-        panic!("AMM Program expects a valid Fungible Token Holding Account for Vault B");
-    };
-
     assert!(
         vault_b_balance >= pool_def_data.reserve_b,
         "Reserve for Token B exceeds vault balance"
@@ -130,6 +114,7 @@ pub fn swap_exact_input(
                 user_holding_b.clone(),
                 swap_amount_in,
                 min_amount_out,
+                pool_def_data.fees,
                 pool_def_data.reserve_a,
                 pool_def_data.reserve_b,
                 pool.account_id,
@@ -144,6 +129,7 @@ pub fn swap_exact_input(
                 user_holding_a.clone(),
                 swap_amount_in,
                 min_amount_out,
+                pool_def_data.fees,
                 pool_def_data.reserve_b,
                 pool_def_data.reserve_a,
                 pool.account_id,
@@ -178,19 +164,29 @@ fn swap_logic(
     user_withdraw: AccountWithMetadata,
     swap_amount_in: u128,
     min_amount_out: u128,
+    fee_bps: u128,
     reserve_deposit_vault_amount: u128,
     reserve_withdraw_vault_amount: u128,
     pool_id: AccountId,
 ) -> (Vec<ChainedCall>, u128, u128) {
-    // Compute withdraw amount
-    // Maintains pool constant product
-    // k = pool_def_data.reserve_a * pool_def_data.reserve_b;
+    let effective_amount_in = swap_amount_in
+        .checked_mul(FEE_BPS_DENOMINATOR - fee_bps)
+        .expect("swap_amount_in * (FEE_BPS_DENOMINATOR - fee_bps) overflows u128")
+        / FEE_BPS_DENOMINATOR;
+    assert!(
+        effective_amount_in != 0,
+        "Effective swap amount should be nonzero"
+    );
+    // Compute the withdraw amount using the fee-adjusted input for pricing.
+    // The recorded pool reserves are updated later with the full
+    // `swap_amount_in`, so LP fees accrue inside `reserve_*` via invariant
+    // growth rather than as a separate vault balance surplus over `reserve_*`.
     let withdraw_amount = reserve_withdraw_vault_amount
-        .checked_mul(swap_amount_in)
-        .expect("reserve * amount_in overflows u128")
+        .checked_mul(effective_amount_in)
+        .expect("reserve * effective_amount_in overflows u128")
         / reserve_deposit_vault_amount
-            .checked_add(swap_amount_in)
-            .expect("reserve + swap_amount_in overflows u128");
+            .checked_add(effective_amount_in)
+            .expect("reserve + effective_amount_in overflows u128");
 
     // Slippage check
     assert!(
@@ -259,6 +255,7 @@ pub fn swap_exact_output(
                 max_amount_in,
                 pool_def_data.reserve_a,
                 pool_def_data.reserve_b,
+                pool_def_data.fees,
                 pool.account_id,
             );
 
@@ -273,6 +270,7 @@ pub fn swap_exact_output(
                 max_amount_in,
                 pool_def_data.reserve_b,
                 pool_def_data.reserve_a,
+                pool_def_data.fees,
                 pool.account_id,
             );
 
@@ -307,6 +305,7 @@ fn exact_output_swap_logic(
     max_amount_in: u128,
     reserve_deposit_vault_amount: u128,
     reserve_withdraw_vault_amount: u128,
+    fee_bps: u128,
     pool_id: AccountId,
 ) -> (Vec<ChainedCall>, u128, u128) {
     // Guard: exact_amount_out must be nonzero
@@ -318,12 +317,28 @@ fn exact_output_swap_logic(
         "Exact amount out exceeds reserve"
     );
 
-    // Compute deposit amount using ceiling division
-    // Formula: amount_in = ceil(reserve_in * exact_amount_out / (reserve_out - exact_amount_out))
-    let deposit_amount = reserve_deposit_vault_amount
+    // Compute the minimum effective input required to achieve exact_amount_out
+    // using the same floor-rounded fee application as swap_exact_input.
+    //
+    // Solve constant product for effective_in (fee already removed):
+    //   effective_in >= ceil(reserve_in * amount_out / (reserve_out - amount_out))
+    let effective_in_numerator = reserve_deposit_vault_amount
         .checked_mul(exact_amount_out)
-        .expect("reserve * amount_out overflows u128")
-        .div_ceil(reserve_withdraw_vault_amount - exact_amount_out);
+        .expect("reserve * amount_out overflows u128");
+    let effective_in_denominator = reserve_withdraw_vault_amount
+        .checked_sub(exact_amount_out)
+        .expect("reserve_out - amount_out underflows");
+    let effective_in_min = effective_in_numerator.div_ceil(effective_in_denominator);
+
+    // Lift back to gross input so that
+    //   floor(gross_in * (FEE_DENOM - fee) / FEE_DENOM) >= effective_in_min
+    let fee_multiplier = FEE_BPS_DENOMINATOR
+        .checked_sub(fee_bps)
+        .expect("fee_bps exceeds fee denominator");
+    let deposit_amount = effective_in_min
+        .checked_mul(FEE_BPS_DENOMINATOR)
+        .expect("effective_in * FEE_DENOM overflows u128")
+        .div_ceil(fee_multiplier);
 
     // Slippage check
     assert!(
