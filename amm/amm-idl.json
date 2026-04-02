@@ -241,6 +241,55 @@
       ]
     },
     {
+      "name": "swap_exact_output",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "exact_amount_out",
+          "type": "u128"
+        },
+        {
+          "name": "max_amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "token_definition_id_in",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
       "name": "sync_reserves",
       "accounts": [
         {

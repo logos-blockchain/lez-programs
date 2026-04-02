@@ -130,6 +130,31 @@ mod amm {
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
 
+    /// Swap tokens specifying the exact desired output amount.
+    #[instruction]
+    pub fn swap_exact_output(
+        pool: AccountWithMetadata,
+        vault_a: AccountWithMetadata,
+        vault_b: AccountWithMetadata,
+        user_holding_a: AccountWithMetadata,
+        user_holding_b: AccountWithMetadata,
+        exact_amount_out: u128,
+        max_amount_in: u128,
+        token_definition_id_in: AccountId,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = amm_program::swap::swap_exact_output(
+            pool,
+            vault_a,
+            vault_b,
+            user_holding_a,
+            user_holding_b,
+            exact_amount_out,
+            max_amount_in,
+            token_definition_id_in,
+        );
+        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+    }
+
     /// Sync pool reserves with current vault balances.
     #[instruction]
     pub fn sync_reserves(
