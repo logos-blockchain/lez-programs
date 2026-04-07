@@ -76,8 +76,18 @@ fn create_swap_post_states(
 ) -> Vec<AccountPostState> {
     let mut pool_post = pool.account;
     let pool_post_definition = PoolDefinition {
-        reserve_a: pool_def_data.reserve_a + deposit_a - withdraw_a,
-        reserve_b: pool_def_data.reserve_b + deposit_b - withdraw_b,
+        reserve_a: pool_def_data
+            .reserve_a
+            .checked_add(deposit_a)
+            .expect("reserve_a + deposit_a overflows u128")
+            .checked_sub(withdraw_a)
+            .expect("reserve_a + deposit_a - withdraw_a underflows"),
+        reserve_b: pool_def_data
+            .reserve_b
+            .checked_add(deposit_b)
+            .expect("reserve_b + deposit_b overflows u128")
+            .checked_sub(withdraw_b)
+            .expect("reserve_b + deposit_b - withdraw_b underflows"),
         ..pool_def_data
     };
 
@@ -173,7 +183,9 @@ fn swap_logic(
     let withdraw_amount = reserve_withdraw_vault_amount
         .checked_mul(swap_amount_in)
         .expect("reserve * amount_in overflows u128")
-        / (reserve_deposit_vault_amount + swap_amount_in);
+        / reserve_deposit_vault_amount
+            .checked_add(swap_amount_in)
+            .expect("reserve + swap_amount_in overflows u128");
 
     // Slippage check
     assert!(

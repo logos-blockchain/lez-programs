@@ -2774,3 +2774,248 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
 
     assert!(synced_delta_lp < unsynced_delta_lp);
 }
+
+#[should_panic(expected = "token_a * token_b overflows u128")]
+#[test]
+fn new_definition_overflow_protection() {
+    let large_amount = u128::MAX / 2 + 1;
+
+    let _result = new_definition(
+        AccountWithMetadataForTests::pool_definition_reinitializable(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_reinitializable(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_uninit(),
+        NonZero::new(large_amount).unwrap(),
+        NonZero::new(2).unwrap(),
+        AMM_PROGRAM_ID,
+    );
+}
+
+#[should_panic(expected = "reserve_a * max_amount_b overflows u128")]
+#[test]
+fn add_liquidity_overflow_protection() {
+    let large_reserve: u128 = u128::MAX / 2 + 1;
+    let reserve_b: u128 = 1_000;
+
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: ProgramId::default(),
+            balance: 0,
+            data: Data::from(&PoolDefinition {
+                definition_token_a_id: IdForTests::token_a_definition_id(),
+                definition_token_b_id: IdForTests::token_b_definition_id(),
+                vault_a_id: IdForTests::vault_a_id(),
+                vault_b_id: IdForTests::vault_b_id(),
+                liquidity_pool_id: IdForTests::token_lp_definition_id(),
+                liquidity_pool_supply: 1_000,
+                reserve_a: large_reserve,
+                reserve_b,
+                fees: 0,
+                active: true,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: true,
+        account_id: IdForTests::pool_definition_id(),
+    };
+
+    let vault_a = AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: IdForTests::token_a_definition_id(),
+                balance: large_reserve,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: false,
+        account_id: IdForTests::vault_a_id(),
+    };
+
+    let vault_b = AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: IdForTests::token_b_definition_id(),
+                balance: reserve_b,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: false,
+        account_id: IdForTests::vault_b_id(),
+    };
+
+    let _result = add_liquidity(
+        pool,
+        vault_a,
+        vault_b,
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(1).unwrap(),
+        500,
+        2, // max_amount_b=2 → reserve_a * 2 overflows
+    );
+}
+
+#[should_panic(expected = "reserve_a * remove_liquidity_amount overflows u128")]
+#[test]
+fn remove_liquidity_overflow_protection() {
+    let large_reserve: u128 = u128::MAX / 2 + 1;
+    let reserve_b: u128 = 1_000;
+    let lp_supply: u128 = 1_002; // must exceed MINIMUM_LIQUIDITY so remove_amount=2 passes the lock check
+
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: ProgramId::default(),
+            balance: 0,
+            data: Data::from(&PoolDefinition {
+                definition_token_a_id: IdForTests::token_a_definition_id(),
+                definition_token_b_id: IdForTests::token_b_definition_id(),
+                vault_a_id: IdForTests::vault_a_id(),
+                vault_b_id: IdForTests::vault_b_id(),
+                liquidity_pool_id: IdForTests::token_lp_definition_id(),
+                liquidity_pool_supply: lp_supply,
+                reserve_a: large_reserve,
+                reserve_b,
+                fees: 0,
+                active: true,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: true,
+        account_id: IdForTests::pool_definition_id(),
+    };
+
+    let vault_a = AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: IdForTests::token_a_definition_id(),
+                balance: large_reserve,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: false,
+        account_id: IdForTests::vault_a_id(),
+    };
+
+    let vault_b = AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: IdForTests::token_b_definition_id(),
+                balance: reserve_b,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: false,
+        account_id: IdForTests::vault_b_id(),
+    };
+
+    let user_lp = AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: IdForTests::token_lp_definition_id(),
+                balance: 2,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: true,
+        account_id: IdForTests::user_token_lp_id(),
+    };
+
+    let _result = remove_liquidity(
+        pool,
+        vault_a,
+        vault_b,
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        user_lp,
+        NonZero::new(2).unwrap(), // remove_amount=2 → reserve_a * 2 overflows
+        1,
+        1,
+    );
+}
+
+#[should_panic(expected = "reserve * amount_in overflows u128")]
+#[test]
+fn swap_exact_input_overflow_protection() {
+    let large_reserve: u128 = u128::MAX / 2 + 1;
+    let reserve_b: u128 = 1_000;
+
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: ProgramId::default(),
+            balance: 0,
+            data: Data::from(&PoolDefinition {
+                definition_token_a_id: IdForTests::token_a_definition_id(),
+                definition_token_b_id: IdForTests::token_b_definition_id(),
+                vault_a_id: IdForTests::vault_a_id(),
+                vault_b_id: IdForTests::vault_b_id(),
+                liquidity_pool_id: IdForTests::token_lp_definition_id(),
+                liquidity_pool_supply: 1,
+                reserve_a: 1_000,
+                reserve_b: large_reserve,
+                fees: 0,
+                active: true,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: true,
+        account_id: IdForTests::pool_definition_id(),
+    };
+
+    let vault_a = AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: IdForTests::token_a_definition_id(),
+                balance: reserve_b,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: true,
+        account_id: IdForTests::vault_a_id(),
+    };
+
+    let vault_b = AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: IdForTests::token_b_definition_id(),
+                balance: large_reserve,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: true,
+        account_id: IdForTests::vault_b_id(),
+    };
+
+    // Swap token_a in: withdraw_amount = reserve_b * swap_amount_in / (reserve_a + swap_amount_in)
+    // reserve_b is large, so reserve_b * 2 overflows
+    let _result = swap_exact_input(
+        pool,
+        vault_a,
+        vault_b,
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        2,
+        1,
+        IdForTests::token_a_definition_id(),
+    );
+}

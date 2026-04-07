@@ -91,7 +91,11 @@ pub fn new_definition(
     }
 
     // LP Token minting calculation
-    let initial_lp = (token_a_amount.get() * token_b_amount.get()).isqrt();
+    let initial_lp = token_a_amount
+        .get()
+        .checked_mul(token_b_amount.get())
+        .expect("token_a * token_b overflows u128")
+        .isqrt();
     assert!(
         initial_lp > MINIMUM_LIQUIDITY,
         "Initial liquidity must exceed minimum liquidity lock"

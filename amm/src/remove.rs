@@ -94,10 +94,16 @@ pub fn remove_liquidity(
         "Cannot remove locked minimum liquidity"
     );
 
-    let withdraw_amount_a =
-        (pool_def_data.reserve_a * remove_liquidity_amount) / pool_def_data.liquidity_pool_supply;
-    let withdraw_amount_b =
-        (pool_def_data.reserve_b * remove_liquidity_amount) / pool_def_data.liquidity_pool_supply;
+    let withdraw_amount_a = pool_def_data
+        .reserve_a
+        .checked_mul(remove_liquidity_amount)
+        .expect("reserve_a * remove_liquidity_amount overflows u128")
+        / pool_def_data.liquidity_pool_supply;
+    let withdraw_amount_b = pool_def_data
+        .reserve_b
+        .checked_mul(remove_liquidity_amount)
+        .expect("reserve_b * remove_liquidity_amount overflows u128")
+        / pool_def_data.liquidity_pool_supply;
 
     // 3. Validate and slippage check
     assert!(
@@ -115,9 +121,18 @@ pub fn remove_liquidity(
     // 5. Update pool account
     let mut pool_post = pool.account.clone();
     let pool_post_definition = PoolDefinition {
-        liquidity_pool_supply: pool_def_data.liquidity_pool_supply - delta_lp,
-        reserve_a: pool_def_data.reserve_a - withdraw_amount_a,
-        reserve_b: pool_def_data.reserve_b - withdraw_amount_b,
+        liquidity_pool_supply: pool_def_data
+            .liquidity_pool_supply
+            .checked_sub(delta_lp)
+            .expect("liquidity_pool_supply - delta_lp underflows"),
+        reserve_a: pool_def_data
+            .reserve_a
+            .checked_sub(withdraw_amount_a)
+            .expect("reserve_a - withdraw_amount_a underflows"),
+        reserve_b: pool_def_data
+            .reserve_b
+            .checked_sub(withdraw_amount_b)
+            .expect("reserve_b - withdraw_amount_b underflows"),
         active: true,
         ..pool_def_data.clone()
     };

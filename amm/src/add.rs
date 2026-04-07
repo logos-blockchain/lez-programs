@@ -80,10 +80,16 @@ pub fn add_liquidity(
     );
 
     // Calculate actual_amounts
-    let ideal_a: u128 =
-        (pool_def_data.reserve_a * max_amount_to_add_token_b) / pool_def_data.reserve_b;
-    let ideal_b: u128 =
-        (pool_def_data.reserve_b * max_amount_to_add_token_a) / pool_def_data.reserve_a;
+    let ideal_a: u128 = pool_def_data
+        .reserve_a
+        .checked_mul(max_amount_to_add_token_b)
+        .expect("reserve_a * max_amount_b overflows u128")
+        / pool_def_data.reserve_b;
+    let ideal_b: u128 = pool_def_data
+        .reserve_b
+        .checked_mul(max_amount_to_add_token_a)
+        .expect("reserve_b * max_amount_a overflows u128")
+        / pool_def_data.reserve_a;
 
     let actual_amount_a = if ideal_a > max_amount_to_add_token_a {
         max_amount_to_add_token_a
@@ -111,8 +117,16 @@ pub fn add_liquidity(
 
     // 4. Calculate LP to mint
     let delta_lp = std::cmp::min(
-        pool_def_data.liquidity_pool_supply * actual_amount_a / pool_def_data.reserve_a,
-        pool_def_data.liquidity_pool_supply * actual_amount_b / pool_def_data.reserve_b,
+        pool_def_data
+            .liquidity_pool_supply
+            .checked_mul(actual_amount_a)
+            .expect("liquidity_pool_supply * actual_amount_a overflows u128")
+            / pool_def_data.reserve_a,
+        pool_def_data
+            .liquidity_pool_supply
+            .checked_mul(actual_amount_b)
+            .expect("liquidity_pool_supply * actual_amount_b overflows u128")
+            / pool_def_data.reserve_b,
     );
 
     assert!(delta_lp != 0, "Payable LP must be nonzero");
@@ -125,9 +139,18 @@ pub fn add_liquidity(
     // 5. Update pool account
     let mut pool_post = pool.account.clone();
     let pool_post_definition = PoolDefinition {
-        liquidity_pool_supply: pool_def_data.liquidity_pool_supply + delta_lp,
-        reserve_a: pool_def_data.reserve_a + actual_amount_a,
-        reserve_b: pool_def_data.reserve_b + actual_amount_b,
+        liquidity_pool_supply: pool_def_data
+            .liquidity_pool_supply
+            .checked_add(delta_lp)
+            .expect("liquidity_pool_supply + delta_lp overflows u128"),
+        reserve_a: pool_def_data
+            .reserve_a
+            .checked_add(actual_amount_a)
+            .expect("reserve_a + actual_amount_a overflows u128"),
+        reserve_b: pool_def_data
+            .reserve_b
+            .checked_add(actual_amount_b)
+            .expect("reserve_b + actual_amount_b overflows u128"),
         ..pool_def_data
     };
 
