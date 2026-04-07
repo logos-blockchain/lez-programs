@@ -107,7 +107,7 @@ mod amm {
 
     /// Swap some quantity of tokens while maintaining the pool constant product.
     #[instruction]
-    pub fn swap(
+    pub fn swap_exact_input(
         pool: AccountWithMetadata,
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
@@ -117,7 +117,7 @@ mod amm {
         min_amount_out: u128,
         token_definition_id_in: AccountId,
     ) -> SpelResult {
-        let (post_states, chained_calls) = amm_program::swap::swap(
+        let (post_states, chained_calls) = amm_program::swap::swap_exact_input(
             pool,
             vault_a,
             vault_b,

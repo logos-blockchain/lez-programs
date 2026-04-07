@@ -1295,7 +1295,7 @@ fn amm_add_liquidity() {
 fn amm_swap_b_to_a() {
     let mut state = state_for_amm_tests();
 
-    let instruction = amm_core::Instruction::Swap {
+    let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         token_definition_id_in: Ids::token_b_definition(),
@@ -1346,7 +1346,7 @@ fn amm_swap_b_to_a() {
 fn amm_swap_a_to_b() {
     let mut state = state_for_amm_tests();
 
-    let instruction = amm_core::Instruction::Swap {
+    let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         token_definition_id_in: Ids::token_a_definition(),

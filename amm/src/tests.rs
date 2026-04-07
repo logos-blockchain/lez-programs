@@ -16,7 +16,7 @@ use crate::{
     add::add_liquidity,
     new_definition::new_definition,
     remove::remove_liquidity,
-    swap::{swap, swap_exact_output},
+    swap::{swap_exact_input, swap_exact_output},
     sync::sync_reserves,
 };
 
@@ -2002,7 +2002,7 @@ fn test_call_new_definition_chained_call_successful() {
 #[should_panic(expected = "AccountId is not a token type for the pool")]
 #[test]
 fn test_call_swap_incorrect_token_type() {
-    let _post_states = swap(
+    let _post_states = swap_exact_input(
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
@@ -2017,7 +2017,7 @@ fn test_call_swap_incorrect_token_type() {
 #[should_panic(expected = "Vault A was not provided")]
 #[test]
 fn test_call_swap_vault_a_omitted() {
-    let _post_states = swap(
+    let _post_states = swap_exact_input(
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_with_wrong_id(),
         AccountWithMetadataForTests::vault_b_init(),
@@ -2032,7 +2032,7 @@ fn test_call_swap_vault_a_omitted() {
 #[should_panic(expected = "Vault B was not provided")]
 #[test]
 fn test_call_swap_vault_b_omitted() {
-    let _post_states = swap(
+    let _post_states = swap_exact_input(
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_with_wrong_id(),
@@ -2047,7 +2047,7 @@ fn test_call_swap_vault_b_omitted() {
 #[should_panic(expected = "Reserve for Token A exceeds vault balance")]
 #[test]
 fn test_call_swap_reserves_vault_mismatch_1() {
-    let _post_states = swap(
+    let _post_states = swap_exact_input(
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init_low(),
         AccountWithMetadataForTests::vault_b_init(),
@@ -2062,7 +2062,7 @@ fn test_call_swap_reserves_vault_mismatch_1() {
 #[should_panic(expected = "Reserve for Token B exceeds vault balance")]
 #[test]
 fn test_call_swap_reserves_vault_mismatch_2() {
-    let _post_states = swap(
+    let _post_states = swap_exact_input(
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init_low(),
@@ -2077,7 +2077,7 @@ fn test_call_swap_reserves_vault_mismatch_2() {
 #[should_panic(expected = "Pool is inactive")]
 #[test]
 fn test_call_swap_ianctive() {
-    let _post_states = swap(
+    let _post_states = swap_exact_input(
         AccountWithMetadataForTests::pool_definition_inactive(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
@@ -2092,7 +2092,7 @@ fn test_call_swap_ianctive() {
 #[should_panic(expected = "Withdraw amount is less than minimal amount out")]
 #[test]
 fn test_call_swap_below_min_out() {
-    let _post_states = swap(
+    let _post_states = swap_exact_input(
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
@@ -2106,7 +2106,7 @@ fn test_call_swap_below_min_out() {
 
 #[test]
 fn test_call_swap_chained_call_successful_1() {
-    let (post_states, chained_calls) = swap(
+    let (post_states, chained_calls) = swap_exact_input(
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
@@ -2138,7 +2138,7 @@ fn test_call_swap_chained_call_successful_1() {
 
 #[test]
 fn test_call_swap_chained_call_successful_2() {
-    let (post_states, chained_calls) = swap(
+    let (post_states, chained_calls) = swap_exact_input(
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),

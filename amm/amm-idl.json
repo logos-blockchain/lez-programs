@@ -192,7 +192,7 @@
       ]
     },
     {
-      "name": "swap",
+      "name": "swap_exact_input",
       "accounts": [
         {
           "name": "pool",
