@@ -1,4 +1,4 @@
-use amm_core::PoolDefinition;
+use amm_core::{PoolDefinition, MINIMUM_LIQUIDITY};
 use nssa::{
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
@@ -52,6 +52,10 @@ impl Ids {
 
     fn token_lp_definition() -> AccountId {
         amm_core::compute_liquidity_token_pda(Self::amm_program(), Self::pool_definition())
+    }
+
+    fn lp_lock_holding() -> AccountId {
+        amm_core::compute_lp_lock_holding_pda(Self::amm_program(), Self::pool_definition())
     }
 
     fn vault_a() -> AccountId {
@@ -243,6 +247,10 @@ impl Balances {
     fn lp_supply_init() -> u128 {
         (Self::vault_a_init() * Self::vault_b_init()).isqrt()
     }
+
+    fn lp_user_init() -> u128 {
+        Self::lp_supply_init() - MINIMUM_LIQUIDITY
+    }
 }
 
 impl Accounts {
@@ -360,6 +368,18 @@ impl Accounts {
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
                 balance: Balances::user_lp_init(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn user_lp_holding_with_balance(balance: u128) -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_lp_definition(),
+                balance,
             }),
             nonce: Nonce(0),
         }
@@ -776,7 +796,7 @@ impl Accounts {
             balance: 0_u128,
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
-                balance: Balances::lp_supply_init(),
+                balance: Balances::lp_user_init(),
             }),
             nonce: Nonce(0),
         }
@@ -790,6 +810,18 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: Balances::lp_supply_init(),
                 metadata_id: None,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn lp_lock_holding_new_init() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_lp_definition(),
+                balance: MINIMUM_LIQUIDITY,
             }),
             nonce: Nonce(0),
         }
@@ -947,6 +979,39 @@ fn amm_remove_liquidity() {
 }
 
 #[test]
+fn amm_remove_liquidity_insufficient_user_lp_fails() {
+    let mut state = state_for_amm_tests();
+    state.force_insert_account(Ids::user_lp(), Accounts::user_lp_holding_with_balance(500));
+
+    let instruction = amm_core::Instruction::RemoveLiquidity {
+        remove_liquidity_amount: Balances::remove_lp(),
+        min_amount_to_remove_token_a: Balances::remove_min_a(),
+        min_amount_to_remove_token_b: Balances::remove_min_b(),
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::token_lp_definition(),
+            Ids::user_a(),
+            Ids::user_b(),
+            Ids::user_lp(),
+        ],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_lp()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0).is_err());
+}
+
+#[test]
 fn amm_new_definition_inactive_initialized_pool_and_uninit_user_lp() {
     let mut state = state_for_amm_tests_with_new_def();
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init_inactive());
@@ -970,6 +1035,7 @@ fn amm_new_definition_inactive_initialized_pool_and_uninit_user_lp() {
             Ids::vault_a(),
             Ids::vault_b(),
             Ids::token_lp_definition(),
+            Ids::lp_lock_holding(),
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
@@ -1000,6 +1066,10 @@ fn amm_new_definition_inactive_initialized_pool_and_uninit_user_lp() {
     assert_eq!(
         state.get_account_by_id(Ids::token_lp_definition()),
         Accounts::token_lp_definition_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::lp_lock_holding()),
+        Accounts::lp_lock_holding_new_init()
     );
     assert_eq!(
         state.get_account_by_id(Ids::user_a()),
@@ -1040,6 +1110,7 @@ fn amm_new_definition_inactive_initialized_pool_init_user_lp() {
             Ids::vault_a(),
             Ids::vault_b(),
             Ids::token_lp_definition(),
+            Ids::lp_lock_holding(),
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
@@ -1070,6 +1141,10 @@ fn amm_new_definition_inactive_initialized_pool_init_user_lp() {
     assert_eq!(
         state.get_account_by_id(Ids::token_lp_definition()),
         Accounts::token_lp_definition_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::lp_lock_holding()),
+        Accounts::lp_lock_holding_new_init()
     );
     assert_eq!(
         state.get_account_by_id(Ids::user_a()),
@@ -1104,6 +1179,7 @@ fn amm_new_definition_uninitialized_pool() {
             Ids::vault_a(),
             Ids::vault_b(),
             Ids::token_lp_definition(),
+            Ids::lp_lock_holding(),
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
@@ -1134,6 +1210,10 @@ fn amm_new_definition_uninitialized_pool() {
     assert_eq!(
         state.get_account_by_id(Ids::token_lp_definition()),
         Accounts::token_lp_definition_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::lp_lock_holding()),
+        Accounts::lp_lock_holding_new_init()
     );
     assert_eq!(
         state.get_account_by_id(Ids::user_a()),

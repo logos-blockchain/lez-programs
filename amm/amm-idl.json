@@ -30,6 +30,12 @@
           "init": false
         },
         {
+          "name": "lp_lock_holding",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "user_holding_a",
           "writable": false,
           "signer": false,

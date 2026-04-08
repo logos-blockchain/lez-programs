@@ -1,6 +1,8 @@
 use std::num::NonZeroU128;
 
-use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
+use amm_core::{
+    compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition, MINIMUM_LIQUIDITY,
+};
 use nssa_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall},
@@ -78,6 +80,19 @@ pub fn remove_liquidity(
         pool_def_data.liquidity_pool_id,
         "Invalid liquidity account provided"
     );
+    // Honest flows should never reach the permanent lock through a valid remove instruction, but
+    // we still reject legacy or corrupted states that are already at the locked floor.
+    assert!(
+        pool_def_data.liquidity_pool_supply > MINIMUM_LIQUIDITY,
+        "Pool only contains locked liquidity"
+    );
+    let unlocked_liquidity = pool_def_data.liquidity_pool_supply - MINIMUM_LIQUIDITY;
+    // The remove instruction never sees the LP lock account directly, so we must still refuse any
+    // request that would burn through the permanent floor even if ownership is already corrupted.
+    assert!(
+        remove_liquidity_amount <= unlocked_liquidity,
+        "Cannot remove locked minimum liquidity"
+    );
 
     let withdraw_amount_a =
         (pool_def_data.reserve_a * remove_liquidity_amount) / pool_def_data.liquidity_pool_supply;
@@ -95,10 +110,7 @@ pub fn remove_liquidity(
     );
 
     // 4. Calculate LP to reduce cap by
-    let delta_lp: u128 = (pool_def_data.liquidity_pool_supply * remove_liquidity_amount)
-        / pool_def_data.liquidity_pool_supply;
-
-    let active: bool = pool_def_data.liquidity_pool_supply - delta_lp != 0;
+    let delta_lp: u128 = remove_liquidity_amount;
 
     // 5. Update pool account
     let mut pool_post = pool.account.clone();
@@ -106,7 +118,7 @@ pub fn remove_liquidity(
         liquidity_pool_supply: pool_def_data.liquidity_pool_supply - delta_lp,
         reserve_a: pool_def_data.reserve_a - withdraw_amount_a,
         reserve_b: pool_def_data.reserve_b - withdraw_amount_b,
-        active,
+        active: true,
         ..pool_def_data.clone()
     };
 

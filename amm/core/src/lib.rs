@@ -7,16 +7,26 @@ use nssa_core::{
 };
 use serde::{Deserialize, Serialize};
 
+// These stable seed bytes are part of the PDA derivation scheme and must stay unchanged for
+// compatibility.
+const LIQUIDITY_TOKEN_PDA_SEED: [u8; 32] = [0; 32];
+const LP_LOCK_HOLDING_PDA_SEED: [u8; 32] = [1; 32];
+
 /// AMM Program Instruction.
 #[derive(Serialize, Deserialize)]
 pub enum Instruction {
     /// Initializes a new Pool (or re-initializes an inactive Pool).
+    ///
+    /// On initialization, `MINIMUM_LIQUIDITY` LP tokens are permanently locked
+    /// in the LP-lock holding PDA; the caller receives `initial_lp - MINIMUM_LIQUIDITY`.
     ///
     /// Required accounts:
     /// - AMM Pool
     /// - Vault Holding Account for Token A
     /// - Vault Holding Account for Token B
     /// - Pool Liquidity Token Definition
+    /// - LP Lock Holding Account, derived as `compute_lp_lock_holding_pda(amm_program_id,
+    ///   pool.account_id)`
     /// - User Holding Account for Token A (authorized)
     /// - User Holding Account for Token B (authorized)
     /// - User Holding Account for Pool Liquidity
@@ -75,6 +85,8 @@ pub enum Instruction {
     },
 }
 
+pub const MINIMUM_LIQUIDITY: u128 = 1_000;
+
 #[derive(Clone, Default, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct PoolDefinition {
     pub definition_token_a_id: AccountId,
@@ -87,9 +99,13 @@ pub struct PoolDefinition {
     pub reserve_b: u128,
     /// Fees are currently not used
     pub fees: u128,
-    /// A pool becomes inactive (active = false)
-    /// once all of its liquidity has been removed (e.g., reserves are emptied and
-    /// liquidity_pool_supply = 0)
+    /// Indicates whether the pool is initialized for use.
+    /// `MINIMUM_LIQUIDITY` LP tokens are permanently locked at initialization
+    /// and cannot be removed, so `liquidity_pool_supply` will never drop below
+    /// `MINIMUM_LIQUIDITY` for pools created after the minimum-liquidity lock
+    /// was introduced. Reaching that floor does not by itself imply
+    /// `active = false`; pools may remain active with only the permanently
+    /// locked minimum liquidity remaining.
     pub active: bool,
 }
 
@@ -186,7 +202,26 @@ pub fn compute_liquidity_token_pda_seed(pool_id: AccountId) -> PdaSeed {
 
     let mut bytes = [0; 64];
     bytes[0..32].copy_from_slice(&pool_id.to_bytes());
-    bytes[32..].copy_from_slice(&[0; 32]);
+    bytes[32..].copy_from_slice(&LIQUIDITY_TOKEN_PDA_SEED);
+
+    PdaSeed::new(
+        Impl::hash_bytes(&bytes)
+            .as_bytes()
+            .try_into()
+            .expect("Hash output must be exactly 32 bytes long"),
+    )
+}
+
+pub fn compute_lp_lock_holding_pda(amm_program_id: ProgramId, pool_id: AccountId) -> AccountId {
+    AccountId::from((&amm_program_id, &compute_lp_lock_holding_pda_seed(pool_id)))
+}
+
+pub fn compute_lp_lock_holding_pda_seed(pool_id: AccountId) -> PdaSeed {
+    use risc0_zkvm::sha::{Impl, Sha256};
+
+    let mut bytes = [0; 64];
+    bytes[0..32].copy_from_slice(&pool_id.to_bytes());
+    bytes[32..].copy_from_slice(&LP_LOCK_HOLDING_PDA_SEED);
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
