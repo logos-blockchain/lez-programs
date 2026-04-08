@@ -14,6 +14,7 @@ use token_core::{TokenDefinition, TokenHolding};
 
 use crate::{
     add::add_liquidity, new_definition::new_definition, remove::remove_liquidity, swap::swap,
+    sync::sync_reserves,
 };
 
 const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
@@ -2235,4 +2236,115 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
     assert!(pool_after_remove.reserve_a > 0);
     assert!(pool_after_remove.reserve_b > 0);
     assert!(pool_after_remove.active);
+}
+
+#[test]
+fn test_sync_reserves_with_donation() {
+    let pool = AccountWithMetadataForTests::pool_definition_init();
+    let donation_a = 111u128;
+
+    let mut donated_vault_a = AccountWithMetadataForTests::vault_a_init();
+    donated_vault_a.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: IdForTests::token_a_definition_id(),
+        balance: BalanceForTests::vault_a_reserve_init() + donation_a,
+    });
+
+    let pool_pre = PoolDefinition::try_from(&pool.account.data).unwrap();
+    assert_eq!(pool_pre.reserve_a, BalanceForTests::vault_a_reserve_init());
+
+    let (post_states, chained_calls) = sync_reserves(
+        pool,
+        donated_vault_a,
+        AccountWithMetadataForTests::vault_b_init(),
+    );
+    assert!(chained_calls.is_empty());
+
+    let pool_post = PoolDefinition::try_from(&post_states[0].account().data).unwrap();
+    assert_eq!(
+        pool_post.reserve_a,
+        BalanceForTests::vault_a_reserve_init() + donation_a
+    );
+    assert_eq!(pool_post.reserve_b, BalanceForTests::vault_b_reserve_init());
+}
+
+#[should_panic(expected = "Sync reserves: vault A balance is less than its reserve")]
+#[test]
+fn test_sync_reserves_panics_when_vault_a_under_collateralized() {
+    let _ = sync_reserves(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init_low(),
+        AccountWithMetadataForTests::vault_b_init(),
+    );
+}
+
+#[should_panic(expected = "Sync reserves: vault B balance is less than its reserve")]
+#[test]
+fn test_sync_reserves_panics_when_vault_b_under_collateralized() {
+    let _ = sync_reserves(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init_low(),
+    );
+}
+
+#[test]
+fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
+    let donation_a = 100u128;
+
+    let mut donated_vault_a = AccountWithMetadataForTests::vault_a_init();
+    donated_vault_a.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: IdForTests::token_a_definition_id(),
+        balance: BalanceForTests::vault_a_reserve_init() + donation_a,
+    });
+    let donated_vault_b = AccountWithMetadataForTests::vault_b_init();
+
+    let (post_unsynced, _) = add_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        donated_vault_a.clone(),
+        donated_vault_b.clone(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(1).unwrap(),
+        100,
+        50,
+    );
+    let unsynced_pool_post = PoolDefinition::try_from(&post_unsynced[0].account().data).unwrap();
+    let unsynced_delta_lp =
+        unsynced_pool_post.liquidity_pool_supply - BalanceForTests::lp_supply_init();
+
+    let donated_vault_a_for_synced_add = donated_vault_a.clone();
+    let donated_vault_b_for_synced_add = donated_vault_b.clone();
+
+    let (sync_post, _) = sync_reserves(
+        AccountWithMetadataForTests::pool_definition_init(),
+        donated_vault_a,
+        donated_vault_b,
+    );
+    let synced_pool = AccountWithMetadata {
+        account: sync_post[0].account().clone(),
+        is_authorized: true,
+        account_id: IdForTests::pool_definition_id(),
+    };
+
+    let (post_synced, _) = add_liquidity(
+        synced_pool,
+        donated_vault_a_for_synced_add,
+        donated_vault_b_for_synced_add,
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(1).unwrap(),
+        100,
+        50,
+    );
+    let synced_pool_post = PoolDefinition::try_from(&post_synced[0].account().data).unwrap();
+    let synced_delta_lp = synced_pool_post.liquidity_pool_supply
+        - PoolDefinition::try_from(&sync_post[0].account().data)
+            .unwrap()
+            .liquidity_pool_supply;
+
+    assert!(synced_delta_lp < unsynced_delta_lp);
 }

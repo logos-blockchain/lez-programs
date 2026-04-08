@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "ffcbc15972adbf557939bf3e2852af276422631b", features = ["host"] }
+token_core = { path = "../../token/core" }
 borsh = { version = "1.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 risc0-zkvm = { version = "=3.0.5", default-features = false }

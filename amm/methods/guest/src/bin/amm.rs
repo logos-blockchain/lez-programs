@@ -129,4 +129,16 @@ mod amm {
         );
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
+
+    /// Sync pool reserves with current vault balances.
+    #[instruction]
+    pub fn sync_reserves(
+        pool: AccountWithMetadata,
+        vault_a: AccountWithMetadata,
+        vault_b: AccountWithMetadata,
+    ) -> SpelResult {
+        let (post_states, chained_calls) =
+            amm_program::sync::sync_reserves(pool, vault_a, vault_b);
+        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+    }
 }

@@ -6,5 +6,6 @@ pub mod add;
 pub mod new_definition;
 pub mod remove;
 pub mod swap;
+pub mod sync;
 
 mod tests;

@@ -46,6 +46,7 @@ dependencies = [
  "nssa_core",
  "risc0-zkvm",
  "serde",
+ "token_core",
 ]
 
 [[package]]

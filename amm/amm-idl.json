@@ -239,6 +239,30 @@
           "type": "account_id"
         }
       ]
+    },
+    {
+      "name": "sync_reserves",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_a",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
     }
   ],
   "instruction_type": "amm_core::Instruction"
