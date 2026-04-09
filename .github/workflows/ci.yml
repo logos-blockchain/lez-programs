@@ -116,3 +116,48 @@ jobs:
         run: cargo test -p integration_tests
         env:
           RISC0_DEV_MODE: 1
+
+  check-idl:
+    name: Check IDL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build idl-gen
+        run: cargo build -p idl-gen --release
+
+      - name: Check IDL files are present and up to date
+        run: |
+          set -e
+          failed=0
+          for src in $(find . -path '*/methods/guest/src/bin/*.rs' | sort); do
+            program=$(basename "$src" .rs)
+            idl="artifacts/${program}-idl.json"
+            if [ ! -f "$idl" ]; then
+              echo "Missing IDL for '${program}' — generate with: cargo run -p idl-gen -- ${src#./} > ${idl}"
+              failed=1
+              continue
+            fi
+            ./target/release/idl-gen "$src" > /tmp/${program}-idl.json
+            if ! diff "$idl" /tmp/${program}-idl.json > /dev/null 2>&1; then
+              echo "IDL for '${program}' is out of date — regenerate with: cargo run -p idl-gen -- ${src#./} > ${idl}"
+              failed=1
+            fi
+          done
+          exit $failed

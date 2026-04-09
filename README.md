@@ -76,17 +76,29 @@ spel inspect <path-to-binary>
 
 The IDL describes the program's instructions and can be used to interact with a deployed program.
 
+**Using the `idl-gen` crate** (no external toolchain required — this is what CI uses):
+
 ```bash
-# Example
-spel generate-idl token/methods/guest/src/bin/token.rs > token/token-idl.json
-spel generate-idl amm/methods/guest/src/bin/amm.rs > amm/amm-idl.json
+cargo run -p idl-gen -- token/methods/guest/src/bin/token.rs > artifacts/token-idl.json
+cargo run -p idl-gen -- amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.json
+cargo run -p idl-gen -- ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
 ```
+
+**Using the `spel` CLI** (requires the SPEL toolchain):
+
+```bash
+spel generate-idl token/methods/guest/src/bin/token.rs > artifacts/token-idl.json
+spel generate-idl amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.json
+spel generate-idl ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
+```
+
+Generated IDL files are committed under `artifacts/`. CI will fail if a program's IDL is missing or out of date.
 
 ### Invoke Instructions
 
 Use `spel --idl <IDL> <INSTRUCTION> [ARGS...]` to call a deployed program instruction:
 
 ```bash
-spel --idl token/token-idl.json <instruction> [args...]
-spel --idl amm/amm-idl.json <instruction> [args...]
+spel --idl artifacts/token-idl.json <instruction> [args...]
+spel --idl artifacts/amm-idl.json <instruction> [args...]
 ```

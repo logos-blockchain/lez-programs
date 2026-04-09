@@ -1,0 +1,14 @@
+[package]
+name = "idl-gen"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "idl-gen"
+path = "src/main.rs"
+
+[dependencies]
+spel-framework-core = { git = "https://github.com/logos-co/spel.git", rev = "57201f64b4542bb3f592bc9a0aa654c47aa908a6", features = [
+  "idl-gen",
+] }
+serde_json = "1.0"

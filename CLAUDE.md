@@ -35,10 +35,23 @@ Built binaries output to: `<program>/methods/guest/target/riscv32im-risc0-zkvm-e
 
 ## IDL Generation
 
+Using the `idl-gen` crate (no external toolchain required — this is what CI uses):
+
 ```bash
-spel generate-idl token/methods/guest/src/bin/token.rs > token/token-idl.json
-spel generate-idl amm/methods/guest/src/bin/amm.rs > amm/amm-idl.json
+cargo run -p idl-gen -- token/methods/guest/src/bin/token.rs > artifacts/token-idl.json
+cargo run -p idl-gen -- amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.json
+cargo run -p idl-gen -- ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
 ```
+
+Alternatively, using the `spel` CLI (requires the SPEL toolchain):
+
+```bash
+spel generate-idl token/methods/guest/src/bin/token.rs > artifacts/token-idl.json
+spel generate-idl amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.json
+spel generate-idl ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
+```
+
+Generated IDL files live in `artifacts/`. CI checks that every program under `*/methods/guest/src/bin/` has a corresponding `artifacts/<program>-idl.json` that matches the source.
 
 ## Deployment
 
