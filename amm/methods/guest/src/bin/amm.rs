@@ -15,7 +15,7 @@ mod amm {
     #[allow(unused_imports)]
     use super::*;
 
-    /// Initializes a new Pool (or re-initializes an inactive Pool).
+    /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
     #[instruction]
     pub fn new_definition(
         pool: AccountWithMetadata,

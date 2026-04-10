@@ -15,7 +15,7 @@ const LP_LOCK_HOLDING_PDA_SEED: [u8; 32] = [1; 32];
 /// AMM Program Instruction.
 #[derive(Serialize, Deserialize)]
 pub enum Instruction {
-    /// Initializes a new Pool (or re-initializes an inactive Pool).
+    /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
     ///
     /// On initialization, `MINIMUM_LIQUIDITY` LP tokens are permanently locked
     /// in the LP-lock holding PDA; the caller receives `initial_lp - MINIMUM_LIQUIDITY`.
@@ -104,7 +104,7 @@ pub enum Instruction {
     /// Sync pool reserves with current vault balances.
     ///
     /// Required accounts:
-    /// - AMM Pool (initialized, active)
+    /// - AMM Pool (initialized, with LP supply at or above minimum liquidity)
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
     SyncReserves,
@@ -119,19 +119,13 @@ pub struct PoolDefinition {
     pub vault_a_id: AccountId,
     pub vault_b_id: AccountId,
     pub liquidity_pool_id: AccountId,
+    /// Total LP supply tracked by the pool. After initialization it includes the permanently
+    /// locked `MINIMUM_LIQUIDITY`; a zero supply means the pool is uninitialized
     pub liquidity_pool_supply: u128,
     pub reserve_a: u128,
     pub reserve_b: u128,
     /// Fee tier in basis points.
     pub fees: u128,
-    /// Indicates whether the pool is initialized for use.
-    /// `MINIMUM_LIQUIDITY` LP tokens are permanently locked at initialization
-    /// and cannot be removed, so `liquidity_pool_supply` will never drop below
-    /// `MINIMUM_LIQUIDITY` for pools created after the minimum-liquidity lock
-    /// was introduced. Reaching that floor does not by itself imply
-    /// `active = false`; pools may remain active with only the permanently
-    /// locked minimum liquidity remaining.
-    pub active: bool,
 }
 
 pub const FEE_BPS_DENOMINATOR: u128 = 10_000;

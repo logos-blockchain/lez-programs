@@ -300,7 +300,6 @@ impl Accounts {
                 reserve_a: Balances::vault_a_init(),
                 reserve_b: Balances::vault_b_init(),
                 fees: Balances::fee_tier(),
-                active: true,
             }),
             nonce: Nonce(0),
         }
@@ -409,7 +408,6 @@ impl Accounts {
                 reserve_a: Balances::vault_a_swap_1(),
                 reserve_b: Balances::vault_b_swap_1(),
                 fees: Balances::fee_tier(),
-                active: true,
             }),
             nonce: Nonce(0),
         }
@@ -477,7 +475,6 @@ impl Accounts {
                 reserve_a: Balances::vault_a_swap_2(),
                 reserve_b: Balances::vault_b_swap_2(),
                 fees: Balances::fee_tier(),
-                active: true,
             }),
             nonce: Nonce(0),
         }
@@ -545,7 +542,6 @@ impl Accounts {
                 reserve_a: Balances::vault_a_add(),
                 reserve_b: Balances::vault_b_add(),
                 fees: Balances::fee_tier(),
-                active: true,
             }),
             nonce: Nonce(0),
         }
@@ -638,7 +634,6 @@ impl Accounts {
                 reserve_a: Balances::vault_a_remove(),
                 reserve_b: Balances::vault_b_remove(),
                 fees: Balances::fee_tier(),
-                active: true,
             }),
             nonce: Nonce(0),
         }
@@ -717,7 +712,7 @@ impl Accounts {
         }
     }
 
-    fn token_lp_definition_init_inactive() -> Account {
+    fn token_lp_definition_reinitializable() -> Account {
         Account {
             program_owner: Ids::token_program(),
             balance: 0_u128,
@@ -730,7 +725,7 @@ impl Accounts {
         }
     }
 
-    fn vault_a_init_inactive() -> Account {
+    fn vault_a_reinitializable() -> Account {
         Account {
             program_owner: Ids::token_program(),
             balance: 0_u128,
@@ -742,7 +737,7 @@ impl Accounts {
         }
     }
 
-    fn vault_b_init_inactive() -> Account {
+    fn vault_b_reinitializable() -> Account {
         Account {
             program_owner: Ids::token_program(),
             balance: 0_u128,
@@ -754,7 +749,7 @@ impl Accounts {
         }
     }
 
-    fn pool_definition_inactive() -> Account {
+    fn pool_definition_zero_supply_reinitializable() -> Account {
         Account {
             program_owner: Ids::amm_program(),
             balance: 0_u128,
@@ -768,7 +763,6 @@ impl Accounts {
                 reserve_a: 0,
                 reserve_b: 0,
                 fees: Balances::fee_tier(),
-                active: false,
             }),
             nonce: Nonce(0),
         }
@@ -849,7 +843,6 @@ impl Accounts {
                 reserve_a: Balances::vault_a_init(),
                 reserve_b: Balances::vault_b_init(),
                 fees: Balances::fee_tier(),
-                active: true,
             }),
             nonce: Nonce(0),
         }
@@ -1056,14 +1049,17 @@ fn amm_remove_liquidity_insufficient_user_lp_fails() {
 }
 
 #[test]
-fn amm_new_definition_inactive_initialized_pool_and_uninit_user_lp() {
+fn amm_new_definition_zero_supply_initialized_pool_and_uninit_user_lp() {
     let mut state = state_for_amm_tests_with_new_def();
-    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init_inactive());
-    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_init_inactive());
-    state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_inactive());
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
+    state.force_insert_account(
+        Ids::pool_definition(),
+        Accounts::pool_definition_zero_supply_reinitializable(),
+    );
     state.force_insert_account(
         Ids::token_lp_definition(),
-        Accounts::token_lp_definition_init_inactive(),
+        Accounts::token_lp_definition_reinitializable(),
     );
 
     execute_new_definition(&mut state, Balances::fee_tier());
@@ -1103,14 +1099,17 @@ fn amm_new_definition_inactive_initialized_pool_and_uninit_user_lp() {
 }
 
 #[test]
-fn amm_new_definition_inactive_initialized_pool_init_user_lp() {
+fn amm_new_definition_zero_supply_initialized_pool_init_user_lp() {
     let mut state = state_for_amm_tests_with_new_def();
-    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init_inactive());
-    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_init_inactive());
-    state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_inactive());
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
+    state.force_insert_account(
+        Ids::pool_definition(),
+        Accounts::pool_definition_zero_supply_reinitializable(),
+    );
     state.force_insert_account(
         Ids::token_lp_definition(),
-        Accounts::token_lp_definition_init_inactive(),
+        Accounts::token_lp_definition_reinitializable(),
     );
     state.force_insert_account(Ids::user_lp(), Accounts::user_lp_holding_init_zero());
 
@@ -1153,8 +1152,8 @@ fn amm_new_definition_inactive_initialized_pool_init_user_lp() {
 #[test]
 fn amm_new_definition_uninitialized_pool() {
     let mut state = state_for_amm_tests_with_new_def();
-    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init_inactive());
-    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_init_inactive());
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
 
     execute_new_definition(&mut state, Balances::fee_tier());
 
@@ -1201,8 +1200,8 @@ fn amm_new_definition_supports_all_fee_tiers() {
         FEE_TIER_BPS_100,
     ] {
         let mut state = state_for_amm_tests_with_new_def();
-        state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init_inactive());
-        state.force_insert_account(Ids::vault_b(), Accounts::vault_b_init_inactive());
+        state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
+        state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
 
         execute_new_definition(&mut state, fees);
 
@@ -1216,12 +1215,15 @@ fn amm_new_definition_supports_all_fee_tiers() {
 #[test]
 fn amm_new_definition_rejects_unsupported_fee_tier_transaction() {
     let mut state = state_for_amm_tests_with_new_def();
-    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init_inactive());
-    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_init_inactive());
-    state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_inactive());
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
+    state.force_insert_account(
+        Ids::pool_definition(),
+        Accounts::pool_definition_zero_supply_reinitializable(),
+    );
     state.force_insert_account(
         Ids::token_lp_definition(),
-        Accounts::token_lp_definition_init_inactive(),
+        Accounts::token_lp_definition_reinitializable(),
     );
     state.force_insert_account(Ids::user_lp(), Accounts::user_lp_holding_init_zero());
 
@@ -1230,19 +1232,19 @@ fn amm_new_definition_rejects_unsupported_fee_tier_transaction() {
     assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
-        Accounts::pool_definition_inactive()
+        Accounts::pool_definition_zero_supply_reinitializable()
     );
     assert_eq!(
         state.get_account_by_id(Ids::vault_a()),
-        Accounts::vault_a_init_inactive()
+        Accounts::vault_a_reinitializable()
     );
     assert_eq!(
         state.get_account_by_id(Ids::vault_b()),
-        Accounts::vault_b_init_inactive()
+        Accounts::vault_b_reinitializable()
     );
     assert_eq!(
         state.get_account_by_id(Ids::token_lp_definition()),
-        Accounts::token_lp_definition_init_inactive()
+        Accounts::token_lp_definition_reinitializable()
     );
     assert_eq!(
         state.get_account_by_id(Ids::user_a()),

@@ -73,7 +73,7 @@ pub fn new_definition(
     assert_supported_fee_tier(fees);
 
     // TODO: return here
-    // Verify that Pool Account is not active
+    // A pool can only be initialized from a fresh account state.
     let is_new_pool = pool.account == Account::default();
     let pool_account_data = if is_new_pool {
         PoolDefinition::default()
@@ -82,16 +82,10 @@ pub fn new_definition(
             .expect("AMM program expects a valid Pool account")
     };
 
-    assert!(
-        !pool_account_data.active,
-        "Cannot initialize an active Pool Definition"
+    assert_eq!(
+        pool_account_data.liquidity_pool_supply, 0,
+        "Cannot initialize a Pool Definition with nonzero LP supply"
     );
-    if !is_new_pool {
-        assert_eq!(
-            pool_account_data.liquidity_pool_supply, 0,
-            "New definition: inactive Pool Definition must have zero LP supply before reinitialization"
-        );
-    }
 
     // LP Token minting calculation
     let initial_lp = token_a_amount
@@ -117,11 +111,10 @@ pub fn new_definition(
         reserve_a: token_a_amount.into(),
         reserve_b: token_b_amount.into(),
         fees,
-        active: true,
     };
 
     pool_post.data = Data::from(&pool_post_definition);
-    let pool_post: AccountPostState = if pool.account == Account::default() {
+    let pool_post: AccountPostState = if is_new_pool {
         AccountPostState::new_claimed(pool_post.clone())
     } else {
         AccountPostState::new(pool_post.clone())

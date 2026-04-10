@@ -1,4 +1,4 @@
-use amm_core::{read_vault_fungible_balances, PoolDefinition};
+use amm_core::{read_vault_fungible_balances, PoolDefinition, MINIMUM_LIQUIDITY};
 use nssa_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall},
@@ -12,7 +12,10 @@ pub fn sync_reserves(
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("Sync reserves: AMM Program expects a valid Pool Definition Account");
 
-    assert!(pool_def_data.active, "Pool is inactive");
+    assert!(
+        pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
+        "Pool liquidity supply is below minimum liquidity"
+    );
     assert_eq!(
         vault_a.account_id, pool_def_data.vault_a_id,
         "Vault A was not provided"

@@ -29,7 +29,10 @@ pub fn remove_liquidity(
         .expect("Remove liquidity: AMM Program expects a valid Pool Definition Account");
     assert_supported_fee_tier(pool_def_data.fees);
 
-    assert!(pool_def_data.active, "Pool is inactive");
+    assert!(
+        pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
+        "Pool liquidity supply is below minimum liquidity"
+    );
     assert_eq!(
         pool_def_data.liquidity_pool_id, pool_definition_lp.account_id,
         "LP definition mismatch"
@@ -135,7 +138,6 @@ pub fn remove_liquidity(
             .reserve_b
             .checked_sub(withdraw_amount_b)
             .expect("reserve_b - withdraw_amount_b underflows"),
-        active: true,
         ..pool_def_data.clone()
     };
 

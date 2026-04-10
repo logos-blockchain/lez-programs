@@ -1,11 +1,11 @@
-use amm_core::assert_supported_fee_tier;
+use amm_core::{assert_supported_fee_tier, MINIMUM_LIQUIDITY};
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall},
 };
 
-/// Validates swap setup: checks pool is active, vaults match, and reserves are sufficient.
+/// Validates swap setup: checks pool liquidity is ready, vaults match, and reserves are sufficient.
 fn validate_swap_setup(
     pool: &AccountWithMetadata,
     vault_a: &AccountWithMetadata,
@@ -15,7 +15,10 @@ fn validate_swap_setup(
         .expect("AMM Program expects a valid Pool Definition Account");
     assert_supported_fee_tier(pool_def_data.fees);
 
-    assert!(pool_def_data.active, "Pool is inactive");
+    assert!(
+        pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
+        "Pool liquidity supply is below minimum liquidity"
+    );
     assert_eq!(
         vault_a.account_id, pool_def_data.vault_a_id,
         "Vault A was not provided"
