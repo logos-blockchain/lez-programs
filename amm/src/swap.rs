@@ -76,20 +76,34 @@ fn create_swap_post_states(
     deposit_b: u128,
     withdraw_b: u128,
 ) -> Vec<AccountPostState> {
+    let new_reserve_a = pool_def_data
+        .reserve_a
+        .checked_add(deposit_a)
+        .expect("reserve_a + deposit_a overflows u128")
+        .checked_sub(withdraw_a)
+        .expect("reserve_a + deposit_a - withdraw_a underflows");
+    let new_reserve_b = pool_def_data
+        .reserve_b
+        .checked_add(deposit_b)
+        .expect("reserve_b + deposit_b overflows u128")
+        .checked_sub(withdraw_b)
+        .expect("reserve_b + deposit_b - withdraw_b underflows");
+    let (old_lo, old_hi) = pool_def_data
+        .reserve_a
+        .carrying_mul(pool_def_data.reserve_b, 0);
+    let (new_lo, new_hi) = new_reserve_a.carrying_mul(new_reserve_b, 0);
+    let old_k = (old_hi, old_lo);
+    let new_k = (new_hi, new_lo);
+
+    assert!(
+        new_k >= old_k,
+        "Swap invariant violation: new k must be greater than or equal to old k"
+    );
+
     let mut pool_post = pool.account;
     let pool_post_definition = PoolDefinition {
-        reserve_a: pool_def_data
-            .reserve_a
-            .checked_add(deposit_a)
-            .expect("reserve_a + deposit_a overflows u128")
-            .checked_sub(withdraw_a)
-            .expect("reserve_a + deposit_a - withdraw_a underflows"),
-        reserve_b: pool_def_data
-            .reserve_b
-            .checked_add(deposit_b)
-            .expect("reserve_b + deposit_b overflows u128")
-            .checked_sub(withdraw_b)
-            .expect("reserve_b + deposit_b - withdraw_b underflows"),
+        reserve_a: new_reserve_a,
+        reserve_b: new_reserve_b,
         ..pool_def_data
     };
 

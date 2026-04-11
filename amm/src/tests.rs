@@ -2030,6 +2030,36 @@ fn test_call_swap_incorrect_token_type() {
     );
 }
 
+fn pool_with_reserves(reserve_a: u128, reserve_b: u128) -> AccountWithMetadata {
+    let mut pool = AccountWithMetadataForTests::pool_definition_init();
+    let mut pool_definition =
+        PoolDefinition::try_from(&pool.account.data).expect("Pool definition must be valid");
+
+    pool_definition.reserve_a = reserve_a;
+    pool_definition.reserve_b = reserve_b;
+    pool.account.data = Data::from(&pool_definition);
+
+    pool
+}
+
+fn vault_a_with_balance(balance: u128) -> AccountWithMetadata {
+    let mut vault = AccountWithMetadataForTests::vault_a_init();
+    vault.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: IdForTests::token_a_definition_id(),
+        balance,
+    });
+    vault
+}
+
+fn vault_b_with_balance(balance: u128) -> AccountWithMetadata {
+    let mut vault = AccountWithMetadataForTests::vault_b_init();
+    vault.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: IdForTests::token_b_definition_id(),
+        balance,
+    });
+    vault
+}
+
 #[should_panic(expected = "Vault A was not provided")]
 #[test]
 fn test_call_swap_vault_a_omitted() {
@@ -2138,6 +2168,36 @@ fn test_call_swap_below_min_out() {
         BalanceForTests::min_amount_out_too_high(),
         IdForTests::token_a_definition_id(),
     );
+}
+
+#[test]
+fn test_call_swap_widened_k_boundary() {
+    let old_reserve_a = u128::MAX - 2;
+    let old_reserve_b = u128::MAX - 1;
+
+    assert!(old_reserve_a.checked_mul(old_reserve_b).is_none());
+
+    let (post_states, _chained_calls) = swap_exact_input(
+        pool_with_reserves(old_reserve_a, old_reserve_b),
+        vault_a_with_balance(old_reserve_a),
+        vault_b_with_balance(old_reserve_b),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        1,
+        0,
+        IdForTests::token_a_definition_id(),
+    );
+
+    let pool_post = post_states[0].clone();
+    let pool_post_definition = PoolDefinition::try_from(&pool_post.account().data)
+        .expect("Pool post-state must contain a valid definition");
+
+    assert_eq!(pool_post_definition.reserve_a, u128::MAX - 1);
+    assert_eq!(pool_post_definition.reserve_b, u128::MAX - 2);
+    assert!(pool_post_definition
+        .reserve_a
+        .checked_mul(pool_post_definition.reserve_b)
+        .is_none());
 }
 
 #[test]
