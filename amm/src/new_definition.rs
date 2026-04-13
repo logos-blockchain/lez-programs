@@ -26,7 +26,6 @@ pub fn new_definition(
     fees: u128,
     amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    // Verify token_a and token_b are different
     let definition_token_a_id = token_core::TokenHolding::try_from(&user_holding_a.account.data)
         .expect("New definition: AMM Program expects valid Token Holding account for Token A")
         .definition_id();
@@ -34,13 +33,14 @@ pub fn new_definition(
         .expect("New definition: AMM Program expects valid Token Holding account for Token B")
         .definition_id();
 
-    // both instances of the same token program
     let token_program = user_holding_a.account.program_owner;
 
+    // both instances of the same token program
     assert_eq!(
         user_holding_b.account.program_owner, token_program,
         "User Token holdings must use the same Token Program"
     );
+    // Verify token_a and token_b are different
     assert!(
         definition_token_a_id != definition_token_b_id,
         "Cannot set up a swap for a token with itself"
@@ -72,19 +72,11 @@ pub fn new_definition(
     );
     assert_supported_fee_tier(fees);
 
-    // TODO: return here
-    // A pool can only be initialized from a fresh account state.
-    let is_new_pool = pool.account == Account::default();
-    let pool_account_data = if is_new_pool {
-        PoolDefinition::default()
-    } else {
-        PoolDefinition::try_from(&pool.account.data)
-            .expect("AMM program expects a valid Pool account")
-    };
-
+    // Assert that pool is uninitialized (hard precondition)
     assert_eq!(
-        pool_account_data.liquidity_pool_supply, 0,
-        "Cannot initialize a Pool Definition with nonzero LP supply"
+        pool.account,
+        Account::default(),
+        "Pool account must be uninitialized"
     );
 
     // LP Token minting calculation
@@ -114,11 +106,7 @@ pub fn new_definition(
     };
 
     pool_post.data = Data::from(&pool_post_definition);
-    let pool_post: AccountPostState = if is_new_pool {
-        AccountPostState::new_claimed(pool_post.clone())
-    } else {
-        AccountPostState::new(pool_post.clone())
-    };
+    let pool_post: AccountPostState = AccountPostState::new_claimed(pool_post.clone());
 
     let token_program_id = user_holding_a.account.program_owner;
 
@@ -140,59 +128,26 @@ pub fn new_definition(
     );
 
     // Chain call for liquidity token lock holding
-    let lock_instruction = if is_new_pool {
-        token_core::Instruction::NewFungibleDefinition {
-            name: String::from("LP Token"),
-            total_supply: MINIMUM_LIQUIDITY,
-        }
-    } else {
-        token_core::Instruction::Mint {
-            amount_to_mint: MINIMUM_LIQUIDITY,
-        }
-    };
-
     let mut pool_lp_auth = pool_definition_lp.clone();
     pool_lp_auth.is_authorized = true;
 
     let call_token_lp_lock = ChainedCall::new(
         token_program_id,
         vec![pool_lp_auth.clone(), lp_lock_holding.clone()],
-        &lock_instruction,
+        &token_core::Instruction::NewFungibleDefinition {
+            name: String::from("LP Token"),
+            total_supply: MINIMUM_LIQUIDITY,
+        },
     )
     .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
 
     let mut pool_lp_after_lock = pool_lp_auth.clone();
-    if pool_definition_lp.account == Account::default() {
-        pool_lp_after_lock.account.program_owner = token_program_id;
-        pool_lp_after_lock.account.data = Data::from(&TokenDefinition::Fungible {
-            name: String::from("LP Token"),
-            total_supply: MINIMUM_LIQUIDITY,
-            metadata_id: None,
-        });
-    } else {
-        let token_definition = TokenDefinition::try_from(&pool_definition_lp.account.data)
-            .expect("New definition: AMM Program expects a valid LP Token Definition Account");
-        let TokenDefinition::Fungible {
-            name,
-            total_supply,
-            metadata_id,
-        } = token_definition
-        else {
-            panic!("New definition: LP Token Definition Account must be fungible");
-        };
-        assert_eq!(
-            total_supply, 0,
-            "New definition: existing LP Token Definition Account must have zero supply before reinitialization"
-        );
-
-        pool_lp_after_lock.account.data = Data::from(&TokenDefinition::Fungible {
-            name,
-            total_supply: total_supply
-                .checked_add(MINIMUM_LIQUIDITY)
-                .expect("LP total supply overflow on lock mint"),
-            metadata_id,
-        });
-    }
+    pool_lp_after_lock.account.program_owner = token_program_id;
+    pool_lp_after_lock.account.data = Data::from(&TokenDefinition::Fungible {
+        name: String::from("LP Token"),
+        total_supply: MINIMUM_LIQUIDITY,
+        metadata_id: None,
+    });
 
     let call_token_lp_user = ChainedCall::new(
         token_program_id,
