@@ -1,12 +1,16 @@
 #![cfg(test)]
 
-use nssa_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
+use nssa_core::{
+    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
+    program::Claim,
+};
 use token_core::{
     MetadataStandard, NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding,
 };
 
 use crate::{
     burn::burn,
+    initialize::initialize_account,
     mint::mint,
     new_definition::{new_definition_with_metadata, new_fungible_definition},
     print_nft::print_nft,
@@ -161,6 +165,14 @@ impl AccountForTests {
         }
     }
 
+    fn holding_account_uninit_auth() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: true,
+            account_id: IdForTests::holding_id_2(),
+        }
+    }
+
     fn init_mint() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
@@ -248,6 +260,22 @@ impl AccountForTests {
             account: Account::default(),
             is_authorized: false,
             account_id: IdForTests::pool_definition_id(),
+        }
+    }
+
+    fn definition_account_uninit_auth() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: true,
+            account_id: IdForTests::pool_definition_id(),
+        }
+    }
+
+    fn metadata_account_uninit_auth() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: true,
+            account_id: AccountId::new([19; 32]),
         }
     }
 
@@ -569,10 +597,36 @@ fn test_new_definition_non_default_second_account_should_fail() {
     );
 }
 
+#[should_panic(expected = "Definition target account must be authorized")]
+#[test]
+fn test_new_definition_requires_authorized_definition_target() {
+    let definition_account = AccountForTests::definition_account_uninit();
+    let holding_account = AccountForTests::holding_account_uninit_auth();
+    let _post_states = new_fungible_definition(
+        definition_account,
+        holding_account,
+        String::from("test"),
+        10,
+    );
+}
+
+#[should_panic(expected = "Holding target account must be authorized")]
+#[test]
+fn test_new_definition_requires_authorized_holding_target() {
+    let definition_account = AccountForTests::definition_account_uninit_auth();
+    let holding_account = AccountForTests::holding_account_uninit();
+    let _post_states = new_fungible_definition(
+        definition_account,
+        holding_account,
+        String::from("test"),
+        10,
+    );
+}
+
 #[test]
 fn test_new_definition_with_valid_inputs_succeeds() {
-    let definition_account = AccountForTests::definition_account_uninit();
-    let holding_account = AccountForTests::holding_account_uninit();
+    let definition_account = AccountForTests::definition_account_uninit_auth();
+    let holding_account = AccountForTests::holding_account_uninit_auth();
 
     let post_states = new_fungible_definition(
         definition_account,
@@ -586,11 +640,13 @@ fn test_new_definition_with_valid_inputs_succeeds() {
         *definition_account.account(),
         AccountForTests::definition_account_unclaimed().account
     );
+    assert_eq!(definition_account.required_claim(), Some(Claim::Authorized));
 
     assert_eq!(
         *holding_account.account(),
         AccountForTests::holding_account_unclaimed().account
     );
+    assert_eq!(holding_account.required_claim(), Some(Claim::Authorized));
 }
 
 #[should_panic(expected = "Sender and recipient definition id mismatch")]
@@ -633,6 +689,8 @@ fn test_transfer_with_valid_inputs_succeeds() {
         *recipient_post.account(),
         AccountForTests::holding_account2_init_post_transfer().account
     );
+    assert_eq!(sender_post.required_claim(), None);
+    assert_eq!(recipient_post.required_claim(), None);
 }
 
 #[should_panic(expected = "Invalid balance for NFT Master transfer")]
@@ -669,9 +727,9 @@ fn test_transfer_with_master_nft_success() {
 }
 
 #[test]
-fn test_token_initialize_account_succeeds() {
+fn test_transfer_with_default_recipient_claims_recipient() {
     let sender = AccountForTests::holding_account_init();
-    let recipient = AccountForTests::holding_account2_init();
+    let recipient = AccountForTests::holding_account_uninit();
     let post_states = transfer(sender, recipient, BalanceForTests::transfer_amount());
     let [sender_post, recipient_post] = post_states.try_into().unwrap();
 
@@ -681,8 +739,53 @@ fn test_token_initialize_account_succeeds() {
     );
     assert_eq!(
         *recipient_post.account(),
-        AccountForTests::holding_account2_init_post_transfer().account
+        Account {
+            program_owner: [0u32; 8],
+            balance: 0u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: IdForTests::pool_definition_id(),
+                balance: BalanceForTests::transfer_amount(),
+            }),
+            nonce: Nonce(0),
+        }
     );
+    assert_eq!(sender_post.required_claim(), None);
+    assert_eq!(recipient_post.required_claim(), Some(Claim::Authorized));
+}
+
+#[test]
+fn test_token_initialize_account_succeeds() {
+    let definition_account = AccountForTests::definition_account_auth();
+    let holding_account = AccountForTests::holding_account_uninit_auth();
+    let post_states = initialize_account(definition_account, holding_account);
+    let [definition_post, holding_post] = post_states.try_into().unwrap();
+
+    assert_eq!(
+        *definition_post.account(),
+        AccountForTests::definition_account_auth().account
+    );
+    assert_eq!(
+        *holding_post.account(),
+        Account {
+            program_owner: [0u32; 8],
+            balance: 0u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: IdForTests::pool_definition_id(),
+                balance: 0,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+    assert_eq!(definition_post.required_claim(), None);
+    assert_eq!(holding_post.required_claim(), Some(Claim::Authorized));
+}
+
+#[test]
+#[should_panic(expected = "Account to initialize must be authorized")]
+fn test_token_initialize_account_requires_authorization() {
+    let definition_account = AccountForTests::definition_account_auth();
+    let holding_account = AccountForTests::holding_account_uninit();
+    let _post_states = initialize_account(definition_account, holding_account);
 }
 
 #[test]
@@ -824,6 +927,8 @@ fn test_mint_success() {
         *holding_post.account(),
         AccountForTests::holding_account_same_definition_mint().account
     );
+    assert_eq!(def_post.required_claim(), None);
+    assert_eq!(holding_post.required_claim(), None);
 }
 
 #[test]
@@ -846,7 +951,8 @@ fn test_mint_uninit_holding_success() {
         *holding_post.account(),
         AccountForTests::init_mint().account
     );
-    assert!(holding_post.requires_claim());
+    assert_eq!(def_post.required_claim(), None);
+    assert_eq!(holding_post.required_claim(), Some(Claim::Authorized));
 }
 
 #[test]
@@ -882,6 +988,111 @@ fn test_mint_cannot_mint_unmintable_tokens() {
         definition_account,
         holding_account,
         BalanceForTests::mint_success(),
+    );
+}
+
+#[test]
+fn test_new_definition_with_metadata_success() {
+    let definition_account = AccountForTests::definition_account_uninit_auth();
+    let holding_account = AccountForTests::holding_account_uninit_auth();
+    let metadata_account = AccountForTests::metadata_account_uninit_auth();
+    let new_definition = NewTokenDefinition::Fungible {
+        name: String::from("test"),
+        total_supply: 15u128,
+    };
+    let metadata = NewTokenMetadata {
+        standard: MetadataStandard::Simple,
+        uri: "test_uri".to_string(),
+        creators: "test_creators".to_string(),
+    };
+
+    let post_states = new_definition_with_metadata(
+        definition_account,
+        holding_account,
+        metadata_account,
+        new_definition,
+        metadata,
+    );
+    let [definition_post, holding_post, metadata_post] = post_states.try_into().unwrap();
+
+    assert_eq!(definition_post.required_claim(), Some(Claim::Authorized));
+    assert_eq!(holding_post.required_claim(), Some(Claim::Authorized));
+    assert_eq!(metadata_post.required_claim(), Some(Claim::Authorized));
+}
+
+#[should_panic(expected = "Definition target account must be authorized")]
+#[test]
+fn test_call_new_definition_metadata_requires_authorized_definition() {
+    let definition_account = AccountForTests::definition_account_uninit();
+    let holding_account = AccountForTests::holding_account_uninit_auth();
+    let metadata_account = AccountForTests::metadata_account_uninit_auth();
+    let new_definition = NewTokenDefinition::Fungible {
+        name: String::from("test"),
+        total_supply: 15u128,
+    };
+    let metadata = NewTokenMetadata {
+        standard: MetadataStandard::Simple,
+        uri: "test_uri".to_string(),
+        creators: "test_creators".to_string(),
+    };
+    let _post_states = new_definition_with_metadata(
+        definition_account,
+        holding_account,
+        metadata_account,
+        new_definition,
+        metadata,
+    );
+}
+
+#[should_panic(expected = "Holding target account must be authorized")]
+#[test]
+fn test_call_new_definition_metadata_requires_authorized_holding() {
+    let definition_account = AccountForTests::definition_account_uninit_auth();
+    let holding_account = AccountForTests::holding_account_uninit();
+    let metadata_account = AccountForTests::metadata_account_uninit_auth();
+    let new_definition = NewTokenDefinition::Fungible {
+        name: String::from("test"),
+        total_supply: 15u128,
+    };
+    let metadata = NewTokenMetadata {
+        standard: MetadataStandard::Simple,
+        uri: "test_uri".to_string(),
+        creators: "test_creators".to_string(),
+    };
+    let _post_states = new_definition_with_metadata(
+        definition_account,
+        holding_account,
+        metadata_account,
+        new_definition,
+        metadata,
+    );
+}
+
+#[should_panic(expected = "Metadata target account must be authorized")]
+#[test]
+fn test_call_new_definition_metadata_requires_authorized_metadata() {
+    let definition_account = AccountForTests::definition_account_uninit_auth();
+    let holding_account = AccountForTests::holding_account_uninit_auth();
+    let metadata_account = AccountWithMetadata {
+        account: Account::default(),
+        is_authorized: false,
+        account_id: AccountId::new([20; 32]),
+    };
+    let new_definition = NewTokenDefinition::Fungible {
+        name: String::from("test"),
+        total_supply: 15u128,
+    };
+    let metadata = NewTokenMetadata {
+        standard: MetadataStandard::Simple,
+        uri: "test_uri".to_string(),
+        creators: "test_creators".to_string(),
+    };
+    let _post_states = new_definition_with_metadata(
+        definition_account,
+        holding_account,
+        metadata_account,
+        new_definition,
+        metadata,
     );
 }
 
@@ -997,11 +1208,19 @@ fn test_print_nft_print_account_initialized() {
     let _post_states = print_nft(master_account, printed_account);
 }
 
+#[should_panic(expected = "Printed Account must be authorized")]
+#[test]
+fn test_print_nft_print_account_must_be_authorized() {
+    let master_account = AccountForTests::holding_account_master_nft();
+    let printed_account = AccountForTests::holding_account_uninit();
+    let _post_states = print_nft(master_account, printed_account);
+}
+
 #[should_panic(expected = "Invalid Token Holding data")]
 #[test]
 fn test_print_nft_master_nft_invalid_token_holding() {
     let master_account = AccountForTests::definition_account_auth();
-    let printed_account = AccountForTests::holding_account_uninit();
+    let printed_account = AccountForTests::holding_account_uninit_auth();
     let _post_states = print_nft(master_account, printed_account);
 }
 
@@ -1009,7 +1228,7 @@ fn test_print_nft_master_nft_invalid_token_holding() {
 #[test]
 fn test_print_nft_master_nft_not_nft_master_account() {
     let master_account = AccountForTests::holding_account_init();
-    let printed_account = AccountForTests::holding_account_uninit();
+    let printed_account = AccountForTests::holding_account_uninit_auth();
     let _post_states = print_nft(master_account, printed_account);
 }
 
@@ -1017,14 +1236,14 @@ fn test_print_nft_master_nft_not_nft_master_account() {
 #[test]
 fn test_print_nft_master_nft_insufficient_balance() {
     let master_account = AccountForTests::holding_account_master_nft_insufficient_balance();
-    let printed_account = AccountForTests::holding_account_uninit();
+    let printed_account = AccountForTests::holding_account_uninit_auth();
     let _post_states = print_nft(master_account, printed_account);
 }
 
 #[test]
 fn test_print_nft_success() {
     let master_account = AccountForTests::holding_account_master_nft();
-    let printed_account = AccountForTests::holding_account_uninit();
+    let printed_account = AccountForTests::holding_account_uninit_auth();
     let post_states = print_nft(master_account, printed_account);
 
     let [post_master_nft, post_printed] = post_states.try_into().unwrap();
@@ -1037,4 +1256,6 @@ fn test_print_nft_success() {
         *post_printed.account(),
         AccountForTests::holding_account_printed_nft().account
     );
+    assert_eq!(post_master_nft.required_claim(), None);
+    assert_eq!(post_printed.required_claim(), Some(Claim::Authorized));
 }

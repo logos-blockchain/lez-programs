@@ -93,6 +93,18 @@ impl Accounts {
             nonce: Nonce(0),
         }
     }
+
+    fn recipient_ata_init() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 0_u128,
+            }),
+            nonce: Nonce(0),
+        }
+    }
 }
 
 fn deploy_programs(state: &mut V03State) {
@@ -113,16 +125,22 @@ fn deploy_programs(state: &mut V03State) {
 }
 
 fn state_for_ata_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[]);
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::owner_ata(), Accounts::owner_ata_init());
     state
 }
 
+fn state_for_ata_tests_with_precreated_recipient_ata() -> V03State {
+    let mut state = state_for_ata_tests();
+    state.force_insert_account(Ids::recipient_ata(), Accounts::recipient_ata_init());
+    state
+}
+
 #[test]
 fn ata_create() {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[]);
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
@@ -141,7 +159,7 @@ fn ata_create() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::owner_ata()),
@@ -176,7 +194,7 @@ fn ata_create_is_idempotent() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     // Already initialized — should remain unchanged
     assert_eq!(
@@ -195,7 +213,7 @@ fn ata_create_is_idempotent() {
 
 #[test]
 fn ata_transfer() {
-    let mut state = state_for_ata_tests();
+    let mut state = state_for_ata_tests_with_precreated_recipient_ata();
 
     let instruction = ata_core::Instruction::Transfer {
         ata_program_id: Ids::ata_program(),
@@ -213,7 +231,7 @@ fn ata_transfer() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::owner_ata()),
@@ -262,7 +280,7 @@ fn ata_burn() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::owner_ata()),
@@ -294,7 +312,7 @@ fn ata_burn() {
 
 #[test]
 fn ata_create_from_private_owner() {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[]);
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
@@ -359,7 +377,7 @@ fn ata_create_from_private_owner() {
     let witness_set = WitnessSet::for_message(&message, proof, &[]);
     let tx = PrivacyPreservingTransaction::new(message, witness_set);
     state
-        .transition_from_privacy_preserving_transaction(&tx, 0)
+        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
         .unwrap();
 
     assert_eq!(

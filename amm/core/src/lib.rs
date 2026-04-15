@@ -29,7 +29,7 @@ pub enum Instruction {
     ///   pool.account_id)`
     /// - User Holding Account for Token A (authorized)
     /// - User Holding Account for Token B (authorized)
-    /// - User Holding Account for Pool Liquidity
+    /// - User Holding Account for Pool Liquidity (authorized when uninitialized)
     NewDefinition {
         token_a_amount: u128,
         token_b_amount: u128,

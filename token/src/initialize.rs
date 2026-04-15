@@ -1,6 +1,6 @@
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
-    program::AccountPostState,
+    program::{AccountPostState, Claim},
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -12,6 +12,10 @@ pub fn initialize_account(
         account_to_initialize.account,
         Account::default(),
         "Only Uninitialized accounts can be initialized"
+    );
+    assert!(
+        account_to_initialize.is_authorized,
+        "Account to initialize must be authorized"
     );
 
     // TODO: #212 We should check that this is an account owned by the token program.
@@ -29,6 +33,6 @@ pub fn initialize_account(
 
     vec![
         AccountPostState::new(definition_post),
-        AccountPostState::new_claimed(account_to_initialize),
+        AccountPostState::new_claimed(account_to_initialize, Claim::Authorized),
     ]
 }

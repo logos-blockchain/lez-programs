@@ -4,13 +4,13 @@ use std::num::NonZero;
 
 use amm_core::{
     compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
-    compute_pool_pda, compute_vault_pda, compute_vault_pda_seed, PoolDefinition,
-    FEE_BPS_DENOMINATOR, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5,
-    MINIMUM_LIQUIDITY,
+    compute_lp_lock_holding_pda_seed, compute_pool_pda, compute_pool_pda_seed, compute_vault_pda,
+    compute_vault_pda_seed, PoolDefinition, FEE_BPS_DENOMINATOR, FEE_TIER_BPS_1, FEE_TIER_BPS_100,
+    FEE_TIER_BPS_30, FEE_TIER_BPS_5, MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::{ChainedCall, ProgramId},
+    program::{ChainedCall, Claim, ProgramId},
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -489,46 +489,57 @@ impl ChainedCallForTests {
     }
 
     fn cc_new_definition_token_a() -> ChainedCall {
+        let mut vault_a_auth = AccountWithMetadataForTests::vault_a_init();
+        vault_a_auth.is_authorized = true;
+
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_a(),
-                AccountWithMetadataForTests::vault_a_init(),
-            ],
+            vec![AccountWithMetadataForTests::user_holding_a(), vault_a_auth],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: BalanceForTests::vault_a_reserve_init(),
             },
         )
+        .with_pda_seeds(vec![compute_vault_pda_seed(
+            IdForTests::pool_definition_id(),
+            IdForTests::token_a_definition_id(),
+        )])
     }
 
     fn cc_new_definition_token_b() -> ChainedCall {
+        let mut vault_b_auth = AccountWithMetadataForTests::vault_b_init();
+        vault_b_auth.is_authorized = true;
+
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_b(),
-                AccountWithMetadataForTests::vault_b_init(),
-            ],
+            vec![AccountWithMetadataForTests::user_holding_b(), vault_b_auth],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: BalanceForTests::vault_b_reserve_init(),
             },
         )
+        .with_pda_seeds(vec![compute_vault_pda_seed(
+            IdForTests::pool_definition_id(),
+            IdForTests::token_b_definition_id(),
+        )])
     }
 
     fn cc_new_definition_token_lp_lock() -> ChainedCall {
         let mut pool_lp_auth = AccountForTests::pool_lp_uninit();
         pool_lp_auth.is_authorized = true;
+        let mut lp_lock_holding_auth = AccountForTests::lp_lock_holding_uninit();
+        lp_lock_holding_auth.is_authorized = true;
 
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![pool_lp_auth, AccountForTests::lp_lock_holding_uninit()],
+            vec![pool_lp_auth, lp_lock_holding_auth],
             &token_core::Instruction::NewFungibleDefinition {
                 name: String::from("LP Token"),
                 total_supply: MINIMUM_LIQUIDITY,
             },
         )
-        .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
-            IdForTests::pool_definition_id(),
-        )])
+        .with_pda_seeds(vec![
+            compute_liquidity_token_pda_seed(IdForTests::pool_definition_id()),
+            compute_lp_lock_holding_pda_seed(IdForTests::pool_definition_id()),
+        ])
     }
 
     fn cc_new_definition_token_lp_user() -> ChainedCall {
@@ -2068,6 +2079,13 @@ fn test_call_new_definition_chained_call_successful() {
     let pool_post = post_states[0].clone();
 
     assert!(AccountWithMetadataForTests::pool_definition_init().account == *pool_post.account());
+    assert_eq!(
+        pool_post.required_claim(),
+        Some(Claim::Pda(compute_pool_pda_seed(
+            IdForTests::token_a_definition_id(),
+            IdForTests::token_b_definition_id(),
+        )))
+    );
 
     let chained_call_lp_lock = chained_calls[0].clone();
     let chained_call_lp_user = chained_calls[1].clone();
@@ -2752,20 +2770,20 @@ fn test_new_definition_lp_symmetric_amounts() {
 
     let mut pool_lp_auth = AccountForTests::pool_lp_uninit();
     pool_lp_auth.is_authorized = true;
+    let mut lp_lock_holding_auth = AccountForTests::lp_lock_holding_uninit();
+    lp_lock_holding_auth.is_authorized = true;
     let expected_lp_lock_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![
-            pool_lp_auth.clone(),
-            AccountForTests::lp_lock_holding_uninit(),
-        ],
+        vec![pool_lp_auth.clone(), lp_lock_holding_auth],
         &token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
             total_supply: MINIMUM_LIQUIDITY,
         },
     )
-    .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
-        IdForTests::pool_definition_id(),
-    )]);
+    .with_pda_seeds(vec![
+        compute_liquidity_token_pda_seed(IdForTests::pool_definition_id()),
+        compute_lp_lock_holding_pda_seed(IdForTests::pool_definition_id()),
+    ]);
 
     let expected_lp_user_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
@@ -2814,21 +2832,21 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
 
     let mut pool_lp_auth = AccountForTests::pool_lp_uninit();
     pool_lp_auth.is_authorized = true;
+    let mut lp_lock_holding_auth = AccountForTests::lp_lock_holding_uninit();
+    lp_lock_holding_auth.is_authorized = true;
 
     let expected_lock_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![
-            pool_lp_auth.clone(),
-            AccountForTests::lp_lock_holding_uninit(),
-        ],
+        vec![pool_lp_auth.clone(), lp_lock_holding_auth],
         &token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
             total_supply: MINIMUM_LIQUIDITY,
         },
     )
-    .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
-        IdForTests::pool_definition_id(),
-    )]);
+    .with_pda_seeds(vec![
+        compute_liquidity_token_pda_seed(IdForTests::pool_definition_id()),
+        compute_lp_lock_holding_pda_seed(IdForTests::pool_definition_id()),
+    ]);
     let expected_user_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
         vec![

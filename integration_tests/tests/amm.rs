@@ -816,6 +816,18 @@ impl Accounts {
                 definition_id: Ids::token_lp_definition(),
                 balance: Balances::lp_user_init(),
             }),
+            nonce: Nonce(1),
+        }
+    }
+
+    fn user_lp_holding_new_init_precreated() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_lp_definition(),
+                balance: Balances::lp_user_init(),
+            }),
             nonce: Nonce(0),
         }
     }
@@ -895,7 +907,7 @@ fn deploy_programs(state: &mut V03State) {
 }
 
 fn state_for_amm_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[]);
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
     deploy_programs(&mut state);
     state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_init());
     state.force_insert_account(
@@ -919,7 +931,7 @@ fn state_for_amm_tests() -> V03State {
 }
 
 fn state_for_amm_tests_with_new_def() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[]);
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
     deploy_programs(&mut state);
     state.force_insert_account(
         Ids::token_a_definition(),
@@ -938,7 +950,17 @@ fn current_nonce(state: &V03State, account_id: AccountId) -> Nonce {
     state.get_account_by_id(account_id).nonce
 }
 
-fn try_execute_new_definition(state: &mut V03State, fees: u128) -> Result<(), NssaError> {
+fn state_for_amm_tests_with_precreated_user_lp_for_new_def() -> V03State {
+    let mut state = state_for_amm_tests_with_new_def();
+    state.force_insert_account(Ids::user_lp(), Accounts::user_lp_holding_init_zero());
+    state
+}
+
+fn try_execute_new_definition(
+    state: &mut V03State,
+    fees: u128,
+    authorize_user_lp: bool,
+) -> Result<(), NssaError> {
     let instruction = amm_core::Instruction::NewDefinition {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
@@ -958,23 +980,37 @@ fn try_execute_new_definition(state: &mut V03State, fees: u128) -> Result<(), Ns
             Ids::user_b(),
             Ids::user_lp(),
         ],
-        vec![
-            current_nonce(state, Ids::user_a()),
-            current_nonce(state, Ids::user_b()),
-        ],
+        if authorize_user_lp {
+            vec![
+                current_nonce(state, Ids::user_a()),
+                current_nonce(state, Ids::user_b()),
+                current_nonce(state, Ids::user_lp()),
+            ]
+        } else {
+            vec![
+                current_nonce(state, Ids::user_a()),
+                current_nonce(state, Ids::user_b()),
+            ]
+        },
         instruction,
     )
     .unwrap();
 
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
+    let witness_set = if authorize_user_lp {
+        public_transaction::WitnessSet::for_message(
+            &message,
+            &[&Keys::user_a(), &Keys::user_b(), &Keys::user_lp()],
+        )
+    } else {
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()])
+    };
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0)
+    state.transition_from_public_transaction(&tx, 0, 0)
 }
 
 fn execute_new_definition(state: &mut V03State, fees: u128) {
-    try_execute_new_definition(state, fees).unwrap();
+    try_execute_new_definition(state, fees, true).unwrap();
 }
 
 fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_out: u128) {
@@ -1001,7 +1037,7 @@ fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_ou
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 }
 
 fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_out: u128) {
@@ -1028,7 +1064,7 @@ fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_ou
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 }
 
 fn execute_add_liquidity(
@@ -1066,7 +1102,7 @@ fn execute_add_liquidity(
         public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 }
 
 fn execute_remove_liquidity(
@@ -1100,7 +1136,7 @@ fn execute_remove_liquidity(
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_lp()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 }
 
 fn fungible_balance(account: &Account) -> u128 {
@@ -1163,7 +1199,7 @@ fn amm_remove_liquidity() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_lp()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
@@ -1225,7 +1261,7 @@ fn amm_remove_liquidity_insufficient_user_lp_fails() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_lp()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    assert!(state.transition_from_public_transaction(&tx, 0).is_err());
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
 }
 
 #[test]
@@ -1271,6 +1307,88 @@ fn amm_new_definition_uninitialized_pool() {
 }
 
 #[test]
+fn amm_new_definition_without_user_lp_authorization_fails() {
+    let mut state = state_for_amm_tests_with_new_def();
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
+
+    let result = try_execute_new_definition(&mut state, Balances::fee_tier(), false);
+
+    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Account::default()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_reinitializable()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_reinitializable()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        Account::default()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::lp_lock_holding()),
+        Account::default()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_a()),
+        Accounts::user_a_holding()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding()
+    );
+    assert_eq!(state.get_account_by_id(Ids::user_lp()), Account::default());
+}
+
+#[test]
+fn amm_new_definition_precreated_zero_balance_user_lp() {
+    let mut state = state_for_amm_tests_with_precreated_user_lp_for_new_def();
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
+
+    try_execute_new_definition(&mut state, Balances::fee_tier(), false).unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        Accounts::token_lp_definition_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::lp_lock_holding()),
+        Accounts::lp_lock_holding_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_a()),
+        Accounts::user_a_holding_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_lp()),
+        Accounts::user_lp_holding_new_init_precreated()
+    );
+}
+
+#[test]
 fn amm_new_definition_supports_all_fee_tiers() {
     for fees in [
         FEE_TIER_BPS_1,
@@ -1293,7 +1411,7 @@ fn amm_new_definition_supports_all_fee_tiers() {
 
 #[test]
 fn amm_new_definition_rejects_unsupported_fee_tier_transaction() {
-    let mut state = state_for_amm_tests_with_new_def();
+    let mut state = state_for_amm_tests_with_precreated_user_lp_for_new_def();
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
     state.force_insert_account(
@@ -1304,9 +1422,8 @@ fn amm_new_definition_rejects_unsupported_fee_tier_transaction() {
         Ids::token_lp_definition(),
         Accounts::token_lp_definition_reinitializable(),
     );
-    state.force_insert_account(Ids::user_lp(), Accounts::user_lp_holding_init_zero());
 
-    let result = try_execute_new_definition(&mut state, 2);
+    let result = try_execute_new_definition(&mut state, 2, false);
 
     assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
     assert_eq!(
@@ -1369,7 +1486,7 @@ fn amm_add_liquidity() {
         public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
@@ -1428,7 +1545,7 @@ fn amm_swap_b_to_a() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
@@ -1479,7 +1596,7 @@ fn amm_swap_a_to_b() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),

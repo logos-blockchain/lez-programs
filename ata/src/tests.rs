@@ -1,5 +1,8 @@
 use ata_core::{compute_ata_seed, get_associated_token_account_id};
-use nssa_core::account::{Account, AccountId, AccountWithMetadata, Data};
+use nssa_core::{
+    account::{Account, AccountId, AccountWithMetadata, Data},
+    program::{ChainedCall, Claim},
+};
 use token_core::{TokenDefinition, TokenHolding};
 
 const ATA_PROGRAM_ID: nssa_core::program::ProgramId = [1u32; 8];
@@ -79,8 +82,18 @@ fn create_emits_chained_call_for_uninitialized_ata() {
     );
 
     assert_eq!(post_states.len(), 3);
-    assert_eq!(chained_calls.len(), 1);
-    assert_eq!(chained_calls[0].program_id, TOKEN_PROGRAM_ID);
+    assert_eq!(post_states[0].required_claim(), Some(Claim::Authorized));
+
+    let mut authorized_ata = uninitialized_ata_account();
+    authorized_ata.is_authorized = true;
+    let expected_call = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![definition_account(), authorized_ata],
+        &token_core::Instruction::InitializeAccount,
+    )
+    .with_pda_seeds(vec![compute_ata_seed(owner_id(), definition_id())]);
+
+    assert_eq!(chained_calls, vec![expected_call]);
 }
 
 #[test]

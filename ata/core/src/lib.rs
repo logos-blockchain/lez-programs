@@ -18,13 +18,13 @@ pub enum Instruction {
     /// `token_program_id` is derived from `token_definition.account.program_owner`.
     Create { ata_program_id: ProgramId },
 
-    /// Transfer tokens FROM owner's ATA to a recipient holding account.
-    /// Uses PDA seeds to authorize the ATA in the chained Token::Transfer call.
+    /// Transfer tokens FROM owner's ATA to a recipient token holding account.
+    /// Uses ATA PDA seeds to authorize the chained Token::Transfer call.
     ///
     /// Required accounts (3):
     /// - Owner account (authorized)
     /// - Sender ATA (owner's token holding)
-    /// - Recipient token holding (any account; auto-created if default)
+    /// - Recipient token holding (must be initialized)
     ///
     /// `token_program_id` is derived from `sender_ata.account.program_owner`.
     Transfer {

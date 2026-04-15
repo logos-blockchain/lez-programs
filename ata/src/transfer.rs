@@ -16,7 +16,7 @@ pub fn transfer_from_associated_token_account(
     let definition_id = TokenHolding::try_from(&sender_ata.account.data)
         .expect("Sender ATA must hold a valid token")
         .definition_id();
-    let seed =
+    let sender_seed =
         ata_core::verify_ata_and_get_seed(&sender_ata, &owner, definition_id, ata_program_id);
 
     let post_states = vec![
@@ -29,11 +29,11 @@ pub fn transfer_from_associated_token_account(
 
     let chained_call = ChainedCall::new(
         token_program_id,
-        vec![sender_ata_auth, recipient.clone()],
+        vec![sender_ata_auth, recipient],
         &token_core::Instruction::Transfer {
             amount_to_transfer: amount,
         },
     )
-    .with_pda_seeds(vec![seed]);
+    .with_pda_seeds(vec![sender_seed]);
     (post_states, vec![chained_call])
 }

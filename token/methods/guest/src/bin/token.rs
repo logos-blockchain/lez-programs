@@ -11,6 +11,7 @@ mod token {
     use super::*;
 
     /// Transfer tokens from sender to recipient.
+    /// Fresh public recipients must be explicitly authorized in the same transaction.
     #[instruction]
     pub fn transfer(
         sender: AccountWithMetadata,
@@ -25,6 +26,7 @@ mod token {
     }
 
     /// Create a new fungible token definition without metadata.
+    /// Definition and holding targets must be uninitialized and authorized.
     #[instruction]
     pub fn new_fungible_definition(
         definition_target_account: AccountWithMetadata,
@@ -43,6 +45,7 @@ mod token {
     }
 
     /// Create a new fungible or non-fungible token definition with metadata.
+    /// Definition, holding, and metadata targets must be uninitialized and authorized.
     #[instruction]
     pub fn new_definition_with_metadata(
         definition_target_account: AccountWithMetadata,
@@ -63,6 +66,7 @@ mod token {
     }
 
     /// Initialize a token holding account for a given token definition.
+    /// The holding target must be uninitialized and authorized.
     #[instruction]
     pub fn initialize_account(
         definition_account: AccountWithMetadata,
@@ -91,6 +95,7 @@ mod token {
     }
 
     /// Mint new tokens to the holder's account.
+    /// Fresh public holders must be explicitly authorized in the same transaction.
     #[instruction]
     pub fn mint(
         definition_account: AccountWithMetadata,
@@ -105,6 +110,7 @@ mod token {
     }
 
     /// Print a new NFT from the master copy.
+    /// The printed copy target must be uninitialized and authorized.
     #[instruction]
     pub fn print_nft(
         master_account: AccountWithMetadata,

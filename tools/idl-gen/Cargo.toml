@@ -8,7 +8,7 @@ name = "idl-gen"
 path = "src/main.rs"
 
 [dependencies]
-spel-framework-core = { git = "https://github.com/logos-co/spel.git", rev = "57201f64b4542bb3f592bc9a0aa654c47aa908a6", features = [
+spel-framework-core = { git = "https://github.com/logos-co/spel.git", tag = "v0.2.0-rc.2", features = [
   "idl-gen",
 ] }
 serde_json = "1.0"

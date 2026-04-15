@@ -2,12 +2,13 @@ use std::num::NonZeroU128;
 
 use amm_core::{
     assert_supported_fee_tier, compute_liquidity_token_pda, compute_liquidity_token_pda_seed,
-    compute_lp_lock_holding_pda, compute_pool_pda, compute_vault_pda, PoolDefinition,
+    compute_lp_lock_holding_pda, compute_lp_lock_holding_pda_seed, compute_pool_pda,
+    compute_pool_pda_seed, compute_vault_pda, compute_vault_pda_seed, PoolDefinition,
     MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    program::{AccountPostState, ChainedCall, Claim, ProgramId},
 };
 use token_core::TokenDefinition;
 
@@ -78,6 +79,10 @@ pub fn new_definition(
         Account::default(),
         "Pool account must be uninitialized"
     );
+    assert!(
+        user_holding_lp.account != Account::default() || user_holding_lp.is_authorized,
+        "Fresh user LP holding requires user authorization"
+    );
 
     // LP Token minting calculation
     let initial_lp = token_a_amount
@@ -106,40 +111,63 @@ pub fn new_definition(
     };
 
     pool_post.data = Data::from(&pool_post_definition);
-    let pool_post: AccountPostState = AccountPostState::new_claimed(pool_post.clone());
+    let pool_post: AccountPostState = AccountPostState::new_claimed(
+        pool_post.clone(),
+        Claim::Pda(compute_pool_pda_seed(
+            definition_token_a_id,
+            definition_token_b_id,
+        )),
+    );
 
     let token_program_id = user_holding_a.account.program_owner;
 
     // Chain call for Token A (user_holding_a -> Vault_A)
+    let mut vault_a_authorized = vault_a.clone();
+    vault_a_authorized.is_authorized = true;
     let call_token_a = ChainedCall::new(
         token_program_id,
-        vec![user_holding_a.clone(), vault_a.clone()],
+        vec![user_holding_a.clone(), vault_a_authorized],
         &token_core::Instruction::Transfer {
             amount_to_transfer: token_a_amount.into(),
         },
-    );
+    )
+    .with_pda_seeds(vec![compute_vault_pda_seed(
+        pool.account_id,
+        definition_token_a_id,
+    )]);
     // Chain call for Token B (user_holding_b -> Vault_B)
+    let mut vault_b_authorized = vault_b.clone();
+    vault_b_authorized.is_authorized = true;
     let call_token_b = ChainedCall::new(
         token_program_id,
-        vec![user_holding_b.clone(), vault_b.clone()],
+        vec![user_holding_b.clone(), vault_b_authorized],
         &token_core::Instruction::Transfer {
             amount_to_transfer: token_b_amount.into(),
         },
-    );
+    )
+    .with_pda_seeds(vec![compute_vault_pda_seed(
+        pool.account_id,
+        definition_token_b_id,
+    )]);
 
     // Chain call for liquidity token lock holding
     let mut pool_lp_auth = pool_definition_lp.clone();
     pool_lp_auth.is_authorized = true;
+    let mut lp_lock_holding_auth = lp_lock_holding.clone();
+    lp_lock_holding_auth.is_authorized = true;
 
     let call_token_lp_lock = ChainedCall::new(
         token_program_id,
-        vec![pool_lp_auth.clone(), lp_lock_holding.clone()],
+        vec![pool_lp_auth.clone(), lp_lock_holding_auth],
         &token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
             total_supply: MINIMUM_LIQUIDITY,
         },
     )
-    .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
+    .with_pda_seeds(vec![
+        compute_liquidity_token_pda_seed(pool.account_id),
+        compute_lp_lock_holding_pda_seed(pool.account_id),
+    ]);
 
     let mut pool_lp_after_lock = pool_lp_auth.clone();
     pool_lp_after_lock.account.program_owner = token_program_id;

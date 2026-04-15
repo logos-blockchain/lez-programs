@@ -74,6 +74,18 @@ impl Accounts {
             nonce: Nonce(0),
         }
     }
+
+    fn recipient_init() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 0_u128,
+            }),
+            nonce: Nonce(0),
+        }
+    }
 }
 
 fn deploy_token(state: &mut V03State) {
@@ -85,7 +97,16 @@ fn deploy_token(state: &mut V03State) {
 }
 
 fn state_for_token_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[]);
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    deploy_token(&mut state);
+    state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
+    state.force_insert_account(Ids::holder(), Accounts::holder_init());
+    state.force_insert_account(Ids::recipient(), Accounts::recipient_init());
+    state
+}
+
+fn state_for_token_tests_without_recipient() -> V03State {
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
     deploy_token(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::holder(), Accounts::holder_init());
@@ -94,7 +115,7 @@ fn state_for_token_tests() -> V03State {
 
 #[test]
 fn token_new_fungible_definition() {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[]);
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
     deploy_token(&mut state);
 
     let instruction = token_core::Instruction::NewFungibleDefinition {
@@ -116,7 +137,7 @@ fn token_new_fungible_definition() {
     );
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
@@ -165,7 +186,7 @@ fn token_transfer() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::holder_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::holder()),
@@ -195,6 +216,88 @@ fn token_transfer() {
 }
 
 #[test]
+fn token_transfer_fresh_public_recipient_requires_authorization() {
+    let mut state = state_for_token_tests_without_recipient();
+
+    let instruction = token_core::Instruction::Transfer {
+        amount_to_transfer: 500_000_u128,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::holder(), Ids::recipient()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::holder_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::holder()),
+        Accounts::holder_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient()),
+        Account::default()
+    );
+}
+
+#[test]
+fn token_transfer_fresh_authorized_public_recipient() {
+    let mut state = state_for_token_tests_without_recipient();
+
+    let instruction = token_core::Instruction::Transfer {
+        amount_to_transfer: 500_000_u128,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::holder(), Ids::recipient()],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::holder_key(), &Keys::recipient_key()],
+    );
+
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::holder()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 500_000_u128,
+            }),
+            nonce: Nonce(1),
+        }
+    );
+
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 500_000_u128,
+            }),
+            nonce: Nonce(1),
+        }
+    );
+}
+
+#[test]
 fn token_burn() {
     let mut state = state_for_token_tests();
 
@@ -213,7 +316,7 @@ fn token_burn() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::holder_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
@@ -262,7 +365,7 @@ fn token_mint() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
@@ -288,6 +391,89 @@ fn token_mint() {
                 balance: 1_500_000_u128,
             }),
             nonce: Nonce(0),
+        }
+    );
+}
+
+#[test]
+fn token_mint_fresh_public_recipient_requires_authorization() {
+    let mut state = state_for_token_tests_without_recipient();
+
+    let instruction = token_core::Instruction::Mint {
+        amount_to_mint: 500_000_u128,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::recipient()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Accounts::token_definition_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient()),
+        Account::default()
+    );
+}
+
+#[test]
+fn token_mint_fresh_authorized_public_recipient() {
+    let mut state = state_for_token_tests_without_recipient();
+
+    let instruction = token_core::Instruction::Mint {
+        amount_to_mint: 500_000_u128,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::recipient()],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::def_key(), &Keys::recipient_key()],
+    );
+
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("Gold"),
+                total_supply: 1_500_000_u128,
+                metadata_id: None,
+            }),
+            nonce: Nonce(1),
+        }
+    );
+
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 500_000_u128,
+            }),
+            nonce: Nonce(1),
         }
     );
 }
@@ -377,7 +563,7 @@ fn shielded_token_transfer(amount: u128, state: &mut V03State) -> Account {
     let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::holder_key()]);
     let tx = PrivacyPreservingTransaction::new(message, witness_set);
     state
-        .transition_from_privacy_preserving_transaction(&tx, 0)
+        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
         .unwrap();
 
     Account {
@@ -476,7 +662,7 @@ fn token_private_transfer() {
     let witness_set = WitnessSet::for_message(&message, proof, &[]);
     let tx = PrivacyPreservingTransaction::new(message, witness_set);
     state
-        .transition_from_privacy_preserving_transaction(&tx, 0)
+        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
         .unwrap();
 
     let sender_nonce_after =
@@ -559,7 +745,7 @@ fn token_deshielded_transfer() {
     let witness_set = WitnessSet::for_message(&message, proof, &[]);
     let tx = PrivacyPreservingTransaction::new(message, witness_set);
     state
-        .transition_from_privacy_preserving_transaction(&tx, 0)
+        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
         .unwrap();
 
     assert_eq!(

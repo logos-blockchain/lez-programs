@@ -1,6 +1,6 @@
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
-    program::AccountPostState,
+    program::{AccountPostState, Claim},
 };
 use token_core::TokenHolding;
 
@@ -17,6 +17,10 @@ pub fn print_nft(
         printed_account.account,
         Account::default(),
         "Printed Account must be uninitialized"
+    );
+    assert!(
+        printed_account.is_authorized,
+        "Printed Account must be authorized"
     );
 
     let mut master_account_data =
@@ -49,6 +53,6 @@ pub fn print_nft(
 
     vec![
         AccountPostState::new(master_account_post),
-        AccountPostState::new_claimed(printed_account_post),
+        AccountPostState::new_claimed(printed_account_post, Claim::Authorized),
     ]
 }

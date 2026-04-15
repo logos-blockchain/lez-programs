@@ -28,7 +28,8 @@ mod ata {
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
 
-    /// Transfer tokens FROM owner's ATA to a recipient holding account.
+    /// Transfer tokens FROM owner's ATA to a recipient token holding account.
+    /// The recipient holding account must already be initialized.
     #[instruction]
     pub fn transfer(
         owner: AccountWithMetadata,

@@ -16,6 +16,7 @@ mod amm {
     use super::*;
 
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
+    /// A fresh user LP holding must be explicitly authorized by the caller.
     #[instruction]
     pub fn new_definition(
         pool: AccountWithMetadata,

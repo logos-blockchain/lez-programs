@@ -1,6 +1,6 @@
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
-    program::AccountPostState,
+    program::{AccountPostState, Claim},
 };
 use token_core::{
     NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding, TokenMetadata,
@@ -23,6 +23,14 @@ pub fn new_fungible_definition(
         Account::default(),
         "Holding target account must have default values"
     );
+    assert!(
+        definition_target_account.is_authorized,
+        "Definition target account must be authorized"
+    );
+    assert!(
+        holding_target_account.is_authorized,
+        "Holding target account must be authorized"
+    );
 
     let token_definition = TokenDefinition::Fungible {
         name,
@@ -41,8 +49,8 @@ pub fn new_fungible_definition(
     holding_target_account_post.data = Data::from(&token_holding);
 
     vec![
-        AccountPostState::new_claimed(definition_target_account_post),
-        AccountPostState::new_claimed(holding_target_account_post),
+        AccountPostState::new_claimed(definition_target_account_post, Claim::Authorized),
+        AccountPostState::new_claimed(holding_target_account_post, Claim::Authorized),
     ]
 }
 
@@ -69,6 +77,18 @@ pub fn new_definition_with_metadata(
         metadata_target_account.account,
         Account::default(),
         "Metadata target account must have default values"
+    );
+    assert!(
+        definition_target_account.is_authorized,
+        "Definition target account must be authorized"
+    );
+    assert!(
+        holding_target_account.is_authorized,
+        "Holding target account must be authorized"
+    );
+    assert!(
+        metadata_target_account.is_authorized,
+        "Metadata target account must be authorized"
     );
 
     let (token_definition, token_holding) = match new_definition {
@@ -117,8 +137,8 @@ pub fn new_definition_with_metadata(
     metadata_target_account_post.data = Data::from(&token_metadata);
 
     vec![
-        AccountPostState::new_claimed(definition_target_account_post),
-        AccountPostState::new_claimed(holding_target_account_post),
-        AccountPostState::new_claimed(metadata_target_account_post),
+        AccountPostState::new_claimed(definition_target_account_post, Claim::Authorized),
+        AccountPostState::new_claimed(holding_target_account_post, Claim::Authorized),
+        AccountPostState::new_claimed(metadata_target_account_post, Claim::Authorized),
     ]
 }
