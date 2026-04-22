@@ -8,10 +8,10 @@ Rectangle {
     required property DummyPoolState poolState
     readonly property string estimateHelp: qsTr("This value is an estimate from the current dummy reserves and your share of total LP supply.")
 
-    color: "#1D1D1D"
+    color: "#151515"
     implicitHeight: content.implicitHeight + 20
     radius: 8
-    border.color: "#343434"
+    border.color: "#303030"
     border.width: 1
 
     ColumnLayout {
@@ -19,102 +19,78 @@ Rectangle {
 
         anchors.fill: parent
         anchors.margins: 10
-        spacing: 4
+        spacing: 6
 
-        Text {
-            color: "#E7E1D8"
-            font.bold: true
-            font.pixelSize: 16
-            text: qsTr("Pool position")
+        RowLayout {
+            spacing: 10
 
             Layout.fillWidth: true
+
+            ColumnLayout {
+                spacing: 2
+
+                Layout.fillWidth: true
+
+                Text {
+                    color: "#E7E1D8"
+                    font.bold: true
+                    font.pixelSize: 13
+                    text: root.poolState.userLpBalance > 0 ? qsTr("Your position") : qsTr("No position")
+
+                    Layout.fillWidth: true
+                }
+
+                Text {
+                    color: "#8E8780"
+                    font.pixelSize: 11
+                    text: qsTr("%1 LP tokens").arg(root.poolState.formatInteger(root.poolState.userLpBalance))
+                    visible: root.poolState.userLpBalance > 0
+
+                    Layout.fillWidth: true
+                }
+            }
+
+            Rectangle {
+                color: "#211914"
+                radius: 10
+                border.color: "#49301F"
+                border.width: 1
+
+                Layout.preferredHeight: 24
+                Layout.preferredWidth: shareText.implicitWidth + 18
+
+                Text {
+                    id: shareText
+
+                    anchors.centerIn: parent
+                    color: "#F2D8C7"
+                    font.bold: true
+                    font.pixelSize: 11
+                    text: root.poolState.userLpBalance > 0 ? root.poolState.formatPoolShare(root.poolState.poolShare) : root.poolState.feeTier
+                }
+            }
         }
 
-        Text {
-            color: "#F26A21"
-            font.pixelSize: 12
-            text: qsTr("You have no position in this pool")
-            visible: root.poolState.userLpBalance === 0
+        SummaryRow {
+            estimated: true
+            estimateHelp: root.estimateHelp
+            label: qsTr("Owned")
+            value: qsTr("%1 + %2").arg(root.poolState.formatCompactTokenAmount(root.poolState.userOwnedA, root.poolState.tokenA)).arg(root.poolState.formatCompactTokenAmount(root.poolState.userOwnedB, root.poolState.tokenB))
+            visible: root.poolState.userLpBalance > 0
 
             Layout.fillWidth: true
         }
 
         SummaryRow {
-            label: qsTr("Token A")
-            value: root.poolState.tokenA
+            label: qsTr("Pool")
+            value: qsTr("%1 / %2").arg(root.poolState.formatCompactTokenAmount(root.poolState.reserveA, root.poolState.tokenA)).arg(root.poolState.formatCompactTokenAmount(root.poolState.reserveB, root.poolState.tokenB))
 
             Layout.fillWidth: true
         }
 
         SummaryRow {
-            label: qsTr("Token B")
-            value: root.poolState.tokenB
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            label: qsTr("Fee tier")
+            label: qsTr("Fee")
             value: root.poolState.feeTier
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            label: qsTr("Your LP tokens")
-            value: root.poolState.formatInteger(root.poolState.userLpBalance)
-            visible: root.poolState.userLpBalance > 0
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            estimated: true
-            estimateHelp: root.estimateHelp
-            label: qsTr("Pool share")
-            value: root.poolState.formatPoolShare(root.poolState.poolShare)
-            visible: root.poolState.userLpBalance > 0
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            estimated: true
-            estimateHelp: root.estimateHelp
-            label: qsTr("Your Token A")
-            value: "\u2248 " + root.poolState.formatTokenAmount(root.poolState.userOwnedA, root.poolState.tokenA)
-            visible: root.poolState.userLpBalance > 0
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            estimated: true
-            estimateHelp: root.estimateHelp
-            label: qsTr("Your Token B")
-            value: "\u2248 " + root.poolState.formatTokenAmount(root.poolState.userOwnedB, root.poolState.tokenB)
-            visible: root.poolState.userLpBalance > 0
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            label: qsTr("Total reserve A")
-            value: root.poolState.formatTokenAmount(root.poolState.reserveA, root.poolState.tokenA)
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            label: qsTr("Total reserve B")
-            value: root.poolState.formatTokenAmount(root.poolState.reserveB, root.poolState.tokenB)
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            label: qsTr("Total LP supply")
-            value: root.poolState.formatInteger(root.poolState.totalLpSupply)
 
             Layout.fillWidth: true
         }

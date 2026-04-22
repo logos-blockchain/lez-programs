@@ -3,6 +3,7 @@ import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import "components"
 import "state"
+import "pages"
 
 Item {
     id: root
@@ -167,79 +168,9 @@ Item {
         }
 
         // ── Liquidity view ────────────────────────────────────────────────────
-        Item {
-            id: liquidityView
+        LiquidityPage {
             anchors.fill: parent
             visible: navbar.currentIndex === 1
-
-            property int  activeLiquidityTab: 0
-            property real slippageTolerancePercent: 0.5
-
-            DummyPoolState {
-                id: poolState
-            }
-
-            Rectangle {
-                anchors.fill: parent
-                color: "#151515"
-            }
-
-            Flickable {
-                id: scroll
-
-                anchors.fill: parent
-                clip: true
-                contentHeight: content.implicitHeight + 24
-                contentWidth: width
-
-                ColumnLayout {
-                    id: content
-                    spacing: 10
-                    width: scroll.width - 24
-                    x: 12
-                    y: 12
-
-                    PoolPositionSummary {
-                        poolState: poolState
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: implicitHeight
-                    }
-
-                    LiquidityActionTabs {
-                        currentIndex: liquidityView.activeLiquidityTab
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: implicitHeight
-
-                        onTabRequested: function(index) {
-                            liquidityView.activeLiquidityTab = index
-                        }
-                    }
-
-                    AddLiquidityForm {
-                        poolState: poolState
-                        slippageTolerancePercent: liquidityView.slippageTolerancePercent
-                        visible: liquidityView.activeLiquidityTab === 0
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: visible ? implicitHeight : 0
-
-                        onSlippageToleranceChangeRequested: function(tolerancePercent) {
-                            liquidityView.slippageTolerancePercent = poolState.clampSlippageTolerancePercent(tolerancePercent)
-                        }
-                    }
-
-                    RemoveLiquidityForm {
-                        poolState: poolState
-                        slippageTolerancePercent: liquidityView.slippageTolerancePercent
-                        visible: liquidityView.activeLiquidityTab === 1
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: visible ? implicitHeight : 0
-
-                        onSlippageToleranceChangeRequested: function(tolerancePercent) {
-                            liquidityView.slippageTolerancePercent = poolState.clampSlippageTolerancePercent(tolerancePercent)
-                        }
-                    }
-                }
-            }
         }
     }
 }

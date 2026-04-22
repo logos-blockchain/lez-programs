@@ -2,7 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 
-Rectangle {
+Item {
     id: root
 
     property real tolerancePercent: 0.5
@@ -12,11 +12,7 @@ Rectangle {
 
     signal toleranceChangeRequested(real tolerancePercent)
 
-    color: "#151515"
-    implicitHeight: content.implicitHeight + 20
-    radius: 8
-    border.color: customField.activeFocus ? "#F26A21" : "#343434"
-    border.width: 1
+    implicitHeight: content.implicitHeight
 
     Component.onCompleted: root.restoreCustomText()
 
@@ -60,15 +56,30 @@ Rectangle {
         id: content
 
         anchors.fill: parent
-        anchors.margins: 10
-        spacing: 8
+        spacing: 6
 
-        Text {
-            color: "#A9A098"
-            font.pixelSize: 12
-            text: qsTr("Slippage tolerance")
+        RowLayout {
+            spacing: 8
 
             Layout.fillWidth: true
+
+            Text {
+                color: "#A9A098"
+                font.pixelSize: 12
+                text: qsTr("Slippage tolerance")
+
+                Layout.fillWidth: true
+            }
+
+            Text {
+                color: root.tolerancePercent <= 1 ? "#8FD6A4" : root.tolerancePercent <= 5 ? "#F2B366" : "#F08A76"
+                font.bold: true
+                font.pixelSize: 11
+                horizontalAlignment: Text.AlignRight
+                text: root.thresholdText
+
+                Layout.maximumWidth: 150
+            }
         }
 
         RowLayout {
@@ -95,7 +106,7 @@ Rectangle {
                 onClicked: root.commitPreset(presetValue)
 
                 contentItem: Text {
-                    color: preset01.hovered || preset01.activeFocus || preset01.selected ? "#151515" : "#A9A098"
+                    color: preset01.selected ? "#F2D8C7" : preset01.hovered || preset01.activeFocus ? "#E7E1D8" : "#A9A098"
                     font.bold: true
                     font.pixelSize: 11
                     horizontalAlignment: Text.AlignHCenter
@@ -106,7 +117,7 @@ Rectangle {
                 background: Rectangle {
                     border.color: preset01.activeFocus || preset01.selected ? "#F26A21" : "#343434"
                     border.width: 1
-                    color: preset01.pressed ? "#D95C1E" : preset01.selected ? "#F26A21" : preset01.hovered || preset01.activeFocus ? "#E7E1D8" : "#101010"
+                    color: preset01.pressed ? "#2A1D16" : preset01.selected ? "#211914" : preset01.hovered || preset01.activeFocus ? "#202020" : "#101010"
                     radius: 6
                 }
             }
@@ -130,7 +141,7 @@ Rectangle {
                 onClicked: root.commitPreset(presetValue)
 
                 contentItem: Text {
-                    color: preset05.hovered || preset05.activeFocus || preset05.selected ? "#151515" : "#A9A098"
+                    color: preset05.selected ? "#F2D8C7" : preset05.hovered || preset05.activeFocus ? "#E7E1D8" : "#A9A098"
                     font.bold: true
                     font.pixelSize: 11
                     horizontalAlignment: Text.AlignHCenter
@@ -141,7 +152,7 @@ Rectangle {
                 background: Rectangle {
                     border.color: preset05.activeFocus || preset05.selected ? "#F26A21" : "#343434"
                     border.width: 1
-                    color: preset05.pressed ? "#D95C1E" : preset05.selected ? "#F26A21" : preset05.hovered || preset05.activeFocus ? "#E7E1D8" : "#101010"
+                    color: preset05.pressed ? "#2A1D16" : preset05.selected ? "#211914" : preset05.hovered || preset05.activeFocus ? "#202020" : "#101010"
                     radius: 6
                 }
             }
@@ -165,7 +176,7 @@ Rectangle {
                 onClicked: root.commitPreset(presetValue)
 
                 contentItem: Text {
-                    color: preset10.hovered || preset10.activeFocus || preset10.selected ? "#151515" : "#A9A098"
+                    color: preset10.selected ? "#F2D8C7" : preset10.hovered || preset10.activeFocus ? "#E7E1D8" : "#A9A098"
                     font.bold: true
                     font.pixelSize: 11
                     horizontalAlignment: Text.AlignHCenter
@@ -176,7 +187,7 @@ Rectangle {
                 background: Rectangle {
                     border.color: preset10.activeFocus || preset10.selected ? "#F26A21" : "#343434"
                     border.width: 1
-                    color: preset10.pressed ? "#D95C1E" : preset10.selected ? "#F26A21" : preset10.hovered || preset10.activeFocus ? "#E7E1D8" : "#101010"
+                    color: preset10.pressed ? "#2A1D16" : preset10.selected ? "#211914" : preset10.hovered || preset10.activeFocus ? "#202020" : "#101010"
                     radius: 6
                 }
             }
@@ -243,39 +254,6 @@ Rectangle {
                     }
                 }
             }
-        }
-
-        RowLayout {
-            spacing: 6
-
-            Layout.fillWidth: true
-
-            Text {
-                color: root.tolerancePercent <= 1 ? "#8FD6A4" : root.tolerancePercent <= 5 ? "#F2B366" : "#F08A76"
-                font.bold: true
-                font.pixelSize: 11
-                horizontalAlignment: Text.AlignHCenter
-                text: root.thresholdIcon
-
-                Layout.preferredWidth: 18
-            }
-
-            Text {
-                color: root.tolerancePercent <= 1 ? "#8FD6A4" : root.tolerancePercent <= 5 ? "#F2B366" : "#F08A76"
-                font.pixelSize: 11
-                text: root.thresholdText
-
-                Layout.fillWidth: true
-            }
-        }
-
-        Text {
-            color: "#A9A098"
-            font.pixelSize: 11
-            text: qsTr("Allowed range: 0.01% to 50%.")
-            wrapMode: Text.WordWrap
-
-            Layout.fillWidth: true
         }
     }
 }

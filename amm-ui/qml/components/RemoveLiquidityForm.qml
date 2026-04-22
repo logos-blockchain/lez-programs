@@ -20,15 +20,17 @@ Rectangle {
     readonly property int minTokenAReceived: root.poolState.minReceivedAmount(root.preview.withdrawA, root.slippageTolerancePercent)
     readonly property int minTokenBReceived: root.poolState.minReceivedAmount(root.preview.withdrawB, root.slippageTolerancePercent)
     readonly property bool minReceivedIsZero: root.burnAmount > 0 && (root.minTokenAReceived === 0 || root.minTokenBReceived === 0)
+    readonly property bool canSubmit: root.hasLpTokens && root.burnAmount > 0 && !root.minReceivedIsZero
     readonly property string estimateHelp: qsTr("Estimated with the same integer floor math used by the remove-liquidity contract path.")
+    readonly property string submitButtonText: !root.hasLpTokens ? qsTr("No LP balance") : root.burnAmount === 0 ? qsTr("Enter an amount") : root.minReceivedIsZero ? qsTr("Minimum received is 0") : qsTr("Remove Liquidity")
 
     signal slippageToleranceChangeRequested(real tolerancePercent)
+    signal removeLiquidityRequested(var snapshot)
 
-    color: "#1D1D1D"
-    implicitHeight: content.implicitHeight + 20
-    radius: 8
-    border.color: "#343434"
-    border.width: 1
+    color: "#00000000"
+    implicitHeight: content.implicitHeight
+    radius: 0
+    border.width: 0
 
     onMaxBurnAmountChanged: {
         if (root.burnAmount > root.maxBurnAmount) {
@@ -36,39 +38,11 @@ Rectangle {
         }
     }
 
-    function setBurnAmount(value) {
-        root.burnAmount = root.poolState.clampBurnAmount(value);
-    }
-
-    function setBurnPercent(percent) {
-        root.setBurnAmount(root.poolState.burnAmountForPercent(percent));
-    }
-
     ColumnLayout {
         id: content
 
         anchors.fill: parent
-        anchors.margins: 10
         spacing: 10
-
-        Text {
-            color: "#E7E1D8"
-            font.bold: true
-            font.pixelSize: 16
-            text: qsTr("Remove liquidity")
-
-            Layout.fillWidth: true
-        }
-
-        Text {
-            color: "#A9A098"
-            font.pixelSize: 12
-            lineHeight: 1.25
-            text: qsTr("Burn LP tokens to withdraw your proportional share of both pool tokens.")
-            wrapMode: Text.WordWrap
-
-            Layout.fillWidth: true
-        }
 
         Text {
             color: "#F26A21"
@@ -386,6 +360,7 @@ Rectangle {
             estimateHelp: root.estimateHelp
             label: qsTr("Withdraw %1").arg(root.poolState.tokenA)
             value: root.poolState.formatTokenAmount(root.preview.withdrawA, root.poolState.tokenA)
+            visible: root.burnAmount > 0
 
             Layout.fillWidth: true
         }
@@ -395,6 +370,7 @@ Rectangle {
             estimateHelp: root.estimateHelp
             label: qsTr("Withdraw %1").arg(root.poolState.tokenB)
             value: root.poolState.formatTokenAmount(root.preview.withdrawB, root.poolState.tokenB)
+            visible: root.burnAmount > 0
 
             Layout.fillWidth: true
         }
@@ -412,6 +388,7 @@ Rectangle {
         SummaryRow {
             label: qsTr("Min %1 received").arg(root.poolState.tokenA)
             value: root.poolState.formatTokenAmount(root.minTokenAReceived, root.poolState.tokenA)
+            visible: root.burnAmount > 0
 
             Layout.fillWidth: true
         }
@@ -419,6 +396,7 @@ Rectangle {
         SummaryRow {
             label: qsTr("Min %1 received").arg(root.poolState.tokenB)
             value: root.poolState.formatTokenAmount(root.minTokenBReceived, root.poolState.tokenB)
+            visible: root.burnAmount > 0
 
             Layout.fillWidth: true
         }
@@ -435,33 +413,79 @@ Rectangle {
         }
 
         SummaryRow {
-            label: qsTr("New reserve A")
-            value: root.poolState.formatTokenAmount(root.preview.newReserveA, root.poolState.tokenA)
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            label: qsTr("New reserve B")
-            value: root.poolState.formatTokenAmount(root.preview.newReserveB, root.poolState.tokenB)
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            label: qsTr("New LP supply")
-            value: root.poolState.formatInteger(root.preview.newTotalLpSupply)
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
             estimated: true
             estimateHelp: root.estimateHelp
-            label: qsTr("New user share")
+            label: qsTr("Position after")
             value: root.poolState.formatPoolShare(root.preview.newUserShare)
+            visible: root.burnAmount > 0
 
             Layout.fillWidth: true
         }
+
+        Button {
+            id: submitButton
+
+            activeFocusOnTab: root.hasLpTokens
+            enabled: root.canSubmit
+            focusPolicy: Qt.StrongFocus
+            hoverEnabled: true
+            text: root.submitButtonText
+
+            Accessible.name: submitButton.text
+
+            Layout.fillWidth: true
+            Layout.minimumHeight: 44
+            Layout.preferredHeight: 44
+
+            onClicked: root.removeLiquidityRequested(root.submitSnapshot())
+
+            contentItem: Text {
+                color: submitButton.enabled ? "#151515" : "#7D756E"
+                elide: Text.ElideRight
+                font.bold: true
+                font.pixelSize: 13
+                horizontalAlignment: Text.AlignHCenter
+                text: submitButton.text
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            background: Rectangle {
+                border.color: submitButton.enabled ? "#F26A21" : "#343434"
+                border.width: 1
+                color: submitButton.enabled ? submitButton.pressed ? "#D95C1E" : submitButton.hovered || submitButton.activeFocus ? "#FF8A3D" : "#F26A21" : "#181818"
+                radius: 6
+            }
+        }
+    }
+
+    function setBurnAmount(value) {
+        root.burnAmount = root.poolState.clampBurnAmount(value);
+    }
+
+    function setBurnPercent(percent) {
+        root.setBurnAmount(root.poolState.burnAmountForPercent(percent));
+    }
+
+    function resetForm() {
+        root.setBurnAmount(0);
+    }
+
+    function submitSnapshot() {
+        return {
+            "action": "remove",
+            "burnAmount": root.preview.burnedLp,
+            "burnPercent": root.poolState.formatPercent(root.removePercent),
+            "burnText": root.poolState.formatLpAmount(root.preview.burnedLp),
+            "minTokenAReceived": root.poolState.formatTokenAmount(root.minTokenAReceived, root.poolState.tokenA),
+            "minTokenBReceived": root.poolState.formatTokenAmount(root.minTokenBReceived, root.poolState.tokenB),
+            "postRemovalShare": root.poolState.formatPoolShare(root.preview.newUserShare),
+            "slippageTolerance": root.poolState.formatPercent(root.slippageTolerancePercent),
+            "tokenA": root.poolState.tokenA,
+            "tokenB": root.poolState.tokenB,
+            "withdrawA": root.preview.withdrawA,
+            "withdrawB": root.preview.withdrawB,
+            "withdrawAText": root.poolState.formatTokenAmount(root.preview.withdrawA, root.poolState.tokenA),
+            "withdrawBText": root.poolState.formatTokenAmount(root.preview.withdrawB, root.poolState.tokenB)
+        };
     }
 }

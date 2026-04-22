@@ -43,7 +43,7 @@ Item {
                 text: root.value
                 verticalAlignment: Text.AlignVCenter
 
-                Layout.maximumWidth: 178
+                Layout.maximumWidth: Math.max(178, root.width * 0.55)
             }
 
             EstimateInfoButton {

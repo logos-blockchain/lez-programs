@@ -9,10 +9,10 @@ Rectangle {
 
     signal tabRequested(int index)
 
-    color: "#1D1D1D"
-    implicitHeight: 44
+    color: "#181818"
+    implicitHeight: 42
     radius: 8
-    border.color: "#343434"
+    border.color: "#303030"
     border.width: 1
 
     RowLayout {
@@ -37,7 +37,7 @@ Rectangle {
             onClicked: root.tabRequested(0)
 
             contentItem: Text {
-                color: root.currentIndex === 0 || addTab.hovered || addTab.activeFocus ? "#151515" : "#A9A098"
+                color: root.currentIndex === 0 ? "#F2D8C7" : addTab.hovered || addTab.activeFocus ? "#E7E1D8" : "#8E8780"
                 elide: Text.ElideRight
                 font.bold: true
                 font.pixelSize: 12
@@ -47,9 +47,9 @@ Rectangle {
             }
 
             background: Rectangle {
-                border.color: addTab.activeFocus ? "#F26A21" : root.currentIndex === 0 ? "#F26A21" : "#151515"
+                border.color: addTab.activeFocus || root.currentIndex === 0 ? "#F26A21" : "#181818"
                 border.width: 1
-                color: addTab.pressed ? "#D95C1E" : root.currentIndex === 0 ? "#F26A21" : addTab.hovered || addTab.activeFocus ? "#E7E1D8" : "#151515"
+                color: addTab.pressed ? "#2A1D16" : root.currentIndex === 0 ? "#211914" : addTab.hovered || addTab.activeFocus ? "#202020" : "#121212"
                 radius: 6
             }
         }
@@ -71,7 +71,7 @@ Rectangle {
             onClicked: root.tabRequested(1)
 
             contentItem: Text {
-                color: root.currentIndex === 1 || removeTab.hovered || removeTab.activeFocus ? "#151515" : "#A9A098"
+                color: root.currentIndex === 1 ? "#F2D8C7" : removeTab.hovered || removeTab.activeFocus ? "#E7E1D8" : "#8E8780"
                 elide: Text.ElideRight
                 font.bold: true
                 font.pixelSize: 12
@@ -81,9 +81,9 @@ Rectangle {
             }
 
             background: Rectangle {
-                border.color: removeTab.activeFocus ? "#F26A21" : root.currentIndex === 1 ? "#F26A21" : "#151515"
+                border.color: removeTab.activeFocus || root.currentIndex === 1 ? "#F26A21" : "#181818"
                 border.width: 1
-                color: removeTab.pressed ? "#D95C1E" : root.currentIndex === 1 ? "#F26A21" : removeTab.hovered || removeTab.activeFocus ? "#E7E1D8" : "#151515"
+                color: removeTab.pressed ? "#2A1D16" : root.currentIndex === 1 ? "#211914" : removeTab.hovered || removeTab.activeFocus ? "#202020" : "#121212"
                 radius: 6
             }
         }

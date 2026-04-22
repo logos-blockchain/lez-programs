@@ -159,12 +159,30 @@ QtObject {
         return amount.toFixed(6).replace(/0+$/, "").replace(/[.]$/, "");
     }
 
+    function formatCompactDecimal(value) {
+        const amount = Number(value) || 0;
+
+        if (Math.abs(amount) >= 1000 || Math.abs(amount - Math.round(amount)) < 0.000001) {
+            return formatInteger(amount);
+        }
+
+        if (Math.abs(amount) >= 1) {
+            return amount.toFixed(2).replace(/0+$/, "").replace(/[.]$/, "");
+        }
+
+        return amount.toFixed(6).replace(/0+$/, "").replace(/[.]$/, "");
+    }
+
     function formatInputAmount(value) {
         return formatDecimal(value);
     }
 
     function formatTokenAmount(value, token) {
         return formatDecimal(value) + " " + token;
+    }
+
+    function formatCompactTokenAmount(value, token) {
+        return formatCompactDecimal(value) + " " + token;
     }
 
     function formatLpAmount(value) {

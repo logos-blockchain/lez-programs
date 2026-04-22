@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import "../state"
 
@@ -21,69 +22,23 @@ Rectangle {
     readonly property bool minReceivedIsZero: root.hasAnyAmount && root.minLpReceived === 0
     readonly property bool zeroTokenDeposit: root.hasAnyAmount && (root.preview.actualA === 0 || root.preview.actualB === 0)
     readonly property bool zeroLpDeposit: root.preview.actualA > 0 && root.preview.actualB > 0 && root.preview.deltaLp === 0
+    readonly property bool canSubmit: root.hasAnyAmount && !root.amountAOverBalance && !root.amountBOverBalance && !root.minReceivedIsZero && !root.zeroTokenDeposit && !root.zeroLpDeposit
+    readonly property string submitButtonText: !root.hasAnyAmount ? qsTr("Enter an amount") : root.amountAOverBalance ? qsTr("Insufficient %1 balance").arg(root.poolState.tokenA) : root.amountBOverBalance ? qsTr("Insufficient %1 balance").arg(root.poolState.tokenB) : root.zeroTokenDeposit ? qsTr("Amount rounds to zero") : root.zeroLpDeposit ? qsTr("LP output is 0") : root.minReceivedIsZero ? qsTr("Minimum received is 0") : qsTr("Add Liquidity")
     readonly property string warningText: root.zeroTokenDeposit ? qsTr("Deposit would be rejected because one token amount rounds to zero") : root.zeroLpDeposit ? qsTr("Deposit would mint 0 LP tokens") : ""
 
     signal slippageToleranceChangeRequested(real tolerancePercent)
+    signal addLiquidityRequested(var snapshot)
 
-    color: "#1D1D1D"
-    implicitHeight: content.implicitHeight + 20
-    radius: 8
-    border.color: "#343434"
-    border.width: 1
-
-    function setAmounts(nextA, nextB, intentToken, showZero) {
-        root.lastEditedToken = intentToken;
-        root.amountA = nextA > 0 || showZero ? root.poolState.formatInputAmount(nextA) : "";
-        root.amountB = nextB > 0 || showZero ? root.poolState.formatInputAmount(nextB) : "";
-    }
-
-    function updateFromTokenA(value) {
-        if (value.length === 0) {
-            setAmounts(0, 0, "A", false);
-            return;
-        }
-
-        const nextA = root.poolState.parseAmount(value);
-        setAmounts(nextA, root.poolState.amountBForA(nextA), "A", true);
-    }
-
-    function updateFromTokenB(value) {
-        if (value.length === 0) {
-            setAmounts(0, 0, "B", false);
-            return;
-        }
-
-        const nextB = root.poolState.parseAmount(value);
-        setAmounts(root.poolState.amountAForB(nextB), nextB, "B", true);
-    }
-
-    function useMax(intentToken) {
-        const capped = root.poolState.maxAddLiquidityForBalances();
-        setAmounts(capped.actualA, capped.actualB, intentToken, false);
-    }
+    color: "#00000000"
+    implicitHeight: content.implicitHeight
+    radius: 0
+    border.width: 0
 
     ColumnLayout {
         id: content
 
         anchors.fill: parent
-        anchors.margins: 10
         spacing: 10
-
-        Text {
-            color: "#E7E1D8"
-            font.bold: true
-            font.pixelSize: 16
-            text: qsTr("Add liquidity")
-
-            Layout.fillWidth: true
-        }
-
-        SummaryRow {
-            label: qsTr("Current ratio")
-            value: qsTr("1 %1 = %2 %3").arg(root.poolState.tokenB).arg(root.poolState.formatInteger(root.poolState.tokenAPerTokenB)).arg(root.poolState.tokenA)
-
-            Layout.fillWidth: true
-        }
 
         TokenAmountInput {
             balance: root.poolState.formatTokenAmount(root.poolState.walletBalanceA, root.poolState.tokenA)
@@ -118,8 +73,8 @@ Rectangle {
         }
 
         SummaryRow {
-            label: qsTr("Required ratio")
-            value: qsTr("%1 %2 / 1 %3").arg(root.poolState.formatInteger(root.poolState.tokenAPerTokenB)).arg(root.poolState.tokenA).arg(root.poolState.tokenB)
+            label: qsTr("Current price")
+            value: qsTr("1 %1 = %2 %3").arg(root.poolState.tokenB).arg(root.poolState.formatInteger(root.poolState.tokenAPerTokenB)).arg(root.poolState.tokenA)
 
             Layout.fillWidth: true
         }
@@ -129,6 +84,7 @@ Rectangle {
             estimateHelp: qsTr("Estimated with the same integer floor math used by the add-liquidity contract path.")
             label: qsTr("Estimated LP tokens")
             value: root.poolState.formatLpAmount(root.preview.deltaLp)
+            visible: root.hasAnyAmount
 
             Layout.fillWidth: true
         }
@@ -146,6 +102,7 @@ Rectangle {
         SummaryRow {
             label: qsTr("Min LP received")
             value: root.poolState.formatLpAmount(root.minLpReceived)
+            visible: root.hasAnyAmount
 
             Layout.fillWidth: true
         }
@@ -171,5 +128,94 @@ Rectangle {
 
             Layout.fillWidth: true
         }
+
+        Button {
+            id: submitButton
+
+            activeFocusOnTab: true
+            enabled: root.canSubmit
+            focusPolicy: Qt.StrongFocus
+            hoverEnabled: true
+            text: root.submitButtonText
+
+            Accessible.name: submitButton.text
+
+            Layout.fillWidth: true
+            Layout.minimumHeight: 44
+            Layout.preferredHeight: 44
+
+            onClicked: root.addLiquidityRequested(root.submitSnapshot())
+
+            contentItem: Text {
+                color: submitButton.enabled ? "#151515" : "#7D756E"
+                elide: Text.ElideRight
+                font.bold: true
+                font.pixelSize: 13
+                horizontalAlignment: Text.AlignHCenter
+                text: submitButton.text
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            background: Rectangle {
+                border.color: submitButton.enabled ? "#F26A21" : "#343434"
+                border.width: 1
+                color: submitButton.enabled ? submitButton.pressed ? "#D95C1E" : submitButton.hovered || submitButton.activeFocus ? "#FF8A3D" : "#F26A21" : "#181818"
+                radius: 6
+            }
+        }
+    }
+
+    function setAmounts(nextA, nextB, intentToken, showZero) {
+        root.lastEditedToken = intentToken;
+        root.amountA = nextA > 0 || showZero ? root.poolState.formatInputAmount(nextA) : "";
+        root.amountB = nextB > 0 || showZero ? root.poolState.formatInputAmount(nextB) : "";
+    }
+
+    function updateFromTokenA(value) {
+        if (value.length === 0) {
+            setAmounts(0, 0, "A", false);
+            return;
+        }
+
+        const nextA = root.poolState.parseAmount(value);
+        setAmounts(nextA, root.poolState.amountBForA(nextA), "A", true);
+    }
+
+    function updateFromTokenB(value) {
+        if (value.length === 0) {
+            setAmounts(0, 0, "B", false);
+            return;
+        }
+
+        const nextB = root.poolState.parseAmount(value);
+        setAmounts(root.poolState.amountAForB(nextB), nextB, "B", true);
+    }
+
+    function useMax(intentToken) {
+        const capped = root.poolState.maxAddLiquidityForBalances();
+        setAmounts(capped.actualA, capped.actualB, intentToken, false);
+    }
+
+    function resetForm() {
+        root.amountA = "";
+        root.amountB = "";
+        root.lastEditedToken = "A";
+    }
+
+    function submitSnapshot() {
+        return {
+            "action": "add",
+            "actualA": root.preview.actualA,
+            "actualB": root.preview.actualB,
+            "currentRatio": qsTr("1 %1 = %2 %3").arg(root.poolState.tokenB).arg(root.poolState.formatInteger(root.poolState.tokenAPerTokenB)).arg(root.poolState.tokenA),
+            "deltaLp": root.preview.deltaLp,
+            "depositA": root.poolState.formatTokenAmount(root.preview.actualA, root.poolState.tokenA),
+            "depositB": root.poolState.formatTokenAmount(root.preview.actualB, root.poolState.tokenB),
+            "feeTier": root.poolState.feeTier,
+            "minLpReceived": root.poolState.formatLpAmount(root.minLpReceived),
+            "slippageTolerance": root.poolState.formatPercent(root.slippageTolerancePercent),
+            "tokenA": root.poolState.tokenA,
+            "tokenB": root.poolState.tokenB
+        };
     }
 }
