@@ -4,7 +4,7 @@
   "type": "ui_qml",
   "category": "amm",
   "description": "UI module for the AMM program",
-  "view": "Main.qml",
+  "view": "qml/Main.qml",
   "icon": "icons/amm.png",
   "dependencies": [],
 
