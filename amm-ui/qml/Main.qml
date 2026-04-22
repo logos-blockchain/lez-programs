@@ -180,15 +180,32 @@ Item {
                 color: "#151515"
             }
 
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 12
-                spacing: 10
+            Flickable {
+                id: scroll
 
-                PoolPositionSummary {
-                    poolState: poolState
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: implicitHeight
+                anchors.fill: parent
+                clip: true
+                contentHeight: content.implicitHeight + 24
+                contentWidth: width
+
+                ColumnLayout {
+                    id: content
+                    spacing: 10
+                    width: scroll.width - 24
+                    x: 12
+                    y: 12
+
+                    PoolPositionSummary {
+                        poolState: poolState
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: implicitHeight
+                    }
+
+                    AddLiquidityForm {
+                        poolState: poolState
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: implicitHeight
+                    }
                 }
             }
         }
