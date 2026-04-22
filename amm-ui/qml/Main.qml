@@ -1,6 +1,8 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+import "components"
+import "state"
 
 Item {
     id: root
@@ -164,10 +166,31 @@ Item {
             }
         }
 
-        // ── Liquidity view (placeholder — replaced when LP branch merges) ─────
+        // ── Liquidity view ────────────────────────────────────────────────────
         Item {
             anchors.fill: parent
             visible: navbar.currentIndex === 1
+
+            DummyPoolState {
+                id: poolState
+            }
+
+            Rectangle {
+                anchors.fill: parent
+                color: "#151515"
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                spacing: 10
+
+                PoolPositionSummary {
+                    poolState: poolState
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: implicitHeight
+                }
+            }
         }
     }
 }
