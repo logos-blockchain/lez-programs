@@ -1,3 +1,5 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.53s
+     Running `target/debug/idl-gen amm/methods/guest/src/bin/amm.rs`
 {
   "version": "0.1.0",
   "name": "amm",
@@ -101,6 +103,12 @@
           "init": false
         },
         {
+          "name": "owner",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "user_holding_a",
           "writable": false,
           "signer": false,
@@ -131,6 +139,10 @@
         {
           "name": "max_amount_to_add_token_b",
           "type": "u128"
+        },
+        {
+          "name": "ata_program_id",
+          "type": "program_id"
         }
       ]
     },
@@ -157,6 +169,12 @@
         },
         {
           "name": "pool_definition_lp",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "owner",
           "writable": false,
           "signer": false,
           "init": false
@@ -192,6 +210,10 @@
         {
           "name": "min_amount_to_remove_token_b",
           "type": "u128"
+        },
+        {
+          "name": "ata_program_id",
+          "type": "program_id"
         }
       ]
     },
@@ -212,6 +234,12 @@
         },
         {
           "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "owner",
           "writable": false,
           "signer": false,
           "init": false
@@ -241,6 +269,10 @@
         {
           "name": "token_definition_id_in",
           "type": "account_id"
+        },
+        {
+          "name": "ata_program_id",
+          "type": "program_id"
         }
       ]
     },
@@ -261,6 +293,12 @@
         },
         {
           "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "owner",
           "writable": false,
           "signer": false,
           "init": false
@@ -290,6 +328,10 @@
         {
           "name": "token_definition_id_in",
           "type": "account_id"
+        },
+        {
+          "name": "ata_program_id",
+          "type": "program_id"
         }
       ]
     },

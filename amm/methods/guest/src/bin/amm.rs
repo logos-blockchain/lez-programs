@@ -56,24 +56,28 @@ mod amm {
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
         pool_definition_lp: AccountWithMetadata,
+        owner: AccountWithMetadata,
         user_holding_a: AccountWithMetadata,
         user_holding_b: AccountWithMetadata,
         user_holding_lp: AccountWithMetadata,
         min_amount_liquidity: u128,
         max_amount_to_add_token_a: u128,
         max_amount_to_add_token_b: u128,
+        ata_program_id: ProgramId,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::add::add_liquidity(
             pool,
             vault_a,
             vault_b,
             pool_definition_lp,
+            owner,
             user_holding_a,
             user_holding_b,
             user_holding_lp,
             NonZeroU128::new(min_amount_liquidity).expect("min_amount_liquidity must be nonzero"),
             max_amount_to_add_token_a,
             max_amount_to_add_token_b,
+            ata_program_id,
         );
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
@@ -85,18 +89,21 @@ mod amm {
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
         pool_definition_lp: AccountWithMetadata,
+        owner: AccountWithMetadata,
         user_holding_a: AccountWithMetadata,
         user_holding_b: AccountWithMetadata,
         user_holding_lp: AccountWithMetadata,
         remove_liquidity_amount: u128,
         min_amount_to_remove_token_a: u128,
         min_amount_to_remove_token_b: u128,
+        ata_program_id: ProgramId,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::remove::remove_liquidity(
             pool,
             vault_a,
             vault_b,
             pool_definition_lp,
+            owner,
             user_holding_a,
             user_holding_b,
             user_holding_lp,
@@ -104,6 +111,7 @@ mod amm {
                 .expect("remove_liquidity_amount must be nonzero"),
             min_amount_to_remove_token_a,
             min_amount_to_remove_token_b,
+            ata_program_id,
         );
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
@@ -114,21 +122,25 @@ mod amm {
         pool: AccountWithMetadata,
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
+        owner: AccountWithMetadata,
         user_holding_a: AccountWithMetadata,
         user_holding_b: AccountWithMetadata,
         swap_amount_in: u128,
         min_amount_out: u128,
         token_definition_id_in: AccountId,
+        ata_program_id: ProgramId,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::swap::swap_exact_input(
             pool,
             vault_a,
             vault_b,
+            owner,
             user_holding_a,
             user_holding_b,
             swap_amount_in,
             min_amount_out,
             token_definition_id_in,
+            ata_program_id,
         );
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
@@ -139,21 +151,25 @@ mod amm {
         pool: AccountWithMetadata,
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
+        owner: AccountWithMetadata,
         user_holding_a: AccountWithMetadata,
         user_holding_b: AccountWithMetadata,
         exact_amount_out: u128,
         max_amount_in: u128,
         token_definition_id_in: AccountId,
+        ata_program_id: ProgramId,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::swap::swap_exact_output(
             pool,
             vault_a,
             vault_b,
+            owner,
             user_holding_a,
             user_holding_b,
             exact_amount_out,
             max_amount_in,
             token_definition_id_in,
+            ata_program_id,
         );
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }

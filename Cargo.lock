@@ -54,6 +54,7 @@ name = "amm_program"
 version = "0.1.0"
 dependencies = [
  "amm_core",
+ "ata_core",
  "nssa_core",
  "token_core",
 ]

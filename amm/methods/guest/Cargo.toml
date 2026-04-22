@@ -14,6 +14,7 @@ spel-framework = { git = "https://github.com/logos-co/spel.git", tag = "v0.2.0-r
 nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc1" }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
 amm_core = { path = "../../core" }
+ata_core = { path = "../../../ata/core" }
 amm_program = { path = "../..", package = "amm_program" }
 token_core = { path = "../../../token/core" }
 serde = { version = "1.0", features = ["derive"] }

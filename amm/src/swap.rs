@@ -4,7 +4,7 @@ use amm_core::{
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall},
+    program::{AccountPostState, ChainedCall, ProgramId},
 };
 
 /// Validates swap setup: checks pool liquidity is ready, vaults match, and reserves are sufficient.
@@ -56,6 +56,7 @@ fn create_swap_post_states(
     pool_def_data: PoolDefinition,
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
+    owner: AccountWithMetadata,
     user_holding_a: AccountWithMetadata,
     user_holding_b: AccountWithMetadata,
     deposit_a: u128,
@@ -86,6 +87,7 @@ fn create_swap_post_states(
         AccountPostState::new(pool_post),
         AccountPostState::new(vault_a.account),
         AccountPostState::new(vault_b.account),
+        AccountPostState::new(owner.account),
         AccountPostState::new(user_holding_a.account),
         AccountPostState::new(user_holding_b.account),
     ]
@@ -97,17 +99,20 @@ pub fn swap_exact_input(
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
+    owner: AccountWithMetadata,
     user_holding_a: AccountWithMetadata,
     user_holding_b: AccountWithMetadata,
     swap_amount_in: u128,
     min_amount_out: u128,
     token_in_id: AccountId,
+    ata_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
 
     let (chained_calls, [deposit_a, withdraw_a], [deposit_b, withdraw_b]) =
         if token_in_id == pool_def_data.definition_token_a_id {
             let (chained_calls, deposit_a, withdraw_b) = swap_logic(
+                owner.clone(),
                 user_holding_a.clone(),
                 vault_a.clone(),
                 vault_b.clone(),
@@ -118,11 +123,13 @@ pub fn swap_exact_input(
                 pool_def_data.reserve_a,
                 pool_def_data.reserve_b,
                 pool.account_id,
+                ata_program_id,
             );
 
             (chained_calls, [deposit_a, 0], [0, withdraw_b])
         } else if token_in_id == pool_def_data.definition_token_b_id {
             let (chained_calls, deposit_b, withdraw_a) = swap_logic(
+                owner.clone(),
                 user_holding_b.clone(),
                 vault_b.clone(),
                 vault_a.clone(),
@@ -133,6 +140,7 @@ pub fn swap_exact_input(
                 pool_def_data.reserve_b,
                 pool_def_data.reserve_a,
                 pool.account_id,
+                ata_program_id,
             );
 
             (chained_calls, [0, withdraw_a], [deposit_b, 0])
@@ -145,6 +153,7 @@ pub fn swap_exact_input(
         pool_def_data,
         vault_a,
         vault_b,
+        owner,
         user_holding_a,
         user_holding_b,
         deposit_a,
@@ -158,6 +167,7 @@ pub fn swap_exact_input(
 
 #[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
 fn swap_logic(
+    owner: AccountWithMetadata,
     user_deposit: AccountWithMetadata,
     vault_deposit: AccountWithMetadata,
     vault_withdraw: AccountWithMetadata,
@@ -168,6 +178,7 @@ fn swap_logic(
     reserve_deposit_vault_amount: u128,
     reserve_withdraw_vault_amount: u128,
     pool_id: AccountId,
+    ata_program_id: ProgramId,
 ) -> (Vec<ChainedCall>, u128, u128) {
     let effective_amount_in = swap_amount_in
         .checked_mul(FEE_BPS_DENOMINATOR - fee_bps)
@@ -195,14 +206,16 @@ fn swap_logic(
     );
     assert!(withdraw_amount != 0, "Withdraw amount should be nonzero");
 
-    let token_program_id = user_deposit.account.program_owner;
+    let token_program_id = vault_withdraw.account.program_owner;
 
     let mut chained_calls = Vec::new();
+    // Deposit: owner's ATA -> vault via ATA program
     chained_calls.push(ChainedCall::new(
-        token_program_id,
-        vec![user_deposit, vault_deposit],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: swap_amount_in,
+        ata_program_id,
+        vec![owner, user_deposit, vault_deposit],
+        &ata_core::Instruction::Transfer {
+            ata_program_id,
+            amount: swap_amount_in,
         },
     ));
 
@@ -216,6 +229,7 @@ fn swap_logic(
             .definition_id(),
     );
 
+    // Withdrawal: vault PDA -> user's ATA (no ATA auth needed for recipient)
     chained_calls.push(
         ChainedCall::new(
             token_program_id,
@@ -236,17 +250,20 @@ pub fn swap_exact_output(
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
+    owner: AccountWithMetadata,
     user_holding_a: AccountWithMetadata,
     user_holding_b: AccountWithMetadata,
     exact_amount_out: u128,
     max_amount_in: u128,
     token_in_id: AccountId,
+    ata_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
 
     let (chained_calls, [deposit_a, withdraw_a], [deposit_b, withdraw_b]) =
         if token_in_id == pool_def_data.definition_token_a_id {
             let (chained_calls, deposit_a, withdraw_b) = exact_output_swap_logic(
+                owner.clone(),
                 user_holding_a.clone(),
                 vault_a.clone(),
                 vault_b.clone(),
@@ -257,11 +274,13 @@ pub fn swap_exact_output(
                 pool_def_data.reserve_b,
                 pool_def_data.fees,
                 pool.account_id,
+                ata_program_id,
             );
 
             (chained_calls, [deposit_a, 0], [0, withdraw_b])
         } else if token_in_id == pool_def_data.definition_token_b_id {
             let (chained_calls, deposit_b, withdraw_a) = exact_output_swap_logic(
+                owner.clone(),
                 user_holding_b.clone(),
                 vault_b.clone(),
                 vault_a.clone(),
@@ -272,6 +291,7 @@ pub fn swap_exact_output(
                 pool_def_data.reserve_a,
                 pool_def_data.fees,
                 pool.account_id,
+                ata_program_id,
             );
 
             (chained_calls, [0, withdraw_a], [deposit_b, 0])
@@ -284,6 +304,7 @@ pub fn swap_exact_output(
         pool_def_data,
         vault_a,
         vault_b,
+        owner,
         user_holding_a,
         user_holding_b,
         deposit_a,
@@ -297,6 +318,7 @@ pub fn swap_exact_output(
 
 #[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
 fn exact_output_swap_logic(
+    owner: AccountWithMetadata,
     user_deposit: AccountWithMetadata,
     vault_deposit: AccountWithMetadata,
     vault_withdraw: AccountWithMetadata,
@@ -307,6 +329,7 @@ fn exact_output_swap_logic(
     reserve_withdraw_vault_amount: u128,
     fee_bps: u128,
     pool_id: AccountId,
+    ata_program_id: ProgramId,
 ) -> (Vec<ChainedCall>, u128, u128) {
     // Guard: exact_amount_out must be nonzero
     assert_ne!(exact_amount_out, 0, "Exact amount out must be nonzero");
@@ -346,14 +369,16 @@ fn exact_output_swap_logic(
         "Required input exceeds maximum amount in"
     );
 
-    let token_program_id = user_deposit.account.program_owner;
+    let token_program_id = vault_withdraw.account.program_owner;
 
     let mut chained_calls = Vec::new();
+    // Deposit: owner's ATA -> vault via ATA program
     chained_calls.push(ChainedCall::new(
-        token_program_id,
-        vec![user_deposit, vault_deposit],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: deposit_amount,
+        ata_program_id,
+        vec![owner, user_deposit, vault_deposit],
+        &ata_core::Instruction::Transfer {
+            ata_program_id,
+            amount: deposit_amount,
         },
     ));
 
@@ -367,6 +392,7 @@ fn exact_output_swap_logic(
             .definition_id(),
     );
 
+    // Withdrawal: vault PDA -> user's ATA (no ATA auth needed for recipient)
     chained_calls.push(
         ChainedCall::new(
             token_program_id,

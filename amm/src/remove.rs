@@ -1,12 +1,11 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_liquidity_token_pda_seed, compute_vault_pda_seed,
-    PoolDefinition, MINIMUM_LIQUIDITY,
+    assert_supported_fee_tier, compute_vault_pda_seed, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
     account::{AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall},
+    program::{AccountPostState, ChainedCall, ProgramId},
 };
 
 #[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
@@ -15,12 +14,14 @@ pub fn remove_liquidity(
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
     pool_definition_lp: AccountWithMetadata,
+    owner: AccountWithMetadata,
     user_holding_a: AccountWithMetadata,
     user_holding_b: AccountWithMetadata,
     user_holding_lp: AccountWithMetadata,
     remove_liquidity_amount: NonZeroU128,
     min_amount_to_remove_token_a: u128,
     min_amount_to_remove_token_b: u128,
+    ata_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let remove_liquidity_amount: u128 = remove_liquidity_amount.into();
 
@@ -143,9 +144,9 @@ pub fn remove_liquidity(
 
     pool_post.data = Data::from(&pool_post_definition);
 
-    let token_program_id = user_holding_a.account.program_owner;
+    let token_program_id = vault_a.account.program_owner;
 
-    // Chaincall for Token A withdraw
+    // Chaincall for Token A withdraw (vault PDA -> user's ATA)
     let call_token_a = ChainedCall::new(
         token_program_id,
         vec![running_vault_a, user_holding_a.clone()],
@@ -157,7 +158,7 @@ pub fn remove_liquidity(
         pool.account_id,
         pool_def_data.definition_token_a_id,
     )]);
-    // Chaincall for Token B withdraw
+    // Chaincall for Token B withdraw (vault PDA -> user's ATA)
     let call_token_b = ChainedCall::new(
         token_program_id,
         vec![running_vault_b, user_holding_b.clone()],
@@ -169,17 +170,19 @@ pub fn remove_liquidity(
         pool.account_id,
         pool_def_data.definition_token_b_id,
     )]);
-    // Chaincall for LP adjustment
-    let mut pool_definition_lp_auth = pool_definition_lp.clone();
-    pool_definition_lp_auth.is_authorized = true;
+    // Chaincall for LP burn (owner's LP ATA -> burn via ATA program)
     let call_token_lp = ChainedCall::new(
-        token_program_id,
-        vec![pool_definition_lp_auth, user_holding_lp.clone()],
-        &token_core::Instruction::Burn {
-            amount_to_burn: delta_lp,
+        ata_program_id,
+        vec![
+            owner.clone(),
+            user_holding_lp.clone(),
+            pool_definition_lp.clone(),
+        ],
+        &ata_core::Instruction::Burn {
+            ata_program_id,
+            amount: delta_lp,
         },
-    )
-    .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
+    );
 
     let chained_calls = vec![call_token_lp, call_token_b, call_token_a];
 
@@ -188,6 +191,7 @@ pub fn remove_liquidity(
         AccountPostState::new(vault_a.account.clone()),
         AccountPostState::new(vault_b.account.clone()),
         AccountPostState::new(pool_definition_lp.account.clone()),
+        AccountPostState::new(owner.account.clone()),
         AccountPostState::new(user_holding_a.account.clone()),
         AccountPostState::new(user_holding_b.account.clone()),
         AccountPostState::new(user_holding_lp.account.clone()),

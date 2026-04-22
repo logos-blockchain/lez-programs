@@ -44,13 +44,15 @@ pub enum Instruction {
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
     /// - Pool Liquidity Token Definition (initialized)
-    /// - User Holding Account for Token A (authorized)
-    /// - User Holding Account for Token B (authorized)
-    /// - User Holding Account for Pool Liquidity
+    /// - Owner account (authorized)
+    /// - User ATA for Token A
+    /// - User ATA for Token B
+    /// - User ATA for Pool Liquidity
     AddLiquidity {
         min_amount_liquidity: u128,
         max_amount_to_add_token_a: u128,
         max_amount_to_add_token_b: u128,
+        ata_program_id: ProgramId,
     },
 
     /// Removes liquidity from the Pool
@@ -60,13 +62,15 @@ pub enum Instruction {
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
     /// - Pool Liquidity Token Definition (initialized)
-    /// - User Holding Account for Token A (initialized)
-    /// - User Holding Account for Token B (initialized)
-    /// - User Holding Account for Pool Liquidity (authorized)
+    /// - Owner account (authorized)
+    /// - User ATA for Token A (initialized)
+    /// - User ATA for Token B (initialized)
+    /// - User ATA for Pool Liquidity
     RemoveLiquidity {
         remove_liquidity_amount: u128,
         min_amount_to_remove_token_a: u128,
         min_amount_to_remove_token_b: u128,
+        ata_program_id: ProgramId,
     },
 
     /// Swap some quantity of Tokens (either Token A or Token B)
@@ -76,13 +80,14 @@ pub enum Instruction {
     /// - AMM Pool (initialized)
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
-    /// - User Holding Account for Token A
-    /// - User Holding Account for Token B Either User Holding Account for Token A or Token B is
-    ///   authorized.
+    /// - Owner account (authorized)
+    /// - User ATA for Token A
+    /// - User ATA for Token B
     SwapExactInput {
         swap_amount_in: u128,
         min_amount_out: u128,
         token_definition_id_in: AccountId,
+        ata_program_id: ProgramId,
     },
 
     /// Swap tokens specifying the exact desired output amount,
@@ -92,13 +97,14 @@ pub enum Instruction {
     /// - AMM Pool (initialized)
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
-    /// - User Holding Account for Token A
-    /// - User Holding Account for Token B Either User Holding Account for Token A or Token B is
-    ///   authorized.
+    /// - Owner account (authorized)
+    /// - User ATA for Token A
+    /// - User ATA for Token B
     SwapExactOutput {
         exact_amount_out: u128,
         max_amount_in: u128,
         token_definition_id_in: AccountId,
+        ata_program_id: ProgramId,
     },
 
     /// Sync pool reserves with current vault balances.

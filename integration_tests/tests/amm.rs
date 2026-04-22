@@ -38,6 +38,10 @@ impl Ids {
         amm_methods::AMM_ID
     }
 
+    fn ata_program() -> nssa_core::program::ProgramId {
+        ata_methods::ATA_ID
+    }
+
     fn token_a_definition() -> AccountId {
         AccountId::new([3; 32])
     }
@@ -1018,6 +1022,7 @@ fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_ou
         swap_amount_in,
         min_amount_out,
         token_definition_id_in: Ids::token_a_definition(),
+        ata_program_id: Ids::ata_program(),
     };
 
     let message = public_transaction::Message::try_new(
@@ -1045,6 +1050,7 @@ fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_ou
         swap_amount_in,
         min_amount_out,
         token_definition_id_in: Ids::token_b_definition(),
+        ata_program_id: Ids::ata_program(),
     };
 
     let message = public_transaction::Message::try_new(
@@ -1077,6 +1083,7 @@ fn execute_add_liquidity(
         min_amount_liquidity,
         max_amount_to_add_token_a,
         max_amount_to_add_token_b,
+        ata_program_id: Ids::ata_program(),
     };
 
     let message = public_transaction::Message::try_new(
@@ -1115,6 +1122,7 @@ fn execute_remove_liquidity(
         remove_liquidity_amount,
         min_amount_to_remove_token_a,
         min_amount_to_remove_token_b,
+        ata_program_id: Ids::ata_program(),
     };
 
     let message = public_transaction::Message::try_new(
@@ -1178,6 +1186,7 @@ fn amm_remove_liquidity() {
         remove_liquidity_amount: Balances::remove_lp(),
         min_amount_to_remove_token_a: Balances::remove_min_a(),
         min_amount_to_remove_token_b: Balances::remove_min_b(),
+        ata_program_id: Ids::ata_program(),
     };
 
     let message = public_transaction::Message::try_new(
@@ -1240,6 +1249,7 @@ fn amm_remove_liquidity_insufficient_user_lp_fails() {
         remove_liquidity_amount: Balances::remove_lp(),
         min_amount_to_remove_token_a: Balances::remove_min_a(),
         min_amount_to_remove_token_b: Balances::remove_min_b(),
+        ata_program_id: Ids::ata_program(),
     };
 
     let message = public_transaction::Message::try_new(
@@ -1464,6 +1474,7 @@ fn amm_add_liquidity() {
         min_amount_liquidity: Balances::add_min_lp(),
         max_amount_to_add_token_a: Balances::add_max_a(),
         max_amount_to_add_token_b: Balances::add_max_b(),
+        ata_program_id: Ids::ata_program(),
     };
 
     let message = public_transaction::Message::try_new(
@@ -1526,6 +1537,7 @@ fn amm_swap_b_to_a() {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         token_definition_id_in: Ids::token_b_definition(),
+        ata_program_id: Ids::ata_program(),
     };
 
     let message = public_transaction::Message::try_new(
@@ -1577,6 +1589,7 @@ fn amm_swap_a_to_b() {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         token_definition_id_in: Ids::token_a_definition(),
+        ata_program_id: Ids::ata_program(),
     };
 
     let message = public_transaction::Message::try_new(

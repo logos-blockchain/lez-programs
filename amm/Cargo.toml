@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc1", features = ["host"] }
 amm_core = { path = "core" }
+ata_core = { path = "../ata/core" }
 token_core = { path = "../token/core" }

@@ -24,6 +24,7 @@ use crate::{
 
 const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
 const AMM_PROGRAM_ID: ProgramId = [42; 8];
+const ATA_PROGRAM_ID: ProgramId = [99; 8];
 
 struct BalanceForTests;
 struct ChainedCallForTests;
@@ -224,13 +225,15 @@ impl BalanceForTests {
 impl ChainedCallForTests {
     fn cc_swap_token_a_test_1() -> ChainedCall {
         ChainedCall::new(
-            TOKEN_PROGRAM_ID,
+            ATA_PROGRAM_ID,
             vec![
+                AccountWithMetadataForTests::owner(),
                 AccountWithMetadataForTests::user_holding_a(),
                 AccountWithMetadataForTests::vault_a_init(),
             ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::add_max_amount_a(),
+            &ata_core::Instruction::Transfer {
+                ata_program_id: ATA_PROGRAM_ID,
+                amount: BalanceForTests::add_max_amount_a(),
             },
         )
     }
@@ -275,13 +278,15 @@ impl ChainedCallForTests {
 
     fn cc_swap_token_b_test_2() -> ChainedCall {
         ChainedCall::new(
-            TOKEN_PROGRAM_ID,
+            ATA_PROGRAM_ID,
             vec![
+                AccountWithMetadataForTests::owner(),
                 AccountWithMetadataForTests::user_holding_b(),
                 AccountWithMetadataForTests::vault_b_init(),
             ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::add_max_amount_b(),
+            &ata_core::Instruction::Transfer {
+                ata_program_id: ATA_PROGRAM_ID,
+                amount: BalanceForTests::add_max_amount_b(),
             },
         )
     }
@@ -293,13 +298,15 @@ impl ChainedCallForTests {
         let swap_amount: u128 = 500;
 
         ChainedCall::new(
-            TOKEN_PROGRAM_ID,
+            ATA_PROGRAM_ID,
             vec![
+                AccountWithMetadataForTests::owner(),
                 AccountWithMetadataForTests::user_holding_a(),
                 AccountWithMetadataForTests::vault_a_init(),
             ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: swap_amount,
+            &ata_core::Instruction::Transfer {
+                ata_program_id: ATA_PROGRAM_ID,
+                amount: swap_amount,
             },
         )
     }
@@ -349,26 +356,30 @@ impl ChainedCallForTests {
         let swap_amount: u128 = 201;
 
         ChainedCall::new(
-            TOKEN_PROGRAM_ID,
+            ATA_PROGRAM_ID,
             vec![
+                AccountWithMetadataForTests::owner(),
                 AccountWithMetadataForTests::user_holding_b(),
                 AccountWithMetadataForTests::vault_b_init(),
             ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: swap_amount,
+            &ata_core::Instruction::Transfer {
+                ata_program_id: ATA_PROGRAM_ID,
+                amount: swap_amount,
             },
         )
     }
 
     fn cc_swap_rounding_boundary_token_a_in() -> ChainedCall {
         ChainedCall::new(
-            TOKEN_PROGRAM_ID,
+            ATA_PROGRAM_ID,
             vec![
+                AccountWithMetadataForTests::owner(),
                 AccountWithMetadataForTests::user_holding_a(),
                 AccountWithMetadataForTests::vault_a_init(),
             ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: 3,
+            &ata_core::Instruction::Transfer {
+                ata_program_id: ATA_PROGRAM_ID,
+                amount: 3,
             },
         )
     }
@@ -392,26 +403,30 @@ impl ChainedCallForTests {
 
     fn cc_add_token_a() -> ChainedCall {
         ChainedCall::new(
-            TOKEN_PROGRAM_ID,
+            ATA_PROGRAM_ID,
             vec![
+                AccountWithMetadataForTests::owner(),
                 AccountWithMetadataForTests::user_holding_a(),
                 AccountWithMetadataForTests::vault_a_init(),
             ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::add_successful_amount_a(),
+            &ata_core::Instruction::Transfer {
+                ata_program_id: ATA_PROGRAM_ID,
+                amount: BalanceForTests::add_successful_amount_a(),
             },
         )
     }
 
     fn cc_add_token_b() -> ChainedCall {
         ChainedCall::new(
-            TOKEN_PROGRAM_ID,
+            ATA_PROGRAM_ID,
             vec![
+                AccountWithMetadataForTests::owner(),
                 AccountWithMetadataForTests::user_holding_b(),
                 AccountWithMetadataForTests::vault_b_init(),
             ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::add_successful_amount_b(),
+            &ata_core::Instruction::Transfer {
+                ata_program_id: ATA_PROGRAM_ID,
+                amount: BalanceForTests::add_successful_amount_b(),
             },
         )
     }
@@ -470,22 +485,18 @@ impl ChainedCallForTests {
     }
 
     fn cc_remove_pool_lp() -> ChainedCall {
-        let mut pool_lp_auth = AccountWithMetadataForTests::pool_lp_init();
-        pool_lp_auth.is_authorized = true;
-
         ChainedCall::new(
-            TOKEN_PROGRAM_ID,
+            ATA_PROGRAM_ID,
             vec![
-                pool_lp_auth,
+                AccountWithMetadataForTests::owner(),
                 AccountWithMetadataForTests::user_holding_lp_init(),
+                AccountWithMetadataForTests::pool_lp_init(),
             ],
-            &token_core::Instruction::Burn {
-                amount_to_burn: BalanceForTests::remove_amount_lp(),
+            &ata_core::Instruction::Burn {
+                ata_program_id: ATA_PROGRAM_ID,
+                amount: BalanceForTests::remove_amount_lp(),
             },
         )
-        .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
-            IdForTests::pool_definition_id(),
-        )])
     }
 
     fn cc_new_definition_token_a() -> ChainedCall {
@@ -610,6 +621,10 @@ impl IdForTests {
             IdForTests::pool_definition_id(),
             IdForTests::token_b_definition_id(),
         )
+    }
+
+    fn owner_id() -> AccountId {
+        AccountId::new([48; 32])
     }
 }
 
@@ -1370,6 +1385,19 @@ impl AccountWithMetadataForTests {
             account_id: IdForTests::pool_definition_id(),
         }
     }
+
+    fn owner() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: ProgramId::default(),
+                balance: 0u128,
+                data: Data::default(),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::owner_id(),
+        }
+    }
 }
 
 #[test]
@@ -1395,12 +1423,14 @@ fn test_call_add_liquidity_vault_a_omitted() {
         AccountWithMetadataForTests::vault_a_with_wrong_id(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1412,12 +1442,14 @@ fn test_call_add_liquidity_vault_b_omitted() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_with_wrong_id(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1429,12 +1461,14 @@ fn test_call_add_liquidity_lp_definition_mismatch() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_with_wrong_id(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1446,12 +1480,14 @@ fn test_call_add_liquidity_zero_balance_1() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         0,
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1463,12 +1499,14 @@ fn test_call_add_liquidity_zero_balance_2() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         0,
         BalanceForTests::add_max_amount_a(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1480,12 +1518,14 @@ fn test_call_add_liquidity_vault_a_balance_below_reserve() {
         AccountWithMetadataForTests::vault_a_init_low(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1497,12 +1537,14 @@ fn test_call_add_liquidity_vault_b_balance_below_reserve() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init_low(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1514,12 +1556,14 @@ fn test_call_add_liquidity_vault_insufficient_balance_1() {
         AccountWithMetadataForTests::vault_a_init_zero(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1531,12 +1575,14 @@ fn test_call_add_liquidity_vault_insufficient_balance_2() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init_zero(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1548,12 +1594,14 @@ fn test_call_add_liquidity_actual_amount_zero_1() {
         AccountWithMetadataForTests::vault_a_init_low(),
         AccountWithMetadataForTests::vault_b_init_high(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1565,12 +1613,14 @@ fn test_call_add_liquidity_actual_amount_zero_2() {
         AccountWithMetadataForTests::vault_a_init_high(),
         AccountWithMetadataForTests::vault_b_init_low(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a_low(),
         BalanceForTests::add_max_amount_b_low(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1582,12 +1632,14 @@ fn test_call_add_liquidity_reserves_zero_1() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1599,12 +1651,14 @@ fn test_call_add_liquidity_reserves_zero_2() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1616,12 +1670,14 @@ fn test_call_add_liquidity_payable_lp_zero() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a_low(),
         BalanceForTests::add_max_amount_b_low(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1632,12 +1688,14 @@ fn test_call_add_liquidity_chained_call_successsful() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
+        ATA_PROGRAM_ID,
     );
 
     let pool_post = post_states[0].clone();
@@ -1664,12 +1722,14 @@ fn test_call_remove_liquidity_vault_a_omitted() {
         AccountWithMetadataForTests::vault_a_with_wrong_id(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1681,12 +1741,14 @@ fn test_call_remove_liquidity_vault_b_omitted() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_with_wrong_id(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1698,12 +1760,14 @@ fn test_call_remove_liquidity_lp_def_mismatch() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_with_wrong_id(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1715,6 +1779,7 @@ fn test_call_remove_liquidity_insufficient_liquidity_amount() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_a(), /* different token account than lp to
@@ -1723,6 +1788,7 @@ fn test_call_remove_liquidity_insufficient_liquidity_amount() {
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1736,12 +1802,14 @@ fn test_call_remove_liquidity_insufficient_balance_1() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::remove_amount_lp_1()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1754,12 +1822,14 @@ fn test_call_remove_liquidity_pool_at_minimum_liquidity() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_with_balance(MINIMUM_LIQUIDITY),
         NonZero::new(MINIMUM_LIQUIDITY).unwrap(),
         1,
         1,
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1774,12 +1844,14 @@ fn test_call_remove_liquidity_exceeds_unlocked_supply() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_with_balance(BalanceForTests::lp_supply_init()),
         NonZero::new(BalanceForTests::lp_supply_init()).unwrap(),
         1,
         1,
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1793,12 +1865,14 @@ fn test_call_remove_liquidity_insufficient_balance_2() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1810,12 +1884,14 @@ fn test_call_remove_liquidity_min_bal_zero_1() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         0,
         BalanceForTests::remove_min_amount_b(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1827,12 +1903,14 @@ fn test_call_remove_liquidity_min_bal_zero_2() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         0,
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -1843,12 +1921,14 @@ fn test_call_remove_liquidity_chained_call_successful() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b_low(),
+        ATA_PROGRAM_ID,
     );
 
     let pool_post = post_states[0].clone();
@@ -2105,11 +2185,13 @@ fn test_call_swap_incorrect_token_type() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_lp_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2120,11 +2202,13 @@ fn test_call_swap_vault_a_omitted() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_with_wrong_id(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2135,11 +2219,13 @@ fn test_call_swap_vault_b_omitted() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_with_wrong_id(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2150,11 +2236,13 @@ fn test_call_swap_reserves_vault_mismatch_1() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init_low(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2165,11 +2253,13 @@ fn test_call_swap_reserves_vault_mismatch_2() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init_low(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2180,11 +2270,13 @@ fn test_call_swap_below_minimum_liquidity() {
         AccountWithMetadataForTests::pool_definition_below_minimum_liquidity(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2200,11 +2292,13 @@ fn test_call_swap_rejects_unsupported_fee_tier() {
         pool,
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_a_low(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2215,11 +2309,13 @@ fn test_call_swap_below_min_out() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out_too_high(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2230,11 +2326,13 @@ fn test_call_swap_effective_amount_zero() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         1,
         0,
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2245,11 +2343,13 @@ fn test_call_swap_output_rounds_to_zero() {
         AccountWithMetadataForTests::pool_definition_init_low_balances(),
         AccountWithMetadataForTests::vault_a_init_low(),
         AccountWithMetadataForTests::vault_b_init_low(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         2,
         0,
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2260,11 +2360,13 @@ fn test_call_swap_exact_input_rejects_amount_that_rounds_down_below_target_outpu
         AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         2,
         1,
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2274,11 +2376,13 @@ fn test_call_swap_exact_input_accepts_smallest_amount_for_rounded_boundary() {
         AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         3,
         1,
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 
     let pool_post = post_states[0].clone();
@@ -2307,11 +2411,13 @@ fn test_call_swap_chained_call_successful_1() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_a_low(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 
     let pool_post = post_states[0].clone();
@@ -2339,11 +2445,13 @@ fn test_call_swap_chained_call_successful_2() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_b(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_b_definition_id(),
+        ATA_PROGRAM_ID,
     );
 
     let pool_post = post_states[0].clone();
@@ -2372,11 +2480,13 @@ fn call_swap_exact_output_incorrect_token_type() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_lp_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2387,11 +2497,13 @@ fn call_swap_exact_output_vault_a_omitted() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_with_wrong_id(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2402,11 +2514,13 @@ fn call_swap_exact_output_vault_b_omitted() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_with_wrong_id(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2417,11 +2531,13 @@ fn call_swap_exact_output_reserves_vault_mismatch_1() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init_low(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2432,11 +2548,13 @@ fn call_swap_exact_output_reserves_vault_mismatch_2() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init_low(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2447,11 +2565,13 @@ fn call_swap_exact_output_below_minimum_liquidity() {
         AccountWithMetadataForTests::pool_definition_below_minimum_liquidity(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2462,11 +2582,13 @@ fn call_swap_exact_output_exceeds_max_in() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         166_u128,
         100_u128,
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2477,11 +2599,13 @@ fn call_swap_exact_output_zero() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         0_u128,
         500_u128,
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2492,11 +2616,13 @@ fn call_swap_exact_output_exceeds_reserve() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::vault_b_reserve_init(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2506,11 +2632,13 @@ fn call_swap_exact_output_chained_call_successful() {
         AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         BalanceForTests::max_amount_in(),
         BalanceForTests::vault_b_reserve_init(),
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 
     let pool_post = post_states[0].clone();
@@ -2539,11 +2667,13 @@ fn call_swap_exact_output_chained_call_successful_2() {
         AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         285,
         300,
         IdForTests::token_b_definition_id(),
+        ATA_PROGRAM_ID,
     );
 
     let pool_post = post_states[0].clone();
@@ -2575,11 +2705,13 @@ fn call_swap_exact_output_fee_enforced() {
         AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         166_u128, // exact_amount_out: token_b
         499_u128, // max_amount_in: still one short after fee rounding
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2593,11 +2725,13 @@ fn call_swap_exact_output_rejects_max_in_that_rounds_down_below_target_output() 
         AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         1,
         2,
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2607,11 +2741,13 @@ fn call_swap_exact_output_accepts_smallest_max_in_for_rounded_boundary() {
         AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         1,
         3,
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 
     let pool_post = post_states[0].clone();
@@ -2698,12 +2834,14 @@ fn swap_exact_output_overflow_protection() {
         pool,
         vault_a,
         vault_b,
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         2, // exact_amount_out: small, valid (< reserve_b)
         1, // max_amount_in: tiny — real deposit would be enormous, but
         // overflow wraps it to 0, making 0 <= 1 pass silently
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -2876,12 +3014,14 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
         AccountForTests::vault_a_init(),
         AccountForTests::vault_b_init(),
         AccountForTests::pool_lp_init(),
+        AccountForTests::owner(),
         AccountForTests::user_holding_a(),
         AccountForTests::user_holding_b(),
         AccountForTests::user_holding_lp_with_balance(user_lp),
         NonZero::new(user_lp).unwrap(),
         1,
         1,
+        ATA_PROGRAM_ID,
     );
 
     let pool_after_remove =
@@ -2966,12 +3106,14 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
         donated_vault_a.clone(),
         donated_vault_b.clone(),
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(1).unwrap(),
         100,
         50,
+        ATA_PROGRAM_ID,
     );
     let unsynced_pool_post = PoolDefinition::try_from(&post_unsynced[0].account().data).unwrap();
     let unsynced_delta_lp =
@@ -2996,12 +3138,14 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
         donated_vault_a_for_synced_add,
         donated_vault_b_for_synced_add,
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(1).unwrap(),
         100,
         50,
+        ATA_PROGRAM_ID,
     );
     let synced_pool_post = PoolDefinition::try_from(&post_synced[0].account().data).unwrap();
     let synced_delta_lp = synced_pool_post.liquidity_pool_supply
@@ -3093,12 +3237,14 @@ fn add_liquidity_overflow_protection() {
         vault_a,
         vault_b,
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
         NonZero::new(1).unwrap(),
         500,
         2, // max_amount_b=2 → reserve_a * 2 overflows
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -3177,12 +3323,14 @@ fn remove_liquidity_overflow_protection() {
         vault_a,
         vault_b,
         AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         user_lp,
         NonZero::new(2).unwrap(), // remove_amount=2 → reserve_a * 2 overflows
         1,
         1,
+        ATA_PROGRAM_ID,
     );
 }
 
@@ -3248,11 +3396,13 @@ fn swap_exact_input_overflow_protection() {
         pool,
         vault_a,
         vault_b,
+        AccountWithMetadataForTests::owner(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         3,
         1,
         IdForTests::token_a_definition_id(),
+        ATA_PROGRAM_ID,
     );
 }
 
