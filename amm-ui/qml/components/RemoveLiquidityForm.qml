@@ -8,6 +8,7 @@ Rectangle {
 
     required property DummyPoolState poolState
 
+    property real slippageTolerancePercent: 0.5
     property int burnAmount: 0
     readonly property int maxBurnAmount: root.poolState.clampBurnAmount(root.poolState.userLpBalance)
     readonly property bool hasLpTokens: root.maxBurnAmount > 0
@@ -16,7 +17,12 @@ Rectangle {
     readonly property int preset75Amount: root.poolState.burnAmountForPercent(75)
     readonly property real removePercent: root.maxBurnAmount > 0 ? root.burnAmount * 100 / root.maxBurnAmount : 0
     readonly property var preview: root.poolState.removeLiquidityPreview(root.burnAmount)
+    readonly property int minTokenAReceived: root.poolState.minReceivedAmount(root.preview.withdrawA, root.slippageTolerancePercent)
+    readonly property int minTokenBReceived: root.poolState.minReceivedAmount(root.preview.withdrawB, root.slippageTolerancePercent)
+    readonly property bool minReceivedIsZero: root.burnAmount > 0 && (root.minTokenAReceived === 0 || root.minTokenBReceived === 0)
     readonly property string estimateHelp: qsTr("Estimated with the same integer floor math used by the remove-liquidity contract path.")
+
+    signal slippageToleranceChangeRequested(real tolerancePercent)
 
     color: "#1D1D1D"
     implicitHeight: content.implicitHeight + 20
@@ -389,6 +395,41 @@ Rectangle {
             estimateHelp: root.estimateHelp
             label: qsTr("Withdraw %1").arg(root.poolState.tokenB)
             value: root.poolState.formatTokenAmount(root.preview.withdrawB, root.poolState.tokenB)
+
+            Layout.fillWidth: true
+        }
+
+        SlippageToleranceControl {
+            tolerancePercent: root.slippageTolerancePercent
+
+            Layout.fillWidth: true
+
+            onToleranceChangeRequested: function (tolerancePercent) {
+                root.slippageToleranceChangeRequested(tolerancePercent);
+            }
+        }
+
+        SummaryRow {
+            label: qsTr("Min %1 received").arg(root.poolState.tokenA)
+            value: root.poolState.formatTokenAmount(root.minTokenAReceived, root.poolState.tokenA)
+
+            Layout.fillWidth: true
+        }
+
+        SummaryRow {
+            label: qsTr("Min %1 received").arg(root.poolState.tokenB)
+            value: root.poolState.formatTokenAmount(root.minTokenBReceived, root.poolState.tokenB)
+
+            Layout.fillWidth: true
+        }
+
+        Text {
+            color: "#F08A76"
+            font.pixelSize: 12
+            lineHeight: 1.25
+            text: qsTr("Minimum received is 0. Increase amount or lower slippage.")
+            visible: root.minReceivedIsZero
+            wrapMode: Text.WordWrap
 
             Layout.fillWidth: true
         }

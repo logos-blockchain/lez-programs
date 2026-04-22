@@ -172,7 +172,8 @@ Item {
             anchors.fill: parent
             visible: navbar.currentIndex === 1
 
-            property int activeLiquidityTab: 0
+            property int  activeLiquidityTab: 0
+            property real slippageTolerancePercent: 0.5
 
             DummyPoolState {
                 id: poolState
@@ -216,16 +217,26 @@ Item {
 
                     AddLiquidityForm {
                         poolState: poolState
+                        slippageTolerancePercent: liquidityView.slippageTolerancePercent
                         visible: liquidityView.activeLiquidityTab === 0
                         Layout.fillWidth: true
                         Layout.preferredHeight: visible ? implicitHeight : 0
+
+                        onSlippageToleranceChangeRequested: function(tolerancePercent) {
+                            liquidityView.slippageTolerancePercent = poolState.clampSlippageTolerancePercent(tolerancePercent)
+                        }
                     }
 
                     RemoveLiquidityForm {
                         poolState: poolState
+                        slippageTolerancePercent: liquidityView.slippageTolerancePercent
                         visible: liquidityView.activeLiquidityTab === 1
                         Layout.fillWidth: true
                         Layout.preferredHeight: visible ? implicitHeight : 0
+
+                        onSlippageToleranceChangeRequested: function(tolerancePercent) {
+                            liquidityView.slippageTolerancePercent = poolState.clampSlippageTolerancePercent(tolerancePercent)
+                        }
                     }
                 }
             }

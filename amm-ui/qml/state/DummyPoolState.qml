@@ -104,6 +104,17 @@ QtObject {
         return Math.min(floorAmount(value), Math.max(0, floorAmount(userLpBalance)));
     }
 
+    function clampSlippageTolerancePercent(value) {
+        return Math.max(0.01, Math.min(50, Number(value) || 0));
+    }
+
+    function minReceivedAmount(previewAmount, slippageTolerancePercent) {
+        const safeAmount = floorAmount(previewAmount);
+        const safeSlippage = clampSlippageTolerancePercent(slippageTolerancePercent);
+
+        return Math.floor(safeAmount * (1 - safeSlippage / 100));
+    }
+
     function burnAmountForPercent(percent) {
         const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
 
