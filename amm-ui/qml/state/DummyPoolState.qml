@@ -12,6 +12,7 @@ QtObject {
     property real totalLpSupply: 22360679
     property real walletBalanceA: 60000
     property real walletBalanceB: 20
+    readonly property real minimumLiquidity: 1000
 
     readonly property real poolShare: totalLpSupply > 0 ? userLpBalance / totalLpSupply : 0
     readonly property real userOwnedA: reserveA * poolShare
@@ -99,6 +100,39 @@ QtObject {
         return addLiquidityPreview(walletBalanceA, walletBalanceB);
     }
 
+    function clampBurnAmount(value) {
+        return Math.min(floorAmount(value), Math.max(0, floorAmount(userLpBalance)));
+    }
+
+    function burnAmountForPercent(percent) {
+        const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+
+        if (safePercent === 100) {
+            return clampBurnAmount(userLpBalance);
+        }
+
+        return clampBurnAmount(Math.floor(userLpBalance * safePercent / 100));
+    }
+
+    function removeLiquidityPreview(burnedLp) {
+        const safeBurnedLp = totalLpSupply > 0 ? Math.min(clampBurnAmount(burnedLp), floorAmount(totalLpSupply)) : 0;
+        const withdrawA = totalLpSupply > 0 ? Math.floor(reserveA * safeBurnedLp / totalLpSupply) : 0;
+        const withdrawB = totalLpSupply > 0 ? Math.floor(reserveB * safeBurnedLp / totalLpSupply) : 0;
+        const newTotalLpSupply = Math.max(0, floorAmount(totalLpSupply) - safeBurnedLp);
+        const newUserLpBalance = Math.max(0, floorAmount(userLpBalance) - safeBurnedLp);
+
+        return {
+            "burnedLp": safeBurnedLp,
+            "newReserveA": Math.max(0, reserveA - withdrawA),
+            "newReserveB": Math.max(0, reserveB - withdrawB),
+            "newTotalLpSupply": newTotalLpSupply,
+            "newUserLpBalance": newUserLpBalance,
+            "newUserShare": newTotalLpSupply > 0 ? newUserLpBalance / newTotalLpSupply : 0,
+            "withdrawA": withdrawA,
+            "withdrawB": withdrawB
+        };
+    }
+
     function formatInteger(value) {
         const rounded = Math.round(Number(value) || 0);
         return rounded.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -128,5 +162,15 @@ QtObject {
 
     function formatPoolShare(value) {
         return "\u2248 " + (Math.max(0, Number(value) || 0) * 100).toFixed(2) + "%";
+    }
+
+    function formatPercent(value) {
+        const amount = Math.max(0, Number(value) || 0);
+
+        if (Math.abs(amount - Math.round(amount)) < 0.000001) {
+            return Math.round(amount).toString() + "%";
+        }
+
+        return amount.toFixed(2).replace(/0+$/, "").replace(/[.]$/, "") + "%";
     }
 }

@@ -168,8 +168,11 @@ Item {
 
         // ── Liquidity view ────────────────────────────────────────────────────
         Item {
+            id: liquidityView
             anchors.fill: parent
             visible: navbar.currentIndex === 1
+
+            property int activeLiquidityTab: 0
 
             DummyPoolState {
                 id: poolState
@@ -201,10 +204,28 @@ Item {
                         Layout.preferredHeight: implicitHeight
                     }
 
-                    AddLiquidityForm {
-                        poolState: poolState
+                    LiquidityActionTabs {
+                        currentIndex: liquidityView.activeLiquidityTab
                         Layout.fillWidth: true
                         Layout.preferredHeight: implicitHeight
+
+                        onTabRequested: function(index) {
+                            liquidityView.activeLiquidityTab = index
+                        }
+                    }
+
+                    AddLiquidityForm {
+                        poolState: poolState
+                        visible: liquidityView.activeLiquidityTab === 0
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: visible ? implicitHeight : 0
+                    }
+
+                    RemoveLiquidityForm {
+                        poolState: poolState
+                        visible: liquidityView.activeLiquidityTab === 1
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: visible ? implicitHeight : 0
                     }
                 }
             }
