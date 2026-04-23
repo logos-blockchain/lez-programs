@@ -10,12 +10,14 @@ members = [
     "ata",
     "ata/methods",
     "integration_tests",
+    "integration_tests/malicious_ata_methods",
     "tools/idl-gen",
 ]
 exclude = [
     "token/methods/guest",
     "amm/methods/guest",
     "ata/methods/guest",
+    "integration_tests/malicious_ata_methods/guest",
 ]
 resolver = "2"
 

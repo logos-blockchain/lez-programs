@@ -12,3 +12,4 @@ ata_core = { workspace = true }
 token-methods = { path = "../token/methods" }
 amm-methods = { path = "../amm/methods" }
 ata-methods = { path = "../ata/methods" }
+malicious-ata-methods = { path = "malicious_ata_methods" }

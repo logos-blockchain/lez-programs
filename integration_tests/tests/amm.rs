@@ -1,13 +1,17 @@
 use amm_core::{
-    PoolDefinition, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5,
-    MINIMUM_LIQUIDITY,
+    PoolDefinition, FEE_BPS_DENOMINATOR, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30,
+    FEE_TIER_BPS_5, MINIMUM_LIQUIDITY,
 };
+use ata_core::{compute_ata_seed, get_associated_token_account_id};
 use nssa::{
     error::NssaError,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use nssa_core::account::{Account, AccountId, Data, Nonce};
+use nssa_core::{
+    account::{Account, AccountId, Data, Nonce},
+    program::ProgramId,
+};
 use token_core::{TokenDefinition, TokenHolding};
 
 struct Keys;
@@ -16,6 +20,10 @@ struct Balances;
 struct Accounts;
 
 impl Keys {
+    fn owner() -> PrivateKey {
+        PrivateKey::try_new([30; 32]).expect("valid private key")
+    }
+
     fn user_a() -> PrivateKey {
         PrivateKey::try_new([31; 32]).expect("valid private key")
     }
@@ -40,6 +48,10 @@ impl Ids {
 
     fn ata_program() -> nssa_core::program::ProgramId {
         ata_methods::ATA_ID
+    }
+
+    fn malicious_ata_program() -> ProgramId {
+        malicious_ata_methods::MALICIOUS_ATA_ID
     }
 
     fn token_a_definition() -> AccountId {
@@ -92,6 +104,31 @@ impl Ids {
 
     fn user_lp() -> AccountId {
         AccountId::from(&PublicKey::new_from_private_key(&Keys::user_lp()))
+    }
+
+    fn owner() -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(&Keys::owner()))
+    }
+
+    fn owner_token_a_ata() -> AccountId {
+        get_associated_token_account_id(
+            &Self::ata_program(),
+            &compute_ata_seed(Self::owner(), Self::token_a_definition()),
+        )
+    }
+
+    fn owner_token_b_ata() -> AccountId {
+        get_associated_token_account_id(
+            &Self::ata_program(),
+            &compute_ata_seed(Self::owner(), Self::token_b_definition()),
+        )
+    }
+
+    fn owner_token_lp_ata() -> AccountId {
+        get_associated_token_account_id(
+            &Self::ata_program(),
+            &compute_ata_seed(Self::owner(), Self::token_lp_definition()),
+        )
     }
 }
 
@@ -282,6 +319,15 @@ impl Balances {
 }
 
 impl Accounts {
+    fn owner() -> Account {
+        Account {
+            program_owner: ProgramId::default(),
+            balance: 0_u128,
+            data: Data::default(),
+            nonce: Nonce(0),
+        }
+    }
+
     fn user_a_holding() -> Account {
         Account {
             program_owner: Ids::token_program(),
@@ -407,6 +453,42 @@ impl Accounts {
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
                 balance,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn owner_token_a_ata() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_a_definition(),
+                balance: Balances::user_a_init(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn owner_token_b_ata() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_b_definition(),
+                balance: Balances::user_b_init(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn owner_token_lp_ata() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_lp_definition(),
+                balance: Balances::user_lp_init(),
             }),
             nonce: Nonce(0),
         }
@@ -893,21 +975,25 @@ impl Accounts {
     }
 }
 
-fn deploy_programs(state: &mut V03State) {
-    let token_message =
-        program_deployment_transaction::Message::new(token_methods::TOKEN_ELF.to_vec());
+fn deploy_program(state: &mut V03State, elf: &[u8], name: &str) {
+    let message = program_deployment_transaction::Message::new(elf.to_vec());
     state
-        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
-            token_message,
-        ))
-        .expect("token program deployment must succeed");
+        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(message))
+        .unwrap_or_else(|_| panic!("{name} program deployment must succeed"));
+}
 
-    let amm_message = program_deployment_transaction::Message::new(amm_methods::AMM_ELF.to_vec());
-    state
-        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
-            amm_message,
-        ))
-        .expect("amm program deployment must succeed");
+fn deploy_programs(state: &mut V03State) {
+    deploy_program(state, token_methods::TOKEN_ELF, "token");
+    deploy_program(state, amm_methods::AMM_ELF, "amm");
+}
+
+fn deploy_programs_with_malicious_ata(state: &mut V03State) {
+    deploy_programs(state);
+    deploy_program(
+        state,
+        malicious_ata_methods::MALICIOUS_ATA_ELF,
+        "malicious ata",
+    );
 }
 
 fn state_for_amm_tests() -> V03State {
@@ -950,8 +1036,51 @@ fn state_for_amm_tests_with_new_def() -> V03State {
     state
 }
 
+fn state_for_malicious_ata_attack() -> V03State {
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    deploy_programs_with_malicious_ata(&mut state);
+    state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_init());
+    state.force_insert_account(
+        Ids::token_a_definition(),
+        Accounts::token_a_definition_account(),
+    );
+    state.force_insert_account(
+        Ids::token_b_definition(),
+        Accounts::token_b_definition_account(),
+    );
+    state.force_insert_account(
+        Ids::token_lp_definition(),
+        Accounts::token_lp_definition_account(),
+    );
+    state.force_insert_account(Ids::owner(), Accounts::owner());
+    state.force_insert_account(Ids::owner_token_a_ata(), Accounts::owner_token_a_ata());
+    state.force_insert_account(Ids::owner_token_b_ata(), Accounts::owner_token_b_ata());
+    state.force_insert_account(Ids::owner_token_lp_ata(), Accounts::owner_token_lp_ata());
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_init());
+    state
+}
+
 fn current_nonce(state: &V03State, account_id: AccountId) -> Nonce {
     state.get_account_by_id(account_id).nonce
+}
+
+fn try_execute_amm_as_owner(
+    state: &mut V03State,
+    instruction: amm_core::Instruction,
+    accounts: Vec<AccountId>,
+) -> Result<(), NssaError> {
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        accounts,
+        vec![current_nonce(state, Ids::owner())],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0)
 }
 
 fn state_for_amm_tests_with_precreated_user_lp_for_new_def() -> V03State {
@@ -1176,6 +1305,290 @@ fn fungible_total_supply(account: &Account) -> u128 {
     };
 
     total_supply
+}
+
+fn exact_output_required_amount_in(
+    reserve_in: u128,
+    reserve_out: u128,
+    exact_amount_out: u128,
+    fee_bps: u128,
+) -> u128 {
+    let effective_in_min = reserve_in
+        .checked_mul(exact_amount_out)
+        .expect("reserve_in * exact_amount_out overflows")
+        .div_ceil(
+            reserve_out
+                .checked_sub(exact_amount_out)
+                .expect("exact_amount_out must stay below reserve_out"),
+        );
+    let fee_multiplier = FEE_BPS_DENOMINATOR
+        .checked_sub(fee_bps)
+        .expect("fee_bps exceeds denominator");
+
+    effective_in_min
+        .checked_mul(FEE_BPS_DENOMINATOR)
+        .expect("effective_in_min * denominator overflows")
+        .div_ceil(fee_multiplier)
+}
+
+fn add_liquidity_malicious_ata_attack_witness() -> Option<&'static str> {
+    let mut state = state_for_malicious_ata_attack();
+    let instruction = amm_core::Instruction::AddLiquidity {
+        min_amount_liquidity: Balances::add_min_lp(),
+        max_amount_to_add_token_a: Balances::add_max_a(),
+        max_amount_to_add_token_b: Balances::add_max_b(),
+        ata_program_id: Ids::malicious_ata_program(),
+    };
+
+    if try_execute_amm_as_owner(
+        &mut state,
+        instruction,
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::token_lp_definition(),
+            Ids::owner(),
+            Ids::owner_token_a_ata(),
+            Ids::owner_token_b_ata(),
+            Ids::owner_token_lp_ata(),
+        ],
+    )
+    .is_err()
+    {
+        return None;
+    }
+
+    let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    assert_eq!(pool.liquidity_pool_supply, Balances::token_lp_supply_add());
+    assert_eq!(pool.reserve_a, Balances::vault_a_add());
+    assert_eq!(pool.reserve_b, Balances::vault_b_add());
+    assert_eq!(
+        fungible_total_supply(&state.get_account_by_id(Ids::token_lp_definition())),
+        Balances::token_lp_supply_add()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::owner_token_lp_ata())),
+        Balances::user_lp_add()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::owner_token_a_ata())),
+        Balances::user_a_init()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::owner_token_b_ata())),
+        Balances::user_b_init()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::vault_a())),
+        Balances::vault_a_init()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::vault_b())),
+        Balances::vault_b_init()
+    );
+
+    Some(
+        "add_liquidity: LP supply and owner LP balance increase while both deposit legs leave balances unchanged",
+    )
+}
+
+fn remove_liquidity_malicious_ata_attack_witness() -> Option<&'static str> {
+    let mut state = state_for_malicious_ata_attack();
+    let instruction = amm_core::Instruction::RemoveLiquidity {
+        remove_liquidity_amount: Balances::remove_lp(),
+        min_amount_to_remove_token_a: Balances::remove_min_a(),
+        min_amount_to_remove_token_b: Balances::remove_min_b(),
+        ata_program_id: Ids::malicious_ata_program(),
+    };
+
+    if try_execute_amm_as_owner(
+        &mut state,
+        instruction,
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::token_lp_definition(),
+            Ids::owner(),
+            Ids::owner_token_a_ata(),
+            Ids::owner_token_b_ata(),
+            Ids::owner_token_lp_ata(),
+        ],
+    )
+    .is_err()
+    {
+        return None;
+    }
+
+    let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    assert_eq!(
+        pool.liquidity_pool_supply,
+        Balances::token_lp_supply_remove()
+    );
+    assert_eq!(pool.reserve_a, Balances::vault_a_remove());
+    assert_eq!(pool.reserve_b, Balances::vault_b_remove());
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::owner_token_a_ata())),
+        Balances::user_a_remove()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::owner_token_b_ata())),
+        Balances::user_b_remove()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::vault_a())),
+        Balances::vault_a_remove()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::vault_b())),
+        Balances::vault_b_remove()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::owner_token_lp_ata())),
+        Balances::user_lp_init()
+    );
+    assert_eq!(
+        fungible_total_supply(&state.get_account_by_id(Ids::token_lp_definition())),
+        Balances::token_lp_supply()
+    );
+
+    Some(
+        "remove_liquidity: owner receives vault tokens while LP balance and LP definition supply stay unchanged",
+    )
+}
+
+fn swap_exact_input_malicious_ata_attack_witness() -> Option<&'static str> {
+    let mut state = state_for_malicious_ata_attack();
+    let instruction = amm_core::Instruction::SwapExactInput {
+        swap_amount_in: Balances::swap_amount_in(),
+        min_amount_out: Balances::swap_min_out(),
+        token_definition_id_in: Ids::token_a_definition(),
+        ata_program_id: Ids::malicious_ata_program(),
+    };
+
+    if try_execute_amm_as_owner(
+        &mut state,
+        instruction,
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::owner(),
+            Ids::owner_token_a_ata(),
+            Ids::owner_token_b_ata(),
+        ],
+    )
+    .is_err()
+    {
+        return None;
+    }
+
+    let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    assert_eq!(pool.reserve_a, Balances::reserve_a_swap_2());
+    assert_eq!(pool.reserve_b, Balances::reserve_b_swap_2());
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::owner_token_a_ata())),
+        Balances::user_a_init()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::owner_token_b_ata())),
+        Balances::user_b_swap_2()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::vault_a())),
+        Balances::vault_a_init()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::vault_b())),
+        Balances::vault_b_swap_2()
+    );
+
+    Some(
+        "swap_exact_input: owner receives output while the input balance and deposit vault stay unchanged",
+    )
+}
+
+fn swap_exact_output_malicious_ata_attack_witness() -> Option<&'static str> {
+    const EXACT_AMOUNT_OUT: u128 = 500;
+    const MAX_AMOUNT_IN: u128 = 2_000;
+
+    let mut state = state_for_malicious_ata_attack();
+    let instruction = amm_core::Instruction::SwapExactOutput {
+        exact_amount_out: EXACT_AMOUNT_OUT,
+        max_amount_in: MAX_AMOUNT_IN,
+        token_definition_id_in: Ids::token_a_definition(),
+        ata_program_id: Ids::malicious_ata_program(),
+    };
+
+    if try_execute_amm_as_owner(
+        &mut state,
+        instruction,
+        vec![
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::owner(),
+            Ids::owner_token_a_ata(),
+            Ids::owner_token_b_ata(),
+        ],
+    )
+    .is_err()
+    {
+        return None;
+    }
+
+    let required_amount_in = exact_output_required_amount_in(
+        Balances::vault_a_init(),
+        Balances::vault_b_init(),
+        EXACT_AMOUNT_OUT,
+        Balances::fee_tier(),
+    );
+    let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    assert_eq!(
+        pool.reserve_a,
+        Balances::vault_a_init() + required_amount_in
+    );
+    assert_eq!(pool.reserve_b, Balances::vault_b_init() - EXACT_AMOUNT_OUT);
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::owner_token_a_ata())),
+        Balances::user_a_init()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::owner_token_b_ata())),
+        Balances::user_b_init() + EXACT_AMOUNT_OUT
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::vault_a())),
+        Balances::vault_a_init()
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::vault_b())),
+        Balances::vault_b_init() - EXACT_AMOUNT_OUT
+    );
+
+    Some(
+        "swap_exact_output: owner receives exact output while the required input balance and deposit vault stay unchanged",
+    )
+}
+
+#[test]
+fn amm_rejects_malicious_ata_program_for_all_value_paths() {
+    let accepted_attacks = [
+        add_liquidity_malicious_ata_attack_witness(),
+        remove_liquidity_malicious_ata_attack_witness(),
+        swap_exact_input_malicious_ata_attack_witness(),
+        swap_exact_output_malicious_ata_attack_witness(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+
+    assert!(
+        accepted_attacks.is_empty(),
+        "AMM accepted a malicious ATA program for value paths: {}",
+        accepted_attacks.join("; ")
+    );
 }
 
 #[test]
