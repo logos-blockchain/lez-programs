@@ -31,6 +31,7 @@ mod amm {
         token_b_amount: u128,
         fees: u128,
         amm_program_id: ProgramId,
+        deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::new_definition::new_definition(
             pool,
@@ -46,7 +47,8 @@ mod amm {
             fees,
             amm_program_id,
         );
-        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+        Ok(SpelOutput::with_chained_calls(post_states, chained_calls)
+            .with_timestamp_validity_window(..deadline))
     }
 
     /// Adds liquidity to the Pool.
@@ -62,6 +64,7 @@ mod amm {
         min_amount_liquidity: u128,
         max_amount_to_add_token_a: u128,
         max_amount_to_add_token_b: u128,
+        deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::add::add_liquidity(
             pool,
@@ -75,7 +78,8 @@ mod amm {
             max_amount_to_add_token_a,
             max_amount_to_add_token_b,
         );
-        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+        Ok(SpelOutput::with_chained_calls(post_states, chained_calls)
+            .with_timestamp_validity_window(..deadline))
     }
 
     /// Removes liquidity from the Pool.
@@ -91,6 +95,7 @@ mod amm {
         remove_liquidity_amount: u128,
         min_amount_to_remove_token_a: u128,
         min_amount_to_remove_token_b: u128,
+        deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::remove::remove_liquidity(
             pool,
@@ -105,7 +110,8 @@ mod amm {
             min_amount_to_remove_token_a,
             min_amount_to_remove_token_b,
         );
-        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+        Ok(SpelOutput::with_chained_calls(post_states, chained_calls)
+            .with_timestamp_validity_window(..deadline))
     }
 
     /// Swap some quantity of tokens while maintaining the pool constant product.
@@ -119,6 +125,7 @@ mod amm {
         swap_amount_in: u128,
         min_amount_out: u128,
         token_definition_id_in: AccountId,
+        deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::swap::swap_exact_input(
             pool,
@@ -130,7 +137,8 @@ mod amm {
             min_amount_out,
             token_definition_id_in,
         );
-        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+        Ok(SpelOutput::with_chained_calls(post_states, chained_calls)
+            .with_timestamp_validity_window(..deadline))
     }
 
     /// Swap tokens specifying the exact desired output amount.
@@ -144,6 +152,7 @@ mod amm {
         exact_amount_out: u128,
         max_amount_in: u128,
         token_definition_id_in: AccountId,
+        deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::swap::swap_exact_output(
             pool,
@@ -155,7 +164,8 @@ mod amm {
             max_amount_in,
             token_definition_id_in,
         );
-        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+        Ok(SpelOutput::with_chained_calls(post_states, chained_calls)
+            .with_timestamp_validity_window(..deadline))
     }
 
     /// Sync pool reserves with current vault balances.

@@ -10,7 +10,7 @@ name = "token"
 path = "src/bin/token.rs"
 
 [dependencies]
-spel-framework = { git = "https://github.com/logos-co/spel.git", tag = "v0.2.0-rc.2", package = "spel-framework" }
+spel-framework = { git = "https://github.com/logos-co/spel.git", rev = "9e7f2754e1d4cdb3ea36e63b1ff86c3af55488d3", package = "spel-framework" }
 nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc1" }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
 token_core = { path = "../../core" }

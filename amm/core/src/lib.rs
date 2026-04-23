@@ -35,6 +35,8 @@ pub enum Instruction {
         token_b_amount: u128,
         fees: u128,
         amm_program_id: ProgramId,
+        /// Unix timestamp (milliseconds) after which this transaction is invalid.
+        deadline: u64,
     },
 
     /// Adds liquidity to the Pool
@@ -51,6 +53,8 @@ pub enum Instruction {
         min_amount_liquidity: u128,
         max_amount_to_add_token_a: u128,
         max_amount_to_add_token_b: u128,
+        /// Unix timestamp (milliseconds) after which this transaction is invalid.
+        deadline: u64,
     },
 
     /// Removes liquidity from the Pool
@@ -67,6 +71,8 @@ pub enum Instruction {
         remove_liquidity_amount: u128,
         min_amount_to_remove_token_a: u128,
         min_amount_to_remove_token_b: u128,
+        /// Unix timestamp (milliseconds) after which this transaction is invalid.
+        deadline: u64,
     },
 
     /// Swap some quantity of Tokens (either Token A or Token B)
@@ -77,12 +83,13 @@ pub enum Instruction {
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
     /// - User Holding Account for Token A
-    /// - User Holding Account for Token B Either User Holding Account for Token A or Token B is
-    ///   authorized.
+    /// - User Holding Account for Token B; either is authorized.
     SwapExactInput {
         swap_amount_in: u128,
         min_amount_out: u128,
         token_definition_id_in: AccountId,
+        /// Unix timestamp (milliseconds) after which this transaction is invalid.
+        deadline: u64,
     },
 
     /// Swap tokens specifying the exact desired output amount,
@@ -93,12 +100,13 @@ pub enum Instruction {
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
     /// - User Holding Account for Token A
-    /// - User Holding Account for Token B Either User Holding Account for Token A or Token B is
-    ///   authorized.
+    /// - User Holding Account for Token B; either is authorized.
     SwapExactOutput {
         exact_amount_out: u128,
         max_amount_in: u128,
         token_definition_id_in: AccountId,
+        /// Unix timestamp (milliseconds) after which this transaction is invalid.
+        deadline: u64,
     },
 
     /// Sync pool reserves with current vault balances.
