@@ -24,6 +24,7 @@ use crate::{
 
 const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
 const AMM_PROGRAM_ID: ProgramId = [42; 8];
+const MALICIOUS_TOKEN_PROGRAM_ID: ProgramId = [99; 8];
 
 struct BalanceForTests;
 struct ChainedCallForTests;
@@ -1343,6 +1344,38 @@ impl AccountWithMetadataForTests {
             },
             is_authorized: true,
             account_id: AccountId::new([4; 32]),
+        }
+    }
+
+    fn user_holding_a_wrong_program() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: MALICIOUS_TOKEN_PROGRAM_ID,
+                balance: 0u128,
+                data: Data::from(&TokenHolding::Fungible {
+                    definition_id: IdForTests::token_a_definition_id(),
+                    balance: BalanceForTests::user_token_a_balance(),
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::user_token_a_id(),
+        }
+    }
+
+    fn user_holding_b_wrong_program() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: MALICIOUS_TOKEN_PROGRAM_ID,
+                balance: 0u128,
+                data: Data::from(&TokenHolding::Fungible {
+                    definition_id: IdForTests::token_b_definition_id(),
+                    balance: BalanceForTests::user_token_b_balance(),
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::user_token_b_id(),
         }
     }
 
@@ -3301,5 +3334,139 @@ fn test_new_definition_rejects_unsupported_fee_tier() {
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         2,
         AMM_PROGRAM_ID,
+    );
+}
+
+// --- Token program ownership validation tests ---
+
+#[should_panic(expected = "User Token A holding must be owned by the vault's Token Program")]
+#[test]
+fn test_add_liquidity_rejects_user_holding_a_wrong_program() {
+    let _ = add_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a_wrong_program(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::add_max_amount_b(),
+    );
+}
+
+#[should_panic(expected = "User Token B holding must be owned by the vault's Token Program")]
+#[test]
+fn test_add_liquidity_rejects_user_holding_b_wrong_program() {
+    let _ = add_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b_wrong_program(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::add_max_amount_b(),
+    );
+}
+
+#[should_panic(expected = "User Token A holding must be owned by the vault's Token Program")]
+#[test]
+fn test_remove_liquidity_rejects_user_holding_a_wrong_program() {
+    let _ = remove_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a_wrong_program(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_with_balance(
+            BalanceForTests::remove_amount_lp(),
+        ),
+        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
+        BalanceForTests::remove_min_amount_a(),
+        BalanceForTests::remove_min_amount_b_low(),
+    );
+}
+
+#[should_panic(expected = "User Token B holding must be owned by the vault's Token Program")]
+#[test]
+fn test_remove_liquidity_rejects_user_holding_b_wrong_program() {
+    let _ = remove_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b_wrong_program(),
+        AccountWithMetadataForTests::user_holding_lp_with_balance(
+            BalanceForTests::remove_amount_lp(),
+        ),
+        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
+        BalanceForTests::remove_min_amount_a(),
+        BalanceForTests::remove_min_amount_b_low(),
+    );
+}
+
+#[should_panic(expected = "User Token A holding must be owned by the vault's Token Program")]
+#[test]
+fn test_swap_exact_input_rejects_user_holding_a_wrong_program() {
+    let _ = swap_exact_input(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a_wrong_program(),
+        AccountWithMetadataForTests::user_holding_b(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::min_amount_out(),
+        IdForTests::token_a_definition_id(),
+    );
+}
+
+#[should_panic(expected = "User Token B holding must be owned by the vault's Token Program")]
+#[test]
+fn test_swap_exact_input_rejects_user_holding_b_wrong_program() {
+    let _ = swap_exact_input(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b_wrong_program(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::min_amount_out(),
+        IdForTests::token_a_definition_id(),
+    );
+}
+
+#[should_panic(expected = "User Token A holding must be owned by the vault's Token Program")]
+#[test]
+fn test_swap_exact_output_rejects_user_holding_a_wrong_program() {
+    let _ = swap_exact_output(
+        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a_wrong_program(),
+        AccountWithMetadataForTests::user_holding_b(),
+        166,
+        BalanceForTests::max_amount_in(),
+        IdForTests::token_a_definition_id(),
+    );
+}
+
+#[should_panic(expected = "User Token B holding must be owned by the vault's Token Program")]
+#[test]
+fn test_swap_exact_output_rejects_user_holding_b_wrong_program() {
+    let _ = swap_exact_output(
+        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b_wrong_program(),
+        166,
+        BalanceForTests::max_amount_in(),
+        IdForTests::token_a_definition_id(),
     );
 }

@@ -46,6 +46,16 @@ pub fn remove_liquidity(
         "Vault B was not provided"
     );
 
+    let token_program_id = vault_a.account.program_owner;
+    assert_eq!(
+        user_holding_a.account.program_owner, token_program_id,
+        "User Token A holding must be owned by the vault's Token Program"
+    );
+    assert_eq!(
+        user_holding_b.account.program_owner, token_program_id,
+        "User Token B holding must be owned by the vault's Token Program"
+    );
+
     // Vault addresses do not need to be checked with PDA
     // calculation for setting authorization since stored
     // in the Pool Definition.
@@ -142,8 +152,6 @@ pub fn remove_liquidity(
     };
 
     pool_post.data = Data::from(&pool_post_definition);
-
-    let token_program_id = user_holding_a.account.program_owner;
 
     // Chaincall for Token A withdraw
     let call_token_a = ChainedCall::new(

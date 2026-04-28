@@ -105,6 +105,16 @@ pub fn swap_exact_input(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
 
+    let token_program_id = vault_a.account.program_owner;
+    assert_eq!(
+        user_holding_a.account.program_owner, token_program_id,
+        "User Token A holding must be owned by the vault's Token Program"
+    );
+    assert_eq!(
+        user_holding_b.account.program_owner, token_program_id,
+        "User Token B holding must be owned by the vault's Token Program"
+    );
+
     let (chained_calls, [deposit_a, withdraw_a], [deposit_b, withdraw_b]) =
         if token_in_id == pool_def_data.definition_token_a_id {
             let (chained_calls, deposit_a, withdraw_b) = swap_logic(
@@ -243,6 +253,16 @@ pub fn swap_exact_output(
     token_in_id: AccountId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
+
+    let token_program_id = vault_a.account.program_owner;
+    assert_eq!(
+        user_holding_a.account.program_owner, token_program_id,
+        "User Token A holding must be owned by the vault's Token Program"
+    );
+    assert_eq!(
+        user_holding_b.account.program_owner, token_program_id,
+        "User Token B holding must be owned by the vault's Token Program"
+    );
 
     let (chained_calls, [deposit_a, withdraw_a], [deposit_b, withdraw_b]) =
         if token_in_id == pool_def_data.definition_token_a_id {

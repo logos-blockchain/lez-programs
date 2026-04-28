@@ -42,6 +42,16 @@ pub fn add_liquidity(
         "Vault B was not provided"
     );
 
+    let token_program_id = vault_a.account.program_owner;
+    assert_eq!(
+        user_holding_a.account.program_owner, token_program_id,
+        "User Token A holding must be owned by the vault's Token Program"
+    );
+    assert_eq!(
+        user_holding_b.account.program_owner, token_program_id,
+        "User Token B holding must be owned by the vault's Token Program"
+    );
+
     assert!(
         max_amount_to_add_token_a != 0 && max_amount_to_add_token_b != 0,
         "Both max-balances must be nonzero"
@@ -138,7 +148,6 @@ pub fn add_liquidity(
     };
 
     pool_post.data = Data::from(&pool_post_definition);
-    let token_program_id = user_holding_a.account.program_owner;
 
     // Chain call for Token A (UserHoldingA -> Vault_A)
     let call_token_a = ChainedCall::new(
