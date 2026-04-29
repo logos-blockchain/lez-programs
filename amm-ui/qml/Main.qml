@@ -42,51 +42,43 @@ Item {
             // Trade view theme — scoped here, invisible to NavBar and LP view.
             QtObject {
                 id: theme
-                property bool isDark: false
+                property bool isDark: true
                 property var colors: isDark ? dark : light
 
                 readonly property var light: ({
-                    background:      "#f7f7f5",
+                    background:      "#f4ede3",
                     cardBg:          "#ffffff",
-                    inputBg:         "#f0f0ee",
-                    panelBg:         "#e8e8e4",
-                    panelHoverBg:    "#ddddd8",
-                    textPrimary:     "#111111",
-                    textSecondary:   "#777770",
-                    textPlaceholder: "#bbbbb5",
+                    inputBg:         "#efe7db",
+                    panelBg:         "#e7e1d8",
+                    panelHoverBg:    "#d9d0c2",
+                    textPrimary:     "#151515",
+                    textSecondary:   "#7d756e",
+                    textPlaceholder: "#a9a098",
                     border:          Qt.rgba(0,0,0,0.08),
                     borderStrong:    Qt.rgba(0,0,0,0.10),
                     divider:         Qt.rgba(0,0,0,0.06),
-                    ctaBg:           "#111111",
-                    ctaHoverBg:      "#2a2a28",
-                    selection:       "#b5c4a5",
-                    noTokenCircle:   "#c8c8c4",
-                    orb1:            "#7a8c6a",
-                    orb2:            "#b5c4a5",
-                    orb3:            "#7a8c6a",
-                    orb4:            "#c8d4b8"
+                    ctaBg:           "#f26a21",
+                    ctaHoverBg:      "#d95c1e",
+                    selection:       "#f2d8c7",
+                    noTokenCircle:   "#a9a098"
                 })
 
                 readonly property var dark: ({
-                    background:      "#0d0d12",
-                    cardBg:          "#1a1a22",
-                    inputBg:         "#222230",
-                    panelBg:         "#2a2a38",
-                    panelHoverBg:    "#363650",
-                    textPrimary:     "#ffffff",
-                    textSecondary:   "#888899",
-                    textPlaceholder: "#444455",
+                    background:      "#151515",
+                    cardBg:          "#1b1b1b",
+                    inputBg:         "#101010",
+                    panelBg:         "#181818",
+                    panelHoverBg:    "#202020",
+                    textPrimary:     "#e7e1d8",
+                    textSecondary:   "#a9a098",
+                    textPlaceholder: "#8e8780",
                     border:          Qt.rgba(1,1,1,0.08),
                     borderStrong:    Qt.rgba(1,1,1,0.10),
                     divider:         Qt.rgba(1,1,1,0.06),
-                    ctaBg:           "#2d1530",
-                    ctaHoverBg:      "#3d1f40",
-                    selection:       "#4c1d4b",
-                    noTokenCircle:   "#444455",
-                    orb1:            "#627eea",
-                    orb2:            "#9b59b6",
-                    orb3:            "#fc72ff",
-                    orb4:            "#26a17b"
+                    ctaBg:           "#f26a21",
+                    ctaHoverBg:      "#ff8a3d",
+                    selection:       "#211914",
+                    noTokenCircle:   "#343434"
                 })
             }
 
@@ -116,12 +108,6 @@ Item {
                         onClicked: theme.isDark = !theme.isDark
                     }
                 }
-
-                // Decorative orbs
-                Rectangle { x: -180; y: -120; width: 560; height: 560; radius: 280; color: theme.colors.orb1; opacity: 0.07 }
-                Rectangle { x: parent.width - 280; y: parent.height - 320; width: 480; height: 480; radius: 240; color: theme.colors.orb2; opacity: 0.09 }
-                Rectangle { x: parent.width - 200; y: -80; width: 380; height: 380; radius: 190; color: theme.colors.orb3; opacity: 0.05 }
-                Rectangle { x: 40; y: parent.height - 260; width: 320; height: 320; radius: 160; color: theme.colors.orb4; opacity: 0.08 }
 
                 ColumnLayout {
                     anchors.centerIn: parent
