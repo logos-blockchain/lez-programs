@@ -1,0 +1,5 @@
+[env]
+# Prevent cc-rs from injecting macOS-specific flags (e.g. -arch arm64, -mmacosx-version-min)
+# into the RISC-V cross-compiler when building C dependencies (e.g. ring) for the guest target.
+# Without this, builds fail on macOS 26+ with the risc0 C++ toolchain.
+CFLAGS_riscv32im_risc0_zkvm_elf = "-march=rv32im -nostdlib"
