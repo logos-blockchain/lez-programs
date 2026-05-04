@@ -68,10 +68,6 @@
           "type": "u128"
         },
         {
-          "name": "amm_program_id",
-          "type": "program_id"
-        },
-        {
           "name": "deadline",
           "type": "u64"
         }

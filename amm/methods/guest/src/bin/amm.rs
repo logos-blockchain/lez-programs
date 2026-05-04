@@ -3,9 +3,9 @@
 use std::num::NonZeroU128;
 
 use spel_framework::prelude::*;
+use spel_framework::context::ProgramContext;
 use nssa_core::{
     account::{AccountId, AccountWithMetadata},
-    program::ProgramId,
 };
 
 risc0_zkvm::guest::entry!(main);
@@ -19,6 +19,7 @@ mod amm {
     /// A fresh user LP holding must be explicitly authorized by the caller.
     #[instruction]
     pub fn new_definition(
+        ctx: ProgramContext,
         pool: AccountWithMetadata,
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
@@ -30,7 +31,6 @@ mod amm {
         token_a_amount: u128,
         token_b_amount: u128,
         fees: u128,
-        amm_program_id: ProgramId,
         deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::new_definition::new_definition(
@@ -45,7 +45,7 @@ mod amm {
             NonZeroU128::new(token_a_amount).expect("token_a_amount must be nonzero"),
             NonZeroU128::new(token_b_amount).expect("token_b_amount must be nonzero"),
             fees,
-            amm_program_id,
+            ctx.self_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
             .with_timestamp_validity_window(..deadline))

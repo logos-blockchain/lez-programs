@@ -965,7 +965,6 @@ fn try_execute_new_definition(
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
         fees,
-        amm_program_id: Ids::amm_program(),
         deadline: u64::MAX,
     };
 
@@ -1844,7 +1843,6 @@ fn amm_new_definition_rejects_expired_deadline() {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
         fees: amm_core::FEE_TIER_BPS_30,
-        amm_program_id: Ids::amm_program(),
         deadline: deadline_ms,
     };
 

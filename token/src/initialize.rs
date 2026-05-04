@@ -1,12 +1,13 @@
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, Claim},
+    program::{AccountPostState, Claim, ProgramId},
 };
 use token_core::{TokenDefinition, TokenHolding};
 
 pub fn initialize_account(
     definition_account: AccountWithMetadata,
     account_to_initialize: AccountWithMetadata,
+    token_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     assert_eq!(
         account_to_initialize.account,
@@ -17,11 +18,11 @@ pub fn initialize_account(
         account_to_initialize.is_authorized,
         "Account to initialize must be authorized"
     );
+    assert_eq!(
+        definition_account.account.program_owner, token_program_id,
+        "Token definition must be owned by token program"
+    );
 
-    // TODO: #212 We should check that this is an account owned by the token program.
-    // This check can't be done here since the ID of the program is known only after compiling it
-    //
-    // Check definition account is valid
     let definition = TokenDefinition::try_from(&definition_account.account.data)
         .expect("Definition account must be valid");
     let holding =

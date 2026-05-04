@@ -1,6 +1,6 @@
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, Claim},
+    program::{AccountPostState, Claim, ProgramId},
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -8,10 +8,15 @@ pub fn mint(
     definition_account: AccountWithMetadata,
     user_holding_account: AccountWithMetadata,
     amount_to_mint: u128,
+    token_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     assert!(
         definition_account.is_authorized,
         "Definition authorization is missing"
+    );
+    assert_eq!(
+        definition_account.account.program_owner, token_program_id,
+        "Token definition must be owned by token program"
     );
 
     let mut definition = TokenDefinition::try_from(&definition_account.account.data)

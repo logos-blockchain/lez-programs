@@ -2,7 +2,7 @@
 
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::Claim,
+    program::{Claim, ProgramId},
 };
 use token_core::{
     MetadataStandard, NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding,
@@ -25,11 +25,31 @@ struct IdForTests;
 
 struct AccountForTests;
 
+const TOKEN_PROGRAM_ID: ProgramId = [5u32; 8];
+const FOREIGN_TOKEN_PROGRAM_ID: ProgramId = [6u32; 8];
+
 impl AccountForTests {
     fn definition_account_auth() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: TOKEN_PROGRAM_ID,
+                balance: 0u128,
+                data: Data::from(&TokenDefinition::Fungible {
+                    name: String::from("test"),
+                    total_supply: BalanceForTests::init_supply(),
+                    metadata_id: None,
+                }),
+                nonce: Nonce(0),
+            },
+            is_authorized: true,
+            account_id: IdForTests::pool_definition_id(),
+        }
+    }
+
+    fn definition_account_foreign_owner() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: FOREIGN_TOKEN_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&TokenDefinition::Fungible {
                     name: String::from("test"),
@@ -46,7 +66,7 @@ impl AccountForTests {
     fn definition_account_without_auth() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: TOKEN_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&TokenDefinition::Fungible {
                     name: String::from("test"),
@@ -757,7 +777,7 @@ fn test_transfer_with_default_recipient_claims_recipient() {
 fn test_token_initialize_account_succeeds() {
     let definition_account = AccountForTests::definition_account_auth();
     let holding_account = AccountForTests::holding_account_uninit_auth();
-    let post_states = initialize_account(definition_account, holding_account);
+    let post_states = initialize_account(definition_account, holding_account, TOKEN_PROGRAM_ID);
     let [definition_post, holding_post] = post_states.try_into().unwrap();
 
     assert_eq!(
@@ -785,7 +805,15 @@ fn test_token_initialize_account_succeeds() {
 fn test_token_initialize_account_requires_authorization() {
     let definition_account = AccountForTests::definition_account_auth();
     let holding_account = AccountForTests::holding_account_uninit();
-    let _post_states = initialize_account(definition_account, holding_account);
+    let _post_states = initialize_account(definition_account, holding_account, TOKEN_PROGRAM_ID);
+}
+
+#[test]
+#[should_panic(expected = "Token definition must be owned by token program")]
+fn test_token_initialize_account_rejects_foreign_owned_definition() {
+    let definition_account = AccountForTests::definition_account_foreign_owner();
+    let holding_account = AccountForTests::holding_account_uninit_auth();
+    let _post_states = initialize_account(definition_account, holding_account, TOKEN_PROGRAM_ID);
 }
 
 #[test]
@@ -868,6 +896,7 @@ fn test_mint_not_valid_holding_account() {
         definition_account,
         holding_account,
         BalanceForTests::mint_success(),
+        TOKEN_PROGRAM_ID,
     );
 }
 
@@ -880,6 +909,7 @@ fn test_mint_not_valid_definition_account() {
         definition_account,
         holding_account,
         BalanceForTests::mint_success(),
+        TOKEN_PROGRAM_ID,
     );
 }
 
@@ -892,6 +922,20 @@ fn test_mint_missing_authorization() {
         definition_account,
         holding_account,
         BalanceForTests::mint_success(),
+        TOKEN_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Token definition must be owned by token program")]
+fn test_mint_rejects_foreign_owned_definition() {
+    let definition_account = AccountForTests::definition_account_foreign_owner();
+    let holding_account = AccountForTests::holding_account_uninit();
+    let _post_states = mint(
+        definition_account,
+        holding_account,
+        BalanceForTests::mint_success(),
+        TOKEN_PROGRAM_ID,
     );
 }
 
@@ -904,6 +948,7 @@ fn test_mint_mismatched_token_definition() {
         definition_account,
         holding_account,
         BalanceForTests::mint_success(),
+        TOKEN_PROGRAM_ID,
     );
 }
 
@@ -915,6 +960,7 @@ fn test_mint_success() {
         definition_account,
         holding_account,
         BalanceForTests::mint_success(),
+        TOKEN_PROGRAM_ID,
     );
 
     let [def_post, holding_post] = post_states.try_into().unwrap();
@@ -939,6 +985,7 @@ fn test_mint_uninit_holding_success() {
         definition_account,
         holding_account,
         BalanceForTests::mint_success(),
+        TOKEN_PROGRAM_ID,
     );
 
     let [def_post, holding_post] = post_states.try_into().unwrap();
@@ -964,6 +1011,7 @@ fn test_mint_total_supply_overflow() {
         definition_account,
         holding_account,
         BalanceForTests::mint_overflow(),
+        TOKEN_PROGRAM_ID,
     );
 }
 
@@ -976,6 +1024,7 @@ fn test_mint_holding_account_overflow() {
         definition_account,
         holding_account,
         BalanceForTests::mint_overflow(),
+        TOKEN_PROGRAM_ID,
     );
 }
 
@@ -988,6 +1037,7 @@ fn test_mint_cannot_mint_unmintable_tokens() {
         definition_account,
         holding_account,
         BalanceForTests::mint_success(),
+        TOKEN_PROGRAM_ID,
     );
 }
 

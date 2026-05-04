@@ -36,6 +36,10 @@ impl Ids {
         token_methods::TOKEN_ID
     }
 
+    fn foreign_token_program() -> nssa_core::program::ProgramId {
+        [0xfeed_u32; 8]
+    }
+
     fn token_definition() -> AccountId {
         AccountId::from(&PublicKey::new_from_private_key(&Keys::def_key()))
     }
@@ -53,6 +57,19 @@ impl Accounts {
     fn token_definition_init() -> Account {
         Account {
             program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("Gold"),
+                total_supply: 1_000_000_u128,
+                metadata_id: None,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn token_definition_foreign_owner() -> Account {
+        Account {
+            program_owner: Ids::foreign_token_program(),
             balance: 0_u128,
             data: Data::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
@@ -164,6 +181,78 @@ fn token_new_fungible_definition() {
             }),
             nonce: Nonce(1),
         }
+    );
+}
+
+#[test]
+fn token_initialize_account_succeeds_for_canonical_definition() {
+    let mut state = state_for_token_tests_without_recipient();
+
+    let instruction = token_core::Instruction::InitializeAccount;
+
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::recipient()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::recipient_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Accounts::token_definition_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 0_u128,
+            }),
+            nonce: Nonce(1),
+        }
+    );
+}
+
+#[test]
+fn token_initialize_account_rejects_foreign_owned_definition() {
+    let mut state = state_for_token_tests_without_recipient();
+    state.force_insert_account(
+        Ids::token_definition(),
+        Accounts::token_definition_foreign_owner(),
+    );
+
+    let instruction = token_core::Instruction::InitializeAccount;
+
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::recipient()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::recipient_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Accounts::token_definition_foreign_owner()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient()),
+        Account::default()
     );
 }
 
@@ -392,6 +481,44 @@ fn token_mint() {
             }),
             nonce: Nonce(0),
         }
+    );
+}
+
+#[test]
+fn token_mint_rejects_foreign_owned_definition() {
+    let mut state = state_for_token_tests_without_recipient();
+    state.force_insert_account(
+        Ids::token_definition(),
+        Accounts::token_definition_foreign_owner(),
+    );
+
+    let instruction = token_core::Instruction::Mint {
+        amount_to_mint: 500_000_u128,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::recipient()],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::def_key(), &Keys::recipient_key()],
+    );
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Accounts::token_definition_foreign_owner()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient()),
+        Account::default()
     );
 }
 

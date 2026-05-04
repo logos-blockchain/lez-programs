@@ -24,12 +24,7 @@
           "init": false
         }
       ],
-      "args": [
-        {
-          "name": "ata_program_id",
-          "type": "program_id"
-        }
-      ]
+      "args": []
     },
     {
       "name": "transfer",
@@ -54,10 +49,6 @@
         }
       ],
       "args": [
-        {
-          "name": "ata_program_id",
-          "type": "program_id"
-        },
         {
           "name": "amount",
           "type": "u128"
@@ -87,10 +78,6 @@
         }
       ],
       "args": [
-        {
-          "name": "ata_program_id",
-          "type": "program_id"
-        },
         {
           "name": "amount",
           "type": "u128"

@@ -144,9 +144,7 @@ fn ata_create() {
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
-    let instruction = ata_core::Instruction::Create {
-        ata_program_id: Ids::ata_program(),
-    };
+    let instruction = ata_core::Instruction::Create;
 
     let message = public_transaction::Message::try_new(
         Ids::ata_program(),
@@ -179,9 +177,7 @@ fn ata_create() {
 fn ata_create_is_idempotent() {
     let mut state = state_for_ata_tests();
 
-    let instruction = ata_core::Instruction::Create {
-        ata_program_id: Ids::ata_program(),
-    };
+    let instruction = ata_core::Instruction::Create;
 
     let message = public_transaction::Message::try_new(
         Ids::ata_program(),
@@ -216,7 +212,6 @@ fn ata_transfer() {
     let mut state = state_for_ata_tests_with_precreated_recipient_ata();
 
     let instruction = ata_core::Instruction::Transfer {
-        ata_program_id: Ids::ata_program(),
         amount: 400_000_u128,
     };
 
@@ -265,7 +260,6 @@ fn ata_burn() {
     let mut state = state_for_ata_tests();
 
     let instruction = ata_core::Instruction::Burn {
-        ata_program_id: Ids::ata_program(),
         amount: 300_000_u128,
     };
 
@@ -337,9 +331,7 @@ fn ata_create_from_private_owner() {
     );
     let ata_pre = AccountWithMetadata::new(Account::default(), false, owner_ata_id);
 
-    let instruction = ata_core::Instruction::Create {
-        ata_program_id: Ids::ata_program(),
-    };
+    let instruction = ata_core::Instruction::Create;
     let instruction_data = Program::serialize_instruction(instruction).unwrap();
 
     // Ephemeral key for encrypting the private owner's post-state

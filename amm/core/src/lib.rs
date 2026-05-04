@@ -26,7 +26,7 @@ pub enum Instruction {
     /// - Vault Holding Account for Token A
     /// - Vault Holding Account for Token B
     /// - Pool Liquidity Token Definition
-    /// - LP Lock Holding Account, derived as `compute_lp_lock_holding_pda(amm_program_id,
+    /// - LP Lock Holding Account, derived as `compute_lp_lock_holding_pda(self_program_id,
     ///   pool.account_id)`
     /// - User Holding Account for Token A (authorized)
     /// - User Holding Account for Token B (authorized)
@@ -35,7 +35,6 @@ pub enum Instruction {
         token_a_amount: u128,
         token_b_amount: u128,
         fees: u128,
-        amm_program_id: ProgramId,
         /// Unix timestamp (milliseconds) after which this transaction is invalid.
         deadline: u64,
     },

@@ -16,7 +16,7 @@ pub enum Instruction {
     /// - Associated token account (default/uninitialized, or already initialized)
     ///
     /// `token_program_id` is derived from `token_definition.account.program_owner`.
-    Create { ata_program_id: ProgramId },
+    Create,
 
     /// Transfer tokens FROM owner's ATA to a recipient token holding account.
     /// Uses ATA PDA seeds to authorize the chained Token::Transfer call.
@@ -27,10 +27,7 @@ pub enum Instruction {
     /// - Recipient token holding (must be initialized)
     ///
     /// `token_program_id` is derived from `sender_ata.account.program_owner`.
-    Transfer {
-        ata_program_id: ProgramId,
-        amount: u128,
-    },
+    Transfer { amount: u128 },
 
     /// Burn tokens FROM owner's ATA.
     /// Uses PDA seeds to authorize the ATA in the chained Token::Burn call.
@@ -41,10 +38,7 @@ pub enum Instruction {
     /// - Token definition account
     ///
     /// `token_program_id` is derived from `holder_ata.account.program_owner`.
-    Burn {
-        ata_program_id: ProgramId,
-        amount: u128,
-    },
+    Burn { amount: u128 },
 }
 
 pub fn compute_ata_seed(owner_id: AccountId, definition_id: AccountId) -> PdaSeed {

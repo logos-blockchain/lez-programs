@@ -1,6 +1,7 @@
 #![no_main]
 
 use spel_framework::prelude::*;
+use spel_framework::context::ProgramContext;
 use nssa_core::account::AccountWithMetadata;
 
 risc0_zkvm::guest::entry!(main);
@@ -71,6 +72,7 @@ mod token {
     /// The holding target must be uninitialized and authorized.
     #[instruction]
     pub fn initialize_account(
+        ctx: ProgramContext,
         definition_account: AccountWithMetadata,
         account_to_initialize: AccountWithMetadata,
     ) -> SpelResult {
@@ -78,6 +80,7 @@ mod token {
             token_program::initialize::initialize_account(
                 definition_account,
                 account_to_initialize,
+                ctx.self_program_id,
             ),
             vec![],
         ))
@@ -101,6 +104,7 @@ mod token {
     /// Fresh public holders must be explicitly authorized in the same transaction.
     #[instruction]
     pub fn mint(
+        ctx: ProgramContext,
         definition_account: AccountWithMetadata,
         user_holding_account: AccountWithMetadata,
         amount_to_mint: u128,
@@ -109,6 +113,7 @@ mod token {
             definition_account,
             user_holding_account,
             amount_to_mint,
+            ctx.self_program_id,
         ), vec![]))
     }
 
