@@ -2983,6 +2983,21 @@ fn test_sync_reserves_rejects_pool_below_minimum_liquidity() {
     );
 }
 
+#[should_panic(expected = "Fee tier must be one of 1, 5, 30, or 100 basis points")]
+#[test]
+fn test_sync_reserves_rejects_unsupported_fee_tier() {
+    let mut pool = AccountWithMetadataForTests::pool_definition_init();
+    let mut pool_def = PoolDefinition::try_from(&pool.account.data).unwrap();
+    pool_def.fees = 2;
+    pool.account.data = Data::from(&pool_def);
+
+    let _ = sync_reserves(
+        pool,
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+    );
+}
+
 #[test]
 fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
     let donation_a = 100u128;

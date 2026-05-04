@@ -1,4 +1,6 @@
-use amm_core::{read_vault_fungible_balances, PoolDefinition, MINIMUM_LIQUIDITY};
+use amm_core::{
+    assert_supported_fee_tier, read_vault_fungible_balances, PoolDefinition, MINIMUM_LIQUIDITY,
+};
 use nssa_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall},
@@ -11,6 +13,7 @@ pub fn sync_reserves(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("Sync reserves: AMM Program expects a valid Pool Definition Account");
+    assert_supported_fee_tier(pool_def_data.fees);
 
     assert!(
         pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
