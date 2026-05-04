@@ -15,7 +15,7 @@ pub enum Instruction {
     /// - Token definition account
     /// - Associated token account (default/uninitialized, or already initialized)
     ///
-    /// `token_program_id` is derived from `token_definition.account.program_owner`.
+    /// The downstream token program is the canonical token program wired by the ATA guest.
     Create { ata_program_id: ProgramId },
 
     /// Transfer tokens FROM owner's ATA to a recipient token holding account.
@@ -26,7 +26,7 @@ pub enum Instruction {
     /// - Sender ATA (owner's token holding)
     /// - Recipient token holding (must be initialized)
     ///
-    /// `token_program_id` is derived from `sender_ata.account.program_owner`.
+    /// The downstream token program is the canonical token program wired by the ATA guest.
     Transfer {
         ata_program_id: ProgramId,
         amount: u128,
@@ -40,7 +40,7 @@ pub enum Instruction {
     /// - Owner's ATA (the holding to burn from)
     /// - Token definition account
     ///
-    /// `token_program_id` is derived from `holder_ata.account.program_owner`.
+    /// The downstream token program is the canonical token program wired by the ATA guest.
     Burn {
         ata_program_id: ProgramId,
         amount: u128,

@@ -24,6 +24,7 @@ mod ata {
             token_definition,
             ata_account,
             ata_program_id,
+            token_methods::TOKEN_ID,
         );
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
@@ -44,6 +45,7 @@ mod ata {
                 sender_ata,
                 recipient,
                 ata_program_id,
+                token_methods::TOKEN_ID,
                 amount,
             );
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
@@ -64,6 +66,7 @@ mod ata {
                 holder_ata,
                 token_definition,
                 ata_program_id,
+                token_methods::TOKEN_ID,
                 amount,
             );
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))

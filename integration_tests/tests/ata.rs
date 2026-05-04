@@ -41,12 +41,20 @@ impl Ids {
         token_methods::TOKEN_ID
     }
 
+    fn foreign_token_program() -> nssa_core::program::ProgramId {
+        [0xfeed_u32; 8]
+    }
+
     fn ata_program() -> nssa_core::program::ProgramId {
         ata_methods::ATA_ID
     }
 
     fn token_definition() -> AccountId {
         AccountId::from(&PublicKey::new_from_private_key(&Keys::def_key()))
+    }
+
+    fn other_token_definition() -> AccountId {
+        AccountId::new([0x99; 32])
     }
 
     fn owner() -> AccountId {
@@ -82,6 +90,25 @@ impl Accounts {
         }
     }
 
+    fn token_definition_foreign_owner() -> Account {
+        let mut account = Self::token_definition_init();
+        account.program_owner = Ids::foreign_token_program();
+        account
+    }
+
+    fn other_token_definition_init() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("Silver"),
+                total_supply: 500_000_u128,
+                metadata_id: None,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
     fn owner_ata_init() -> Account {
         Account {
             program_owner: Ids::token_program(),
@@ -90,6 +117,21 @@ impl Accounts {
                 definition_id: Ids::token_definition(),
                 balance: 1_000_000_u128,
             }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn owner_ata_foreign_owner() -> Account {
+        let mut account = Self::owner_ata_init();
+        account.program_owner = Ids::foreign_token_program();
+        account
+    }
+
+    fn owner_ata_malformed() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::try_from(vec![0xFF]).expect("test data fits"),
             nonce: Nonce(0),
         }
     }
@@ -176,6 +218,42 @@ fn ata_create() {
 }
 
 #[test]
+fn ata_create_rejects_foreign_owned_token_definition() {
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    deploy_programs(&mut state);
+    state.force_insert_account(
+        Ids::token_definition(),
+        Accounts::token_definition_foreign_owner(),
+    );
+
+    let instruction = ata_core::Instruction::Create {
+        ata_program_id: Ids::ata_program(),
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::ata_program(),
+        vec![Ids::owner(), Ids::token_definition(), Ids::owner_ata()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Accounts::token_definition_foreign_owner()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::owner_ata()),
+        Account::default()
+    );
+}
+
+#[test]
 fn ata_create_is_idempotent() {
     let mut state = state_for_ata_tests();
 
@@ -208,6 +286,36 @@ fn ata_create_is_idempotent() {
             }),
             nonce: Nonce(0),
         }
+    );
+}
+
+#[test]
+fn ata_create_rejects_malformed_existing_ata_occupant() {
+    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    deploy_programs(&mut state);
+    state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
+    state.force_insert_account(Ids::owner_ata(), Accounts::owner_ata_malformed());
+
+    let instruction = ata_core::Instruction::Create {
+        ata_program_id: Ids::ata_program(),
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::ata_program(),
+        vec![Ids::owner(), Ids::token_definition(), Ids::owner_ata()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::owner_ata()),
+        Accounts::owner_ata_malformed()
     );
 }
 
@@ -261,6 +369,39 @@ fn ata_transfer() {
 }
 
 #[test]
+fn ata_transfer_rejects_foreign_owned_sender_ata() {
+    let mut state = state_for_ata_tests_with_precreated_recipient_ata();
+    state.force_insert_account(Ids::owner_ata(), Accounts::owner_ata_foreign_owner());
+
+    let instruction = ata_core::Instruction::Transfer {
+        ata_program_id: Ids::ata_program(),
+        amount: 400_000_u128,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::ata_program(),
+        vec![Ids::owner(), Ids::owner_ata(), Ids::recipient_ata()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::owner_ata()),
+        Accounts::owner_ata_foreign_owner()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient_ata()),
+        Accounts::recipient_ata_init()
+    );
+}
+
+#[test]
 fn ata_burn() {
     let mut state = state_for_ata_tests();
 
@@ -307,6 +448,82 @@ fn ata_burn() {
             }),
             nonce: Nonce(0),
         }
+    );
+}
+
+#[test]
+fn ata_burn_rejects_foreign_owned_token_definition() {
+    let mut state = state_for_ata_tests();
+    state.force_insert_account(
+        Ids::token_definition(),
+        Accounts::token_definition_foreign_owner(),
+    );
+
+    let instruction = ata_core::Instruction::Burn {
+        ata_program_id: Ids::ata_program(),
+        amount: 300_000_u128,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::ata_program(),
+        vec![Ids::owner(), Ids::owner_ata(), Ids::token_definition()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::owner_ata()),
+        Accounts::owner_ata_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Accounts::token_definition_foreign_owner()
+    );
+}
+
+#[test]
+fn ata_burn_rejects_definition_mismatch() {
+    let mut state = state_for_ata_tests();
+    state.force_insert_account(
+        Ids::other_token_definition(),
+        Accounts::other_token_definition_init(),
+    );
+
+    let instruction = ata_core::Instruction::Burn {
+        ata_program_id: Ids::ata_program(),
+        amount: 300_000_u128,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::ata_program(),
+        vec![
+            Ids::owner(),
+            Ids::owner_ata(),
+            Ids::other_token_definition(),
+        ],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::owner_ata()),
+        Accounts::owner_ata_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::other_token_definition()),
+        Accounts::other_token_definition_init()
     );
 }
 

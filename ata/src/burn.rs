@@ -2,20 +2,24 @@ use nssa_core::{
     account::AccountWithMetadata,
     program::{AccountPostState, ChainedCall, ProgramId},
 };
-use token_core::TokenHolding;
 
 pub fn burn_from_associated_token_account(
     owner: AccountWithMetadata,
     holder_ata: AccountWithMetadata,
     token_definition: AccountWithMetadata,
     ata_program_id: ProgramId,
+    token_program_id: ProgramId,
     amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    let token_program_id = holder_ata.account.program_owner;
     assert!(owner.is_authorized, "Owner authorization is missing");
-    let definition_id = TokenHolding::try_from(&holder_ata.account.data)
-        .expect("Holder ATA must hold a valid token")
-        .definition_id();
+    let _definition =
+        crate::validation::canonical_token_definition(&token_definition, token_program_id);
+    let definition_id =
+        crate::validation::canonical_ata_holding(&holder_ata, token_program_id).definition_id();
+    assert_eq!(
+        definition_id, token_definition.account_id,
+        "Holder ATA token definition mismatch"
+    );
     let seed =
         ata_core::verify_ata_and_get_seed(&holder_ata, &owner, definition_id, ata_program_id);
 

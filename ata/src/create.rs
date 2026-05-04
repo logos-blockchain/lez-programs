@@ -8,12 +8,14 @@ pub fn create_associated_token_account(
     token_definition: AccountWithMetadata,
     ata_account: AccountWithMetadata,
     ata_program_id: ProgramId,
+    token_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     // No explicit owner authorization check is needed here: ATA creation is idempotent, so the
     // call itself may proceed without `owner.is_authorized`. If the owner account is still
     // default, the returned post-state will still carry `Claim::Authorized` so the runtime can
     // claim that owner account when needed.
-    let token_program_id = token_definition.account.program_owner;
+    let _definition =
+        crate::validation::canonical_token_definition(&token_definition, token_program_id);
     let seed = ata_core::verify_ata_and_get_seed(
         &ata_account,
         &owner,
@@ -23,6 +25,12 @@ pub fn create_associated_token_account(
 
     // Idempotent: already initialized → no-op
     if ata_account.account != Account::default() {
+        let holding = crate::validation::canonical_ata_holding(&ata_account, token_program_id);
+        assert_eq!(
+            holding.definition_id(),
+            token_definition.account_id,
+            "Existing ATA token definition mismatch"
+        );
         return (
             vec![
                 AccountPostState::new_claimed_if_default(owner.account.clone(), Claim::Authorized),
