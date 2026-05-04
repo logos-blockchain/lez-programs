@@ -3411,6 +3411,24 @@ fn test_remove_liquidity_rejects_user_holding_b_wrong_program() {
     );
 }
 
+#[should_panic(expected = "Remove amount exceeds user LP balance")]
+#[test]
+fn test_remove_liquidity_rejects_amount_exceeding_user_lp_balance() {
+    let lp_balance = BalanceForTests::remove_amount_lp() - 1;
+    let _ = remove_liquidity(
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_with_balance(lp_balance),
+        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
+        BalanceForTests::remove_min_amount_a(),
+        BalanceForTests::remove_min_amount_b_low(),
+    );
+}
+
 #[should_panic(expected = "User Token A holding must be owned by the vault's Token Program")]
 #[test]
 fn test_swap_exact_input_rejects_user_holding_a_wrong_program() {

@@ -101,6 +101,10 @@ pub fn remove_liquidity(
         pool_def_data.liquidity_pool_supply > MINIMUM_LIQUIDITY,
         "Pool only contains locked liquidity"
     );
+    assert!(
+        remove_liquidity_amount <= user_lp_balance,
+        "Remove amount exceeds user LP balance"
+    );
     let unlocked_liquidity = pool_def_data.liquidity_pool_supply - MINIMUM_LIQUIDITY;
     // The remove instruction never sees the LP lock account directly, so we must still refuse any
     // request that would burn through the permanent floor even if ownership is already corrupted.
