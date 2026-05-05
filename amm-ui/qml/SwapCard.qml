@@ -1,6 +1,8 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+import "components"
+import "state"
 
 Rectangle {
     id: root
@@ -11,7 +13,11 @@ Rectangle {
     property var buyToken: null
     property string sellAmount: ""
     property real slippageTolerancePercent: 0.5
-    readonly property real feePercent: 0.30
+
+    DummySwapState {
+        id: swapState
+        feeBps: 30
+    }
 
     signal requestTokenSelect(string side)
     signal submitRequested(var snapshot)
@@ -25,24 +31,18 @@ Rectangle {
         root.sellAmount = ""
     }
 
+    readonly property real sellReserve: sellToken ? (sellToken.reserve || 0) : 0
+    readonly property real buyReserve: buyToken ? (buyToken.reserve || 0) : 0
+
     readonly property real parsedSellAmount: {
         var amt = parseFloat(sellAmount)
         return isNaN(amt) || amt < 0 ? 0 : amt
     }
 
-    readonly property real parsedBuyAmount: {
-        if (!sellToken || !buyToken || parsedSellAmount <= 0) return 0
-        return parsedSellAmount * sellToken.usdPrice / buyToken.usdPrice
-    }
-
-    readonly property real minReceivedAmount: parsedBuyAmount * (1 - slippageTolerancePercent / 100)
-
-    readonly property real priceImpactPercent: {
-        if (!sellToken || parsedSellAmount <= 0) return 0
-        var reserve = sellToken.reserve || 0
-        if (reserve <= 0) return 0
-        return parsedSellAmount / (reserve + parsedSellAmount) * 100
-    }
+    readonly property real parsedBuyAmount: swapState.amountOutFor(parsedSellAmount, sellReserve, buyReserve)
+    readonly property real feeAmount: swapState.feeAmount(parsedSellAmount)
+    readonly property real minReceivedAmount: swapState.minReceived(parsedBuyAmount, slippageTolerancePercent)
+    readonly property real priceImpactPercent: swapState.priceImpactPercent(parsedSellAmount, parsedBuyAmount, sellReserve, buyReserve)
 
     readonly property bool hasAmount: parsedSellAmount > 0
     readonly property bool tokensSelected: sellToken !== null && buyToken !== null
@@ -89,9 +89,10 @@ Rectangle {
             "sellAmount": formatAmountValue(parsedSellAmount),
             "buyAmount": formatAmountValue(parsedBuyAmount),
             "minReceived": formatAmountValue(minReceivedAmount),
-            "feePercent": feePercent.toFixed(2) + "%",
-            "priceImpactPercent": priceImpactPercent < 0.01 ? "<0.01%" : priceImpactPercent.toFixed(2) + "%",
-            "slippageTolerance": slippageTolerancePercent.toFixed(2).replace(/0+$/, "").replace(/[.]$/, "") + "%"
+            "feeAmount": swapState.formatTokenAmount(feeAmount, sellToken ? sellToken.symbol : ""),
+            "priceImpactPercent": swapState.formatPercent(priceImpactPercent),
+            "priceImpactPercentValue": priceImpactPercent,
+            "slippageTolerance": swapState.formatSlippagePercent(slippageTolerancePercent)
         }
     }
 
@@ -174,6 +175,20 @@ Rectangle {
             token: root.buyToken
             readOnly: true
             onTokenClicked: root.requestTokenSelect("buy")
+        }
+
+        SwapSummary {
+            Layout.fillWidth: true
+            Layout.topMargin: 12
+            Layout.leftMargin: 16
+            Layout.rightMargin: 16
+            theme: root.theme
+            visible: root.tokensSelected && root.hasAmount
+            feeText: swapState.formatTokenAmount(root.feeAmount, root.sellToken ? root.sellToken.symbol : "")
+            priceImpactText: swapState.formatPercent(root.priceImpactPercent)
+            priceImpactPercent: root.priceImpactPercent
+            slippageText: swapState.formatSlippagePercent(root.slippageTolerancePercent)
+            minReceivedText: swapState.formatTokenAmount(root.minReceivedAmount, root.buyToken ? root.buyToken.symbol : "")
         }
 
         Rectangle {

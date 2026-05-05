@@ -141,64 +141,16 @@ FocusScope {
                 }
             }
 
-            ColumnLayout {
-                spacing: 8
+            SwapSummary {
                 Layout.fillWidth: true
-
-                Item {
-                    Layout.fillWidth: true
-                    implicitHeight: 18
-                    Text {
-                        anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
-                        text: qsTr("Fee"); color: root.theme.colors.textSecondary; font.pixelSize: 12
-                    }
-                    Text {
-                        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                        text: root.snapshot.feePercent || ""
-                        color: root.theme.colors.textPrimary; font.pixelSize: 12; font.bold: true
-                    }
-                }
-                Item {
-                    Layout.fillWidth: true
-                    implicitHeight: 18
-                    Text {
-                        anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
-                        text: qsTr("Price impact"); color: root.theme.colors.textSecondary; font.pixelSize: 12
-                    }
-                    Text {
-                        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                        text: root.snapshot.priceImpactPercent || ""
-                        color: root.theme.colors.textPrimary; font.pixelSize: 12; font.bold: true
-                    }
-                }
-                Item {
-                    Layout.fillWidth: true
-                    implicitHeight: 18
-                    Text {
-                        anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
-                        text: qsTr("Slippage tolerance"); color: root.theme.colors.textSecondary; font.pixelSize: 12
-                    }
-                    Text {
-                        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                        text: root.snapshot.slippageTolerance || ""
-                        color: root.theme.colors.textPrimary; font.pixelSize: 12; font.bold: true
-                    }
-                }
-                Item {
-                    Layout.fillWidth: true
-                    implicitHeight: 18
-                    Text {
-                        anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
-                        text: qsTr("Min received"); color: root.theme.colors.textSecondary; font.pixelSize: 12
-                    }
-                    Text {
-                        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                        text: qsTr("%1 %2")
-                                .arg(root.snapshot.minReceived || "")
-                                .arg(root.snapshot.buyToken || "")
-                        color: root.theme.colors.textPrimary; font.pixelSize: 12; font.bold: true
-                    }
-                }
+                theme: root.theme
+                feeText: root.snapshot.feeAmount || ""
+                priceImpactText: root.snapshot.priceImpactPercent || ""
+                priceImpactPercent: Number(root.snapshot.priceImpactPercentValue) || 0
+                slippageText: root.snapshot.slippageTolerance || ""
+                minReceivedText: qsTr("%1 %2")
+                                    .arg(root.snapshot.minReceived || "")
+                                    .arg(root.snapshot.buyToken || "")
             }
 
             RowLayout {
