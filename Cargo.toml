@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "token/ids",
     "token/core",
     "token",
     "token/methods",

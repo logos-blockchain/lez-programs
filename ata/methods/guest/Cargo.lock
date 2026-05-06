@@ -281,7 +281,7 @@ dependencies = [
  "risc0-zkvm",
  "serde",
  "spel-framework",
- "token-methods",
+ "token-ids",
  "token_core",
 ]
 
@@ -3147,13 +3147,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
-name = "token-methods"
+name = "token-ids"
 version = "0.1.0"
-dependencies = [
- "risc0-build",
- "risc0-zkvm",
- "token_core",
-]
 
 [[package]]
 name = "token_core"

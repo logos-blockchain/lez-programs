@@ -10,5 +10,8 @@ risc0-build = "=3.0.5"
 risc0-zkvm = { version = "=3.0.5", features = ["std"] }
 token_core = { path = "../core" }
 
+[dev-dependencies]
+token-ids = { path = "../ids" }
+
 [package.metadata.risc0]
 methods = ["guest"]
