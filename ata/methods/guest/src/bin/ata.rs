@@ -1,14 +1,18 @@
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 
 use spel_framework::prelude::*;
 use spel_framework::context::ProgramContext;
 use nssa_core::{account::AccountWithMetadata, program::ProgramId};
 
+#[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
 
 #[lez_program(instruction = "ata_core::Instruction")]
 mod ata {
-    #[allow(unused_imports)]
+    #[expect(
+        unused_imports,
+        reason = "SPEL instruction macro requires importing parent-scope handler types"
+    )]
     use super::*;
 
     /// Create the Associated Token Account for (token program, owner, definition).

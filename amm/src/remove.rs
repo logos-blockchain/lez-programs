@@ -9,7 +9,10 @@ use nssa_core::{
     program::{AccountPostState, ChainedCall},
 };
 
-#[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "instruction surface passes explicit pool, vault, and user accounts"
+)]
 pub fn remove_liquidity(
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
@@ -105,7 +108,10 @@ pub fn remove_liquidity(
         remove_liquidity_amount <= user_lp_balance,
         "Remove amount exceeds user LP balance"
     );
-    let unlocked_liquidity = pool_def_data.liquidity_pool_supply - MINIMUM_LIQUIDITY;
+    let unlocked_liquidity = pool_def_data
+        .liquidity_pool_supply
+        .checked_sub(MINIMUM_LIQUIDITY)
+        .expect("liquidity supply must be at least the locked minimum after validation");
     // The remove instruction never sees the LP lock account directly, so we must still refuse any
     // request that would burn through the permanent floor even if ownership is already corrupted.
     assert!(
@@ -117,12 +123,14 @@ pub fn remove_liquidity(
         .reserve_a
         .checked_mul(remove_liquidity_amount)
         .expect("reserve_a * remove_liquidity_amount overflows u128")
-        / pool_def_data.liquidity_pool_supply;
+        .checked_div(pool_def_data.liquidity_pool_supply)
+        .expect("liquidity supply must be nonzero after validation");
     let withdraw_amount_b = pool_def_data
         .reserve_b
         .checked_mul(remove_liquidity_amount)
         .expect("reserve_b * remove_liquidity_amount overflows u128")
-        / pool_def_data.liquidity_pool_supply;
+        .checked_div(pool_def_data.liquidity_pool_supply)
+        .expect("liquidity supply must be nonzero after validation");
 
     // 3. Validate and slippage check
     assert!(

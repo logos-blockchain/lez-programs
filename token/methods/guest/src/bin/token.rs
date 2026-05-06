@@ -1,14 +1,18 @@
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 
 use spel_framework::prelude::*;
 use spel_framework::context::ProgramContext;
 use nssa_core::account::AccountWithMetadata;
 
+#[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
 
 #[lez_program(instruction = "token_core::Instruction")]
 mod token {
-    #[allow(unused_imports)]
+    #[expect(
+        unused_imports,
+        reason = "SPEL instruction macro requires importing parent-scope handler types"
+    )]
     use super::*;
 
     /// Transfer tokens from sender to recipient.
@@ -48,6 +52,10 @@ mod token {
 
     /// Create a new fungible or non-fungible token definition with metadata.
     /// Definition, holding, and metadata targets must be uninitialized and authorized.
+    #[expect(
+        clippy::boxed_local,
+        reason = "boxed metadata keeps the instruction argument size bounded on the stack"
+    )]
     #[instruction]
     pub fn new_definition_with_metadata(
         definition_target_account: AccountWithMetadata,

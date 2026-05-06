@@ -16,7 +16,13 @@ fn main() {
     let dep_dirs = find_path_dep_dirs(&path);
 
     match spel_framework_core::idl_gen::generate_idl_from_file_with_deps(&path, &dep_dirs) {
-        Ok(idl) => println!("{}", serde_json::to_string_pretty(&idl).unwrap()),
+        Ok(idl) => match serde_json::to_string_pretty(&idl) {
+            Ok(json) => println!("{json}"),
+            Err(e) => {
+                eprintln!("Error serializing IDL to JSON: {e}");
+                process::exit(1);
+            }
+        },
         Err(e) => {
             eprintln!("Error: {e}");
             process::exit(1);

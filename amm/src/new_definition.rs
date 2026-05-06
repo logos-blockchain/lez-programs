@@ -12,7 +12,10 @@ use nssa_core::{
 };
 use token_core::TokenDefinition;
 
-#[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "instruction surface passes explicit pool, vault, mint, lock, and user accounts"
+)]
 pub fn new_definition(
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
@@ -94,7 +97,9 @@ pub fn new_definition(
         initial_lp > MINIMUM_LIQUIDITY,
         "Initial liquidity must exceed minimum liquidity lock"
     );
-    let user_lp = initial_lp - MINIMUM_LIQUIDITY;
+    let user_lp = initial_lp
+        .checked_sub(MINIMUM_LIQUIDITY)
+        .expect("initial liquidity must exceed minimum liquidity after validation");
 
     // Update pool account
     let mut pool_post = pool.account.clone();

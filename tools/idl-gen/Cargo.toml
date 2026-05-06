@@ -3,6 +3,9 @@ name = "idl-gen"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "idl-gen"
 path = "src/main.rs"

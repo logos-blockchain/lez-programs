@@ -60,12 +60,16 @@ pub fn compute_ata_seed(
 ) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256};
     let mut bytes = [0u8; 96];
-    for (index, word) in token_program_id.iter().enumerate() {
-        let offset = index * 4;
-        bytes[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
+    let (program_id_bytes, rest) = bytes.split_at_mut(32);
+    let (owner_bytes, definition_bytes) = rest.split_at_mut(32);
+    for (chunk, word) in program_id_bytes
+        .chunks_exact_mut(4)
+        .zip(token_program_id.iter())
+    {
+        chunk.copy_from_slice(&word.to_le_bytes());
     }
-    bytes[32..64].copy_from_slice(&owner_id.to_bytes());
-    bytes[64..96].copy_from_slice(&definition_id.to_bytes());
+    owner_bytes.copy_from_slice(&owner_id.to_bytes());
+    definition_bytes.copy_from_slice(&definition_id.to_bytes());
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
             .as_bytes()

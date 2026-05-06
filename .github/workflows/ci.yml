@@ -59,7 +59,22 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Clippy
-        run: RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          if rg -n -U --multiline '#\[(allow|expect)\([\s\S]*?reason\s*=\s*"(TODO|FIXME|fix later|later|temporary|hack)' token amm ata integration_tests tools -g '*.rs'; then
+            echo "Found non-actionable lint suppression reason"
+            exit 1
+          fi
+          RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Guest Clippy
+        run: |
+          for manifest in \
+            token/methods/guest/Cargo.toml \
+            amm/methods/guest/Cargo.toml \
+            ata/methods/guest/Cargo.toml
+          do
+            cargo clippy --manifest-path "$manifest" --all-targets -- -D warnings
+          done
 
   unit-tests:
     name: Unit Tests

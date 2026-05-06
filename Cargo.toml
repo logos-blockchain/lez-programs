@@ -39,3 +39,41 @@ borsh = { version = "1.0", features = ["derive"] }
 risc0-zkvm = { version = "=3.0.5" }
 serde_json = "1.0"
 tokio = { version = "1.28.2", features = ["net", "rt-multi-thread", "sync", "macros"] }
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "deny", priority = -1 }
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+
+# Generated-code / placeholder blockers.
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+# Lint suppression hygiene.
+allow_attributes = "warn"
+allow_attributes_without_reason = "deny"
+
+# Determinism, panic-safety, and arithmetic correctness.
+arithmetic_side_effects = "deny"
+indexing_slicing = "deny"
+integer_division = "warn"
+
+# Cast discipline.
+as_conversions = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_precision_loss = "warn"
+cast_sign_loss = "deny"
+
+# API and enum evolution.
+large_enum_variant = "deny"
+match_wildcard_for_single_variants = "warn"
+wildcard_enum_match_arm = "deny"
+
+# Too noisy for this codebase unless enforced selectively.
+module_name_repetitions = "allow"
+similar_names = "allow"

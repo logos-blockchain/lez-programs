@@ -1,3 +1,8 @@
+#![expect(
+    clippy::arithmetic_side_effects,
+    reason = "integration fixtures use fixed balances to assert AMM state transitions"
+)]
+
 use amm_core::{
     PoolDefinition, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5,
     MINIMUM_LIQUIDITY,
@@ -956,6 +961,7 @@ fn state_for_amm_tests_with_precreated_user_lp_for_new_def() -> V03State {
     state
 }
 
+#[cfg(test)]
 fn try_execute_new_definition(
     state: &mut V03State,
     fees: u128,
@@ -1009,10 +1015,12 @@ fn try_execute_new_definition(
     state.transition_from_public_transaction(&tx, 0, 0)
 }
 
+#[cfg(test)]
 fn execute_new_definition(state: &mut V03State, fees: u128) {
     try_execute_new_definition(state, fees, true).unwrap();
 }
 
+#[cfg(test)]
 fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_out: u128) {
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in,
@@ -1041,6 +1049,7 @@ fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_ou
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 }
 
+#[cfg(test)]
 fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_out: u128) {
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in,
@@ -1069,6 +1078,7 @@ fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_ou
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 }
 
+#[cfg(test)]
 fn execute_add_liquidity(
     state: &mut V03State,
     min_amount_liquidity: u128,
@@ -1108,6 +1118,7 @@ fn execute_add_liquidity(
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 }
 
+#[cfg(test)]
 fn execute_remove_liquidity(
     state: &mut V03State,
     remove_liquidity_amount: u128,

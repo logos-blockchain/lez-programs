@@ -1,4 +1,4 @@
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 
 use std::num::NonZeroU128;
 
@@ -8,15 +8,23 @@ use nssa_core::{
     account::{AccountId, AccountWithMetadata},
 };
 
+#[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
 
 #[lez_program(instruction = "amm_core::Instruction")]
 mod amm {
-    #[allow(unused_imports)]
+    #[expect(
+        unused_imports,
+        reason = "SPEL instruction macro requires importing parent-scope handler types"
+    )]
     use super::*;
 
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
     /// A fresh user LP holding must be explicitly authorized by the caller.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "instruction interface requires explicit pool, vault, mint, lock, and user accounts"
+    )]
     #[instruction]
     pub fn new_definition(
         ctx: ProgramContext,
@@ -52,6 +60,10 @@ mod amm {
     }
 
     /// Adds liquidity to the Pool.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "instruction interface requires explicit pool, vault, and user accounts"
+    )]
     #[instruction]
     pub fn add_liquidity(
         pool: AccountWithMetadata,
@@ -83,6 +95,10 @@ mod amm {
     }
 
     /// Removes liquidity from the Pool.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "instruction interface requires explicit pool, vault, and user accounts"
+    )]
     #[instruction]
     pub fn remove_liquidity(
         pool: AccountWithMetadata,
@@ -115,6 +131,10 @@ mod amm {
     }
 
     /// Swap some quantity of tokens while maintaining the pool constant product.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "instruction interface requires explicit pool, vault, user accounts, and bounds"
+    )]
     #[instruction]
     pub fn swap_exact_input(
         pool: AccountWithMetadata,
@@ -142,6 +162,10 @@ mod amm {
     }
 
     /// Swap tokens specifying the exact desired output amount.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "instruction interface requires explicit pool, vault, user accounts, and bounds"
+    )]
     #[instruction]
     pub fn swap_exact_output(
         pool: AccountWithMetadata,

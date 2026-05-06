@@ -1,4 +1,8 @@
 #![cfg(test)]
+#![expect(
+    clippy::arithmetic_side_effects,
+    reason = "test fixtures use fixed values to lock boundary behavior"
+)]
 
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},

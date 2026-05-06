@@ -1,4 +1,9 @@
 #![cfg(test)]
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    reason = "test fixtures use fixed values to lock AMM math boundaries"
+)]
 
 use std::num::NonZero;
 
@@ -3228,7 +3233,8 @@ fn remove_liquidity_overflow_protection() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         user_lp,
-        NonZero::new(2).unwrap(), // remove_amount=2 → reserve_a * 2 overflows
+        NonZero::new(2).unwrap(), /* remove_amount=2 → reserve_a * 2
+                                   * overflows */
         1,
         1,
     );
@@ -3365,7 +3371,7 @@ fn test_add_liquidity_rejects_user_holding_a_wrong_program() {
         AccountWithMetadataForTests::user_holding_a_wrong_program(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
+        NonZero::new(BalanceForTests::add_min_amount_lp()).expect("test value must be nonzero"),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
     );
@@ -3382,7 +3388,7 @@ fn test_add_liquidity_rejects_user_holding_b_wrong_program() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b_wrong_program(),
         AccountWithMetadataForTests::user_holding_lp_init(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
+        NonZero::new(BalanceForTests::add_min_amount_lp()).expect("test value must be nonzero"),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
     );
@@ -3401,7 +3407,7 @@ fn test_remove_liquidity_rejects_user_holding_a_wrong_program() {
         AccountWithMetadataForTests::user_holding_lp_with_balance(
             BalanceForTests::remove_amount_lp(),
         ),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
+        NonZero::new(BalanceForTests::remove_amount_lp()).expect("test value must be nonzero"),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b_low(),
     );
@@ -3420,7 +3426,7 @@ fn test_remove_liquidity_rejects_user_holding_b_wrong_program() {
         AccountWithMetadataForTests::user_holding_lp_with_balance(
             BalanceForTests::remove_amount_lp(),
         ),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
+        NonZero::new(BalanceForTests::remove_amount_lp()).expect("test value must be nonzero"),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b_low(),
     );
@@ -3438,7 +3444,7 @@ fn test_remove_liquidity_rejects_amount_exceeding_user_lp_balance() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_with_balance(lp_balance),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
+        NonZero::new(BalanceForTests::remove_amount_lp()).expect("test value must be nonzero"),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b_low(),
     );

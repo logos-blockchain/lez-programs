@@ -46,7 +46,10 @@ fn validate_swap_setup(
 }
 
 /// Creates post-state and returns reserves after swap.
-#[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "post-state assembly keeps pool, vault, user account, and delta state explicit"
+)]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "consistent with codebase style"
@@ -91,7 +94,10 @@ fn create_swap_post_states(
     ]
 }
 
-#[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "instruction surface passes explicit pool, vault, and user accounts"
+)]
 #[must_use]
 pub fn swap_exact_input(
     pool: AccountWithMetadata,
@@ -166,7 +172,10 @@ pub fn swap_exact_input(
     (post_states, chained_calls)
 }
 
-#[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "swap calculation keeps account context and pricing parameters explicit"
+)]
 fn swap_logic(
     user_deposit: AccountWithMetadata,
     vault_deposit: AccountWithMetadata,
@@ -179,10 +188,14 @@ fn swap_logic(
     reserve_withdraw_vault_amount: u128,
     pool_id: AccountId,
 ) -> (Vec<ChainedCall>, u128, u128) {
+    let fee_multiplier = FEE_BPS_DENOMINATOR
+        .checked_sub(fee_bps)
+        .expect("fee_bps exceeds fee denominator");
     let effective_amount_in = swap_amount_in
-        .checked_mul(FEE_BPS_DENOMINATOR - fee_bps)
+        .checked_mul(fee_multiplier)
         .expect("swap_amount_in * (FEE_BPS_DENOMINATOR - fee_bps) overflows u128")
-        / FEE_BPS_DENOMINATOR;
+        .checked_div(FEE_BPS_DENOMINATOR)
+        .expect("fee denominator must be nonzero");
     assert!(
         effective_amount_in != 0,
         "Effective swap amount should be nonzero"
@@ -194,9 +207,12 @@ fn swap_logic(
     let withdraw_amount = reserve_withdraw_vault_amount
         .checked_mul(effective_amount_in)
         .expect("reserve * effective_amount_in overflows u128")
-        / reserve_deposit_vault_amount
-            .checked_add(effective_amount_in)
-            .expect("reserve + effective_amount_in overflows u128");
+        .checked_div(
+            reserve_deposit_vault_amount
+                .checked_add(effective_amount_in)
+                .expect("reserve + effective_amount_in overflows u128"),
+        )
+        .expect("reserve plus effective input must be nonzero");
 
     // Slippage check
     assert!(
@@ -240,7 +256,10 @@ fn swap_logic(
     (chained_calls, swap_amount_in, withdraw_amount)
 }
 
-#[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "instruction surface passes explicit pool, vault, and user accounts"
+)]
 #[must_use]
 pub fn swap_exact_output(
     pool: AccountWithMetadata,
@@ -315,7 +334,10 @@ pub fn swap_exact_output(
     (post_states, chained_calls)
 }
 
-#[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "swap calculation keeps account context and pricing parameters explicit"
+)]
 fn exact_output_swap_logic(
     user_deposit: AccountWithMetadata,
     vault_deposit: AccountWithMetadata,

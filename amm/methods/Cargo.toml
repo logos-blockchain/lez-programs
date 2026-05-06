@@ -3,6 +3,9 @@ name = "amm-methods"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [build-dependencies]
 risc0-build = "=3.0.5"
 

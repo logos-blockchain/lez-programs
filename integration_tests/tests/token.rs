@@ -648,6 +648,7 @@ fn token_program() -> Program {
 /// Performs a shielded transfer (public → private) of `amount` tokens from
 /// `Ids::holder()` to a new private account keyed by `PrivateKeys::recipient_*`.
 /// Returns the resulting private recipient account.
+#[cfg(test)]
 fn shielded_token_transfer(amount: u128, state: &mut V03State) -> Account {
     let sender_id = Ids::holder();
     let sender_account = state.get_account_by_id(sender_id);

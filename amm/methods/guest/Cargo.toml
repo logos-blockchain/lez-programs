@@ -5,6 +5,32 @@ edition = "2021"
 
 [workspace]
 
+[lints.rust]
+rust_2018_idioms = { level = "deny", priority = -1 }
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+allow_attributes = "warn"
+allow_attributes_without_reason = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_precision_loss = "warn"
+cast_sign_loss = "deny"
+dbg_macro = "deny"
+indexing_slicing = "deny"
+integer_division = "warn"
+large_enum_variant = "deny"
+match_wildcard_for_single_variants = "warn"
+module_name_repetitions = "allow"
+similar_names = "allow"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+wildcard_enum_match_arm = "deny"
+
 [[bin]]
 name = "amm"
 path = "src/bin/amm.rs"

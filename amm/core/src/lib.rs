@@ -204,8 +204,9 @@ pub fn compute_pool_pda_seed(
     };
 
     let mut bytes = [0; 64];
-    bytes[0..32].copy_from_slice(&token_1.to_bytes());
-    bytes[32..].copy_from_slice(&token_2.to_bytes());
+    let (token_1_bytes, token_2_bytes) = bytes.split_at_mut(32);
+    token_1_bytes.copy_from_slice(&token_1.to_bytes());
+    token_2_bytes.copy_from_slice(&token_2.to_bytes());
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
@@ -230,8 +231,9 @@ pub fn compute_vault_pda_seed(pool_id: AccountId, definition_token_id: AccountId
     use risc0_zkvm::sha::{Impl, Sha256};
 
     let mut bytes = [0; 64];
-    bytes[0..32].copy_from_slice(&pool_id.to_bytes());
-    bytes[32..].copy_from_slice(&definition_token_id.to_bytes());
+    let (pool_bytes, definition_bytes) = bytes.split_at_mut(32);
+    pool_bytes.copy_from_slice(&pool_id.to_bytes());
+    definition_bytes.copy_from_slice(&definition_token_id.to_bytes());
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
@@ -249,8 +251,9 @@ pub fn compute_liquidity_token_pda_seed(pool_id: AccountId) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256};
 
     let mut bytes = [0; 64];
-    bytes[0..32].copy_from_slice(&pool_id.to_bytes());
-    bytes[32..].copy_from_slice(&LIQUIDITY_TOKEN_PDA_SEED);
+    let (pool_bytes, seed_bytes) = bytes.split_at_mut(32);
+    pool_bytes.copy_from_slice(&pool_id.to_bytes());
+    seed_bytes.copy_from_slice(&LIQUIDITY_TOKEN_PDA_SEED);
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
@@ -268,8 +271,9 @@ pub fn compute_lp_lock_holding_pda_seed(pool_id: AccountId) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256};
 
     let mut bytes = [0; 64];
-    bytes[0..32].copy_from_slice(&pool_id.to_bytes());
-    bytes[32..].copy_from_slice(&LP_LOCK_HOLDING_PDA_SEED);
+    let (pool_bytes, seed_bytes) = bytes.split_at_mut(32);
+    pool_bytes.copy_from_slice(&pool_id.to_bytes());
+    seed_bytes.copy_from_slice(&LP_LOCK_HOLDING_PDA_SEED);
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)

@@ -9,7 +9,10 @@ use nssa_core::{
     program::{AccountPostState, ChainedCall},
 };
 
-#[expect(clippy::too_many_arguments, reason = "TODO: Fix later")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "instruction surface passes explicit pool, vault, and user accounts"
+)]
 pub fn add_liquidity(
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
@@ -77,12 +80,14 @@ pub fn add_liquidity(
         .reserve_a
         .checked_mul(max_amount_to_add_token_b)
         .expect("reserve_a * max_amount_b overflows u128")
-        / pool_def_data.reserve_b;
+        .checked_div(pool_def_data.reserve_b)
+        .expect("reserve_b must be nonzero after validation");
     let ideal_b: u128 = pool_def_data
         .reserve_b
         .checked_mul(max_amount_to_add_token_a)
         .expect("reserve_b * max_amount_a overflows u128")
-        / pool_def_data.reserve_a;
+        .checked_div(pool_def_data.reserve_a)
+        .expect("reserve_a must be nonzero after validation");
 
     let actual_amount_a = if ideal_a > max_amount_to_add_token_a {
         max_amount_to_add_token_a
@@ -114,12 +119,14 @@ pub fn add_liquidity(
             .liquidity_pool_supply
             .checked_mul(actual_amount_a)
             .expect("liquidity_pool_supply * actual_amount_a overflows u128")
-            / pool_def_data.reserve_a,
+            .checked_div(pool_def_data.reserve_a)
+            .expect("reserve_a must be nonzero after validation"),
         pool_def_data
             .liquidity_pool_supply
             .checked_mul(actual_amount_b)
             .expect("liquidity_pool_supply * actual_amount_b overflows u128")
-            / pool_def_data.reserve_b,
+            .checked_div(pool_def_data.reserve_b)
+            .expect("reserve_b must be nonzero after validation"),
     );
 
     assert!(delta_lp != 0, "Payable LP must be nonzero");
