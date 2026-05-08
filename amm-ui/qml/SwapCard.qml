@@ -217,8 +217,20 @@ Rectangle {
             feeText: swapState.formatTokenAmount(root.feeAmount, root.sellToken ? root.sellToken.symbol : "")
             priceImpactText: swapState.formatPercent(root.priceImpactPercent)
             priceImpactPercent: root.priceImpactPercent
-            slippageText: swapState.formatSlippagePercent(root.slippageTolerancePercent)
             minReceivedText: swapState.formatTokenAmount(root.minReceivedAmount, root.buyToken ? root.buyToken.symbol : "")
+        }
+
+        SlippageToleranceControl {
+            Layout.fillWidth: true
+            Layout.topMargin: 12
+            Layout.leftMargin: 16
+            Layout.rightMargin: 16
+            tolerancePercent: root.slippageTolerancePercent
+            visible: root.tokensSelected && root.hasAmount
+
+            onToleranceChangeRequested: function(tolerancePercent) {
+                root.slippageTolerancePercent = swapState.clampSlippagePercent(tolerancePercent);
+            }
         }
 
         Rectangle {

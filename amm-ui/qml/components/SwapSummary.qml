@@ -98,6 +98,7 @@ Item {
 
         Item {
             implicitHeight: 18
+            visible: root.slippageText.length > 0
 
             Layout.fillWidth: true
 
