@@ -30,6 +30,22 @@ QtObject {
         return safeReserveOut * amountInAfterFee / (safeReserveIn + amountInAfterFee);
     }
 
+    function amountInFor(amountOut, reserveIn, reserveOut) {
+        const safeAmountOut = parseAmount(amountOut);
+        const safeReserveIn = parseAmount(reserveIn);
+        const safeReserveOut = parseAmount(reserveOut);
+
+        if (safeAmountOut <= 0 || safeReserveIn <= 0 || safeReserveOut <= 0) {
+            return 0;
+        }
+        if (safeAmountOut >= safeReserveOut) {
+            return 0;
+        }
+
+        const amountInAfterFee = safeAmountOut * safeReserveIn / (safeReserveOut - safeAmountOut);
+        return amountInAfterFee * 10000 / (10000 - root.feeBps);
+    }
+
     function priceImpactPercent(amountIn, amountOut, reserveIn, reserveOut) {
         const safeAmountIn = parseAmount(amountIn);
         const safeAmountOut = parseAmount(amountOut);

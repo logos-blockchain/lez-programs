@@ -11,7 +11,9 @@ Rectangle {
     property var tokens: []
     property var sellToken: null
     property var buyToken: null
-    property string sellAmount: ""
+    property string sellInput: ""
+    property string buyInput: ""
+    property string editingSide: "sell"
     property real slippageTolerancePercent: 0.5
 
     DummySwapState {
@@ -28,27 +30,44 @@ Rectangle {
     }
 
     function resetAmounts() {
-        root.sellAmount = ""
+        root.sellInput = ""
+        root.buyInput = ""
+        root.editingSide = "sell"
     }
 
     readonly property real sellReserve: sellToken ? (sellToken.reserve || 0) : 0
     readonly property real buyReserve: buyToken ? (buyToken.reserve || 0) : 0
 
-    readonly property real parsedSellAmount: {
-        var amt = parseFloat(sellAmount)
+    readonly property real parsedSellInput: {
+        var amt = parseFloat(sellInput)
         return isNaN(amt) || amt < 0 ? 0 : amt
     }
 
-    readonly property real parsedBuyAmount: swapState.amountOutFor(parsedSellAmount, sellReserve, buyReserve)
+    readonly property real parsedBuyInput: {
+        var amt = parseFloat(buyInput)
+        return isNaN(amt) || amt < 0 ? 0 : amt
+    }
+
+    readonly property real parsedSellAmount: editingSide === "sell"
+        ? parsedSellInput
+        : swapState.amountInFor(parsedBuyInput, sellReserve, buyReserve)
+
+    readonly property real parsedBuyAmount: editingSide === "buy"
+        ? parsedBuyInput
+        : swapState.amountOutFor(parsedSellInput, sellReserve, buyReserve)
+
     readonly property real feeAmount: swapState.feeAmount(parsedSellAmount)
     readonly property real minReceivedAmount: swapState.minReceived(parsedBuyAmount, slippageTolerancePercent)
     readonly property real priceImpactPercent: swapState.priceImpactPercent(parsedSellAmount, parsedBuyAmount, sellReserve, buyReserve)
 
-    readonly property bool hasAmount: parsedSellAmount > 0
+    readonly property string swapMode: editingSide === "buy" ? "swap-exact-output" : "swap-exact-input"
+    readonly property string swapModeText: editingSide === "buy" ? qsTr("Exact output") : qsTr("Exact input")
+
+    readonly property bool hasAmount: editingSide === "sell" ? parsedSellInput > 0 : parsedBuyInput > 0
     readonly property bool tokensSelected: sellToken !== null && buyToken !== null
     readonly property bool insufficientBalance: hasAmount && sellToken !== null && parsedSellAmount > (sellToken.balance || 0)
     readonly property bool insufficientLiquidity: hasAmount && buyToken !== null && parsedBuyAmount > (buyToken.reserve || 0)
-    readonly property bool canSubmit: tokensSelected && hasAmount && !insufficientBalance && !insufficientLiquidity
+    readonly property bool canSubmit: tokensSelected && hasAmount && parsedSellAmount > 0 && parsedBuyAmount > 0 && !insufficientBalance && !insufficientLiquidity
 
     readonly property string submitButtonText: {
         if (!hasAmount || !tokensSelected) return qsTr("Enter an amount")
@@ -63,21 +82,22 @@ Rectangle {
         return val.toFixed(8)
     }
 
-    readonly property string buyAmount: {
-        if (!sellToken || !buyToken || sellAmount === "") return ""
-        if (parsedSellAmount <= 0) return ""
-        return formatAmountValue(parsedBuyAmount)
-    }
+    readonly property string sellDisplay: editingSide === "sell"
+        ? sellInput
+        : (parsedSellAmount > 0 ? formatAmountValue(parsedSellAmount) : "")
+
+    readonly property string buyDisplay: editingSide === "buy"
+        ? buyInput
+        : (parsedBuyAmount > 0 ? formatAmountValue(parsedBuyAmount) : "")
 
     readonly property string sellUsd: {
-        if (!sellToken || sellAmount === "") return ""
-        if (parsedSellAmount <= 0) return ""
+        if (!sellToken || parsedSellAmount <= 0) return ""
         var val = parsedSellAmount * sellToken.usdPrice
         return "~$" + val.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
     }
 
     readonly property string buyUsd: {
-        if (!buyToken || buyAmount === "") return ""
+        if (!buyToken || parsedBuyAmount <= 0) return ""
         var val = parsedBuyAmount * buyToken.usdPrice
         return "~$" + val.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
     }
@@ -92,7 +112,9 @@ Rectangle {
             "feeAmount": swapState.formatTokenAmount(feeAmount, sellToken ? sellToken.symbol : ""),
             "priceImpactPercent": swapState.formatPercent(priceImpactPercent),
             "priceImpactPercentValue": priceImpactPercent,
-            "slippageTolerance": swapState.formatSlippagePercent(slippageTolerancePercent)
+            "slippageTolerance": swapState.formatSlippagePercent(slippageTolerancePercent),
+            "swapMode": swapMode,
+            "swapModeText": swapModeText
         }
     }
 
@@ -117,11 +139,14 @@ Rectangle {
             Layout.fillWidth: true
             theme: root.theme
             label: "Sell"
-            amount: root.sellAmount
+            amount: root.sellDisplay
             usdValue: root.sellUsd
             token: root.sellToken
-            readOnly: false
-            onInputEdited: function(v) { root.sellAmount = v }
+            active: root.editingSide === "sell"
+            onInputEdited: function(v) {
+                root.sellInput = v
+                if (root.editingSide !== "sell") root.editingSide = "sell"
+            }
             onTokenClicked: root.requestTokenSelect("sell")
         }
 
@@ -170,10 +195,14 @@ Rectangle {
             Layout.fillWidth: true
             theme: root.theme
             label: "Buy"
-            amount: root.buyAmount
+            amount: root.buyDisplay
             usdValue: root.buyUsd
             token: root.buyToken
-            readOnly: true
+            active: root.editingSide === "buy"
+            onInputEdited: function(v) {
+                root.buyInput = v
+                if (root.editingSide !== "buy") root.editingSide = "buy"
+            }
             onTokenClicked: root.requestTokenSelect("buy")
         }
 
@@ -184,6 +213,7 @@ Rectangle {
             Layout.rightMargin: 16
             theme: root.theme
             visible: root.tokensSelected && root.hasAmount
+            swapModeText: root.swapModeText
             feeText: swapState.formatTokenAmount(root.feeAmount, root.sellToken ? root.sellToken.symbol : "")
             priceImpactText: swapState.formatPercent(root.priceImpactPercent)
             priceImpactPercent: root.priceImpactPercent

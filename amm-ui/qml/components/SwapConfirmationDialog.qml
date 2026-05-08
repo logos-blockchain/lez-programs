@@ -144,6 +144,7 @@ FocusScope {
             SwapSummary {
                 Layout.fillWidth: true
                 theme: root.theme
+                swapModeText: root.snapshot.swapModeText || ""
                 feeText: root.snapshot.feeAmount || ""
                 priceImpactText: root.snapshot.priceImpactPercent || ""
                 priceImpactPercent: Number(root.snapshot.priceImpactPercentValue) || 0

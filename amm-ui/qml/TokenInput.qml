@@ -9,7 +9,7 @@ Rectangle {
     property string amount: ""
     property string usdValue: ""
     property var token: null
-    property bool readOnly: false
+    property bool active: true
 
     signal tokenClicked()
     signal inputEdited(string newValue)
@@ -18,11 +18,10 @@ Rectangle {
         target: tiInput
         property: "text"
         value: root.amount
-        when: root.readOnly
     }
 
     radius: 16
-    color: theme.colors.inputBg
+    color: root.active ? theme.colors.inputBg : theme.colors.panelBg
     implicitHeight: 110
 
     Behavior on color { ColorAnimation { duration: 300 } }
@@ -52,13 +51,12 @@ Rectangle {
                 TextInput {
                     id: tiInput
                     anchors.fill: parent
-                    color: theme.colors.textPrimary
+                    color: root.active ? theme.colors.textPrimary : theme.colors.textSecondary
                     font.pixelSize: 36
                     font.weight: Font.Bold
-                    readOnly: root.readOnly
                     selectionColor: theme.colors.selection
                     clip: true
-                    onTextChanged: { if (!root.readOnly) root.inputEdited(text) }
+                    onTextEdited: root.inputEdited(text)
                     validator: RegularExpressionValidator {
                         regularExpression: /^[0-9]*\.?[0-9]*$/
                     }

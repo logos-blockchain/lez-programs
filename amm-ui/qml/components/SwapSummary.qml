@@ -5,6 +5,7 @@ Item {
     id: root
 
     property var theme
+    property string swapModeText: ""
     property string feeText: ""
     property string priceImpactText: ""
     property real priceImpactPercent: 0
@@ -24,6 +25,30 @@ Item {
 
         anchors.fill: parent
         spacing: 8
+
+        Item {
+            implicitHeight: 18
+            visible: root.swapModeText.length > 0
+
+            Layout.fillWidth: true
+
+            Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                color: root.theme.colors.textSecondary
+                font.pixelSize: 12
+                text: qsTr("Type of swap")
+            }
+
+            Text {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                color: root.theme.colors.textPrimary
+                font.bold: true
+                font.pixelSize: 12
+                text: root.swapModeText
+            }
+        }
 
         Item {
             implicitHeight: 18
