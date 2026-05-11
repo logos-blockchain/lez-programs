@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3", features = ["host"] }
+spel-framework-macros = { git = "https://github.com/logos-co/spel.git", rev = "338129a5209e46d433bb068c96ab2eb7cc2601d9", package = "spel-framework-macros" }
 token_core = { path = "../../token/core" }
 borsh = { version = "1.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }

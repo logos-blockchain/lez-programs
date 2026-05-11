@@ -1742,7 +1742,7 @@ checksum = "a5b0c77c1b780822bc749a33e39aeb2c07584ab93332303babeabb645298a76e"
 [[package]]
 name = "nssa_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3#cf3639d8252040d13b3d4e933feb19b42c76e14a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc1#35d8df0d031315219f94d1546ceb862b0e5b208f"
 dependencies = [
  "base58",
  "borsh",
@@ -2857,7 +2857,7 @@ dependencies = [
 [[package]]
 name = "spel-framework"
 version = "0.2.0"
-source = "git+https://github.com/logos-co/spel.git?rev=338129a5209e46d433bb068c96ab2eb7cc2601d9#338129a5209e46d433bb068c96ab2eb7cc2601d9"
+source = "git+https://github.com/logos-co/spel.git?rev=9e7f2754e1d4cdb3ea36e63b1ff86c3af55488d3#9e7f2754e1d4cdb3ea36e63b1ff86c3af55488d3"
 dependencies = [
  "borsh",
  "nssa_core",
@@ -2869,11 +2869,10 @@ dependencies = [
 [[package]]
 name = "spel-framework-core"
 version = "0.2.0"
-source = "git+https://github.com/logos-co/spel.git?rev=338129a5209e46d433bb068c96ab2eb7cc2601d9#338129a5209e46d433bb068c96ab2eb7cc2601d9"
+source = "git+https://github.com/logos-co/spel.git?rev=9e7f2754e1d4cdb3ea36e63b1ff86c3af55488d3#9e7f2754e1d4cdb3ea36e63b1ff86c3af55488d3"
 dependencies = [
  "borsh",
  "nssa_core",
- "proc-macro2",
  "serde",
  "serde_json",
  "sha2",
@@ -2884,7 +2883,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-macros"
 version = "0.2.0"
-source = "git+https://github.com/logos-co/spel.git?rev=338129a5209e46d433bb068c96ab2eb7cc2601d9#338129a5209e46d433bb068c96ab2eb7cc2601d9"
+source = "git+https://github.com/logos-co/spel.git?rev=9e7f2754e1d4cdb3ea36e63b1ff86c3af55488d3#9e7f2754e1d4cdb3ea36e63b1ff86c3af55488d3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2925,6 +2924,36 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "stablecoin-guest"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "nssa_core",
+ "risc0-zkvm",
+ "serde",
+ "spel-framework",
+ "stablecoin_core",
+ "stablecoin_program",
+]
+
+[[package]]
+name = "stablecoin_core"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "nssa_core",
+ "serde",
+]
+
+[[package]]
+name = "stablecoin_program"
+version = "0.1.0"
+dependencies = [
+ "nssa_core",
+ "stablecoin_core",
+]
 
 [[package]]
 name = "strsim"
@@ -3109,37 +3138,6 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
-name = "token-guest"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "nssa_core",
- "risc0-zkvm",
- "serde",
- "spel-framework",
- "token_core",
- "token_program",
-]
-
-[[package]]
-name = "token_core"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "nssa_core",
- "serde",
- "spel-framework-macros",
-]
-
-[[package]]
-name = "token_program"
-version = "0.1.0"
-dependencies = [
- "nssa_core",
- "token_core",
-]
 
 [[package]]
 name = "tokio"

@@ -10,7 +10,7 @@ name = "amm"
 path = "src/bin/amm.rs"
 
 [dependencies]
-spel-framework = { git = "https://github.com/logos-co/spel.git", rev = "668aacf354ad0754b3609820ed1b2e15e749c809", package = "spel-framework" }
+spel-framework = { git = "https://github.com/logos-co/spel.git", rev = "338129a5209e46d433bb068c96ab2eb7cc2601d9", package = "spel-framework" }
 nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3" }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
 amm_core = { path = "../../core" }

@@ -47,6 +47,7 @@ mod amm {
             fees,
             amm_program_id,
         );
+        #[allow(deprecated)]
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls)
             .with_timestamp_validity_window(..deadline))
     }
@@ -78,6 +79,7 @@ mod amm {
             max_amount_to_add_token_a,
             max_amount_to_add_token_b,
         );
+        #[allow(deprecated)]
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls)
             .with_timestamp_validity_window(..deadline))
     }
@@ -110,6 +112,7 @@ mod amm {
             min_amount_to_remove_token_a,
             min_amount_to_remove_token_b,
         );
+        #[allow(deprecated)]
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls)
             .with_timestamp_validity_window(..deadline))
     }
@@ -137,6 +140,7 @@ mod amm {
             min_amount_out,
             token_definition_id_in,
         );
+        #[allow(deprecated)]
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls)
             .with_timestamp_validity_window(..deadline))
     }
@@ -164,6 +168,7 @@ mod amm {
             max_amount_in,
             token_definition_id_in,
         );
+        #[allow(deprecated)]
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls)
             .with_timestamp_validity_window(..deadline))
     }
@@ -177,6 +182,7 @@ mod amm {
     ) -> SpelResult {
         let (post_states, chained_calls) =
             amm_program::sync::sync_reserves(pool, vault_a, vault_b);
+        #[allow(deprecated)]
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
 }

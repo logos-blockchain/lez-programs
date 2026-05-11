@@ -25,6 +25,7 @@ mod ata {
             ata_account,
             ata_program_id,
         );
+        #[allow(deprecated)]
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
 
@@ -46,6 +47,7 @@ mod ata {
                 ata_program_id,
                 amount,
             );
+        #[allow(deprecated)]
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
 
@@ -66,6 +68,7 @@ mod ata {
                 ata_program_id,
                 amount,
             );
+        #[allow(deprecated)]
         Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
     }
 }

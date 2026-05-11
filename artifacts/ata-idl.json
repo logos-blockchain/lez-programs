@@ -98,5 +98,142 @@
       ]
     }
   ],
+  "accounts": [
+    {
+      "name": "TokenDefinition",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Fungible",
+            "fields": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "total_supply",
+                "type": "u128"
+              },
+              {
+                "name": "metadata_id",
+                "type": {
+                  "option": "account_id"
+                }
+              }
+            ]
+          },
+          {
+            "name": "NonFungible",
+            "fields": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "printable_supply",
+                "type": "u128"
+              },
+              {
+                "name": "metadata_id",
+                "type": "account_id"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "TokenHolding",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Fungible",
+            "fields": [
+              {
+                "name": "definition_id",
+                "type": "account_id"
+              },
+              {
+                "name": "balance",
+                "type": "u128"
+              }
+            ]
+          },
+          {
+            "name": "NftMaster",
+            "fields": [
+              {
+                "name": "definition_id",
+                "type": "account_id"
+              },
+              {
+                "name": "print_balance",
+                "type": "u128"
+              }
+            ]
+          },
+          {
+            "name": "NftPrintedCopy",
+            "fields": [
+              {
+                "name": "definition_id",
+                "type": "account_id"
+              },
+              {
+                "name": "owned",
+                "type": "bool"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "TokenMetadata",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "definition_id",
+            "type": "account_id"
+          },
+          {
+            "name": "standard",
+            "type": {
+              "defined": "MetadataStandard"
+            }
+          },
+          {
+            "name": "uri",
+            "type": "string"
+          },
+          {
+            "name": "creators",
+            "type": "string"
+          },
+          {
+            "name": "primary_sale_date",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ],
+  "types": [
+    {
+      "name": "MetadataStandard",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Simple"
+        },
+        {
+          "name": "Expanded"
+        }
+      ]
+    }
+  ],
   "instruction_type": "ata_core::Instruction"
 }

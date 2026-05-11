@@ -3,6 +3,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use nssa_core::account::{AccountId, Data};
 use serde::{Deserialize, Serialize};
+use spel_framework_macros::account_type;
 
 /// Token Program Instruction.
 #[derive(Serialize, Deserialize)]
@@ -76,6 +77,7 @@ pub enum NewTokenDefinition {
     },
 }
 
+#[account_type]
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum TokenDefinition {
     Fungible {
@@ -110,6 +112,7 @@ impl From<&TokenDefinition> for Data {
     }
 }
 
+#[account_type]
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum TokenHolding {
     Fungible {
@@ -201,6 +204,7 @@ pub struct NewTokenMetadata {
     pub creators: String,
 }
 
+#[account_type]
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct TokenMetadata {
     /// Token Definition account id.

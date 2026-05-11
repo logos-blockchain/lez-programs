@@ -6,6 +6,7 @@ use nssa_core::{
     program::{PdaSeed, ProgramId},
 };
 use serde::{Deserialize, Serialize};
+use spel_framework_macros::account_type;
 
 // These stable seed bytes are part of the PDA derivation scheme and must stay unchanged for
 // compatibility.
@@ -120,6 +121,7 @@ pub enum Instruction {
 
 pub const MINIMUM_LIQUIDITY: u128 = 1_000;
 
+#[account_type]
 #[derive(Clone, Default, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct PoolDefinition {
     pub definition_token_a_id: AccountId,
