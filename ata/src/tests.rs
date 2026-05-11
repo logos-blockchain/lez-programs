@@ -162,3 +162,131 @@ fn get_associated_token_account_id_differs_by_definition() {
         get_associated_token_account_id(&ATA_PROGRAM_ID, &compute_ata_seed(owner_id(), other_def));
     assert_ne!(id1, id2);
 }
+
+fn recipient_id() -> AccountId {
+    AccountId::new([0x03u8; 32])
+}
+
+fn initialized_recipient_account() -> AccountWithMetadata {
+    AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: definition_id(),
+                balance: 0,
+            }),
+            nonce: nssa_core::account::Nonce(0),
+        },
+        is_authorized: false,
+        account_id: recipient_id(),
+    }
+}
+
+#[test]
+fn transfer_emits_chained_call_for_initialized_recipient() {
+    let (post_states, chained_calls) = crate::transfer::transfer_from_associated_token_account(
+        owner_account(),
+        initialized_ata_account(),
+        initialized_recipient_account(),
+        ATA_PROGRAM_ID,
+        25,
+    );
+
+    assert_eq!(post_states.len(), 3);
+    assert_eq!(chained_calls.len(), 1);
+
+    let mut sender_auth = initialized_ata_account();
+    sender_auth.is_authorized = true;
+    let expected_call = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![sender_auth, initialized_recipient_account()],
+        &token_core::Instruction::Transfer {
+            amount_to_transfer: 25,
+        },
+    )
+    .with_pda_seeds(vec![compute_ata_seed(owner_id(), definition_id())]);
+
+    assert_eq!(chained_calls, vec![expected_call]);
+}
+
+#[test]
+#[should_panic(expected = "Owner authorization is missing")]
+fn transfer_panics_when_owner_not_authorized() {
+    let mut unauthorized_owner = owner_account();
+    unauthorized_owner.is_authorized = false;
+
+    crate::transfer::transfer_from_associated_token_account(
+        unauthorized_owner,
+        initialized_ata_account(),
+        initialized_recipient_account(),
+        ATA_PROGRAM_ID,
+        1,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Recipient token holding must be initialized")]
+fn transfer_panics_when_recipient_is_default() {
+    let default_recipient = AccountWithMetadata {
+        account: Account::default(),
+        is_authorized: false,
+        account_id: recipient_id(),
+    };
+
+    crate::transfer::transfer_from_associated_token_account(
+        owner_account(),
+        initialized_ata_account(),
+        default_recipient,
+        ATA_PROGRAM_ID,
+        1,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Recipient must be owned by the same token program as the sender ATA")]
+fn transfer_panics_when_recipient_is_foreign_owned() {
+    let mut foreign_recipient = initialized_recipient_account();
+    foreign_recipient.account.program_owner = [9u32; 8];
+
+    crate::transfer::transfer_from_associated_token_account(
+        owner_account(),
+        initialized_ata_account(),
+        foreign_recipient,
+        ATA_PROGRAM_ID,
+        1,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Recipient must hold a valid token")]
+fn transfer_panics_when_recipient_data_is_malformed() {
+    let mut malformed_recipient = initialized_recipient_account();
+    malformed_recipient.account.data = Data::try_from(vec![0xFFu8, 0xFE, 0xFD]).unwrap();
+
+    crate::transfer::transfer_from_associated_token_account(
+        owner_account(),
+        initialized_ata_account(),
+        malformed_recipient,
+        ATA_PROGRAM_ID,
+        1,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Recipient and sender token definitions do not match")]
+fn transfer_panics_when_recipient_definition_mismatches_sender() {
+    let mut mismatched_recipient = initialized_recipient_account();
+    mismatched_recipient.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: AccountId::new([0xAAu8; 32]),
+        balance: 0,
+    });
+
+    crate::transfer::transfer_from_associated_token_account(
+        owner_account(),
+        initialized_ata_account(),
+        mismatched_recipient,
+        ATA_PROGRAM_ID,
+        1,
+    );
+}

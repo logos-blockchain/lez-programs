@@ -24,7 +24,10 @@ pub enum Instruction {
     /// Required accounts (3):
     /// - Owner account (authorized)
     /// - Sender ATA (owner's token holding)
-    /// - Recipient token holding (must be initialized)
+    /// - Recipient token holding. Must be:
+    ///   - already initialized (not a default account),
+    ///   - owned by the same token program as the sender ATA,
+    ///   - and point at the same token definition as the sender.
     ///
     /// `token_program_id` is derived from `sender_ata.account.program_owner`.
     Transfer {

@@ -261,6 +261,85 @@ fn ata_transfer() {
 }
 
 #[test]
+fn ata_transfer_rejects_default_recipient() {
+    let mut state = state_for_ata_tests();
+
+    let instruction = ata_core::Instruction::Transfer {
+        ata_program_id: Ids::ata_program(),
+        amount: 1_u128,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::ata_program(),
+        vec![Ids::owner(), Ids::owner_ata(), Ids::recipient_ata()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::owner_ata()),
+        Accounts::owner_ata_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient_ata()),
+        Account::default()
+    );
+}
+
+#[test]
+fn ata_transfer_rejects_mismatched_definition_recipient() {
+    let mut state = state_for_ata_tests_with_precreated_recipient_ata();
+
+    // Replace the recipient ATA with a token holding pointing at a different definition.
+    let foreign_definition_id = AccountId::from(&PublicKey::new_from_private_key(
+        &PrivateKey::try_new([42; 32]).expect("valid private key"),
+    ));
+    let mismatched_recipient = Account {
+        program_owner: Ids::token_program(),
+        balance: 0_u128,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: foreign_definition_id,
+            balance: 0_u128,
+        }),
+        nonce: Nonce(0),
+    };
+    state.force_insert_account(Ids::recipient_ata(), mismatched_recipient.clone());
+
+    let instruction = ata_core::Instruction::Transfer {
+        ata_program_id: Ids::ata_program(),
+        amount: 1_u128,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::ata_program(),
+        vec![Ids::owner(), Ids::owner_ata(), Ids::recipient_ata()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner_key()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+
+    assert_eq!(
+        state.get_account_by_id(Ids::owner_ata()),
+        Accounts::owner_ata_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient_ata()),
+        mismatched_recipient
+    );
+}
+
+#[test]
 fn ata_burn() {
     let mut state = state_for_ata_tests();
 

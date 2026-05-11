@@ -29,7 +29,8 @@ mod ata {
     }
 
     /// Transfer tokens FROM owner's ATA to a recipient token holding account.
-    /// The recipient holding account must already be initialized.
+    /// The recipient holding must already be initialized, be owned by the same token program
+    /// as the sender ATA, and point at the same token definition as the sender.
     #[instruction]
     pub fn transfer(
         owner: AccountWithMetadata,
