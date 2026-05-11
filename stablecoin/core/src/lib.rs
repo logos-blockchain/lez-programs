@@ -21,15 +21,16 @@ pub enum Instruction {
 
     /// Open a new collateral-only [`Position`] for the calling owner.
     ///
-    /// Required accounts (4):
+    /// Required accounts (5):
     /// - Owner account (authorized)
     /// - Position account (uninitialized, address must match
     ///   `compute_position_pda(stablecoin_program_id, owner)`)
     /// - Position vault token holding account (uninitialized, address must match
     ///   `compute_position_vault_pda(stablecoin_program_id, position_id)`)
     /// - Owner's source token holding for the collateral (authorized, initialized)
-    ///
-    /// `token_program_id` is derived from the owner's collateral holding `program_owner`.
+    /// - Token definition account for the collateral (matches the user holding's
+    ///   `definition_id`; its `program_owner` determines the Token Program used by the
+    ///   chained `InitializeAccount` / `Transfer` calls)
     OpenPosition {
         /// `ProgramId` under which the [`Position`] and vault PDAs are derived.
         stablecoin_program_id: ProgramId,
@@ -64,7 +65,7 @@ impl TryFrom<&Data> for Position {
 
 impl From<&Position> for Data {
     fn from(position: &Position) -> Self {
-        let mut data = Vec::with_capacity(size_of_val(position));
+        let mut data = Vec::with_capacity(std::mem::size_of_val(position));
         #[allow(
             clippy::expect_used,
             reason = "BorshSerialize::serialize is infallible when writing to a Vec"
