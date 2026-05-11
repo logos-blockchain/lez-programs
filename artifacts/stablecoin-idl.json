@@ -13,6 +13,51 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "open_position",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "position",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "token_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "stablecoin_program_id",
+          "type": "program_id"
+        },
+        {
+          "name": "collateral_amount",
+          "type": "u128"
+        }
+      ]
     }
   ],
   "instruction_type": "stablecoin_core::Instruction"

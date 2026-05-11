@@ -3042,6 +3042,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "nssa_core",
+ "risc0-zkvm",
  "serde",
 ]
 
@@ -3051,6 +3052,7 @@ version = "0.1.0"
 dependencies = [
  "nssa_core",
  "stablecoin_core",
+ "token_core",
 ]
 
 [[package]]
