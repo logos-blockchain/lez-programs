@@ -9,6 +9,9 @@ members = [
     "ata/core",
     "ata",
     "ata/methods",
+    "stablecoin/core",
+    "stablecoin",
+    "stablecoin/methods",
     "integration_tests",
     "tools/idl-gen",
 ]
@@ -16,6 +19,7 @@ exclude = [
     "token/methods/guest",
     "amm/methods/guest",
     "ata/methods/guest",
+    "stablecoin/methods/guest",
 ]
 resolver = "2"
 
@@ -28,6 +32,8 @@ amm_core = { path = "amm/core" }
 amm_program = { path = "amm" }
 ata_core = { path = "ata/core" }
 ata_program = { path = "ata" }
+stablecoin_core = { path = "stablecoin/core" }
+stablecoin_program = { path = "stablecoin" }
 serde = { version = "1.0", features = ["derive"] }
 borsh = { version = "1.0", features = ["derive"] }
 risc0-zkvm = { version = "=3.0.5" }

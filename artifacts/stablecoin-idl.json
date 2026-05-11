@@ -1,0 +1,19 @@
+{
+  "version": "0.1.0",
+  "name": "stablecoin",
+  "instructions": [
+    {
+      "name": "noop",
+      "accounts": [
+        {
+          "name": "account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    }
+  ],
+  "instruction_type": "stablecoin_core::Instruction"
+}
