@@ -28,9 +28,9 @@ pub enum Instruction {
     /// - Position vault token holding account (uninitialized, address must match
     ///   `compute_position_vault_pda(stablecoin_program_id, position_id)`)
     /// - Owner's source token holding for the collateral (authorized, initialized)
-    /// - Token definition account for the collateral (matches the user holding's
-    ///   `definition_id`; its `program_owner` determines the Token Program used by the
-    ///   chained `InitializeAccount` / `Transfer` calls)
+    /// - Token definition account for the collateral (matches the user holding's `definition_id`;
+    ///   its `program_owner` determines the Token Program used by the chained `InitializeAccount`
+    ///   / `Transfer` calls)
     OpenPosition {
         /// `ProgramId` under which the [`Position`] and vault PDAs are derived.
         stablecoin_program_id: ProgramId,
