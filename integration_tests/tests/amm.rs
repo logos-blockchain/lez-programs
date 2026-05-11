@@ -907,7 +907,7 @@ fn deploy_programs(state: &mut V03State) {
 }
 
 fn state_for_amm_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_programs(&mut state);
     state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_init());
     state.force_insert_account(
@@ -931,7 +931,7 @@ fn state_for_amm_tests() -> V03State {
 }
 
 fn state_for_amm_tests_with_new_def() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_programs(&mut state);
     state.force_insert_account(
         Ids::token_a_definition(),

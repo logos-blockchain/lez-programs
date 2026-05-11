@@ -181,10 +181,10 @@ pub fn compute_pool_pda(
     definition_token_a_id: AccountId,
     definition_token_b_id: AccountId,
 ) -> AccountId {
-    AccountId::from((
+    AccountId::for_public_pda(
         &amm_program_id,
         &compute_pool_pda_seed(definition_token_a_id, definition_token_b_id),
-    ))
+    )
 }
 
 pub fn compute_pool_pda_seed(
@@ -219,10 +219,10 @@ pub fn compute_vault_pda(
     pool_id: AccountId,
     definition_token_id: AccountId,
 ) -> AccountId {
-    AccountId::from((
+    AccountId::for_public_pda(
         &amm_program_id,
         &compute_vault_pda_seed(pool_id, definition_token_id),
-    ))
+    )
 }
 
 pub fn compute_vault_pda_seed(pool_id: AccountId, definition_token_id: AccountId) -> PdaSeed {
@@ -241,7 +241,7 @@ pub fn compute_vault_pda_seed(pool_id: AccountId, definition_token_id: AccountId
 }
 
 pub fn compute_liquidity_token_pda(amm_program_id: ProgramId, pool_id: AccountId) -> AccountId {
-    AccountId::from((&amm_program_id, &compute_liquidity_token_pda_seed(pool_id)))
+    AccountId::for_public_pda(&amm_program_id, &compute_liquidity_token_pda_seed(pool_id))
 }
 
 pub fn compute_liquidity_token_pda_seed(pool_id: AccountId) -> PdaSeed {
@@ -260,7 +260,7 @@ pub fn compute_liquidity_token_pda_seed(pool_id: AccountId) -> PdaSeed {
 }
 
 pub fn compute_lp_lock_holding_pda(amm_program_id: ProgramId, pool_id: AccountId) -> AccountId {
-    AccountId::from((&amm_program_id, &compute_lp_lock_holding_pda_seed(pool_id)))
+    AccountId::for_public_pda(&amm_program_id, &compute_lp_lock_holding_pda_seed(pool_id))
 }
 
 pub fn compute_lp_lock_holding_pda_seed(pool_id: AccountId) -> PdaSeed {

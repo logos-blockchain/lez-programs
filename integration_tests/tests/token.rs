@@ -97,7 +97,7 @@ fn deploy_token(state: &mut V03State) {
 }
 
 fn state_for_token_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_token(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::holder(), Accounts::holder_init());
@@ -106,7 +106,7 @@ fn state_for_token_tests() -> V03State {
 }
 
 fn state_for_token_tests_without_recipient() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_token(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::holder(), Accounts::holder_init());
@@ -115,7 +115,7 @@ fn state_for_token_tests_without_recipient() -> V03State {
 
 #[test]
 fn token_new_fungible_definition() {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_token(&mut state);
 
     let instruction = token_core::Instruction::NewFungibleDefinition {
@@ -639,8 +639,8 @@ fn token_private_transfer() {
         Program::serialize_instruction(instruction).unwrap(),
         vec![1, 2],
         vec![
-            (sender_npk.clone(), shared_secret_1),
-            (new_recipient_npk.clone(), shared_secret_2),
+            (sender_npk, shared_secret_1),
+            (new_recipient_npk, shared_secret_2),
         ],
         vec![sender_nsk],
         vec![state.get_proof_for_commitment(&sender_commitment), None],
@@ -652,8 +652,8 @@ fn token_private_transfer() {
         vec![],
         vec![],
         vec![
-            (sender_npk.clone(), sender_vpk, epk_1),
-            (new_recipient_npk.clone(), new_recipient_vpk, epk_2),
+            (sender_npk, sender_vpk, epk_1),
+            (new_recipient_npk, new_recipient_vpk, epk_2),
         ],
         output,
     )
@@ -727,7 +727,7 @@ fn token_deshielded_transfer() {
         vec![sender_pre, public_recipient_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![1, 0],
-        vec![(sender_npk.clone(), shared_secret)],
+        vec![(sender_npk, shared_secret)],
         vec![sender_nsk],
         vec![state.get_proof_for_commitment(&sender_commitment)],
         &token_program().into(),
@@ -737,7 +737,7 @@ fn token_deshielded_transfer() {
     let message = Message::try_from_circuit_output(
         vec![public_recipient_id],
         vec![],
-        vec![(sender_npk.clone(), sender_vpk, epk)],
+        vec![(sender_npk, sender_vpk, epk)],
         output,
     )
     .unwrap();

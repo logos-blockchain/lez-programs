@@ -43,7 +43,7 @@ name = "amm_core"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "nssa_core",
+ "nssa_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3)",
  "risc0-zkvm",
  "serde",
  "token_core",
@@ -54,7 +54,7 @@ name = "amm_program"
 version = "0.1.0"
 dependencies = [
  "amm_core",
- "nssa_core",
+ "nssa_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3)",
  "token_core",
 ]
 
@@ -313,7 +313,7 @@ name = "ata_core"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "nssa_core",
+ "nssa_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3)",
  "risc0-zkvm",
  "serde",
 ]
@@ -323,7 +323,7 @@ name = "ata_program"
 version = "0.1.0"
 dependencies = [
  "ata_core",
- "nssa_core",
+ "nssa_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3)",
  "token_core",
 ]
 
@@ -601,10 +601,10 @@ dependencies = [
 [[package]]
 name = "clock_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc1#35d8df0d031315219f94d1546ceb862b0e5b208f"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3#cf3639d8252040d13b3d4e933feb19b42c76e14a"
 dependencies = [
  "borsh",
- "nssa_core",
+ "nssa_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3)",
 ]
 
 [[package]]
@@ -1595,7 +1595,7 @@ dependencies = [
  "ata-methods",
  "ata_core",
  "nssa",
- "nssa_core",
+ "nssa_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3)",
  "token-methods",
  "token_core",
 ]
@@ -1830,7 +1830,7 @@ checksum = "a5b0c77c1b780822bc749a33e39aeb2c07584ab93332303babeabb645298a76e"
 [[package]]
 name = "nssa"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc1#35d8df0d031315219f94d1546ceb862b0e5b208f"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3#cf3639d8252040d13b3d4e933feb19b42c76e14a"
 dependencies = [
  "anyhow",
  "borsh",
@@ -1838,7 +1838,7 @@ dependencies = [
  "hex",
  "k256",
  "log",
- "nssa_core",
+ "nssa_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3)",
  "rand 0.8.5",
  "risc0-binfmt",
  "risc0-build",
@@ -1853,6 +1853,23 @@ dependencies = [
 name = "nssa_core"
 version = "0.1.0"
 source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc1#35d8df0d031315219f94d1546ceb862b0e5b208f"
+dependencies = [
+ "base58",
+ "borsh",
+ "bytemuck",
+ "bytesize",
+ "chacha20",
+ "k256",
+ "risc0-zkvm",
+ "serde",
+ "serde_with",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "nssa_core"
+version = "0.1.0"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3#cf3639d8252040d13b3d4e933feb19b42c76e14a"
 dependencies = [
  "base58",
  "borsh",
@@ -2976,7 +2993,7 @@ version = "0.2.0"
 source = "git+https://github.com/logos-co/spel.git?tag=v0.2.0-rc.2#9005e9fbbd78b0530412f9987273f753ed32eb2d"
 dependencies = [
  "borsh",
- "nssa_core",
+ "nssa_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc1)",
  "serde",
  "serde_json",
  "sha2",
@@ -3214,7 +3231,7 @@ name = "token_core"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "nssa_core",
+ "nssa_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3)",
  "serde",
 ]
 
@@ -3222,7 +3239,7 @@ dependencies = [
 name = "token_program"
 version = "0.1.0"
 dependencies = [
- "nssa_core",
+ "nssa_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc3)",
  "token_core",
 ]
 

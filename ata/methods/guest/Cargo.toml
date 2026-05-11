@@ -10,8 +10,8 @@ name = "ata"
 path = "src/bin/ata.rs"
 
 [dependencies]
-spel-framework = { git = "https://github.com/logos-co/spel.git", rev = "9e7f2754e1d4cdb3ea36e63b1ff86c3af55488d3", package = "spel-framework" }
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc1" }
+spel-framework = { git = "https://github.com/logos-co/spel.git", rev = "668aacf354ad0754b3609820ed1b2e15e749c809", package = "spel-framework" }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3" }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
 ata_core = { path = "../../core" }
 ata_program = { path = "../..", package = "ata_program" }

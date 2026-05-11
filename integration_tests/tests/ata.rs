@@ -125,7 +125,7 @@ fn deploy_programs(state: &mut V03State) {
 }
 
 fn state_for_ata_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::owner_ata(), Accounts::owner_ata_init());
@@ -140,7 +140,7 @@ fn state_for_ata_tests_with_precreated_recipient_ata() -> V03State {
 
 #[test]
 fn ata_create() {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
@@ -312,7 +312,7 @@ fn ata_burn() {
 
 #[test]
 fn ata_create_from_private_owner() {
-    let mut state = V03State::new_with_genesis_accounts(&[], &[], 0);
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
@@ -359,7 +359,7 @@ fn ata_create_from_private_owner() {
         instruction_data,
         // owner=new private (2), token_definition=public (0), ata=public (0)
         vec![2, 0, 0],
-        vec![(owner_npk.clone(), shared_secret)],
+        vec![(owner_npk, shared_secret)],
         vec![],     // no NSKs: new private accounts don't require one
         vec![None], // no membership proof: owner is being created, not spending
         &program_with_deps,
