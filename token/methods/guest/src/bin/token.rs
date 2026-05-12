@@ -18,12 +18,11 @@ mod token {
         recipient: AccountWithMetadata,
         amount_to_transfer: u128,
     ) -> SpelResult {
-        #[allow(deprecated)]
-        Ok(SpelOutput::states_only(token_program::transfer::transfer(
+        Ok(spel_framework::SpelOutput::execute(token_program::transfer::transfer(
             sender,
             recipient,
             amount_to_transfer,
-        )))
+        ), vec![]))
     }
 
     /// Create a new fungible token definition without metadata.
@@ -35,14 +34,14 @@ mod token {
         name: String,
         total_supply: u128,
     ) -> SpelResult {
-        #[allow(deprecated)]
-        Ok(SpelOutput::states_only(
+        Ok(spel_framework::SpelOutput::execute(
             token_program::new_definition::new_fungible_definition(
                 definition_target_account,
                 holding_target_account,
                 name,
                 total_supply,
             ),
+            vec![],
         ))
     }
 
@@ -56,8 +55,7 @@ mod token {
         new_definition: token_core::NewTokenDefinition,
         metadata: Box<token_core::NewTokenMetadata>,
     ) -> SpelResult {
-        #[allow(deprecated)]
-        Ok(SpelOutput::states_only(
+        Ok(spel_framework::SpelOutput::execute(
             token_program::new_definition::new_definition_with_metadata(
                 definition_target_account,
                 holding_target_account,
@@ -65,6 +63,7 @@ mod token {
                 new_definition,
                 *metadata,
             ),
+            vec![],
         ))
     }
 
@@ -75,12 +74,12 @@ mod token {
         definition_account: AccountWithMetadata,
         account_to_initialize: AccountWithMetadata,
     ) -> SpelResult {
-        #[allow(deprecated)]
-        Ok(SpelOutput::states_only(
+        Ok(spel_framework::SpelOutput::execute(
             token_program::initialize::initialize_account(
                 definition_account,
                 account_to_initialize,
             ),
+            vec![],
         ))
     }
 
@@ -91,12 +90,11 @@ mod token {
         user_holding_account: AccountWithMetadata,
         amount_to_burn: u128,
     ) -> SpelResult {
-        #[allow(deprecated)]
-        Ok(SpelOutput::states_only(token_program::burn::burn(
+        Ok(spel_framework::SpelOutput::execute(token_program::burn::burn(
             definition_account,
             user_holding_account,
             amount_to_burn,
-        )))
+        ), vec![]))
     }
 
     /// Mint new tokens to the holder's account.
@@ -107,12 +105,11 @@ mod token {
         user_holding_account: AccountWithMetadata,
         amount_to_mint: u128,
     ) -> SpelResult {
-        #[allow(deprecated)]
-        Ok(SpelOutput::states_only(token_program::mint::mint(
+        Ok(spel_framework::SpelOutput::execute(token_program::mint::mint(
             definition_account,
             user_holding_account,
             amount_to_mint,
-        )))
+        ), vec![]))
     }
 
     /// Print a new NFT from the master copy.
@@ -122,10 +119,9 @@ mod token {
         master_account: AccountWithMetadata,
         printed_account: AccountWithMetadata,
     ) -> SpelResult {
-        #[allow(deprecated)]
-        Ok(SpelOutput::states_only(token_program::print_nft::print_nft(
+        Ok(spel_framework::SpelOutput::execute(token_program::print_nft::print_nft(
             master_account,
             printed_account,
-        )))
+        ), vec![]))
     }
 }

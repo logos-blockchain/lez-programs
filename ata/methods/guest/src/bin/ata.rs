@@ -25,8 +25,7 @@ mod ata {
             ata_account,
             ata_program_id,
         );
-        #[allow(deprecated)]
-        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
     }
 
     /// Transfer tokens FROM owner's ATA to a recipient token holding account.
@@ -47,8 +46,7 @@ mod ata {
                 ata_program_id,
                 amount,
             );
-        #[allow(deprecated)]
-        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
     }
 
     /// Burn tokens FROM owner's ATA.
@@ -68,7 +66,6 @@ mod ata {
                 ata_program_id,
                 amount,
             );
-        #[allow(deprecated)]
-        Ok(SpelOutput::with_chained_calls(post_states, chained_calls))
+        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
     }
 }

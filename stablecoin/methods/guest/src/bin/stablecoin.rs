@@ -12,9 +12,8 @@ mod stablecoin {
 
     #[instruction]
     pub fn noop(account: AccountWithMetadata) -> SpelResult {
-        #[allow(deprecated)]
-        Ok(SpelOutput::states_only(stablecoin_program::noop::noop(
+        Ok(spel_framework::SpelOutput::execute(stablecoin_program::noop::noop(
             account,
-        )))
+        ), vec![]))
     }
 }
