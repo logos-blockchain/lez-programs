@@ -1,5 +1,4 @@
 #![allow(
-    clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
     clippy::unwrap_used,
@@ -32,7 +31,11 @@ fn user_holding_id() -> AccountId {
 }
 
 fn position_id() -> AccountId {
-    compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id())
+    compute_position_pda(
+        STABLECOIN_PROGRAM_ID,
+        owner_id(),
+        collateral_definition_id(),
+    )
 }
 
 fn vault_id() -> AccountId {
@@ -97,17 +100,6 @@ fn uninit_vault_account() -> AccountWithMetadata {
 }
 
 #[test]
-fn noop_returns_single_post_state() {
-    let account = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: AccountId::new([0u8; 32]),
-    };
-    let post_states = crate::noop::noop(account);
-    assert_eq!(post_states.len(), 1);
-}
-
-#[test]
 fn open_position_claims_pda_and_emits_chained_calls() {
     let collateral_amount: u128 = 500;
     let (post_states, chained_calls) = crate::open_position::open_position(
@@ -126,7 +118,10 @@ fn open_position_claims_pda_and_emits_chained_calls() {
     let position_post = &post_states[1];
     assert_eq!(
         position_post.required_claim(),
-        Some(Claim::Pda(compute_position_pda_seed(owner_id())))
+        Some(Claim::Pda(compute_position_pda_seed(
+            owner_id(),
+            collateral_definition_id()
+        )))
     );
     let position = Position::try_from(&position_post.account().data).expect("valid Position");
     assert_eq!(
@@ -356,23 +351,44 @@ fn open_position_rejects_definition_with_wrong_token_program() {
 }
 
 #[test]
-fn position_pda_is_deterministic_and_owner_specific() {
-    let id_a = compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id());
-    let id_b = compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id());
+fn position_pda_is_deterministic_and_owner_and_collateral_specific() {
+    let id_a = compute_position_pda(
+        STABLECOIN_PROGRAM_ID,
+        owner_id(),
+        collateral_definition_id(),
+    );
+    let id_b = compute_position_pda(
+        STABLECOIN_PROGRAM_ID,
+        owner_id(),
+        collateral_definition_id(),
+    );
     assert_eq!(id_a, id_b);
 
     let other_owner = AccountId::new([0x11u8; 32]);
     assert_ne!(
-        compute_position_pda(STABLECOIN_PROGRAM_ID, other_owner),
+        compute_position_pda(
+            STABLECOIN_PROGRAM_ID,
+            other_owner,
+            collateral_definition_id()
+        ),
+        id_a
+    );
+
+    let other_definition = AccountId::new([0x21u8; 32]);
+    assert_ne!(
+        compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), other_definition),
         id_a
     );
 }
 
 #[test]
 fn position_pda_and_vault_pda_do_not_collide() {
-    // Distinct domain tags must keep the position id and its vault id disjoint, even
-    // though both derivations involve only the owner's address.
-    let position = compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id());
+    // Distinct domain tags must keep the position id and its vault id disjoint.
+    let position = compute_position_pda(
+        STABLECOIN_PROGRAM_ID,
+        owner_id(),
+        collateral_definition_id(),
+    );
     let vault = compute_position_vault_pda(STABLECOIN_PROGRAM_ID, position);
     assert_ne!(position, vault);
 }

@@ -3044,6 +3044,7 @@ dependencies = [
  "nssa_core",
  "risc0-zkvm",
  "serde",
+ "spel-framework-macros",
 ]
 
 [[package]]

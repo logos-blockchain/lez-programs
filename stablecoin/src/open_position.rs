@@ -23,11 +23,6 @@ use token_core::TokenHolding;
 /// - `user_holding` cannot be decoded as a [`TokenHolding`].
 /// - `user_holding`'s definition does not match `token_definition`.
 /// - `token_definition.program_owner` does not match `user_holding.program_owner`.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "instruction handler shape: spel #[instruction] macro deserializes owned \
-              AccountWithMetadata values into these parameters"
-)]
 pub fn open_position(
     owner: AccountWithMetadata,
     position: AccountWithMetadata,
@@ -53,15 +48,6 @@ pub fn open_position(
         "Position vault account must be uninitialized"
     );
 
-    let position_seed = verify_position_and_get_seed(&position, &owner, stablecoin_program_id);
-    let vault_seed =
-        verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
-
-    #[allow(
-        clippy::expect_used,
-        reason = "open_position uses the same panic-on-bad-input pattern as the surrounding \
-                  assert!/assert_eq! invariant checks; runtime must supply a valid TokenHolding"
-    )]
     let user_holding_definition_id = TokenHolding::try_from(&user_holding.account.data)
         .expect("User holding must be a valid Token Holding")
         .definition_id();
@@ -74,6 +60,15 @@ pub fn open_position(
         token_definition.account.program_owner, token_program_id,
         "Collateral token definition is not owned by the user holding's Token Program"
     );
+
+    let position_seed = verify_position_and_get_seed(
+        &position,
+        &owner,
+        token_definition.account_id,
+        stablecoin_program_id,
+    );
+    let vault_seed =
+        verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
 
     let mut position_post = position.account;
     position_post.program_owner = stablecoin_program_id;
@@ -92,9 +87,8 @@ pub fn open_position(
         AccountPostState::new(token_definition.account.clone()),
     ];
 
-    // Chained Token::InitializeAccount sets the vault up as a zero-balance holding of the
-    // collateral token. We hand the runtime the vault marked authorized via PDA so it can
-    // satisfy `InitializeAccount`'s authorization requirement without a user signature.
+    // Chained Token::InitializeAccount owns the vault as a Token holding. The Stablecoin
+    // program only authorizes that claim by passing the vault PDA seed to the chained call.
     let mut vault_authorized = vault.clone();
     vault_authorized.is_authorized = true;
     let initialize_call = ChainedCall::new(
