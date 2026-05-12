@@ -1,6 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
-import "../components"
+import "../components/shared"
+import "../components/liquidity"
 import "../state"
 
 Item {

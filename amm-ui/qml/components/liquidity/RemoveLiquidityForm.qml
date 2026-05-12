@@ -1,7 +1,8 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import "../state"
+import "../shared"
+import "../../state"
 
 Rectangle {
     id: root
