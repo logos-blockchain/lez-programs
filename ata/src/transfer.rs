@@ -9,16 +9,21 @@ pub fn transfer_from_associated_token_account(
     sender_ata: AccountWithMetadata,
     recipient: AccountWithMetadata,
     ata_program_id: ProgramId,
+    token_program_id: ProgramId,
     amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    let token_program_id = sender_ata.account.program_owner;
     assert!(owner.is_authorized, "Owner authorization is missing");
+    assert_eq!(
+        sender_ata.account.program_owner, token_program_id,
+        "Sender ATA must be owned by expected token program"
+    );
     let sender_definition_id = TokenHolding::try_from(&sender_ata.account.data)
         .expect("Sender ATA must hold a valid token")
         .definition_id();
     let sender_seed = ata_core::verify_ata_and_get_seed(
         &sender_ata,
         &owner,
+        token_program_id,
         sender_definition_id,
         ata_program_id,
     );

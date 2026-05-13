@@ -9,15 +9,32 @@ pub fn burn_from_associated_token_account(
     holder_ata: AccountWithMetadata,
     token_definition: AccountWithMetadata,
     ata_program_id: ProgramId,
+    token_program_id: ProgramId,
     amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    let token_program_id = holder_ata.account.program_owner;
     assert!(owner.is_authorized, "Owner authorization is missing");
+    assert_eq!(
+        holder_ata.account.program_owner, token_program_id,
+        "Holder ATA must be owned by expected token program"
+    );
+    assert_eq!(
+        token_definition.account.program_owner, token_program_id,
+        "Token definition must be owned by expected token program"
+    );
     let definition_id = TokenHolding::try_from(&holder_ata.account.data)
         .expect("Holder ATA must hold a valid token")
         .definition_id();
-    let seed =
-        ata_core::verify_ata_and_get_seed(&holder_ata, &owner, definition_id, ata_program_id);
+    assert_eq!(
+        definition_id, token_definition.account_id,
+        "Holder ATA token definition does not match"
+    );
+    let seed = ata_core::verify_ata_and_get_seed(
+        &holder_ata,
+        &owner,
+        token_program_id,
+        definition_id,
+        ata_program_id,
+    );
 
     let post_states = vec![
         AccountPostState::new(owner.account.clone()),

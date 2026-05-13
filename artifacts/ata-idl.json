@@ -24,7 +24,12 @@
           "init": false
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "token_program_id",
+          "type": "program_id"
+        }
+      ]
     },
     {
       "name": "transfer",
@@ -49,6 +54,10 @@
         }
       ],
       "args": [
+        {
+          "name": "token_program_id",
+          "type": "program_id"
+        },
         {
           "name": "amount",
           "type": "u128"
@@ -78,6 +87,10 @@
         }
       ],
       "args": [
+        {
+          "name": "token_program_id",
+          "type": "program_id"
+        },
         {
           "name": "amount",
           "type": "u128"

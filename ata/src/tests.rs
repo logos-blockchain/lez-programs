@@ -7,6 +7,7 @@ use token_core::{TokenDefinition, TokenHolding};
 
 const ATA_PROGRAM_ID: nssa_core::program::ProgramId = [1u32; 8];
 const TOKEN_PROGRAM_ID: nssa_core::program::ProgramId = [2u32; 8];
+const OTHER_TOKEN_PROGRAM_ID: nssa_core::program::ProgramId = [3u32; 8];
 
 fn owner_id() -> AccountId {
     AccountId::new([0x01u8; 32])
@@ -19,7 +20,7 @@ fn definition_id() -> AccountId {
 fn ata_id() -> AccountId {
     get_associated_token_account_id(
         &ATA_PROGRAM_ID,
-        &compute_ata_seed(owner_id(), definition_id()),
+        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
     )
 }
 
@@ -79,6 +80,7 @@ fn create_emits_chained_call_for_uninitialized_ata() {
         definition_account(),
         uninitialized_ata_account(),
         ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
     );
 
     assert_eq!(post_states.len(), 3);
@@ -91,7 +93,11 @@ fn create_emits_chained_call_for_uninitialized_ata() {
         vec![definition_account(), authorized_ata],
         &token_core::Instruction::InitializeAccount,
     )
-    .with_pda_seeds(vec![compute_ata_seed(owner_id(), definition_id())]);
+    .with_pda_seeds(vec![compute_ata_seed(
+        TOKEN_PROGRAM_ID,
+        owner_id(),
+        definition_id(),
+    )]);
 
     assert_eq!(chained_calls, vec![expected_call]);
 }
@@ -103,6 +109,7 @@ fn create_is_idempotent_for_initialized_ata() {
         definition_account(),
         initialized_ata_account(),
         ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
     );
 
     assert_eq!(post_states.len(), 3);
@@ -126,15 +133,29 @@ fn create_panics_on_wrong_ata_address() {
         definition_account(),
         wrong_ata,
         ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
     );
 }
 
 #[test]
 fn get_associated_token_account_id_is_deterministic() {
-    let seed = compute_ata_seed(owner_id(), definition_id());
+    let seed = compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id());
     let id1 = get_associated_token_account_id(&ATA_PROGRAM_ID, &seed);
     let id2 = get_associated_token_account_id(&ATA_PROGRAM_ID, &seed);
     assert_eq!(id1, id2);
+}
+
+#[test]
+fn get_associated_token_account_id_differs_by_token_program() {
+    let id1 = get_associated_token_account_id(
+        &ATA_PROGRAM_ID,
+        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
+    );
+    let id2 = get_associated_token_account_id(
+        &ATA_PROGRAM_ID,
+        &compute_ata_seed(OTHER_TOKEN_PROGRAM_ID, owner_id(), definition_id()),
+    );
+    assert_ne!(id1, id2);
 }
 
 #[test]
@@ -142,11 +163,11 @@ fn get_associated_token_account_id_differs_by_owner() {
     let other_owner = AccountId::new([0x99u8; 32]);
     let id1 = get_associated_token_account_id(
         &ATA_PROGRAM_ID,
-        &compute_ata_seed(owner_id(), definition_id()),
+        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
     );
     let id2 = get_associated_token_account_id(
         &ATA_PROGRAM_ID,
-        &compute_ata_seed(other_owner, definition_id()),
+        &compute_ata_seed(TOKEN_PROGRAM_ID, other_owner, definition_id()),
     );
     assert_ne!(id1, id2);
 }
@@ -156,11 +177,61 @@ fn get_associated_token_account_id_differs_by_definition() {
     let other_def = AccountId::new([0x99u8; 32]);
     let id1 = get_associated_token_account_id(
         &ATA_PROGRAM_ID,
-        &compute_ata_seed(owner_id(), definition_id()),
+        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
     );
-    let id2 =
-        get_associated_token_account_id(&ATA_PROGRAM_ID, &compute_ata_seed(owner_id(), other_def));
+    let id2 = get_associated_token_account_id(
+        &ATA_PROGRAM_ID,
+        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), other_def),
+    );
     assert_ne!(id1, id2);
+}
+
+#[test]
+#[should_panic(expected = "Token definition must be owned by expected token program")]
+fn create_panics_when_definition_is_owned_by_unexpected_token_program() {
+    let mut definition = definition_account();
+    definition.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
+
+    crate::create::create_associated_token_account(
+        owner_account(),
+        definition,
+        uninitialized_ata_account(),
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Existing ATA must be owned by expected token program")]
+fn create_panics_when_existing_ata_is_owned_by_unexpected_token_program() {
+    let mut ata = initialized_ata_account();
+    ata.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
+
+    crate::create::create_associated_token_account(
+        owner_account(),
+        definition_account(),
+        ata,
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Existing ATA token definition does not match")]
+fn create_panics_when_existing_ata_definition_mismatches_requested_definition() {
+    let mut ata = initialized_ata_account();
+    ata.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: AccountId::new([0xAAu8; 32]),
+        balance: 100,
+    });
+
+    crate::create::create_associated_token_account(
+        owner_account(),
+        definition_account(),
+        ata,
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+    );
 }
 
 fn recipient_id() -> AccountId {
@@ -190,6 +261,7 @@ fn transfer_emits_chained_call_for_initialized_recipient() {
         initialized_ata_account(),
         initialized_recipient_account(),
         ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
         25,
     );
 
@@ -205,7 +277,11 @@ fn transfer_emits_chained_call_for_initialized_recipient() {
             amount_to_transfer: 25,
         },
     )
-    .with_pda_seeds(vec![compute_ata_seed(owner_id(), definition_id())]);
+    .with_pda_seeds(vec![compute_ata_seed(
+        TOKEN_PROGRAM_ID,
+        owner_id(),
+        definition_id(),
+    )]);
 
     assert_eq!(chained_calls, vec![expected_call]);
 }
@@ -221,6 +297,7 @@ fn transfer_panics_when_owner_not_authorized() {
         initialized_ata_account(),
         initialized_recipient_account(),
         ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
         1,
     );
 }
@@ -239,6 +316,23 @@ fn transfer_panics_when_recipient_is_default() {
         initialized_ata_account(),
         default_recipient,
         ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        1,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Sender ATA must be owned by expected token program")]
+fn transfer_panics_when_sender_ata_is_owned_by_unexpected_token_program() {
+    let mut sender = initialized_ata_account();
+    sender.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
+
+    crate::transfer::transfer_from_associated_token_account(
+        owner_account(),
+        sender,
+        initialized_recipient_account(),
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
         1,
     );
 }
@@ -254,6 +348,7 @@ fn transfer_panics_when_recipient_is_foreign_owned() {
         initialized_ata_account(),
         foreign_recipient,
         ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
         1,
     );
 }
@@ -269,6 +364,7 @@ fn transfer_panics_when_recipient_data_is_malformed() {
         initialized_ata_account(),
         malformed_recipient,
         ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
         1,
     );
 }
@@ -287,6 +383,85 @@ fn transfer_panics_when_recipient_definition_mismatches_sender() {
         initialized_ata_account(),
         mismatched_recipient,
         ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        1,
+    );
+}
+
+#[test]
+fn burn_emits_chained_call_for_initialized_ata() {
+    let (post_states, chained_calls) = crate::burn::burn_from_associated_token_account(
+        owner_account(),
+        initialized_ata_account(),
+        definition_account(),
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        25,
+    );
+
+    assert_eq!(post_states.len(), 3);
+    assert_eq!(chained_calls.len(), 1);
+
+    let mut holder_auth = initialized_ata_account();
+    holder_auth.is_authorized = true;
+    let expected_call = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![definition_account(), holder_auth],
+        &token_core::Instruction::Burn { amount_to_burn: 25 },
+    )
+    .with_pda_seeds(vec![compute_ata_seed(
+        TOKEN_PROGRAM_ID,
+        owner_id(),
+        definition_id(),
+    )]);
+
+    assert_eq!(chained_calls, vec![expected_call]);
+}
+
+#[test]
+#[should_panic(expected = "Holder ATA must be owned by expected token program")]
+fn burn_panics_when_holder_ata_is_owned_by_unexpected_token_program() {
+    let mut holder = initialized_ata_account();
+    holder.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
+
+    crate::burn::burn_from_associated_token_account(
+        owner_account(),
+        holder,
+        definition_account(),
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        1,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Token definition must be owned by expected token program")]
+fn burn_panics_when_definition_is_owned_by_unexpected_token_program() {
+    let mut definition = definition_account();
+    definition.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
+
+    crate::burn::burn_from_associated_token_account(
+        owner_account(),
+        initialized_ata_account(),
+        definition,
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        1,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Holder ATA token definition does not match")]
+fn burn_panics_when_holder_definition_mismatches_supplied_definition() {
+    let mut definition = definition_account();
+    definition.account_id = AccountId::new([0xBBu8; 32]);
+
+    crate::burn::burn_from_associated_token_account(
+        owner_account(),
+        initialized_ata_account(),
+        definition,
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
         1,
     );
 }
