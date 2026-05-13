@@ -259,10 +259,7 @@ fn ata_transfer() {
 fn ata_transfer_rejects_default_recipient() {
     let mut state = state_for_ata_tests();
 
-    let instruction = ata_core::Instruction::Transfer {
-        ata_program_id: Ids::ata_program(),
-        amount: 1_u128,
-    };
+    let instruction = ata_core::Instruction::Transfer { amount: 1_u128 };
 
     let message = public_transaction::Message::try_new(
         Ids::ata_program(),
@@ -306,10 +303,7 @@ fn ata_transfer_rejects_mismatched_definition_recipient() {
     };
     state.force_insert_account(Ids::recipient_ata(), mismatched_recipient.clone());
 
-    let instruction = ata_core::Instruction::Transfer {
-        ata_program_id: Ids::ata_program(),
-        amount: 1_u128,
-    };
+    let instruction = ata_core::Instruction::Transfer { amount: 1_u128 };
 
     let message = public_transaction::Message::try_new(
         Ids::ata_program(),
