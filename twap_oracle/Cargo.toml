@@ -1,0 +1,8 @@
+[package]
+name = "twap_oracle_program"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3", features = ["host"] }
+twap_oracle_core = { path = "core" }

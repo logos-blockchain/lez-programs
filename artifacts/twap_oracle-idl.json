@@ -1,0 +1,46 @@
+{
+  "version": "0.1.0",
+  "name": "twap_oracle",
+  "instructions": [
+    {
+      "name": "noop",
+      "accounts": [],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "OraclePriceAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "base_asset",
+            "type": "account_id"
+          },
+          {
+            "name": "quote_asset",
+            "type": "account_id"
+          },
+          {
+            "name": "price",
+            "type": "u128"
+          },
+          {
+            "name": "timestamp",
+            "type": "u64"
+          },
+          {
+            "name": "source_id",
+            "type": "string"
+          },
+          {
+            "name": "confidence_interval",
+            "type": "u128"
+          }
+        ]
+      }
+    }
+  ],
+  "instruction_type": "twap_oracle_core::Instruction"
+}

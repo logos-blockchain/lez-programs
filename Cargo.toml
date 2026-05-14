@@ -9,6 +9,9 @@ members = [
     "ata/core",
     "ata",
     "ata/methods",
+    "twap_oracle/core",
+    "twap_oracle",
+    "twap_oracle/methods",
     "stablecoin/core",
     "stablecoin",
     "stablecoin/methods",
@@ -20,6 +23,7 @@ exclude = [
     "amm/methods/guest",
     "ata/methods/guest",
     "stablecoin/methods/guest",
+    "twap_oracle/methods/guest"
 ]
 resolver = "2"
 
@@ -32,10 +36,12 @@ amm_core = { path = "amm/core" }
 amm_program = { path = "amm" }
 ata_core = { path = "ata/core" }
 ata_program = { path = "ata" }
+twap_oracle_core = { path = "twap_oracle/core" }
+twap_oracle_program = { path = "twap_oracle" }
 stablecoin_core = { path = "stablecoin/core" }
 stablecoin_program = { path = "stablecoin" }
 serde = { version = "1.0", features = ["derive"] }
-borsh = { version = "1.0", features = ["derive"] }
+borsh = { version = "1.5", features = ["derive"] }
 risc0-zkvm = { version = "=3.0.5" }
 serde_json = "1.0"
 tokio = { version = "1.28.2", features = ["net", "rt-multi-thread", "sync", "macros"] }

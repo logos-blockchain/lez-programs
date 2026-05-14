@@ -3045,6 +3045,7 @@ dependencies = [
  "risc0-zkvm",
  "serde",
  "spel-framework-macros",
+ "twap_oracle_core",
 ]
 
 [[package]]
@@ -3467,6 +3468,33 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "twap-oracle-methods"
+version = "0.1.0"
+dependencies = [
+ "risc0-build",
+ "risc0-zkvm",
+ "twap_oracle_core",
+]
+
+[[package]]
+name = "twap_oracle_core"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "nssa_core",
+ "serde",
+ "spel-framework-macros",
+]
+
+[[package]]
+name = "twap_oracle_program"
+version = "0.1.0"
+dependencies = [
+ "nssa_core",
+ "twap_oracle_core",
+]
 
 [[package]]
 name = "typenum"
@@ -4081,9 +4109,9 @@ dependencies = [
 
 [[package]]
 name = "zerofrom"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69faa1f2a1ea75661980b013019ed6687ed0e83d069bc1114e2cc74c6c04c4df"
+checksum = "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272"
 dependencies = [
  "zerofrom-derive",
 ]
