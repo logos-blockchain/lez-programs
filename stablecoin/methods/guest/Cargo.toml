@@ -10,7 +10,7 @@ name = "stablecoin"
 path = "src/bin/stablecoin.rs"
 
 [dependencies]
-spel-framework = { git = "https://github.com/logos-co/spel.git", rev = "6473ab4c400bc59bac8db83a286faaeafa7d1999", package = "spel-framework" }
+spel-framework = { git = "https://github.com/logos-co/spel.git", tag = "v0.3.0", package = "spel-framework" }
 nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3" }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
 stablecoin_core = { path = "../../core" }
