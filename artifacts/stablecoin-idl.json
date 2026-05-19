@@ -42,6 +42,41 @@
           "type": "u128"
         }
       ]
+    },
+    {
+      "name": "withdraw_collateral",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "position",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "destination",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
     }
   ],
   "accounts": [

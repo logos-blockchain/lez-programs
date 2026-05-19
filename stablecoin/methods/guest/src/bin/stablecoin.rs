@@ -41,4 +41,36 @@ mod stablecoin {
             chained_calls,
         ))
     }
+
+    /// Withdraw `amount` collateral tokens from an existing position back to a
+    /// user-controlled holding.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails (see
+    /// [`stablecoin_program::withdraw_collateral::withdraw_collateral`] for the
+    /// full list).
+    #[instruction]
+    pub fn withdraw_collateral(
+        ctx: ProgramContext,
+        owner: AccountWithMetadata,
+        position: AccountWithMetadata,
+        vault: AccountWithMetadata,
+        destination: AccountWithMetadata,
+        amount: u128,
+    ) -> SpelResult {
+        let (post_states, chained_calls) =
+            stablecoin_program::withdraw_collateral::withdraw_collateral(
+                owner,
+                position,
+                vault,
+                destination,
+                ctx.self_program_id,
+                amount,
+            );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
 }
