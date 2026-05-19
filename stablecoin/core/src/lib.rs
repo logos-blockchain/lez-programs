@@ -30,6 +30,26 @@ pub enum Instruction {
         /// Amount of collateral tokens to deposit into the position vault.
         collateral_amount: u128,
     },
+    /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
+    ///
+    /// Required accounts (4):
+    /// - Owner account (authorized)
+    /// - Position account (initialized, owned by `self_program_id`)
+    /// - Position vault token holding (address must match
+    ///   `compute_position_vault_pda(self_program_id, position_id)`)
+    /// - Destination user collateral holding (initialized, owned by the vault's Token Program,
+    ///   `TokenHolding.definition_id == Position.collateral_definition_id`)
+    ///
+    /// `token_program_id` is derived from `vault.account.program_owner`;
+    /// `collateral_definition_id` is read from the decoded [`Position`].
+    ///
+    /// **Note:** until issues #97/#96/#95 land, this instruction hard-asserts
+    /// `Position.debt_amount == 0` instead of accruing fees and checking the
+    /// collateralization ratio.
+    WithdrawCollateral {
+        /// Amount of collateral tokens to move from the vault back to `destination`.
+        amount: u128,
+    },
 }
 
 /// Persistent state held by a Stablecoin [`Position`] account.
