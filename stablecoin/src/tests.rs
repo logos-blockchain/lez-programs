@@ -30,6 +30,26 @@ fn user_holding_id() -> AccountId {
     AccountId::new([0x30u8; 32])
 }
 
+fn token_holding_account(
+    account_id: AccountId,
+    definition_id: AccountId,
+    balance: u128,
+) -> AccountWithMetadata {
+    AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id,
+                balance,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: false,
+        account_id,
+    }
+}
+
 fn position_id() -> AccountId {
     compute_position_pda(
         STABLECOIN_PROGRAM_ID,
@@ -68,19 +88,9 @@ fn collateral_definition_account() -> AccountWithMetadata {
 }
 
 fn user_holding_account(balance: u128) -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: collateral_definition_id(),
-                balance,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: true,
-        account_id: user_holding_id(),
-    }
+    let mut account = token_holding_account(user_holding_id(), collateral_definition_id(), balance);
+    account.is_authorized = true;
+    account
 }
 
 fn uninit_position_account() -> AccountWithMetadata {
@@ -122,35 +132,11 @@ fn init_position_account(collateral_amount: u128, debt_amount: u128) -> AccountW
 }
 
 fn init_vault_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: collateral_definition_id(),
-                balance: 0,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: false,
-        account_id: vault_id(),
-    }
+    token_holding_account(vault_id(), collateral_definition_id(), 0)
 }
 
 fn destination_holding_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: collateral_definition_id(),
-                balance: 0,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: false,
-        account_id: destination_holding_id(),
-    }
+    token_holding_account(destination_holding_id(), collateral_definition_id(), 0)
 }
 
 #[test]
@@ -497,6 +483,30 @@ fn withdraw_collateral_updates_position_and_emits_transfer() {
     )
     .with_pda_seeds(vec![compute_position_vault_pda_seed(position_id())]);
     assert_eq!(chained_calls[0], expected_transfer);
+}
+
+#[test]
+#[should_panic(expected = "Insufficient balance")]
+fn withdraw_collateral_transfer_pre_states_should_not_be_executable() {
+    let initial_collateral: u128 = 500;
+    let amount: u128 = 200;
+    let (_post_states, chained_calls) = crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        init_position_account(initial_collateral, 0),
+        init_vault_account(),
+        destination_holding_account(),
+        STABLECOIN_PROGRAM_ID,
+        amount,
+    );
+
+    let transfer_call = chained_calls
+        .into_iter()
+        .next()
+        .expect("withdraw emits transfer");
+    let [sender, recipient] =
+        <[_; 2]>::try_from(transfer_call.pre_states).expect("token transfer accounts");
+
+    token_program::transfer::transfer(sender, recipient, amount);
 }
 
 #[test]

@@ -3055,6 +3055,7 @@ dependencies = [
  "nssa_core",
  "stablecoin_core",
  "token_core",
+ "token_program",
 ]
 
 [[package]]
