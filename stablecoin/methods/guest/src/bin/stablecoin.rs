@@ -1,9 +1,10 @@
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 
 use nssa_core::account::AccountWithMetadata;
 use spel_framework::context::ProgramContext;
 use spel_framework::prelude::*;
 
+#[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
 
 #[lez_program(instruction = "stablecoin_core::Instruction")]
