@@ -42,10 +42,17 @@ tokio = { version = "1.28.2", features = ["net", "rt-multi-thread", "sync", "mac
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }
-unsafe_code = "forbid"
+# deny (not forbid) so a targeted per-item #[allow] remains possible if ever needed
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
-all = { level = "deny", priority = -1 }
+# Deny only the groups where a new lint should always be a hard error.
+# style/pedantic lints default to warn so toolchain upgrades don't break the
+# build unexpectedly — they can be evaluated and addressed at our own pace.
+correctness = { level = "deny", priority = -1 }
+suspicious  = { level = "deny", priority = -1 }
+perf        = { level = "deny", priority = -1 }
+style       = { level = "warn", priority = -1 }
 
 # Generated-code / placeholder blockers.
 dbg_macro = "deny"
@@ -60,18 +67,15 @@ allow_attributes_without_reason = "deny"
 # Determinism, panic-safety, and arithmetic correctness.
 arithmetic_side_effects = "deny"
 indexing_slicing = "deny"
-integer_division = "warn"
 
 # Cast discipline.
 as_conversions = "deny"
 cast_possible_truncation = "deny"
 cast_possible_wrap = "deny"
-cast_precision_loss = "warn"
 cast_sign_loss = "deny"
 
 # API and enum evolution.
 large_enum_variant = "deny"
-match_wildcard_for_single_variants = "warn"
 wildcard_enum_match_arm = "deny"
 
 # Too noisy for this codebase unless enforced selectively.

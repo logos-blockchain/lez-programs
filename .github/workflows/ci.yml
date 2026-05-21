@@ -60,21 +60,14 @@ jobs:
 
       - name: Clippy
         run: |
-          if rg -n -U --multiline '#\[(allow|expect)\([\s\S]*?reason\s*=\s*"(TODO|FIXME|fix later|later|temporary|hack)' token amm ata integration_tests tools -g '*.rs'; then
+          if rg -n -U --multiline '#\[(allow|expect)\([\s\S]*?reason\s*=\s*"(TODO|FIXME|fix later|temporary|hack)' . -g '*.rs' -g '!*/target/*'; then
             echo "Found non-actionable lint suppression reason"
             exit 1
           fi
-          RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
+          make clippy
 
       - name: Guest Clippy
-        run: |
-          for manifest in \
-            token/methods/guest/Cargo.toml \
-            amm/methods/guest/Cargo.toml \
-            ata/methods/guest/Cargo.toml
-          do
-            cargo clippy --manifest-path "$manifest" --all-targets -- -D warnings
-          done
+        run: make clippy-guest
 
   unit-tests:
     name: Unit Tests

@@ -103,4 +103,4 @@ Each program follows a layered pattern:
 
 **Chained calls**: The AMM's swap and liquidity operations compose with the token program via `ChainedCall` — the AMM instructs the token program to execute transfers as part of the same atomic operation.
 
-**Testing**: Tests call program functions directly (no zkVM overhead). Set `RISC0_DEV_MODE=1` to skip ZK proof generation when running integration tests that go through the zkVM. The Rust toolchain pinned version is **1.91.1**.
+**Testing**: Tests call program functions directly (no zkVM overhead). Set `RISC0_DEV_MODE=1` to skip ZK proof generation when running integration tests that go through the zkVM. The Rust toolchain pinned version is **1.94.0**.
