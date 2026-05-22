@@ -77,6 +77,41 @@
           "type": "u128"
         }
       ]
+    },
+    {
+      "name": "repay_debt",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "position",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_stablecoin_holding",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
     }
   ],
   "accounts": [

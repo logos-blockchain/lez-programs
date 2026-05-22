@@ -139,6 +139,41 @@ fn destination_holding_account() -> AccountWithMetadata {
     token_holding_account(destination_holding_id(), collateral_definition_id(), 0)
 }
 
+fn stablecoin_definition_id() -> AccountId {
+    AccountId::new([0x50u8; 32])
+}
+
+fn user_stablecoin_holding_id() -> AccountId {
+    AccountId::new([0x60u8; 32])
+}
+
+fn stablecoin_definition_account() -> AccountWithMetadata {
+    AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: "DAI".to_owned(),
+                total_supply: 1_000_000,
+                metadata_id: None,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: false,
+        account_id: stablecoin_definition_id(),
+    }
+}
+
+fn user_stablecoin_holding_account(balance: u128) -> AccountWithMetadata {
+    let mut account = token_holding_account(
+        user_stablecoin_holding_id(),
+        stablecoin_definition_id(),
+        balance,
+    );
+    account.is_authorized = true;
+    account
+}
+
 #[test]
 fn open_position_claims_pda_and_emits_chained_calls() {
     let collateral_amount: u128 = 500;
@@ -694,6 +729,244 @@ fn withdraw_collateral_rejects_overdraw() {
         init_position_account(100, 0),
         init_vault_account(),
         destination_holding_account(),
+        STABLECOIN_PROGRAM_ID,
+        200,
+    );
+}
+
+#[test]
+fn repay_debt_decreases_debt_and_emits_burn() {
+    let initial_collateral: u128 = 500;
+    let initial_debt: u128 = 300;
+    let amount: u128 = 100;
+    let holding_balance: u128 = 1_000;
+
+    let (post_states, chained_calls) = crate::repay_debt::repay_debt(
+        owner_account(),
+        init_position_account(initial_collateral, initial_debt),
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(holding_balance),
+        STABLECOIN_PROGRAM_ID,
+        amount,
+    );
+
+    assert_eq!(post_states.len(), 4);
+
+    // Position post-state: plain `new`, holds the decremented Position.
+    let position_post = &post_states[1];
+    assert_eq!(position_post.required_claim(), None);
+    let position = Position::try_from(&position_post.account().data).expect("valid Position");
+    assert_eq!(
+        position,
+        Position {
+            collateral_vault_id: vault_id(),
+            collateral_definition_id: collateral_definition_id(),
+            collateral_amount: initial_collateral,
+            debt_amount: initial_debt - amount,
+        }
+    );
+    assert_eq!(position_post.account().program_owner, STABLECOIN_PROGRAM_ID);
+
+    // Stablecoin definition and user holding post-states are pre-burn.
+    assert_eq!(
+        post_states[2].account(),
+        &stablecoin_definition_account().account
+    );
+    assert_eq!(
+        post_states[3].account(),
+        &user_stablecoin_holding_account(holding_balance).account
+    );
+
+    // Single chained Token::Burn, no PDA seeds (user-authorized burn source).
+    assert_eq!(chained_calls.len(), 1);
+    let expected_burn = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![
+            stablecoin_definition_account(),
+            user_stablecoin_holding_account(holding_balance),
+        ],
+        &token_core::Instruction::Burn {
+            amount_to_burn: amount,
+        },
+    );
+    assert_eq!(chained_calls[0], expected_burn);
+}
+
+#[test]
+fn repay_debt_allows_full_repayment() {
+    let debt: u128 = 300;
+    let (post_states, _chained_calls) = crate::repay_debt::repay_debt(
+        owner_account(),
+        init_position_account(500, debt),
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        debt,
+    );
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.debt_amount, 0);
+    assert_eq!(position.collateral_amount, 500);
+}
+
+#[test]
+fn repay_debt_allows_zero_amount() {
+    let initial_debt: u128 = 300;
+    let (post_states, chained_calls) = crate::repay_debt::repay_debt(
+        owner_account(),
+        init_position_account(500, initial_debt),
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        0,
+    );
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.debt_amount, initial_debt);
+
+    let expected_burn = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![
+            stablecoin_definition_account(),
+            user_stablecoin_holding_account(1_000),
+        ],
+        &token_core::Instruction::Burn { amount_to_burn: 0 },
+    );
+    assert_eq!(chained_calls, vec![expected_burn]);
+}
+
+#[test]
+#[should_panic(expected = "Owner authorization is missing")]
+fn repay_debt_requires_owner_authorization() {
+    let mut owner = owner_account();
+    owner.is_authorized = false;
+    crate::repay_debt::repay_debt(
+        owner,
+        init_position_account(500, 300),
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position account must be initialized")]
+fn repay_debt_rejects_uninitialized_position() {
+    crate::repay_debt::repay_debt(
+        owner_account(),
+        uninit_position_account(),
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position is not owned by this stablecoin program")]
+fn repay_debt_rejects_position_owned_by_other_program() {
+    let mut position = init_position_account(500, 300);
+    position.account.program_owner = [9u32; 8];
+    crate::repay_debt::repay_debt(
+        owner_account(),
+        position,
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position account ID does not match expected derivation")]
+fn repay_debt_rejects_wrong_position_address() {
+    let mut position = init_position_account(500, 300);
+    position.account_id = AccountId::new([0xFFu8; 32]);
+    crate::repay_debt::repay_debt(
+        owner_account(),
+        position,
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "User stablecoin holding authorization is missing")]
+fn repay_debt_requires_user_holding_authorization() {
+    let mut holding = user_stablecoin_holding_account(1_000);
+    holding.is_authorized = false;
+    crate::repay_debt::repay_debt(
+        owner_account(),
+        init_position_account(500, 300),
+        stablecoin_definition_account(),
+        holding,
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "User stablecoin holding must be initialized")]
+fn repay_debt_rejects_uninitialized_user_holding() {
+    let holding = AccountWithMetadata {
+        account: Account::default(),
+        is_authorized: true,
+        account_id: user_stablecoin_holding_id(),
+    };
+    crate::repay_debt::repay_debt(
+        owner_account(),
+        init_position_account(500, 300),
+        stablecoin_definition_account(),
+        holding,
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "Stablecoin holding and definition must be owned by the same Token Program"
+)]
+fn repay_debt_rejects_holding_with_different_token_program() {
+    let mut holding = user_stablecoin_holding_account(1_000);
+    holding.account.program_owner = [9u32; 8];
+    crate::repay_debt::repay_debt(
+        owner_account(),
+        init_position_account(500, 300),
+        stablecoin_definition_account(),
+        holding,
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Stablecoin holding does not match the provided stablecoin definition")]
+fn repay_debt_rejects_holding_for_other_definition() {
+    let mut holding = user_stablecoin_holding_account(1_000);
+    holding.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: AccountId::new([0x21u8; 32]),
+        balance: 1_000,
+    });
+    crate::repay_debt::repay_debt(
+        owner_account(),
+        init_position_account(500, 300),
+        stablecoin_definition_account(),
+        holding,
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Repay amount exceeds outstanding debt")]
+fn repay_debt_rejects_overrepay() {
+    crate::repay_debt::repay_debt(
+        owner_account(),
+        init_position_account(500, 100),
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(1_000),
         STABLECOIN_PROGRAM_ID,
         200,
     );

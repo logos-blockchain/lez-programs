@@ -19,6 +19,10 @@ impl Keys {
     fn user_holding() -> PrivateKey {
         PrivateKey::try_new([42; 32]).expect("valid private key")
     }
+
+    fn user_stablecoin_holding() -> PrivateKey {
+        PrivateKey::try_new([43; 32]).expect("valid private key")
+    }
 }
 
 impl Ids {
@@ -40,6 +44,16 @@ impl Ids {
 
     fn user_holding() -> AccountId {
         AccountId::from(&PublicKey::new_from_private_key(&Keys::user_holding()))
+    }
+
+    fn stablecoin_definition() -> AccountId {
+        AccountId::new([6; 32])
+    }
+
+    fn user_stablecoin_holding() -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(
+            &Keys::user_stablecoin_holding(),
+        ))
     }
 
     fn position() -> AccountId {
@@ -67,6 +81,22 @@ impl Balances {
     fn collateral_withdraw() -> u128 {
         200_000
     }
+
+    fn stablecoin_supply_init() -> u128 {
+        1_000
+    }
+
+    fn user_stablecoin_holding_init() -> u128 {
+        1_000
+    }
+
+    fn initial_debt() -> u128 {
+        300
+    }
+
+    fn debt_repay_amount() -> u128 {
+        100
+    }
 }
 
 impl Accounts {
@@ -90,6 +120,45 @@ impl Accounts {
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: Ids::collateral_definition(),
                 balance: Balances::user_holding_init(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn stablecoin_definition_init() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("DAI"),
+                total_supply: Balances::stablecoin_supply_init(),
+                metadata_id: None,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn user_stablecoin_holding_init() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::stablecoin_definition(),
+                balance: Balances::user_stablecoin_holding_init(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn position_with_debt_init() -> Account {
+        Account {
+            program_owner: stablecoin_methods::STABLECOIN_ID,
+            balance: 0_u128,
+            data: Data::from(&Position {
+                collateral_vault_id: Ids::vault(),
+                collateral_definition_id: Ids::collateral_definition(),
+                collateral_amount: Balances::collateral_deposit(),
+                debt_amount: Balances::initial_debt(),
             }),
             nonce: Nonce(0),
         }
@@ -129,13 +198,35 @@ fn current_nonce(state: &V03State, account_id: AccountId) -> Nonce {
     state.get_account_by_id(account_id).nonce
 }
 
+fn state_for_stablecoin_repay_tests() -> V03State {
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    deploy_programs(&mut state);
+    state.force_insert_account(
+        Ids::collateral_definition(),
+        Accounts::collateral_definition_init(),
+    );
+    state.force_insert_account(
+        Ids::stablecoin_definition(),
+        Accounts::stablecoin_definition_init(),
+    );
+    state.force_insert_account(Ids::position(), Accounts::position_with_debt_init());
+    state.force_insert_account(
+        Ids::user_stablecoin_holding(),
+        Accounts::user_stablecoin_holding_init(),
+    );
+    state
+}
+
 fn assert_position(state: &V03State, expected_collateral: u128) {
-    let position = Position::try_from(&state.get_account_by_id(Ids::position()).data)
-        .expect("valid Position");
+    let position =
+        Position::try_from(&state.get_account_by_id(Ids::position()).data).expect("valid Position");
     assert_eq!(position.collateral_amount, expected_collateral);
     assert_eq!(position.debt_amount, 0);
     assert_eq!(position.collateral_vault_id, Ids::vault());
-    assert_eq!(position.collateral_definition_id, Ids::collateral_definition());
+    assert_eq!(
+        position.collateral_definition_id,
+        Ids::collateral_definition()
+    );
 }
 
 fn assert_fungible_balance(state: &V03State, account_id: AccountId, expected_balance: u128) {
@@ -212,8 +303,7 @@ fn stablecoin_open_position_then_withdraw_collateral() {
         withdraw,
     )
     .unwrap();
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::owner()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner()]);
     let tx = PublicTransaction::new(message, witness_set);
     state
         .transition_from_public_transaction(&tx, 0, 0)
@@ -234,4 +324,75 @@ fn stablecoin_open_position_then_withdraw_collateral() {
         Balances::user_holding_init() - Balances::collateral_deposit()
             + Balances::collateral_withdraw(),
     );
+}
+
+#[test]
+fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
+    let mut state = state_for_stablecoin_repay_tests();
+
+    let repay = stablecoin_core::Instruction::RepayDebt {
+        amount: Balances::debt_repay_amount(),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::stablecoin_program(),
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::stablecoin_definition(),
+            Ids::user_stablecoin_holding(),
+        ],
+        vec![
+            current_nonce(&state, Ids::owner()),
+            current_nonce(&state, Ids::user_stablecoin_holding()),
+        ],
+        repay,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::owner(), &Keys::user_stablecoin_holding()],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .expect("repay_debt must succeed");
+
+    // Position debt decreased; collateral untouched.
+    let position =
+        Position::try_from(&state.get_account_by_id(Ids::position()).data).expect("valid Position");
+    assert_eq!(
+        position.debt_amount,
+        Balances::initial_debt() - Balances::debt_repay_amount()
+    );
+    assert_eq!(position.collateral_amount, Balances::collateral_deposit());
+
+    // Stablecoin total supply decreased by the burn amount.
+    let definition =
+        TokenDefinition::try_from(&state.get_account_by_id(Ids::stablecoin_definition()).data)
+            .expect("valid TokenDefinition");
+    match definition {
+        TokenDefinition::Fungible { total_supply, .. } => {
+            assert_eq!(
+                total_supply,
+                Balances::stablecoin_supply_init() - Balances::debt_repay_amount()
+            );
+        }
+        TokenDefinition::NonFungible { .. } => panic!("expected Fungible definition"),
+    }
+
+    // User stablecoin holding decreased by the burn amount.
+    let holding =
+        TokenHolding::try_from(&state.get_account_by_id(Ids::user_stablecoin_holding()).data)
+            .expect("valid TokenHolding");
+    match holding {
+        TokenHolding::Fungible { balance, .. } => {
+            assert_eq!(
+                balance,
+                Balances::user_stablecoin_holding_init() - Balances::debt_repay_amount()
+            );
+        }
+        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
+            panic!("expected Fungible holding")
+        }
+    }
 }

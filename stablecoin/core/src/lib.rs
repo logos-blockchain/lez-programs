@@ -50,6 +50,32 @@ pub enum Instruction {
         /// Amount of collateral tokens to move from the vault back to `destination`.
         amount: u128,
     },
+    /// Repay `amount` of outstanding stablecoin debt against an existing position.
+    ///
+    /// Required accounts (4):
+    /// - Owner account (authorized; binds caller-as-owner via position PDA re-derivation)
+    /// - Position account (initialized, owned by `self_program_id`)
+    /// - Stablecoin token definition account (the definition of the stablecoin being repaid)
+    /// - User's stablecoin holding (authorized, initialized, owned by the same Token Program as
+    ///   the definition, with `TokenHolding.definition_id == stablecoin_definition.account_id`)
+    ///
+    /// `token_program_id` is derived from `user_stablecoin_holding.account.program_owner`.
+    /// `collateral_definition_id` (for position PDA verification) is read from the
+    /// decoded [`Position`].
+    ///
+    /// **Note:** until issue #97 (stability fee accrual) lands, this instruction does
+    /// not accrue fees before reducing debt. A `// TODO(#97)` comment in the host
+    /// function marks where the accrual code will plug in. Today every position has
+    /// `debt_amount = 0` (no `generate_debt` yet), so the precondition is vacuously met.
+    ///
+    /// **Note:** until issue #91 (`generate_debt`) records the stablecoin definition
+    /// into `Position`, this instruction cannot validate that the passed
+    /// `stablecoin_token_definition` is the one this position's debt is denominated
+    /// in. The caller is trusted for that until then.
+    RepayDebt {
+        /// Amount of stablecoin debt to repay (also the amount burned from the user's holding).
+        amount: u128,
+    },
 }
 
 /// Persistent state held by a Stablecoin [`Position`] account.

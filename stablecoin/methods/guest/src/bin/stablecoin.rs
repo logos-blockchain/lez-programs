@@ -73,4 +73,33 @@ mod stablecoin {
             chained_calls,
         ))
     }
+
+    /// Repay `amount` of outstanding stablecoin debt against an existing position.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails (see [`stablecoin_program::repay_debt::repay_debt`] for the
+    /// full list).
+    #[instruction]
+    pub fn repay_debt(
+        ctx: ProgramContext,
+        owner: AccountWithMetadata,
+        position: AccountWithMetadata,
+        stablecoin_definition: AccountWithMetadata,
+        user_stablecoin_holding: AccountWithMetadata,
+        amount: u128,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::repay_debt::repay_debt(
+            owner,
+            position,
+            stablecoin_definition,
+            user_stablecoin_holding,
+            ctx.self_program_id,
+            amount,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
 }
