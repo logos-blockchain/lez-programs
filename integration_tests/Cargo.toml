@@ -12,6 +12,8 @@ nssa_core = { workspace = true, features = ["host"] }
 amm_core = { workspace = true }
 token_core = { workspace = true }
 ata_core = { workspace = true }
+stablecoin_core = { workspace = true }
 token-methods = { path = "../token/methods" }
 amm-methods = { path = "../amm/methods" }
 ata-methods = { path = "../ata/methods" }
+stablecoin-methods = { path = "../stablecoin/methods" }

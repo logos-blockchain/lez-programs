@@ -1606,6 +1606,8 @@ dependencies = [
  "ata_core",
  "nssa",
  "nssa_core",
+ "stablecoin-methods",
+ "stablecoin_core",
  "token-methods",
  "token_core",
 ]
@@ -3055,7 +3057,6 @@ dependencies = [
  "nssa_core",
  "stablecoin_core",
  "token_core",
- "token_program",
 ]
 
 [[package]]

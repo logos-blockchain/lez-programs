@@ -487,30 +487,6 @@ fn withdraw_collateral_updates_position_and_emits_transfer() {
 }
 
 #[test]
-#[should_panic(expected = "Insufficient balance")]
-fn withdraw_collateral_transfer_pre_states_should_not_be_executable() {
-    let initial_collateral: u128 = 500;
-    let amount: u128 = 200;
-    let (_post_states, chained_calls) = crate::withdraw_collateral::withdraw_collateral(
-        owner_account(),
-        init_position_account(initial_collateral, 0),
-        init_vault_account(),
-        destination_holding_account(),
-        STABLECOIN_PROGRAM_ID,
-        amount,
-    );
-
-    let transfer_call = chained_calls
-        .into_iter()
-        .next()
-        .expect("withdraw emits transfer");
-    let [sender, recipient] =
-        <[_; 2]>::try_from(transfer_call.pre_states).expect("token transfer accounts");
-
-    token_program::transfer::transfer(sender, recipient, amount);
-}
-
-#[test]
 fn withdraw_collateral_allows_full_drain() {
     let amount: u128 = 500;
     let (post_states, _chained_calls) = crate::withdraw_collateral::withdraw_collateral(
