@@ -173,7 +173,8 @@ fn open_position_claims_pda_and_emits_chained_calls() {
             debt_amount: 0,
         }
     );
-    assert_eq!(position_post.account().program_owner, STABLECOIN_PROGRAM_ID);
+    // The runtime sets the program_owner on the claimed account after validating Claim::Pda.
+    assert_eq!(position_post.account().program_owner, ProgramId::default());
 
     assert_eq!(chained_calls.len(), 2);
 

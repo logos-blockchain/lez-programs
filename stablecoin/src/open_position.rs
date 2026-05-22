@@ -71,7 +71,6 @@ pub fn open_position(
         verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
 
     let mut position_post = position.account;
-    position_post.program_owner = stablecoin_program_id;
     position_post.data = Data::from(&Position {
         collateral_vault_id: vault.account_id,
         collateral_definition_id: token_definition.account_id,
