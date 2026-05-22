@@ -60,7 +60,7 @@ jobs:
 
       - name: Clippy
         run: |
-          if rg -n -U --multiline '#\[(allow|expect)\([\s\S]*?reason\s*=\s*"(TODO|FIXME|fix later|temporary|hack)' . -g '*.rs' -g '!*/target/*'; then
+          if rg -n -P -U --multiline '#\[(allow|expect)\([\s\S]*?reason\s*=\s*"(TODO|FIXME|fix later|temporary|hack)' . -g '*.rs' -g '!*/target/*'; then
             echo "Found non-actionable lint suppression reason"
             exit 1
           fi
