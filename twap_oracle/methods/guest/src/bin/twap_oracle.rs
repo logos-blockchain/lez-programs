@@ -1,7 +1,8 @@
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 
 use spel_framework::prelude::*;
 
+#[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
 
 #[lez_program(instruction = "twap_oracle_core::Instruction")]
