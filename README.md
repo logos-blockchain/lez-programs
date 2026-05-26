@@ -16,11 +16,33 @@ Essential programs for the **Logos Execution Zone (LEZ)** — a zkVM-based execu
 
 | App | Description |
 |---|---|
-| **amm-ui** | QML-based UI for interacting with the AMM program |
+| **amm** | QML-based UI for interacting with the AMM program |
+
+## Running Apps
+
+Apps live under `apps/` and are standalone UI applications. Each app has its own `README.md` with full details.
+
+Apps use [Nix](https://nixos.org/) flakes. Enable flakes if you haven't already:
+
+```bash
+mkdir -p ~/.config/nix && echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
+```
+
+### Example (`apps/amm`)
+
+```bash
+cd apps/amm
+
+# Run the app
+nix run .
+
+# Update pinned dependencies
+nix flake update
+```
 
 ## Prerequisites
 
-- **Rust** — install via [rustup](https://rustup.rs/). The pinned toolchain version is `1.91.1` (set in `rust-toolchain.toml`).
+- **Rust** — install via [rustup](https://rustup.rs/). The pinned toolchain version is set in `rust-toolchain.toml`.
 - **RISC Zero toolchain** — required to build guest ZK binaries:
 
   ```bash
@@ -34,10 +56,10 @@ Essential programs for the **Logos Execution Zone (LEZ)** — a zkVM-based execu
 
 ```bash
 # Lint the entire workspace (skips expensive guest ZK builds)
-RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
+make clippy
 
 # Format check
-cargo fmt --all
+make fmt
 
 # Run unit tests for all programs (no zkVM, no ZK proof generation)
 RISC0_DEV_MODE=1 cargo test -p token_program -p amm_program -p ata_program -p stablecoin_program -p twap_oracle_program
@@ -46,7 +68,7 @@ RISC0_DEV_MODE=1 cargo test -p token_program -p amm_program -p ata_program -p st
 RISC0_DEV_MODE=1 cargo test -p integration_tests
 
 # Run all tests
-RISC0_DEV_MODE=1 cargo test --workspace
+make test
 ```
 
 Integration tests live in `programs/integration_tests/tests/` and cover `token`, `amm`, and `ata` programs end-to-end through the zkVM using `RISC0_DEV_MODE=1` to skip proof generation. Each test file corresponds to a program:
@@ -100,11 +122,7 @@ The IDL describes the program's instructions and can be used to interact with a 
 **Using the `idl-gen` crate** (no external toolchain required — this is what CI uses):
 
 ```bash
-cargo run -p idl-gen -- programs/token/methods/guest/src/bin/token.rs > artifacts/token-idl.json
-cargo run -p idl-gen -- programs/amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.json
-cargo run -p idl-gen -- programs/ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
-cargo run -p idl-gen -- programs/stablecoin/methods/guest/src/bin/stablecoin.rs > artifacts/stablecoin-idl.json
-cargo run -p idl-gen -- programs/twap_oracle/methods/guest/src/bin/twap_oracle.rs > artifacts/twap_oracle-idl.json
+make idl
 ```
 
 **Using the `spel` CLI** (requires the SPEL toolchain):

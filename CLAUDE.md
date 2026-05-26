@@ -6,29 +6,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repo contains essential programs for the **Logos Execution Zone (LEZ)** — a zkVM-based execution environment built on [RISC Zero](https://risczero.com/). Programs run inside the RISC Zero zkVM (`riscv32im-risc0-zkvm-elf` target) and interact with the LEZ runtime via the `nssa_core` library from `logos-execution-zone`.
 
-Two programs are implemented:
+Five programs are implemented:
 - **token** — Fungible and non-fungible token program (create, mint, burn, transfer, print NFTs)
 - **amm** — Automated market maker (constant product AMM with add/remove liquidity and swaps)
+- **ata** — Associated Token Account program (derives and initializes deterministic token accounts for a given owner and token definition)
+- **stablecoin** — Collateral-backed position program (open positions, repay debt, withdraw collateral)
+- **twap_oracle** — TWAP oracle (provides canonical on-chain price accounts consumed by other programs)
 
 ## Build Commands
 
 ```bash
 # Check all workspace crates (skips expensive guest ZK builds)
-RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
+make clippy
 
 # Run all tests (dev mode skips ZK proof generation)
-RISC0_DEV_MODE=1 cargo test --workspace
+make test
 
 # Run tests for a single package
 RISC0_DEV_MODE=1 cargo test -p token_program
 RISC0_DEV_MODE=1 cargo test -p amm_program
+RISC0_DEV_MODE=1 cargo test -p ata_program
+RISC0_DEV_MODE=1 cargo test -p stablecoin_program
+RISC0_DEV_MODE=1 cargo test -p twap_oracle_program
 
 # Format
-cargo fmt --all
+make fmt
 
 # Build the guest ZK binary (requires risc0 toolchain)
-cargo risczero build --manifest-path programs/token/methods/guest/Cargo.toml
-cargo risczero build --manifest-path programs/amm/methods/guest/Cargo.toml
+cargo risczero build --manifest-path programs/<program>/methods/guest/Cargo.toml
 ```
 
 Built binaries output to: `<program>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<program>.bin`
@@ -84,6 +89,25 @@ programs/
     src/                # Program logic: add, remove, swap, new_definition
     methods/            # Host-side zkVM method embedding
     methods/guest/      # Guest binary (separate workspace)
+  ata/
+    core/src/lib.rs     # Data types & Instruction enum
+    src/                # Program logic: create, burn, transfer
+    methods/            # Host-side zkVM method embedding
+    methods/guest/      # Guest binary (separate workspace)
+  stablecoin/
+    core/src/lib.rs     # Data types & Instruction enum
+    src/                # Program logic: open_position, repay_debt, withdraw_collateral
+    methods/            # Host-side zkVM method embedding
+    methods/guest/      # Guest binary (separate workspace)
+  twap_oracle/
+    core/src/lib.rs     # Data types & Instruction enum
+    src/                # Program logic: noop (price account initialization)
+    methods/            # Host-side zkVM method embedding
+    methods/guest/      # Guest binary (separate workspace)
+  integration_tests/
+    tests/              # End-to-end tests through the zkVM (token, amm, ata)
+apps/
+  amm/                  # QML-based UI for the AMM program (Nix flake)
 ```
 
 ## Architecture
@@ -106,4 +130,4 @@ Each program follows a layered pattern:
 
 **Chained calls**: The AMM's swap and liquidity operations compose with the token program via `ChainedCall` — the AMM instructs the token program to execute transfers as part of the same atomic operation.
 
-**Testing**: Tests call program functions directly (no zkVM overhead). Set `RISC0_DEV_MODE=1` to skip ZK proof generation when running integration tests that go through the zkVM. The Rust toolchain pinned version is **1.94.0**.
+**Testing**: Tests call program functions directly (no zkVM overhead). Set `RISC0_DEV_MODE=1` to skip ZK proof generation when running integration tests that go through the zkVM. The Rust toolchain version is pinned in `rust-toolchain.toml`.
