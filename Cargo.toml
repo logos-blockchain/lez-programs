@@ -1,45 +1,45 @@
 [workspace]
 members = [
-    "token/core",
-    "token",
-    "token/methods",
-    "amm/core",
-    "amm",
-    "amm/methods",
-    "ata/core",
-    "ata",
-    "ata/methods",
-    "twap_oracle/core",
-    "twap_oracle",
-    "twap_oracle/methods",
-    "stablecoin/core",
-    "stablecoin",
-    "stablecoin/methods",
-    "integration_tests",
+    "programs/token/core",
+    "programs/token",
+    "programs/token/methods",
+    "programs/amm/core",
+    "programs/amm",
+    "programs/amm/methods",
+    "programs/ata/core",
+    "programs/ata",
+    "programs/ata/methods",
+    "programs/twap_oracle/core",
+    "programs/twap_oracle",
+    "programs/twap_oracle/methods",
+    "programs/stablecoin/core",
+    "programs/stablecoin",
+    "programs/stablecoin/methods",
+    "programs/integration_tests",
     "tools/idl-gen",
 ]
 exclude = [
-    "token/methods/guest",
-    "amm/methods/guest",
-    "ata/methods/guest",
-    "stablecoin/methods/guest",
-    "twap_oracle/methods/guest"
+    "programs/token/methods/guest",
+    "programs/amm/methods/guest",
+    "programs/ata/methods/guest",
+    "programs/stablecoin/methods/guest",
+    "programs/twap_oracle/methods/guest"
 ]
 resolver = "2"
 
 [workspace.dependencies]
 nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3", features = ["host"] }
 nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3", features = ["test-utils"] }
-token_core = { path = "token/core" }
-token_program = { path = "token" }
-amm_core = { path = "amm/core" }
-amm_program = { path = "amm" }
-ata_core = { path = "ata/core" }
-ata_program = { path = "ata" }
-twap_oracle_core = { path = "twap_oracle/core" }
-twap_oracle_program = { path = "twap_oracle" }
-stablecoin_core = { path = "stablecoin/core" }
-stablecoin_program = { path = "stablecoin" }
+token_core = { path = "programs/token/core" }
+token_program = { path = "programs/token" }
+amm_core = { path = "programs/amm/core" }
+amm_program = { path = "programs/amm" }
+ata_core = { path = "programs/ata/core" }
+ata_program = { path = "programs/ata" }
+twap_oracle_core = { path = "programs/twap_oracle/core" }
+twap_oracle_program = { path = "programs/twap_oracle" }
+stablecoin_core = { path = "programs/stablecoin/core" }
+stablecoin_program = { path = "programs/stablecoin" }
 serde = { version = "1.0", features = ["derive"] }
 borsh = { version = "1.5", features = ["derive"] }
 risc0-zkvm = { version = "=3.0.5" }

@@ -27,8 +27,8 @@ RISC0_DEV_MODE=1 cargo test -p amm_program
 cargo fmt --all
 
 # Build the guest ZK binary (requires risc0 toolchain)
-cargo risczero build --manifest-path token/methods/guest/Cargo.toml
-cargo risczero build --manifest-path amm/methods/guest/Cargo.toml
+cargo risczero build --manifest-path programs/token/methods/guest/Cargo.toml
+cargo risczero build --manifest-path programs/amm/methods/guest/Cargo.toml
 ```
 
 Built binaries output to: `<program>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<program>.bin`
@@ -38,17 +38,19 @@ Built binaries output to: `<program>/methods/guest/target/riscv32im-risc0-zkvm-e
 Using the `idl-gen` crate (no external toolchain required — this is what CI uses):
 
 ```bash
-cargo run -p idl-gen -- token/methods/guest/src/bin/token.rs > artifacts/token-idl.json
-cargo run -p idl-gen -- amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.json
-cargo run -p idl-gen -- ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
+make idl
+```
+
+Or individually per program:
+
+```bash
+cargo run -p idl-gen -- programs/<program>/methods/guest/src/bin/<program>.rs > artifacts/<program>-idl.json
 ```
 
 Alternatively, using the `spel` CLI (requires the SPEL toolchain):
 
 ```bash
-spel generate-idl token/methods/guest/src/bin/token.rs > artifacts/token-idl.json
-spel generate-idl amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.json
-spel generate-idl ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
+spel generate-idl programs/<program>/methods/guest/src/bin/<program>.rs > artifacts/<program>-idl.json
 ```
 
 Generated IDL files live in `artifacts/`. CI checks that every program under `*/methods/guest/src/bin/` has a corresponding `artifacts/<program>-idl.json` that matches the source.
@@ -71,16 +73,17 @@ spel inspect <path-to-binary>
 
 ```
 Cargo.toml              # Workspace root (excludes guest crates)
-token/
-  core/src/lib.rs       # Data types & Instruction enum (shared with guest)
-  src/                  # Program logic: burn, mint, transfer, initialize, new_definition, print_nft
-  methods/              # Host-side zkVM method embedding (build.rs uses risc0_build::embed_methods)
-  methods/guest/        # Guest binary (separate workspace, riscv32im target)
-amm/
-  core/src/lib.rs       # Data types, Instruction enum, PDA computation helpers
-  src/                  # Program logic: add, remove, swap, new_definition
-  methods/              # Host-side zkVM method embedding
-  methods/guest/        # Guest binary (separate workspace)
+programs/
+  token/
+    core/src/lib.rs     # Data types & Instruction enum (shared with guest)
+    src/                # Program logic: burn, mint, transfer, initialize, new_definition, print_nft
+    methods/            # Host-side zkVM method embedding (build.rs uses risc0_build::embed_methods)
+    methods/guest/      # Guest binary (separate workspace, riscv32im target)
+  amm/
+    core/src/lib.rs     # Data types, Instruction enum, PDA computation helpers
+    src/                # Program logic: add, remove, swap, new_definition
+    methods/            # Host-side zkVM method embedding
+    methods/guest/      # Guest binary (separate workspace)
 ```
 
 ## Architecture
