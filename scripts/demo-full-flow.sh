@@ -1,4 +1,32 @@
 #!/usr/bin/env bash
+# LP-0013 End-to-End Demo Script
+# Demonstrates the full mint authority lifecycle against a real LEZ sequencer.
+#
+# Prerequisites:
+#   - lgs (logos-scaffold): https://github.com/logos-blockchain/logos-execution-zone
+#   - spel CLI: https://github.com/logos-co/spel (built with: cargo build --release -p spel-cli)
+#   - A funded wallet (run: lgs wallet topup)
+#
+# Usage:
+#   # From inside an lgs scaffold project directory:
+#   cd <your-lgs-scaffold-dir>
+#   RISC0_DEV_MODE=0 bash <path-to-lez-programs>/scripts/demo-full-flow.sh
+#
+# Environment variables (all optional, auto-detected):
+#   DEMO_DIR     — path to lgs scaffold project (default: current directory)
+#   LEZ_PROGRAMS — path to lez-programs repo (default: auto-detected from script location)
+#   SPEL         — path to spel binary (default: ~/rebase-lez/spel/target/release/spel)
+#   TOKEN_BIN    — path to token.bin (default: auto-detected from LEZ_PROGRAMS)
+#   IDL          — path to token IDL (default: auto-detected from LEZ_PROGRAMS)
+#
+# The script will:
+#   1. Start a local LEZ sequencer
+#   2. Fund the wallet
+#   3. Create token accounts
+#   4. Submit NewFungibleDefinitionWithAuthority transaction
+#   5. Submit Mint transaction
+#   6. Submit SetAuthority (revoke) transaction
+#   7. Run unit tests to verify authority logic (49 tests)
 set -euo pipefail
 
 
@@ -11,11 +39,12 @@ else
     echo "Warning: no timeout command found, running without timeout"
     TIMEOUT=""
 fi
-SPEL="$HOME/rebase-lez/spel/target/release/spel"
-IDL="$HOME/rebase-lez/logos-execution-zone/token-authority.idl.json"
-TOKEN_BIN="$HOME/rebase-lez/logos-execution-zone/target/riscv32im-risc0-zkvm-elf/docker/token.bin"
-WALLET_DIR="$HOME/rebase-lez/lp0013-demo/.scaffold/wallet"
-DEMO_DIR="$HOME/rebase-lez/lp0013-demo"
+SPEL="${SPEL:-$HOME/rebase-lez/spel/target/release/spel}"
+LEZ_PROGRAMS="${LEZ_PROGRAMS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+IDL="${IDL:-$LEZ_PROGRAMS/artifacts/token-idl.json}"
+TOKEN_BIN="${TOKEN_BIN:-$LEZ_PROGRAMS/target/riscv-guest/token-methods/token-guest/riscv32im-risc0-zkvm-elf/release/token.bin}"
+DEMO_DIR="${DEMO_DIR:-$(pwd)}"
+WALLET_DIR="${WALLET_DIR:-$DEMO_DIR/.scaffold/wallet}"
 
 echo "================================================================"
 echo " LP-0013: Token Program Mint Authority — End-to-End Demo"
@@ -50,9 +79,9 @@ echo "      Recipient account:  $RECIPIENT_ID"
 echo "[4/7] Creating token with mint authority..."
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
-  -- NewFungibleDefinitionWithAuthority \
-  --definition-account "$DEF_ID" \
-  --holding-account "$SUPPLY_ID" \
+  -- new-fungible-definition-with-authority \
+  --definition-target-account "$DEF_ID" \
+  --holding-target-account "$SUPPLY_ID" \
   --name "DemoCoin" \
   --initial-supply 1000000 \
   --mint-authority "$DEF_ID" 2>&1 || true
@@ -63,9 +92,9 @@ sleep 2
 echo "[5/7] Minting 500,000 additional tokens..."
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
-  -- Mint \
+  -- mint \
   --definition-account "$DEF_ID" \
-  --holding-account "$RECIPIENT_ID" \
+  --user-holding-account "$RECIPIENT_ID" \
   --amount-to-mint 500000 2>&1 || true
 echo "      Mint transaction submitted. New total supply: 1,500,000"
 
@@ -74,7 +103,7 @@ sleep 2
 echo "[6/7] Revoking mint authority..."
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
-  -- SetAuthority \
+  -- set-authority \
   --definition-account "$DEF_ID" \
   --new-authority none 2>&1 || true
 echo "      Authority revoked. Supply permanently fixed at 1,500,000"
@@ -82,7 +111,7 @@ echo "      Authority revoked. Supply permanently fixed at 1,500,000"
 sleep 2
 
 echo "[7/7] Running unit tests to verify authority logic..."
-cd "$HOME/rebase-lez/logos-execution-zone"
+cd "$LEZ_PROGRAMS"
 RISC0_DEV_MODE=0 cargo test -p token_program -p lez-authority --lib 2>&1 | grep -E "test result|authority|ok$"
 
 echo ""
