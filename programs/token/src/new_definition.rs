@@ -36,6 +36,7 @@ pub fn new_fungible_definition(
         name,
         total_supply,
         metadata_id: None,
+        mint_authority: None,
     };
     let token_holding = TokenHolding::Fungible {
         definition_id: definition_target_account.account_id,
@@ -97,6 +98,7 @@ pub fn new_definition_with_metadata(
                 name,
                 total_supply,
                 metadata_id: Some(metadata_target_account.account_id),
+                mint_authority: None,
             },
             TokenHolding::Fungible {
                 definition_id: definition_target_account.account_id,
@@ -140,5 +142,54 @@ pub fn new_definition_with_metadata(
         AccountPostState::new_claimed(definition_target_account_post, Claim::Authorized),
         AccountPostState::new_claimed(holding_target_account_post, Claim::Authorized),
         AccountPostState::new_claimed(metadata_target_account_post, Claim::Authorized),
+    ]
+}
+
+pub fn new_fungible_definition_with_authority(
+    definition_target_account: AccountWithMetadata,
+    holding_target_account: AccountWithMetadata,
+    name: String,
+    initial_supply: u128,
+    mint_authority: [u8; 32],
+) -> Vec<AccountPostState> {
+    assert_eq!(
+        definition_target_account.account,
+        Account::default(),
+        "Definition target account must have default values"
+    );
+    assert_eq!(
+        holding_target_account.account,
+        Account::default(),
+        "Holding target account must have default values"
+    );
+    assert!(
+        definition_target_account.is_authorized,
+        "Definition target account must be authorized"
+    );
+    assert!(
+        holding_target_account.is_authorized,
+        "Holding target account must be authorized"
+    );
+
+    let token_definition = TokenDefinition::Fungible {
+        name,
+        total_supply: initial_supply,
+        metadata_id: None,
+        mint_authority: Some(mint_authority),
+    };
+    let token_holding = TokenHolding::Fungible {
+        definition_id: definition_target_account.account_id,
+        balance: initial_supply,
+    };
+
+    let mut definition_target_account_post = definition_target_account.account;
+    definition_target_account_post.data = Data::from(&token_definition);
+
+    let mut holding_target_account_post = holding_target_account.account;
+    holding_target_account_post.data = Data::from(&token_holding);
+
+    vec![
+        AccountPostState::new_claimed(definition_target_account_post, Claim::Authorized),
+        AccountPostState::new_claimed(holding_target_account_post, Claim::Authorized),
     ]
 }

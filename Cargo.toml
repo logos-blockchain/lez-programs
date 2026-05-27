@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "lez-authority",
     "programs/token/core",
     "programs/token",
     "programs/token/methods",

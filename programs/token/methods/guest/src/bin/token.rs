@@ -137,6 +137,45 @@ mod token {
         ), vec![]))
     }
 
+
+    /// Create a new fungible token definition with a mint authority.
+    /// Unlike NewFungibleDefinition, this allows minting additional tokens later.
+    #[instruction]
+    pub fn new_fungible_definition_with_authority(
+        definition_target_account: AccountWithMetadata,
+        holding_target_account: AccountWithMetadata,
+        name: String,
+        initial_supply: u128,
+        mint_authority: [u8; 32],
+    ) -> SpelResult {
+        Ok(spel_framework::SpelOutput::execute(
+            token_program::new_definition::new_fungible_definition_with_authority(
+                definition_target_account,
+                holding_target_account,
+                name,
+                initial_supply,
+                mint_authority,
+            ),
+            vec![],
+        ))
+    }
+
+    /// Set or rotate the mint authority for a fungible token definition.
+    /// Pass `new_authority: None` to permanently revoke minting (fixed supply).
+    #[instruction]
+    pub fn set_authority(
+        definition_account: AccountWithMetadata,
+        new_authority: Option<[u8; 32]>,
+    ) -> SpelResult {
+        Ok(spel_framework::SpelOutput::execute(
+            token_program::set_authority::set_authority(
+                definition_account,
+                new_authority,
+            ),
+            vec![],
+        ))
+    }
+
     /// Print a new NFT from the master copy.
     /// The printed copy target must be uninitialized and authorized.
     #[instruction]

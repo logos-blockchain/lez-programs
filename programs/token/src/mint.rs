@@ -21,6 +21,14 @@ pub fn mint(
 
     let mut definition = TokenDefinition::try_from(&definition_account.account.data)
         .expect("Token Definition account must be valid");
+
+    // LP-0013: enforce mint authority — minting is only allowed if mint_authority is Some.
+    if let TokenDefinition::Fungible { mint_authority, .. } = &definition {
+        assert!(
+            mint_authority.is_some(),
+            "Mint authority has been revoked; this token has a fixed supply"
+        );
+    }
     let mut holding = if user_holding_account.account == Account::default() {
         TokenHolding::zeroized_from_definition(definition_account.account_id, &definition)
     } else {
@@ -40,6 +48,7 @@ pub fn mint(
                 name: _,
                 metadata_id: _,
                 total_supply,
+                mint_authority: _,
             },
             TokenHolding::Fungible {
                 definition_id: _,
