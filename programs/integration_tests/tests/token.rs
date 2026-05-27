@@ -921,3 +921,96 @@ fn token_deshielded_transfer() {
         .get_proof_for_commitment(&Commitment::new(&sender_id, &new_sender_account))
         .is_some());
 }
+
+#[test]
+fn token_new_fungible_definition_with_authority() {
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    deploy_token(&mut state);
+    let authority_key = [9_u8; 32];
+    let instruction = token_core::Instruction::NewFungibleDefinitionWithAuthority {
+        name: String::from("AuthCoin"),
+        initial_supply: 1_000_000_u128,
+        mint_authority: authority_key,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder()],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::def_key(), &Keys::holder_key()],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("AuthCoin"),
+                total_supply: 1_000_000_u128,
+                metadata_id: None,
+                mint_authority: Some(authority_key),
+            }),
+            nonce: Nonce(1),
+        }
+    );
+}
+
+#[test]
+fn token_set_authority_revoke() {
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    deploy_token(&mut state);
+    let authority_key = [9_u8; 32];
+    // Create token with authority
+    let instruction = token_core::Instruction::NewFungibleDefinitionWithAuthority {
+        name: String::from("AuthCoin"),
+        initial_supply: 1_000_000_u128,
+        mint_authority: authority_key,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder()],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::def_key(), &Keys::holder_key()],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+    // Revoke authority
+    let instruction = token_core::Instruction::SetAuthority {
+        new_authority: None,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition()],
+        vec![Nonce(1)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("AuthCoin"),
+                total_supply: 1_000_000_u128,
+                metadata_id: None,
+                mint_authority: None,
+            }),
+            nonce: Nonce(2),
+        }
+    );
+}
