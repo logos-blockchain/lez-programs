@@ -82,6 +82,10 @@ impl Balances {
         200_000
     }
 
+    fn collateral_extra_deposit() -> u128 {
+        100_000
+    }
+
     fn stablecoin_supply_init() -> u128 {
         1_000
     }
@@ -249,7 +253,7 @@ fn assert_fungible_balance(state: &V03State, account_id: AccountId, expected_bal
 }
 
 #[test]
-fn stablecoin_open_position_then_withdraw_collateral() {
+fn stablecoin_open_position_deposit_then_withdraw_collateral() {
     let mut state = state_for_stablecoin_tests();
 
     // Open the position: deposit collateral from the user's holding into a fresh vault.
@@ -289,6 +293,51 @@ fn stablecoin_open_position_then_withdraw_collateral() {
         Balances::user_holding_init() - Balances::collateral_deposit(),
     );
 
+    // Deposit more collateral into the existing position.
+    let deposit = stablecoin_core::Instruction::DepositCollateral {
+        amount: Balances::collateral_extra_deposit(),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::stablecoin_program(),
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+        ],
+        vec![
+            current_nonce(&state, Ids::owner()),
+            current_nonce(&state, Ids::user_holding()),
+        ],
+        deposit,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::owner(), &Keys::user_holding()],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .expect("deposit_collateral must succeed");
+
+    assert_position(
+        &state,
+        Balances::collateral_deposit() + Balances::collateral_extra_deposit(),
+    );
+    assert_fungible_balance(
+        &state,
+        Ids::vault(),
+        Balances::collateral_deposit() + Balances::collateral_extra_deposit(),
+    );
+    assert_fungible_balance(
+        &state,
+        Ids::user_holding(),
+        Balances::user_holding_init()
+            - Balances::collateral_deposit()
+            - Balances::collateral_extra_deposit(),
+    );
+
     // Withdraw part of the collateral back to the same user holding.
     let withdraw = stablecoin_core::Instruction::WithdrawCollateral {
         amount: Balances::collateral_withdraw(),
@@ -313,17 +362,21 @@ fn stablecoin_open_position_then_withdraw_collateral() {
 
     assert_position(
         &state,
-        Balances::collateral_deposit() - Balances::collateral_withdraw(),
+        Balances::collateral_deposit() + Balances::collateral_extra_deposit()
+            - Balances::collateral_withdraw(),
     );
     assert_fungible_balance(
         &state,
         Ids::vault(),
-        Balances::collateral_deposit() - Balances::collateral_withdraw(),
+        Balances::collateral_deposit() + Balances::collateral_extra_deposit()
+            - Balances::collateral_withdraw(),
     );
     assert_fungible_balance(
         &state,
         Ids::user_holding(),
-        Balances::user_holding_init() - Balances::collateral_deposit()
+        Balances::user_holding_init()
+            - Balances::collateral_deposit()
+            - Balances::collateral_extra_deposit()
             + Balances::collateral_withdraw(),
     );
 }

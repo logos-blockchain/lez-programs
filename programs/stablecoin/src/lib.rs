@@ -2,6 +2,9 @@
 
 pub use stablecoin_core as core;
 
+/// Deposit additional collateral into an existing position.
+pub mod deposit_collateral;
+
 /// Open a new collateral-only position for a calling owner.
 pub mod open_position;
 

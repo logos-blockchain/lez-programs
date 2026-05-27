@@ -525,6 +525,253 @@ fn withdraw_collateral_updates_position_and_emits_transfer() {
 }
 
 #[test]
+fn deposit_collateral_updates_position_and_emits_transfer() {
+    let initial_collateral: u128 = 500;
+    let initial_debt: u128 = 300;
+    let amount: u128 = 200;
+    let holding_balance: u128 = 1_000;
+
+    let (post_states, chained_calls) = crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        init_position_account(initial_collateral, initial_debt),
+        init_vault_account(),
+        user_holding_account(holding_balance),
+        STABLECOIN_PROGRAM_ID,
+        amount,
+    );
+
+    assert_eq!(post_states.len(), 4);
+
+    let position_post = &post_states[1];
+    assert_eq!(position_post.required_claim(), None);
+    let position = Position::try_from(&position_post.account().data).expect("valid Position");
+    assert_eq!(
+        position,
+        Position {
+            collateral_vault_id: vault_id(),
+            collateral_definition_id: collateral_definition_id(),
+            collateral_amount: initial_collateral + amount,
+            debt_amount: initial_debt,
+        }
+    );
+    assert_eq!(position_post.account().program_owner, STABLECOIN_PROGRAM_ID);
+
+    assert_eq!(post_states[2].account(), &init_vault_account().account);
+    assert_eq!(
+        post_states[3].account(),
+        &user_holding_account(holding_balance).account
+    );
+
+    assert_eq!(chained_calls.len(), 1);
+    let expected_transfer = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![user_holding_account(holding_balance), init_vault_account()],
+        &token_core::Instruction::Transfer {
+            amount_to_transfer: amount,
+        },
+    );
+    assert_eq!(chained_calls[0], expected_transfer);
+}
+
+#[test]
+fn deposit_collateral_allows_zero_amount() {
+    let initial: u128 = 500;
+    let (post_states, chained_calls) = crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        init_position_account(initial, 0),
+        init_vault_account(),
+        user_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        0,
+    );
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.collateral_amount, initial);
+
+    let expected_transfer = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![user_holding_account(1_000), init_vault_account()],
+        &token_core::Instruction::Transfer {
+            amount_to_transfer: 0,
+        },
+    );
+    assert_eq!(chained_calls, vec![expected_transfer]);
+}
+
+#[test]
+#[should_panic(expected = "Owner authorization is missing")]
+fn deposit_collateral_requires_owner_authorization() {
+    let mut owner = owner_account();
+    owner.is_authorized = false;
+    crate::deposit_collateral::deposit_collateral(
+        owner,
+        init_position_account(500, 0),
+        init_vault_account(),
+        user_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "User collateral holding authorization is missing")]
+fn deposit_collateral_requires_user_holding_authorization() {
+    let mut holding = user_holding_account(1_000);
+    holding.is_authorized = false;
+    crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        holding,
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position account must be initialized")]
+fn deposit_collateral_rejects_uninitialized_position() {
+    crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        uninit_position_account(),
+        init_vault_account(),
+        user_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position is not owned by this stablecoin program")]
+fn deposit_collateral_rejects_position_owned_by_other_program() {
+    let mut position = init_position_account(500, 0);
+    position.account.program_owner = [9u32; 8];
+    crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        position,
+        init_vault_account(),
+        user_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position account ID does not match expected derivation")]
+fn deposit_collateral_rejects_wrong_position_address() {
+    let mut position = init_position_account(500, 0);
+    position.account_id = AccountId::new([0xFFu8; 32]);
+    crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        position,
+        init_vault_account(),
+        user_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position vault account ID does not match expected derivation")]
+fn deposit_collateral_rejects_wrong_vault_address() {
+    let mut vault = init_vault_account();
+    vault.account_id = AccountId::new([0xEEu8; 32]);
+    crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        init_position_account(500, 0),
+        vault,
+        user_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Vault token holding is not for the position's collateral definition")]
+fn deposit_collateral_rejects_vault_for_other_definition() {
+    let mut vault = init_vault_account();
+    vault.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: AccountId::new([0x21u8; 32]),
+        balance: 0,
+    });
+    crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        init_position_account(500, 0),
+        vault,
+        user_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "User collateral holding must be initialized")]
+fn deposit_collateral_rejects_uninitialized_user_holding() {
+    let holding = AccountWithMetadata {
+        account: Account::default(),
+        is_authorized: true,
+        account_id: user_holding_id(),
+    };
+    crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        holding,
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "User collateral holding must be owned by same Token Program as the vault"
+)]
+fn deposit_collateral_rejects_holding_with_different_token_program() {
+    let mut holding = user_holding_account(1_000);
+    holding.account.program_owner = [9u32; 8];
+    crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        holding,
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "User collateral holding does not match the position's collateral definition"
+)]
+fn deposit_collateral_rejects_holding_for_other_definition() {
+    let mut holding = user_holding_account(1_000);
+    holding.account.data = Data::from(&TokenHolding::Fungible {
+        definition_id: AccountId::new([0x21u8; 32]),
+        balance: 1_000,
+    });
+    crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        holding,
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Deposit amount overflows position collateral")]
+fn deposit_collateral_rejects_collateral_overflow() {
+    crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        init_position_account(u128::MAX, 0),
+        init_vault_account(),
+        user_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        1,
+    );
+}
+
+#[test]
 fn withdraw_collateral_allows_full_drain() {
     let amount: u128 = 500;
     let (post_states, _chained_calls) = crate::withdraw_collateral::withdraw_collateral(

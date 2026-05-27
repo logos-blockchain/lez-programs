@@ -34,6 +34,22 @@ pub enum Instruction {
         /// Amount of collateral tokens to deposit into the position vault.
         collateral_amount: u128,
     },
+    /// Deposit additional collateral tokens into an existing position vault.
+    ///
+    /// Required accounts (4):
+    /// - Owner account (authorized; binds caller-as-owner via position PDA re-derivation)
+    /// - Position account (initialized, owned by `self_program_id`)
+    /// - Position vault token holding (address must match
+    ///   `compute_position_vault_pda(self_program_id, position_id)`)
+    /// - User's source token holding for the collateral (authorized, initialized, owned by the
+    ///   same Token Program as the vault, with `TokenHolding.definition_id ==
+    ///   Position.collateral_definition_id`)
+    ///
+    /// No collateralization check is needed because this instruction never increases debt.
+    DepositCollateral {
+        /// Amount of collateral tokens to deposit into the position vault.
+        amount: u128,
+    },
     /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
     ///
     /// Required accounts (4):
