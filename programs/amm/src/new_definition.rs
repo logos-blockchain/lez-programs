@@ -206,6 +206,7 @@ pub fn new_definition(
         name: String::from("LP Token"),
         total_supply: MINIMUM_LIQUIDITY,
         metadata_id: None,
+        mint_authority: None,
     });
 
     let call_token_lp_user = ChainedCall::new(

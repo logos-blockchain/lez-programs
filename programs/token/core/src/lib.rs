@@ -82,9 +82,7 @@ pub enum Instruction {
     ///
     /// Required accounts:
     /// - Token Definition account (initialized, authorized by current mint authority).
-    SetAuthority {
-        new_authority: Option<[u8; 32]>,
-    },
+    SetAuthority { new_authority: Option<[u8; 32]> },
 }
 
 #[derive(Serialize, Deserialize)]

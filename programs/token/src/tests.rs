@@ -1320,12 +1320,10 @@ fn test_print_nft_success() {
     assert_eq!(post_printed.required_claim(), Some(Claim::Authorized));
 }
 
-
 #[cfg(test)]
 mod authority_tests {
     use super::*;
-    use crate::mint::mint;
-    use crate::set_authority::set_authority;
+    use crate::{mint::mint, set_authority::set_authority};
 
     const AUTHORITY: [u8; 32] = [9_u8; 32];
     const TOKEN_PROGRAM_ID: [u32; 8] = [5_u32; 8];
@@ -1402,7 +1400,12 @@ mod authority_tests {
 
     #[test]
     fn mint_with_authority_succeeds() {
-        let post_states = mint(def_with_authority(), holding_account(), 50_000, TOKEN_PROGRAM_ID);
+        let post_states = mint(
+            def_with_authority(),
+            holding_account(),
+            50_000,
+            TOKEN_PROGRAM_ID,
+        );
         let [def_post, holding_post] = post_states.try_into().unwrap();
 
         let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
@@ -1428,13 +1431,23 @@ mod authority_tests {
     #[test]
     #[should_panic(expected = "Mint authority has been revoked; this token has a fixed supply")]
     fn mint_with_revoked_authority_fails() {
-        let _ = mint(def_with_authority_revoked(), holding_account(), 50_000, TOKEN_PROGRAM_ID);
+        let _ = mint(
+            def_with_authority_revoked(),
+            holding_account(),
+            50_000,
+            TOKEN_PROGRAM_ID,
+        );
     }
 
     #[test]
     #[should_panic(expected = "Definition authorization is missing")]
     fn mint_without_is_authorized_fails() {
-        let _ = mint(def_without_auth_flag(), holding_account(), 50_000, TOKEN_PROGRAM_ID);
+        let _ = mint(
+            def_without_auth_flag(),
+            holding_account(),
+            50_000,
+            TOKEN_PROGRAM_ID,
+        );
     }
 
     #[test]
