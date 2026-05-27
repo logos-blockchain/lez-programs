@@ -41,6 +41,7 @@ fn definition_account() -> AccountWithMetadata {
                 name: "TEST".to_string(),
                 total_supply: 1000,
                 metadata_id: None,
+                mint_authority: None,
             }),
             nonce: nssa_core::account::Nonce(0),
         },

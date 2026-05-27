@@ -61,6 +61,7 @@ impl Accounts {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
+                mint_authority: None,
             }),
             nonce: Nonce(0),
         }
@@ -74,6 +75,7 @@ impl Accounts {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
+                mint_authority: None,
             }),
             nonce: Nonce(0),
         }
@@ -164,6 +166,7 @@ fn token_new_fungible_definition() {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
+                mint_authority: None,
             }),
             nonce: Nonce(1),
         }
@@ -415,6 +418,7 @@ fn token_burn() {
                 name: String::from("Gold"),
                 total_supply: 800_000_u128,
                 metadata_id: None,
+                mint_authority: None,
             }),
             nonce: Nonce(0),
         }
@@ -464,6 +468,7 @@ fn token_mint() {
                 name: String::from("Gold"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
+                mint_authority: None,
             }),
             nonce: Nonce(1),
         }
@@ -585,6 +590,7 @@ fn token_mint_fresh_authorized_public_recipient() {
                 name: String::from("Gold"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
+                mint_authority: None,
             }),
             nonce: Nonce(1),
         }

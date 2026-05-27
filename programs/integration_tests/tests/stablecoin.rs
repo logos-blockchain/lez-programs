@@ -108,6 +108,7 @@ impl Accounts {
                 name: String::from("Gold"),
                 total_supply: Balances::user_holding_init(),
                 metadata_id: None,
+                mint_authority: None,
             }),
             nonce: Nonce(0),
         }
@@ -133,6 +134,7 @@ impl Accounts {
                 name: String::from("DAI"),
                 total_supply: Balances::stablecoin_supply_init(),
                 metadata_id: None,
+                mint_authority: None,
             }),
             nonce: Nonce(0),
         }
