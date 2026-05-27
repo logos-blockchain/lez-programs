@@ -84,6 +84,7 @@ impl Accounts {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
+                authority: None,
             }),
             nonce: Nonce(0),
         }
@@ -121,6 +122,7 @@ impl Accounts {
                 name: String::from("Foreign Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
+                authority: None,
             }),
             nonce: Nonce(0),
         }
@@ -495,6 +497,7 @@ fn ata_burn() {
                 name: String::from("Gold"),
                 total_supply: 700_000_u128,
                 metadata_id: None,
+                authority: None,
             }),
             nonce: Nonce(0),
         }

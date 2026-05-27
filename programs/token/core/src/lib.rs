@@ -18,10 +18,18 @@ pub enum Instruction {
 
     /// Create a new fungible token definition without metadata.
     ///
+    /// `mint_authority` decides the supply model:
+    /// - `Some(id)` — `id` may mint additional supply and rotate/renounce the authority,
+    /// - `None` — supply is permanently fixed at `total_supply`.
+    ///
     /// Required accounts:
     /// - Token Definition account (uninitialized, authorized),
     /// - Token Holding account (uninitialized, authorized).
-    NewFungibleDefinition { name: String, total_supply: u128 },
+    NewFungibleDefinition {
+        name: String,
+        total_supply: u128,
+        mint_authority: Option<AccountId>,
+    },
 
     /// Create a new fungible or non-fungible token definition with metadata.
     ///
@@ -49,13 +57,27 @@ pub enum Instruction {
     /// - Token Holding account (authorized).
     Burn { amount_to_burn: u128 },
 
-    /// Mint new tokens to the holder's account.
+    /// Mint new tokens to the holder's account under **self/PDA authority**: the
+    /// Token Definition account itself is the current mint authority and must be
+    /// authorized in this transaction (signer, or a PDA authorized under its
+    /// seeds). A definition with no authority has a fixed supply and rejects
+    /// minting.
     ///
     /// Required accounts:
-    /// - Token Definition account (initialized, authorized),
-    /// - Token Holding account (initialized, or uninitialized with holder authorization in the
-    ///   same transaction).
+    /// - Token Definition account (initialized, authorized as the current mint authority),
+    /// - Token Holding account (uninitialized or authorized and initialized).
     Mint { amount_to_mint: u128 },
+
+    /// Mint new tokens under an **external authority**: a distinct authority
+    /// account (the account the mint authority was rotated to) authorizes the
+    /// mint by signing, while the Token Definition account is mutated but does
+    /// not sign. Its account id must match the definition's stored authority.
+    ///
+    /// Required accounts:
+    /// - Token Definition account (initialized),
+    /// - Token Holding account (uninitialized or authorized and initialized),
+    /// - Authority account (authorized as the current mint authority).
+    MintWithAuthority { amount_to_mint: u128 },
 
     /// Print a new NFT from the master copy.
     ///
@@ -63,6 +85,25 @@ pub enum Instruction {
     /// - NFT Master Token Holding account (authorized),
     /// - NFT Printed Copy Token Holding account (uninitialized, authorized).
     PrintNft,
+
+    /// Rotate or renounce the mint authority under **self/PDA authority**: the
+    /// Token Definition account itself is the current authority and must be
+    /// authorized in this transaction. Pass `new_authority: None` to permanently
+    /// renounce minting (fixed supply).
+    ///
+    /// Required accounts:
+    /// - Token Definition account (initialized, authorized as the current mint authority).
+    SetAuthority { new_authority: Option<AccountId> },
+
+    /// Rotate or renounce the mint authority under an **external authority**: a
+    /// distinct authority account (the account the authority was rotated to)
+    /// authorizes the change by signing, while the Token Definition account is
+    /// mutated but does not sign. Pass `new_authority: None` to permanently renounce.
+    ///
+    /// Required accounts:
+    /// - Token Definition account (initialized),
+    /// - Authority account (authorized as the current mint authority).
+    SetAuthorityWithAuthority { new_authority: Option<AccountId> },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -70,6 +111,9 @@ pub enum NewTokenDefinition {
     Fungible {
         name: String,
         total_supply: u128,
+        /// Mint authority. `Some(id)` makes the token mintable by `id`; `None`
+        /// fixes the supply.
+        mint_authority: Option<AccountId>,
     },
     NonFungible {
         name: String,
@@ -84,6 +128,14 @@ pub enum TokenDefinition {
         name: String,
         total_supply: u128,
         metadata_id: Option<AccountId>,
+        /// Mint authority slot. `Some(id)` may mint and rotate/renounce;
+        /// `None` means the supply is permanently fixed.
+        ///
+        /// Stored directly as `Option<AccountId>` (Borsh-identical to a custom
+        /// authority newtype) so account state stays decodable by `spel inspect`.
+        /// The require/rotate/renounce guard logic lives inline in the `mint` and
+        /// `set_authority` handlers.
+        authority: Option<AccountId>,
     },
     NonFungible {
         name: String,

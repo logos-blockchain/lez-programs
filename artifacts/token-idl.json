@@ -49,6 +49,12 @@
         {
           "name": "total_supply",
           "type": "u128"
+        },
+        {
+          "name": "mint_authority",
+          "type": {
+            "option": "account_id"
+          }
         }
       ]
     },
@@ -154,6 +160,79 @@
       ]
     },
     {
+      "name": "mint_with_authority",
+      "accounts": [
+        {
+          "name": "definition_account",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding_account",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "authority_account",
+          "writable": false,
+          "signer": true,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount_to_mint",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "set_authority",
+      "accounts": [
+        {
+          "name": "definition_account",
+          "writable": true,
+          "signer": true,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": {
+            "option": "account_id"
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_authority_with_authority",
+      "accounts": [
+        {
+          "name": "definition_account",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "authority_account",
+          "writable": false,
+          "signer": true,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": {
+            "option": "account_id"
+          }
+        }
+      ]
+    },
+    {
       "name": "print_nft",
       "accounts": [
         {
@@ -191,6 +270,12 @@
               },
               {
                 "name": "metadata_id",
+                "type": {
+                  "option": "account_id"
+                }
+              },
+              {
+                "name": "authority",
                 "type": {
                   "option": "account_id"
                 }

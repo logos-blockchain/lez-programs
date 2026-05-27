@@ -28,6 +28,10 @@ impl Keys {
     fn recipient_key() -> PrivateKey {
         PrivateKey::try_new([12; 32]).expect("valid private key")
     }
+
+    fn authority_key() -> PrivateKey {
+        PrivateKey::try_new([13; 32]).expect("valid private key")
+    }
 }
 
 impl Ids {
@@ -50,6 +54,10 @@ impl Ids {
     fn recipient() -> AccountId {
         AccountId::from(&PublicKey::new_from_private_key(&Keys::recipient_key()))
     }
+
+    fn authority() -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(&Keys::authority_key()))
+    }
 }
 
 impl Accounts {
@@ -61,6 +69,7 @@ impl Accounts {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
+                authority: Some(Ids::token_definition()),
             }),
             nonce: Nonce(0),
         }
@@ -74,6 +83,7 @@ impl Accounts {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
+                authority: Some(Ids::token_definition()),
             }),
             nonce: Nonce(0),
         }
@@ -102,6 +112,15 @@ impl Accounts {
             nonce: Nonce(0),
         }
     }
+
+    fn authority_init() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::default(),
+            nonce: Nonce(0),
+        }
+    }
 }
 
 fn deploy_token(state: &mut V03State) {
@@ -118,6 +137,7 @@ fn state_for_token_tests() -> V03State {
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::holder(), Accounts::holder_init());
     state.force_insert_account(Ids::recipient(), Accounts::recipient_init());
+    state.force_insert_account(Ids::authority(), Accounts::authority_init());
     state
 }
 
@@ -126,6 +146,7 @@ fn state_for_token_tests_without_recipient() -> V03State {
     deploy_token(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::holder(), Accounts::holder_init());
+    state.force_insert_account(Ids::authority(), Accounts::authority_init());
     state
 }
 
@@ -137,6 +158,7 @@ fn token_new_fungible_definition() {
     let instruction = token_core::Instruction::NewFungibleDefinition {
         name: String::from("Gold"),
         total_supply: 1_000_000_u128,
+        mint_authority: None,
     };
 
     let message = public_transaction::Message::try_new(
@@ -164,6 +186,7 @@ fn token_new_fungible_definition() {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
+                authority: None,
             }),
             nonce: Nonce(1),
         }
@@ -415,6 +438,7 @@ fn token_burn() {
                 name: String::from("Gold"),
                 total_supply: 800_000_u128,
                 metadata_id: None,
+                authority: Some(Ids::token_definition()),
             }),
             nonce: Nonce(0),
         }
@@ -464,6 +488,7 @@ fn token_mint() {
                 name: String::from("Gold"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
+                authority: Some(Ids::token_definition()),
             }),
             nonce: Nonce(1),
         }
@@ -585,6 +610,7 @@ fn token_mint_fresh_authorized_public_recipient() {
                 name: String::from("Gold"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
+                authority: Some(Ids::token_definition()),
             }),
             nonce: Nonce(1),
         }
@@ -914,4 +940,320 @@ fn token_deshielded_transfer() {
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&sender_id, &new_sender_account))
         .is_some());
+}
+
+#[test]
+fn token_new_fungible_definition_with_authority() {
+    let mut state = V03State::new();
+    deploy_token(&mut state);
+    let authority_key: [u8; 32] = Ids::token_definition()
+        .as_ref()
+        .try_into()
+        .expect("AccountId is always 32 bytes");
+    let instruction = token_core::Instruction::NewFungibleDefinition {
+        name: String::from("AuthCoin"),
+        total_supply: 1_000_000_u128,
+        mint_authority: Some(AccountId::new(authority_key)),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder()],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::def_key(), &Keys::holder_key()],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("AuthCoin"),
+                total_supply: 1_000_000_u128,
+                metadata_id: None,
+                authority: Some(AccountId::new(authority_key)),
+            }),
+            nonce: Nonce(1),
+        }
+    );
+}
+
+#[test]
+fn token_set_authority_revoke() {
+    let mut state = V03State::new();
+    deploy_token(&mut state);
+    let authority_key: [u8; 32] = Ids::token_definition()
+        .as_ref()
+        .try_into()
+        .expect("AccountId is always 32 bytes");
+    // Create token with authority
+    let instruction = token_core::Instruction::NewFungibleDefinition {
+        name: String::from("AuthCoin"),
+        total_supply: 1_000_000_u128,
+        mint_authority: Some(AccountId::new(authority_key)),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder()],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::def_key(), &Keys::holder_key()],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // Seed the authority account so it can sign the revoke
+    state.force_insert_account(Ids::authority(), Accounts::authority_init());
+
+    // Revoke authority
+    let instruction = token_core::Instruction::SetAuthority {
+        new_authority: None,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition()],
+        vec![Nonce(1)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("AuthCoin"),
+                total_supply: 1_000_000_u128,
+                metadata_id: None,
+                authority: None,
+            }),
+            nonce: Nonce(2),
+        }
+    );
+}
+
+/// After the authority is rotated to an external key, that external key can rotate
+/// or revoke again via `SetAuthorityWithAuthority` — signing as a distinct authority
+/// account while the definition account does not sign.
+#[test]
+fn token_set_authority_with_authority_revokes() {
+    let mut state = V03State::new();
+    deploy_token(&mut state);
+
+    // Create with self-authority (definition is the initial mint authority).
+    let instruction = token_core::Instruction::NewFungibleDefinition {
+        name: String::from("RotCoin"),
+        total_supply: 1_000_000_u128,
+        mint_authority: Some(Ids::token_definition()),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder()],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::def_key(), &Keys::holder_key()],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // Rotate to the external authority via self-authority (def_key signs).
+    let instruction = token_core::Instruction::SetAuthority {
+        new_authority: Some(Ids::authority()),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition()],
+        vec![Nonce(1)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // Seed the external authority so it can sign.
+    state.force_insert_account(Ids::authority(), Accounts::authority_init());
+
+    // The external authority revokes via SetAuthorityWithAuthority. Accounts:
+    // [definition, authority]; only the authority signs.
+    let instruction = token_core::Instruction::SetAuthorityWithAuthority {
+        new_authority: None,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::authority()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    let def = state.get_account_by_id(Ids::token_definition());
+    let stored = match TokenDefinition::try_from(&def.data).unwrap() {
+        TokenDefinition::Fungible { authority, .. } => authority,
+        _ => None,
+    };
+    assert_eq!(stored, None, "authority must be permanently revoked");
+}
+
+/// Integration test for RFP-001 authority rotation flow:
+/// 1. Create a token where `Ids::token_definition()` is the initial mint authority
+///    (self-authority).
+/// 2. Rotate the mint authority to `Ids::authority()` (an external key).
+/// 3. Verify that the new external authority can mint by presenting itself as a rest account.
+/// 4. Verify that the OLD authority (def key) can no longer mint after rotation.
+#[test]
+fn token_rotate_authority_then_new_authority_can_mint() {
+    let mut state = V03State::new();
+    deploy_token(&mut state);
+
+    let authority_key: [u8; 32] = Ids::authority()
+        .as_ref()
+        .try_into()
+        .expect("AccountId is always 32 bytes");
+
+    // Step 1: Create token with self-authority (def account is initial mint authority).
+    let instruction = token_core::Instruction::NewFungibleDefinition {
+        name: String::from("RotCoin"),
+        total_supply: 1_000_000_u128,
+        mint_authority: Some(AccountId::new(
+            Ids::token_definition()
+                .as_ref()
+                .try_into()
+                .expect("AccountId is always 32 bytes"),
+        )),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder()],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::def_key(), &Keys::holder_key()],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // Step 2: Rotate mint authority from def_key to Ids::authority() (external key).
+    // Self-authority path: no rest accounts; def_key signs.
+    let instruction = token_core::Instruction::SetAuthority {
+        new_authority: Some(AccountId::new(authority_key)),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition()],
+        vec![Nonce(1)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // Verify the authority slot now holds Ids::authority().
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("RotCoin"),
+                total_supply: 1_000_000_u128,
+                metadata_id: None,
+                authority: Some(AccountId::new(authority_key)),
+            }),
+            nonce: Nonce(2),
+        }
+    );
+
+    // Seed the external authority account and the holder so they exist in state.
+    state.force_insert_account(Ids::authority(), Accounts::authority_init());
+    state.force_insert_account(Ids::holder(), Accounts::holder_init());
+
+    // Step 3: New external authority mints via MintWithAuthority, signing as a
+    // distinct authority account. Accounts: [definition, holder, authority].
+    let instruction = token_core::Instruction::MintWithAuthority {
+        amount_to_mint: 500_000_u128,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder(), Ids::authority()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // Verify total_supply increased and holder balance reflects the mint.
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("RotCoin"),
+                total_supply: 1_500_000_u128,
+                metadata_id: None,
+                authority: Some(AccountId::new(authority_key)),
+            }),
+            nonce: Nonce(2),
+        }
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::holder()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 1_500_000_u128,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+
+    // Step 4: OLD authority (def_key self-authority path) must be rejected after rotation.
+    let instruction = token_core::Instruction::Mint {
+        amount_to_mint: 1_u128,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    let result = state.transition_from_public_transaction(&tx, 0, 0);
+    assert!(
+        result.is_err(),
+        "Old authority must be rejected after rotation"
+    );
 }

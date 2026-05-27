@@ -666,6 +666,12 @@
                 "type": {
                   "option": "account_id"
                 }
+              },
+              {
+                "name": "authority",
+                "type": {
+                  "option": "account_id"
+                }
               }
             ]
           },

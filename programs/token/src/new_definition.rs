@@ -1,16 +1,31 @@
 use nssa_core::{
-    account::{Account, AccountWithMetadata, Data},
+    account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, Claim},
 };
 use token_core::{
     NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding, TokenMetadata,
 };
 
+/// Validate the mint authority for a freshly created fungible definition.
+///
+/// `Some(id)` makes the token mintable by `id`; `None` fixes the supply.
+/// An all-zero authority id is rejected as it cannot be a real signer.
+fn validate_mint_authority(mint_authority: Option<AccountId>) -> Option<AccountId> {
+    if let Some(id) = &mint_authority {
+        assert!(
+            id.value() != &[0u8; 32],
+            "Mint authority must be a valid non-zero account ID"
+        );
+    }
+    mint_authority
+}
+
 pub fn new_fungible_definition(
     definition_target_account: AccountWithMetadata,
     holding_target_account: AccountWithMetadata,
     name: String,
     total_supply: u128,
+    mint_authority: Option<AccountId>,
 ) -> Vec<AccountPostState> {
     assert_eq!(
         definition_target_account.account,
@@ -36,6 +51,7 @@ pub fn new_fungible_definition(
         name,
         total_supply,
         metadata_id: None,
+        authority: validate_mint_authority(mint_authority),
     };
     let token_holding = TokenHolding::Fungible {
         definition_id: definition_target_account.account_id,
@@ -92,11 +108,16 @@ pub fn new_definition_with_metadata(
     );
 
     let (token_definition, token_holding) = match new_definition {
-        NewTokenDefinition::Fungible { name, total_supply } => (
+        NewTokenDefinition::Fungible {
+            name,
+            total_supply,
+            mint_authority,
+        } => (
             TokenDefinition::Fungible {
                 name,
                 total_supply,
                 metadata_id: Some(metadata_target_account.account_id),
+                authority: validate_mint_authority(mint_authority),
             },
             TokenHolding::Fungible {
                 definition_id: definition_target_account.account_id,
@@ -124,7 +145,7 @@ pub fn new_definition_with_metadata(
         standard: metadata.standard,
         uri: metadata.uri,
         creators: metadata.creators,
-        primary_sale_date: 0u64, // TODO #261: future works to implement this
+        primary_sale_date: 0u64,
     };
 
     let mut definition_target_account_post = definition_target_account.account.clone();

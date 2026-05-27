@@ -193,6 +193,7 @@ pub fn new_definition(
         &token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
             total_supply: MINIMUM_LIQUIDITY,
+            mint_authority: Some(pool_definition_lp.account_id),
         },
     )
     .with_pda_seeds(vec![
@@ -206,8 +207,10 @@ pub fn new_definition(
         name: String::from("LP Token"),
         total_supply: MINIMUM_LIQUIDITY,
         metadata_id: None,
+        // Self-authority: the LP token is mintable only by the pool, which
+        // presents this PDA as the authorized minter in the chained Mint call.
+        authority: Some(pool_definition_lp.account_id),
     });
-
     let call_token_lp_user = ChainedCall::new(
         token_program_id,
         vec![pool_lp_after_lock, user_holding_lp.clone()],

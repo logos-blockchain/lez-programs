@@ -401,6 +401,7 @@ impl Accounts {
                 name: String::from("test"),
                 total_supply: Balances::token_a_supply(),
                 metadata_id: None,
+                authority: None,
             }),
             nonce: Nonce(0),
         }
@@ -414,6 +415,7 @@ impl Accounts {
                 name: String::from("test"),
                 total_supply: Balances::token_b_supply(),
                 metadata_id: None,
+                authority: None,
             }),
             nonce: Nonce(0),
         }
@@ -427,6 +429,7 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: Balances::token_lp_supply(),
                 metadata_id: None,
+                authority: Some(Ids::token_lp_definition()),
             }),
             nonce: Nonce(0),
         }
@@ -705,6 +708,7 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: Balances::token_lp_supply_add(),
                 metadata_id: None,
+                authority: Some(Ids::token_lp_definition()),
             }),
             nonce: Nonce(0),
         }
@@ -797,6 +801,7 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: Balances::token_lp_supply_remove(),
                 metadata_id: None,
+                authority: Some(Ids::token_lp_definition()),
             }),
             nonce: Nonce(0),
         }
@@ -810,6 +815,7 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: 0,
                 metadata_id: None,
+                authority: Some(Ids::token_lp_definition()),
             }),
             nonce: Nonce(0),
         }
@@ -902,6 +908,7 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: Balances::lp_supply_init(),
                 metadata_id: None,
+                authority: Some(Ids::token_lp_definition()),
             }),
             nonce: Nonce(0),
         }
@@ -1390,6 +1397,7 @@ fn fungible_total_supply(account: &Account) -> u128 {
         name: _,
         total_supply,
         metadata_id: _,
+        authority: _,
     } = definition
     else {
         panic!("expected fungible token definition")
