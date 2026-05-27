@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
+# Cross-platform timeout command
+if command -v gtimeout &>/dev/null; then
+    TIMEOUT="gtimeout"
+elif command -v timeout &>/dev/null; then
+    TIMEOUT="timeout"
+else
+    echo "Warning: no timeout command found, running without timeout"
+    TIMEOUT=""
+fi
 SPEL="$HOME/rebase-lez/spel/target/release/spel"
 IDL="$HOME/rebase-lez/logos-execution-zone/token-authority.idl.json"
 TOKEN_BIN="$HOME/rebase-lez/logos-execution-zone/target/riscv32im-risc0-zkvm-elf/docker/token.bin"
@@ -39,7 +49,7 @@ echo "      Recipient account:  $RECIPIENT_ID"
 
 echo "[4/7] Creating token with mint authority..."
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
-gtimeout 30 "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
+${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- NewFungibleDefinitionWithAuthority \
   --definition-account "$DEF_ID" \
   --holding-account "$SUPPLY_ID" \
@@ -52,7 +62,7 @@ sleep 2
 
 echo "[5/7] Minting 500,000 additional tokens..."
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
-gtimeout 30 "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
+${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- Mint \
   --definition-account "$DEF_ID" \
   --holding-account "$RECIPIENT_ID" \
@@ -63,7 +73,7 @@ sleep 2
 
 echo "[6/7] Revoking mint authority..."
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
-gtimeout 30 "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
+${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- SetAuthority \
   --definition-account "$DEF_ID" \
   --new-authority none 2>&1 || true

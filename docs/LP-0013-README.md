@@ -144,3 +144,78 @@ RISC0_DEV_MODE=0 bash scripts/demo-full-flow.sh
 - [SetAuthority handler](../programs/token/src/set_authority.rs)
 - [Mint handler](../programs/token/src/mint.rs)
 - [Solana SPL Token - Set Authority](https://solana.com/docs/tokens/basics/set-authority)
+
+## Deployment
+
+### Program ID (LEZ localnet/testnet)
+efdf86b1127c57c4653903e78bd2174b539fd688054331618c48f98c8fc057bd
+
+### Deploy
+```bash
+lgs deploy --program-path target/riscv-guest/token-methods/token-guest/riscv32im-risc0-zkvm-elf/release/token.bin
+```
+
+## Compute Unit (CU) Costs
+
+Measured on LEZ localnet with RISC0_DEV_MODE=1 (execution only, no proof):
+
+| Operation | Execution Time | Notes |
+|---|---|---|
+| `NewFungibleDefinitionWithAuthority` | ~11ms | Creates token with mint authority |
+| `Mint` (with authority) | ~10ms | Authority-gated mint |
+| `SetAuthority` (rotate) | ~8ms | Rotates to new key |
+| `SetAuthority` (revoke) | ~8ms | Permanently revokes, sets None |
+
+Note: With `RISC0_DEV_MODE=0`, full ZK proof generation takes 3-10 minutes per transaction on Apple M-series hardware. LEZ's per-transaction compute budget may change during testnet.
+
+## CLI Usage
+
+### Create token with mint authority
+```bash
+spel --idl token-idl.json --program token.bin \
+  -- NewFungibleDefinitionWithAuthority \
+  --definition-account <DEF_ID> \
+  --holding-account <SUPPLY_ID> \
+  --name "MyToken" \
+  --initial-supply 1000000 \
+  --mint-authority <AUTHORITY_KEY_HEX>
+```
+
+### Mint tokens
+```bash
+spel --idl token-idl.json --program token.bin \
+  -- Mint \
+  --definition-account <DEF_ID> \
+  --holding-account <HOLDER_ID> \
+  --amount-to-mint 500000
+```
+
+### Rotate authority
+```bash
+spel --idl token-idl.json --program token.bin \
+  -- SetAuthority \
+  --definition-account <DEF_ID> \
+  --new-authority <NEW_KEY_HEX>
+```
+
+### Revoke authority (fix supply permanently)
+```bash
+spel --idl token-idl.json --program token.bin \
+  -- SetAuthority \
+  --definition-account <DEF_ID> \
+  --new-authority none
+```
+
+## Module/SDK
+
+`token_core` provides the reusable types and instructions for building Logos modules:
+
+```toml
+[dependencies]
+token_core = { path = "programs/token/core" }
+```
+
+Key types:
+- `TokenDefinition::Fungible { mint_authority, .. }` — token definition with authority
+- `Instruction::NewFungibleDefinitionWithAuthority` — create with authority
+- `Instruction::SetAuthority` — rotate or revoke
