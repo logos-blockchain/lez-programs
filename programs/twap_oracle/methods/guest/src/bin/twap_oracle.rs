@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), no_main)]
 
-use nssa_core::account::AccountWithMetadata;
+use nssa_core::account::{AccountId, AccountWithMetadata};
 use spel_framework::context::ProgramContext;
 use spel_framework::prelude::*;
 
@@ -34,6 +34,35 @@ mod twap_oracle {
                 price_source,
                 clock,
                 initial_tick,
+                window_duration,
+                ctx.self_program_id,
+            );
+        Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
+    }
+
+    /// Creates and initialises a canonical oracle price account for a price source and time
+    /// window.
+    ///
+    /// Expected accounts:
+    /// 1. `oracle_price_account` — uninitialized PDA owned by this oracle program.
+    /// 2. `price_source` — account the caller controls (proven via `is_authorized = true`);
+    ///    its ID ties this price account to the same source as the corresponding
+    ///    `PriceObservations` account for the same window.
+    #[instruction]
+    pub fn create_oracle_price_account(
+        ctx: ProgramContext,
+        oracle_price_account: AccountWithMetadata,
+        price_source: AccountWithMetadata,
+        base_asset: AccountId,
+        quote_asset: AccountId,
+        window_duration: u64,
+    ) -> SpelResult {
+        let post_states =
+            twap_oracle_program::create_oracle_price_account::create_oracle_price_account(
+                oracle_price_account,
+                price_source,
+                base_asset,
+                quote_asset,
                 window_duration,
                 ctx.self_program_id,
             );
