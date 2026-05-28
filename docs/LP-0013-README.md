@@ -15,7 +15,7 @@ The `lez-authority` crate provides a reusable, program-agnostic authority librar
 
 ## Architecture
 
-### Authority Model
+### Authority Model 
 
 `mint_authority: Option<[u8; 32]>` is added to `TokenDefinition::Fungible`:
 - `Some(key)` — the key holder can mint and rotate/revoke
@@ -63,6 +63,21 @@ Key types:
 - `TokenDefinition::Fungible { mint_authority, .. }` — token definition with authority
 - `Instruction::NewFungibleDefinitionWithAuthority` — create with authority
 - `Instruction::SetAuthority` — rotate or revoke
+
+## RFP-001 Compliance
+
+LP-0013 has a formal dependency on [RFP-001](https://github.com/logos-co/rfp/blob/master/RFPs/RFP-001-admin-authority-lib.md) — the standardised admin authority library. The `lez-authority` crate in this submission directly implements the approval pattern defined in RFP-001:
+
+| RFP-001 Requirement | How `lez-authority` satisfies it |
+|---|---|
+| Self-sufficient, agnostic authority library | `lez-authority` has zero program-specific dependencies — it only uses `borsh` for serialisation |
+| Authority slot abstraction | `AuthoritySlot` struct wraps `Option<[u8; 32]>` with `check`, `set`, and revocation semantics |
+| Approval check | `AuthoritySlot::check(signer)` returns an error if the signer does not match or authority is revoked |
+| Rotation | `AuthoritySlot::set(Some(new_key))` atomically rotates to a new authority |
+| Permanent revocation | `AuthoritySlot::set(None)` permanently fixes the supply — subsequent `set` calls are rejected |
+| Reusable by other programs | Any LEZ program can add `lez-authority` as a workspace dependency and use `AuthoritySlot` directly |
+
+The `lez-authority` crate was also submitted as part of [RFP-001 PR #212](https://github.com/logos-co/spel/pull/212) (the `spel-admin-authority` library with the `#[require_admin]` macro). The two are complementary: `lez-authority` is the lightweight on-chain primitive; `spel-admin-authority` is the SPEL framework macro layer built on top of the same pattern.
 
 ## Deployment
 
