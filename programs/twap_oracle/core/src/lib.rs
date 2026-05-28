@@ -9,10 +9,10 @@ use spel_framework_macros::account_type;
 /// TWAP Oracle Program Instruction.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Instruction {
-    /// Creates and initialises a price feed account for a price source and time window.
+    /// Creates and initialises a price observations account for a price source and time window.
     ///
     /// Required accounts (in order):
-    /// 1. Price feed account — uninitialized PDA derived from
+    /// 1. Price observations account — uninitialized PDA derived from
     ///    `compute_price_observations_pda(self_program_id, price_source.account_id,
     ///    window_duration)`.
     /// 2. Price source account — the account whose ID acts as the feed identifier (e.g. an AMM
@@ -27,6 +27,37 @@ pub enum Instruction {
         /// Together with `OBSERVATIONS_CAPACITY` this determines the minimum sampling interval
         /// enforced by `RecordPrice`: `min_interval = window_duration / OBSERVATIONS_CAPACITY`.
         /// It is also part of the PDA seed, so each window gets a distinct account.
+        window_duration: u64,
+    },
+    /// Creates and initialises a canonical [`OraclePriceAccount`] for a price source and time
+    /// window.
+    ///
+    /// The account is initialised with the non-zero `initial_price` and the timestamp read from
+    /// the canonical 1-block clock. A zero price or zero timestamp is the "no valid price"
+    /// sentinel consumers reject, so an account is never created in that state.
+    ///
+    /// Required accounts (in order):
+    /// 1. Oracle price account — uninitialized PDA derived from
+    ///    `compute_oracle_price_account_pda(self_program_id, price_source.account_id,
+    ///    window_duration)`.
+    /// 2. Price source account — must be passed with `is_authorized = true` to prove the caller
+    ///    controls it. Its ID ties this price account to the same source as the corresponding
+    ///    [`PriceObservations`] account for the same window.
+    /// 3. Clock account — the canonical 1-block LEZ clock; supplies the initial timestamp.
+    CreateOraclePriceAccount {
+        /// Canonical identifier of the base asset being priced.
+        base_asset: AccountId,
+        /// Canonical identifier of the quote asset that denominates `price`.
+        quote_asset: AccountId,
+        /// Initial price as a `Q64.64` fixed-point value (real price = `initial_price / 2^64`).
+        ///
+        /// Must be non-zero; the caller is responsible for supplying a correctly-scaled
+        /// fixed-point value rather than a plain integer.
+        initial_price: u128,
+        /// Duration of the TWAP window this price account serves, in milliseconds.
+        ///
+        /// Part of the PDA seed, so each `(price_source, window)` pair maps to a distinct
+        /// oracle price account.
         window_duration: u64,
     },
 }
@@ -156,6 +187,48 @@ pub fn compute_price_observations_pda_seed(
     )
 }
 
+const ORACLE_PRICE_ACCOUNT_PDA_SEED: [u8; 32] = [3; 32];
+
+/// Derives the [`AccountId`] for a price source's [`OraclePriceAccount`] PDA.
+///
+/// The `window_duration` is included in the seed so that each `(price_source, window)` pair
+/// maps to a distinct account, mirroring the [`PriceObservations`] PDA derivation.
+#[must_use]
+pub fn compute_oracle_price_account_pda(
+    oracle_program_id: ProgramId,
+    price_source_id: AccountId,
+    window_duration: u64,
+) -> AccountId {
+    AccountId::for_public_pda(
+        &oracle_program_id,
+        &compute_oracle_price_account_pda_seed(price_source_id, window_duration),
+    )
+}
+
+/// Derives the [`PdaSeed`] for a price source's [`OraclePriceAccount`].
+///
+/// Hash input: `price_source_id (32 bytes) || window_duration_le (8 bytes) ||
+/// ORACLE_PRICE_ACCOUNT_PDA_SEED (32 bytes)`.
+#[must_use]
+pub fn compute_oracle_price_account_pda_seed(
+    price_source_id: AccountId,
+    window_duration: u64,
+) -> PdaSeed {
+    use risc0_zkvm::sha::{Impl, Sha256};
+
+    let mut bytes = [0u8; 72];
+    bytes[..32].copy_from_slice(&price_source_id.to_bytes());
+    bytes[32..40].copy_from_slice(&window_duration.to_le_bytes());
+    bytes[40..72].copy_from_slice(&ORACLE_PRICE_ACCOUNT_PDA_SEED);
+
+    PdaSeed::new(
+        Impl::hash_bytes(&bytes)
+            .as_bytes()
+            .try_into()
+            .expect("Hash output must be exactly 32 bytes long"),
+    )
+}
+
 /// Canonical oracle price account consumed by LEZ programs.
 ///
 /// Oracle producers own how this account is written; consumers only read and
@@ -175,8 +248,9 @@ pub struct OraclePriceAccount {
     /// Price observation timestamp. Consumers choose the time unit by matching this with
     /// `max_age`.
     pub timestamp: u64,
-    /// Identifier of the source that populated this account, such as a TWAP or external adaptor.
-    pub source_id: String,
+    /// Identifier of the source account that populated this account, such as a TWAP program or
+    /// external adaptor.
+    pub source_id: AccountId,
     /// Source-provided confidence interval, or zero when the source does not provide one.
     pub confidence_interval: u128,
 }

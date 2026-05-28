@@ -34,6 +34,47 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "create_oracle_price_account",
+      "accounts": [
+        {
+          "name": "oracle_price_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "price_source",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "base_asset",
+          "type": "account_id"
+        },
+        {
+          "name": "quote_asset",
+          "type": "account_id"
+        },
+        {
+          "name": "initial_price",
+          "type": "u128"
+        },
+        {
+          "name": "window_duration",
+          "type": "u64"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -92,7 +133,7 @@
           },
           {
             "name": "source_id",
-            "type": "string"
+            "type": "account_id"
           },
           {
             "name": "confidence_interval",
