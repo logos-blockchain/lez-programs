@@ -2,4 +2,4 @@
 
 pub use twap_oracle_core as core;
 
-pub mod noop;
+pub mod create_price_observations;
