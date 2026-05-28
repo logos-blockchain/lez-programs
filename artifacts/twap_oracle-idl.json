@@ -3,12 +3,72 @@
   "name": "twap_oracle",
   "instructions": [
     {
-      "name": "noop",
-      "accounts": [],
-      "args": []
+      "name": "create_price_observations",
+      "accounts": [
+        {
+          "name": "price_observations",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "price_source",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "initial_tick",
+          "type": "i32"
+        },
+        {
+          "name": "window_duration",
+          "type": "u64"
+        }
+      ]
     }
   ],
   "accounts": [
+    {
+      "name": "PriceObservations",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "price_source_id",
+            "type": "account_id"
+          },
+          {
+            "name": "write_index",
+            "type": "u32"
+          },
+          {
+            "name": "total_entries",
+            "type": "u64"
+          },
+          {
+            "name": "last_recorded_tick",
+            "type": "i32"
+          },
+          {
+            "name": "entries",
+            "type": {
+              "vec": {
+                "defined": "ObservationEntry"
+              }
+            }
+          }
+        ]
+      }
+    },
     {
       "name": "OraclePriceAccount",
       "type": {
@@ -40,6 +100,22 @@
           }
         ]
       }
+    }
+  ],
+  "types": [
+    {
+      "name": "ObservationEntry",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "timestamp",
+          "type": "u64"
+        },
+        {
+          "name": "tick_cumulative",
+          "type": "i64"
+        }
+      ]
     }
   ],
   "instruction_type": "twap_oracle_core::Instruction"
