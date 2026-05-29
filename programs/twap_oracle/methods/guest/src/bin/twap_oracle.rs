@@ -77,4 +77,57 @@ mod twap_oracle {
             );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
+
+    /// Creates and initialises a current tick account for a price source.
+    ///
+    /// Expected accounts:
+    /// 1. `current_tick_account` — uninitialized PDA owned by this oracle program.
+    /// 2. `price_source` — account the caller controls (proven via `is_authorized = true`).
+    /// 3. `clock` — read-only LEZ clock account.
+    ///
+    /// `initial_price` is a `Q64.64` spot price; the oracle converts it to a tick.
+    #[instruction]
+    pub fn create_current_tick_account(
+        ctx: ProgramContext,
+        current_tick_account: AccountWithMetadata,
+        price_source: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        initial_price: u128,
+    ) -> SpelResult {
+        let post_states =
+            twap_oracle_program::create_current_tick_account::create_current_tick_account(
+                current_tick_account,
+                price_source,
+                clock,
+                initial_price,
+                ctx.self_program_id,
+            );
+        Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
+    }
+
+    /// Updates the tick stored in an existing current tick account.
+    ///
+    /// Expected accounts:
+    /// 1. `current_tick_account` — initialized PDA owned by this oracle program.
+    /// 2. `price_source` — account the caller controls (proven via `is_authorized = true`).
+    /// 3. `clock` — read-only LEZ clock account.
+    ///
+    /// `price` is a `Q64.64` spot price; the oracle converts it to a tick.
+    #[instruction]
+    pub fn update_current_tick(
+        ctx: ProgramContext,
+        current_tick_account: AccountWithMetadata,
+        price_source: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        price: u128,
+    ) -> SpelResult {
+        let post_states = twap_oracle_program::update_current_tick::update_current_tick(
+            current_tick_account,
+            price_source,
+            clock,
+            price,
+            ctx.self_program_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
+    }
 }
