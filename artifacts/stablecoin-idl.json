@@ -323,6 +323,22 @@
           }
         ]
       }
+    },
+    {
+      "name": "CurrentTickAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "tick",
+            "type": "i32"
+          },
+          {
+            "name": "last_updated",
+            "type": "u64"
+          }
+        ]
+      }
     }
   ],
   "types": [

@@ -65,6 +65,64 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "create_current_tick_account",
+      "accounts": [
+        {
+          "name": "current_tick_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "price_source",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "initial_tick",
+          "type": "i32"
+        }
+      ]
+    },
+    {
+      "name": "update_current_tick",
+      "accounts": [
+        {
+          "name": "current_tick_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "price_source",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "tick",
+          "type": "i32"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -128,6 +186,22 @@
           {
             "name": "confidence_interval",
             "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CurrentTickAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "tick",
+            "type": "i32"
+          },
+          {
+            "name": "last_updated",
+            "type": "u64"
           }
         ]
       }

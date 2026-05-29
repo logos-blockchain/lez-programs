@@ -53,6 +53,35 @@ pub enum Instruction {
         /// oracle price account.
         window_duration: u64,
     },
+    /// Creates and initialises a [`CurrentTickAccount`] for a price source.
+    ///
+    /// Called once per price source (not per window). The account holds the latest raw tick
+    /// written by the price source and serves as the input to `RecordTick`.
+    ///
+    /// Required accounts (in order):
+    /// 1. Current tick account — uninitialized PDA derived from
+    ///    `compute_current_tick_account_pda(self_program_id, price_source.account_id)`.
+    /// 2. Price source account — must be passed with `is_authorized = true`.
+    /// 3. Clock account — read-only; supplies the initial timestamp.
+    CreateCurrentTickAccount {
+        /// Opening tick: `floor(log_{1.0001}(reserve_b / reserve_a))` at creation time.
+        initial_tick: i32,
+    },
+    /// Updates the tick stored in an existing [`CurrentTickAccount`].
+    ///
+    /// Called by the price source (e.g. AMM) after each price-changing operation. Anyone may
+    /// subsequently call `RecordTick` to advance the [`PriceObservations`] accumulator using
+    /// the new tick.
+    ///
+    /// Required accounts (in order):
+    /// 1. Current tick account — initialized PDA derived from
+    ///    `compute_current_tick_account_pda(self_program_id, price_source.account_id)`.
+    /// 2. Price source account — must be passed with `is_authorized = true`.
+    /// 3. Clock account — read-only; supplies the updated timestamp.
+    UpdateCurrentTick {
+        /// New raw tick from the price source.
+        tick: i32,
+    },
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -265,4 +294,78 @@ impl From<&OraclePriceAccount> for Data {
             .expect("Serialization to Vec should not fail");
         Self::try_from(data).expect("Oracle price account encoded data should fit into Data")
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Current tick account
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Live price tick for a price source, written by the price source on every price-changing
+/// operation.
+///
+/// Owned by the TWAP oracle as a PDA derived from
+/// `compute_current_tick_account_pda(oracle_program_id, price_source_id)`.
+/// One account exists per price source; it is shared across all time windows for that source.
+/// Anyone may call `RecordTick` to advance a [`PriceObservations`] accumulator using the tick
+/// stored here.
+#[account_type]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct CurrentTickAccount {
+    /// Most recent raw tick written by the price source:
+    /// `floor(log_{1.0001}(reserve_b / reserve_a))`.
+    pub tick: i32,
+    /// Block timestamp (milliseconds) when `tick` was last written.
+    pub last_updated: u64,
+}
+
+impl TryFrom<&Data> for CurrentTickAccount {
+    type Error = std::io::Error;
+
+    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+        Self::try_from_slice(data.as_ref())
+    }
+}
+
+impl From<&CurrentTickAccount> for Data {
+    fn from(account: &CurrentTickAccount) -> Self {
+        let serialized_len =
+            borsh::object_length(account).expect("CurrentTickAccount length must be known");
+        let mut data = Vec::with_capacity(serialized_len);
+        BorshSerialize::serialize(account, &mut data)
+            .expect("Serialization to Vec should not fail");
+        Self::try_from(data).expect("CurrentTickAccount encoded data should fit into Data")
+    }
+}
+
+const CURRENT_TICK_ACCOUNT_PDA_SEED: [u8; 32] = [4; 32];
+
+/// Derives the [`AccountId`] for a price source's [`CurrentTickAccount`] PDA.
+#[must_use]
+pub fn compute_current_tick_account_pda(
+    oracle_program_id: ProgramId,
+    price_source_id: AccountId,
+) -> AccountId {
+    AccountId::for_public_pda(
+        &oracle_program_id,
+        &compute_current_tick_account_pda_seed(price_source_id),
+    )
+}
+
+/// Derives the [`PdaSeed`] for a price source's [`CurrentTickAccount`].
+///
+/// Hash input: `price_source_id (32 bytes) || CURRENT_TICK_ACCOUNT_PDA_SEED (32 bytes)`.
+#[must_use]
+pub fn compute_current_tick_account_pda_seed(price_source_id: AccountId) -> PdaSeed {
+    use risc0_zkvm::sha::{Impl, Sha256};
+
+    let mut bytes = [0u8; 64];
+    bytes[..32].copy_from_slice(&price_source_id.to_bytes());
+    bytes[32..64].copy_from_slice(&CURRENT_TICK_ACCOUNT_PDA_SEED);
+
+    PdaSeed::new(
+        Impl::hash_bytes(&bytes)
+            .as_bytes()
+            .try_into()
+            .expect("Hash output must be exactly 32 bytes long"),
+    )
 }
