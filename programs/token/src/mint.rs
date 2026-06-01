@@ -24,10 +24,16 @@ pub fn mint(
 
     // LP-0013: enforce mint authority — minting is only allowed if mint_authority is Some.
     if let TokenDefinition::Fungible { mint_authority, .. } = &definition {
-        assert!(
-            mint_authority.is_some(),
-            "Mint authority has been revoked; this token has a fixed supply"
-        );
+        match mint_authority {
+            None => panic!("Mint authority has been revoked; this token has a fixed supply"),
+            Some(authority_key) => {
+                assert_eq!(
+                    definition_account.account_id.as_ref(),
+                    authority_key,
+                    "Signer is not the mint authority"
+                );
+            }
+        }
     }
     let mut holding = if user_holding_account.account == Account::default() {
         TokenHolding::zeroized_from_definition(definition_account.account_id, &definition)

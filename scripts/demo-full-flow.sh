@@ -26,7 +26,7 @@
 #   4. Submit NewFungibleDefinitionWithAuthority transaction
 #   5. Submit Mint transaction
 #   6. Submit SetAuthority (revoke) transaction
-#   7. Run unit tests to verify authority logic (49 tests)
+#   7. Run unit tests to verify authority logic (60 tests)
 set -euo pipefail
 
 
@@ -66,11 +66,11 @@ lgs wallet topup 2>&1 | grep -E "complete|funded|Address" || true
 echo "      Wallet funded."
 
 echo "[3/7] Creating token accounts..."
-DEF_RESULT=$(lgs wallet -- account new public 2>&1)
+DEF_RESULT=$(lgs wallet -- account new --public 2>&1)
 DEF_ID=$(echo "$DEF_RESULT" | grep -oE '[0-9a-f]{64}' | head -1)
-SUPPLY_RESULT=$(lgs wallet -- account new public 2>&1)
+SUPPLY_RESULT=$(lgs wallet -- account new --public 2>&1)
 SUPPLY_ID=$(echo "$SUPPLY_RESULT" | grep -oE '[0-9a-f]{64}' | head -1)
-RECIPIENT_RESULT=$(lgs wallet -- account new public 2>&1)
+RECIPIENT_RESULT=$(lgs wallet -- account new --public 2>&1)
 RECIPIENT_ID=$(echo "$RECIPIENT_RESULT" | grep -oE '[0-9a-f]{64}' | head -1)
 echo "      Definition account: $DEF_ID"
 echo "      Supply account:     $SUPPLY_ID"
@@ -84,7 +84,7 @@ ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   --holding-target-account "$SUPPLY_ID" \
   --name "DemoCoin" \
   --initial-supply 1000000 \
-  --mint-authority "$DEF_ID" 2>&1 || true
+  --mint-authority "$DEF_ID"
 echo "      Token 'DemoCoin' submitted. Initial supply: 1,000,000"
 
 sleep 2
@@ -95,7 +95,7 @@ ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- mint \
   --definition-account "$DEF_ID" \
   --user-holding-account "$RECIPIENT_ID" \
-  --amount-to-mint 500000 2>&1 || true
+  --amount-to-mint 500000
 echo "      Mint transaction submitted. New total supply: 1,500,000"
 
 sleep 2
@@ -105,7 +105,7 @@ NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- set-authority \
   --definition-account "$DEF_ID" \
-  --new-authority none 2>&1 || true
+  --new-authority none
 echo "      Authority revoked. Supply permanently fixed at 1,500,000"
 
 sleep 2

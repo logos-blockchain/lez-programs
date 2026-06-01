@@ -9,9 +9,6 @@ pub fn set_authority(
     definition_account: AccountWithMetadata,
     new_authority: Option<[u8; 32]>,
 ) -> Vec<AccountPostState> {
-    // The definition account must be authorized — this means the transaction
-    // signer controls the definition account, which is how mint authority
-    // is enforced in LEZ (account-level authorization).
     assert!(
         definition_account.is_authorized,
         "Definition account authorization is missing; only the mint authority can call SetAuthority"
@@ -26,8 +23,13 @@ pub fn set_authority(
                 None => {
                     panic!("Mint authority already revoked; supply is permanently fixed");
                 }
-                Some(_) => {
-                    // Rotate to new authority, or revoke by setting to None
+                Some(authority_key) => {
+                    // Validate caller matches the stored mint authority key
+                    assert_eq!(
+                        definition_account.account_id.as_ref(),
+                        authority_key.as_ref(),
+                        "Signer does not match the stored mint authority"
+                    );
                     *mint_authority = new_authority;
                 }
             }

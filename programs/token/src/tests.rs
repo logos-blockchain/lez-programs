@@ -42,7 +42,7 @@ impl AccountForTests {
                     name: String::from("test"),
                     total_supply: BalanceForTests::init_supply(),
                     metadata_id: None,
-                    mint_authority: Some([1_u8; 32]),
+                    mint_authority: Some([15_u8; 32]),
                 }),
                 nonce: Nonce(0),
             },
@@ -160,7 +160,7 @@ impl AccountForTests {
                     name: String::from("test"),
                     total_supply: BalanceForTests::init_supply_burned(),
                     metadata_id: None,
-                    mint_authority: Some([1_u8; 32]),
+                    mint_authority: Some([15_u8; 32]),
                 }),
                 nonce: Nonce(0),
             },
@@ -242,7 +242,7 @@ impl AccountForTests {
                     name: String::from("test"),
                     total_supply: BalanceForTests::init_supply_mint(),
                     metadata_id: None,
-                    mint_authority: Some([1_u8; 32]),
+                    mint_authority: Some([15_u8; 32]),
                 }),
                 nonce: Nonce(0),
             },
@@ -1325,7 +1325,7 @@ mod authority_tests {
     use super::*;
     use crate::{mint::mint, set_authority::set_authority};
 
-    const AUTHORITY: [u8; 32] = [9_u8; 32];
+    const AUTHORITY: [u8; 32] = [15_u8; 32];
     const TOKEN_PROGRAM_ID: [u32; 8] = [5_u32; 8];
 
     fn def_with_authority() -> AccountWithMetadata {
