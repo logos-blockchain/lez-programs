@@ -177,6 +177,8 @@ pub fn deposit_collateral(
     let mut position_post = position.account.clone();
     position_post.data = Data::from(&updated_position);
 
+    // Framework zips declared inputs with returned post-states and truncates to the shorter
+    // length, so these must stay positionally aligned with the first two inputs: owner, position.
     let post_states = vec![
         AccountPostState::new(owner.account),
         AccountPostState::new(position_post),

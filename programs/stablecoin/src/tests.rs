@@ -690,6 +690,50 @@ fn deposit_collateral_updates_position_and_emits_transfer() {
 }
 
 #[test]
+fn deposit_collateral_allows_exact_user_balance() {
+    let initial_collateral: u128 = 500;
+    let amount: u128 = 100;
+    let position_account = init_position_account(initial_collateral, 0);
+    let vault = init_vault_account();
+    let user_holding = user_holding_account(amount);
+
+    let (post_states, chained_calls) = crate::deposit_collateral::deposit_collateral(
+        owner_account(),
+        position_account.clone(),
+        vault.clone(),
+        user_holding.clone(),
+        collateral_definition_account(),
+        STABLECOIN_PROGRAM_ID,
+        amount,
+    );
+
+    let expected_position = Position {
+        collateral_vault_id: vault_id(),
+        collateral_definition_id: collateral_definition_id(),
+        collateral_amount: initial_collateral + amount,
+        debt_amount: 0,
+    };
+    let post_state_account_ids = [owner_id(), position_account.account_id];
+    let position_post = position_post_state(
+        &post_states,
+        &post_state_account_ids,
+        position_account.account_id,
+        &expected_position,
+    );
+    let position = Position::try_from(&position_post.account().data).expect("valid Position");
+    assert_eq!(position, expected_position);
+
+    let expected_transfer = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![user_holding, vault],
+        &token_core::Instruction::Transfer {
+            amount_to_transfer: amount,
+        },
+    );
+    assert_eq!(chained_calls, vec![expected_transfer]);
+}
+
+#[test]
 fn deposit_collateral_allows_zero_amount() {
     let initial: u128 = 500;
     let position_account = init_position_account(initial, 0);
@@ -908,6 +952,17 @@ fn deposit_collateral_rejects_nonfungible_vault() {
 }
 
 #[test]
+fn deposit_collateral_rejects_master_nft_vault() {
+    let mut fixture = deposit_fixture();
+    fixture.vault.account.data = Data::from(&TokenHolding::NftMaster {
+        definition_id: collateral_definition_id(),
+        print_balance: 0,
+    });
+
+    assert_deposit_collateral_panics(fixture, crate::deposit_collateral::ERR_VAULT_NOT_FUNGIBLE);
+}
+
+#[test]
 fn deposit_collateral_rejects_vault_definition_owner_mismatch() {
     let mut fixture = deposit_fixture();
     fixture.vault.account.program_owner = [9u32; 8];
@@ -987,6 +1042,21 @@ fn deposit_collateral_rejects_nonfungible_user_holding() {
     fixture.user_holding.account.data = Data::from(&TokenHolding::NftPrintedCopy {
         definition_id: collateral_definition_id(),
         owned: true,
+    });
+
+    assert_deposit_collateral_panics(
+        fixture,
+        crate::deposit_collateral::ERR_USER_HOLDING_NOT_FUNGIBLE,
+    );
+}
+
+#[test]
+fn deposit_collateral_rejects_master_nft_user_holding() {
+    let mut fixture = deposit_fixture();
+    fixture.amount = 1;
+    fixture.user_holding.account.data = Data::from(&TokenHolding::NftMaster {
+        definition_id: collateral_definition_id(),
+        print_balance: 0,
     });
 
     assert_deposit_collateral_panics(
