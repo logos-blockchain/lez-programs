@@ -61,7 +61,7 @@ impl Accounts {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
-                mint_authority: None,
+                mint_authority: Some(Ids::token_definition().as_ref().try_into().unwrap()),
             }),
             nonce: Nonce(0),
         }
@@ -75,7 +75,7 @@ impl Accounts {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
-                mint_authority: None,
+                mint_authority: Some(Ids::token_definition().as_ref().try_into().unwrap()),
             }),
             nonce: Nonce(0),
         }
@@ -418,7 +418,7 @@ fn token_burn() {
                 name: String::from("Gold"),
                 total_supply: 800_000_u128,
                 metadata_id: None,
-                mint_authority: None,
+                mint_authority: Some(Ids::token_definition().as_ref().try_into().unwrap()),
             }),
             nonce: Nonce(0),
         }
@@ -468,7 +468,7 @@ fn token_mint() {
                 name: String::from("Gold"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
-                mint_authority: None,
+                mint_authority: Some(Ids::token_definition().as_ref().try_into().unwrap()),
             }),
             nonce: Nonce(1),
         }
@@ -590,7 +590,7 @@ fn token_mint_fresh_authorized_public_recipient() {
                 name: String::from("Gold"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
-                mint_authority: None,
+                mint_authority: Some(Ids::token_definition().as_ref().try_into().unwrap()),
             }),
             nonce: Nonce(1),
         }
@@ -926,7 +926,7 @@ fn token_deshielded_transfer() {
 fn token_new_fungible_definition_with_authority() {
     let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_token(&mut state);
-    let authority_key = [9_u8; 32];
+    let authority_key: [u8; 32] = Ids::token_definition().as_ref().try_into().unwrap();
     let instruction = token_core::Instruction::NewFungibleDefinitionWithAuthority {
         name: String::from("AuthCoin"),
         initial_supply: 1_000_000_u128,
@@ -965,7 +965,8 @@ fn token_new_fungible_definition_with_authority() {
 fn token_set_authority_revoke() {
     let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_token(&mut state);
-    let authority_key = [9_u8; 32];
+    let authority_key: [u8; 32] = Ids::token_definition().as_ref().try_into().unwrap();
+
     // Create token with authority
     let instruction = token_core::Instruction::NewFungibleDefinitionWithAuthority {
         name: String::from("AuthCoin"),
