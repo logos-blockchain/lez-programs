@@ -304,6 +304,7 @@ fn stablecoin_open_position_deposit_then_withdraw_collateral() {
             Ids::position(),
             Ids::vault(),
             Ids::user_holding(),
+            Ids::collateral_definition(),
         ],
         vec![
             current_nonce(&state, Ids::owner()),

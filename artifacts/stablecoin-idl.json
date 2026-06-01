@@ -49,23 +49,29 @@
         {
           "name": "owner",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
           "name": "position",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "vault",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_holding",
+          "writable": true,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "token_definition",
           "writable": false,
           "signer": false,
           "init": false

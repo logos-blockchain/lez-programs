@@ -56,10 +56,15 @@ mod stablecoin {
     #[instruction]
     pub fn deposit_collateral(
         ctx: ProgramContext,
+        #[account(signer)]
         owner: AccountWithMetadata,
+        #[account(mut)]
         position: AccountWithMetadata,
+        #[account(mut)]
         vault: AccountWithMetadata,
+        #[account(mut, signer)]
         user_holding: AccountWithMetadata,
+        token_definition: AccountWithMetadata,
         amount: u128,
     ) -> SpelResult {
         let (post_states, chained_calls) =
@@ -68,6 +73,7 @@ mod stablecoin {
                 position,
                 vault,
                 user_holding,
+                token_definition,
                 ctx.self_program_id,
                 amount,
             );

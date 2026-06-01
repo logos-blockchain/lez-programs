@@ -15,6 +15,11 @@ use spel_framework_macros::account_type;
 const POSITION_PDA_DOMAIN: &[u8] = b"POSITION";
 const POSITION_VAULT_PDA_DOMAIN: &[u8] = b"POSITION_VAULT";
 
+pub const ERR_POSITION_ACCOUNT_ID_MISMATCH: &str =
+    "Position account ID does not match expected derivation";
+pub const ERR_POSITION_VAULT_ACCOUNT_ID_MISMATCH: &str =
+    "Position vault account ID does not match expected derivation";
+
 /// Stablecoin Program Instruction.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Instruction {
@@ -36,14 +41,17 @@ pub enum Instruction {
     },
     /// Deposit additional collateral tokens into an existing position vault.
     ///
-    /// Required accounts (4):
+    /// Required accounts (5):
     /// - Owner account (authorized; binds caller-as-owner via position PDA re-derivation)
     /// - Position account (initialized, owned by `self_program_id`)
     /// - Position vault token holding (address must match
     ///   `compute_position_vault_pda(self_program_id, position_id)`)
     /// - User's source token holding for the collateral (authorized, initialized, owned by the
-    ///   same Token Program as the vault, with `TokenHolding.definition_id ==
+    ///   same Token Program as the token definition, with `TokenHolding.definition_id ==
     ///   Position.collateral_definition_id`)
+    /// - Token definition account for the collateral (matches `Position.collateral_definition_id`;
+    ///   must be fungible, and its `program_owner` determines the Token Program used by the
+    ///   chained `Transfer` call)
     ///
     /// No collateralization check is needed because this instruction never increases debt.
     DepositCollateral {
@@ -206,10 +214,12 @@ pub fn verify_position_and_get_seed(
 ) -> PdaSeed {
     let seed = compute_position_pda_seed(owner.account_id, collateral_definition_id);
     let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
-    assert_eq!(
-        position.account_id, expected_id,
-        "Position account ID does not match expected derivation"
-    );
+    if position.account_id != expected_id {
+        panic!(
+            "{ERR_POSITION_ACCOUNT_ID_MISMATCH}: provided {}, expected {}",
+            position.account_id, expected_id
+        );
+    }
     seed
 }
 
@@ -226,9 +236,11 @@ pub fn verify_position_vault_and_get_seed(
 ) -> PdaSeed {
     let seed = compute_position_vault_pda_seed(position_id);
     let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
-    assert_eq!(
-        vault.account_id, expected_id,
-        "Position vault account ID does not match expected derivation"
-    );
+    if vault.account_id != expected_id {
+        panic!(
+            "{ERR_POSITION_VAULT_ACCOUNT_ID_MISMATCH}: provided {}, expected {}",
+            vault.account_id, expected_id
+        );
+    }
     seed
 }
