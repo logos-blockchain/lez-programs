@@ -1556,6 +1556,20 @@ mod authority_tests {
         );
     }
 
+    #[should_panic(expected = "Mint authority must be a valid non-zero account ID")]
+    #[test]
+    fn test_new_fungible_definition_with_authority_rejects_zero_authority() {
+        let definition_account = AccountForTests::definition_account_uninit_auth();
+        let holding_account = AccountForTests::holding_account_uninit_auth();
+        let _post_states = crate::new_definition::new_fungible_definition_with_authority(
+            definition_account,
+            holding_account,
+            String::from("test"),
+            1000,
+            [0u8; 32],
+        );
+    }
+
     #[test]
     fn set_authority_rotate_then_old_cannot_mint() {
         let new_key = [7_u8; 32];

@@ -4,33 +4,26 @@
 #
 # Prerequisites:
 #   - lgs (logos-scaffold): https://github.com/logos-blockchain/logos-execution-zone
-#   - spel CLI: https://github.com/logos-co/spel (built with: cargo build --release -p spel-cli)
+#   - spel CLI: https://github.com/logos-co/spel
 #   - A funded wallet (run: lgs wallet topup)
 #
-# Usage:
-#   # From inside an lgs scaffold project directory:
+# Usage (from inside an lgs scaffold project directory):
 #   cd <your-lgs-scaffold-dir>
 #   RISC0_DEV_MODE=0 bash <path-to-lez-programs>/scripts/demo-full-flow.sh
 #
 # Environment variables (all optional, auto-detected):
-#   DEMO_DIR     — path to lgs scaffold project (default: current directory)
-#   LEZ_PROGRAMS — path to lez-programs repo (default: auto-detected from script location)
-#   SPEL         — path to spel binary (default: ~/rebase-lez/spel/target/release/spel)
-#   TOKEN_BIN    — path to token.bin (default: auto-detected from LEZ_PROGRAMS)
-#   IDL          — path to token IDL (default: auto-detected from LEZ_PROGRAMS)
+#   DEMO_DIR / LEZ_PROGRAMS / SPEL / TOKEN_BIN / IDL / WALLET_DIR
 #
 # The script will:
 #   1. Start a local LEZ sequencer
 #   2. Fund the wallet
 #   3. Create token accounts
 #   4. Submit NewFungibleDefinitionWithAuthority transaction
-#   5. Submit Mint transaction
+#   5. Submit Mint transaction (authority-gated)
 #   6. Submit SetAuthority (revoke) transaction
 #   7. Run unit tests to verify authority logic (60 tests)
 set -euo pipefail
 
-
-# Cross-platform timeout command
 if command -v gtimeout &>/dev/null; then
     TIMEOUT="gtimeout"
 elif command -v timeout &>/dev/null; then
@@ -47,10 +40,10 @@ DEMO_DIR="${DEMO_DIR:-$(pwd)}"
 WALLET_DIR="${WALLET_DIR:-$DEMO_DIR/.scaffold/wallet}"
 
 # Convert a base58 "Public/..." account_id to the 64-char hex form
-# that SPEL expects for [u8; 32] args (e.g. --mint-authority).
+# that spel expects for [u8; 32] args (e.g. --mint-authority).
 b58_to_hex() {
-    local id="${1#Public/}"   # strip the Public/ prefix
-    id="${id#Private/}"        # strip Private/ if present
+    local id="${1#Public/}"
+    id="${id#Private/}"
     python3 -c "
 import sys
 s = sys.argv[1]
@@ -82,12 +75,9 @@ lgs wallet topup 2>&1 | grep -E "complete|funded|Address" || true
 echo "      Wallet funded."
 
 echo "[3/7] Creating token accounts..."
-DEF_RESULT=$(lgs wallet -- account new public 2>&1)
-DEF_ID=$(echo "$DEF_RESULT" | grep -oE 'account_id [^ ]+' | awk '{print $2}')
-SUPPLY_RESULT=$(lgs wallet -- account new public 2>&1)
-SUPPLY_ID=$(echo "$SUPPLY_RESULT" | grep -oE 'account_id [^ ]+' | awk '{print $2}')
-RECIPIENT_RESULT=$(lgs wallet -- account new public 2>&1)
-RECIPIENT_ID=$(echo "$RECIPIENT_RESULT" | grep -oE 'account_id [^ ]+' | awk '{print $2}')
+DEF_ID=$(lgs wallet -- account new public 2>&1 | grep -oE 'account_id [^ ]+' | awk '{print $2}')
+SUPPLY_ID=$(lgs wallet -- account new public 2>&1 | grep -oE 'account_id [^ ]+' | awk '{print $2}')
+RECIPIENT_ID=$(lgs wallet -- account new public 2>&1 | grep -oE 'account_id [^ ]+' | awk '{print $2}')
 echo "      Definition account: $DEF_ID"
 echo "      Supply account:     $SUPPLY_ID"
 echo "      Recipient account:  $RECIPIENT_ID"
@@ -103,7 +93,6 @@ ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   --initial-supply 1000000 \
   --mint-authority "$DEF_ID_HEX"
 echo "      Token 'DemoCoin' submitted. Initial supply: 1,000,000"
-
 sleep 2
 
 echo "[5/7] Minting 500,000 additional tokens..."
@@ -115,7 +104,6 @@ ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   --user-holding-account "$RECIPIENT_ID" \
   --amount-to-mint 500000
 echo "      Mint transaction submitted. New total supply: 1,500,000"
-
 sleep 2
 
 echo "[6/7] Revoking mint authority..."
@@ -126,7 +114,6 @@ ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   --authority-account "$DEF_ID" \
   --new-authority none
 echo "      Authority revoked. Supply permanently fixed at 1,500,000"
-
 sleep 2
 
 echo "[7/7] Running unit tests to verify authority logic..."
@@ -140,5 +127,5 @@ echo " Summary:"
 echo "   [1/4] NewFungibleDefinitionWithAuthority → supply=1,000,000"
 echo "   [2/4] Mint 500,000                       → supply=1,500,000"
 echo "   [3/4] SetAuthority (revoke)               → supply fixed"
-echo "   [4/4] 60 unit tests passing               → all authority cases verified"
+echo "   [4/4] Unit tests passing                 → all authority cases verified"
 echo "================================================================"

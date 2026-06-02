@@ -170,6 +170,10 @@ pub fn new_fungible_definition_with_authority(
         holding_target_account.is_authorized,
         "Holding target account must be authorized"
     );
+    assert!(
+        mint_authority != [0u8; 32],
+        "Mint authority must be a valid non-zero account ID"
+    );
 
     let token_definition = TokenDefinition::Fungible {
         name,
