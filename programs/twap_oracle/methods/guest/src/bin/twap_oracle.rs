@@ -94,6 +94,33 @@ mod twap_oracle {
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
 
+    /// Computes the TWAP from the price observations ring buffer and writes it to the price
+    /// account.
+    ///
+    /// Expected accounts:
+    /// 1. `price_observations` — initialized PDA owned by this oracle program.
+    /// 2. `oracle_price_account` — initialized PDA owned by this oracle program.
+    /// 3. `clock` — read-only LEZ clock account.
+    #[instruction]
+    pub fn publish_price(
+        ctx: ProgramContext,
+        price_observations: AccountWithMetadata,
+        oracle_price_account: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        price_source_id: AccountId,
+        window_duration: u64,
+    ) -> SpelResult {
+        let post_states = twap_oracle_program::publish_price::publish_price(
+            price_observations,
+            oracle_price_account,
+            clock,
+            price_source_id,
+            window_duration,
+            ctx.self_program_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
+    }
+
     /// Records the current tick into a price observations ring buffer.
     ///
     /// Expected accounts:

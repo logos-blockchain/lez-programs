@@ -12,3 +12,9 @@ borsh = { version = "1.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 spel-framework-macros = { git = "https://github.com/logos-co/spel.git", tag = "v0.3.0", package = "spel-framework-macros" }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
+uniswap_v3_math = "0.6.2"
+alloy-primitives = { version = "1", default-features = false }
+# Pin ruint (transitive via alloy-primitives) below 1.18, which raised its MSRV to rustc 1.90.
+# The risc0 guest toolchain ships rustc 1.88, so 1.18+ fails the guest build. 1.17.0 (MSRV 1.85)
+# is the newest compatible release. Remove this pin once the risc0 toolchain advances past 1.90.
+ruint = { version = "=1.17.0", default-features = false }
