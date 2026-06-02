@@ -94,6 +94,40 @@ pub enum Instruction {
         /// tick on-chain.
         price: u128,
     },
+    /// Computes the TWAP over `window_duration` from the [`PriceObservations`] ring buffer and
+    /// writes the result to the [`OraclePriceAccount`].
+    ///
+    /// Permissionless — anyone may call this. Returns all accounts unchanged (no-op) if the
+    /// ring buffer holds fewer than two observations. Once at least two observations exist the
+    /// TWAP is computed over the available history, which may be shorter than `window_duration`
+    /// while the buffer is young.
+    ///
+    /// The resulting TWAP tick is converted to a `Q64.64` price ratio via [`tick_to_oracle_price`]
+    /// and stored in [`OraclePriceAccount::price`]. The stored value is a plain price ratio, not a
+    /// tick encoding, so consumers read it directly (`price / 2^PRICE_FRACTIONAL_BITS`) and the
+    /// account stays source-agnostic — a non-tick source (e.g. RedStone, Pyth) writes the same
+    /// field.
+    ///
+    /// Required accounts (in order):
+    /// 1. Price observations account — initialized PDA derived from
+    ///    `compute_price_observations_pda(self_program_id, price_source_id, window_duration)`.
+    /// 2. Oracle price account — initialized PDA derived from
+    ///    `compute_oracle_price_account_pda(self_program_id, price_source_id, window_duration)`.
+    /// 3. Current tick account — initialized PDA derived from
+    ///    `compute_current_tick_account_pda(self_program_id, price_source_id)`. Supplies the live
+    ///    tick used to extend the average from the newest stored observation up to `now`.
+    /// 4. Clock account — read-only; supplies the publication timestamp.
+    PublishPrice {
+        /// ID of the price source; used to verify all three PDAs.
+        price_source_id: AccountId,
+        /// Duration of the TWAP window in milliseconds. Used only to verify the price
+        /// observations and oracle price account PDAs (the current tick account PDA does not
+        /// depend on it). No boundary search is performed: the oldest valid observation is the
+        /// ring buffer's natural start (entry 0 while partially filled, else the slot at
+        /// `write_index`), because each observations account is calibrated to one window via its
+        /// sampling guard.
+        window_duration: u64,
+    },
     /// Records the current tick from a [`CurrentTickAccount`] into a [`PriceObservations`]
     /// ring buffer.
     ///
@@ -419,6 +453,53 @@ fn integer_sqrt(n: alloy_primitives::U256) -> alloy_primitives::U256 {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// TWAP price encoding
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Number of fractional bits in the [`OraclePriceAccount::price`] fixed-point value.
+///
+/// The price is stored as a `Q64.64` ratio: `OraclePriceAccount::price / 2^PRICE_FRACTIONAL_BITS`
+/// is the amount of `quote_asset` one unit of `base_asset` is worth. A consumer multiplies a
+/// token amount by the price with `(amount * price) >> PRICE_FRACTIONAL_BITS`.
+pub const PRICE_FRACTIONAL_BITS: u32 = 64;
+
+/// Converts a TWAP tick into the `Q64.64` fixed-point price stored in
+/// [`OraclePriceAccount::price`].
+///
+/// The price is `1.0001^tick`, computed via the Uniswap v3 `sqrtPriceX96` representation
+/// (pure-integer, no floating point) and then squared back to a plain ratio:
+///
+/// ```text
+/// sqrtPriceX96 = sqrt(1.0001^tick) * 2^96
+/// price        = sqrtPriceX96^2 / 2^128 = 1.0001^tick * 2^64   (Q64.64)
+/// ```
+///
+/// `sqrtPriceX96^2` is computed with `full_math::mul_div` using a 512-bit intermediate, so it
+/// never overflows for any valid tick. The tick is clamped to `[MIN_TICK, MAX_TICK]` and the
+/// result saturates at `u128::MAX` for the (practically unreachable) ticks above ~443 636 whose
+/// ratio would exceed `2^64`.
+///
+/// See `docs/twap-oracle-tick-to-price-conversion.md` for the full derivation.
+#[must_use]
+pub fn tick_to_oracle_price(tick: i32) -> u128 {
+    use alloy_primitives::U256;
+    use uniswap_v3_math::tick_math::{MAX_TICK, MIN_TICK};
+
+    // 2^128, used to bring sqrtPriceX96^2 (a Q128.128 square) down to Q64.64.
+    // Built from limbs (little-endian u64 words) to avoid arithmetic operators on U256.
+    const TWO_POW_128: U256 = U256::from_limbs([0, 0, 1, 0]);
+
+    let clamped_tick = tick.clamp(MIN_TICK, MAX_TICK);
+    let sqrt_price_x96 = uniswap_v3_math::tick_math::get_sqrt_ratio_at_tick(clamped_tick)
+        .expect("clamped tick is within [MIN_TICK, MAX_TICK]");
+    let price_q64_64 =
+        uniswap_v3_math::full_math::mul_div(sqrt_price_x96, sqrt_price_x96, TWO_POW_128)
+            .expect("1.0001^tick * 2^64 fits in U256 for any valid tick");
+
+    u128::try_from(price_q64_64).unwrap_or(u128::MAX)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Current tick account
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -620,6 +701,71 @@ mod tests {
         assert!(
             root >= U256::ONE.checked_shl(127).expect("shift < 256"),
             "root of a ~2^256 value should be ~2^128"
+        );
+    }
+
+    // ── tick_to_oracle_price ──────────────────────────────────────────────────────
+
+    #[test]
+    fn tick_zero_is_unit_price() {
+        // 1.0001^0 = 1.0 → exactly 2^64 in Q64.64.
+        assert_eq!(tick_to_oracle_price(0), ONE_Q64_64);
+    }
+
+    #[test]
+    fn positive_tick_is_above_unit() {
+        assert!(tick_to_oracle_price(1) > ONE_Q64_64);
+        assert!(tick_to_oracle_price(10_000) > ONE_Q64_64);
+    }
+
+    #[test]
+    fn negative_tick_is_below_unit() {
+        assert!(tick_to_oracle_price(-1) < ONE_Q64_64);
+        assert!(tick_to_oracle_price(-10_000) < ONE_Q64_64);
+    }
+
+    #[test]
+    fn price_is_monotonic_in_tick() {
+        let mut prev = tick_to_oracle_price(-50_000);
+        for tick in (-49_000..=50_000).step_by(1_000) {
+            let cur = tick_to_oracle_price(tick);
+            assert!(cur > prev, "price must increase with tick at {tick}");
+            prev = cur;
+        }
+    }
+
+    #[test]
+    fn tick_10000_matches_known_ratio() {
+        // 1.0001^10000 ≈ 2.71814. Check the ratio in milli-units (× 1000) lands in [2717, 2719]
+        // using integer math only — `price * 1000 / 2^64` ≈ 2718.
+        let price = tick_to_oracle_price(10_000);
+        let ratio_milli = price
+            .checked_mul(1_000)
+            .and_then(|scaled| scaled.checked_div(ONE_Q64_64))
+            .expect("price * 1000 fits in u128");
+        assert!(
+            (2_717..=2_719).contains(&ratio_milli),
+            "got {ratio_milli} / 1000"
+        );
+    }
+
+    #[test]
+    fn extreme_positive_tick_saturates() {
+        // 1.0001^MAX_TICK far exceeds 2^64, so the Q64.64 value saturates at u128::MAX.
+        let price = tick_to_oracle_price(uniswap_v3_math::tick_math::MAX_TICK);
+        assert_eq!(price, u128::MAX);
+    }
+
+    #[test]
+    fn ticks_beyond_bounds_are_clamped() {
+        // Ticks outside [MIN_TICK, MAX_TICK] must not panic; they clamp to the bound.
+        assert_eq!(
+            tick_to_oracle_price(i32::MAX),
+            tick_to_oracle_price(uniswap_v3_math::tick_math::MAX_TICK)
+        );
+        assert_eq!(
+            tick_to_oracle_price(i32::MIN),
+            tick_to_oracle_price(uniswap_v3_math::tick_math::MIN_TICK)
         );
     }
 }
