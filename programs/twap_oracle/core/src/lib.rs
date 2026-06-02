@@ -82,11 +82,43 @@ pub enum Instruction {
         /// New raw tick from the price source.
         tick: i32,
     },
+    /// Records the current tick from a [`CurrentTickAccount`] into a [`PriceObservations`]
+    /// ring buffer.
+    ///
+    /// Permissionless — anyone may call this. Both PDAs are verified against `price_source_id`,
+    /// so the tick can only have been written by whoever controls that price source.
+    ///
+    /// A sampling guard silently skips the write if less than
+    /// `window_duration / OBSERVATIONS_CAPACITY` milliseconds have elapsed since the last
+    /// observation. Callers may call this on every block without concern — the guard handles
+    /// downsampling on-chain.
+    ///
+    /// Required accounts (in order):
+    /// 1. Price observations account — initialized PDA derived from
+    ///    `compute_price_observations_pda(self_program_id, price_source_id, window_duration)`.
+    /// 2. Current tick account — initialized PDA derived from
+    ///    `compute_current_tick_account_pda(self_program_id, price_source_id)`.
+    /// 3. Clock account — read-only; supplies the current timestamp.
+    RecordTick {
+        /// ID of the price source; used to verify both PDAs.
+        price_source_id: AccountId,
+        /// Duration of the TWAP window in milliseconds; used to verify the
+        /// [`PriceObservations`] PDA and to compute the sampling guard interval.
+        window_duration: u64,
+    },
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Price feed
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// Maximum tick delta injected into the accumulator per observation.
+///
+/// Matches the Uniswap v4 truncated oracle hook reference value (~2.39× price move per block).
+/// An attacker who moves the pool by more than this in one block still only injects
+/// `MAX_TICK_DELTA` ticks into the cumulative — they must sustain the manipulation across
+/// many blocks while arbitrage erodes their position.
+pub const MAX_TICK_DELTA: i32 = 9_116;
 
 /// Number of entries in each price feed.
 ///
@@ -108,10 +140,10 @@ pub const OBSERVATIONS_CAPACITY: u32 = 6396;
 pub struct ObservationEntry {
     /// Block timestamp (milliseconds) when this entry was recorded.
     pub timestamp: u64,
-    /// Running sum of `tick × elapsed_seconds` up to this entry.
+    /// Running sum of `tick × elapsed_milliseconds` up to this entry.
     ///
     /// Grows without bound over time, which is why this is `i64` rather than `i32`.
-    /// The TWAP over any window `[t1, t2]` is computed as
+    /// The TWAP over any window `[t1, t2]` (timestamps in milliseconds) is computed as
     /// `(tick_cumulative[t2] - tick_cumulative[t1]) / (t2 - t1)`.
     pub tick_cumulative: i64,
 }
