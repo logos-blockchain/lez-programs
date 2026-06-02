@@ -51,6 +51,16 @@ impl AccountForTests {
         }
     }
 
+    /// A signed authority account whose ID matches the [15; 32] mint authority
+    /// used by definition_account_auth() / definition_account_mint().
+    fn authority_account_auth() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: true,
+            account_id: IdForTests::pool_definition_id(),
+        }
+    }
+
     fn definition_account_foreign_owner() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
@@ -904,6 +914,7 @@ fn test_mint_not_valid_holding_account() {
     let holding_account = AccountForTests::definition_account_without_auth();
     let _post_states = mint(
         definition_account,
+        AccountForTests::authority_account_auth(),
         holding_account,
         BalanceForTests::mint_success(),
         TOKEN_PROGRAM_ID,
@@ -917,6 +928,7 @@ fn test_mint_not_valid_definition_account() {
     let holding_account = AccountForTests::holding_same_definition_without_authorization();
     let _post_states = mint(
         definition_account,
+        AccountForTests::authority_account_auth(),
         holding_account,
         BalanceForTests::mint_success(),
         TOKEN_PROGRAM_ID,
@@ -924,12 +936,19 @@ fn test_mint_not_valid_definition_account() {
 }
 
 #[test]
-#[should_panic(expected = "Definition authorization is missing")]
+#[should_panic(expected = "Mint authority must sign the transaction")]
 fn test_mint_missing_authorization() {
-    let definition_account = AccountForTests::definition_account_without_auth();
+    let definition_account = AccountForTests::definition_account_auth();
     let holding_account = AccountForTests::holding_same_definition_without_authorization();
+    // authority account that is NOT signed
+    let unsigned_authority = AccountWithMetadata {
+        account: Account::default(),
+        is_authorized: false,
+        account_id: IdForTests::pool_definition_id(),
+    };
     let _post_states = mint(
         definition_account,
+        unsigned_authority,
         holding_account,
         BalanceForTests::mint_success(),
         TOKEN_PROGRAM_ID,
@@ -943,6 +962,7 @@ fn test_mint_rejects_foreign_owned_definition() {
     let holding_account = AccountForTests::holding_account_uninit();
     let _post_states = mint(
         definition_account,
+        AccountForTests::authority_account_auth(),
         holding_account,
         BalanceForTests::mint_success(),
         TOKEN_PROGRAM_ID,
@@ -952,10 +972,12 @@ fn test_mint_rejects_foreign_owned_definition() {
 #[test]
 #[should_panic(expected = "Mismatch Token Definition and Token Holding")]
 fn test_mint_mismatched_token_definition() {
+    //
     let definition_account = AccountForTests::definition_account_auth();
     let holding_account = AccountForTests::holding_different_definition();
     let _post_states = mint(
         definition_account,
+        AccountForTests::authority_account_auth(),
         holding_account,
         BalanceForTests::mint_success(),
         TOKEN_PROGRAM_ID,
@@ -968,12 +990,13 @@ fn test_mint_success() {
     let holding_account = AccountForTests::holding_same_definition_without_authorization();
     let post_states = mint(
         definition_account,
+        AccountForTests::authority_account_auth(),
         holding_account,
         BalanceForTests::mint_success(),
         TOKEN_PROGRAM_ID,
     );
 
-    let [def_post, holding_post] = post_states.try_into().unwrap();
+    let [def_post, _authority_post, holding_post] = post_states.try_into().unwrap();
 
     assert_eq!(
         *def_post.account(),
@@ -993,12 +1016,13 @@ fn test_mint_uninit_holding_success() {
     let holding_account = AccountForTests::holding_account_uninit();
     let post_states = mint(
         definition_account,
+        AccountForTests::authority_account_auth(),
         holding_account,
         BalanceForTests::mint_success(),
         TOKEN_PROGRAM_ID,
     );
 
-    let [def_post, holding_post] = post_states.try_into().unwrap();
+    let [def_post, _authority_post, holding_post] = post_states.try_into().unwrap();
 
     assert_eq!(
         *def_post.account(),
@@ -1019,6 +1043,7 @@ fn test_mint_total_supply_overflow() {
     let holding_account = AccountForTests::holding_same_definition_without_authorization();
     let _post_states = mint(
         definition_account,
+        AccountForTests::authority_account_auth(),
         holding_account,
         BalanceForTests::mint_overflow(),
         TOKEN_PROGRAM_ID,
@@ -1032,6 +1057,7 @@ fn test_mint_holding_account_overflow() {
     let holding_account = AccountForTests::holding_same_definition_without_authorization_overflow();
     let _post_states = mint(
         definition_account,
+        AccountForTests::authority_account_auth(),
         holding_account,
         BalanceForTests::mint_overflow(),
         TOKEN_PROGRAM_ID,
@@ -1045,6 +1071,7 @@ fn test_mint_cannot_mint_unmintable_tokens() {
     let holding_account = AccountForTests::holding_account_master_nft();
     let _post_states = mint(
         definition_account,
+        AccountForTests::authority_account_auth(),
         holding_account,
         BalanceForTests::mint_success(),
         TOKEN_PROGRAM_ID,
@@ -1364,24 +1391,6 @@ mod authority_tests {
         }
     }
 
-    fn def_without_auth_flag() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: [5_u32; 8],
-                balance: 0_u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: 100_000_u128,
-                    metadata_id: None,
-                    mint_authority: Some(AUTHORITY),
-                }),
-                nonce: 0_u128.into(),
-            },
-            is_authorized: false,
-            account_id: AccountId::new([15; 32]),
-        }
-    }
-
     fn holding_account() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
@@ -1398,15 +1407,34 @@ mod authority_tests {
         }
     }
 
+    /// Signed authority matching the [15; 32] stored mint authority.
+    fn authority_signer() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: true,
+            account_id: AccountId::new([15; 32]),
+        }
+    }
+
+    /// A different signer (Bob) — NOT the current authority.
+    fn wrong_authority_signer() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: true,
+            account_id: AccountId::new([99; 32]),
+        }
+    }
+
     #[test]
     fn mint_with_authority_succeeds() {
         let post_states = mint(
             def_with_authority(),
+            authority_signer(),
             holding_account(),
             50_000,
             TOKEN_PROGRAM_ID,
         );
-        let [def_post, holding_post] = post_states.try_into().unwrap();
+        let [def_post, _authority_post, holding_post] = post_states.try_into().unwrap();
 
         let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
         let holding = TokenHolding::try_from(&holding_post.account().data).unwrap();
@@ -1429,10 +1457,11 @@ mod authority_tests {
     }
 
     #[test]
-    #[should_panic(expected = "Mint authority has been revoked; this token has a fixed supply")]
+    #[should_panic(expected = "Mint authority check failed")]
     fn mint_with_revoked_authority_fails() {
         let _ = mint(
             def_with_authority_revoked(),
+            authority_signer(),
             holding_account(),
             50_000,
             TOKEN_PROGRAM_ID,
@@ -1440,10 +1469,16 @@ mod authority_tests {
     }
 
     #[test]
-    #[should_panic(expected = "Definition authorization is missing")]
+    #[should_panic(expected = "Mint authority must sign the transaction")]
     fn mint_without_is_authorized_fails() {
+        let unsigned_authority = AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: AccountId::new([15; 32]),
+        };
         let _ = mint(
-            def_without_auth_flag(),
+            def_with_authority(),
+            unsigned_authority,
             holding_account(),
             50_000,
             TOKEN_PROGRAM_ID,
@@ -1453,8 +1488,8 @@ mod authority_tests {
     #[test]
     fn set_authority_rotates_to_new_key() {
         let new_key = [7_u8; 32];
-        let post_states = set_authority(def_with_authority(), Some(new_key));
-        let [def_post] = post_states.try_into().unwrap();
+        let post_states = set_authority(def_with_authority(), authority_signer(), Some(new_key));
+        let [def_post, _authority_post] = post_states.try_into().unwrap();
 
         let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
         assert!(matches!(
@@ -1464,9 +1499,21 @@ mod authority_tests {
     }
 
     #[test]
+    #[should_panic(expected = "Mint authority check failed")]
+    fn mint_with_wrong_signer_fails() {
+        let _ = mint(
+            def_with_authority(),
+            wrong_authority_signer(),
+            holding_account(),
+            50_000,
+            TOKEN_PROGRAM_ID,
+        );
+    }
+
+    #[test]
     fn set_authority_revokes_permanently() {
-        let post_states = set_authority(def_with_authority(), None);
-        let [def_post] = post_states.try_into().unwrap();
+        let post_states = set_authority(def_with_authority(), authority_signer(), None);
+        let [def_post, _authority_post] = post_states.try_into().unwrap();
 
         let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
         assert!(matches!(
@@ -1479,22 +1526,41 @@ mod authority_tests {
     }
 
     #[test]
-    #[should_panic(expected = "Mint authority already revoked; supply is permanently fixed")]
+    #[should_panic(expected = "SetAuthority failed")]
     fn set_authority_on_revoked_fails() {
-        let _ = set_authority(def_with_authority_revoked(), Some([7_u8; 32]));
+        let _ = set_authority(
+            def_with_authority_revoked(),
+            authority_signer(),
+            Some([7_u8; 32]),
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Definition account authorization is missing")]
+    #[should_panic(expected = "Mint authority must sign the transaction")]
     fn set_authority_without_is_authorized_fails() {
-        let _ = set_authority(def_without_auth_flag(), Some([7_u8; 32]));
+        let unsigned_authority = AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: AccountId::new([15; 32]),
+        };
+        let _ = set_authority(def_with_authority(), unsigned_authority, Some([7_u8; 32]));
+    }
+
+    #[test]
+    #[should_panic(expected = "SetAuthority failed")]
+    fn set_authority_wrong_signer_fails() {
+        let _ = set_authority(
+            def_with_authority(),
+            wrong_authority_signer(),
+            Some([7_u8; 32]),
+        );
     }
 
     #[test]
     fn set_authority_rotate_then_old_cannot_mint() {
         let new_key = [7_u8; 32];
-        let post_states = set_authority(def_with_authority(), Some(new_key));
-        let [def_post] = post_states.try_into().unwrap();
+        let post_states = set_authority(def_with_authority(), authority_signer(), Some(new_key));
+        let [def_post, _authority_post] = post_states.try_into().unwrap();
 
         let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
         assert!(matches!(

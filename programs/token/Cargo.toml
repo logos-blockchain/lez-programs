@@ -9,3 +9,4 @@ workspace = true
 [dependencies]
 nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", features = ["host"], package = "lee_core" }
 token_core = { path = "core" }
+lez-authority = { path = "../../lez-authority" }

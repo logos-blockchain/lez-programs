@@ -1,8 +1,8 @@
 #![cfg_attr(not(test), no_main)]
 
-use spel_framework::prelude::*;
-use spel_framework::context::ProgramContext;
 use nssa_core::account::AccountWithMetadata;
+use spel_framework::context::ProgramContext;
+use spel_framework::prelude::*;
 
 #[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
@@ -25,11 +25,10 @@ mod token {
         recipient: AccountWithMetadata,
         amount_to_transfer: u128,
     ) -> SpelResult {
-        Ok(spel_framework::SpelOutput::execute(token_program::transfer::transfer(
-            sender,
-            recipient,
-            amount_to_transfer,
-        ), vec![]))
+        Ok(spel_framework::SpelOutput::execute(
+            token_program::transfer::transfer(sender, recipient, amount_to_transfer),
+            vec![],
+        ))
     }
 
     /// Create a new fungible token definition without metadata.
@@ -111,11 +110,10 @@ mod token {
         user_holding_account: AccountWithMetadata,
         amount_to_burn: u128,
     ) -> SpelResult {
-        Ok(spel_framework::SpelOutput::execute(token_program::burn::burn(
-            definition_account,
-            user_holding_account,
-            amount_to_burn,
-        ), vec![]))
+        Ok(spel_framework::SpelOutput::execute(
+            token_program::burn::burn(definition_account, user_holding_account, amount_to_burn),
+            vec![],
+        ))
     }
 
     /// Mint new tokens to the holder's account.
@@ -125,18 +123,21 @@ mod token {
         ctx: ProgramContext,
         #[account(mut, signer)]
         definition_account: AccountWithMetadata,
-        #[account(mut)]
+        authority_account: AccountWithMetadata,
         user_holding_account: AccountWithMetadata,
         amount_to_mint: u128,
     ) -> SpelResult {
-        Ok(spel_framework::SpelOutput::execute(token_program::mint::mint(
-            definition_account,
-            user_holding_account,
-            amount_to_mint,
-            ctx.self_program_id,
-        ), vec![]))
+        Ok(spel_framework::SpelOutput::execute(
+            token_program::mint::mint(
+                definition_account,
+                authority_account,
+                user_holding_account,
+                amount_to_mint,
+                ctx.self_program_id,
+            ),
+            vec![],
+        ))
     }
-
 
     /// Create a new fungible token definition with a mint authority.
     /// Unlike NewFungibleDefinition, this allows minting additional tokens later.
@@ -165,11 +166,13 @@ mod token {
     #[instruction]
     pub fn set_authority(
         definition_account: AccountWithMetadata,
+        authority_account: AccountWithMetadata,
         new_authority: Option<[u8; 32]>,
     ) -> SpelResult {
         Ok(spel_framework::SpelOutput::execute(
             token_program::set_authority::set_authority(
                 definition_account,
+                authority_account,
                 new_authority,
             ),
             vec![],
@@ -185,9 +188,9 @@ mod token {
         #[account(init, signer)]
         printed_account: AccountWithMetadata,
     ) -> SpelResult {
-        Ok(spel_framework::SpelOutput::execute(token_program::print_nft::print_nft(
-            master_account,
-            printed_account,
-        ), vec![]))
+        Ok(spel_framework::SpelOutput::execute(
+            token_program::print_nft::print_nft(master_account, printed_account),
+            vec![],
+        ))
     }
 }

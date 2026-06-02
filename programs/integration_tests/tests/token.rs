@@ -28,6 +28,10 @@ impl Keys {
     fn recipient_key() -> PrivateKey {
         PrivateKey::try_new([12; 32]).expect("valid private key")
     }
+
+    fn authority_key() -> PrivateKey {
+        PrivateKey::try_new([13; 32]).expect("valid private key")
+    }
 }
 
 impl Ids {
@@ -50,6 +54,10 @@ impl Ids {
     fn recipient() -> AccountId {
         AccountId::from(&PublicKey::new_from_private_key(&Keys::recipient_key()))
     }
+
+    fn authority() -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(&Keys::authority_key()))
+    }
 }
 
 impl Accounts {
@@ -62,7 +70,7 @@ impl Accounts {
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
                 mint_authority: Some(
-                    Ids::token_definition()
+                    Ids::authority()
                         .as_ref()
                         .try_into()
                         .expect("AccountId is always 32 bytes"),
@@ -81,7 +89,7 @@ impl Accounts {
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
                 mint_authority: Some(
-                    Ids::token_definition()
+                    Ids::authority()
                         .as_ref()
                         .try_into()
                         .expect("AccountId is always 32 bytes"),
@@ -114,6 +122,15 @@ impl Accounts {
             nonce: Nonce(0),
         }
     }
+
+    fn authority_init() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::default(),
+            nonce: Nonce(0),
+        }
+    }
 }
 
 fn deploy_token(state: &mut V03State) {
@@ -130,6 +147,7 @@ fn state_for_token_tests() -> V03State {
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::holder(), Accounts::holder_init());
     state.force_insert_account(Ids::recipient(), Accounts::recipient_init());
+    state.force_insert_account(Ids::authority(), Accounts::authority_init());
     state
 }
 
@@ -138,6 +156,7 @@ fn state_for_token_tests_without_recipient() -> V03State {
     deploy_token(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::holder(), Accounts::holder_init());
+    state.force_insert_account(Ids::authority(), Accounts::authority_init());
     state
 }
 
@@ -429,7 +448,7 @@ fn token_burn() {
                 total_supply: 800_000_u128,
                 metadata_id: None,
                 mint_authority: Some(
-                    Ids::token_definition()
+                    Ids::authority()
                         .as_ref()
                         .try_into()
                         .expect("AccountId is always 32 bytes")
@@ -463,13 +482,14 @@ fn token_mint() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
+        vec![Ids::token_definition(), Ids::authority(), Ids::holder()],
         vec![Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -484,13 +504,13 @@ fn token_mint() {
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
                 mint_authority: Some(
-                    Ids::token_definition()
+                    Ids::authority()
                         .as_ref()
                         .try_into()
                         .expect("AccountId is always 32 bytes")
                 ),
             }),
-            nonce: Nonce(1),
+            nonce: Nonce(0),
         }
     );
 
@@ -522,7 +542,7 @@ fn token_mint_rejects_foreign_owned_definition() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
+        vec![Ids::token_definition(), Ids::authority(), Ids::recipient()],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -530,7 +550,7 @@ fn token_mint_rejects_foreign_owned_definition() {
 
     let witness_set = public_transaction::WitnessSet::for_message(
         &message,
-        &[&Keys::def_key(), &Keys::recipient_key()],
+        &[&Keys::authority_key(), &Keys::recipient_key()],
     );
 
     let tx = PublicTransaction::new(message, witness_set);
@@ -556,13 +576,14 @@ fn token_mint_fresh_public_recipient_requires_authorization() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
+        vec![Ids::token_definition(), Ids::authority(), Ids::recipient()],
         vec![Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
@@ -587,7 +608,7 @@ fn token_mint_fresh_authorized_public_recipient() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
+        vec![Ids::token_definition(), Ids::authority(), Ids::recipient()],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -595,7 +616,7 @@ fn token_mint_fresh_authorized_public_recipient() {
 
     let witness_set = public_transaction::WitnessSet::for_message(
         &message,
-        &[&Keys::def_key(), &Keys::recipient_key()],
+        &[&Keys::authority_key(), &Keys::recipient_key()],
     );
 
     let tx = PublicTransaction::new(message, witness_set);
@@ -611,13 +632,13 @@ fn token_mint_fresh_authorized_public_recipient() {
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
                 mint_authority: Some(
-                    Ids::token_definition()
+                    Ids::authority()
                         .as_ref()
                         .try_into()
                         .expect("AccountId is always 32 bytes")
                 ),
             }),
-            nonce: Nonce(1),
+            nonce: Nonce(0),
         }
     );
 
@@ -993,11 +1014,10 @@ fn token_new_fungible_definition_with_authority() {
 fn token_set_authority_revoke() {
     let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_token(&mut state);
-    let authority_key: [u8; 32] = Ids::token_definition()
+    let authority_key: [u8; 32] = Ids::authority()
         .as_ref()
         .try_into()
         .expect("AccountId is always 32 bytes");
-
     // Create token with authority
     let instruction = token_core::Instruction::NewFungibleDefinitionWithAuthority {
         name: String::from("AuthCoin"),
@@ -1017,18 +1037,23 @@ fn token_set_authority_revoke() {
     );
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // Seed the authority account so it can sign the revoke
+    state.force_insert_account(Ids::authority(), Accounts::authority_init());
+
     // Revoke authority
     let instruction = token_core::Instruction::SetAuthority {
         new_authority: None,
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition()],
-        vec![Nonce(1)],
+        vec![Ids::token_definition(), Ids::authority()],
+        vec![Nonce(0)],
         instruction,
     )
     .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
     assert_eq!(
@@ -1042,7 +1067,7 @@ fn token_set_authority_revoke() {
                 metadata_id: None,
                 mint_authority: None,
             }),
-            nonce: Nonce(2),
+            nonce: Nonce(1),
         }
     );
 }

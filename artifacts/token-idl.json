@@ -140,6 +140,12 @@
           "init": false
         },
         {
+          "name": "authority_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "user_holding_account",
           "writable": true,
           "signer": false,
@@ -194,6 +200,12 @@
       "accounts": [
         {
           "name": "definition_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "authority_account",
           "writable": false,
           "signer": false,
           "init": false

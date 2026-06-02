@@ -46,6 +46,22 @@ TOKEN_BIN="${TOKEN_BIN:-$LEZ_PROGRAMS/target/riscv-guest/token-methods/token-gue
 DEMO_DIR="${DEMO_DIR:-$(pwd)}"
 WALLET_DIR="${WALLET_DIR:-$DEMO_DIR/.scaffold/wallet}"
 
+# Convert a base58 "Public/..." account_id to the 64-char hex form
+# that SPEL expects for [u8; 32] args (e.g. --mint-authority).
+b58_to_hex() {
+    local id="${1#Public/}"   # strip the Public/ prefix
+    id="${id#Private/}"        # strip Private/ if present
+    python3 -c "
+import sys
+s = sys.argv[1]
+alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+num = 0
+for c in s:
+    num = num * 58 + alphabet.index(c)
+print(num.to_bytes(32, 'big').hex())
+" "$id"
+}
+
 echo "================================================================"
 echo " LP-0013: Token Program Mint Authority — End-to-End Demo"
 echo " RISC0_DEV_MODE=${RISC0_DEV_MODE:-not set}"
@@ -66,17 +82,18 @@ lgs wallet topup 2>&1 | grep -E "complete|funded|Address" || true
 echo "      Wallet funded."
 
 echo "[3/7] Creating token accounts..."
-DEF_RESULT=$(lgs wallet -- account new --public 2>&1)
-DEF_ID=$(echo "$DEF_RESULT" | grep -oE '[0-9a-f]{64}' | head -1)
-SUPPLY_RESULT=$(lgs wallet -- account new --public 2>&1)
-SUPPLY_ID=$(echo "$SUPPLY_RESULT" | grep -oE '[0-9a-f]{64}' | head -1)
-RECIPIENT_RESULT=$(lgs wallet -- account new --public 2>&1)
-RECIPIENT_ID=$(echo "$RECIPIENT_RESULT" | grep -oE '[0-9a-f]{64}' | head -1)
+DEF_RESULT=$(lgs wallet -- account new public 2>&1)
+DEF_ID=$(echo "$DEF_RESULT" | grep -oE 'account_id [^ ]+' | awk '{print $2}')
+SUPPLY_RESULT=$(lgs wallet -- account new public 2>&1)
+SUPPLY_ID=$(echo "$SUPPLY_RESULT" | grep -oE 'account_id [^ ]+' | awk '{print $2}')
+RECIPIENT_RESULT=$(lgs wallet -- account new public 2>&1)
+RECIPIENT_ID=$(echo "$RECIPIENT_RESULT" | grep -oE 'account_id [^ ]+' | awk '{print $2}')
 echo "      Definition account: $DEF_ID"
 echo "      Supply account:     $SUPPLY_ID"
 echo "      Recipient account:  $RECIPIENT_ID"
 
 echo "[4/7] Creating token with mint authority..."
+DEF_ID_HEX=$(b58_to_hex "$DEF_ID")
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- new-fungible-definition-with-authority \
@@ -84,7 +101,7 @@ ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   --holding-target-account "$SUPPLY_ID" \
   --name "DemoCoin" \
   --initial-supply 1000000 \
-  --mint-authority "$DEF_ID"
+  --mint-authority "$DEF_ID_HEX"
 echo "      Token 'DemoCoin' submitted. Initial supply: 1,000,000"
 
 sleep 2
@@ -94,6 +111,7 @@ NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- mint \
   --definition-account "$DEF_ID" \
+  --authority-account "$DEF_ID" \
   --user-holding-account "$RECIPIENT_ID" \
   --amount-to-mint 500000
 echo "      Mint transaction submitted. New total supply: 1,500,000"
@@ -105,6 +123,7 @@ NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- set-authority \
   --definition-account "$DEF_ID" \
+  --authority-account "$DEF_ID" \
   --new-authority none
 echo "      Authority revoked. Supply permanently fixed at 1,500,000"
 
