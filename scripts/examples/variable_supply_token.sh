@@ -1,73 +1,91 @@
 #!/usr/bin/env bash
-# LP-0013 Example 2: Variable Supply Token with Authority Rotation
-# Creates a token with alice as mint authority, mints tokens,
-# rotates authority to bob, verifies alice can no longer mint,
-# then bob mints successfully.
+# LP-0013 Example: Variable Supply Token with Authority Rotation
+#
+# Demonstrates, against a real LEZ sequencer via spel:
+#   - creating a fungible token with a mint authority
+#   - minting additional supply (authority-gated)
+#   - rotating the mint authority to a new key
+#
+# The guarantee that the OLD authority can no longer mint after rotation —
+# and that only the current authority's signer is accepted — is enforced by
+# lez-authority's AuthoritySlot and covered by:
+#   - token_program unit tests: set_authority_rotate_then_old_cannot_mint,
+#     mint_with_wrong_signer_fails, set_authority_wrong_signer_fails
+#   - integration test: token_set_authority_revoke
+# Run them with: RISC0_DEV_MODE=0 cargo test -p token_program -p lez-authority --lib
+#
+# Usage (from inside an lgs scaffold project dir):
+#   RISC0_DEV_MODE=0 bash <path-to-lez-programs>/scripts/examples/variable_supply_token.sh
 set -euo pipefail
 
-echo "=== Variable Supply Token (Authority Rotation) Example ==="
-echo ""
+SPEL="${SPEL:-$HOME/rebase-lez/spel/target/release/spel}"
+LEZ_PROGRAMS="${LEZ_PROGRAMS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+IDL="${IDL:-$LEZ_PROGRAMS/artifacts/token-idl.json}"
+TOKEN_BIN="${TOKEN_BIN:-$LEZ_PROGRAMS/target/riscv-guest/token-methods/token-guest/riscv32im-risc0-zkvm-elf/release/token.bin}"
+WALLET_DIR="${WALLET_DIR:-$(pwd)/.scaffold/wallet}"
 
-# 1. Start localnet if not running
-echo "[1/7] Checking localnet..."
-lgs localnet status --json 2>/dev/null | grep -q '"running":true' || lgs localnet start
+b58_to_hex() {
+    local id="${1#Public/}"
+    id="${id#Private/}"
+    python3 -c "
+import sys
+s = sys.argv[1]
+alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+num = 0
+for c in s:
+    num = num * 58 + alphabet.index(c)
+print(num.to_bytes(32, 'big').hex())
+" "$id"
+}
+
+echo "=== Variable Supply Token (Authority Rotation) Example ==="
+
+echo "[1/5] Checking localnet..."
+lgs localnet status 2>/dev/null | grep -q "ready: true" || lgs localnet start
 echo "      Localnet ready."
 
-# 2. Set up two wallets (alice = current wallet default, bob = second key)
-echo "[2/7] Setting up accounts..."
-ALICE=$(lgs wallet -- account default)
-DEF_ID=$(lgs wallet -- account new --public | grep "account_id" | awk '{print $2}')
-ALICE_HOLD=$(lgs wallet -- account new --public | grep "account_id" | awk '{print $2}')
-echo "      Alice:      $ALICE"
+echo "[2/5] Creating accounts..."
+DEF_ID=$(lgs wallet -- account new public 2>&1 | grep -oE 'account_id [^ ]+' | awk '{print $2}')
+HOLD_ID=$(lgs wallet -- account new public 2>&1 | grep -oE 'account_id [^ ]+' | awk '{print $2}')
+NEW_AUTH_ID=$(lgs wallet -- account new public 2>&1 | grep -oE 'account_id [^ ]+' | awk '{print $2}')
+DEF_ID_HEX=$(b58_to_hex "$DEF_ID")
+NEW_AUTH_HEX=$(b58_to_hex "$NEW_AUTH_ID")
 echo "      Definition: $DEF_ID"
+echo "      New authority (rotation target): $NEW_AUTH_ID"
 
-# 3. Create token with alice as mint authority
-echo "[3/7] Alice creates token with mint authority..."
-lgs wallet -- token new-with-authority \
-    --definition "$DEF_ID" \
-    --holding "$ALICE_HOLD" \
-    --name "VarCoin" \
-    --initial-supply 100000 \
-    --mint-authority "$ALICE"
-echo "      Token created. Alice is mint authority."
+echo "[3/5] Creating token with mint authority (the definition account)..."
+NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
+"$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
+  -- new-fungible-definition-with-authority \
+  --definition-target-account "$DEF_ID" \
+  --holding-target-account "$HOLD_ID" \
+  --name "VarCoin" \
+  --initial-supply 100000 \
+  --mint-authority "$DEF_ID_HEX"
+echo "      Token 'VarCoin' created. Initial supply: 100,000"
+sleep 2
 
-# 4. Alice mints 50,000 tokens
-echo "[4/7] Alice mints 50,000 tokens..."
-lgs wallet -- token mint \
-    --definition "$DEF_ID" \
-    --holding "$ALICE_HOLD" \
-    --amount 50000
-echo "      Minted. Alice holding: 150,000"
+echo "[4/5] Minting 50,000 more (authority-gated)..."
+NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
+"$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
+  -- mint \
+  --definition-account "$DEF_ID" \
+  --authority-account "$DEF_ID" \
+  --user-holding-account "$HOLD_ID" \
+  --amount-to-mint 50000
+echo "      Minted. Total supply: 150,000"
+sleep 2
 
-# 5. Alice rotates authority to bob
-echo "[5/7] Alice rotates mint authority to bob..."
-BOB=$(lgs wallet -- account new --public | grep "account_id" | awk '{print $2}')
-lgs wallet -- token set-authority \
-    --definition "$DEF_ID" \
-    --new-authority "$BOB"
-echo "      Authority rotated to bob: $BOB"
-
-# 6. Alice tries to mint — should fail
-echo "[6/7] Verifying alice can no longer mint..."
-EXTRA_HOLD=$(lgs wallet -- account new --public | grep "account_id" | awk '{print $2}')
-if lgs wallet -- token mint \
-    --definition "$DEF_ID" \
-    --holding "$EXTRA_HOLD" \
-    --amount 1 2>&1 | grep -q "authorization\|unauthorized\|authority"; then
-    echo "      ✓ Alice correctly rejected after authority rotation"
-else
-    echo "      ✗ FAIL: Expected alice to be rejected after rotation"
-    exit 1
-fi
-
-# 7. Bob mints successfully (bob now controls the definition account)
-echo "[7/7] Bob mints 25,000 tokens..."
-BOB_HOLD=$(lgs wallet -- account new --public | grep "account_id" | awk '{print $2}')
-lgs wallet -- token set-authority \
-    --definition "$DEF_ID" \
-    --new-authority "$BOB" 2>/dev/null || true
-echo "      (Note: full bob mint requires bob wallet session — see README)"
-echo "      Authority rotation verified structurally via unit tests."
+echo "[5/5] Rotating mint authority to a new key..."
+NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
+"$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
+  -- set-authority \
+  --definition-account "$DEF_ID" \
+  --authority-account "$DEF_ID" \
+  --new-authority "$NEW_AUTH_HEX"
+echo "      Authority rotated to: $NEW_AUTH_ID"
+echo "      After rotation, only the new authority's signer can mint —"
+echo "      enforced by lez-authority and covered by unit/integration tests."
 
 echo ""
-echo "=== Variable Supply Token Example PASSED ==="
+echo "=== Variable Supply Token Example complete ==="
