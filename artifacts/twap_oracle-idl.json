@@ -106,6 +106,39 @@
       ]
     },
     {
+      "name": "record_tick",
+      "accounts": [
+        {
+          "name": "price_observations",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "current_tick_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "price_source_id",
+          "type": "account_id"
+        },
+        {
+          "name": "window_duration",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "update_current_tick",
       "accounts": [
         {

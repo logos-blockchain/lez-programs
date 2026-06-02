@@ -105,6 +105,32 @@ mod twap_oracle {
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
 
+    /// Records the current tick into a price observations ring buffer.
+    ///
+    /// Expected accounts:
+    /// 1. `price_observations` — initialized PDA owned by this oracle program.
+    /// 2. `current_tick_account` — initialized PDA owned by this oracle program.
+    /// 3. `clock` — read-only LEZ clock account.
+    #[instruction]
+    pub fn record_tick(
+        ctx: ProgramContext,
+        price_observations: AccountWithMetadata,
+        current_tick_account: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        price_source_id: AccountId,
+        window_duration: u64,
+    ) -> SpelResult {
+        let post_states = twap_oracle_program::record_tick::record_tick(
+            price_observations,
+            current_tick_account,
+            clock,
+            price_source_id,
+            window_duration,
+            ctx.self_program_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
+    }
+
     /// Updates the tick stored in an existing current tick account.
     ///
     /// Expected accounts:

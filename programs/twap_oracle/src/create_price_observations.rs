@@ -25,6 +25,9 @@ use twap_oracle_core::{
 /// - `price_observations.account` is not the default (already initialised).
 /// - `price_source.is_authorized` is false (caller does not control the price source account).
 /// - `clock.account_id` is not [`CLOCK_01_PROGRAM_ACCOUNT_ID`].
+/// - `window_duration` is smaller than [`OBSERVATIONS_CAPACITY`]. The sampling interval enforced by
+///   `RecordTick` is `window_duration / OBSERVATIONS_CAPACITY` (integer division); a smaller window
+///   floors it to zero, disabling the guard and letting same-timestamp writes trample the buffer.
 pub fn create_price_observations(
     price_observations: AccountWithMetadata,
     price_source: AccountWithMetadata,
@@ -51,6 +54,11 @@ pub fn create_price_observations(
     assert_eq!(
         clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
         "CreatePriceObservations: clock account must be the canonical 1-block LEZ clock account"
+    );
+    assert!(
+        window_duration >= u64::from(OBSERVATIONS_CAPACITY),
+        "CreatePriceObservations: window_duration must be >= OBSERVATIONS_CAPACITY so the RecordTick \
+         sampling interval (window_duration / OBSERVATIONS_CAPACITY) is at least one millisecond"
     );
 
     let clock_data = ClockAccountData::from_bytes(clock.account.data.as_ref());
@@ -429,5 +437,58 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
+    }
+
+    /// A window smaller than `OBSERVATIONS_CAPACITY` floors the `RecordTick` sampling interval to
+    /// zero, disabling the guard, so it must be rejected at creation. The uninitialised account is
+    /// built at the small window's PDA so the window check — not the PDA check — is what fires.
+    #[test]
+    #[should_panic(expected = "window_duration must be >= OBSERVATIONS_CAPACITY")]
+    fn window_duration_below_capacity_panics() {
+        let small_window = u64::from(OBSERVATIONS_CAPACITY)
+            .checked_sub(1)
+            .expect("OBSERVATIONS_CAPACITY is non-zero");
+        let uninit = AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: compute_price_observations_pda(
+                ORACLE_PROGRAM_ID,
+                price_source_id(),
+                small_window,
+            ),
+        };
+        create_price_observations(
+            uninit,
+            price_source_authorized(),
+            clock_account_with_timestamp(0),
+            0,
+            small_window,
+            ORACLE_PROGRAM_ID,
+        );
+    }
+
+    /// A window exactly equal to `OBSERVATIONS_CAPACITY` is the minimum accepted value — the
+    /// sampling interval is exactly one millisecond.
+    #[test]
+    fn window_duration_equal_to_capacity_is_accepted() {
+        let window = u64::from(OBSERVATIONS_CAPACITY);
+        let uninit = AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: compute_price_observations_pda(
+                ORACLE_PROGRAM_ID,
+                price_source_id(),
+                window,
+            ),
+        };
+        let post_states = create_price_observations(
+            uninit,
+            price_source_authorized(),
+            clock_account_with_timestamp(0),
+            0,
+            window,
+            ORACLE_PROGRAM_ID,
+        );
+        assert_eq!(post_states.len(), 3);
     }
 }
