@@ -26,7 +26,7 @@ The `lez-authority` crate provides a reusable, program-agnostic authority librar
 | Instruction | Description |
 |---|---|
 | `NewFungibleDefinitionWithAuthority` | Create token with mint authority |
-| `Mint` (updated) | Now authority-gated — rejects if authority is None |
+| `Mint` (updated) | Now authority-gated — Now authority-gated |
 | `SetAuthority` | Rotate or revoke mint authority |
 
 ### Atomicity
@@ -37,9 +37,12 @@ The `lez-authority` crate provides a reusable, program-agnostic authority librar
 
 | Condition | Message |
 |---|---|
-| Mint with revoked authority | Mint authority has been revoked; this token has a fixed supply |
-| SetAuthority without authorization | Definition account authorization is missing |
-| SetAuthority on already-revoked | Mint authority already revoked; supply is permanently fixed |
+| Mint when authority revoked | Mint authority check failed: Revoked |
+| Mint by non-authority signer | Mint authority check failed: Unauthorized |
+| Mint/SetAuthority without signed authority | Mint authority must sign the transaction |
+| SetAuthority on already-revoked | SetAuthority failed: AlreadyRevoked |
+| SetAuthority by wrong signer | SetAuthority failed: Unauthorized |
+| Create/rotate with all-zero authority | Mint authority must be a valid non-zero account ID |
 
 ## Crate Structure
 
@@ -81,8 +84,12 @@ The `lez-authority` crate was also submitted as part of [RFP-001 PR #212](https:
 
 ## Deployment
 
-### Program ID (LEZ localnet)
-efdf86b1127c57c4653903e78bd2174b539fd688054331618c48f98c8fc057bd
+The program ID is the hash of the compiled guest ELF and will change whenever
+the guest is rebuilt. Obtain the current ID after building:
+
+```bash
+lgs deploy --program-path target/riscv-guest/token-methods/token-guest/riscv32im-risc0-zkvm-elf/release/token.bin
+```
 
 ### Build the guest binary
 
@@ -127,6 +134,7 @@ spel --idl artifacts/token-idl.json --program <token-binary> \
 spel --idl artifacts/token-idl.json --program <token-binary> \
   -- mint \
   --definition-account <DEF_ID> \
+  --authority-account <AUTHORITY_ID> \
   --user-holding-account <HOLDER_ID> \
   --amount-to-mint 500000
 ```
@@ -137,6 +145,7 @@ spel --idl artifacts/token-idl.json --program <token-binary> \
 spel --idl artifacts/token-idl.json --program <token-binary> \
   -- set-authority \
   --definition-account <DEF_ID> \
+  --authority-account <AUTHORITY_ID> \
   --new-authority <NEW_KEY_HEX>
 ```
 
@@ -146,6 +155,7 @@ spel --idl artifacts/token-idl.json --program <token-binary> \
 spel --idl artifacts/token-idl.json --program <token-binary> \
   -- set-authority \
   --definition-account <DEF_ID> \
+  --authority-account <AUTHORITY_ID> \
   --new-authority none
 ```
 
@@ -185,7 +195,7 @@ The script will:
 4. Submit `NewFungibleDefinitionWithAuthority` (creates "DemoCoin" with 1M supply)
 5. Submit `Mint` (mints 500K to recipient → total supply 1.5M)
 6. Submit `SetAuthority` with `None` (permanently revokes minting)
-7. Run unit tests to verify authority logic (60 tests)
+7. Run unit tests to verify authority logic (64 tests)
 
 ## Compute Unit (CU) Costs
 

@@ -52,9 +52,9 @@ pub enum Instruction {
     /// Mint new tokens to the holder's account.
     ///
     /// Required accounts:
-    /// - Token Definition account (initialized, authorized),
-    /// - Token Holding account (initialized, or uninitialized with holder authorization in the
-    ///   same transaction).
+    /// - Token Definition account (initialized).
+    /// - Authority account: must sign and match the stored mint authority.
+    /// - Token Holding account (uninitialized or authorized and initialized).
     Mint { amount_to_mint: u128 },
 
     /// Print a new NFT from the master copy.
@@ -81,7 +81,8 @@ pub enum Instruction {
     /// Pass `new_authority: None` to permanently revoke minting (fixed supply).
     ///
     /// Required accounts:
-    /// - Token Definition account (initialized, authorized by current mint authority).
+    /// - Token Definition account (initialized).
+    /// - Authority account: must sign and match the current mint authority.
     SetAuthority { new_authority: Option<[u8; 32]> },
 }
 

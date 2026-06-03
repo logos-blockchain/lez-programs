@@ -1486,6 +1486,12 @@ mod authority_tests {
     }
 
     #[test]
+    #[should_panic(expected = "New mint authority must be a valid non-zero account ID")]
+    fn set_authority_rejects_zero_new_authority() {
+        let _ = set_authority(def_with_authority(), authority_signer(), Some([0u8; 32]));
+    }
+
+    #[test]
     fn set_authority_rotates_to_new_key() {
         let new_key = [7_u8; 32];
         let post_states = set_authority(def_with_authority(), authority_signer(), Some(new_key));

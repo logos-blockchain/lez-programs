@@ -19,6 +19,13 @@ pub fn set_authority(
                 authority_account.is_authorized,
                 "Mint authority must sign the transaction"
             );
+
+            if let Some(new_key) = new_authority {
+                assert!(
+                    new_key != [0u8; 32],
+                    "New mint authority must be a valid non-zero account ID"
+                );
+            }
             let signer: [u8; 32] = authority_account
                 .account_id
                 .as_ref()
