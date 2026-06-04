@@ -75,20 +75,22 @@ mod twap_oracle {
     /// 1. `current_tick_account` — uninitialized PDA owned by this oracle program.
     /// 2. `price_source` — account the caller controls (proven via `is_authorized = true`).
     /// 3. `clock` — read-only LEZ clock account.
+    ///
+    /// `initial_price` is a `Q64.64` spot price; the oracle converts it to a tick.
     #[instruction]
     pub fn create_current_tick_account(
         ctx: ProgramContext,
         current_tick_account: AccountWithMetadata,
         price_source: AccountWithMetadata,
         clock: AccountWithMetadata,
-        initial_tick: i32,
+        initial_price: u128,
     ) -> SpelResult {
         let post_states =
             twap_oracle_program::create_current_tick_account::create_current_tick_account(
                 current_tick_account,
                 price_source,
                 clock,
-                initial_tick,
+                initial_price,
                 ctx.self_program_id,
             );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
@@ -153,19 +155,21 @@ mod twap_oracle {
     /// 1. `current_tick_account` — initialized PDA owned by this oracle program.
     /// 2. `price_source` — account the caller controls (proven via `is_authorized = true`).
     /// 3. `clock` — read-only LEZ clock account.
+    ///
+    /// `price` is a `Q64.64` spot price; the oracle converts it to a tick.
     #[instruction]
     pub fn update_current_tick(
         ctx: ProgramContext,
         current_tick_account: AccountWithMetadata,
         price_source: AccountWithMetadata,
         clock: AccountWithMetadata,
-        tick: i32,
+        price: u128,
     ) -> SpelResult {
         let post_states = twap_oracle_program::update_current_tick::update_current_tick(
             current_tick_account,
             price_source,
             clock,
-            tick,
+            price,
             ctx.self_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))

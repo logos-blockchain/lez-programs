@@ -90,8 +90,8 @@
       ],
       "args": [
         {
-          "name": "initial_tick",
-          "type": "i32"
+          "name": "initial_price",
+          "type": "u128"
         }
       ]
     },
@@ -185,8 +185,8 @@
       ],
       "args": [
         {
-          "name": "tick",
-          "type": "i32"
+          "name": "price",
+          "type": "u128"
         }
       ]
     }

@@ -3,9 +3,12 @@ use nssa_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ProgramId},
 };
-use twap_oracle_core::{compute_current_tick_account_pda, CurrentTickAccount};
+use twap_oracle_core::{compute_current_tick_account_pda, price_to_tick, CurrentTickAccount};
 
-/// Updates the tick stored in an existing [`CurrentTickAccount`].
+/// Updates the tick stored in an existing [`CurrentTickAccount`] from a new spot price.
+///
+/// The price source reports a spot **price** (`Q64.64` ratio); this function converts it to a
+/// tick via [`price_to_tick`], so the source never needs to know about ticks.
 ///
 /// # Panics
 /// Panics if:
@@ -17,7 +20,7 @@ pub fn update_current_tick(
     current_tick_account: AccountWithMetadata,
     price_source: AccountWithMetadata,
     clock: AccountWithMetadata,
-    tick: i32,
+    price: u128,
     oracle_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     let price_source_id = price_source.account_id;
@@ -35,7 +38,7 @@ pub fn update_current_tick(
         .expect("UpdateCurrentTick: current tick account must be initialized");
 
     let clock_data = ClockAccountData::from_bytes(clock.account.data.as_ref());
-    stored.tick = tick;
+    stored.tick = price_to_tick(price);
     stored.last_updated = clock_data.timestamp;
 
     let mut current_tick_account_post = current_tick_account.account.clone();
@@ -51,12 +54,14 @@ pub fn update_current_tick(
 #[cfg(test)]
 mod tests {
     use nssa_core::account::{Account, AccountId, Nonce};
-    use twap_oracle_core::compute_current_tick_account_pda;
+    use twap_oracle_core::{compute_current_tick_account_pda, tick_to_oracle_price};
 
     use super::*;
 
     const ORACLE_PROGRAM_ID: ProgramId = [77u32; 8];
     const CLOCK_PROGRAM_ID: ProgramId = [88u32; 8];
+    /// `1.0` in Q64.64 — the spot price at tick 0.
+    const UNIT_PRICE: u128 = 1u128 << 64;
 
     fn price_source_id() -> AccountId {
         AccountId::new([1u8; 32])
@@ -115,24 +120,29 @@ mod tests {
             current_tick_account_initialized(0, 0),
             price_source_authorized(),
             clock_account_with_timestamp(1_000),
-            100,
+            UNIT_PRICE,
             ORACLE_PROGRAM_ID,
         );
         assert_eq!(post_states.len(), 3);
     }
 
     #[test]
-    fn tick_updated_to_new_value() {
+    fn price_converted_and_tick_updated() {
+        // Update from a price corresponding to tick 200; the stored tick should match (within 1).
         let post_states = update_current_tick(
             current_tick_account_initialized(100, 0),
             price_source_authorized(),
             clock_account_with_timestamp(1_000),
-            200,
+            tick_to_oracle_price(200),
             ORACLE_PROGRAM_ID,
         );
         let account = CurrentTickAccount::try_from(&post_states[0].account().data)
             .expect("post state must contain a valid CurrentTickAccount");
-        assert_eq!(account.tick, 200);
+        assert!(
+            (account.tick - 200).abs() <= 1,
+            "stored tick {}",
+            account.tick
+        );
     }
 
     #[test]
@@ -141,7 +151,7 @@ mod tests {
             current_tick_account_initialized(0, 0),
             price_source_authorized(),
             clock_account_with_timestamp(999_000),
-            0,
+            UNIT_PRICE,
             ORACLE_PROGRAM_ID,
         );
         let account = CurrentTickAccount::try_from(&post_states[0].account().data)
@@ -150,18 +160,23 @@ mod tests {
     }
 
     #[test]
-    fn positive_and_negative_ticks_accepted() {
-        for tick in [i32::MIN, -1, 0, 1, i32::MAX] {
+    fn prices_convert_to_expected_ticks() {
+        // Representable ticks (|tick| well inside the saturation bound) round-trip within 1.
+        for tick in [-100_000, -1, 0, 1, 100_000] {
             let post_states = update_current_tick(
                 current_tick_account_initialized(0, 0),
                 price_source_authorized(),
                 clock_account_with_timestamp(0),
-                tick,
+                tick_to_oracle_price(tick),
                 ORACLE_PROGRAM_ID,
             );
             let account = CurrentTickAccount::try_from(&post_states[0].account().data)
                 .expect("post state must contain a valid CurrentTickAccount");
-            assert_eq!(account.tick, tick);
+            assert!(
+                (account.tick - tick).abs() <= 1,
+                "price for tick {tick} stored tick {}",
+                account.tick
+            );
         }
     }
 
@@ -174,7 +189,7 @@ mod tests {
             current_tick_account_initialized(0, 0),
             price_source.clone(),
             clock.clone(),
-            0,
+            UNIT_PRICE,
             ORACLE_PROGRAM_ID,
         );
 

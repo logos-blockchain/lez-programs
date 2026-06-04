@@ -55,8 +55,10 @@ pub enum Instruction {
     },
     /// Creates and initialises a [`CurrentTickAccount`] for a price source.
     ///
-    /// Called once per price source (not per window). The account holds the latest raw tick
-    /// written by the price source and serves as the input to `RecordTick`.
+    /// Called once per price source (not per window). The account holds the latest tick written
+    /// by the price source and serves as the input to `RecordTick`. The price source reports a
+    /// spot **price**; the oracle converts it to a tick via [`price_to_tick`], so the source
+    /// never needs to know about ticks.
     ///
     /// Required accounts (in order):
     /// 1. Current tick account — uninitialized PDA derived from
@@ -64,14 +66,16 @@ pub enum Instruction {
     /// 2. Price source account — must be passed with `is_authorized = true`.
     /// 3. Clock account — read-only; supplies the initial timestamp.
     CreateCurrentTickAccount {
-        /// Opening tick: `floor(log_{1.0001}(reserve_b / reserve_a))` at creation time.
-        initial_tick: i32,
+        /// Opening spot price as a `Q64.64` ratio (`quote_asset` per `base_asset`), e.g. an
+        /// AMM's `reserve_b / reserve_a`. Converted to a tick on-chain.
+        initial_price: u128,
     },
     /// Updates the tick stored in an existing [`CurrentTickAccount`].
     ///
     /// Called by the price source (e.g. AMM) after each price-changing operation. Anyone may
     /// subsequently call `RecordTick` to advance the [`PriceObservations`] accumulator using
-    /// the new tick.
+    /// the new tick. The price source reports a spot **price**; the oracle converts it to a tick
+    /// via [`price_to_tick`].
     ///
     /// Required accounts (in order):
     /// 1. Current tick account — initialized PDA derived from
@@ -79,8 +83,9 @@ pub enum Instruction {
     /// 2. Price source account — must be passed with `is_authorized = true`.
     /// 3. Clock account — read-only; supplies the updated timestamp.
     UpdateCurrentTick {
-        /// New raw tick from the price source.
-        tick: i32,
+        /// New spot price as a `Q64.64` ratio (`quote_asset` per `base_asset`). Converted to a
+        /// tick on-chain.
+        price: u128,
     },
     /// Computes the TWAP over `window_duration` from the [`PriceObservations`] ring buffer and
     /// writes the result to the [`OraclePriceAccount`].
@@ -399,6 +404,81 @@ pub fn tick_to_oracle_price(tick: i32) -> u128 {
     u128::try_from(price_q64_64).unwrap_or(u128::MAX)
 }
 
+/// Converts a `Q64.64` fixed-point price into the nearest TWAP tick — the inverse of
+/// [`tick_to_oracle_price`].
+///
+/// Price sources report a spot price (e.g. an AMM's `reserve_b / reserve_a` as a `Q64.64`
+/// ratio); the oracle owns the conversion to its internal tick representation so producers never
+/// need to know about ticks. The price is mapped back through the Uniswap `sqrtPriceX96`
+/// representation:
+///
+/// ```text
+/// price        = ratio * 2^64                 (Q64.64 input)
+/// sqrtPriceX96 = sqrt(ratio) * 2^96 = isqrt(price << 128)
+/// tick         = get_tick_at_sqrt_ratio(sqrtPriceX96)
+/// ```
+///
+/// `isqrt` is a pure-integer square root (no floating point — deterministic in the zkVM). The
+/// `sqrtPriceX96` is clamped to at least `MIN_SQRT_RATIO` so a zero or dust price maps to
+/// `MIN_TICK` rather than erroring; the upper bound cannot be reached from a `u128` price (its
+/// max ratio `~2^64` corresponds to a tick well inside `MAX_TICK`).
+#[must_use]
+pub fn price_to_tick(price: u128) -> i32 {
+    use alloy_primitives::U256;
+    use uniswap_v3_math::tick_math::{get_tick_at_sqrt_ratio, MIN_SQRT_RATIO};
+
+    // sqrtPriceX96 = sqrt(price / 2^64) * 2^96 = sqrt(price) * 2^64 = isqrt(price << 128).
+    // price < 2^128, so price << 128 < 2^256 and the shift never overflows U256.
+    let shifted = U256::from(price)
+        .checked_shl(128)
+        .expect("price < 2^128, so price << 128 fits in U256");
+    let sqrt_price_x96 = integer_sqrt(shifted).max(MIN_SQRT_RATIO);
+
+    get_tick_at_sqrt_ratio(sqrt_price_x96)
+        .expect("sqrt_price_x96 is clamped into [MIN_SQRT_RATIO, MAX_SQRT_RATIO)")
+}
+
+/// Floor of the integer square root of a 256-bit value, computed bit-by-bit with no floating
+/// point (`ruint`'s own `root` is gated behind its `std` feature and uses an `f64` seed, neither
+/// of which is available in the guest). Deterministic — suitable for the zkVM.
+fn integer_sqrt(n: alloy_primitives::U256) -> alloy_primitives::U256 {
+    use alloy_primitives::U256;
+
+    if n.is_zero() {
+        return U256::ZERO;
+    }
+
+    // Largest power of four not exceeding `n`: `1 << (msb rounded down to an even bit index)`.
+    let msb = 255usize
+        .checked_sub(n.leading_zeros())
+        .expect("n is non-zero, so leading_zeros <= 255");
+    let start = msb & !1usize;
+    let mut d = U256::ONE.checked_shl(start).expect("start < 256");
+    let mut c = U256::ZERO;
+    let mut x = n;
+
+    // `c` and `d` are shifted with `wrapping_shr`, which logically drops the low bits (the
+    // algorithm intends to). `checked_shr` would return `None` whenever a set bit falls off
+    // (e.g. `d = 1 >> 2`), which is not what we want here.
+    while !d.is_zero() {
+        let cd = c
+            .checked_add(d)
+            .expect("c + d stays below the root, no overflow");
+        if x >= cd {
+            x = x.checked_sub(cd).expect("guarded by x >= cd");
+            c = c
+                .wrapping_shr(1)
+                .checked_add(d)
+                .expect("c/2 + d stays below the root, no overflow");
+        } else {
+            c = c.wrapping_shr(1);
+        }
+        d = d.wrapping_shr(2);
+    }
+
+    c
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Current tick account
 // ──────────────────────────────────────────────────────────────────────────────
@@ -541,5 +621,127 @@ mod tests {
             tick_to_oracle_price(i32::MIN),
             tick_to_oracle_price(uniswap_v3_math::tick_math::MIN_TICK)
         );
+    }
+
+    // ── price_to_tick (inverse) ─────────────────────────────────────────────────
+
+    #[test]
+    fn unit_price_maps_to_tick_zero() {
+        // 1.0 in Q64.64 is 2^64; sqrt → 2^96 = sqrtPriceX96 at tick 0.
+        assert_eq!(price_to_tick(ONE_Q64_64), 0);
+    }
+
+    #[test]
+    fn price_to_tick_is_monotonic() {
+        let mut prev = price_to_tick(tick_to_oracle_price(-50_000));
+        for tick in (-49_000..=50_000).step_by(1_000) {
+            let cur = price_to_tick(tick_to_oracle_price(tick));
+            assert!(
+                cur >= prev,
+                "tick must not decrease as price increases at {tick}"
+            );
+            prev = cur;
+        }
+    }
+
+    #[test]
+    fn round_trip_tick_to_price_to_tick() {
+        // tick -> price -> tick recovers the original tick within 1 (mul_div and isqrt each
+        // floor, which can nudge the recovered sqrtPriceX96 across a tick boundary at most once).
+        //
+        // The faithful range is asymmetric on the small-price (very negative tick) side, in two
+        // stages: resolution thins at ~tick -350,000 (ratio ~6e-16), where Q64.64's fixed absolute
+        // precision of 2^-64 no longer separates adjacent ticks so neighbours share one integer;
+        // and the absolute floor is lower, at ~tick -443,636 (2^-64 ~= 5e-20), where the value
+        // underflows to the integer 1. Resolution gives out well above the floor. Both are far
+        // below any real price (~6e-16 vs e.g. ~1e-11 for a $0.000001 token against $100k BTC), so
+        // it never matters. Large prices keep full resolution up to the +443,636 saturation edge.
+        for tick in [
+            -300_000, -100_000, -10_000, -1, 0, 1, 10_000, 100_000, 300_000, 443_000,
+        ] {
+            let recovered = price_to_tick(tick_to_oracle_price(tick));
+            assert!(
+                (recovered - tick).abs() <= 1,
+                "tick {tick} round-tripped to {recovered}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_price_maps_to_min_tick() {
+        // A zero/dust price clamps to MIN_SQRT_RATIO → MIN_TICK, never panics.
+        assert_eq!(price_to_tick(0), uniswap_v3_math::tick_math::MIN_TICK);
+    }
+
+    #[test]
+    fn integer_sqrt_matches_known_squares() {
+        use alloy_primitives::U256;
+        for v in [
+            0u128,
+            1,
+            4,
+            9,
+            2,
+            3,
+            15,
+            16,
+            17,
+            1_000_000,
+            u128::from(u64::MAX),
+        ] {
+            let n = U256::from(v);
+            let root = integer_sqrt(n);
+            // root^2 <= v < (root+1)^2
+            let root_sq = root.checked_mul(root).expect("root^2 fits");
+            let next = root.checked_add(U256::from(1u8)).expect("root+1 fits");
+            let next_sq = next.checked_mul(next).expect("(root+1)^2 fits");
+            assert!(root_sq <= n && n < next_sq, "isqrt({v}) = {root} is wrong");
+        }
+    }
+
+    #[test]
+    fn integer_sqrt_on_large_values() {
+        use alloy_primitives::U256;
+        // Exact roots of large perfect squares (s <= 2^127 so s^2 fits in U256). This is the
+        // magnitude range price_to_tick actually exercises, well beyond u64::MAX.
+        for shift in [64usize, 100, 127] {
+            let s = U256::ONE.checked_shl(shift).expect("shift < 256");
+            let n = s.checked_mul(s).expect("s^2 fits for s <= 2^127");
+            assert_eq!(integer_sqrt(n), s, "isqrt((2^{shift})^2) should be exact");
+            // One below a perfect square floors to s - 1.
+            let n_minus = n.checked_sub(U256::ONE).expect("n > 0");
+            let s_minus = s.checked_sub(U256::ONE).expect("s > 0");
+            assert_eq!(
+                integer_sqrt(n_minus),
+                s_minus,
+                "isqrt((2^{shift})^2 - 1) should floor to 2^{shift} - 1"
+            );
+        }
+
+        // The largest input price_to_tick can feed: u128::MAX << 128 (~2^256). Must not panic and
+        // satisfy root^2 <= n. The upper bound (root+1)^2 is omitted — it would overflow U256.
+        let max_input = U256::from(u128::MAX)
+            .checked_shl(128)
+            .expect("u128::MAX << 128 fits in U256");
+        let root = integer_sqrt(max_input);
+        let root_sq = root.checked_mul(root).expect("root^2 < 2^256 fits");
+        assert!(root_sq <= max_input, "root^2 must not exceed n");
+        assert!(
+            root >= U256::ONE.checked_shl(127).expect("shift < 256"),
+            "root of a ~2^256 value should be ~2^128"
+        );
+    }
+
+    #[test]
+    fn max_price_maps_near_saturation_tick_without_panicking() {
+        // The largest representable Q64.64 price maps to a large positive tick near the +443,636
+        // saturation edge. Exercises checked_shl(128) and the isqrt at their maximum input — the
+        // high-end counterpart to `zero_price_maps_to_min_tick`.
+        let tick = price_to_tick(u128::MAX);
+        assert!(
+            tick > 440_000,
+            "max price should map near the saturation tick, got {tick}"
+        );
+        assert!(tick <= uniswap_v3_math::tick_math::MAX_TICK);
     }
 }
