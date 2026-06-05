@@ -1,6 +1,7 @@
 //! This crate contains core data structures and utilities for the Token Program.
 
 use borsh::{BorshDeserialize, BorshSerialize};
+pub use lez_authority::{Authority, Ownable};
 use nssa_core::account::{AccountId, Data};
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
@@ -18,10 +19,18 @@ pub enum Instruction {
 
     /// Create a new fungible token definition without metadata.
     ///
+    /// `mint_authority` decides the supply model:
+    /// - `Some(id)` — `id` may mint additional supply and rotate/renounce the authority,
+    /// - `None` — supply is permanently fixed at `total_supply`.
+    ///
     /// Required accounts:
     /// - Token Definition account (uninitialized, authorized),
     /// - Token Holding account (uninitialized, authorized).
-    NewFungibleDefinition { name: String, total_supply: u128 },
+    NewFungibleDefinition {
+        name: String,
+        total_supply: u128,
+        mint_authority: Option<AccountId>,
+    },
 
     /// Create a new fungible or non-fungible token definition with metadata.
     ///
@@ -51,9 +60,13 @@ pub enum Instruction {
 
     /// Mint new tokens to the holder's account.
     ///
+    /// Minting is gated on the definition's mint authority: the Token Definition
+    /// account must be authorized in this transaction and its account id must match
+    /// the stored authority. A definition with no authority has a fixed supply and
+    /// rejects minting.
+    ///
     /// Required accounts:
-    /// - Token Definition account (initialized).
-    /// - Authority account: must sign and match the stored mint authority.
+    /// - Token Definition account (initialized, authorized as the current mint authority),
     /// - Token Holding account (uninitialized or authorized and initialized).
     Mint { amount_to_mint: u128 },
 
@@ -64,26 +77,12 @@ pub enum Instruction {
     /// - NFT Printed Copy Token Holding account (uninitialized, authorized).
     PrintNft,
 
-    /// Create a new fungible token definition with a mint authority.
-    /// Unlike NewFungibleDefinition, this allows minting additional tokens later.
+    /// Rotate or renounce the mint authority for a fungible token definition.
+    /// Pass `new_authority: None` to permanently renounce minting (fixed supply).
     ///
     /// Required accounts:
-    /// - Token Definition account (uninitialized, authorized),
-    /// - Token Holding account (uninitialized, authorized).
-    NewFungibleDefinitionWithAuthority {
-        name: String,
-        initial_supply: u128,
-        /// The initial mint authority. Can be rotated or revoked later via SetAuthority.
-        mint_authority: [u8; 32],
-    },
-
-    /// Set or rotate the mint authority for a fungible token definition.
-    /// Pass `new_authority: None` to permanently revoke minting (fixed supply).
-    ///
-    /// Required accounts:
-    /// - Token Definition account (initialized).
-    /// - Authority account: must sign and match the current mint authority.
-    SetAuthority { new_authority: Option<[u8; 32]> },
+    /// - Token Definition account (initialized, authorized as the current mint authority).
+    SetAuthority { new_authority: Option<AccountId> },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -105,15 +104,35 @@ pub enum TokenDefinition {
         name: String,
         total_supply: u128,
         metadata_id: Option<AccountId>,
-        /// Mint authority. `None` = supply is permanently fixed (no further minting allowed).
-        /// Added by LP-0013.
-        mint_authority: Option<[u8; 32]>,
+        /// Mint authority slot. `Some(id)` may mint and rotate/renounce;
+        /// `None` means the supply is permanently fixed.
+        authority: Authority,
     },
     NonFungible {
         name: String,
         printable_supply: u128,
         metadata_id: AccountId,
     },
+}
+
+impl Ownable for TokenDefinition {
+    fn authority(&self) -> &Authority {
+        match self {
+            TokenDefinition::Fungible { authority, .. } => authority,
+            TokenDefinition::NonFungible { .. } => {
+                panic!("Authority is not supported for Non-Fungible Tokens")
+            }
+        }
+    }
+
+    fn authority_mut(&mut self) -> &mut Authority {
+        match self {
+            TokenDefinition::Fungible { authority, .. } => authority,
+            TokenDefinition::NonFungible { .. } => {
+                panic!("Authority is not supported for Non-Fungible Tokens")
+            }
+        }
+    }
 }
 
 impl TryFrom<&Data> for TokenDefinition {

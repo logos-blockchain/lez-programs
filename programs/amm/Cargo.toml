@@ -12,3 +12,4 @@ clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.g
 amm_core = { path = "core" }
 token_core = { path = "../token/core" }
 twap_oracle_core = { path = "../twap_oracle/core" }
+lez-authority = { path = "../../lez-authority" }

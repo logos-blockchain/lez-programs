@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), no_main)]
 
-use nssa_core::account::AccountWithMetadata;
+use nssa_core::account::{AccountId, AccountWithMetadata};
 use spel_framework::context::ProgramContext;
 use spel_framework::prelude::*;
 
@@ -33,6 +33,7 @@ mod token {
 
     /// Create a new fungible token definition without metadata.
     /// Definition and holding targets must be uninitialized and authorized.
+    /// `mint_authority` is `Some(id)` for a mintable token or `None` for fixed supply.
     #[instruction]
     pub fn new_fungible_definition(
         #[account(init, signer)]
@@ -41,6 +42,7 @@ mod token {
         holding_target_account: AccountWithMetadata,
         name: String,
         total_supply: u128,
+        mint_authority: Option<AccountId>,
     ) -> SpelResult {
         Ok(spel_framework::SpelOutput::execute(
             token_program::new_definition::new_fungible_definition(
@@ -48,6 +50,7 @@ mod token {
                 holding_target_account,
                 name,
                 total_supply,
+                mint_authority,
             ),
             vec![],
         ))
@@ -117,20 +120,19 @@ mod token {
     }
 
     /// Mint new tokens to the holder's account.
+    /// The definition account must be authorized as the current mint authority.
     /// Fresh public holders must be explicitly authorized in the same transaction.
     #[instruction]
     pub fn mint(
         ctx: ProgramContext,
         #[account(mut, signer)]
         definition_account: AccountWithMetadata,
-        authority_account: AccountWithMetadata,
         user_holding_account: AccountWithMetadata,
         amount_to_mint: u128,
     ) -> SpelResult {
         Ok(spel_framework::SpelOutput::execute(
             token_program::mint::mint(
                 definition_account,
-                authority_account,
                 user_holding_account,
                 amount_to_mint,
                 ctx.self_program_id,
@@ -139,42 +141,16 @@ mod token {
         ))
     }
 
-    /// Create a new fungible token definition with a mint authority.
-    /// Unlike NewFungibleDefinition, this allows minting additional tokens later.
-    #[instruction]
-    pub fn new_fungible_definition_with_authority(
-        definition_target_account: AccountWithMetadata,
-        holding_target_account: AccountWithMetadata,
-        name: String,
-        initial_supply: u128,
-        mint_authority: [u8; 32],
-    ) -> SpelResult {
-        Ok(spel_framework::SpelOutput::execute(
-            token_program::new_definition::new_fungible_definition_with_authority(
-                definition_target_account,
-                holding_target_account,
-                name,
-                initial_supply,
-                mint_authority,
-            ),
-            vec![],
-        ))
-    }
-
-    /// Set or rotate the mint authority for a fungible token definition.
-    /// Pass `new_authority: None` to permanently revoke minting (fixed supply).
+    /// Rotate or renounce the mint authority for a fungible token definition.
+    /// Pass `new_authority: None` to permanently renounce minting (fixed supply).
+    /// The definition account must be authorized as the current mint authority.
     #[instruction]
     pub fn set_authority(
         definition_account: AccountWithMetadata,
-        authority_account: AccountWithMetadata,
-        new_authority: Option<[u8; 32]>,
+        new_authority: Option<AccountId>,
     ) -> SpelResult {
         Ok(spel_framework::SpelOutput::execute(
-            token_program::set_authority::set_authority(
-                definition_account,
-                authority_account,
-                new_authority,
-            ),
+            token_program::set_authority::set_authority(definition_account, new_authority),
             vec![],
         ))
     }

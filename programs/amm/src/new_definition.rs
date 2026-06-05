@@ -7,7 +7,9 @@ use amm_core::{
     compute_vault_pda_seed, isqrt_product, spot_price_q64_64, AmmConfig, PoolDefinition,
     MINIMUM_LIQUIDITY,
 };
+
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
+use lez_authority::Authority;
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId},
@@ -193,6 +195,7 @@ pub fn new_definition(
         &token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
             total_supply: MINIMUM_LIQUIDITY,
+            mint_authority: Some(pool_definition_lp.account_id),
         },
     )
     .with_pda_seeds(vec![
@@ -206,9 +209,14 @@ pub fn new_definition(
         name: String::from("LP Token"),
         total_supply: MINIMUM_LIQUIDITY,
         metadata_id: None,
-        mint_authority: None,
+        authority: Authority::new(
+            pool_definition_lp
+                .account_id
+                .as_ref()
+                .try_into()
+                .expect("AccountId is always 32 bytes"),
+        ),
     });
-
     let call_token_lp_user = ChainedCall::new(
         token_program_id,
         vec![pool_lp_after_lock, user_holding_lp.clone()],

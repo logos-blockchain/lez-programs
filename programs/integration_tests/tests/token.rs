@@ -69,8 +69,8 @@ impl Accounts {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
-                mint_authority: Some(
-                    Ids::authority()
+                authority: token_core::Authority::new(
+                    Ids::token_definition()
                         .as_ref()
                         .try_into()
                         .expect("AccountId is always 32 bytes"),
@@ -88,8 +88,8 @@ impl Accounts {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
-                mint_authority: Some(
-                    Ids::authority()
+                authority: token_core::Authority::new(
+                    Ids::token_definition()
                         .as_ref()
                         .try_into()
                         .expect("AccountId is always 32 bytes"),
@@ -168,6 +168,7 @@ fn token_new_fungible_definition() {
     let instruction = token_core::Instruction::NewFungibleDefinition {
         name: String::from("Gold"),
         total_supply: 1_000_000_u128,
+        mint_authority: None,
     };
 
     let message = public_transaction::Message::try_new(
@@ -195,7 +196,7 @@ fn token_new_fungible_definition() {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
-                mint_authority: None,
+                authority: token_core::Authority::renounced(),
             }),
             nonce: Nonce(1),
         }
@@ -447,8 +448,8 @@ fn token_burn() {
                 name: String::from("Gold"),
                 total_supply: 800_000_u128,
                 metadata_id: None,
-                mint_authority: Some(
-                    Ids::authority()
+                authority: token_core::Authority::new(
+                    Ids::token_definition()
                         .as_ref()
                         .try_into()
                         .expect("AccountId is always 32 bytes")
@@ -482,14 +483,13 @@ fn token_mint() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::authority(), Ids::holder()],
+        vec![Ids::token_definition(), Ids::holder()],
         vec![Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -503,14 +503,14 @@ fn token_mint() {
                 name: String::from("Gold"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
-                mint_authority: Some(
-                    Ids::authority()
+                authority: token_core::Authority::new(
+                    Ids::token_definition()
                         .as_ref()
                         .try_into()
                         .expect("AccountId is always 32 bytes")
                 ),
             }),
-            nonce: Nonce(0),
+            nonce: Nonce(1),
         }
     );
 
@@ -542,7 +542,7 @@ fn token_mint_rejects_foreign_owned_definition() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::authority(), Ids::recipient()],
+        vec![Ids::token_definition(), Ids::recipient()],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -550,7 +550,7 @@ fn token_mint_rejects_foreign_owned_definition() {
 
     let witness_set = public_transaction::WitnessSet::for_message(
         &message,
-        &[&Keys::authority_key(), &Keys::recipient_key()],
+        &[&Keys::def_key(), &Keys::recipient_key()],
     );
 
     let tx = PublicTransaction::new(message, witness_set);
@@ -576,14 +576,13 @@ fn token_mint_fresh_public_recipient_requires_authorization() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::authority(), Ids::recipient()],
+        vec![Ids::token_definition(), Ids::recipient()],
         vec![Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
@@ -608,7 +607,7 @@ fn token_mint_fresh_authorized_public_recipient() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::authority(), Ids::recipient()],
+        vec![Ids::token_definition(), Ids::recipient()],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -616,7 +615,7 @@ fn token_mint_fresh_authorized_public_recipient() {
 
     let witness_set = public_transaction::WitnessSet::for_message(
         &message,
-        &[&Keys::authority_key(), &Keys::recipient_key()],
+        &[&Keys::def_key(), &Keys::recipient_key()],
     );
 
     let tx = PublicTransaction::new(message, witness_set);
@@ -631,14 +630,14 @@ fn token_mint_fresh_authorized_public_recipient() {
                 name: String::from("Gold"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
-                mint_authority: Some(
-                    Ids::authority()
+                authority: token_core::Authority::new(
+                    Ids::token_definition()
                         .as_ref()
                         .try_into()
                         .expect("AccountId is always 32 bytes")
                 ),
             }),
-            nonce: Nonce(0),
+            nonce: Nonce(1),
         }
     );
 
@@ -976,10 +975,10 @@ fn token_new_fungible_definition_with_authority() {
         .as_ref()
         .try_into()
         .expect("AccountId is always 32 bytes");
-    let instruction = token_core::Instruction::NewFungibleDefinitionWithAuthority {
+    let instruction = token_core::Instruction::NewFungibleDefinition {
         name: String::from("AuthCoin"),
-        initial_supply: 1_000_000_u128,
-        mint_authority: authority_key,
+        total_supply: 1_000_000_u128,
+        mint_authority: Some(AccountId::new(authority_key)),
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
@@ -1003,7 +1002,7 @@ fn token_new_fungible_definition_with_authority() {
                 name: String::from("AuthCoin"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
-                mint_authority: Some(authority_key),
+                authority: token_core::Authority::new(authority_key),
             }),
             nonce: Nonce(1),
         }
@@ -1014,15 +1013,15 @@ fn token_new_fungible_definition_with_authority() {
 fn token_set_authority_revoke() {
     let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_token(&mut state);
-    let authority_key: [u8; 32] = Ids::authority()
+    let authority_key: [u8; 32] = Ids::token_definition()
         .as_ref()
         .try_into()
         .expect("AccountId is always 32 bytes");
     // Create token with authority
-    let instruction = token_core::Instruction::NewFungibleDefinitionWithAuthority {
+    let instruction = token_core::Instruction::NewFungibleDefinition {
         name: String::from("AuthCoin"),
-        initial_supply: 1_000_000_u128,
-        mint_authority: authority_key,
+        total_supply: 1_000_000_u128,
+        mint_authority: Some(AccountId::new(authority_key)),
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
@@ -1047,13 +1046,12 @@ fn token_set_authority_revoke() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::authority()],
-        vec![Nonce(0)],
+        vec![Ids::token_definition()],
+        vec![Nonce(1)],
         instruction,
     )
     .unwrap();
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
     assert_eq!(
@@ -1065,9 +1063,9 @@ fn token_set_authority_revoke() {
                 name: String::from("AuthCoin"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
-                mint_authority: None,
+                authority: token_core::Authority::renounced(),
             }),
-            nonce: Nonce(1),
+            nonce: Nonce(2),
         }
     );
 }

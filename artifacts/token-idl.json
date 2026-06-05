@@ -49,6 +49,12 @@
         {
           "name": "total_supply",
           "type": "u128"
+        },
+        {
+          "name": "mint_authority",
+          "type": {
+            "option": "account_id"
+          }
         }
       ]
     },
@@ -140,12 +146,6 @@
           "init": false
         },
         {
-          "name": "authority_account",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
           "name": "user_holding_account",
           "writable": true,
           "signer": false,
@@ -160,52 +160,10 @@
       ]
     },
     {
-      "name": "new_fungible_definition_with_authority",
-      "accounts": [
-        {
-          "name": "definition_target_account",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "holding_target_account",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "name",
-          "type": "string"
-        },
-        {
-          "name": "initial_supply",
-          "type": "u128"
-        },
-        {
-          "name": "mint_authority",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        }
-      ]
-    },
-    {
       "name": "set_authority",
       "accounts": [
         {
           "name": "definition_account",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "authority_account",
           "writable": false,
           "signer": false,
           "init": false
@@ -215,12 +173,7 @@
         {
           "name": "new_authority",
           "type": {
-            "option": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
+            "option": "account_id"
           }
         }
       ]
@@ -268,14 +221,9 @@
                 }
               },
               {
-                "name": "mint_authority",
+                "name": "authority",
                 "type": {
-                  "option": {
-                    "array": [
-                      "u8",
-                      32
-                    ]
-                  }
+                  "defined": "Authority"
                 }
               }
             ]

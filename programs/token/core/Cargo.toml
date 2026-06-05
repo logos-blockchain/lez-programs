@@ -11,3 +11,4 @@ nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.gi
 spel-framework-macros = { git = "https://github.com/0x-r4bbit/spel.git", rev = "91023c9115bf88173b0d25d2e905f2a55ef0313b", package = "spel-framework-macros" }
 borsh = { version = "1.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
+lez-authority = { path = "../../../lez-authority" }

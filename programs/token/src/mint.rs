@@ -1,4 +1,4 @@
-use lez_authority::AuthoritySlot;
+use lez_authority::Ownable;
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, Claim, ProgramId},
@@ -7,7 +7,6 @@ use token_core::{TokenDefinition, TokenHolding};
 
 pub fn mint(
     definition_account: AccountWithMetadata,
-    authority_account: AccountWithMetadata,
     user_holding_account: AccountWithMetadata,
     amount_to_mint: u128,
     token_program_id: ProgramId,
@@ -20,20 +19,24 @@ pub fn mint(
     let mut definition = TokenDefinition::try_from(&definition_account.account.data)
         .expect("Token Definition account must be valid");
 
-    // LP-0013 / RFP-001: gate minting through lez-authority. The authority_account
-    // is the signer and must match the stored mint authority.
-    if let TokenDefinition::Fungible { mint_authority, .. } = &definition {
+    // Minting is gated on the definition's mint authority: the definition account
+    // must be authorized in this transaction and its id must match the stored
+    // authority. This holds for an external owner that signs the definition key,
+    // and for a program-controlled PDA authorized via its seeds (e.g. the AMM's
+    // pool definition minting LP tokens).
+    if let TokenDefinition::Fungible { .. } = &definition {
         assert!(
-            authority_account.is_authorized,
-            "Mint authority must sign the transaction"
+            definition_account.is_authorized,
+            "Mint authority must authorize the transaction"
         );
-        let signer: [u8; 32] = authority_account
+        let signer: [u8; 32] = definition_account
             .account_id
             .as_ref()
             .try_into()
             .expect("AccountId is always 32 bytes");
-        let slot = AuthoritySlot(*mint_authority);
-        slot.check(signer).expect("Mint authority check failed");
+        definition
+            .require_owner(signer)
+            .expect("Mint authority check failed");
     }
 
     let mut holding = if user_holding_account.account == Account::default() {
@@ -55,7 +58,7 @@ pub fn mint(
                 name: _,
                 metadata_id: _,
                 total_supply,
-                mint_authority: _,
+                authority: _,
             },
             TokenHolding::Fungible {
                 definition_id: _,
@@ -87,7 +90,6 @@ pub fn mint(
 
     vec![
         AccountPostState::new(definition_post),
-        AccountPostState::new(authority_account.account),
         AccountPostState::new_claimed_if_default(holding_post, Claim::Authorized),
     ]
 }

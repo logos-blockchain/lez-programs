@@ -401,7 +401,7 @@ impl Accounts {
                 name: String::from("test"),
                 total_supply: Balances::token_a_supply(),
                 metadata_id: None,
-                mint_authority: None,
+                authority: token_core::Authority::renounced(),
             }),
             nonce: Nonce(0),
         }
@@ -415,7 +415,7 @@ impl Accounts {
                 name: String::from("test"),
                 total_supply: Balances::token_b_supply(),
                 metadata_id: None,
-                mint_authority: None,
+                authority: token_core::Authority::renounced(),
             }),
             nonce: Nonce(0),
         }
@@ -429,7 +429,12 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: Balances::token_lp_supply(),
                 metadata_id: None,
-                mint_authority: None,
+                authority: token_core::Authority::new(
+                    Ids::token_lp_definition()
+                        .as_ref()
+                        .try_into()
+                        .expect("AccountId is always 32 bytes"),
+                ),
             }),
             nonce: Nonce(0),
         }
@@ -708,7 +713,12 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: Balances::token_lp_supply_add(),
                 metadata_id: None,
-                mint_authority: None,
+                authority: token_core::Authority::new(
+                    Ids::token_lp_definition()
+                        .as_ref()
+                        .try_into()
+                        .expect("AccountId is always 32 bytes"),
+                ),
             }),
             nonce: Nonce(0),
         }
@@ -801,7 +811,12 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: Balances::token_lp_supply_remove(),
                 metadata_id: None,
-                mint_authority: None,
+                authority: token_core::Authority::new(
+                    Ids::token_lp_definition()
+                        .as_ref()
+                        .try_into()
+                        .expect("AccountId is always 32 bytes"),
+                ),
             }),
             nonce: Nonce(0),
         }
@@ -815,7 +830,12 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: 0,
                 metadata_id: None,
-                mint_authority: None,
+                authority: token_core::Authority::new(
+                    Ids::token_lp_definition()
+                        .as_ref()
+                        .try_into()
+                        .expect("AccountId is always 32 bytes"),
+                ),
             }),
             nonce: Nonce(0),
         }
@@ -908,7 +928,12 @@ impl Accounts {
                 name: String::from("LP Token"),
                 total_supply: Balances::lp_supply_init(),
                 metadata_id: None,
-                mint_authority: None,
+                authority: token_core::Authority::new(
+                    Ids::token_lp_definition()
+                        .as_ref()
+                        .try_into()
+                        .expect("AccountId is always 32 bytes"),
+                ),
             }),
             nonce: Nonce(0),
         }
@@ -1397,7 +1422,7 @@ fn fungible_total_supply(account: &Account) -> u128 {
         name: _,
         total_supply,
         metadata_id: _,
-        mint_authority: _,
+        authority: _,
     } = definition
     else {
         panic!("expected fungible token definition")
