@@ -3267,7 +3267,7 @@ fn test_new_definition_lp_symmetric_amounts() {
         &token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
             total_supply: MINIMUM_LIQUIDITY,
-                mint_authority: Some(pool_lp_auth.account_id),
+            mint_authority: Some(pool_lp_auth.account_id),
         },
     )
     .with_pda_seeds(vec![
@@ -3370,7 +3370,7 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
         &token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
             total_supply: MINIMUM_LIQUIDITY,
-                mint_authority: Some(pool_lp_auth.account_id),
+            mint_authority: Some(pool_lp_auth.account_id),
         },
     )
     .with_pda_seeds(vec![
