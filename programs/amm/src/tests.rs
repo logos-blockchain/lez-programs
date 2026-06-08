@@ -873,7 +873,12 @@ impl AccountWithMetadataForTests {
                     name: String::from("test"),
                     total_supply: BalanceForTests::lp_supply_init(),
                     metadata_id: None,
-                    authority: token_core::Authority::renounced(),
+                    authority: token_core::Authority::new(
+                        IdForTests::token_lp_definition_id()
+                            .as_ref()
+                            .try_into()
+                            .expect("AccountId is always 32 bytes"),
+                    ),
                 }),
                 nonce: Nonce(0),
             },
@@ -899,7 +904,12 @@ impl AccountWithMetadataForTests {
                     name: String::from("LP Token"),
                     total_supply: MINIMUM_LIQUIDITY,
                     metadata_id: None,
-                    authority: token_core::Authority::renounced(),
+                    authority: token_core::Authority::new(
+                        IdForTests::token_lp_definition_id()
+                            .as_ref()
+                            .try_into()
+                            .expect("AccountId is always 32 bytes"),
+                    ),
                 }),
                 nonce: Nonce(0),
             },
@@ -917,7 +927,12 @@ impl AccountWithMetadataForTests {
                     name: String::from("test"),
                     total_supply: BalanceForTests::lp_supply_init(),
                     metadata_id: None,
-                    authority: token_core::Authority::renounced(),
+                    authority: token_core::Authority::new(
+                        IdForTests::token_lp_definition_id()
+                            .as_ref()
+                            .try_into()
+                            .expect("AccountId is always 32 bytes"),
+                    ),
                 }),
                 nonce: Nonce(0),
             },
