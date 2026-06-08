@@ -3,8 +3,12 @@ use nssa::{
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use nssa_core::account::{Account, AccountId, Data, Nonce};
-use stablecoin_core::{compute_position_pda, compute_position_vault_pda, Position};
+use stablecoin_core::{
+    compute_position_pda, compute_position_vault_pda, compute_redemption_controller_pda, Position,
+    RedemptionController, CONTROLLER_GAIN_SCALE,
+};
 use token_core::{TokenDefinition, TokenHolding};
+use twap_oracle_core::OraclePriceAccount;
 
 struct Keys;
 struct Ids;
@@ -50,6 +54,26 @@ impl Ids {
         AccountId::new([6; 32])
     }
 
+    fn reference_asset() -> AccountId {
+        AccountId::new([7; 32])
+    }
+
+    fn price_feed() -> AccountId {
+        AccountId::new([8; 32])
+    }
+
+    fn redemption_controller() -> AccountId {
+        compute_redemption_controller_pda(
+            Self::stablecoin_program(),
+            Self::stablecoin_definition(),
+            Self::price_feed(),
+        )
+    }
+
+    fn oracle_program() -> nssa_core::program::ProgramId {
+        [9u32; 8]
+    }
+
     fn user_stablecoin_holding() -> AccountId {
         AccountId::from(&PublicKey::new_from_private_key(
             &Keys::user_stablecoin_holding(),
@@ -84,6 +108,14 @@ impl Balances {
 
     fn stablecoin_supply_init() -> u128 {
         1_000
+    }
+
+    fn redemption_price() -> u128 {
+        1_000
+    }
+
+    fn market_price_below_redemption() -> u128 {
+        900
     }
 
     fn user_stablecoin_holding_init() -> u128 {
@@ -152,6 +184,22 @@ impl Accounts {
         }
     }
 
+    fn price_feed_init(price: u128, timestamp: u64) -> Account {
+        Account {
+            program_owner: Ids::oracle_program(),
+            balance: 0_u128,
+            data: Data::from(&OraclePriceAccount {
+                base_asset: Ids::stablecoin_definition(),
+                quote_asset: Ids::reference_asset(),
+                price,
+                timestamp,
+                source_id: String::from("twap"),
+                confidence_interval: 0,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
     fn position_with_debt_init() -> Account {
         Account {
             program_owner: stablecoin_methods::STABLECOIN_ID,
@@ -215,6 +263,20 @@ fn state_for_stablecoin_repay_tests() -> V03State {
     state.force_insert_account(
         Ids::user_stablecoin_holding(),
         Accounts::user_stablecoin_holding_init(),
+    );
+    state
+}
+
+fn state_for_stablecoin_redemption_controller_tests(price: u128, timestamp: u64) -> V03State {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+    state.force_insert_account(
+        Ids::stablecoin_definition(),
+        Accounts::stablecoin_definition_init(),
+    );
+    state.force_insert_account(
+        Ids::price_feed(),
+        Accounts::price_feed_init(price, timestamp),
     );
     state
 }
@@ -397,4 +459,69 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
             panic!("expected Fungible holding")
         }
     }
+}
+
+#[test]
+fn stablecoin_redemption_controller_initializes_and_updates_from_price_feed() {
+    let current_timestamp = 100_u64;
+    let mut state = state_for_stablecoin_redemption_controller_tests(
+        Balances::market_price_below_redemption(),
+        current_timestamp,
+    );
+
+    let initialize = stablecoin_core::Instruction::InitializeRedemptionController {
+        reference_asset_id: Ids::reference_asset(),
+        initial_redemption_price: Balances::redemption_price(),
+        proportional_gain: CONTROLLER_GAIN_SCALE,
+        integral_gain: 0,
+        max_integral_error: 1_000,
+        max_redemption_rate: 500,
+        max_price_feed_age: 10,
+        current_timestamp,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::stablecoin_program(),
+        vec![
+            Ids::redemption_controller(),
+            Ids::stablecoin_definition(),
+            Ids::price_feed(),
+        ],
+        vec![],
+        initialize,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state
+        .transition_from_public_transaction(&tx, 0, current_timestamp)
+        .expect("initialize_redemption_controller must succeed");
+
+    let controller =
+        RedemptionController::try_from(&state.get_account_by_id(Ids::redemption_controller()).data)
+            .expect("valid RedemptionController");
+    assert_eq!(controller.redemption_price, Balances::redemption_price());
+    assert_eq!(controller.redemption_rate, 0);
+    assert_eq!(controller.oracle_program_id, Ids::oracle_program());
+
+    let update = stablecoin_core::Instruction::UpdateRedemptionController { current_timestamp };
+    let message = public_transaction::Message::try_new(
+        Ids::stablecoin_program(),
+        vec![Ids::redemption_controller(), Ids::price_feed()],
+        vec![],
+        update,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state
+        .transition_from_public_transaction(&tx, 0, current_timestamp)
+        .expect("update_redemption_controller must succeed");
+
+    let controller =
+        RedemptionController::try_from(&state.get_account_by_id(Ids::redemption_controller()).data)
+            .expect("valid RedemptionController");
+    assert_eq!(controller.redemption_price, Balances::redemption_price());
+    assert_eq!(controller.redemption_rate, 100);
+    assert_eq!(controller.accumulated_error, 0);
+    assert_eq!(controller.last_update_timestamp, current_timestamp);
 }

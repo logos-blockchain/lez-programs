@@ -112,6 +112,86 @@
           "type": "u128"
         }
       ]
+    },
+    {
+      "name": "initialize_redemption_controller",
+      "accounts": [
+        {
+          "name": "controller",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "price_feed",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "reference_asset_id",
+          "type": "account_id"
+        },
+        {
+          "name": "initial_redemption_price",
+          "type": "u128"
+        },
+        {
+          "name": "proportional_gain",
+          "type": "u128"
+        },
+        {
+          "name": "integral_gain",
+          "type": "u128"
+        },
+        {
+          "name": "max_integral_error",
+          "type": "u128"
+        },
+        {
+          "name": "max_redemption_rate",
+          "type": "u128"
+        },
+        {
+          "name": "max_price_feed_age",
+          "type": "u64"
+        },
+        {
+          "name": "current_timestamp",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "update_redemption_controller",
+      "accounts": [
+        {
+          "name": "controller",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "price_feed",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "current_timestamp",
+          "type": "u64"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -135,6 +215,66 @@
           {
             "name": "debt_amount",
             "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RedemptionController",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "stablecoin_definition_id",
+            "type": "account_id"
+          },
+          {
+            "name": "reference_asset_id",
+            "type": "account_id"
+          },
+          {
+            "name": "price_feed_id",
+            "type": "account_id"
+          },
+          {
+            "name": "oracle_program_id",
+            "type": "program_id"
+          },
+          {
+            "name": "redemption_price",
+            "type": "u128"
+          },
+          {
+            "name": "redemption_rate",
+            "type": "i128"
+          },
+          {
+            "name": "accumulated_error",
+            "type": "i128"
+          },
+          {
+            "name": "proportional_gain",
+            "type": "u128"
+          },
+          {
+            "name": "integral_gain",
+            "type": "u128"
+          },
+          {
+            "name": "max_integral_error",
+            "type": "u128"
+          },
+          {
+            "name": "max_redemption_rate",
+            "type": "u128"
+          },
+          {
+            "name": "max_price_feed_age",
+            "type": "u64"
+          },
+          {
+            "name": "last_update_timestamp",
+            "type": "u64"
           }
         ]
       }

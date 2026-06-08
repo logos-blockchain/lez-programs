@@ -1,8 +1,7 @@
 #![cfg_attr(not(test), no_main)]
 
-use nssa_core::account::AccountWithMetadata;
-use spel_framework::context::ProgramContext;
-use spel_framework::prelude::*;
+use nssa_core::account::{AccountId, AccountWithMetadata};
+use spel_framework::{context::ProgramContext, prelude::*};
 
 #[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
@@ -113,5 +112,81 @@ mod stablecoin {
             post_states,
             chained_calls,
         ))
+    }
+
+    /// Initialize redemption-rate feedback controller state for one stablecoin/feed pair.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails (see
+    /// [`stablecoin_program::redemption_controller::initialize_redemption_controller`]
+    /// for the full list).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "instruction interface exposes controller configuration explicitly"
+    )]
+    #[instruction]
+    pub fn initialize_redemption_controller(
+        ctx: ProgramContext,
+        controller: AccountWithMetadata,
+        stablecoin_definition: AccountWithMetadata,
+        price_feed: AccountWithMetadata,
+        reference_asset_id: AccountId,
+        initial_redemption_price: u128,
+        proportional_gain: u128,
+        integral_gain: u128,
+        max_integral_error: u128,
+        max_redemption_rate: u128,
+        max_price_feed_age: u64,
+        current_timestamp: u64,
+    ) -> SpelResult {
+        let post_states =
+            stablecoin_program::redemption_controller::initialize_redemption_controller(
+                controller,
+                stablecoin_definition,
+                price_feed,
+                ctx.self_program_id,
+                reference_asset_id,
+                initial_redemption_price,
+                proportional_gain,
+                integral_gain,
+                max_integral_error,
+                max_redemption_rate,
+                max_price_feed_age,
+                current_timestamp,
+            );
+        let validity_end = current_timestamp
+            .checked_add(1)
+            .expect("current_timestamp must allow an exact validity window");
+        Ok(spel_framework::SpelOutput::execute(post_states, vec![])
+            .try_with_timestamp_validity_window(current_timestamp..validity_end)
+            .expect("exact timestamp validity window must be non-empty"))
+    }
+
+    /// Update redemption price and redemption rate from the configured price feed.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if controller state
+    /// validation fails. Stale or unavailable price feeds pause updates by
+    /// emitting the controller state unchanged.
+    #[instruction]
+    pub fn update_redemption_controller(
+        ctx: ProgramContext,
+        controller: AccountWithMetadata,
+        price_feed: AccountWithMetadata,
+        current_timestamp: u64,
+    ) -> SpelResult {
+        let post_states = stablecoin_program::redemption_controller::update_redemption_controller(
+            controller,
+            price_feed,
+            ctx.self_program_id,
+            current_timestamp,
+        );
+        let validity_end = current_timestamp
+            .checked_add(1)
+            .expect("current_timestamp must allow an exact validity window");
+        Ok(spel_framework::SpelOutput::execute(post_states, vec![])
+            .try_with_timestamp_validity_window(current_timestamp..validity_end)
+            .expect("exact timestamp validity window must be non-empty"))
     }
 }
