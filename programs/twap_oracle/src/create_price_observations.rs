@@ -1,4 +1,4 @@
-use clock_core::ClockAccountData;
+use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, Claim, ProgramId},
@@ -14,12 +14,17 @@ use twap_oracle_core::{
 /// from `price_source.account_id` and `window_duration`, so whoever controls the price source
 /// controls the observations account.
 ///
+/// The initial observation timestamp is read from `clock`, which must be the canonical 1-block
+/// LEZ system clock ([`CLOCK_01_PROGRAM_ACCOUNT_ID`]). Enforcing this prevents a caller from
+/// supplying an account they control to seed the TWAP with a forged base timestamp.
+///
 /// # Panics
 /// Panics if:
 /// - `price_observations.account_id` does not match
 ///   `compute_price_observations_pda(oracle_program_id, price_source.account_id, window_duration)`.
 /// - `price_observations.account` is not the default (already initialised).
 /// - `price_source.is_authorized` is false (caller does not control the price source account).
+/// - `clock.account_id` is not [`CLOCK_01_PROGRAM_ACCOUNT_ID`].
 pub fn create_price_observations(
     price_observations: AccountWithMetadata,
     price_source: AccountWithMetadata,
@@ -42,6 +47,10 @@ pub fn create_price_observations(
     assert!(
         price_source.is_authorized,
         "CreatePriceObservations: price source account must be authorized (caller must control it via a PDA)"
+    );
+    assert_eq!(
+        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+        "CreatePriceObservations: clock account must be the canonical 1-block LEZ clock account"
     );
 
     let clock_data = ClockAccountData::from_bytes(clock.account.data.as_ref());
@@ -95,7 +104,7 @@ mod tests {
         AccountId::new([1u8; 32])
     }
 
-    fn clock_account_with_timestamp(timestamp: u64) -> AccountWithMetadata {
+    fn clock_account_with_id(timestamp: u64, account_id: AccountId) -> AccountWithMetadata {
         let data = ClockAccountData {
             block_id: 0,
             timestamp,
@@ -109,8 +118,12 @@ mod tests {
                 nonce: Nonce(0),
             },
             is_authorized: false,
-            account_id: AccountId::new([99u8; 32]),
+            account_id,
         }
+    }
+
+    fn clock_account_with_timestamp(timestamp: u64) -> AccountWithMetadata {
+        clock_account_with_id(timestamp, CLOCK_01_PROGRAM_ACCOUNT_ID)
     }
 
     fn price_source_authorized() -> AccountWithMetadata {
@@ -380,6 +393,38 @@ mod tests {
             price_observations_uninit(),
             unauthorized,
             clock_account_with_timestamp(0),
+            0,
+            WINDOW_24H,
+            ORACLE_PROGRAM_ID,
+        );
+    }
+
+    /// The coarser-cadence clock accounts (10-block, 50-block) are still rejected: the oracle
+    /// must read the most fine-grained 1-block clock.
+    #[test]
+    #[should_panic(expected = "clock account must be the canonical 1-block LEZ clock account")]
+    fn non_canonical_clock_account_id_panics() {
+        use clock_core::CLOCK_10_PROGRAM_ACCOUNT_ID;
+        create_price_observations(
+            price_observations_uninit(),
+            price_source_authorized(),
+            clock_account_with_id(0, CLOCK_10_PROGRAM_ACCOUNT_ID),
+            0,
+            WINDOW_24H,
+            ORACLE_PROGRAM_ID,
+        );
+    }
+
+    /// An attacker cannot supply an account they control — even one whose data deserializes as a
+    /// valid [`ClockAccountData`] with a forged timestamp — in place of the system clock.
+    #[test]
+    #[should_panic(expected = "clock account must be the canonical 1-block LEZ clock account")]
+    fn forged_clock_account_panics() {
+        let forged_clock = clock_account_with_id(9_999_999_999, AccountId::new([7u8; 32]));
+        create_price_observations(
+            price_observations_uninit(),
+            price_source_authorized(),
+            forged_clock,
             0,
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
