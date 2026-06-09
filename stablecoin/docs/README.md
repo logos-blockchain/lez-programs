@@ -343,7 +343,7 @@ pub const FIXED_POINT_ONE: u128 = 10u128.pow(27);
 The 27-decimal choice matches MakerDAO / RAI's `RAY` precision and gives enough headroom for rate compounding over years without underflow.
 
 - All multiplications of fixed-point values use `u256` (`i256` for signed) intermediates to avoid overflow; results are reduced back to `u128` / `i128` after dividing by `FIXED_POINT_ONE`.
-- Rounding direction is chosen per use site to favour the protocol (§ 6.5).
+- Rounding direction is chosen per use site to favour the protocol (§ 6.3).
 
 ### 5.2 `compound_rate`
 
@@ -446,7 +446,7 @@ position.normalized_debt_amount = position.normalized_debt_amount.checked_sub(de
 - **`generate_debt` rounds UP.** User gets exactly `amount` stablecoins; their nominal debt grows by `≥ amount`. They owe slightly more than they walked away with → protocol's total debt ≥ total supply.
 - **`repay_debt` rounds DOWN.** User burns exactly `amount` stablecoins; their nominal debt shrinks by `≤ amount`. They paid `amount` but debt only dropped by ≤ that → protocol keeps the rounding remainder as fee credit.
 
-Net effect: the protocol's "implicit fee credit" (`Σ nominal_debt − total_supply`, see §7.7) can only grow over time, never shrink. The integer dust always sticks to the protocol's side.
+Net effect: the protocol's "implicit fee credit" (`Σ nominal_debt − total_supply`, see §7 invariant 7) can only grow over time, never shrink. The integer dust always sticks to the protocol's side.
 
 **Dust trade-off on full repay.** Because we round the decrement down, fully clearing a position can require burning slightly more than the nominal debt (≤ one accumulator unit of overpayment). v1 accepts this. UX-side, the SDK can either show "exact" + "with dust buffer" amounts, or expose a `repay_all` helper that picks the right number off-chain.
 
@@ -580,7 +580,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 | 6 | `withdraw_collateral` | owner | blocked | Remove collateral, subject to collateralization. |
 | 7 | `generate_debt` | owner | blocked | Mint stablecoin, increase normalized debt, subject to collateralization. Oracle staleness gate. |
 | 8 | `repay_debt` | owner | ok | Burn stablecoin, decrease normalized debt. |
-| 9 | `close_position` | owner | ok | Clear Position PDA when debt = 0 and collateral = 0. Vault lingers (see § 12). |
+| 9 | `close_position` | owner | ok | Clear Position PDA when debt = 0 and collateral = 0. Vault lingers (see § 14). |
 
 ### 9.4 Admin parameter updates
 
@@ -929,7 +929,7 @@ flowchart TD
 **Outputs:**
 
 - `position` ← `Account::default()` (cleared; PDA released).
-- `vault` unchanged — lingers with `balance = 0` (Token Program has no `CloseHolding`; § 12).
+- `vault` unchanged — lingers with `balance = 0` (Token Program has no `CloseHolding`; § 14).
 
 **Chained calls:** none.
 
@@ -1062,7 +1062,7 @@ flowchart TD
 - **Stale oracle but unfrozen.** `update_redemption_rate` panics, so the rate stops drifting at whatever it last was. `generate_debt` also panics (RFP R3). Existing positions, `deposit_collateral`, `repay_debt`, `withdraw_collateral` all continue. Withdrawing requires the collateralization check, which uses the projected redemption price from the OLD rate — operationally fine.
 - **Frozen + stale oracle.** `withdraw_collateral` blocked (frozen). `generate_debt` blocked twice (frozen + stale). `deposit_collateral`, `repay_debt`, `close_position` work. Anyone can still call `accrue_stability_fee` (rate-independent).
 - **Admin tightens `minimum_collateralization_ratio`.** Existing positions with healthy-old-ratio but underwater-new-ratio cannot `generate_debt` or `withdraw_collateral`. They CAN `deposit_collateral` to recover, or `repay_debt` to reduce their debt.
-- **Position re-open at same nonce after close.** Fails — the vault PDA at `hash(position_id)` lingers from before. Workaround: pick a fresh nonce. See § 12.
+- **Position re-open at same nonce after close.** Fails — the vault PDA at `hash(position_id)` lingers from before. Workaround: pick a fresh nonce. See § 14.
 - **Overrepay on `repay_debt`.** Panics via `checked_sub`; protects against user error sending more burn than nominal debt at this instant.
 - **Dust on full repay.** Because the decrement is rounded down (§6.3), burning exactly the current nominal debt may leave a tiny `normalized_debt_amount` residue (≤ one accumulator unit). To fully clear, users overpay by a tiny amount (≤ accumulator × 1 raw unit). Off-chain SDK computes the right number; if it picks too small, `repay_debt` still succeeds but the position isn't closeable until another small repay.
 - **Zero-amount instructions.** `deposit_collateral(0)`, `withdraw_collateral(0)`, `generate_debt(0)`, `repay_debt(0)`: all valid no-ops at the protocol level (chained Token call is also a no-op). Saves the caller from having to short-circuit.
@@ -1078,7 +1078,7 @@ flowchart TD
 
 ## 13. Forward integration
 
-- **RFP-014 (Liquidation & Auction Engine).** Adds an external "liquidator" program that, when a position falls under `minimum_collateralization_ratio`, may seize its collateral and clear its debt. Cleanest fit: a new instruction `liquidate_position` callable by the liquidator program (gated by checking the position's collateralization), or by extending the existing instructions to support a `liquidate_only_path`. Either way, this design's `normalized_debt_amount` and `current_accumulator` carry over directly. Surplus accounting (the gap of § 7.7) materializes here when auctions land.
+- **RFP-014 (Liquidation & Auction Engine).** Adds an external "liquidator" program that, when a position falls under `minimum_collateralization_ratio`, may seize its collateral and clear its debt. Cleanest fit: a new instruction `liquidate_position` callable by the liquidator program (gated by checking the position's collateralization), or by extending the existing instructions to support a `liquidate_only_path`. Either way, this design's `normalized_debt_amount` and `current_accumulator` carry over directly. Surplus accounting (the gap of § 7 invariant 7) materializes here when auctions land.
 - **RFP-001 (Admin Authority).** When RFP-001 ships, `admin_account_id` either points at the admin program's account (and any `set_*` instruction's `admin` input is that account being authorized by that program) or this RFP grows a wrapper. Either way it's a local change: `set_*` instructions become "admin authority program authorizes this account" rather than "this account is `is_authorized`". No data-model migration needed.
 - **RFP-002 (Freeze Authority).** Same pattern for `freeze_authority_account_id`.
 - **Mini-app / CLI / SDK.** Read the on-chain accounts directly to display: position-level collateralization, redemption price drift, projected outcomes (these are SDK functions over the same math in § 6). The deshield-interact-reshield privacy pattern is the SDK's responsibility; the program is unaware of whether callers are ephemeral or persistent.
@@ -1089,7 +1089,7 @@ flowchart TD
 - **Two-step admin / freeze rotation.** `set_admin` / `set_freeze_authority` could grow `pending_*` fields + `accept_*` instructions to protect against typo'd `set_admin`. Not in this RFP.
 - **Promote `INTEGRAL_CLAMP` and `RATE_DELTA_CLAMP` to admin-tunable.** Constants for v1 to keep the surface small. Promotion is additive (new `ProtocolParameters` fields + new admin setters); no migration of existing state.
 - **Liquidation-specific instructions.** Tracked under RFP-014.
-- **Surplus extraction.** When RFP-014 lands, the implicit fee credit (§ 7.7) becomes extractable. May require a one-shot `materialize_surplus` instruction that mints the gap into a designated holding.
+- **Surplus extraction.** When RFP-014 lands, the implicit fee credit (§ 7 invariant 7) becomes extractable. May require a one-shot `materialize_surplus` instruction that mints the gap into a designated holding.
 
 ## 15. Implementation plan handoff
 
@@ -1192,7 +1192,7 @@ Alice slightly overpaid (211 nominal vs 210.26 owed). The extra 0.74 went to the
 **Net result over the year:**
 
 - Alice locked 600 collateral, borrowed 200 stablecoin, repaid 211 stablecoin. Net cost: ~11 stablecoin (the protocol's accrued stability fee).
-- The protocol's "accumulated fee credit" gap (§7.7) grew by ~11 over the year just from Alice's position. Over thousands of positions, this is the fee revenue the protocol implicitly holds. Surplus extraction is a future-RFP capability (§14).
+- The protocol's "accumulated fee credit" gap (§7 invariant 7) grew by ~11 over the year just from Alice's position. Over thousands of positions, this is the fee revenue the protocol implicitly holds. Surplus extraction is a future-RFP capability (§14).
 
 ### 16.2 Emergency freeze
 
