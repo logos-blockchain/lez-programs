@@ -54,10 +54,6 @@ impl Ids {
         AccountId::new([6; 32])
     }
 
-    fn reference_asset() -> AccountId {
-        AccountId::new([7; 32])
-    }
-
     fn price_feed() -> AccountId {
         AccountId::new([8; 32])
     }
@@ -190,7 +186,7 @@ impl Accounts {
             balance: 0_u128,
             data: Data::from(&OraclePriceAccount {
                 base_asset: Ids::stablecoin_definition(),
-                quote_asset: Ids::reference_asset(),
+                quote_asset: Ids::collateral_definition(),
                 price,
                 timestamp,
                 source_id: String::from("twap"),
@@ -470,7 +466,7 @@ fn stablecoin_redemption_controller_initializes_and_updates_from_price_feed() {
     );
 
     let initialize = stablecoin_core::Instruction::InitializeRedemptionController {
-        reference_asset_id: Ids::reference_asset(),
+        collateral_definition_id: Ids::collateral_definition(),
         initial_redemption_price: Balances::redemption_price(),
         proportional_gain: CONTROLLER_GAIN_SCALE,
         integral_gain: 0,
@@ -501,7 +497,6 @@ fn stablecoin_redemption_controller_initializes_and_updates_from_price_feed() {
             .expect("valid RedemptionController");
     assert_eq!(controller.redemption_price, Balances::redemption_price());
     assert_eq!(controller.redemption_rate, 0);
-    assert_eq!(controller.oracle_program_id, Ids::oracle_program());
 
     let update = stablecoin_core::Instruction::UpdateRedemptionController { current_timestamp };
     let message = public_transaction::Message::try_new(
@@ -521,7 +516,7 @@ fn stablecoin_redemption_controller_initializes_and_updates_from_price_feed() {
         RedemptionController::try_from(&state.get_account_by_id(Ids::redemption_controller()).data)
             .expect("valid RedemptionController");
     assert_eq!(controller.redemption_price, Balances::redemption_price());
-    assert_eq!(controller.redemption_rate, 100);
+    assert_eq!(controller.redemption_rate, -100);
     assert_eq!(controller.accumulated_error, 0);
     assert_eq!(controller.last_update_timestamp, current_timestamp);
 }

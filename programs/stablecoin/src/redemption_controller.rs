@@ -14,7 +14,7 @@ const CONTROLLER_GAIN_SCALE_I128: i128 = 1_000_000_000;
 /// - `controller` is already initialized.
 /// - `controller.account_id` does not match the stablecoin/feed PDA.
 /// - `stablecoin_definition` is uninitialized or not a fungible token definition.
-/// - `price_feed` is uninitialized.
+/// - `price_feed` is uninitialized, malformed, stale, or not the stablecoin/collateral feed.
 /// - Initial price, gains, or clamp limits do not fit controller math bounds.
 #[expect(
     clippy::too_many_arguments,
@@ -25,7 +25,7 @@ pub fn initialize_redemption_controller(
     stablecoin_definition: AccountWithMetadata,
     price_feed: AccountWithMetadata,
     stablecoin_program_id: ProgramId,
-    reference_asset_id: AccountId,
+    collateral_definition_id: AccountId,
     initial_redemption_price: u128,
     proportional_gain: u128,
     integral_gain: u128,
@@ -69,6 +69,13 @@ pub fn initialize_redemption_controller(
         matches!(token_definition, TokenDefinition::Fungible { .. }),
         "Stablecoin definition must be fungible"
     );
+    assert_live_price_feed(
+        &price_feed,
+        stablecoin_definition.account_id,
+        collateral_definition_id,
+        current_timestamp,
+        max_price_feed_age,
+    );
 
     let controller_seed = verify_redemption_controller_and_get_seed(
         &controller,
@@ -78,9 +85,8 @@ pub fn initialize_redemption_controller(
     );
     let controller_state = RedemptionController {
         stablecoin_definition_id: stablecoin_definition.account_id,
-        reference_asset_id,
+        collateral_definition_id,
         price_feed_id: price_feed.account_id,
-        oracle_program_id: price_feed.account.program_owner,
         redemption_price: initial_redemption_price,
         redemption_rate: 0,
         accumulated_error: 0,
@@ -165,16 +171,14 @@ fn live_market_price(
     price_feed: &AccountWithMetadata,
     current_timestamp: u64,
 ) -> Option<u128> {
-    if price_feed.account_id != controller.price_feed_id
-        || price_feed.account == Account::default()
-        || price_feed.account.program_owner != controller.oracle_program_id
+    if price_feed.account_id != controller.price_feed_id || price_feed.account == Account::default()
     {
         return None;
     }
 
     let price_account = OraclePriceAccount::try_from(&price_feed.account.data).ok()?;
     if price_account.base_asset != controller.stablecoin_definition_id
-        || price_account.quote_asset != controller.reference_asset_id
+        || price_account.quote_asset != controller.collateral_definition_id
         || price_account.price == 0
         || price_account.price > i128_max_as_u128()
         || price_account.timestamp > current_timestamp
@@ -188,6 +192,38 @@ fn live_market_price(
     }
 
     Some(price_account.price)
+}
+
+fn assert_live_price_feed(
+    price_feed: &AccountWithMetadata,
+    stablecoin_definition_id: AccountId,
+    collateral_definition_id: AccountId,
+    current_timestamp: u64,
+    max_price_feed_age: u64,
+) {
+    let price_account = OraclePriceAccount::try_from(&price_feed.account.data)
+        .expect("Price feed account must hold a valid OraclePriceAccount");
+    assert_eq!(
+        price_account.base_asset, stablecoin_definition_id,
+        "Price feed base asset must be the stablecoin definition"
+    );
+    assert_eq!(
+        price_account.quote_asset, collateral_definition_id,
+        "Price feed quote asset must be the collateral definition"
+    );
+    assert_ne!(price_account.price, 0, "Price feed price must be nonzero");
+    assert_price_value_fits_i128(price_account.price, "Price feed price");
+    assert!(
+        price_account.timestamp <= current_timestamp,
+        "Price feed timestamp cannot be in the future"
+    );
+    let age = current_timestamp
+        .checked_sub(price_account.timestamp)
+        .expect("Price feed timestamp was checked to be current or older");
+    assert!(
+        age <= max_price_feed_age,
+        "Price feed age exceeds maximum allowed age"
+    );
 }
 
 fn compute_next_controller_state(
@@ -212,16 +248,15 @@ fn compute_next_controller_state(
     );
     let proportional_term = scaled_term(error, controller.proportional_gain);
     let integral_term = scaled_term(accumulated_error, controller.integral_gain);
-    let redemption_rate = clamp_signed(
-        proportional_term.saturating_add(integral_term),
-        controller.max_redemption_rate,
-    );
+    let rate_adjustment = proportional_term
+        .saturating_add(integral_term)
+        .saturating_neg();
+    let redemption_rate = clamp_signed(rate_adjustment, controller.max_redemption_rate);
 
     RedemptionController {
         stablecoin_definition_id: controller.stablecoin_definition_id,
-        reference_asset_id: controller.reference_asset_id,
+        collateral_definition_id: controller.collateral_definition_id,
         price_feed_id: controller.price_feed_id,
-        oracle_program_id: controller.oracle_program_id,
         redemption_price,
         redemption_rate,
         accumulated_error,
@@ -302,7 +337,7 @@ mod tests {
         AccountId::new([1; 32])
     }
 
-    fn reference_asset_id() -> AccountId {
+    fn collateral_definition_id() -> AccountId {
         AccountId::new([2; 32])
     }
 
@@ -341,13 +376,21 @@ mod tests {
     }
 
     fn price_feed_account(price: u128, timestamp: u64) -> AccountWithMetadata {
+        price_feed_account_with_owner(price, timestamp, ORACLE_PROGRAM_ID)
+    }
+
+    fn price_feed_account_with_owner(
+        price: u128,
+        timestamp: u64,
+        program_owner: ProgramId,
+    ) -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ORACLE_PROGRAM_ID,
+                program_owner,
                 balance: 0,
                 data: Data::from(&OraclePriceAccount {
                     base_asset: stablecoin_definition_id(),
-                    quote_asset: reference_asset_id(),
+                    quote_asset: collateral_definition_id(),
                     price,
                     timestamp,
                     source_id: "twap".to_owned(),
@@ -384,9 +427,8 @@ mod tests {
     fn controller_state() -> RedemptionController {
         RedemptionController {
             stablecoin_definition_id: stablecoin_definition_id(),
-            reference_asset_id: reference_asset_id(),
+            collateral_definition_id: collateral_definition_id(),
             price_feed_id: price_feed_id(),
-            oracle_program_id: ORACLE_PROGRAM_ID,
             redemption_price: 1_000,
             redemption_rate: 0,
             accumulated_error: 0,
@@ -406,7 +448,7 @@ mod tests {
             stablecoin_definition_account(),
             price_feed_account(1_000, 100),
             STABLECOIN_PROGRAM_ID,
-            reference_asset_id(),
+            collateral_definition_id(),
             1_000,
             CONTROLLER_GAIN_SCALE,
             0,
@@ -427,9 +469,11 @@ mod tests {
             controller.stablecoin_definition_id,
             stablecoin_definition_id()
         );
-        assert_eq!(controller.reference_asset_id, reference_asset_id());
+        assert_eq!(
+            controller.collateral_definition_id,
+            collateral_definition_id()
+        );
         assert_eq!(controller.price_feed_id, price_feed_id());
-        assert_eq!(controller.oracle_program_id, ORACLE_PROGRAM_ID);
         assert_eq!(controller.redemption_price, 1_000);
         assert_eq!(controller.redemption_rate, 0);
         assert_eq!(controller.last_update_timestamp, 100);
@@ -447,8 +491,22 @@ mod tests {
         assert_eq!(post_states.len(), 2);
         let controller =
             RedemptionController::try_from(&post_states[0].account().data).expect("valid state");
-        assert_eq!(controller.redemption_rate, 100);
+        assert_eq!(controller.redemption_rate, -100);
         assert_eq!(controller.last_update_timestamp, 100);
+    }
+
+    #[test]
+    fn update_redemption_controller_accepts_matching_feed_from_any_program_owner() {
+        let post_states = update_redemption_controller(
+            controller_account(&controller_state()),
+            price_feed_account_with_owner(900, 100, [7u32; 8]),
+            STABLECOIN_PROGRAM_ID,
+            100,
+        );
+
+        let controller =
+            RedemptionController::try_from(&post_states[0].account().data).expect("valid state");
+        assert_eq!(controller.redemption_rate, -100);
     }
 
     #[test]
@@ -487,19 +545,19 @@ mod tests {
     }
 
     #[test]
-    fn controller_sets_positive_rate_when_market_price_is_below_redemption_price() {
+    fn controller_sets_negative_rate_when_market_price_is_below_redemption_price() {
         let updated = compute_next_controller_state(&controller_state(), 900, 100);
 
-        assert_eq!(updated.redemption_rate, 100);
+        assert_eq!(updated.redemption_rate, -100);
         assert_eq!(updated.accumulated_error, 0);
         assert_eq!(updated.redemption_price, 1_000);
     }
 
     #[test]
-    fn controller_sets_negative_rate_when_market_price_is_above_redemption_price() {
+    fn controller_sets_positive_rate_when_market_price_is_above_redemption_price() {
         let updated = compute_next_controller_state(&controller_state(), 1_100, 100);
 
-        assert_eq!(updated.redemption_rate, -100);
+        assert_eq!(updated.redemption_rate, 100);
     }
 
     #[test]
@@ -527,6 +585,6 @@ mod tests {
         let updated = compute_next_controller_state(&controller, 900, 101);
 
         assert_eq!(updated.accumulated_error, 100);
-        assert_eq!(updated.redemption_rate, 80);
+        assert_eq!(updated.redemption_rate, -80);
     }
 }

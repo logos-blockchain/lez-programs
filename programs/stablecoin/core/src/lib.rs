@@ -92,14 +92,15 @@ pub enum Instruction {
     /// - Redemption controller account (uninitialized, address must match
     ///   `compute_redemption_controller_pda(self_program_id, stablecoin_definition, price_feed)`)
     /// - Stablecoin token definition account (initialized fungible token)
-    /// - Oracle price feed account (initialized; its `program_owner` becomes the configured oracle
-    ///   program)
+    /// - Oracle price feed account (initialized; must decode as the configured
+    ///   stablecoin/collateral market price)
     ///
     /// `proportional_gain` and `integral_gain` use [`CONTROLLER_GAIN_SCALE`] fixed-point
     /// precision. For example, `CONTROLLER_GAIN_SCALE / 10` represents `0.1`.
     InitializeRedemptionController {
-        /// Asset that denominates both the oracle market price and redemption price.
-        reference_asset_id: AccountId,
+        /// Collateral token definition that denominates the oracle market price and redemption
+        /// price.
+        collateral_definition_id: AccountId,
         /// Initial redemption price, in the same units and precision as the oracle price.
         initial_redemption_price: u128,
         /// Proportional controller gain, scaled by [`CONTROLLER_GAIN_SCALE`].
@@ -146,7 +147,7 @@ pub struct Position {
     pub debt_amount: u128,
 }
 
-/// Global redemption feedback controller state for a stablecoin/feed pair.
+/// Redemption feedback controller state for a stablecoin/feed pair.
 ///
 /// `redemption_rate` is signed price drift per timestamp unit. Positive rates raise the
 /// redemption price; negative rates lower it. `accumulated_error` stores the integral term
@@ -156,12 +157,10 @@ pub struct Position {
 pub struct RedemptionController {
     /// Stablecoin token definition priced by the oracle feed.
     pub stablecoin_definition_id: AccountId,
-    /// Asset that denominates both oracle prices and redemption price.
-    pub reference_asset_id: AccountId,
+    /// Collateral token definition that denominates oracle prices and redemption price.
+    pub collateral_definition_id: AccountId,
     /// Configured oracle price feed account.
     pub price_feed_id: AccountId,
-    /// Program expected to own `price_feed_id`.
-    pub oracle_program_id: ProgramId,
     /// Current redemption price in oracle price units.
     pub redemption_price: u128,
     /// Current redemption rate in price units per timestamp unit.
