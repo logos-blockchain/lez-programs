@@ -16,13 +16,37 @@ fn main() {
     let dep_dirs = find_path_dep_dirs(&path);
 
     match spel_framework_core::idl_gen::generate_idl_from_file_with_deps(&path, &dep_dirs) {
-        Ok(idl) => match serde_json::to_string_pretty(&idl) {
-            Ok(json) => println!("{json}"),
-            Err(e) => {
-                eprintln!("Error serializing IDL to JSON: {e}");
-                process::exit(1);
+        Ok(idl) => {
+            // spel-framework emits the top-level `types` array in HashMap
+            // iteration order, which is non-deterministic across processes.
+            // Sort it by name so regenerated IDL is byte-stable regardless of
+            // where it runs (local `make idl` vs CI vs another contributor).
+            let mut value = match serde_json::to_value(&idl) {
+                Ok(value) => value,
+                Err(e) => {
+                    eprintln!("Error converting IDL to JSON value: {e}");
+                    process::exit(1);
+                }
+            };
+            if let Some(types) = value.get_mut("types").and_then(|t| t.as_array_mut()) {
+                types.sort_by(|a, b| {
+                    let name = |v: &serde_json::Value| {
+                        v.get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_owned()
+                    };
+                    name(a).cmp(&name(b))
+                });
             }
-        },
+            match serde_json::to_string_pretty(&value) {
+                Ok(json) => println!("{json}"),
+                Err(e) => {
+                    eprintln!("Error serializing IDL to JSON: {e}");
+                    process::exit(1);
+                }
+            }
+        }
         Err(e) => {
             eprintln!("Error: {e}");
             process::exit(1);

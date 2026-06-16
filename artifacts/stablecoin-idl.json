@@ -327,6 +327,18 @@
   ],
   "types": [
     {
+      "name": "MetadataStandard",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Simple"
+        },
+        {
+          "name": "Expanded"
+        }
+      ]
+    },
+    {
       "name": "ObservationEntry",
       "kind": "struct",
       "fields": [
@@ -337,18 +349,6 @@
         {
           "name": "tick_cumulative",
           "type": "i64"
-        }
-      ]
-    },
-    {
-      "name": "MetadataStandard",
-      "kind": "enum",
-      "variants": [
-        {
-          "name": "Simple"
-        },
-        {
-          "name": "Expanded"
         }
       ]
     }
