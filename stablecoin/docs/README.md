@@ -135,7 +135,7 @@ These two are usually run by keeper bots that batch them into one transaction. T
 - `withdraw_collateral` (§10.6) to take some back — only allowed if the position still meets the safety ratio afterwards.
 - `repay_debt` (§10.8) to burn stablecoin and lower the debt. To pay off accrued interest, users may need to buy extra stablecoin on the market.
 
-**Closing out.** When a position's debt and collateral are both zero, `close_position` (§10.9) clears the `Position` account so the user can later open a new position with the same nonce. (The vault account stays — see §14.)
+**Closing out.** When a position's debt and collateral are both zero, `close_position` (§10.9) clears the `Position` account. This does **not** free the nonce for reuse: the vault PDA at `hash(position_id)` lingers (the Token Program has no `CloseHolding`), so reopening at the same `(owner, nonce)` always fails `open_position`'s vault-uninitialized check — the user must pick a fresh nonce. See §11 and §14.
 
 **Admin tunes parameters.** The admin can change the stability fee (which auto-applies any pending interest first so the new rate doesn't apply retroactively), tighten or loosen the collateralization ratio, change the controller gains, point at a different oracle, adjust the timing intervals, or rotate the admin / freeze-authority handles. None of these touch any position directly. The admin CANNOT touch a position, mint or burn stablecoin, reset the redemption price, or change the stablecoin / collateral definitions — those are fixed at setup.
 
@@ -360,7 +360,7 @@ Edge cases:
 - `seconds_elapsed = 0` → returns `FIXED_POINT_ONE` (identity element).
 - `per_second_rate = FIXED_POINT_ONE` → returns `FIXED_POINT_ONE` regardless of `seconds_elapsed`.
 - `per_second_rate < FIXED_POINT_ONE` → result < `FIXED_POINT_ONE` (compounding decay).
-- Overflow guard: cap intermediate results; on overflow, panic (this should be impossible given parameter bounds in § 8).
+- Overflow guard: callers clamp the elapsed window to `MAXIMUM_COMPOUNDING_WINDOW_SECONDS` before calling (§5.3). This is load-bearing, not decorative: over an *unbounded* window, any `per_second_rate > FIXED_POINT_ONE` eventually overflows `rate ^ seconds_elapsed` regardless of how close to `1.0` it is — the §8 rate bound alone does **not** prevent it.
 
 **In plain English:** this is just `rate ^ seconds_elapsed` — what a per-second multiplier becomes after that many seconds. The naive way is `seconds_elapsed` separate multiplications. Exponentiation-by-squaring does it in `log₂(seconds_elapsed)` multiplications instead — for a year's worth of seconds (~31.5M), that's ~25 muls instead of 31.5M.
 
@@ -369,13 +369,18 @@ Edge cases:
 ```rust
 // Used in every op that needs the up-to-date accumulator / redemption price.
 fn current_accumulated_rate(state: StabilityFeeAccumulator, params: ProtocolParameters, now: u64) -> u128 {
-    let dt = now.saturating_sub(state.last_accrued_at);
+    // Clamp the elapsed window. Over an unbounded dt, any rate > 1 eventually overflows
+    // compound_rate (§5.2, §8). The cap bounds the worst case structurally, independent of
+    // the rate value. Trade-off: fees stop accruing past the window if NO keeper pokes for
+    // that long — permissionless, cheap accrue makes this a catastrophic-neglect-only case.
+    let dt = now.saturating_sub(state.last_accrued_at).min(MAXIMUM_COMPOUNDING_WINDOW_SECONDS);
     let factor = compound_rate(params.stability_fee_per_second, dt);
     mul_div(state.accumulated_rate_at_last_accrual, factor, FIXED_POINT_ONE)
 }
 
 fn current_redemption_price(state: RedemptionPriceState, now: u64) -> u128 {
-    let dt = now.saturating_sub(state.last_updated_at);
+    // Same clamp rationale as above — redemption_rate_per_second can also exceed 1.0.
+    let dt = now.saturating_sub(state.last_updated_at).min(MAXIMUM_COMPOUNDING_WINDOW_SECONDS);
     let factor = compound_rate(state.redemption_rate_per_second, dt);
     mul_div(state.redemption_price_at_last_update, factor, FIXED_POINT_ONE)
 }
@@ -541,7 +546,7 @@ These are properties the protocol maintains across every state-changing instruct
 | Constant / parameter | Bound | Rationale |
 |---|---|---|
 | `FIXED_POINT_ONE` | `10^27` | RAY precision; standard. |
-| `stability_fee_per_second` | `FIXED_POINT_ONE ≤ x ≤ FIXED_POINT_ONE * 2` | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). Upper bound is a wildly impossible value (≈100% per second) for anti-typo. Real values are `1 + ε` where `ε ≈ 10^16` for ~5% annual. |
+| `stability_fee_per_second` | `FIXED_POINT_ONE ≤ x ≤ FIXED_POINT_ONE * 2` | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). Upper bound is an anti-typo sanity cap (≈100%/s) — it does **not** by itself prevent `compound_rate` overflow; that is handled by clamping the elapsed window (`MAXIMUM_COMPOUNDING_WINDOW_SECONDS`, below). Real values are `1 + ε` where `ε ≈ 10^16` for ~5% annual. |
 | `minimum_collateralization_ratio` | `FIXED_POINT_ONE * 1.1 ≤ x ≤ FIXED_POINT_ONE * 10` | Lower bound = 110% (any less is liquidation-immediate); upper bound = 1000% (sanity cap). Real values are 130–200%. |
 | `controller_proportional_gain` magnitude | `|x| ≤ FIXED_POINT_ONE * 10^6` | Practical upper bound for rate-explosion guard (RFP R2). Real values are tiny (≈10^9–10^15 raw) because they scale price-error × rate-output. |
 | `controller_integral_gain` magnitude | Same as proportional | Same rationale. |
@@ -550,6 +555,7 @@ These are properties the protocol maintains across every state-changing instruct
 | `minimum_seconds_between_fee_accruals` | `1 ≤ x ≤ 86400` | Min 1s (no zero-spam), max 1 day (RFP "rate updates within a small number of blocks"). |
 | `minimum_seconds_between_rate_updates` | Same | Same. |
 | `maximum_oracle_price_age_seconds` | `1 ≤ x ≤ 86400` | Stale beyond a day is obviously bad; aggressive freshness is a tuning parameter. |
+| `MAXIMUM_COMPOUNDING_WINDOW_SECONDS` | TBD — `≥` the expected worst-case keeper-poke gap (candidate range `86400`–`604800`) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Exact value pending tuning. |
 | `initial_redemption_price` | `> 0` | Must be positive; admin chooses an initial value reflecting the launch peg target. |
 
 All bounds enforced in `initialize_program` and the corresponding `set_*` instruction.
@@ -562,7 +568,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 
 | # | Instruction | Caller | One-line |
 |---|---|---|---|
-| 1 | `initialize_program` | admin (one-shot) | Create all four global PDAs (three native + stablecoin definition via chained `Token::NewFungibleDefinition`), bind collateral + oracle + initial params, set initial redemption price. |
+| 1 | `initialize_program` | admin (one-shot) | Create all five global PDAs (three native + the stablecoin definition and its paired master holding, both via chained `Token::NewFungibleDefinition`), bind collateral + oracle + initial params, set initial redemption price. |
 
 ### 9.2 Permissionless pokes
 
@@ -647,7 +653,7 @@ fn initialize_program(
 
 1. `Token::NewFungibleDefinition { name: stablecoin_name, total_supply: 0 }` · accounts: `[stablecoin_definition, stablecoin_master_holding]` (both authorized via their respective stablecoin-program PDA seeds).
 
-**Panics if:** `admin.is_authorized = false`; any of the four target PDAs already initialized; `collateral_definition` uninitialized or not `TokenDefinition::Fungible`; `market_price_oracle` base/quote mismatch; any numerical param outside its sane band (§ 8).
+**Panics if:** `admin.is_authorized = false`; any of the five target PDAs already initialized; `collateral_definition` uninitialized or not `TokenDefinition::Fungible`; `market_price_oracle` base/quote mismatch; any numerical param outside its sane band (§ 8).
 
 ```mermaid
 flowchart TD
@@ -681,7 +687,7 @@ flowchart TD
 
 **Chained calls:** none.
 
-**Panics if:** `caller.is_authorized = false`; either global uninitialized; `now − last_accrued_at < minimum_seconds_between_fee_accruals`; overflow in `compound_rate` (impossible under the bounds of § 8).
+**Panics if:** `caller.is_authorized = false`; either global uninitialized; `now − last_accrued_at < minimum_seconds_between_fee_accruals`; overflow in `compound_rate` (prevented by the `MAXIMUM_COMPOUNDING_WINDOW_SECONDS` clamp of §5.3 — without it a within-bounds-but-high rate over a long `dt` would overflow).
 
 ```mermaid
 flowchart TD
@@ -899,7 +905,7 @@ flowchart TD
 
 **Chained calls:** `Token::Burn { amount_to_burn: amount }` · accounts: `[stablecoin_definition, user_stablecoin_holding (user-authorized)]` · no PDA seeds.
 
-**Panics if:** `owner.is_authorized = false`; `user_stablecoin_holding.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; overrepay (`⌈amount × FIXED_POINT_ONE / current_accumulator⌉ > position.normalized_debt_amount`). Allowed when frozen.
+**Panics if:** `owner.is_authorized = false`; `user_stablecoin_holding.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; overrepay (`⌊amount × FIXED_POINT_ONE / current_accumulator⌋ > position.normalized_debt_amount`, mirroring the floor decrement of §6.3 / the output above). Allowed when frozen.
 
 ```mermaid
 flowchart TD
@@ -1058,7 +1064,7 @@ flowchart TD
 ## 11. Edge cases
 
 - **Empty position** (`collateral_amount = 0`, `normalized_debt_amount = 0`) — valid intermediate state. `withdraw_collateral` with `amount = 0` is a no-op. `close_position` is the only path that clears the account.
-- **Long time since last poke.** `compound_rate` handles large `dt` via exponentiation by squaring (O(log dt)). At extreme `dt` (e.g., 10 years) the result is bounded by the constants of § 8.
+- **Long time since last poke.** `compound_rate` handles large `dt` via exponentiation by squaring (O(log dt)), but the result is NOT self-bounding: at extreme `dt` any rate > `FIXED_POINT_ONE` overflows. Callers therefore clamp `dt` to `MAXIMUM_COMPOUNDING_WINDOW_SECONDS` (§5.3). The trade-off is that fee accrual and redemption drift pause beyond the window if no one pokes for that long; permissionless, cheap pokes make this a catastrophic-neglect-only scenario.
 - **Stale oracle but unfrozen.** `update_redemption_rate` panics, so the rate stops drifting at whatever it last was. `generate_debt` also panics (RFP R3). Existing positions, `deposit_collateral`, `repay_debt`, `withdraw_collateral` all continue. Withdrawing requires the collateralization check, which uses the projected redemption price from the OLD rate — operationally fine.
 - **Frozen + stale oracle.** `withdraw_collateral` blocked (frozen). `generate_debt` blocked twice (frozen + stale). `deposit_collateral`, `repay_debt`, `close_position` work. Anyone can still call `accrue_stability_fee` (rate-independent).
 - **Admin tightens `minimum_collateralization_ratio`.** Existing positions with healthy-old-ratio but underwater-new-ratio cannot `generate_debt` or `withdraw_collateral`. They CAN `deposit_collateral` to recover, or `repay_debt` to reduce their debt.
