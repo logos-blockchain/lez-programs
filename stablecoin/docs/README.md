@@ -475,9 +475,13 @@ new_integral = clamp(new_integral, -INTEGRAL_CLAMP, INTEGRAL_CLAMP)
 
 // 4. Compute rate adjustment.
 proportional_term = (params.controller_proportional_gain as i256) * error / FIXED_POINT_ONE
-rate_adjustment   = -(proportional_term + new_integral)
-//   Negative sign: when redemption > market (error > 0), drive rate DOWN so the
-//   redemption price drifts toward the market price; vice versa.
+rate_adjustment   = proportional_term + new_integral
+//   No negation: the adjustment carries the SAME sign as error = redemption − market.
+//   When redemption > market (error > 0, coin trading below target), drive the rate UP:
+//   the redemption price rises, collateralization tightens, minting contracts, supply
+//   shrinks, and the market price is pulled back UP toward the target (negative feedback).
+//   Vice versa when above. Matches RAI's PIRawPerSecondCalculator, whose final step is
+//   redemptionRate = RAY + (Kp·error + Ki·∫) with error = redemptionPrice − marketPrice.
 
 // 5. Clamp the per-second adjustment (rate-explosion guard, RFP R2).
 rate_adjustment = clamp(rate_adjustment, -RATE_DELTA_CLAMP, RATE_DELTA_CLAMP)
@@ -489,9 +493,11 @@ state.controller_integral_term        = new_integral
 state.last_updated_at                 = now
 ```
 
-The signs work out so that **positive gains drive the system toward stability**. Operators tune gain magnitude; sign is conventional and embedded in the controller, not the gain.
+The signs work out so that **positive gains drive the system toward stability** (negative feedback): with no negation on `rate_adjustment`, the correction carries the same sign as `error = redemption − market`, exactly matching RAI's `redemptionRate = RAY + (Kp·error + Ki·∫)`. Operators tune gain magnitude; the stabilizing direction is embedded in the controller, not the gain.
 
 `INTEGRAL_CLAMP` and `RATE_DELTA_CLAMP` are constants in v1 (§ 8). Promoting them to `ProtocolParameters` admin-tunable fields is a future revision (no on-chain migration needed — additive).
+
+**Anti-windup — clamp vs leak (deliberate divergence from RAI).** v1 bounds the integral with a hard clamp (`clamp(new_integral, ±INTEGRAL_CLAMP)`) — conditional integration / saturation. RAI instead uses a *leaky* integrator: it scales the accumulated deviation by a per-second decay factor (`rpow(perSecondCumulativeLeak, Δt)`) before adding the new term, so stale error fades exponentially rather than sitting pinned at a bound. Both are valid anti-windup. v1 picks the clamp because it's simpler, deterministic, and adds no extra parameter; the trade-off is *windup-on-release* — under a long sustained deviation the clamped integral saturates and then unwinds with some lag when the error reverses, whereas the leak never fully saturates. This is a conscious choice, not an oversight; adopting RAI's leak is the planned upgrade once the controller is tuned against simulation (§14, §15).
 
 **In plain English:** this is the protocol's "thermostat". The redemption price is the target; the market price is what's actually observed. The bigger the gap (the **error**), the harder the protocol pushes back via the **redemption rate** — which then drifts the redemption price toward the market. The **proportional term** reacts to the CURRENT gap; the **integral term** remembers the gap's HISTORY, so persistent errors get a stronger correction over time. The two clamps prevent the two classic feedback-loop failure modes: anti-windup keeps the integral from growing unbounded during long imbalances, and the rate clamp keeps single-update jumps from exploding.
 
@@ -510,7 +516,7 @@ flowchart LR
     StateOld -->|prev integral| IClamp
     IDelta --> IClamp[new_integral<br/>clamp ±INTEGRAL_CLAMP]
 
-    P --> RAdj["rate_adjustment<br/>= − P − new_integral"]
+    P --> RAdj["rate_adjustment<br/>= P + new_integral"]
     IClamp --> RAdj
     RAdj --> RClamp[clamp ±RATE_DELTA_CLAMP]
     RClamp --> NewRate[redemption_rate_per_second<br/>= FIXED_POINT_ONE + rate_adjustment]
@@ -1094,6 +1100,7 @@ flowchart TD
 - **`Token::CloseHolding`.** Upstream extension to the token program. Lets `close_position` actually clear the vault account so position-nonce reuse becomes possible. Track as a separate issue against the Token Program.
 - **Two-step admin / freeze rotation.** `set_admin` / `set_freeze_authority` could grow `pending_*` fields + `accept_*` instructions to protect against typo'd `set_admin`. Not in this RFP.
 - **Promote `INTEGRAL_CLAMP` and `RATE_DELTA_CLAMP` to admin-tunable.** Constants for v1 to keep the surface small. Promotion is additive (new `ProtocolParameters` fields + new admin setters); no migration of existing state.
+- **Leaky integrator (RAI parity).** v1 uses a hard `INTEGRAL_CLAMP` for anti-windup (§6.4); RAI uses a per-second integral *leak* (`perSecondCumulativeLeak`) that exponentially decays stale deviation. Switching to the leak — better dynamics under sustained deviations, at the cost of a new tunable parameter (with its own §8 bound) and a change to the §6.4 integral math — is deferred to the controller-tuning pass (§15). Deliberate divergence, not an oversight.
 - **Liquidation-specific instructions.** Tracked under RFP-014.
 - **Surplus extraction.** When RFP-014 lands, the implicit fee credit (§ 7 invariant 7) becomes extractable. May require a one-shot `materialize_surplus` instruction that mints the gap into a designated holding.
 
