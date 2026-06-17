@@ -41,6 +41,7 @@
     - [10.1 `initialize_program`](#101-initialize_program)
     - [10.2 `accrue_stability_fee`](#102-accrue_stability_fee)
     - [10.3 `update_redemption_rate`](#103-update_redemption_rate)
+    - [10.3a `refresh_globals`](#103a-refresh_globals-combined-poke)
     - [10.4 `open_position`](#104-open_position)
     - [10.5 `deposit_collateral`](#105-deposit_collateral)
     - [10.6 `withdraw_collateral`](#106-withdraw_collateral)
@@ -127,7 +128,7 @@ A walkthrough of who calls what and what changes when. Detailed mechanics are in
 - `accrue_stability_fee` (§10.2) advances the global fee multiplier. Nothing moves; the multiplier grows so every open position accrues interest at once.
 - `update_redemption_rate` (§10.3) reads the market-price oracle, runs the PI controller (§6.4), and updates the redemption price and its drift rate. The redemption price then keeps drifting toward the market price until the next call.
 
-These two are usually run by keeper bots that batch them into one transaction. They cost gas but earn no reward — anyone with money in the protocol wants the globals fresh before they act.
+These two are usually run by keeper bots. A LEZ transaction carries a single instruction, so a keeper that wants to advance both globals at once calls the combined `refresh_globals` poke (§10.3a); otherwise it sends `accrue_stability_fee` and `update_redemption_rate` as two separate transactions. They cost gas but earn no reward — anyone with money in the protocol wants the globals fresh before they act.
 
 **A user opens a position and borrows.** A user picks a `position_nonce` (any integer — 0, 7, whatever) and calls `open_position` (§10.4) with some collateral. Two accounts get created: their `Position` (at `hash(owner, nonce)`, owned by the stablecoin program, starting with zero debt) and a `PositionVault` (at `hash(position)`, owned by the Token Program) that holds the collateral tokens. They can then call `generate_debt` (§10.7) to mint stablecoin into their own holding. The mint increases the position's normalized debt; the collateralization check prevents over-borrowing; the call fails if the oracle is stale or the protocol is frozen.
 
@@ -157,17 +158,17 @@ Five single-instance accounts hold all the globally-shared state. Each is a PDA 
 
 *Holds:* the compounded stability-fee rate at the last accrual, plus the wall-clock timestamp of that accrual.
 
-*Why:* implements the RAI accumulator trick (§6.1) — instead of writing interest into every position on every accrual, we maintain one global multiplier. Each position's nominal debt is then `normalized_debt × accumulator`, computed lazily at read time. Read by every debt-touching op; written only by `accrue_stability_fee` and the auto-accrue path in `set_stability_fee_per_second`.
+*Why:* implements the RAI accumulator trick (§6.1) — instead of writing interest into every position on every accrual, we maintain one global multiplier. Each position's nominal debt is then `normalized_debt × accumulator`, computed lazily at read time. Read by every debt-touching op; written only by `accrue_stability_fee` and the auto-accrue path in `set_stability_fee_per_millisecond`.
 
 **`RedemptionPriceState`** — PDA seed `"REDEMPTION_PRICE_STATE"`, owned by the stablecoin program.
 
-*Holds:* the redemption price anchor (at the last update), the per-second drift rate, the PI controller's persisted integral term, and the wall-clock timestamp of the last update.
+*Holds:* the redemption price anchor (at the last update), the per-millisecond drift rate, the PI controller's persisted integral term, and the wall-clock timestamp of the last update.
 
 *Why:* the redemption price is the protocol's target value (in collateral-per-stablecoin); the controller continuously drifts it based on the deviation between market price and target. Storing as `(anchor, rate, last_updated_at)` lets the current value be projected on the fly without writing every block — only `update_redemption_rate` re-anchors it.
 
 **`StablecoinDefinition`** — PDA seed `"STABLECOIN_DEFINITION"`, owned by the **Token Program** (PDA-derived under the stablecoin program).
 
-*Holds:* the stablecoin's `TokenDefinition::Fungible` — name, current `total_supply`, no metadata.
+*Holds:* the stablecoin's `TokenDefinition::Fungible` — its `name`, current `total_supply`, and `metadata_id = None`. The `name` is a first-class field on the definition itself; "no metadata" means no separate `TokenMetadata` account is attached (that account would only carry an off-chain `uri` / `creators` / standard — not a name or symbol — and isn't needed for v1).
 
 *Why:* the stablecoin is a normal fungible token on LEZ — it composes with wallets, AMMs, ATAs, anything else that understands the Token Program. Putting the definition at a stablecoin-program-derived PDA means the **stablecoin program's PDA seed authorizes every chained `Token::Mint` / `Token::Burn`** issued from `generate_debt` / `repay_debt`. No off-band coordination needed; the program is structurally the only mintable authority.
 
@@ -182,11 +183,11 @@ A future Token Program extension (`Token::NewFungibleDefinitionWithoutHolding`, 
 **Why split the globals?** Each one has exactly one writer family:
 
 - `ProtocolParameters` ← `initialize_program`, admin `set_*`, `freeze` / `unfreeze`.
-- `StabilityFeeAccumulator` ← `initialize_program`, `accrue_stability_fee`, `set_stability_fee_per_second` (auto-accrues inline).
-- `RedemptionPriceState` ← `initialize_program`, `update_redemption_rate`.
+- `StabilityFeeAccumulator` ← `initialize_program`, `accrue_stability_fee`, `refresh_globals` (fee half), `set_stability_fee_per_millisecond` (auto-accrues inline).
+- `RedemptionPriceState` ← `initialize_program`, `update_redemption_rate`, `refresh_globals` (redemption half).
 - `StablecoinDefinition` + `StablecoinMasterHolding` ← `initialize_program` via chained `Token::NewFungibleDefinition`; afterwards the definition's `total_supply` is incremented / decremented by `Token::Mint` / `Token::Burn` from `generate_debt` / `repay_debt`. The master holding is never touched again.
 
-That strict writer separation means a keeper calling `accrue_stability_fee`, another keeper calling `update_redemption_rate`, and a user calling `withdraw_collateral` in the same block don't contend on any account.
+That strict writer separation means a keeper calling `accrue_stability_fee`, another keeper calling `update_redemption_rate`, and a user calling `withdraw_collateral` in the same block don't contend on any account. (The combined `refresh_globals` poke (§10.3a) is the deliberate exception — it writes *both* global accounts — but it's a single-keeper convenience; you wouldn't run it concurrently with the individual pokes.)
 
 ### 3.2 Per-position accounts (one set per open position)
 
@@ -248,21 +249,21 @@ pub struct ProtocolParameters {
     /// `OraclePriceAccount` producing stablecoin-in-collateral market price.
     /// Updatable by admin via `set_market_price_oracle` (oracle rotation).
     pub market_price_oracle_id: AccountId,
-    /// Per-second multiplicative stability fee. Stored as `(1 + r_per_second) * FIXED_POINT_ONE`.
-    /// Updatable by admin via `set_stability_fee_per_second` (auto-accrues first).
-    pub stability_fee_per_second: u128,
+    /// Per-millisecond multiplicative stability fee. Stored as `(1 + r_per_millisecond) * FIXED_POINT_ONE`.
+    /// Updatable by admin via `set_stability_fee_per_millisecond` (auto-accrues first).
+    pub stability_fee_per_millisecond: u128,
     /// PI controller Kp. Signed.
     pub controller_proportional_gain: i128,
     /// PI controller Ki. Signed.
     pub controller_integral_gain: i128,
     /// Minimum collateralization ratio in fixed-point. e.g. `1.5 * FIXED_POINT_ONE` = 150%.
     pub minimum_collateralization_ratio: u128,
-    /// Min seconds between successful `accrue_stability_fee` calls (spam guard).
-    pub minimum_seconds_between_fee_accruals: u64,
-    /// Min seconds between successful `update_redemption_rate` calls (RFP F2).
-    pub minimum_seconds_between_rate_updates: u64,
+    /// Min milliseconds between successful `accrue_stability_fee` calls (spam guard).
+    pub minimum_milliseconds_between_fee_accruals: u64,
+    /// Min milliseconds between successful `update_redemption_rate` calls (RFP F2).
+    pub minimum_milliseconds_between_rate_updates: u64,
     /// Reject oracle observations older than this (RFP R3 staleness gate).
-    pub maximum_oracle_price_age_seconds: u64,
+    pub maximum_oracle_price_age_milliseconds: u64,
     /// `true` blocks `open_position`, `generate_debt`, `withdraw_collateral`.
     /// `deposit_collateral` / `repay_debt` / `close_position` / pokes / admin / freeze ops
     /// remain available so users can deleverage out and operators can re-tune.
@@ -276,9 +277,9 @@ pub struct ProtocolParameters {
 #[account_type]
 pub struct StabilityFeeAccumulator {
     /// Accumulator at `last_accrued_at`. Initialized to `FIXED_POINT_ONE`.
-    /// Updated on accrual via `anchor * compound_rate(stability_fee_per_second, Δt)`.
+    /// Updated on accrual via `anchor * compound_rate(stability_fee_per_millisecond, Δt)`.
     pub accumulated_rate_at_last_accrual: u128,
-    /// Unix seconds of the last accrue. Current accumulator on the read side =
+    /// Unix milliseconds of the last accrue. Current accumulator on the read side =
     /// `anchor * compound_rate(rate, now - last_accrued_at) / FIXED_POINT_ONE`.
     pub last_accrued_at: u64,
 }
@@ -291,13 +292,13 @@ pub struct StabilityFeeAccumulator {
 pub struct RedemptionPriceState {
     /// Redemption price at `last_updated_at`, in collateral per stablecoin, fixed-point.
     pub redemption_price_at_last_update: u128,
-    /// Per-second drift multiplier, stored as `(1 + r) * FIXED_POINT_ONE`.
+    /// Per-millisecond drift multiplier, stored as `(1 + r) * FIXED_POINT_ONE`.
     /// Below `FIXED_POINT_ONE` = decay. Output of the PI controller.
-    pub redemption_rate_per_second: u128,
+    pub redemption_rate_per_millisecond: u128,
     /// Persisted integral state of the PI controller. Clamped on every update for
     /// anti-windup (§ 6.4).
     pub controller_integral_term: i128,
-    /// Unix seconds of the last update. Read-side current price =
+    /// Unix milliseconds of the last update. Read-side current price =
     /// `anchor * compound_rate(rate, now - last_updated_at) / FIXED_POINT_ONE`.
     pub last_updated_at: u64,
 }
@@ -321,14 +322,14 @@ pub struct Position {
     /// **Nominal debt at time T** = `normalized_debt_amount * accumulated_rate(T) / FIXED_POINT_ONE`.
     /// Storing normalized lets one global accumulator update apply interest to every position.
     pub normalized_debt_amount: u128,
-    /// Unix seconds when the position was first opened. UX/analytics; not used in protocol logic.
+    /// Unix milliseconds when the position was first opened. UX/analytics; not used in protocol logic.
     pub opened_at: u64,
 }
 ```
 
 ### 4.5 External account shapes (read-only, reused)
 
-- `OraclePriceAccount` from `twap_oracle_core` — required at oracle reads: `base_asset = stablecoin_definition_id`, `quote_asset = collateral_definition_id`, `price > 0`, `now − timestamp ≤ maximum_oracle_price_age_seconds`.
+- `OraclePriceAccount` from `twap_oracle_core` — required at oracle reads: `base_asset = stablecoin_definition_id`, `quote_asset = collateral_definition_id`, `price > 0`, `now − timestamp ≤ maximum_oracle_price_age_milliseconds`.
 - `TokenDefinition::Fungible` from `token_core` — stablecoin (PDA-derived under us; owned by Token Program) and collateral (externally created).
 - `TokenHolding::Fungible` from `token_core` — vault and user holdings.
 
@@ -350,21 +351,21 @@ The 27-decimal choice matches MakerDAO / RAI's `RAY` precision and gives enough 
 ### 5.2 `compound_rate`
 
 ```rust
-/// Returns `per_second_rate ^ seconds_elapsed` in fixed point (where `1.0 == FIXED_POINT_ONE`).
+/// Returns `per_millisecond_rate ^ milliseconds_elapsed` in fixed point (where `1.0 == FIXED_POINT_ONE`).
 ///
-/// O(log seconds_elapsed) — exponentiation by squaring. Uses u256 intermediates.
+/// O(log milliseconds_elapsed) — exponentiation by squaring. Uses u256 intermediates.
 /// Same algorithm as MakerDAO / RAI's `rpow`.
-pub fn compound_rate(per_second_rate: u128, seconds_elapsed: u64) -> u128;
+pub fn compound_rate(per_millisecond_rate: u128, milliseconds_elapsed: u64) -> u128;
 ```
 
 Edge cases:
 
-- `seconds_elapsed = 0` → returns `FIXED_POINT_ONE` (identity element).
-- `per_second_rate = FIXED_POINT_ONE` → returns `FIXED_POINT_ONE` regardless of `seconds_elapsed`.
-- `per_second_rate < FIXED_POINT_ONE` → result < `FIXED_POINT_ONE` (compounding decay).
-- Overflow guard: callers clamp the elapsed window to `MAXIMUM_COMPOUNDING_WINDOW_SECONDS` before calling (§5.3). This is load-bearing, not decorative: over an *unbounded* window, any `per_second_rate > FIXED_POINT_ONE` eventually overflows `rate ^ seconds_elapsed` regardless of how close to `1.0` it is — the §8 rate bound alone does **not** prevent it.
+- `milliseconds_elapsed = 0` → returns `FIXED_POINT_ONE` (identity element).
+- `per_millisecond_rate = FIXED_POINT_ONE` → returns `FIXED_POINT_ONE` regardless of `milliseconds_elapsed`.
+- `per_millisecond_rate < FIXED_POINT_ONE` → result < `FIXED_POINT_ONE` (compounding decay).
+- Overflow guard: callers clamp the elapsed window to `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` before calling (§5.3). This is load-bearing, not decorative: over an *unbounded* window, any `per_millisecond_rate > FIXED_POINT_ONE` eventually overflows `rate ^ milliseconds_elapsed` regardless of how close to `1.0` it is — the §8 rate bound alone does **not** prevent it.
 
-**In plain English:** this is just `rate ^ seconds_elapsed` — what a per-second multiplier becomes after that many seconds. The naive way is `seconds_elapsed` separate multiplications. Exponentiation-by-squaring does it in `log₂(seconds_elapsed)` multiplications instead — for a year's worth of seconds (~31.5M), that's ~25 muls instead of 31.5M.
+**In plain English:** this is just `rate ^ milliseconds_elapsed` — what a per-millisecond multiplier becomes after that many milliseconds. The naive way is `milliseconds_elapsed` separate multiplications. Exponentiation-by-squaring does it in `log₂(milliseconds_elapsed)` multiplications instead — for a year's worth of milliseconds (~31.5 billion), that's ~35 muls instead of 31.5 billion.
 
 ### 5.3 Current value projections (read on the hot path)
 
@@ -375,22 +376,22 @@ fn current_accumulated_rate(state: StabilityFeeAccumulator, params: ProtocolPara
     // compound_rate (§5.2, §8). The cap bounds the worst case structurally, independent of
     // the rate value. Trade-off: fees stop accruing past the window if NO keeper pokes for
     // that long — permissionless, cheap accrue makes this a catastrophic-neglect-only case.
-    let dt = now.saturating_sub(state.last_accrued_at).min(MAXIMUM_COMPOUNDING_WINDOW_SECONDS);
-    let factor = compound_rate(params.stability_fee_per_second, dt);
+    let dt = now.saturating_sub(state.last_accrued_at).min(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS);
+    let factor = compound_rate(params.stability_fee_per_millisecond, dt);
     mul_div(state.accumulated_rate_at_last_accrual, factor, FIXED_POINT_ONE)
 }
 
 fn current_redemption_price(state: RedemptionPriceState, now: u64) -> u128 {
-    // Same clamp rationale as above — redemption_rate_per_second can also exceed 1.0.
-    let dt = now.saturating_sub(state.last_updated_at).min(MAXIMUM_COMPOUNDING_WINDOW_SECONDS);
-    let factor = compound_rate(state.redemption_rate_per_second, dt);
+    // Same clamp rationale as above — redemption_rate_per_millisecond can also exceed 1.0.
+    let dt = now.saturating_sub(state.last_updated_at).min(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS);
+    let factor = compound_rate(state.redemption_rate_per_millisecond, dt);
     mul_div(state.redemption_price_at_last_update, factor, FIXED_POINT_ONE)
 }
 ```
 
 Where `mul_div(a, b, c) = (a * b) / c` computed via u256 to avoid intermediate overflow.
 
-**In plain English:** instead of writing "current_accumulator = X" to disk on every block (which would require touching every position's account on every fee tick), we store an **anchor** plus the **per-second rate**, and compute the current value on the fly by rolling the anchor forward via `compound_rate`. Reads are slightly more expensive (one `compound_rate` call); writes happen only on real anchor updates (the pokes in §10.2 / §10.3).
+**In plain English:** instead of writing "current_accumulator = X" to disk on every block (which would require touching every position's account on every fee tick), we store an **anchor** plus the **per-millisecond rate**, and compute the current value on the fly by rolling the anchor forward via `compound_rate`. Reads are slightly more expensive (one `compound_rate` call); writes happen only on real anchor updates (the pokes in §10.2 / §10.3).
 
 ## 6. Math
 
@@ -463,7 +464,7 @@ Net effect: the protocol's "implicit fee credit" (`Σ nominal_debt − total_sup
 // 1. Project current redemption price from the anchor.
 dt = now - state.last_updated_at
 current_redemption_price = state.redemption_price_at_last_update
-                         * compound_rate(state.redemption_rate_per_second, dt)
+                         * compound_rate(state.redemption_rate_per_millisecond, dt)
                          / FIXED_POINT_ONE
 
 // 2. Compute signed error.
@@ -485,12 +486,12 @@ rate_adjustment   = proportional_term + new_integral
 //   Vice versa when above. Matches RAI's PIRawPerSecondCalculator, whose final step is
 //   redemptionRate = RAY + (Kp·error + Ki·∫) with error = redemptionPrice − marketPrice.
 
-// 5. Clamp the per-second adjustment (rate-explosion guard, RFP R2).
+// 5. Clamp the per-update rate adjustment (rate-explosion guard, RFP R2).
 rate_adjustment = clamp(rate_adjustment, -RATE_DELTA_CLAMP, RATE_DELTA_CLAMP)
 
 // 6. Persist.
 state.redemption_price_at_last_update = current_redemption_price
-state.redemption_rate_per_second      = (FIXED_POINT_ONE as i256 + rate_adjustment) as u128
+state.redemption_rate_per_millisecond      = (FIXED_POINT_ONE as i256 + rate_adjustment) as u128
 state.controller_integral_term        = new_integral
 state.last_updated_at                 = now
 ```
@@ -501,7 +502,7 @@ The signs work out so that **positive gains drive the system toward stability** 
 
 **Anti-windup — clamp vs leak (deliberate divergence from RAI).** v1 bounds the integral with a hard clamp (`clamp(new_integral, ±INTEGRAL_CLAMP)`) — conditional integration / saturation. RAI instead uses a *leaky* integrator: it scales the accumulated deviation by a per-second decay factor (`rpow(perSecondCumulativeLeak, Δt)`) before adding the new term, so stale error fades exponentially rather than sitting pinned at a bound. Both are valid anti-windup. v1 picks the clamp because it's simpler, deterministic, and adds no extra parameter; the trade-off is *windup-on-release* — under a long sustained deviation the clamped integral saturates and then unwinds with some lag when the error reverses, whereas the leak never fully saturates. This is a conscious choice, not an oversight; adopting RAI's leak is the planned upgrade once the controller is tuned against simulation (§14, §15).
 
-**In plain English.** The controller steers one number — the **redemption price**, the protocol's official value for the coin — so that the **market price** (from the oracle) is pulled toward it. It never moves the price directly; it sets the *speed and direction* the redemption price changes, the `redemption_rate_per_second` (above `1.0` ⇒ price goes up over time, below `1.0` ⇒ down, exactly `1.0` ⇒ held).
+**In plain English.** The controller steers one number — the **redemption price**, the protocol's official value for the coin — so that the **market price** (from the oracle) is pulled toward it. It never moves the price directly; it sets the *speed and direction* the redemption price changes, the `redemption_rate_per_millisecond` (above `1.0` ⇒ price goes up over time, below `1.0` ⇒ down, exactly `1.0` ⇒ held).
 
 It works from the gap, `error = redemption_price − market_price` (positive ⇒ coin trading below target, i.e. too cheap), and combines two reactions:
 
@@ -530,7 +531,7 @@ flowchart LR
     P --> RAdj["rate_adjustment<br/>= P + new_integral"]
     IClamp --> RAdj
     RAdj --> RClamp[clamp ±RATE_DELTA_CLAMP]
-    RClamp --> NewRate[redemption_rate_per_second<br/>= FIXED_POINT_ONE + rate_adjustment]
+    RClamp --> NewRate[redemption_rate_per_millisecond<br/>= FIXED_POINT_ONE + rate_adjustment]
 
     NewRate -.persist.-> StateNew[(RedemptionPriceState<br/>updated)]
     CurRP -.new anchor.-> StateNew
@@ -546,26 +547,26 @@ The same few names for the fee/debt machinery recur across §4, §5, and §6. Co
 
 - **`normalized_debt_amount`** — a position's debt with interest stripped out: its "shares." Lives in `Position` (one per `(owner, position_nonce)`). Set on `generate_debt` / `repay_debt`, otherwise unchanged — it is never rewritten as time passes. Units: shares.
 - **`accumulated_rate_at_last_accrual`** — the stablecoin-per-share multiplier as of the last accrual (the "anchor"). Lives in the global `StabilityFeeAccumulator`. Starts at `FIXED_POINT_ONE`; only ever grows. Units: stablecoin / share.
-- **`last_accrued_at`** — unix-seconds timestamp the anchor was last refreshed. Also in `StabilityFeeAccumulator`. Pairs with the anchor so the live value can be projected.
-- **`stability_fee_per_second`** — the per-second growth multiplier applied to the accumulator. Lives in `ProtocolParameters`, stored as `(1 + r) × FIXED_POINT_ONE` (just above 1.0). This is what gets compounded.
+- **`last_accrued_at`** — unix-milliseconds timestamp the anchor was last refreshed. Also in `StabilityFeeAccumulator`. Pairs with the anchor so the live value can be projected.
+- **`stability_fee_per_millisecond`** — the per-millisecond growth multiplier applied to the accumulator. Lives in `ProtocolParameters`, stored as `(1 + r) × FIXED_POINT_ONE` (just above 1.0). This is what gets compounded.
 
 **Computed on the fly** (never stored; recomputed on read):
 
-- **`current_accumulated_rate`** — the live accumulator now: `accumulated_rate_at_last_accrual × compound_rate(stability_fee_per_second, now − last_accrued_at) / FIXED_POINT_ONE` (§5.3). Units: stablecoin / share.
+- **`current_accumulated_rate`** — the live accumulator now: `accumulated_rate_at_last_accrual × compound_rate(stability_fee_per_millisecond, now − last_accrued_at) / FIXED_POINT_ONE` (§5.3). Units: stablecoin / share.
 - **nominal debt** — what a position actually owes now, in stablecoin: `normalized_debt_amount × current_accumulated_rate / FIXED_POINT_ONE` (§6.1). Frozen shares × the live (growing) accumulator, so it grows over time even though the shares don't. Never stored.
 
 **Operations:**
 
-- **`compound_rate(rate, seconds)`** — `rate ^ seconds` in fixed point, via exponentiation-by-squaring (§5.2).
-- **`accrue_stability_fee`** — the permissionless "poke" that refreshes the accumulator anchor: rolls the live value into `accumulated_rate_at_last_accrual` and sets `last_accrued_at = now` (§10.2). The only writer of the accumulator besides init and the auto-accrue in `set_stability_fee_per_second`.
+- **`compound_rate(rate, millis)`** — `rate ^ millis` in fixed point, via exponentiation-by-squaring (§5.2).
+- **`accrue_stability_fee`** — the permissionless "poke" that refreshes the accumulator anchor: rolls the live value into `accumulated_rate_at_last_accrual` and sets `last_accrued_at = now` (§10.2). The only writer of the accumulator besides init and the auto-accrue in `set_stability_fee_per_millisecond`.
 - **`FIXED_POINT_ONE`** — the value `1.0` in this system (`10^27`). Every rate / multiplier / price is stored as `actual_value × FIXED_POINT_ONE` (§5.1).
 
-**The redemption-price side mirrors this exactly** — same anchor + per-second-rate + timestamp pattern, projected the same way (§5.3), re-anchored only by its own poke. Different fields:
+**The redemption-price side mirrors this exactly** — same anchor + per-millisecond-rate + timestamp pattern, projected the same way (§5.3), re-anchored only by its own poke. Different fields:
 
 | Role | Debt / fee side | Redemption-price side |
 |---|---|---|
 | anchor | `accumulated_rate_at_last_accrual` | `redemption_price_at_last_update` |
-| per-second rate | `stability_fee_per_second` | `redemption_rate_per_second` |
+| per-millisecond rate | `stability_fee_per_millisecond` | `redemption_rate_per_millisecond` |
 | last-touched timestamp | `last_accrued_at` | `last_updated_at` |
 | live projection | `current_accumulated_rate` | `current_redemption_price` |
 | re-anchored by | `accrue_stability_fee` (§10.2) | `update_redemption_rate` (§10.3) |
@@ -576,9 +577,9 @@ These are properties the protocol maintains across every state-changing instruct
 
 1. **Vault-position consistency.** After every op, `position.collateral_amount == position.vault.balance` (the `TokenHolding::Fungible.balance` of the vault account).
 
-2. **Stability fee accumulator monotonicity.** `accumulated_rate_at_last_accrual` is monotonically non-decreasing while `stability_fee_per_second ≥ FIXED_POINT_ONE` (enforced by `set_stability_fee_per_second`'s bound check).
+2. **Stability fee accumulator monotonicity.** `accumulated_rate_at_last_accrual` is monotonically non-decreasing while `stability_fee_per_millisecond ≥ FIXED_POINT_ONE` (enforced by `set_stability_fee_per_millisecond`'s bound check).
 
-3. **Redemption price positivity.** `redemption_price_at_last_update > 0` at all times. Initial value at init must be > 0; the controller's `rate_adjustment` clamp keeps `redemption_rate_per_second > 0`, so subsequent projections stay positive.
+3. **Redemption price positivity.** `redemption_price_at_last_update > 0` at all times. Initial value at init must be > 0; the controller's `rate_adjustment` clamp keeps `redemption_rate_per_millisecond > 0`, so subsequent projections stay positive.
 
 4. **Position addressing.** For every `Position` account `P` owned by the stablecoin program, `P.account_id == compute_position_pda(stablecoin_program_id, P.owner_account_id, P.position_nonce)`.
 
@@ -595,23 +596,25 @@ These are properties the protocol maintains across every state-changing instruct
 | Constant / parameter | Bound | Rationale |
 |---|---|---|
 | `FIXED_POINT_ONE` | `10^27` | RAY precision; standard. |
-| `stability_fee_per_second` | `FIXED_POINT_ONE ≤ x ≤ FIXED_POINT_ONE * 2` | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). Upper bound is an anti-typo sanity cap (≈100%/s) — it does **not** by itself prevent `compound_rate` overflow; that is handled by clamping the elapsed window (`MAXIMUM_COMPOUNDING_WINDOW_SECONDS`, below). Real values are `1 + ε` where `ε ≈ 10^16` for ~5% annual. |
+| `stability_fee_per_millisecond` | `FIXED_POINT_ONE ≤ x ≤ FIXED_POINT_ONE * 2` | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). Upper bound is an anti-typo sanity cap (≈100%/ms) — it does **not** by itself prevent `compound_rate` overflow; that is handled by clamping the elapsed window (`MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS`, below). Real values are `1 + ε` where `ε ≈ 1.5×10^15` for ~5% annual. |
 | `minimum_collateralization_ratio` | `FIXED_POINT_ONE * 1.1 ≤ x ≤ FIXED_POINT_ONE * 10` | Lower bound = 110% (any less is liquidation-immediate); upper bound = 1000% (sanity cap). Real values are 130–200%. |
-| `controller_proportional_gain` magnitude | `|x| ≤ FIXED_POINT_ONE * 10^6` | Practical upper bound for rate-explosion guard (RFP R2). Real values are tiny (≈10^9–10^15 raw) because they scale price-error × rate-output. |
-| `controller_integral_gain` magnitude | Same as proportional | Same rationale. |
-| `INTEGRAL_CLAMP` | `± FIXED_POINT_ONE * 10^9` | Anti-windup. Constant in v1; future-promotable to `ProtocolParameters`. |
-| `RATE_DELTA_CLAMP` | `± FIXED_POINT_ONE / 100` | Max single-update rate adjustment: ±1% per call. Constant in v1. |
-| `minimum_seconds_between_fee_accruals` | `1 ≤ x ≤ 86400` | Min 1s (no zero-spam), max 1 day (RFP "rate updates within a small number of blocks"). |
-| `minimum_seconds_between_rate_updates` | Same | Same. |
-| `maximum_oracle_price_age_seconds` | `1 ≤ x ≤ 86400` | Stale beyond a day is obviously bad; aggressive freshness is a tuning parameter. |
-| `MAXIMUM_COMPOUNDING_WINDOW_SECONDS` | TBD — `≥` the expected worst-case keeper-poke gap (candidate range `86400`–`604800`) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Exact value pending tuning. |
+| `controller_proportional_gain` magnitude | `|x| ≤ FIXED_POINT_ONE * 10^3` | Practical upper bound for rate-explosion guard (RFP R2). Real values are tiny (≈10^6–10^12 raw) because they scale price-error × per-ms rate-output. Rescaled `÷10^3` from the per-second formulation. |
+| `controller_integral_gain` magnitude | `|x| ≤ FIXED_POINT_ONE` | As proportional, but rescaled `÷10^6` (it also multiplies `Δt`, now in ms): real values ≈10^3–10^9 raw. |
+| `INTEGRAL_CLAMP` | `± FIXED_POINT_ONE * 10^6` | Anti-windup; rescaled `÷10^3` to ms. Constant in v1; future-promotable to `ProtocolParameters`. |
+| `RATE_DELTA_CLAMP` | `± FIXED_POINT_ONE / 100_000` | Max single-update per-ms rate adjustment (≈±0.001%); rescaled `÷10^3` to ms so a ~1/sec keeper cadence still caps near ±1%/s. Constant in v1. |
+| `minimum_milliseconds_between_fee_accruals` | `1 ≤ x ≤ 86_400_000` | Min 1 ms (no zero-spam), max 1 day (RFP "rate updates within a small number of blocks"). |
+| `minimum_milliseconds_between_rate_updates` | Same | Same. |
+| `maximum_oracle_price_age_milliseconds` | `1 ≤ x ≤ 86_400_000` | Stale beyond a day is obviously bad; aggressive freshness is a tuning parameter. |
+| `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` | TBD — `≥` the expected worst-case keeper-poke gap (candidate range `86_400_000`–`604_800_000`, i.e. 1–7 days) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Exact value pending tuning. |
 | `initial_redemption_price` | `> 0` | Must be positive; admin chooses an initial value reflecting the launch peg target. |
 
 All bounds enforced in `initialize_program` and the corresponding `set_*` instruction.
 
+**Time-unit note (milliseconds).** The runtime clock is in **milliseconds**, so every timestamp (`opened_at`, `last_accrued_at`, `last_updated_at`), the interval bounds, the per-millisecond rates, and the gain/clamp magnitudes above are all ms-denominated. The gains and clamps were **rescaled directly to per-millisecond terms** by deterministic factors — `Kp ÷10^3`, `Ki ÷10^6` (it also multiplies `Δt`, now 1000× larger), `INTEGRAL_CLAMP ÷10^3`, `RATE_DELTA_CLAMP ÷10^3` — which exactly preserves the per-second behavior they encoded. This is a units rescale, **not** validation: those magnitudes were always v1 estimates, so the final values are locked against simulation in the §15 tuning pass — a step that exists independently of the time unit. The interval bounds are exact.
+
 ## 9. Instruction set
 
-18 instructions in 5 groups. Full per-instruction details in § 10.
+19 instructions in 5 groups (the combined poke `refresh_globals` is numbered 3a, grouped with the other two pokes). Full per-instruction details in § 10.
 
 ### 9.1 Bootstrap
 
@@ -625,6 +628,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 |---|---|---|---|
 | 2 | `accrue_stability_fee` | anyone | Roll `StabilityFeeAccumulator` forward to `now` if min interval elapsed. |
 | 3 | `update_redemption_rate` | anyone | Read oracle, run PI controller, re-anchor `RedemptionPriceState`. |
+| 3a | `refresh_globals` | anyone | Best-effort combined poke: do #2 and #3, each only if its interval is due (and the oracle fresh for #3); skip rather than panic. Advances both globals in one transaction (§10.3a). |
 
 ### 9.3 Position lifecycle
 
@@ -641,7 +645,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 
 | # | Instruction | Caller | One-line |
 |---|---|---|---|
-| 10 | `set_stability_fee_per_second` | admin | Auto-accrues first; then updates the rate. |
+| 10 | `set_stability_fee_per_millisecond` | admin | Auto-accrues first; then updates the rate. |
 | 11 | `set_minimum_collateralization_ratio` | admin | Update the safety ratio. |
 | 12 | `set_controller_gains` | admin | Update Kp + Ki atomically. |
 | 13 | `set_market_price_oracle` | admin | Rotate oracle id; validate new oracle's base/quote. |
@@ -667,13 +671,13 @@ For each instruction below: **inputs** (accounts) with pre-state expectations an
 ```rust
 fn initialize_program(
     freeze_authority_account_id: AccountId,
-    initial_stability_fee_per_second: u128,
+    initial_stability_fee_per_millisecond: u128,
     initial_controller_proportional_gain: i128,
     initial_controller_integral_gain: i128,
     initial_minimum_collateralization_ratio: u128,
-    minimum_seconds_between_fee_accruals: u64,
-    minimum_seconds_between_rate_updates: u64,
-    maximum_oracle_price_age_seconds: u64,
+    minimum_milliseconds_between_fee_accruals: u64,
+    minimum_milliseconds_between_rate_updates: u64,
+    maximum_oracle_price_age_milliseconds: u64,
     initial_redemption_price: u128,
     stablecoin_name: String,
 );
@@ -694,7 +698,7 @@ fn initialize_program(
 
 - `protocol_parameters` (claimed PDA): all `ProtocolParameters` fields written from the params (including `admin_account_id = admin.account_id`, `is_frozen = false`).
 - `stability_fee_accumulator` (claimed PDA): `accumulated_rate_at_last_accrual = FIXED_POINT_ONE`, `last_accrued_at = now`.
-- `redemption_price_state` (claimed PDA): `redemption_price_at_last_update = initial_redemption_price`, `redemption_rate_per_second = FIXED_POINT_ONE`, `controller_integral_term = 0`, `last_updated_at = now`.
+- `redemption_price_state` (claimed PDA): `redemption_price_at_last_update = initial_redemption_price`, `redemption_rate_per_millisecond = FIXED_POINT_ONE`, `controller_integral_term = 0`, `last_updated_at = now`.
 - `stablecoin_definition` (claimed via chained): `TokenDefinition::Fungible { name: stablecoin_name, total_supply: 0, metadata_id: None }`, owned by Token Program.
 - `stablecoin_master_holding` (claimed via chained): `TokenHolding::Fungible { definition_id: stablecoin_definition.account_id, balance: 0 }`, owned by Token Program.
 
@@ -731,12 +735,12 @@ flowchart TD
 
 **Output state changes:**
 
-- `stability_fee_accumulator.accumulated_rate_at_last_accrual` ← `anchor × compound_rate(stability_fee_per_second, now − last_accrued_at) / FIXED_POINT_ONE`
+- `stability_fee_accumulator.accumulated_rate_at_last_accrual` ← `anchor × compound_rate(stability_fee_per_millisecond, now − last_accrued_at) / FIXED_POINT_ONE`
 - `stability_fee_accumulator.last_accrued_at` ← `now`
 
 **Chained calls:** none.
 
-**Panics if:** `caller.is_authorized = false`; either global uninitialized; `now − last_accrued_at < minimum_seconds_between_fee_accruals`; overflow in `compound_rate` (prevented by the `MAXIMUM_COMPOUNDING_WINDOW_SECONDS` clamp of §5.3 — without it a within-bounds-but-high rate over a long `dt` would overflow).
+**Panics if:** `caller.is_authorized = false`; either global uninitialized; `now − last_accrued_at < minimum_milliseconds_between_fee_accruals`; overflow in `compound_rate` (prevented by the `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` clamp of §5.3 — without it a within-bounds-but-high rate over a long `dt` would overflow).
 
 ```mermaid
 flowchart TD
@@ -765,7 +769,7 @@ flowchart TD
 
 **Chained calls:** none.
 
-**Panics if:** `caller.is_authorized = false`; any input uninitialized / wrong owner; oracle id mismatch; `now − oracle.timestamp > maximum_oracle_price_age_seconds`; `oracle.price = 0`; `now − last_updated_at < minimum_seconds_between_rate_updates`.
+**Panics if:** `caller.is_authorized = false`; any input uninitialized / wrong owner; oracle id mismatch; `now − oracle.timestamp > maximum_oracle_price_age_milliseconds`; `oracle.price = 0`; `now − last_updated_at < minimum_milliseconds_between_rate_updates`.
 
 ```mermaid
 flowchart TD
@@ -777,6 +781,47 @@ flowchart TD
     end
     In --> Ins((update_redemption_rate<br/>PI controller, see 6.4))
     Ins --> Post
+```
+
+### 10.3a `refresh_globals` (combined poke)
+
+**Signature:** `fn refresh_globals();`
+
+A convenience poke that advances **both** globals in one instruction. Because a LEZ transaction carries a single instruction, this is the only way to refresh the fee accumulator and the redemption rate in one transaction. It is **best-effort**: it performs each half only if that half is due, and **skips rather than panics** when a half isn't due (or the oracle is stale). The standalone `accrue_stability_fee` (§10.2) and `update_redemption_rate` (§10.3) remain for callers that want a single global or strict (loud-failing) semantics — see "Why keep all three" below.
+
+**Inputs (5 accounts)** — the union of §10.2 and §10.3:
+
+1. `caller` — authorized.
+2. `protocol_parameters` — initialized, read-only.
+3. `stability_fee_accumulator` — initialized, writable.
+4. `redemption_price_state` — initialized, writable.
+5. `market_price_oracle` — initialized, read-only. Must equal `protocol_parameters.market_price_oracle_id`.
+
+**Behavior:**
+
+- **Fee half** — if `now − stability_fee_accumulator.last_accrued_at ≥ minimum_milliseconds_between_fee_accruals`: roll the accumulator forward exactly as §10.2. Else: skip (no write). Never depends on the oracle.
+- **Redemption half** — if `now − redemption_price_state.last_updated_at ≥ minimum_milliseconds_between_rate_updates` **and** the oracle is fresh (`now − oracle.timestamp ≤ maximum_oracle_price_age_milliseconds`) **and** `oracle.price > 0`: run the PI controller and re-anchor exactly as §10.3. Else: skip (no write).
+- If both halves skip, the call is a successful no-op.
+
+**Chained calls:** none.
+
+**Panics if:** `caller.is_authorized = false`; any of `protocol_parameters` / `stability_fee_accumulator` / `redemption_price_state` uninitialized or wrong owner; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`. It does **NOT** panic on "interval not yet elapsed" or "oracle stale / zero" — those conditions skip the corresponding half. Allowed when frozen (like the individual pokes).
+
+**Why keep all three (independent need):**
+
+- **`accrue_stability_fee` alone** — takes a *smaller* account set (no oracle at all) and is guaranteed oracle-independent: the canonical path during an oracle outage. It is also strict — it panics if called before its interval, so a keeper can detect "too early."
+- **`update_redemption_rate` alone** — updates the redemption rate *without* touching the fee accumulator, and is strict: it panics on a stale / zero oracle, which a keeper may *want* as an explicit failure signal rather than a silent skip.
+- **`refresh_globals`** — the common-case convenience: one transaction advances both, best-effort so it never fails just because one half isn't due. Trades strictness for "always make whatever progress is available."
+
+```mermaid
+flowchart TD
+    subgraph In["Inputs (5)"]
+        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[stability_fee_accumulator<br/>write] ~~~ a4[redemption_price_state<br/>write] ~~~ a5[market_price_oracle<br/>read]
+    end
+    In --> Ins((refresh_globals<br/>best-effort))
+    Ins -->|fee interval due| F[accrue — as §10.2]
+    Ins -->|rate interval due<br/>AND oracle fresh| R[update redemption — as §10.3]
+    Ins -.->|neither due| N[successful no-op]
 ```
 
 ### 10.4 `open_position`
@@ -917,7 +962,7 @@ flowchart TD
 
 **Chained calls:** `Token::Mint { amount_to_mint: amount }` · accounts: `[stablecoin_definition (auth via stablecoin program PDA seed), user_stablecoin_holding]` · pda_seeds: `[stablecoin_definition_seed]`.
 
-**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`; `now − oracle.timestamp > maximum_oracle_price_age_seconds`; `protocol_parameters.is_frozen = true`; collateralization check (§ 6.2) fails post-mint; arithmetic overflow.
+**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`; `now − oracle.timestamp > maximum_oracle_price_age_milliseconds`; `protocol_parameters.is_frozen = true`; collateralization check (§ 6.2) fails post-mint; arithmetic overflow.
 
 ```mermaid
 flowchart TD
@@ -1015,18 +1060,18 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 | `stablecoin_definition_id` | PDA claimed at init | **NO — immutable** (changing breaks supply accounting) |
 | `collateral_definition_id` | param to init | **NO — immutable** (changing orphans every vault) |
 | `market_price_oracle_id` | param to init | yes — `set_market_price_oracle` (validates new oracle's base/quote) |
-| `stability_fee_per_second` | param to init | yes — `set_stability_fee_per_second` (auto-accrues at OLD rate first) |
+| `stability_fee_per_millisecond` | param to init | yes — `set_stability_fee_per_millisecond` (auto-accrues at OLD rate first) |
 | `controller_proportional_gain` | param to init | yes — `set_controller_gains` (bundled with Ki) |
 | `controller_integral_gain` | param to init | yes — `set_controller_gains` (bundled with Kp) |
 | `minimum_collateralization_ratio` | param to init | yes — `set_minimum_collateralization_ratio` |
-| `minimum_seconds_between_fee_accruals` | param to init | yes — `set_timing_parameters` (bundled) |
-| `minimum_seconds_between_rate_updates` | param to init | yes — `set_timing_parameters` (bundled) |
-| `maximum_oracle_price_age_seconds` | param to init | yes — `set_timing_parameters` (bundled) |
+| `minimum_milliseconds_between_fee_accruals` | param to init | yes — `set_timing_parameters` (bundled) |
+| `minimum_milliseconds_between_rate_updates` | param to init | yes — `set_timing_parameters` (bundled) |
+| `maximum_oracle_price_age_milliseconds` | param to init | yes — `set_timing_parameters` (bundled) |
 | `is_frozen` | always `false` at init | toggled by `freeze` / `unfreeze` (freeze_authority, not admin) |
 | `redemption_price_at_last_update` | param to init (initial price) | **not directly settable by admin** — only drifts via `update_redemption_rate` (controller) |
-| `redemption_rate_per_second` | always `FIXED_POINT_ONE` at init | controller-managed (only `update_redemption_rate` writes it) |
+| `redemption_rate_per_millisecond` | always `FIXED_POINT_ONE` at init | controller-managed (only `update_redemption_rate` writes it) |
 | `controller_integral_term` | always `0` at init | controller-managed (only `update_redemption_rate` writes it) |
-| `accumulated_rate_at_last_accrual` | always `FIXED_POINT_ONE` at init | grows monotonically via `accrue_stability_fee` and the auto-accrue in `set_stability_fee_per_second` |
+| `accumulated_rate_at_last_accrual` | always `FIXED_POINT_ONE` at init | grows monotonically via `accrue_stability_fee` and the auto-accrue in `set_stability_fee_per_millisecond` |
 | `stablecoin name` | param to init | **NO — immutable** (lives in `TokenDefinition::Fungible`; no token-program setter) |
 
 **What admin CAN do:**
@@ -1067,11 +1112,11 @@ All seven share the same skeleton:
 
 | # | Instruction | Param(s) | Fields rewritten | Extra accounts | Special note |
 |---|---|---|---|---|---|
-| 10 | `set_stability_fee_per_second` | `new_rate: u128` | `stability_fee_per_second` | `stability_fee_accumulator` (writable) | Auto-accrues forward at the OLD rate up to `now` first. |
+| 10 | `set_stability_fee_per_millisecond` | `new_rate: u128` | `stability_fee_per_millisecond` | `stability_fee_accumulator` (writable) | Auto-accrues forward at the OLD rate up to `now` first. |
 | 11 | `set_minimum_collateralization_ratio` | `new_ratio: u128` | `minimum_collateralization_ratio` | — | Tightening leaves existing positions retroactively under-collateralized; they cannot increase debt or withdraw collateral until back above. No mass-liquidation here (RFP-014 out of scope). |
 | 12 | `set_controller_gains` | `new_proportional_gain: i128, new_integral_gain: i128` | `controller_proportional_gain`, `controller_integral_gain` | — | Does NOT reset `controller_integral_term`. |
 | 13 | `set_market_price_oracle` | (no scalar) | `market_price_oracle_id` | `new_oracle` (read-only) | Validates `OraclePriceAccount` shape, base/quote ids. `program_owner` not pinned. |
-| 14 | `set_timing_parameters` | three `u64`s | `minimum_seconds_between_fee_accruals`, `minimum_seconds_between_rate_updates`, `maximum_oracle_price_age_seconds` | — | Bundled. |
+| 14 | `set_timing_parameters` | three `u64`s | `minimum_milliseconds_between_fee_accruals`, `minimum_milliseconds_between_rate_updates`, `maximum_oracle_price_age_milliseconds` | — | Bundled. |
 | 15 | `set_admin` | `new_admin_account_id: AccountId` | `admin_account_id` | — | One-step rotation. |
 | 16 | `set_freeze_authority` | `new_freeze_authority_account_id: AccountId` | `freeze_authority_account_id` | — | One-step rotation. |
 
@@ -1113,11 +1158,11 @@ flowchart TD
 ## 11. Edge cases
 
 - **Empty position** (`collateral_amount = 0`, `normalized_debt_amount = 0`) — valid intermediate state. `withdraw_collateral` with `amount = 0` is a no-op. `close_position` is the only path that clears the account.
-- **Long time since last poke.** `compound_rate` handles large `dt` via exponentiation by squaring (O(log dt)), but the result is NOT self-bounding: at extreme `dt` any rate > `FIXED_POINT_ONE` overflows. Callers therefore clamp `dt` to `MAXIMUM_COMPOUNDING_WINDOW_SECONDS` (§5.3). The trade-off is that fee accrual and redemption drift pause beyond the window if no one pokes for that long; permissionless, cheap pokes make this a catastrophic-neglect-only scenario.
+- **Long time since last poke.** `compound_rate` handles large `dt` via exponentiation by squaring (O(log dt)), but the result is NOT self-bounding: at extreme `dt` any rate > `FIXED_POINT_ONE` overflows. Callers therefore clamp `dt` to `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` (§5.3). The trade-off is that fee accrual and redemption drift pause beyond the window if no one pokes for that long; permissionless, cheap pokes make this a catastrophic-neglect-only scenario.
 - **Stale oracle but unfrozen.** `update_redemption_rate` panics, so the rate stops drifting at whatever it last was. `generate_debt` also panics (RFP R3). Existing positions, `deposit_collateral`, `repay_debt`, `withdraw_collateral` all continue. Withdrawing requires the collateralization check, which uses the projected redemption price from the OLD rate — operationally fine.
 - **Frozen + stale oracle.** `withdraw_collateral` blocked (frozen). `generate_debt` blocked twice (frozen + stale). `deposit_collateral`, `repay_debt`, `close_position` work. Anyone can still call `accrue_stability_fee` (rate-independent).
 - **Admin tightens `minimum_collateralization_ratio`.** Existing positions with healthy-old-ratio but underwater-new-ratio cannot `generate_debt` or `withdraw_collateral`. They CAN `deposit_collateral` to recover, or `repay_debt` to reduce their debt.
-- **Position re-open at same nonce after close.** Fails — the vault PDA at `hash(position_id)` lingers from before. Workaround: pick a fresh nonce. See § 14.
+- **Position re-open at same nonce after close.** Fails — the vault PDA at `hash(position_id)` lingers from before. By design — pick a fresh nonce (intentional limitation). See § 14.
 - **Overrepay on `repay_debt`.** Panics via `checked_sub`; protects against user error sending more burn than nominal debt at this instant.
 - **Dust on full repay.** Because the decrement is rounded down (§6.3), burning exactly the current nominal debt may leave a tiny `normalized_debt_amount` residue (≤ one accumulator unit). To fully clear, users overpay by a tiny amount (≤ accumulator × 1 raw unit). Off-chain SDK computes the right number; if it picks too small, `repay_debt` still succeeds but the position isn't closeable until another small repay.
 - **Zero-amount instructions.** `deposit_collateral(0)`, `withdraw_collateral(0)`, `generate_debt(0)`, `repay_debt(0)`: all valid no-ops at the protocol level (chained Token call is also a no-op). Saves the caller from having to short-circuit.
@@ -1140,7 +1185,7 @@ flowchart TD
 
 ## 14. Open follow-ups (not blocking this design)
 
-- **`Token::CloseHolding`.** Upstream extension to the token program. Lets `close_position` actually clear the vault account so position-nonce reuse becomes possible. Track as a separate issue against the Token Program.
+- **Reusing a position nonce after close (accepted limitation — not planned).** `close_position` clears the `Position` but can't clear the vault: the Token Program has no `Token::CloseHolding`, so the empty vault `TokenHolding` lingers at `hash(position_id)` and blocks reopening at the same `(owner, position_nonce)`. Accepted answer: **pick a fresh nonce** (the space is `u64`). A `Token::CloseHolding` primitive would let `close_position` clear the vault and make reuse possible, but nonce reuse alone doesn't justify a shared Token-Program change, and the only other cost — empty accounts accumulating on-chain — only matters if LEZ ever charges for account storage or locks a creation deposit. Revisit only if that becomes a real problem; not tracked as active work.
 - **Two-step admin / freeze rotation.** `set_admin` / `set_freeze_authority` could grow `pending_*` fields + `accept_*` instructions to protect against typo'd `set_admin`. Not in this RFP.
 - **Promote `INTEGRAL_CLAMP` and `RATE_DELTA_CLAMP` to admin-tunable.** Constants for v1 to keep the surface small. Promotion is additive (new `ProtocolParameters` fields + new admin setters); no migration of existing state.
 - **Leaky integrator (RAI parity).** v1 uses a hard `INTEGRAL_CLAMP` for anti-windup (§6.4); RAI uses a per-second integral *leak* (`perSecondCumulativeLeak`) that exponentially decays stale deviation. Switching to the leak — better dynamics under sustained deviations, at the cost of a new tunable parameter (with its own §8 bound) and a change to the §6.4 integral math — is deferred to the controller-tuning pass (§15). Deliberate divergence, not an oversight.
@@ -1159,7 +1204,7 @@ This design is the input to the writing-plans skill. The plan should:
 
 ## 16. Sample scenarios
 
-Two end-to-end walkthroughs showing how the relevant fields change over time. Numbers are illustrative — scaled-down magnitudes so the arithmetic stays readable. Real deployments would use atomic-unit scales (`u128`).
+Two end-to-end walkthroughs showing how the relevant fields change over time. Numbers are illustrative — scaled-down magnitudes so the arithmetic stays readable. Real deployments would use atomic-unit scales (`u128`). All times are in **milliseconds** (the runtime clock unit): where a step is labelled "`t = 10s`" or "one year", that's elapsed wall-clock, and the underlying `*_at` fields store the equivalent millisecond count (e.g. `t = 10s` → timestamp `10_000`).
 
 ### 16.1 Alice's full lifecycle
 
@@ -1167,9 +1212,9 @@ Alice opens a collateralized position, borrows stablecoin, holds for ~1 year, ac
 
 **Setup (t = 0, just after a long-running protocol)**
 
-- `ProtocolParameters`: `stability_fee_per_second` set for ~5%/year, `minimum_collateralization_ratio = 1.5 × FIXED_POINT_ONE`, oracle wired to a TWAP producer.
+- `ProtocolParameters`: `stability_fee_per_millisecond` set for ~5%/year, `minimum_collateralization_ratio = 1.5 × FIXED_POINT_ONE`, oracle wired to a TWAP producer.
 - `StabilityFeeAccumulator`: `accumulated_rate_at_last_accrual = 1.0 × FIXED_POINT_ONE`, `last_accrued_at = 0` (assume keepers will catch up).
-- `RedemptionPriceState`: `redemption_price_at_last_update = 0.5 × FIXED_POINT_ONE` (collateral-per-stablecoin), `redemption_rate_per_second = FIXED_POINT_ONE`, `controller_integral_term = 0`.
+- `RedemptionPriceState`: `redemption_price_at_last_update = 0.5 × FIXED_POINT_ONE` (collateral-per-stablecoin), `redemption_rate_per_millisecond = FIXED_POINT_ONE`, `controller_integral_term = 0`.
 - Alice's collateral holding: `balance = 1000`. Alice's stablecoin holding: doesn't exist yet (she'll initialize it before `generate_debt`).
 
 **Step 1 — t = 0s: `open_position(nonce = 7, initial_collateral_amount = 600)`**
@@ -1270,11 +1315,11 @@ A keeper calls `update_redemption_rate()`. Oracle staleness check passes (timest
 
 | Account | Field | Before | After |
 |---|---|---|---|
-| `RedemptionPriceState` | redemption_rate_per_second | ~`FIXED_POINT_ONE` | `0.99 × FIXED_POINT_ONE` (clamped) |
+| `RedemptionPriceState` | redemption_rate_per_millisecond | ~`FIXED_POINT_ONE` | `0.99 × FIXED_POINT_ONE` (clamped) |
 | `RedemptionPriceState` | controller_integral_term | ~0 | large negative (clamped to `-INTEGRAL_CLAMP`) |
 | `RedemptionPriceState` | last_updated_at | T | T + 100 |
 
-The redemption price will now drift DOWN at 1%/second from `~0.5`. After 60 seconds, it's roughly `0.5 × 0.99^60 ≈ 0.27`.
+The redemption price will now drift DOWN at 1%/ms from `~0.5`. After 60 ms, it's roughly `0.5 × 0.99^60 ≈ 0.27`.
 
 **Step 2 — t = T + 200s: Attacker spots the oracle problem and calls `generate_debt(amount = 1_000_000_000)` against a tiny position**
 
@@ -1326,20 +1371,20 @@ The attacker still holds the stablecoin they minted during the attack. The proto
 
 ### 16.3 Redemption price & controller walkthrough
 
-One `update_redemption_rate` computing a new rate from the price gap (§6.4), then how `current_redemption_price` is projected at later times (§5.3), then the next update re-anchoring. As in §16's preamble, magnitudes are illustrative; here the per-second rate is **deliberately exaggerated** (real values are ≈ `1.0000001`/s) so the arithmetic is legible. On-chain every value is also × `FIXED_POINT_ONE`.
+One `update_redemption_rate` computing a new rate from the price gap (§6.4), then how `current_redemption_price` is projected at later times (§5.3), then the next update re-anchoring. As in §16's preamble, magnitudes are illustrative; here the per-millisecond rate is **deliberately exaggerated** (real values are far closer to `1.0`) so the arithmetic is legible. On-chain every value is also × `FIXED_POINT_ONE`.
 
 **Constants (illustrative):** `Kp = 0.4`, `Ki = 0.0001`.
 
-**Start (t = 1000s):**
+**Start (t = 1000 ms):**
 
 | Field | Value |
 |---|---|
 | `redemption_price_at_last_update` | `0.50` |
-| `redemption_rate_per_second` | `1.00` (held) |
+| `redemption_rate_per_millisecond` | `1.00` (held) |
 | `last_updated_at` | `1000` |
 | `controller_integral_term` | `0` (memory starts at 0) |
 
-**Step 1 — a keeper calls `update_redemption_rate()` at t = 2000s**
+**Step 1 — a keeper calls `update_redemption_rate()` at t = 2000 ms**
 
 1. Project the current price from the OLD rate: `Δt = 2000 − 1000 = 1000`; `current_redemption_price = 0.50 × compound_rate(1.00, 1000) = 0.50 × 1.00 = 0.50` (rate was 1.0, so no change).
 2. Read the oracle: market price = `0.48`.
@@ -1349,13 +1394,13 @@ One `update_redemption_rate` computing a new rate from the price gap (§6.4), th
    - `integral_delta = Ki × error × Δt = 0.0001 × 0.02 × 1000 = 0.002`
    - `new_integral = 0 + 0.002 = 0.002` (within `INTEGRAL_CLAMP`)
    - `rate_adjustment = P + new_integral = 0.008 + 0.002 = 0.010`
-5. New rate: `redemption_rate_per_second = 1.0 + 0.010 = 1.01`.
+5. New rate: `redemption_rate_per_millisecond = 1.0 + 0.010 = 1.01`.
 6. Persist (the anchor, rate, and memory all change here, and only here):
 
 | Field | Before | After |
 |---|---|---|
 | `redemption_price_at_last_update` | `0.50` | `0.50` (the value from step 1) |
-| `redemption_rate_per_second` | `1.00` | `1.01` |
+| `redemption_rate_per_millisecond` | `1.00` | `1.01` |
 | `controller_integral_term` | `0` | `0.002` |
 | `last_updated_at` | `1000` | `2000` |
 
@@ -1375,7 +1420,7 @@ Coin was too cheap ⇒ rate set above `1.0` ⇒ redemption price will rise, pull
 
 None of these are saved — all are computed from the same stored `(0.50, 1.01, 2000)`. `compound_rate` does `1.01^10` in ~4 multiplications via exponentiation-by-squaring: `1.01^2 = 1.0201`, `1.01^4 = 1.040604`, `1.01^8 = 1.082857`, `1.01^10 = 1.01^8 × 1.01^2 ≈ 1.104622`.
 
-**Step 3 — the next `update_redemption_rate()` at t = 2010s** (re-anchors at the live value, carries the memory forward):
+**Step 3 — the next `update_redemption_rate()` at t = 2010 ms** (re-anchors at the live value, carries the memory forward):
 
 1. Current price from the current rate: `0.50 × 1.01^10 = 0.552311`.
 2. Oracle (market has responded): `0.545` — the gap shrank from `0.48` to `0.545`.
@@ -1390,4 +1435,4 @@ None of these are saved — all are computed from the same stored `(0.50, 1.01, 
 
 Two things to notice: the current gap is now small, so `P` dropped sharply (`0.008 → 0.0029`); but the **memory still holds `0.002`** from the earlier sustained gap, keeping part of the correction alive even though the current gap is nearly closed — that is exactly the integral's job. As the market reaches the target, `error → 0`, both terms stop adding, the rate settles to `1.0`, and the redemption price holds.
 
-**One-line summary:** `current_redemption_price` at any time = `redemption_price_at_last_update × redemption_rate_per_second ^ (now − last_updated_at)`. Those three saved numbers change only when `update_redemption_rate` runs (which also updates `controller_integral_term`, starting at `0` and remembering past gaps). `Kp` / `Ki` are fixed dials. Between updates, raise the rate to the elapsed seconds and multiply by the anchor.
+**One-line summary:** `current_redemption_price` at any time = `redemption_price_at_last_update × redemption_rate_per_millisecond ^ (now − last_updated_at)`. Those three saved numbers change only when `update_redemption_rate` runs (which also updates `controller_integral_term`, starting at `0` and remembering past gaps). `Kp` / `Ki` are fixed dials. Between updates, raise the rate to the elapsed milliseconds and multiply by the anchor.
