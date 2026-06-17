@@ -28,6 +28,7 @@
     - [6.2 Collateralization invariant](#62-collateralization-invariant)
     - [6.3 Normalized-debt deltas with directional rounding](#63-normalized-debt-deltas-with-directional-rounding)
     - [6.4 PI controller](#64-pi-controller-update_redemption_rate)
+    - [6.5 Debt-accrual terminology](#65-debt-accrual-terminology-quick-reference)
 7. [Cross-instruction invariants](#7-cross-instruction-invariants)
 8. [Bound choices](#8-bound-choices)
 9. [Instruction set](#9-instruction-set)
@@ -56,6 +57,7 @@
 16. [Sample scenarios](#16-sample-scenarios)
     - [16.1 Alice's full lifecycle](#161-alices-full-lifecycle)
     - [16.2 Emergency freeze](#162-emergency-freeze)
+    - [16.3 Redemption price & controller walkthrough](#163-redemption-price--controller-walkthrough)
 
 ---
 
@@ -499,7 +501,16 @@ The signs work out so that **positive gains drive the system toward stability** 
 
 **Anti-windup — clamp vs leak (deliberate divergence from RAI).** v1 bounds the integral with a hard clamp (`clamp(new_integral, ±INTEGRAL_CLAMP)`) — conditional integration / saturation. RAI instead uses a *leaky* integrator: it scales the accumulated deviation by a per-second decay factor (`rpow(perSecondCumulativeLeak, Δt)`) before adding the new term, so stale error fades exponentially rather than sitting pinned at a bound. Both are valid anti-windup. v1 picks the clamp because it's simpler, deterministic, and adds no extra parameter; the trade-off is *windup-on-release* — under a long sustained deviation the clamped integral saturates and then unwinds with some lag when the error reverses, whereas the leak never fully saturates. This is a conscious choice, not an oversight; adopting RAI's leak is the planned upgrade once the controller is tuned against simulation (§14, §15).
 
-**In plain English:** this is the protocol's "thermostat". The redemption price is the target; the market price is what's actually observed. The bigger the gap (the **error**), the harder the protocol pushes back via the **redemption rate** — which then drifts the redemption price toward the market. The **proportional term** reacts to the CURRENT gap; the **integral term** remembers the gap's HISTORY, so persistent errors get a stronger correction over time. The two clamps prevent the two classic feedback-loop failure modes: anti-windup keeps the integral from growing unbounded during long imbalances, and the rate clamp keeps single-update jumps from exploding.
+**In plain English.** The controller steers one number — the **redemption price**, the protocol's official value for the coin — so that the **market price** (from the oracle) is pulled toward it. It never moves the price directly; it sets the *speed and direction* the redemption price changes, the `redemption_rate_per_second` (above `1.0` ⇒ price goes up over time, below `1.0` ⇒ down, exactly `1.0` ⇒ held).
+
+It works from the gap, `error = redemption_price − market_price` (positive ⇒ coin trading below target, i.e. too cheap), and combines two reactions:
+
+- **Proportional** — `Kp × error`, where `Kp` (`controller_proportional_gain`) is a fixed dial the operator sets for how strongly to react to the gap *right now*.
+- **Integral** — a running memory (`controller_integral_term`, which **starts at `0` at launch**) that each update grows by `Ki × error × Δt`, where `Ki` (`controller_integral_gain`) is the dial for how strongly a gap that *won't go away* feeds in. The memory is what corrects small-but-persistent deviations that the proportional term alone would miss.
+
+Their sum is the rate adjustment, added to `1.0`. Because there is **no negation**, the adjustment carries the same sign as `error`: too cheap ⇒ rate above `1.0` ⇒ redemption price goes up ⇒ holding the coin becomes more rewarding and minting tightens ⇒ market pulled **up** toward the target. Too expensive ⇒ the mirror image. As the market reaches the target, `error → 0`, the rate returns to `1.0`, and the price holds.
+
+`Kp` and `Ki` are fixed dials (changed only by the admin via `set_controller_gains`); the memory and the rate are the parts that move. Two clamps bound the loop: `INTEGRAL_CLAMP` on the memory (anti-windup) and `RATE_DELTA_CLAMP` on a single update's adjustment. A fully worked numeric walkthrough — computing the rate, then projecting `current_redemption_price` at several times — is in §16.3.
 
 ```mermaid
 flowchart LR
@@ -526,6 +537,38 @@ flowchart LR
     IClamp -.persist.-> StateNew
     StateNew -. drift then re-read on next update .-> CurRP
 ```
+
+### 6.5 Debt-accrual terminology (quick reference)
+
+The same few names for the fee/debt machinery recur across §4, §5, and §6. Consolidated here.
+
+**Stored values** (written to account data):
+
+- **`normalized_debt_amount`** — a position's debt with interest stripped out: its "shares." Lives in `Position` (one per `(owner, position_nonce)`). Set on `generate_debt` / `repay_debt`, otherwise unchanged — it is never rewritten as time passes. Units: shares.
+- **`accumulated_rate_at_last_accrual`** — the stablecoin-per-share multiplier as of the last accrual (the "anchor"). Lives in the global `StabilityFeeAccumulator`. Starts at `FIXED_POINT_ONE`; only ever grows. Units: stablecoin / share.
+- **`last_accrued_at`** — unix-seconds timestamp the anchor was last refreshed. Also in `StabilityFeeAccumulator`. Pairs with the anchor so the live value can be projected.
+- **`stability_fee_per_second`** — the per-second growth multiplier applied to the accumulator. Lives in `ProtocolParameters`, stored as `(1 + r) × FIXED_POINT_ONE` (just above 1.0). This is what gets compounded.
+
+**Computed on the fly** (never stored; recomputed on read):
+
+- **`current_accumulated_rate`** — the live accumulator now: `accumulated_rate_at_last_accrual × compound_rate(stability_fee_per_second, now − last_accrued_at) / FIXED_POINT_ONE` (§5.3). Units: stablecoin / share.
+- **nominal debt** — what a position actually owes now, in stablecoin: `normalized_debt_amount × current_accumulated_rate / FIXED_POINT_ONE` (§6.1). Frozen shares × the live (growing) accumulator, so it grows over time even though the shares don't. Never stored.
+
+**Operations:**
+
+- **`compound_rate(rate, seconds)`** — `rate ^ seconds` in fixed point, via exponentiation-by-squaring (§5.2).
+- **`accrue_stability_fee`** — the permissionless "poke" that refreshes the accumulator anchor: rolls the live value into `accumulated_rate_at_last_accrual` and sets `last_accrued_at = now` (§10.2). The only writer of the accumulator besides init and the auto-accrue in `set_stability_fee_per_second`.
+- **`FIXED_POINT_ONE`** — the value `1.0` in this system (`10^27`). Every rate / multiplier / price is stored as `actual_value × FIXED_POINT_ONE` (§5.1).
+
+**The redemption-price side mirrors this exactly** — same anchor + per-second-rate + timestamp pattern, projected the same way (§5.3), re-anchored only by its own poke. Different fields:
+
+| Role | Debt / fee side | Redemption-price side |
+|---|---|---|
+| anchor | `accumulated_rate_at_last_accrual` | `redemption_price_at_last_update` |
+| per-second rate | `stability_fee_per_second` | `redemption_rate_per_second` |
+| last-touched timestamp | `last_accrued_at` | `last_updated_at` |
+| live projection | `current_accumulated_rate` | `current_redemption_price` |
+| re-anchored by | `accrue_stability_fee` (§10.2) | `update_redemption_rate` (§10.3) |
 
 ## 7. Cross-instruction invariants
 
@@ -1280,3 +1323,71 @@ Trading resumes. A keeper calls `update_redemption_rate()`, which now reads the 
 **What this scenario doesn't fix:**
 
 The attacker still holds the stablecoin they minted during the attack. The protocol's `Σ(nominal_debt) − total_supply` gap got worse (the position's collateral is now far below what it should be backing). Recovery requires the **liquidation engine of RFP-014** — until that lands, the protocol's accumulated fee credit absorbs the loss, and if it's not enough, the protocol is effectively under-collateralized in aggregate. This is the inherent limit of "freeze without liquidation" — the freeze stops the bleeding mid-attack but doesn't undo prior damage.
+
+### 16.3 Redemption price & controller walkthrough
+
+One `update_redemption_rate` computing a new rate from the price gap (§6.4), then how `current_redemption_price` is projected at later times (§5.3), then the next update re-anchoring. As in §16's preamble, magnitudes are illustrative; here the per-second rate is **deliberately exaggerated** (real values are ≈ `1.0000001`/s) so the arithmetic is legible. On-chain every value is also × `FIXED_POINT_ONE`.
+
+**Constants (illustrative):** `Kp = 0.4`, `Ki = 0.0001`.
+
+**Start (t = 1000s):**
+
+| Field | Value |
+|---|---|
+| `redemption_price_at_last_update` | `0.50` |
+| `redemption_rate_per_second` | `1.00` (held) |
+| `last_updated_at` | `1000` |
+| `controller_integral_term` | `0` (memory starts at 0) |
+
+**Step 1 — a keeper calls `update_redemption_rate()` at t = 2000s**
+
+1. Project the current price from the OLD rate: `Δt = 2000 − 1000 = 1000`; `current_redemption_price = 0.50 × compound_rate(1.00, 1000) = 0.50 × 1.00 = 0.50` (rate was 1.0, so no change).
+2. Read the oracle: market price = `0.48`.
+3. Error: `0.50 − 0.48 = +0.02` (coin too cheap).
+4. Terms:
+   - `P = Kp × error = 0.4 × 0.02 = 0.008`
+   - `integral_delta = Ki × error × Δt = 0.0001 × 0.02 × 1000 = 0.002`
+   - `new_integral = 0 + 0.002 = 0.002` (within `INTEGRAL_CLAMP`)
+   - `rate_adjustment = P + new_integral = 0.008 + 0.002 = 0.010`
+5. New rate: `redemption_rate_per_second = 1.0 + 0.010 = 1.01`.
+6. Persist (the anchor, rate, and memory all change here, and only here):
+
+| Field | Before | After |
+|---|---|---|
+| `redemption_price_at_last_update` | `0.50` | `0.50` (the value from step 1) |
+| `redemption_rate_per_second` | `1.00` | `1.01` |
+| `controller_integral_term` | `0` | `0.002` |
+| `last_updated_at` | `1000` | `2000` |
+
+Coin was too cheap ⇒ rate set above `1.0` ⇒ redemption price will rise, pulling the market up. Both halves contributed: `0.008` from the current gap, `0.002` from the memory.
+
+**Step 2 — read `current_redemption_price` at several later times** (no new update; just project the anchor `0.50` at rate `1.01`):
+
+`current_redemption_price(t) = 0.50 × 1.01^(t − 2000)`
+
+| time t | elapsed | `1.01 ^ elapsed` | `current_redemption_price` |
+|---|---|---|---|
+| 2000 | 0 | 1.000000 | **0.500000** |
+| 2001 | 1 | 1.010000 | **0.505000** |
+| 2002 | 2 | 1.020100 | **0.510050** |
+| 2003 | 3 | 1.030301 | **0.515151** |
+| 2010 | 10 | 1.104622 | **0.552311** |
+
+None of these are saved — all are computed from the same stored `(0.50, 1.01, 2000)`. `compound_rate` does `1.01^10` in ~4 multiplications via exponentiation-by-squaring: `1.01^2 = 1.0201`, `1.01^4 = 1.040604`, `1.01^8 = 1.082857`, `1.01^10 = 1.01^8 × 1.01^2 ≈ 1.104622`.
+
+**Step 3 — the next `update_redemption_rate()` at t = 2010s** (re-anchors at the live value, carries the memory forward):
+
+1. Current price from the current rate: `0.50 × 1.01^10 = 0.552311`.
+2. Oracle (market has responded): `0.545` — the gap shrank from `0.48` to `0.545`.
+3. Error: `0.552311 − 0.545 = 0.007311` (much smaller).
+4. Terms (`Δt = 10`):
+   - `P = 0.4 × 0.007311 = 0.002924`
+   - `integral_delta = 0.0001 × 0.007311 × 10 = 0.0000073`
+   - `new_integral = 0.002 + 0.0000073 ≈ 0.0020073` (memory keeps the earlier `0.002`)
+   - `rate_adjustment = 0.002924 + 0.0020073 ≈ 0.004931`
+5. New rate: `≈ 1.0049`.
+6. Persist: anchor = `0.552311`, rate = `1.0049`, `controller_integral_term ≈ 0.0020073`, `last_updated_at = 2010`.
+
+Two things to notice: the current gap is now small, so `P` dropped sharply (`0.008 → 0.0029`); but the **memory still holds `0.002`** from the earlier sustained gap, keeping part of the correction alive even though the current gap is nearly closed — that is exactly the integral's job. As the market reaches the target, `error → 0`, both terms stop adding, the rate settles to `1.0`, and the redemption price holds.
+
+**One-line summary:** `current_redemption_price` at any time = `redemption_price_at_last_update × redemption_rate_per_second ^ (now − last_updated_at)`. Those three saved numbers change only when `update_redemption_rate` runs (which also updates `controller_integral_term`, starting at `0` and remembering past gaps). `Kp` / `Ki` are fixed dials. Between updates, raise the rate to the elapsed seconds and multiply by the anchor.
