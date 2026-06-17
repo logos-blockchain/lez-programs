@@ -43,6 +43,10 @@ impl Ids {
         amm_methods::AMM_ID
     }
 
+    fn config() -> AccountId {
+        amm_core::compute_config_pda(Self::amm_program())
+    }
+
     fn token_a_definition() -> AccountId {
         AccountId::new([3; 32])
     }
@@ -283,6 +287,17 @@ impl Balances {
 }
 
 impl Accounts {
+    fn config() -> Account {
+        Account {
+            program_owner: Ids::amm_program(),
+            balance: 0_u128,
+            data: Data::from(&amm_core::AmmConfig {
+                token_program_id: Ids::token_program(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
     fn user_a_holding() -> Account {
         Account {
             program_owner: Ids::token_program(),
@@ -914,6 +929,7 @@ fn deploy_programs(state: &mut V03State) {
 fn state_for_amm_tests() -> V03State {
     let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_programs(&mut state);
+    state.force_insert_account(Ids::config(), Accounts::config());
     state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_init());
     state.force_insert_account(
         Ids::token_a_definition(),
@@ -938,6 +954,7 @@ fn state_for_amm_tests() -> V03State {
 fn state_for_amm_tests_with_new_def() -> V03State {
     let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
     deploy_programs(&mut state);
+    state.force_insert_account(Ids::config(), Accounts::config());
     state.force_insert_account(
         Ids::token_a_definition(),
         Accounts::token_a_definition_account(),
@@ -977,6 +994,7 @@ fn try_execute_new_definition(
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1032,6 +1050,7 @@ fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_ou
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1061,6 +1080,7 @@ fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_ou
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1095,6 +1115,7 @@ fn execute_add_liquidity(
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1135,6 +1156,7 @@ fn execute_remove_liquidity(
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1149,6 +1171,26 @@ fn execute_remove_liquidity(
     .unwrap();
 
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_lp()]);
+
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+}
+
+#[cfg(test)]
+fn execute_initialize(state: &mut V03State) {
+    let instruction = amm_core::Instruction::Initialize {
+        token_program_id: Ids::token_program(),
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![Ids::config()],
+        vec![],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -1186,6 +1228,26 @@ fn fungible_total_supply(account: &Account) -> u128 {
 }
 
 #[test]
+fn amm_initialize_creates_config_account() {
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    deploy_programs(&mut state);
+
+    // Before initialization the config PDA does not exist.
+    assert_eq!(state.get_account_by_id(Ids::config()), Account::default());
+
+    execute_initialize(&mut state);
+
+    // Initialization creates the config PDA, owned by the AMM program.
+    let config_account = state.get_account_by_id(Ids::config());
+    assert_eq!(config_account, Accounts::config());
+
+    // Explicitly assert the stored Token Program ID round-trips from the instruction argument.
+    let config = amm_core::AmmConfig::try_from(&config_account.data)
+        .expect("config account must hold a valid AmmConfig");
+    assert_eq!(config.token_program_id, Ids::token_program());
+}
+
+#[test]
 fn amm_remove_liquidity() {
     let mut state = state_for_amm_tests();
 
@@ -1199,6 +1261,7 @@ fn amm_remove_liquidity() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1262,6 +1325,7 @@ fn amm_remove_liquidity_insufficient_user_lp_fails() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1487,6 +1551,7 @@ fn amm_add_liquidity() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1550,6 +1615,7 @@ fn amm_swap_b_to_a() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1602,6 +1668,7 @@ fn amm_swap_a_to_b() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1708,6 +1775,7 @@ fn amm_swap_rejects_expired_deadline() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1744,6 +1812,7 @@ fn amm_swap_exact_output_rejects_expired_deadline() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1780,6 +1849,7 @@ fn amm_add_liquidity_rejects_expired_deadline() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1822,6 +1892,7 @@ fn amm_remove_liquidity_rejects_expired_deadline() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
@@ -1860,6 +1931,7 @@ fn amm_new_definition_rejects_expired_deadline() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
+            Ids::config(),
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),

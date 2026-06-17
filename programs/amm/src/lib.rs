@@ -3,6 +3,7 @@
 pub use amm_core as core;
 
 pub mod add;
+pub mod initialize;
 pub mod new_definition;
 pub mod remove;
 pub mod swap;

@@ -6,6 +6,7 @@ use spel_framework::prelude::*;
 use spel_framework::context::ProgramContext;
 use nssa_core::{
     account::{AccountId, AccountWithMetadata},
+    program::ProgramId,
 };
 
 #[cfg(not(test))]
@@ -19,15 +20,31 @@ mod amm {
     )]
     use super::*;
 
+    /// Initializes the AMM Program by creating its singleton config account.
+    ///
+    /// Expected accounts:
+    /// 1. `config` — uninitialized config PDA derived from `compute_config_pda(self_program_id)`.
+    #[instruction]
+    pub fn initialize(
+        ctx: ProgramContext,
+        config: AccountWithMetadata,
+        token_program_id: ProgramId,
+    ) -> SpelResult {
+        let post_states =
+            amm_program::initialize::initialize(config, token_program_id, ctx.self_program_id);
+        Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
+    }
+
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
     /// A fresh user LP holding must be explicitly authorized by the caller.
     #[expect(
         clippy::too_many_arguments,
-        reason = "instruction interface requires explicit pool, vault, mint, lock, and user accounts"
+        reason = "instruction interface requires explicit config, pool, vault, mint, lock, and user accounts"
     )]
     #[instruction]
     pub fn new_definition(
         ctx: ProgramContext,
+        config: AccountWithMetadata,
         pool: AccountWithMetadata,
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
@@ -42,6 +59,7 @@ mod amm {
         deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::new_definition::new_definition(
+            config,
             pool,
             vault_a,
             vault_b,
@@ -66,6 +84,8 @@ mod amm {
     )]
     #[instruction]
     pub fn add_liquidity(
+        ctx: ProgramContext,
+        config: AccountWithMetadata,
         pool: AccountWithMetadata,
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
@@ -79,6 +99,7 @@ mod amm {
         deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::add::add_liquidity(
+            config,
             pool,
             vault_a,
             vault_b,
@@ -89,6 +110,7 @@ mod amm {
             NonZeroU128::new(min_amount_liquidity).expect("min_amount_liquidity must be nonzero"),
             max_amount_to_add_token_a,
             max_amount_to_add_token_b,
+            ctx.self_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
             .with_timestamp_validity_window(..deadline))
@@ -101,6 +123,8 @@ mod amm {
     )]
     #[instruction]
     pub fn remove_liquidity(
+        ctx: ProgramContext,
+        config: AccountWithMetadata,
         pool: AccountWithMetadata,
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
@@ -114,6 +138,7 @@ mod amm {
         deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::remove::remove_liquidity(
+            config,
             pool,
             vault_a,
             vault_b,
@@ -125,6 +150,7 @@ mod amm {
                 .expect("remove_liquidity_amount must be nonzero"),
             min_amount_to_remove_token_a,
             min_amount_to_remove_token_b,
+            ctx.self_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
             .with_timestamp_validity_window(..deadline))
@@ -137,6 +163,8 @@ mod amm {
     )]
     #[instruction]
     pub fn swap_exact_input(
+        ctx: ProgramContext,
+        config: AccountWithMetadata,
         pool: AccountWithMetadata,
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
@@ -148,6 +176,7 @@ mod amm {
         deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::swap::swap_exact_input(
+            config,
             pool,
             vault_a,
             vault_b,
@@ -156,6 +185,7 @@ mod amm {
             swap_amount_in,
             min_amount_out,
             token_definition_id_in,
+            ctx.self_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
             .with_timestamp_validity_window(..deadline))
@@ -168,6 +198,8 @@ mod amm {
     )]
     #[instruction]
     pub fn swap_exact_output(
+        ctx: ProgramContext,
+        config: AccountWithMetadata,
         pool: AccountWithMetadata,
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
@@ -179,6 +211,7 @@ mod amm {
         deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::swap::swap_exact_output(
+            config,
             pool,
             vault_a,
             vault_b,
@@ -187,6 +220,7 @@ mod amm {
             exact_amount_out,
             max_amount_in,
             token_definition_id_in,
+            ctx.self_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
             .with_timestamp_validity_window(..deadline))

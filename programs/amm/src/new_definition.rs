@@ -1,10 +1,10 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_liquidity_token_pda, compute_liquidity_token_pda_seed,
-    compute_lp_lock_holding_pda, compute_lp_lock_holding_pda_seed, compute_pool_pda,
-    compute_pool_pda_seed, compute_vault_pda, compute_vault_pda_seed, PoolDefinition,
-    MINIMUM_LIQUIDITY,
+    assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda,
+    compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
+    compute_lp_lock_holding_pda_seed, compute_pool_pda, compute_pool_pda_seed, compute_vault_pda,
+    compute_vault_pda_seed, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
@@ -17,6 +17,7 @@ use token_core::TokenDefinition;
     reason = "instruction surface passes explicit pool, vault, mint, lock, and user accounts"
 )]
 pub fn new_definition(
+    config: AccountWithMetadata,
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
@@ -37,12 +38,24 @@ pub fn new_definition(
         .expect("New definition: AMM Program expects valid Token Holding account for Token B")
         .definition_id();
 
-    let token_program = user_holding_a.account.program_owner;
-
-    // both instances of the same token program
+    // The Token Program is taken from the config account, not trusted from a caller-supplied
+    // holding. Validating the config PDA is also the Program's initialization gate.
     assert_eq!(
-        user_holding_b.account.program_owner, token_program,
-        "User Token holdings must use the same Token Program"
+        config.account_id,
+        compute_config_pda(amm_program_id),
+        "New definition: AMM config Account ID does not match PDA"
+    );
+    let token_program_id = AmmConfig::try_from(&config.account.data)
+        .expect("New definition: AMM Program must be initialized before use")
+        .token_program_id;
+
+    assert_eq!(
+        user_holding_a.account.program_owner, token_program_id,
+        "User Token A holding must be owned by the configured Token Program"
+    );
+    assert_eq!(
+        user_holding_b.account.program_owner, token_program_id,
+        "User Token B holding must be owned by the configured Token Program"
     );
     // Verify token_a and token_b are different
     assert!(
@@ -124,8 +137,6 @@ pub fn new_definition(
         )),
     );
 
-    let token_program_id = user_holding_a.account.program_owner;
-
     // Chain call for Token A (user_holding_a -> Vault_A)
     let mut vault_a_authorized = vault_a.clone();
     vault_a_authorized.is_authorized = true;
@@ -199,6 +210,7 @@ pub fn new_definition(
     ];
 
     let post_states = vec![
+        AccountPostState::new(config.account.clone()),
         pool_post.clone(),
         AccountPostState::new(vault_a.account.clone()),
         AccountPostState::new(vault_b.account.clone()),

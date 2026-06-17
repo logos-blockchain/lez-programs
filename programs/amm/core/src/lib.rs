@@ -16,6 +16,21 @@ const LP_LOCK_HOLDING_PDA_SEED: [u8; 32] = [1; 32];
 /// AMM Program Instruction.
 #[derive(Serialize, Deserialize)]
 pub enum Instruction {
+    /// Initializes the AMM Program by creating its singleton configuration account.
+    ///
+    /// The configuration account is a PDA derived from the constant `"CONFIG"` seed
+    /// (`compute_config_pda(self_program_id)`). It stores the Token Program ID that the AMM
+    /// uses for every chained call. The Program must be initialized via this instruction before
+    /// any pool can be created or interacted with — the other instructions read the Token
+    /// Program ID from this account and reject calls when it does not yet exist.
+    ///
+    /// Required accounts:
+    /// - AMM Config Account, uninitialized, derived as `compute_config_pda(self_program_id)`
+    Initialize {
+        /// Program ID of the Token Program the AMM will issue chained calls to.
+        token_program_id: ProgramId,
+    },
+
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
     ///
     /// On initialization, `MINIMUM_LIQUIDITY` LP tokens are permanently locked
@@ -175,6 +190,61 @@ impl From<&PoolDefinition> for Data {
 
         Data::try_from(data).expect("Token definition encoded data should fit into Data")
     }
+}
+
+/// Singleton configuration account for the AMM Program.
+///
+/// Stored at the PDA derived from the constant `"CONFIG"` seed
+/// (`compute_config_pda(amm_program_id)`). Created once via the `Initialize` instruction; its
+/// existence is the Program's "initialized" flag. Every chained-call instruction reads
+/// `token_program_id` from here instead of trusting the program owner of a caller-supplied
+/// account.
+#[account_type]
+#[derive(Clone, Default, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct AmmConfig {
+    /// Program ID of the Token Program the AMM issues chained calls to.
+    pub token_program_id: ProgramId,
+}
+
+impl TryFrom<&Data> for AmmConfig {
+    type Error = std::io::Error;
+
+    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+        AmmConfig::try_from_slice(data.as_ref())
+    }
+}
+
+impl From<&AmmConfig> for Data {
+    fn from(config: &AmmConfig) -> Self {
+        let mut data = Vec::with_capacity(std::mem::size_of_val(config));
+
+        BorshSerialize::serialize(config, &mut data).expect("Serialization to Vec should not fail");
+
+        Data::try_from(data).expect("AMM config encoded data should fit into Data")
+    }
+}
+
+// Stable seed marker for the singleton config PDA. The literal `"CONFIG"` bytes are hashed into
+// the 32-byte seed; this must stay unchanged for address compatibility.
+const CONFIG_PDA_SEED: &[u8] = b"CONFIG";
+
+/// Derives the [`AccountId`] of the AMM Program's singleton config PDA.
+#[must_use]
+pub fn compute_config_pda(amm_program_id: ProgramId) -> AccountId {
+    AccountId::for_public_pda(&amm_program_id, &compute_config_pda_seed())
+}
+
+/// Derives the [`PdaSeed`] of the AMM Program's singleton config PDA from the `"CONFIG"` bytes.
+#[must_use]
+pub fn compute_config_pda_seed() -> PdaSeed {
+    use risc0_zkvm::sha::{Impl, Sha256};
+
+    PdaSeed::new(
+        Impl::hash_bytes(CONFIG_PDA_SEED)
+            .as_bytes()
+            .try_into()
+            .expect("Hash output must be exactly 32 bytes long"),
+    )
 }
 
 pub fn compute_pool_pda(

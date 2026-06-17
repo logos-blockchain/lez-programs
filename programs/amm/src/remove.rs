@@ -1,12 +1,12 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_liquidity_token_pda_seed, compute_vault_pda_seed,
-    PoolDefinition, MINIMUM_LIQUIDITY,
+    assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda_seed,
+    compute_vault_pda_seed, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
     account::{AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall},
+    program::{AccountPostState, ChainedCall, ProgramId},
 };
 
 #[expect(
@@ -14,6 +14,7 @@ use nssa_core::{
     reason = "instruction surface passes explicit pool, vault, and user accounts"
 )]
 pub fn remove_liquidity(
+    config: AccountWithMetadata,
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
@@ -24,8 +25,20 @@ pub fn remove_liquidity(
     remove_liquidity_amount: NonZeroU128,
     min_amount_to_remove_token_a: u128,
     min_amount_to_remove_token_b: u128,
+    amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let remove_liquidity_amount: u128 = remove_liquidity_amount.into();
+
+    // The Token Program is taken from the config account, not trusted from a caller-supplied
+    // holding. Validating the config PDA is also the Program's initialization gate.
+    assert_eq!(
+        config.account_id,
+        compute_config_pda(amm_program_id),
+        "Remove liquidity: AMM config Account ID does not match PDA"
+    );
+    let token_program_id = AmmConfig::try_from(&config.account.data)
+        .expect("Remove liquidity: AMM Program must be initialized before use")
+        .token_program_id;
 
     // 1. Fetch Pool state
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
@@ -49,14 +62,21 @@ pub fn remove_liquidity(
         "Vault B was not provided"
     );
 
-    let token_program_id = vault_a.account.program_owner;
+    assert_eq!(
+        vault_a.account.program_owner, token_program_id,
+        "Vault A must be owned by the configured Token Program"
+    );
+    assert_eq!(
+        vault_b.account.program_owner, token_program_id,
+        "Vault B must be owned by the configured Token Program"
+    );
     assert_eq!(
         user_holding_a.account.program_owner, token_program_id,
-        "User Token A holding must be owned by the vault's Token Program"
+        "User Token A holding must be owned by the configured Token Program"
     );
     assert_eq!(
         user_holding_b.account.program_owner, token_program_id,
-        "User Token B holding must be owned by the vault's Token Program"
+        "User Token B holding must be owned by the configured Token Program"
     );
 
     // Vault addresses do not need to be checked with PDA
@@ -204,6 +224,7 @@ pub fn remove_liquidity(
     let chained_calls = vec![call_token_lp, call_token_b, call_token_a];
 
     let post_states = vec![
+        AccountPostState::new(config.account.clone()),
         AccountPostState::new(pool_post.clone()),
         AccountPostState::new(vault_a.account.clone()),
         AccountPostState::new(vault_b.account.clone()),

@@ -3,8 +3,31 @@
   "name": "amm",
   "instructions": [
     {
+      "name": "initialize",
+      "accounts": [
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "token_program_id",
+          "type": "program_id"
+        }
+      ]
+    },
+    {
       "name": "new_definition",
       "accounts": [
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
         {
           "name": "pool",
           "writable": false,
@@ -77,6 +100,12 @@
       "name": "add_liquidity",
       "accounts": [
         {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "pool",
           "writable": false,
           "signer": false,
@@ -141,6 +170,12 @@
     {
       "name": "remove_liquidity",
       "accounts": [
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
         {
           "name": "pool",
           "writable": false,
@@ -207,6 +242,12 @@
       "name": "swap_exact_input",
       "accounts": [
         {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "pool",
           "writable": false,
           "signer": false,
@@ -259,6 +300,12 @@
     {
       "name": "swap_exact_output",
       "accounts": [
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
         {
           "name": "pool",
           "writable": false,
@@ -375,6 +422,18 @@
           {
             "name": "fees",
             "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AmmConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "token_program_id",
+            "type": "program_id"
           }
         ]
       }

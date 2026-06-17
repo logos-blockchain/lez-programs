@@ -1,10 +1,11 @@
 use amm_core::{
-    assert_supported_fee_tier, read_vault_fungible_balances, FEE_BPS_DENOMINATOR, MINIMUM_LIQUIDITY,
+    assert_supported_fee_tier, compute_config_pda, read_vault_fungible_balances, AmmConfig,
+    FEE_BPS_DENOMINATOR, MINIMUM_LIQUIDITY,
 };
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall},
+    program::{AccountPostState, ChainedCall, ProgramId},
 };
 
 /// Validates swap setup: checks pool liquidity is ready, vaults match, and reserves are sufficient.
@@ -55,6 +56,7 @@ fn validate_swap_setup(
     reason = "consistent with codebase style"
 )]
 fn create_swap_post_states(
+    config: AccountWithMetadata,
     pool: AccountWithMetadata,
     pool_def_data: PoolDefinition,
     vault_a: AccountWithMetadata,
@@ -86,6 +88,7 @@ fn create_swap_post_states(
     pool_post.data = Data::from(&pool_post_definition);
 
     vec![
+        AccountPostState::new(config.account),
         AccountPostState::new(pool_post),
         AccountPostState::new(vault_a.account),
         AccountPostState::new(vault_b.account),
@@ -100,6 +103,7 @@ fn create_swap_post_states(
 )]
 #[must_use]
 pub fn swap_exact_input(
+    config: AccountWithMetadata,
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
@@ -108,17 +112,35 @@ pub fn swap_exact_input(
     swap_amount_in: u128,
     min_amount_out: u128,
     token_in_id: AccountId,
+    amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
 
-    let token_program_id = vault_a.account.program_owner;
+    // The Token Program is taken from the config account, not trusted from a caller-supplied
+    // account. Validating the config PDA is also the Program's initialization gate.
+    assert_eq!(
+        config.account_id,
+        compute_config_pda(amm_program_id),
+        "Swap exact input: AMM config Account ID does not match PDA"
+    );
+    let token_program_id = AmmConfig::try_from(&config.account.data)
+        .expect("Swap exact input: AMM Program must be initialized before use")
+        .token_program_id;
+    assert_eq!(
+        vault_a.account.program_owner, token_program_id,
+        "Vault A must be owned by the configured Token Program"
+    );
+    assert_eq!(
+        vault_b.account.program_owner, token_program_id,
+        "Vault B must be owned by the configured Token Program"
+    );
     assert_eq!(
         user_holding_a.account.program_owner, token_program_id,
-        "User Token A holding must be owned by the vault's Token Program"
+        "User Token A holding must be owned by the configured Token Program"
     );
     assert_eq!(
         user_holding_b.account.program_owner, token_program_id,
-        "User Token B holding must be owned by the vault's Token Program"
+        "User Token B holding must be owned by the configured Token Program"
     );
 
     let (chained_calls, [deposit_a, withdraw_a], [deposit_b, withdraw_b]) =
@@ -157,6 +179,7 @@ pub fn swap_exact_input(
         };
 
     let post_states = create_swap_post_states(
+        config,
         pool,
         pool_def_data,
         vault_a,
@@ -262,6 +285,7 @@ fn swap_logic(
 )]
 #[must_use]
 pub fn swap_exact_output(
+    config: AccountWithMetadata,
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
@@ -270,17 +294,35 @@ pub fn swap_exact_output(
     exact_amount_out: u128,
     max_amount_in: u128,
     token_in_id: AccountId,
+    amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
 
-    let token_program_id = vault_a.account.program_owner;
+    // The Token Program is taken from the config account, not trusted from a caller-supplied
+    // account. Validating the config PDA is also the Program's initialization gate.
+    assert_eq!(
+        config.account_id,
+        compute_config_pda(amm_program_id),
+        "Swap exact output: AMM config Account ID does not match PDA"
+    );
+    let token_program_id = AmmConfig::try_from(&config.account.data)
+        .expect("Swap exact output: AMM Program must be initialized before use")
+        .token_program_id;
+    assert_eq!(
+        vault_a.account.program_owner, token_program_id,
+        "Vault A must be owned by the configured Token Program"
+    );
+    assert_eq!(
+        vault_b.account.program_owner, token_program_id,
+        "Vault B must be owned by the configured Token Program"
+    );
     assert_eq!(
         user_holding_a.account.program_owner, token_program_id,
-        "User Token A holding must be owned by the vault's Token Program"
+        "User Token A holding must be owned by the configured Token Program"
     );
     assert_eq!(
         user_holding_b.account.program_owner, token_program_id,
-        "User Token B holding must be owned by the vault's Token Program"
+        "User Token B holding must be owned by the configured Token Program"
     );
 
     let (chained_calls, [deposit_a, withdraw_a], [deposit_b, withdraw_b]) =
@@ -319,6 +361,7 @@ pub fn swap_exact_output(
         };
 
     let post_states = create_swap_post_states(
+        config,
         pool,
         pool_def_data,
         vault_a,
