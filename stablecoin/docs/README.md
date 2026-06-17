@@ -258,8 +258,6 @@ pub struct ProtocolParameters {
     pub controller_integral_gain: i128,
     /// Minimum collateralization ratio in fixed-point. e.g. `1.5 * FIXED_POINT_ONE` = 150%.
     pub minimum_collateralization_ratio: u128,
-    /// Min milliseconds between successful `accrue_stability_fee` calls (spam guard).
-    pub minimum_milliseconds_between_fee_accruals: u64,
     /// Min milliseconds between successful `update_redemption_rate` calls (RFP F2).
     pub minimum_milliseconds_between_rate_updates: u64,
     /// Reject oracle observations older than this (RFP R3 staleness gate).
@@ -602,8 +600,7 @@ These are properties the protocol maintains across every state-changing instruct
 | `controller_integral_gain` magnitude | `|x| ≤ FIXED_POINT_ONE` | As proportional, but rescaled `÷10^6` (it also multiplies `Δt`, now in ms): real values ≈10^3–10^9 raw. |
 | `INTEGRAL_CLAMP` | `± FIXED_POINT_ONE * 10^6` | Anti-windup; rescaled `÷10^3` to ms. Constant in v1; future-promotable to `ProtocolParameters`. |
 | `RATE_DELTA_CLAMP` | `± FIXED_POINT_ONE / 100_000` | Max single-update per-ms rate adjustment (≈±0.001%); rescaled `÷10^3` to ms so a ~1/sec keeper cadence still caps near ±1%/s. Constant in v1. |
-| `minimum_milliseconds_between_fee_accruals` | `1 ≤ x ≤ 86_400_000` | Min 1 ms (no zero-spam), max 1 day (RFP "rate updates within a small number of blocks"). |
-| `minimum_milliseconds_between_rate_updates` | Same | Same. |
+| `minimum_milliseconds_between_rate_updates` | `1 ≤ x ≤ 86_400_000` | Min 1 ms (no zero-spam), max 1 day (RFP F2 "rate updates within a small number of blocks"). |
 | `maximum_oracle_price_age_milliseconds` | `1 ≤ x ≤ 86_400_000` | Stale beyond a day is obviously bad; aggressive freshness is a tuning parameter. |
 | `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` | TBD — `≥` the expected worst-case keeper-poke gap (candidate range `86_400_000`–`604_800_000`, i.e. 1–7 days) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Exact value pending tuning. |
 | `initial_redemption_price` | `> 0` | Must be positive; admin chooses an initial value reflecting the launch peg target. |
@@ -626,9 +623,9 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 
 | # | Instruction | Caller | One-line |
 |---|---|---|---|
-| 2 | `accrue_stability_fee` | anyone | Roll `StabilityFeeAccumulator` forward to `now` if min interval elapsed. |
+| 2 | `accrue_stability_fee` | anyone | Roll `StabilityFeeAccumulator` forward to `now` (no throttle — idempotent). |
 | 3 | `update_redemption_rate` | anyone | Read oracle, run PI controller, re-anchor `RedemptionPriceState`. |
-| 3a | `refresh_globals` | anyone | Best-effort combined poke: do #2 and #3, each only if its interval is due (and the oracle fresh for #3); skip rather than panic. Advances both globals in one transaction (§10.3a). |
+| 3a | `refresh_globals` | anyone | Best-effort combined poke: always runs #2; runs #3 if its interval is due and the oracle is fresh; skips rather than panics. Advances both globals in one transaction (§10.3a). |
 
 ### 9.3 Position lifecycle
 
@@ -649,7 +646,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 | 11 | `set_minimum_collateralization_ratio` | admin | Update the safety ratio. |
 | 12 | `set_controller_gains` | admin | Update Kp + Ki atomically. |
 | 13 | `set_market_price_oracle` | admin | Rotate oracle id; validate new oracle's base/quote. |
-| 14 | `set_timing_parameters` | admin | Update the three timing fields atomically. |
+| 14 | `set_timing_parameters` | admin | Update the two timing fields atomically. |
 | 15 | `set_admin` | admin | One-step admin rotation. |
 | 16 | `set_freeze_authority` | admin | One-step freeze authority rotation. |
 
@@ -675,7 +672,6 @@ fn initialize_program(
     initial_controller_proportional_gain: i128,
     initial_controller_integral_gain: i128,
     initial_minimum_collateralization_ratio: u128,
-    minimum_milliseconds_between_fee_accruals: u64,
     minimum_milliseconds_between_rate_updates: u64,
     maximum_oracle_price_age_milliseconds: u64,
     initial_redemption_price: u128,
@@ -740,7 +736,9 @@ flowchart TD
 
 **Chained calls:** none.
 
-**Panics if:** `caller.is_authorized = false`; either global uninitialized; `now − last_accrued_at < minimum_milliseconds_between_fee_accruals`; overflow in `compound_rate` (prevented by the `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` clamp of §5.3 — without it a within-bounds-but-high rate over a long `dt` would overflow).
+**Panics if:** `caller.is_authorized = false`; either global uninitialized; overflow in `compound_rate` (prevented by the `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` clamp of §5.3 — without it a within-bounds-but-high rate over a long `dt` would overflow).
+
+**Note:** `accrue_stability_fee` has no minimum-interval throttle. Accrual is idempotent and lazy (§5.3, §6.1): calling it more or less often doesn't change the result — the read-side projection keeps every position current regardless of cadence — so redundant calls are harmless, self-funded no-ops rather than something to guard against. (The oracle-driven `update_redemption_rate` keeps its throttle, because there frequency *is* a control-cadence choice.)
 
 ```mermaid
 flowchart TD
@@ -787,7 +785,7 @@ flowchart TD
 
 **Signature:** `fn refresh_globals();`
 
-A convenience poke that advances **both** globals in one instruction. Because a LEZ transaction carries a single instruction, this is the only way to refresh the fee accumulator and the redemption rate in one transaction. It is **best-effort**: it performs each half only if that half is due, and **skips rather than panics** when a half isn't due (or the oracle is stale). The standalone `accrue_stability_fee` (§10.2) and `update_redemption_rate` (§10.3) remain for callers that want a single global or strict (loud-failing) semantics — see "Why keep all three" below.
+A convenience poke that advances **both** globals in one instruction. Because a LEZ transaction carries a single instruction, this is the only way to refresh the fee accumulator and the redemption rate in one transaction. It is **best-effort**: it always performs the fee accrual, performs the redemption update only if its interval is due and the oracle is fresh, and **skips rather than panics** otherwise. The standalone `accrue_stability_fee` (§10.2) and `update_redemption_rate` (§10.3) remain for callers that want to touch just one global — and, for `update_redemption_rate`, strict loud-failing semantics on a stale oracle (see "Why keep all three" below).
 
 **Inputs (5 accounts)** — the union of §10.2 and §10.3:
 
@@ -799,17 +797,17 @@ A convenience poke that advances **both** globals in one instruction. Because a 
 
 **Behavior:**
 
-- **Fee half** — if `now − stability_fee_accumulator.last_accrued_at ≥ minimum_milliseconds_between_fee_accruals`: roll the accumulator forward exactly as §10.2. Else: skip (no write). Never depends on the oracle.
+- **Fee half** — always rolls the accumulator forward exactly as §10.2 (there is no fee-accrual interval gate). Never depends on the oracle.
 - **Redemption half** — if `now − redemption_price_state.last_updated_at ≥ minimum_milliseconds_between_rate_updates` **and** the oracle is fresh (`now − oracle.timestamp ≤ maximum_oracle_price_age_milliseconds`) **and** `oracle.price > 0`: run the PI controller and re-anchor exactly as §10.3. Else: skip (no write).
-- If both halves skip, the call is a successful no-op.
+- The fee half always runs; if the redemption half skips, the call just advances the accumulator alone.
 
 **Chained calls:** none.
 
-**Panics if:** `caller.is_authorized = false`; any of `protocol_parameters` / `stability_fee_accumulator` / `redemption_price_state` uninitialized or wrong owner; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`. It does **NOT** panic on "interval not yet elapsed" or "oracle stale / zero" — those conditions skip the corresponding half. Allowed when frozen (like the individual pokes).
+**Panics if:** `caller.is_authorized = false`; any of `protocol_parameters` / `stability_fee_accumulator` / `redemption_price_state` uninitialized or wrong owner; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`. It does **NOT** panic when the redemption half's interval hasn't elapsed or the oracle is stale / zero — those conditions skip the redemption half (the fee half always runs). Allowed when frozen (like the individual pokes).
 
 **Why keep all three (independent need):**
 
-- **`accrue_stability_fee` alone** — takes a *smaller* account set (no oracle at all) and is guaranteed oracle-independent: the canonical path during an oracle outage. It is also strict — it panics if called before its interval, so a keeper can detect "too early."
+- **`accrue_stability_fee` alone** — takes a *smaller* account set (no oracle at all) and is guaranteed oracle-independent: the canonical path during an oracle outage.
 - **`update_redemption_rate` alone** — updates the redemption rate *without* touching the fee accumulator, and is strict: it panics on a stale / zero oracle, which a keeper may *want* as an explicit failure signal rather than a silent skip.
 - **`refresh_globals`** — the common-case convenience: one transaction advances both, best-effort so it never fails just because one half isn't due. Trades strictness for "always make whatever progress is available."
 
@@ -1064,7 +1062,6 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 | `controller_proportional_gain` | param to init | yes — `set_controller_gains` (bundled with Ki) |
 | `controller_integral_gain` | param to init | yes — `set_controller_gains` (bundled with Kp) |
 | `minimum_collateralization_ratio` | param to init | yes — `set_minimum_collateralization_ratio` |
-| `minimum_milliseconds_between_fee_accruals` | param to init | yes — `set_timing_parameters` (bundled) |
 | `minimum_milliseconds_between_rate_updates` | param to init | yes — `set_timing_parameters` (bundled) |
 | `maximum_oracle_price_age_milliseconds` | param to init | yes — `set_timing_parameters` (bundled) |
 | `is_frozen` | always `false` at init | toggled by `freeze` / `unfreeze` (freeze_authority, not admin) |
@@ -1081,7 +1078,7 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 - Tune the controller gains (Kp / Ki), without resetting the integral term.
 - Tune the minimum collateralization ratio. Tightening leaves existing positions retroactively under-collateralized — they can `deposit_collateral` or `repay_debt` to recover, but cannot `withdraw_collateral` or `generate_debt` until they're back above the new ratio.
 - Rotate the market-price oracle to a new account (validates the new oracle's base/quote pair, does not pin its `program_owner` — so any producer that emits an `OraclePriceAccount` with the right shape works).
-- Tune the timing parameters (accrual interval, rate-update interval, oracle staleness threshold).
+- Tune the timing parameters (rate-update interval, oracle staleness threshold).
 
 **What admin CANNOT do:**
 
@@ -1116,7 +1113,7 @@ All seven share the same skeleton:
 | 11 | `set_minimum_collateralization_ratio` | `new_ratio: u128` | `minimum_collateralization_ratio` | — | Tightening leaves existing positions retroactively under-collateralized; they cannot increase debt or withdraw collateral until back above. No mass-liquidation here (RFP-014 out of scope). |
 | 12 | `set_controller_gains` | `new_proportional_gain: i128, new_integral_gain: i128` | `controller_proportional_gain`, `controller_integral_gain` | — | Does NOT reset `controller_integral_term`. |
 | 13 | `set_market_price_oracle` | (no scalar) | `market_price_oracle_id` | `new_oracle` (read-only) | Validates `OraclePriceAccount` shape, base/quote ids. `program_owner` not pinned. |
-| 14 | `set_timing_parameters` | three `u64`s | `minimum_milliseconds_between_fee_accruals`, `minimum_milliseconds_between_rate_updates`, `maximum_oracle_price_age_milliseconds` | — | Bundled. |
+| 14 | `set_timing_parameters` | two `u64`s | `minimum_milliseconds_between_rate_updates`, `maximum_oracle_price_age_milliseconds` | — | Bundled. |
 | 15 | `set_admin` | `new_admin_account_id: AccountId` | `admin_account_id` | — | One-step rotation. |
 | 16 | `set_freeze_authority` | `new_freeze_authority_account_id: AccountId` | `freeze_authority_account_id` | — | One-step rotation. |
 
