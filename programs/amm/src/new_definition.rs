@@ -4,13 +4,15 @@ use amm_core::{
     assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda,
     compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
     compute_lp_lock_holding_pda_seed, compute_pool_pda, compute_pool_pda_seed, compute_vault_pda,
-    compute_vault_pda_seed, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_vault_pda_seed, spot_price_q64_64, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
 };
+use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId},
 };
 use token_core::TokenDefinition;
+use twap_oracle_core::compute_current_tick_account_pda;
 
 #[expect(
     clippy::too_many_arguments,
@@ -26,6 +28,8 @@ pub fn new_definition(
     user_holding_a: AccountWithMetadata,
     user_holding_b: AccountWithMetadata,
     user_holding_lp: AccountWithMetadata,
+    current_tick_account: AccountWithMetadata,
+    clock: AccountWithMetadata,
     token_a_amount: NonZeroU128,
     token_b_amount: NonZeroU128,
     fees: u128,
@@ -45,9 +49,10 @@ pub fn new_definition(
         compute_config_pda(amm_program_id),
         "New definition: AMM config Account ID does not match PDA"
     );
-    let token_program_id = AmmConfig::try_from(&config.account.data)
-        .expect("New definition: AMM Program must be initialized before use")
-        .token_program_id;
+    let config_data = AmmConfig::try_from(&config.account.data)
+        .expect("New definition: AMM Program must be initialized before use");
+    let token_program_id = config_data.token_program_id;
+    let twap_oracle_program_id = config_data.twap_oracle_program_id;
 
     assert_eq!(
         user_holding_a.account.program_owner, token_program_id,
@@ -100,6 +105,18 @@ pub fn new_definition(
         "Fresh user LP holding requires user authorization"
     );
 
+    // The pool's TWAP current-tick account is created in the same transaction (a chained call to
+    // the oracle). Validate its PDA and that the clock is the canonical 1-block LEZ clock.
+    assert_eq!(
+        current_tick_account.account_id,
+        compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
+        "New definition: current tick Account ID does not match PDA"
+    );
+    assert_eq!(
+        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+        "New definition: clock account must be the canonical 1-block LEZ clock account"
+    );
+
     // LP Token minting calculation
     let initial_lp = token_a_amount
         .get()
@@ -115,7 +132,6 @@ pub fn new_definition(
         .expect("initial liquidity must exceed minimum liquidity after validation");
 
     // Update pool account
-    let mut pool_post = pool.account.clone();
     let pool_post_definition = PoolDefinition {
         definition_token_a_id,
         definition_token_b_id,
@@ -128,9 +144,10 @@ pub fn new_definition(
         fees,
     };
 
-    pool_post.data = Data::from(&pool_post_definition);
+    let mut pool_initialized = pool.account.clone();
+    pool_initialized.data = Data::from(&pool_post_definition);
     let pool_post: AccountPostState = AccountPostState::new_claimed(
-        pool_post.clone(),
+        pool_initialized.clone(),
         Claim::Pda(compute_pool_pda_seed(
             definition_token_a_id,
             definition_token_b_id,
@@ -202,11 +219,41 @@ pub fn new_definition(
     )
     .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
 
+    // Chain call to create the pool's TWAP current-tick account, with the pool as the price
+    // source. The oracle derives the tick from the opening spot price (reserve_b / reserve_a as a
+    // Q64.64 ratio), so the seed value is taken from the pool's own reserves, not the caller.
+    //
+    // The pool is claimed (and thus owned by this program) by this same instruction, so the
+    // chained call must present the pool in its post-claim state to match the accumulated state
+    // diff: the runtime sets the claimed pool's owner to this program, so we predict that here.
+    let initial_price = spot_price_q64_64(token_a_amount.get(), token_b_amount.get());
+    let mut pool_price_source_account = pool_initialized;
+    pool_price_source_account.program_owner = amm_program_id;
+    let pool_price_source = AccountWithMetadata {
+        account: pool_price_source_account,
+        is_authorized: true,
+        account_id: pool.account_id,
+    };
+    let call_create_current_tick = ChainedCall::new(
+        twap_oracle_program_id,
+        vec![
+            current_tick_account.clone(),
+            pool_price_source,
+            clock.clone(),
+        ],
+        &twap_oracle_core::Instruction::CreateCurrentTickAccount { initial_price },
+    )
+    .with_pda_seeds(vec![compute_pool_pda_seed(
+        definition_token_a_id,
+        definition_token_b_id,
+    )]);
+
     let chained_calls = vec![
         call_token_lp_lock,
         call_token_lp_user,
         call_token_b,
         call_token_a,
+        call_create_current_tick,
     ];
 
     let post_states = vec![
@@ -219,6 +266,8 @@ pub fn new_definition(
         AccountPostState::new(user_holding_a.account.clone()),
         AccountPostState::new(user_holding_b.account.clone()),
         AccountPostState::new(user_holding_lp.account.clone()),
+        AccountPostState::new(current_tick_account.account.clone()),
+        AccountPostState::new(clock.account.clone()),
     ];
 
     (post_states, chained_calls)

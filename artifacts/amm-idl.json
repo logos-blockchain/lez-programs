@@ -161,6 +161,18 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "current_tick_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
         }
       ],
       "args": [

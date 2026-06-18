@@ -222,6 +222,35 @@ pub fn assert_supported_fee_tier(fees: u128) {
     );
 }
 
+/// Computes a `Q64.64` spot price (`reserve_quote` per `reserve_base`) from raw pool reserves.
+///
+/// This is the constant-product AMM's spot price (`reserve_quote / reserve_base`) expressed as a
+/// `Q64.64` fixed-point value: `(reserve_quote / reserve_base) * 2^64`. It is computed in 256-bit
+/// precision and saturates at `u128::MAX` if the ratio exceeds the representable range. The TWAP
+/// oracle consumes exactly this representation (it converts the `Q64.64` price to a tick), so the
+/// AMM owns the reserves → price mapping and the oracle stays agnostic to how the price is formed.
+///
+/// # Panics
+/// Panics if `reserve_base` is zero.
+#[must_use]
+pub fn spot_price_q64_64(reserve_base: u128, reserve_quote: u128) -> u128 {
+    use alloy_primitives::U256;
+
+    assert!(
+        reserve_base != 0,
+        "spot_price_q64_64: reserve_base must be non-zero"
+    );
+
+    let numerator = U256::from(reserve_quote)
+        .checked_shl(64)
+        .expect("reserve_quote < 2^128, so reserve_quote << 64 fits in U256");
+    let price = numerator
+        .checked_div(U256::from(reserve_base))
+        .expect("reserve_base is non-zero after the assertion above");
+
+    u128::try_from(price).unwrap_or(u128::MAX)
+}
+
 impl TryFrom<&Data> for PoolDefinition {
     type Error = std::io::Error;
 
@@ -433,4 +462,46 @@ pub fn read_vault_fungible_balances(
     let (_, vault_b_balance) = read_fungible_holding(vault_b, &vault_b_context);
 
     (vault_a_balance, vault_b_balance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `1.0` in Q64.64 is `2^64`.
+    const ONE_Q64_64: u128 = 1u128 << 64;
+
+    #[test]
+    fn equal_reserves_map_to_unit_price() {
+        assert_eq!(spot_price_q64_64(1_000, 1_000), ONE_Q64_64);
+    }
+
+    #[test]
+    fn spot_price_reflects_reserve_ratio() {
+        // reserve_quote / reserve_base = 2.0 -> 2 * 2^64.
+        assert_eq!(spot_price_q64_64(1_000, 2_000), ONE_Q64_64 * 2);
+        // reserve_quote / reserve_base = 0.5 -> 2^64 / 2.
+        assert_eq!(spot_price_q64_64(2_000, 1_000), ONE_Q64_64 / 2);
+    }
+
+    #[test]
+    fn spot_price_saturates_instead_of_overflowing() {
+        // A huge quote-to-base ratio would exceed u128 in Q64.64; it must saturate, not panic.
+        assert_eq!(spot_price_q64_64(1, u128::MAX), u128::MAX);
+    }
+
+    #[test]
+    fn spot_price_handles_large_reserves_without_intermediate_overflow() {
+        // reserve_quote >= 2^64 would overflow a naive `reserve_quote << 64` in u128; the U256
+        // intermediate keeps it exact. Ratio here is 4.0.
+        let base = 1u128 << 64;
+        let quote = 1u128 << 66;
+        assert_eq!(spot_price_q64_64(base, quote), ONE_Q64_64 * 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "reserve_base must be non-zero")]
+    fn zero_reserve_base_panics() {
+        let _ = spot_price_q64_64(0, 1_000);
+    }
 }

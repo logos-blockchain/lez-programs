@@ -565,6 +565,33 @@ impl ChainedCallForTests {
             IdForTests::pool_definition_id(),
         )])
     }
+
+    fn cc_new_definition_create_current_tick() -> ChainedCall {
+        // The pool is passed to the oracle in its post-claim state: owned by the AMM program and
+        // carrying the freshly written PoolDefinition, authorized as the price source.
+        let mut pool_price_source = AccountForTests::pool_definition_init();
+        pool_price_source.account.program_owner = AMM_PROGRAM_ID;
+        pool_price_source.is_authorized = true;
+
+        let initial_price = amm_core::spot_price_q64_64(
+            BalanceForTests::vault_a_reserve_init(),
+            BalanceForTests::vault_b_reserve_init(),
+        );
+
+        ChainedCall::new(
+            TWAP_ORACLE_PROGRAM_ID,
+            vec![
+                AccountForTests::current_tick_account_uninit(),
+                pool_price_source,
+                AccountForTests::clock(),
+            ],
+            &twap_oracle_core::Instruction::CreateCurrentTickAccount { initial_price },
+        )
+        .with_pda_seeds(vec![compute_pool_pda_seed(
+            IdForTests::token_a_definition_id(),
+            IdForTests::token_b_definition_id(),
+        )])
+    }
 }
 
 impl IdForTests {
@@ -653,6 +680,27 @@ impl AccountWithMetadataForTests {
         let mut config = AccountWithMetadataForTests::config_init();
         config.account_id = AccountId::new([7; 32]);
         config
+    }
+
+    /// The pool's TWAP current-tick PDA, uninitialized (created by `new_definition`).
+    fn current_tick_account_uninit() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: twap_oracle_core::compute_current_tick_account_pda(
+                TWAP_ORACLE_PROGRAM_ID,
+                IdForTests::pool_definition_id(),
+            ),
+        }
+    }
+
+    /// The canonical 1-block LEZ clock account.
+    fn clock() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+        }
     }
 
     fn user_holding_a() -> AccountWithMetadata {
@@ -2049,6 +2097,8 @@ fn test_call_new_definition_with_zero_balance_1() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(0).expect("Balances must be nonzero"),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2069,6 +2119,8 @@ fn test_call_new_definition_with_zero_balance_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(0).expect("Balances must be nonzero"),
         BalanceForTests::fee_tier(),
@@ -2089,6 +2141,8 @@ fn test_call_new_definition_same_token_definition() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2109,6 +2163,8 @@ fn test_call_new_definition_wrong_liquidity_id() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2129,6 +2185,8 @@ fn test_call_new_definition_wrong_lp_lock_holding_id() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2149,6 +2207,8 @@ fn test_call_new_definition_wrong_pool_id() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2169,6 +2229,8 @@ fn test_call_new_definition_wrong_vault_id_1() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2189,6 +2251,8 @@ fn test_call_new_definition_wrong_vault_id_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2210,6 +2274,8 @@ fn test_call_new_definition_rejects_initialized_pool() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2231,6 +2297,8 @@ fn test_call_new_definition_initial_lp_too_small() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(MINIMUM_LIQUIDITY).unwrap(),
         NonZero::new(MINIMUM_LIQUIDITY).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2250,6 +2318,8 @@ fn test_call_new_definition_chained_call_successful() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2276,6 +2346,14 @@ fn test_call_new_definition_chained_call_successful() {
     assert!(chained_call_b == ChainedCallForTests::cc_new_definition_token_b());
     assert!(chained_call_lp_lock == ChainedCallForTests::cc_new_definition_token_lp_lock());
     assert!(chained_call_lp_user == ChainedCallForTests::cc_new_definition_token_lp_user());
+
+    // The fifth chained call creates the pool's TWAP current-tick account, seeding the tick from
+    // the opening reserves.
+    assert_eq!(chained_calls.len(), 5);
+    assert!(chained_calls[4] == ChainedCallForTests::cc_new_definition_create_current_tick());
+
+    // Two extra post-states (current-tick + clock) are echoed back unchanged.
+    assert_eq!(post_states.len(), 11);
 }
 
 #[should_panic(expected = "AccountId is not a token type for the pool")]
@@ -2957,6 +3035,8 @@ fn test_new_definition_lp_asymmetric_amounts() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         BalanceForTests::fee_tier(),
@@ -2995,6 +3075,8 @@ fn test_new_definition_lp_symmetric_amounts() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(token_a_amount).unwrap(),
         NonZero::new(token_b_amount).unwrap(),
         BalanceForTests::fee_tier(),
@@ -3065,6 +3147,8 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
         AccountForTests::user_holding_a(),
         AccountForTests::user_holding_b(),
         AccountForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(token_a_amount).unwrap(),
         NonZero::new(token_b_amount).unwrap(),
         BalanceForTests::fee_tier(),
@@ -3289,6 +3373,8 @@ fn new_definition_overflow_protection() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(large_amount).unwrap(),
         NonZero::new(2).unwrap(),
         BalanceForTests::fee_tier(),
@@ -3544,6 +3630,8 @@ fn test_new_definition_supports_all_fee_tiers() {
             AccountWithMetadataForTests::user_holding_a(),
             AccountWithMetadataForTests::user_holding_b(),
             AccountWithMetadataForTests::user_holding_lp_uninit(),
+            AccountWithMetadataForTests::current_tick_account_uninit(),
+            AccountWithMetadataForTests::clock(),
             NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
             NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
             fees,
@@ -3569,6 +3657,8 @@ fn test_new_definition_rejects_unsupported_fee_tier() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
         NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
         2,

@@ -328,20 +328,6 @@ impl Accounts {
         }
     }
 
-    /// The pool's TWAP current-tick account, owned by the oracle program. Seeded directly into
-    /// state so the AMM has an authoritative tick to read when creating observations.
-    fn current_tick_account(tick: i32) -> Account {
-        Account {
-            program_owner: Ids::twap_oracle_program(),
-            balance: 0_u128,
-            data: Data::from(&twap_oracle_core::CurrentTickAccount {
-                tick,
-                last_updated: 1_700_000_000_000,
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
     fn user_a_holding() -> Account {
         Account {
             program_owner: Ids::token_program(),
@@ -1055,6 +1041,8 @@ fn try_execute_new_definition(
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         if authorize_user_lp {
             vec![
@@ -1276,6 +1264,18 @@ fn execute_create_price_observations(
     state.transition_from_public_transaction(&tx, 0, 0)
 }
 
+/// Builds a state whose pool was created through `new_definition`, which also creates the pool's
+/// TWAP current-tick account (seeded from the opening reserves). Used by the observation tests so
+/// they consume the real current-tick account rather than a hand-inserted one.
+#[cfg(test)]
+fn state_with_pool_created_via_new_definition() -> V03State {
+    let mut state = state_for_amm_tests_with_new_def();
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
+    execute_new_definition(&mut state, Balances::fee_tier());
+    state
+}
+
 fn fungible_balance(account: &Account) -> u128 {
     let holding = TokenHolding::try_from(&account.data).expect("expected token holding");
     let TokenHolding::Fungible {
@@ -1424,15 +1424,15 @@ fn amm_update_config_authority_handoff_revokes_old_admin() {
 
 #[test]
 fn amm_creates_price_observations_on_twap_oracle() {
-    let mut state = state_for_amm_tests();
+    let mut state = state_with_pool_created_via_new_definition();
     let window_duration = 24 * 60 * 60 * 1_000u64;
-    let current_tick = 1_234_i32;
 
-    // The pool already has an authoritative current-tick account written by the oracle.
-    state.force_insert_account(
-        Ids::current_tick_account(),
-        Accounts::current_tick_account(current_tick),
-    );
+    // The current-tick account created during pool creation supplies the authoritative seed tick,
+    // derived from the opening reserves (reserve_b / reserve_a as a Q64.64 spot price).
+    let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        Balances::vault_a_init(),
+        Balances::vault_b_init(),
+    ));
 
     // The observations PDA does not exist before the AMM creates it.
     assert_eq!(
@@ -1451,7 +1451,7 @@ fn amm_creates_price_observations_on_twap_oracle() {
     let feed = twap_oracle_core::PriceObservations::try_from(&account.data)
         .expect("observations account must hold a valid PriceObservations");
     assert_eq!(feed.price_source_id, Ids::pool_definition());
-    assert_eq!(feed.last_recorded_tick, current_tick);
+    assert_eq!(feed.last_recorded_tick, expected_tick);
     assert_eq!(feed.write_index, 1);
     assert_eq!(feed.total_entries, 1);
     assert_eq!(
@@ -1464,18 +1464,14 @@ fn amm_creates_price_observations_on_twap_oracle() {
     assert_eq!(state.get_account_by_id(Ids::config()), Accounts::config());
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
-        Accounts::pool_definition_init()
+        Accounts::pool_definition_new_init()
     );
 }
 
 #[test]
 fn amm_create_price_observations_rejects_existing_account() {
-    let mut state = state_for_amm_tests();
+    let mut state = state_with_pool_created_via_new_definition();
     let window_duration = 24 * 60 * 60 * 1_000u64;
-    state.force_insert_account(
-        Ids::current_tick_account(),
-        Accounts::current_tick_account(1_234),
-    );
 
     // First creation succeeds.
     execute_create_price_observations(&mut state, window_duration).unwrap();
@@ -1651,6 +1647,19 @@ fn amm_new_definition_uninitialized_pool() {
         state.get_account_by_id(Ids::user_lp()),
         Accounts::user_lp_holding_new_init()
     );
+
+    // Pool creation also created the pool's TWAP current-tick account (a chained call to the
+    // oracle), owned by the oracle program and seeded with the tick derived from the opening
+    // reserves (reserve_b / reserve_a as a Q64.64 spot price).
+    let current_tick = state.get_account_by_id(Ids::current_tick_account());
+    assert_eq!(current_tick.program_owner, Ids::twap_oracle_program());
+    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(&current_tick.data)
+        .expect("current tick account must hold a valid CurrentTickAccount");
+    let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        Balances::vault_a_init(),
+        Balances::vault_b_init(),
+    ));
+    assert_eq!(tick_account.tick, expected_tick);
 }
 
 #[test]
@@ -2206,6 +2215,8 @@ fn amm_new_definition_rejects_expired_deadline() {
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![
             current_nonce(&state, Ids::user_a()),
