@@ -32,6 +32,10 @@ impl Keys {
     fn user_lp() -> PrivateKey {
         PrivateKey::try_new([33; 32]).expect("valid private key")
     }
+
+    fn admin() -> PrivateKey {
+        PrivateKey::try_new([34; 32]).expect("valid private key")
+    }
 }
 
 impl Ids {
@@ -97,6 +101,10 @@ impl Ids {
 
     fn user_lp() -> AccountId {
         AccountId::from(&PublicKey::new_from_private_key(&Keys::user_lp()))
+    }
+
+    fn admin() -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(&Keys::admin()))
     }
 }
 
@@ -293,6 +301,7 @@ impl Accounts {
             balance: 0_u128,
             data: Data::from(&amm_core::AmmConfig {
                 token_program_id: Ids::token_program(),
+                authority: Ids::admin(),
             }),
             nonce: Nonce(0),
         }
@@ -1180,6 +1189,7 @@ fn execute_remove_liquidity(
 fn execute_initialize(state: &mut V03State) {
     let instruction = amm_core::Instruction::Initialize {
         token_program_id: Ids::token_program(),
+        authority: Ids::admin(),
     };
 
     let message = public_transaction::Message::try_new(
@@ -1241,10 +1251,102 @@ fn amm_initialize_creates_config_account() {
     let config_account = state.get_account_by_id(Ids::config());
     assert_eq!(config_account, Accounts::config());
 
-    // Explicitly assert the stored Token Program ID round-trips from the instruction argument.
+    // Explicitly assert the stored Token Program ID and admin authority round-trip from the
+    // instruction arguments.
     let config = amm_core::AmmConfig::try_from(&config_account.data)
         .expect("config account must hold a valid AmmConfig");
     assert_eq!(config.token_program_id, Ids::token_program());
+    assert_eq!(config.authority, Ids::admin());
+}
+
+#[cfg(test)]
+fn execute_update_config(
+    state: &mut V03State,
+    signer: &PrivateKey,
+    token_program_id: Option<nssa_core::program::ProgramId>,
+    new_authority: Option<AccountId>,
+) -> Result<(), NssaError> {
+    let signer_id = AccountId::from(&PublicKey::new_from_private_key(signer));
+    let instruction = amm_core::Instruction::UpdateConfig {
+        token_program_id,
+        new_authority,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![Ids::config(), signer_id],
+        vec![current_nonce(state, signer_id)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[signer]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0)
+}
+
+fn config_data(state: &V03State) -> amm_core::AmmConfig {
+    amm_core::AmmConfig::try_from(&state.get_account_by_id(Ids::config()).data)
+        .expect("config account must hold a valid AmmConfig")
+}
+
+fn initialized_amm_state() -> V03State {
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    deploy_programs(&mut state);
+    execute_initialize(&mut state);
+    state
+}
+
+#[test]
+fn amm_update_config_changes_token_program_id_and_authority() {
+    let mut state = initialized_amm_state();
+
+    let new_token_program = [123u32; 8];
+    let new_admin = Ids::user_a();
+
+    execute_update_config(
+        &mut state,
+        &Keys::admin(),
+        Some(new_token_program),
+        Some(new_admin),
+    )
+    .unwrap();
+
+    let config = config_data(&state);
+    assert_eq!(config.token_program_id, new_token_program);
+    assert_eq!(config.authority, new_admin);
+}
+
+#[test]
+fn amm_update_config_rejects_non_admin() {
+    let mut state = initialized_amm_state();
+
+    // user_a is not the admin; even though they sign, the update is rejected and the config is
+    // left unchanged.
+    let result = execute_update_config(&mut state, &Keys::user_a(), Some([123u32; 8]), None);
+    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+
+    let config = config_data(&state);
+    assert_eq!(config.token_program_id, Ids::token_program());
+    assert_eq!(config.authority, Ids::admin());
+}
+
+#[test]
+fn amm_update_config_authority_handoff_revokes_old_admin() {
+    let mut state = initialized_amm_state();
+    let new_admin = Ids::user_a();
+
+    // Admin hands off control to user_a.
+    execute_update_config(&mut state, &Keys::admin(), None, Some(new_admin)).unwrap();
+    assert_eq!(config_data(&state).authority, new_admin);
+
+    // The original admin can no longer update.
+    let result = execute_update_config(&mut state, &Keys::admin(), Some([123u32; 8]), None);
+    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+
+    // The new admin can.
+    execute_update_config(&mut state, &Keys::user_a(), Some([124u32; 8]), None).unwrap();
+    assert_eq!(config_data(&state).token_program_id, [124u32; 8]);
 }
 
 #[test]

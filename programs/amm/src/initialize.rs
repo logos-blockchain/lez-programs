@@ -1,14 +1,15 @@
 use amm_core::{compute_config_pda, compute_config_pda_seed, AmmConfig};
 use nssa_core::{
-    account::{Account, AccountWithMetadata, Data},
+    account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, Claim, ProgramId},
 };
 
 /// Initializes the AMM Program by creating its singleton configuration account.
 ///
 /// The config account is a PDA derived from the constant `"CONFIG"` seed
-/// (`compute_config_pda(amm_program_id)`) and stores `token_program_id`, the Token Program the
-/// AMM issues every chained call to. Its existence is the Program's "initialized" flag: the
+/// (`compute_config_pda(amm_program_id)`) and stores `token_program_id` (the Token Program the
+/// AMM issues every chained call to) and `authority` (the admin allowed to change configuration
+/// later via `update_config`). Its existence is the Program's "initialized" flag: the
 /// chained-call instructions read the Token Program ID from it and reject calls until it exists.
 ///
 /// # Panics
@@ -18,6 +19,7 @@ use nssa_core::{
 pub fn initialize(
     config: AccountWithMetadata,
     token_program_id: ProgramId,
+    authority: AccountId,
     amm_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     assert_eq!(
@@ -32,7 +34,10 @@ pub fn initialize(
     );
 
     let mut config_post = config.account.clone();
-    config_post.data = Data::from(&AmmConfig { token_program_id });
+    config_post.data = Data::from(&AmmConfig {
+        token_program_id,
+        authority,
+    });
 
     vec![AccountPostState::new_claimed(
         config_post,
@@ -50,6 +55,10 @@ mod tests {
     const AMM_PROGRAM_ID: ProgramId = [42; 8];
     const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
 
+    fn authority() -> AccountId {
+        AccountId::new([9; 32])
+    }
+
     fn config_uninit() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account::default(),
@@ -60,7 +69,12 @@ mod tests {
 
     #[test]
     fn returns_single_pda_claimed_post_state() {
-        let post_states = initialize(config_uninit(), TOKEN_PROGRAM_ID, AMM_PROGRAM_ID);
+        let post_states = initialize(
+            config_uninit(),
+            TOKEN_PROGRAM_ID,
+            authority(),
+            AMM_PROGRAM_ID,
+        );
         assert_eq!(post_states.len(), 1);
         assert_eq!(
             post_states[0].required_claim(),
@@ -69,11 +83,17 @@ mod tests {
     }
 
     #[test]
-    fn stores_token_program_id() {
-        let post_states = initialize(config_uninit(), TOKEN_PROGRAM_ID, AMM_PROGRAM_ID);
+    fn stores_token_program_id_and_authority() {
+        let post_states = initialize(
+            config_uninit(),
+            TOKEN_PROGRAM_ID,
+            authority(),
+            AMM_PROGRAM_ID,
+        );
         let config = AmmConfig::try_from(&post_states[0].account().data)
             .expect("post state must contain a valid AmmConfig");
         assert_eq!(config.token_program_id, TOKEN_PROGRAM_ID);
+        assert_eq!(config.authority, authority());
     }
 
     #[test]
@@ -81,7 +101,7 @@ mod tests {
     fn wrong_config_account_id_panics() {
         let mut wrong = config_uninit();
         wrong.account_id = AccountId::new([0; 32]);
-        initialize(wrong, TOKEN_PROGRAM_ID, AMM_PROGRAM_ID);
+        initialize(wrong, TOKEN_PROGRAM_ID, authority(), AMM_PROGRAM_ID);
     }
 
     #[test]
@@ -90,8 +110,9 @@ mod tests {
         let mut initialized = config_uninit();
         initialized.account.data = Data::from(&AmmConfig {
             token_program_id: TOKEN_PROGRAM_ID,
+            authority: authority(),
         });
         initialized.account.nonce = Nonce(0);
-        initialize(initialized, TOKEN_PROGRAM_ID, AMM_PROGRAM_ID);
+        initialize(initialized, TOKEN_PROGRAM_ID, authority(), AMM_PROGRAM_ID);
     }
 }

@@ -628,6 +628,7 @@ impl AccountWithMetadataForTests {
                 balance: 0u128,
                 data: Data::from(&AmmConfig {
                     token_program_id: TOKEN_PROGRAM_ID,
+                    authority: AccountId::new([9; 32]),
                 }),
                 nonce: Nonce(0),
             },

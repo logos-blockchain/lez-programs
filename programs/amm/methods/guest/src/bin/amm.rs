@@ -29,9 +29,37 @@ mod amm {
         ctx: ProgramContext,
         config: AccountWithMetadata,
         token_program_id: ProgramId,
+        authority: AccountId,
     ) -> SpelResult {
-        let post_states =
-            amm_program::initialize::initialize(config, token_program_id, ctx.self_program_id);
+        let post_states = amm_program::initialize::initialize(
+            config,
+            token_program_id,
+            authority,
+            ctx.self_program_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
+    }
+
+    /// Updates the AMM Program's configuration. Only the configured admin authority may call this.
+    ///
+    /// Expected accounts:
+    /// 1. `config` — initialized AMM config account.
+    /// 2. `authority` — the config's current admin, passed authorized (signed).
+    #[instruction]
+    pub fn update_config(
+        ctx: ProgramContext,
+        config: AccountWithMetadata,
+        authority: AccountWithMetadata,
+        token_program_id: Option<ProgramId>,
+        new_authority: Option<AccountId>,
+    ) -> SpelResult {
+        let post_states = amm_program::update_config::update_config(
+            config,
+            authority,
+            token_program_id,
+            new_authority,
+            ctx.self_program_id,
+        );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
 

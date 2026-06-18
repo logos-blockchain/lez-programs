@@ -20,7 +20,8 @@ pub enum Instruction {
     ///
     /// The configuration account is a PDA derived from the constant `"CONFIG"` seed
     /// (`compute_config_pda(self_program_id)`). It stores the Token Program ID that the AMM
-    /// uses for every chained call. The Program must be initialized via this instruction before
+    /// uses for every chained call, plus the admin `authority` allowed to change configuration
+    /// later via `UpdateConfig`. The Program must be initialized via this instruction before
     /// any pool can be created or interacted with — the other instructions read the Token
     /// Program ID from this account and reject calls when it does not yet exist.
     ///
@@ -29,6 +30,24 @@ pub enum Instruction {
     Initialize {
         /// Program ID of the Token Program the AMM will issue chained calls to.
         token_program_id: ProgramId,
+        /// Admin authority allowed to change configuration via `UpdateConfig`.
+        authority: AccountId,
+    },
+
+    /// Updates the AMM Program's configuration. Only the configured admin `authority` may call
+    /// this; the authority account must be passed authorized (signed).
+    ///
+    /// Each field is optional — `None` leaves the corresponding value unchanged. Setting
+    /// `new_authority` transfers admin control to a different account.
+    ///
+    /// Required accounts:
+    /// - AMM Config Account (initialized)
+    /// - Authority Account — must equal the config's current `authority`, passed authorized.
+    UpdateConfig {
+        /// New Token Program ID for chained calls, or `None` to keep the current one.
+        token_program_id: Option<ProgramId>,
+        /// New admin authority (transfers control), or `None` to keep the current admin.
+        new_authority: Option<AccountId>,
     },
 
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
@@ -204,6 +223,8 @@ impl From<&PoolDefinition> for Data {
 pub struct AmmConfig {
     /// Program ID of the Token Program the AMM issues chained calls to.
     pub token_program_id: ProgramId,
+    /// Admin authority allowed to change this configuration via `UpdateConfig`.
+    pub authority: AccountId,
 }
 
 impl TryFrom<&Data> for AmmConfig {

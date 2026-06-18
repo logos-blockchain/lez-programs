@@ -16,6 +16,41 @@
         {
           "name": "token_program_id",
           "type": "program_id"
+        },
+        {
+          "name": "authority",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
+      "name": "update_config",
+      "accounts": [
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "authority",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "token_program_id",
+          "type": {
+            "option": "program_id"
+          }
+        },
+        {
+          "name": "new_authority",
+          "type": {
+            "option": "account_id"
+          }
         }
       ]
     },
@@ -434,6 +469,10 @@
           {
             "name": "token_program_id",
             "type": "program_id"
+          },
+          {
+            "name": "authority",
+            "type": "account_id"
           }
         ]
       }

@@ -8,5 +8,6 @@ pub mod new_definition;
 pub mod remove;
 pub mod swap;
 pub mod sync;
+pub mod update_config;
 
 mod tests;
