@@ -23,6 +23,7 @@ pub fn update_config(
     config: AccountWithMetadata,
     authority: AccountWithMetadata,
     token_program_id: Option<ProgramId>,
+    twap_oracle_program_id: Option<ProgramId>,
     new_authority: Option<AccountId>,
     amm_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
@@ -47,6 +48,9 @@ pub fn update_config(
     if let Some(token_program_id) = token_program_id {
         config_data.token_program_id = token_program_id;
     }
+    if let Some(twap_oracle_program_id) = twap_oracle_program_id {
+        config_data.twap_oracle_program_id = twap_oracle_program_id;
+    }
     if let Some(new_authority) = new_authority {
         config_data.authority = new_authority;
     }
@@ -69,6 +73,8 @@ mod tests {
     const AMM_PROGRAM_ID: ProgramId = [42; 8];
     const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
     const NEW_TOKEN_PROGRAM_ID: ProgramId = [16; 8];
+    const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
+    const NEW_TWAP_ORACLE_PROGRAM_ID: ProgramId = [78; 8];
 
     fn admin_id() -> AccountId {
         AccountId::new([9; 32])
@@ -81,6 +87,7 @@ mod tests {
                 balance: 0,
                 data: Data::from(&AmmConfig {
                     token_program_id: TOKEN_PROGRAM_ID,
+                    twap_oracle_program_id: TWAP_ORACLE_PROGRAM_ID,
                     authority: admin_id(),
                 }),
                 nonce: Nonce(0),
@@ -112,11 +119,30 @@ mod tests {
             admin_authorized(),
             Some(NEW_TOKEN_PROGRAM_ID),
             None,
+            None,
             AMM_PROGRAM_ID,
         );
         let config = updated_config(&post_states);
         assert_eq!(config.token_program_id, NEW_TOKEN_PROGRAM_ID);
-        // Authority is unchanged.
+        // TWAP oracle program and authority are unchanged.
+        assert_eq!(config.twap_oracle_program_id, TWAP_ORACLE_PROGRAM_ID);
+        assert_eq!(config.authority, admin_id());
+    }
+
+    #[test]
+    fn updates_twap_oracle_program_id() {
+        let post_states = update_config(
+            config_init(),
+            admin_authorized(),
+            None,
+            Some(NEW_TWAP_ORACLE_PROGRAM_ID),
+            None,
+            AMM_PROGRAM_ID,
+        );
+        let config = updated_config(&post_states);
+        assert_eq!(config.twap_oracle_program_id, NEW_TWAP_ORACLE_PROGRAM_ID);
+        // Token program and authority are unchanged.
+        assert_eq!(config.token_program_id, TOKEN_PROGRAM_ID);
         assert_eq!(config.authority, admin_id());
     }
 
@@ -126,6 +152,7 @@ mod tests {
         let post_states = update_config(
             config_init(),
             admin_authorized(),
+            None,
             None,
             Some(new_admin),
             AMM_PROGRAM_ID,
@@ -143,6 +170,7 @@ mod tests {
             config_init(),
             admin_authorized(),
             Some(NEW_TOKEN_PROGRAM_ID),
+            None,
             Some(new_admin),
             AMM_PROGRAM_ID,
         );
@@ -158,10 +186,12 @@ mod tests {
             admin_authorized(),
             None,
             None,
+            None,
             AMM_PROGRAM_ID,
         );
         let config = updated_config(&post_states);
         assert_eq!(config.token_program_id, TOKEN_PROGRAM_ID);
+        assert_eq!(config.twap_oracle_program_id, TWAP_ORACLE_PROGRAM_ID);
         assert_eq!(config.authority, admin_id());
     }
 
@@ -172,6 +202,7 @@ mod tests {
             config_init(),
             authority.clone(),
             Some(NEW_TOKEN_PROGRAM_ID),
+            None,
             None,
             AMM_PROGRAM_ID,
         );
@@ -193,6 +224,7 @@ mod tests {
             admin_authorized(),
             Some(NEW_TOKEN_PROGRAM_ID),
             None,
+            None,
             AMM_PROGRAM_ID,
         );
     }
@@ -210,6 +242,7 @@ mod tests {
             admin_authorized(),
             Some(NEW_TOKEN_PROGRAM_ID),
             None,
+            None,
             AMM_PROGRAM_ID,
         );
     }
@@ -225,6 +258,7 @@ mod tests {
             not_admin,
             Some(NEW_TOKEN_PROGRAM_ID),
             None,
+            None,
             AMM_PROGRAM_ID,
         );
     }
@@ -239,6 +273,7 @@ mod tests {
             config_init(),
             unsigned,
             Some(NEW_TOKEN_PROGRAM_ID),
+            None,
             None,
             AMM_PROGRAM_ID,
         );

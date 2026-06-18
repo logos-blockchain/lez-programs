@@ -19,17 +19,20 @@ pub enum Instruction {
     /// Initializes the AMM Program by creating its singleton configuration account.
     ///
     /// The configuration account is a PDA derived from the constant `"CONFIG"` seed
-    /// (`compute_config_pda(self_program_id)`). It stores the Token Program ID that the AMM
-    /// uses for every chained call, plus the admin `authority` allowed to change configuration
-    /// later via `UpdateConfig`. The Program must be initialized via this instruction before
-    /// any pool can be created or interacted with — the other instructions read the Token
-    /// Program ID from this account and reject calls when it does not yet exist.
+    /// (`compute_config_pda(self_program_id)`). It stores the program IDs the AMM issues chained
+    /// calls to (the Token Program and the TWAP oracle program), plus the admin `authority`
+    /// allowed to change configuration later via `UpdateConfig`. The Program must be initialized
+    /// via this instruction before any pool can be created or interacted with — the other
+    /// instructions read these program IDs from this account and reject calls when it does not
+    /// yet exist.
     ///
     /// Required accounts:
     /// - AMM Config Account, uninitialized, derived as `compute_config_pda(self_program_id)`
     Initialize {
         /// Program ID of the Token Program the AMM will issue chained calls to.
         token_program_id: ProgramId,
+        /// Program ID of the TWAP oracle program the AMM will issue chained calls to.
+        twap_oracle_program_id: ProgramId,
         /// Admin authority allowed to change configuration via `UpdateConfig`.
         authority: AccountId,
     },
@@ -46,8 +49,36 @@ pub enum Instruction {
     UpdateConfig {
         /// New Token Program ID for chained calls, or `None` to keep the current one.
         token_program_id: Option<ProgramId>,
+        /// New TWAP oracle program ID for chained calls, or `None` to keep the current one.
+        twap_oracle_program_id: Option<ProgramId>,
         /// New admin authority (transfers control), or `None` to keep the current admin.
         new_authority: Option<AccountId>,
+    },
+
+    /// Creates a TWAP price-observations account for a pool over a time window, on behalf of the
+    /// AMM, via a chained call to the configured TWAP oracle program.
+    ///
+    /// The pool acts as the price source: the AMM authorizes it (via its pool PDA seed) so the
+    /// oracle ties the observations account to this pool. The feed's initial tick is read from the
+    /// pool's [`CurrentTickAccount`](twap_oracle_core::CurrentTickAccount) — the authoritative
+    /// tick the AMM previously wrote — rather than being supplied by the caller, so the feed
+    /// cannot be seeded at a forged price. Rejects if the observations account already exists.
+    /// The clock must be the canonical 1-block LEZ clock.
+    ///
+    /// Required accounts:
+    /// - AMM Config Account (initialized)
+    /// - AMM Pool (initialized; acts as the price source)
+    /// - Current Tick Account, the pool's initialized TWAP PDA derived as
+    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; supplies the
+    ///   initial tick
+    /// - Price Observations Account, uninitialized TWAP PDA derived as
+    ///   `compute_price_observations_pda(twap_oracle_program_id, pool.account_id,
+    ///   window_duration)`
+    /// - Clock Account (the canonical 1-block LEZ clock)
+    CreatePriceObservations {
+        /// Duration of the TWAP window this feed serves, in milliseconds. Part of the
+        /// observations PDA seed, so each window gets a distinct account.
+        window_duration: u64,
     },
 
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
@@ -223,6 +254,8 @@ impl From<&PoolDefinition> for Data {
 pub struct AmmConfig {
     /// Program ID of the Token Program the AMM issues chained calls to.
     pub token_program_id: ProgramId,
+    /// Program ID of the TWAP oracle program the AMM issues chained calls to.
+    pub twap_oracle_program_id: ProgramId,
     /// Admin authority allowed to change this configuration via `UpdateConfig`.
     pub authority: AccountId,
 }

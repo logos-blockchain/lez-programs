@@ -30,6 +30,7 @@ use crate::{
 
 const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
 const AMM_PROGRAM_ID: ProgramId = [42; 8];
+const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
 const MALICIOUS_TOKEN_PROGRAM_ID: ProgramId = [99; 8];
 
 struct BalanceForTests;
@@ -628,6 +629,7 @@ impl AccountWithMetadataForTests {
                 balance: 0u128,
                 data: Data::from(&AmmConfig {
                     token_program_id: TOKEN_PROGRAM_ID,
+                    twap_oracle_program_id: TWAP_ORACLE_PROGRAM_ID,
                     authority: AccountId::new([9; 32]),
                 }),
                 nonce: Nonce(0),

@@ -11,6 +11,7 @@ use nssa::{
     error::NssaError,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
+    CLOCK_01_PROGRAM_ACCOUNT_ID,
 };
 use nssa_core::account::{Account, AccountId, Data, Nonce};
 use token_core::{TokenDefinition, TokenHolding};
@@ -47,8 +48,27 @@ impl Ids {
         amm_methods::AMM_ID
     }
 
+    fn twap_oracle_program() -> nssa_core::program::ProgramId {
+        twap_oracle_methods::TWAP_ORACLE_ID
+    }
+
     fn config() -> AccountId {
         amm_core::compute_config_pda(Self::amm_program())
+    }
+
+    fn price_observations(window_duration: u64) -> AccountId {
+        twap_oracle_core::compute_price_observations_pda(
+            Self::twap_oracle_program(),
+            Self::pool_definition(),
+            window_duration,
+        )
+    }
+
+    fn current_tick_account() -> AccountId {
+        twap_oracle_core::compute_current_tick_account_pda(
+            Self::twap_oracle_program(),
+            Self::pool_definition(),
+        )
     }
 
     fn token_a_definition() -> AccountId {
@@ -301,7 +321,22 @@ impl Accounts {
             balance: 0_u128,
             data: Data::from(&amm_core::AmmConfig {
                 token_program_id: Ids::token_program(),
+                twap_oracle_program_id: Ids::twap_oracle_program(),
                 authority: Ids::admin(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    /// The pool's TWAP current-tick account, owned by the oracle program. Seeded directly into
+    /// state so the AMM has an authoritative tick to read when creating observations.
+    fn current_tick_account(tick: i32) -> Account {
+        Account {
+            program_owner: Ids::twap_oracle_program(),
+            balance: 0_u128,
+            data: Data::from(&twap_oracle_core::CurrentTickAccount {
+                tick,
+                last_updated: 1_700_000_000_000,
             }),
             nonce: Nonce(0),
         }
@@ -933,6 +968,14 @@ fn deploy_programs(state: &mut V03State) {
             amm_message,
         ))
         .expect("amm program deployment must succeed");
+
+    let twap_message =
+        program_deployment_transaction::Message::new(twap_oracle_methods::TWAP_ORACLE_ELF.to_vec());
+    state
+        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
+            twap_message,
+        ))
+        .expect("twap oracle program deployment must succeed");
 }
 
 fn state_for_amm_tests() -> V03State {
@@ -1189,6 +1232,7 @@ fn execute_remove_liquidity(
 fn execute_initialize(state: &mut V03State) {
     let instruction = amm_core::Instruction::Initialize {
         token_program_id: Ids::token_program(),
+        twap_oracle_program_id: Ids::twap_oracle_program(),
         authority: Ids::admin(),
     };
 
@@ -1204,6 +1248,32 @@ fn execute_initialize(state: &mut V03State) {
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+}
+
+#[cfg(test)]
+fn execute_create_price_observations(
+    state: &mut V03State,
+    window_duration: u64,
+) -> Result<(), NssaError> {
+    let instruction = amm_core::Instruction::CreatePriceObservations { window_duration };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::config(),
+            Ids::pool_definition(),
+            Ids::current_tick_account(),
+            Ids::price_observations(window_duration),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0)
 }
 
 fn fungible_balance(account: &Account) -> u128 {
@@ -1264,11 +1334,13 @@ fn execute_update_config(
     state: &mut V03State,
     signer: &PrivateKey,
     token_program_id: Option<nssa_core::program::ProgramId>,
+    twap_oracle_program_id: Option<nssa_core::program::ProgramId>,
     new_authority: Option<AccountId>,
 ) -> Result<(), NssaError> {
     let signer_id = AccountId::from(&PublicKey::new_from_private_key(signer));
     let instruction = amm_core::Instruction::UpdateConfig {
         token_program_id,
+        twap_oracle_program_id,
         new_authority,
     };
 
@@ -1308,6 +1380,7 @@ fn amm_update_config_changes_token_program_id_and_authority() {
         &mut state,
         &Keys::admin(),
         Some(new_token_program),
+        None,
         Some(new_admin),
     )
     .unwrap();
@@ -1323,7 +1396,7 @@ fn amm_update_config_rejects_non_admin() {
 
     // user_a is not the admin; even though they sign, the update is rejected and the config is
     // left unchanged.
-    let result = execute_update_config(&mut state, &Keys::user_a(), Some([123u32; 8]), None);
+    let result = execute_update_config(&mut state, &Keys::user_a(), Some([123u32; 8]), None, None);
     assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
 
     let config = config_data(&state);
@@ -1337,16 +1410,107 @@ fn amm_update_config_authority_handoff_revokes_old_admin() {
     let new_admin = Ids::user_a();
 
     // Admin hands off control to user_a.
-    execute_update_config(&mut state, &Keys::admin(), None, Some(new_admin)).unwrap();
+    execute_update_config(&mut state, &Keys::admin(), None, None, Some(new_admin)).unwrap();
     assert_eq!(config_data(&state).authority, new_admin);
 
     // The original admin can no longer update.
-    let result = execute_update_config(&mut state, &Keys::admin(), Some([123u32; 8]), None);
+    let result = execute_update_config(&mut state, &Keys::admin(), Some([123u32; 8]), None, None);
     assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
 
     // The new admin can.
-    execute_update_config(&mut state, &Keys::user_a(), Some([124u32; 8]), None).unwrap();
+    execute_update_config(&mut state, &Keys::user_a(), Some([124u32; 8]), None, None).unwrap();
     assert_eq!(config_data(&state).token_program_id, [124u32; 8]);
+}
+
+#[test]
+fn amm_creates_price_observations_on_twap_oracle() {
+    let mut state = state_for_amm_tests();
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+    let current_tick = 1_234_i32;
+
+    // The pool already has an authoritative current-tick account written by the oracle.
+    state.force_insert_account(
+        Ids::current_tick_account(),
+        Accounts::current_tick_account(current_tick),
+    );
+
+    // The observations PDA does not exist before the AMM creates it.
+    assert_eq!(
+        state.get_account_by_id(Ids::price_observations(window_duration)),
+        Account::default()
+    );
+
+    execute_create_price_observations(&mut state, window_duration).unwrap();
+
+    // The observations account now exists, is owned by the TWAP oracle program, and is seeded
+    // with the pool as its price source and the tick read from the current-tick account.
+    let account = state.get_account_by_id(Ids::price_observations(window_duration));
+    assert_ne!(account, Account::default());
+    assert_eq!(account.program_owner, Ids::twap_oracle_program());
+
+    let feed = twap_oracle_core::PriceObservations::try_from(&account.data)
+        .expect("observations account must hold a valid PriceObservations");
+    assert_eq!(feed.price_source_id, Ids::pool_definition());
+    assert_eq!(feed.last_recorded_tick, current_tick);
+    assert_eq!(feed.write_index, 1);
+    assert_eq!(feed.total_entries, 1);
+    assert_eq!(
+        feed.entries.len(),
+        usize::try_from(twap_oracle_core::OBSERVATIONS_CAPACITY)
+            .expect("OBSERVATIONS_CAPACITY fits in usize")
+    );
+
+    // The AMM config and pool are left unchanged by the operation.
+    assert_eq!(state.get_account_by_id(Ids::config()), Accounts::config());
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_init()
+    );
+}
+
+#[test]
+fn amm_create_price_observations_rejects_existing_account() {
+    let mut state = state_for_amm_tests();
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+    state.force_insert_account(
+        Ids::current_tick_account(),
+        Accounts::current_tick_account(1_234),
+    );
+
+    // First creation succeeds.
+    execute_create_price_observations(&mut state, window_duration).unwrap();
+    let feed_after_first = twap_oracle_core::PriceObservations::try_from(
+        &state
+            .get_account_by_id(Ids::price_observations(window_duration))
+            .data,
+    )
+    .expect("observations account must hold a valid PriceObservations");
+
+    // A second creation for the same (pool, window) is rejected because the observations account
+    // already exists, and leaves the existing account intact.
+    let result = execute_create_price_observations(&mut state, window_duration);
+    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    let feed_after_second = twap_oracle_core::PriceObservations::try_from(
+        &state
+            .get_account_by_id(Ids::price_observations(window_duration))
+            .data,
+    )
+    .expect("observations account must hold a valid PriceObservations");
+    assert_eq!(feed_after_first, feed_after_second);
+}
+
+#[test]
+fn amm_create_price_observations_without_current_tick_account_fails() {
+    let mut state = state_for_amm_tests();
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+
+    // No current-tick account was created, so there is no authoritative tick to seed from.
+    let result = execute_create_price_observations(&mut state, window_duration);
+    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert_eq!(
+        state.get_account_by_id(Ids::price_observations(window_duration)),
+        Account::default()
+    );
 }
 
 #[test]

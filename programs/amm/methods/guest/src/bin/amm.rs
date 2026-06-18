@@ -29,11 +29,13 @@ mod amm {
         ctx: ProgramContext,
         config: AccountWithMetadata,
         token_program_id: ProgramId,
+        twap_oracle_program_id: ProgramId,
         authority: AccountId,
     ) -> SpelResult {
         let post_states = amm_program::initialize::initialize(
             config,
             token_program_id,
+            twap_oracle_program_id,
             authority,
             ctx.self_program_id,
         );
@@ -51,16 +53,51 @@ mod amm {
         config: AccountWithMetadata,
         authority: AccountWithMetadata,
         token_program_id: Option<ProgramId>,
+        twap_oracle_program_id: Option<ProgramId>,
         new_authority: Option<AccountId>,
     ) -> SpelResult {
         let post_states = amm_program::update_config::update_config(
             config,
             authority,
             token_program_id,
+            twap_oracle_program_id,
             new_authority,
             ctx.self_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
+    }
+
+    /// Creates a TWAP price-observations account for a pool over a time window, on behalf of the
+    /// AMM, via a chained call to the configured TWAP oracle program.
+    ///
+    /// Expected accounts:
+    /// 1. `config` — initialized AMM config account.
+    /// 2. `pool` — initialized AMM pool; acts as the (authorized) price source.
+    /// 3. `current_tick_account` — the pool's initialized TWAP current-tick PDA; supplies the
+    ///    initial tick.
+    /// 4. `price_observations` — uninitialized TWAP PDA for `(pool, window_duration)`.
+    /// 5. `clock` — the canonical 1-block LEZ clock account.
+    #[instruction]
+    pub fn create_price_observations(
+        ctx: ProgramContext,
+        config: AccountWithMetadata,
+        pool: AccountWithMetadata,
+        current_tick_account: AccountWithMetadata,
+        price_observations: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        window_duration: u64,
+    ) -> SpelResult {
+        let (post_states, chained_calls) =
+            amm_program::create_price_observations::create_price_observations(
+                config,
+                pool,
+                current_tick_account,
+                price_observations,
+                clock,
+                window_duration,
+                ctx.self_program_id,
+            );
+        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
     }
 
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
