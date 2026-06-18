@@ -1520,6 +1520,8 @@ fn test_call_add_liquidity_vault_a_omitted() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1539,6 +1541,8 @@ fn test_call_add_liquidity_vault_b_omitted() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1558,6 +1562,8 @@ fn test_call_add_liquidity_lp_definition_mismatch() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1577,6 +1583,8 @@ fn test_call_add_liquidity_zero_balance_1() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         0,
         BalanceForTests::add_max_amount_b(),
@@ -1596,6 +1604,8 @@ fn test_call_add_liquidity_zero_balance_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         0,
         BalanceForTests::add_max_amount_a(),
@@ -1615,6 +1625,8 @@ fn test_call_add_liquidity_vault_a_balance_below_reserve() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1634,6 +1646,8 @@ fn test_call_add_liquidity_vault_b_balance_below_reserve() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1653,6 +1667,8 @@ fn test_call_add_liquidity_vault_insufficient_balance_1() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1672,6 +1688,8 @@ fn test_call_add_liquidity_vault_insufficient_balance_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1691,6 +1709,8 @@ fn test_call_add_liquidity_actual_amount_zero_1() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1710,6 +1730,8 @@ fn test_call_add_liquidity_actual_amount_zero_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a_low(),
         BalanceForTests::add_max_amount_b_low(),
@@ -1729,6 +1751,8 @@ fn test_call_add_liquidity_reserves_zero_1() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1748,6 +1772,8 @@ fn test_call_add_liquidity_reserves_zero_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1767,6 +1793,8 @@ fn test_call_add_liquidity_payable_lp_zero() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a_low(),
         BalanceForTests::add_max_amount_b_low(),
@@ -1785,6 +1813,8 @@ fn test_call_add_liquidity_chained_call_successsful() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1806,6 +1836,10 @@ fn test_call_add_liquidity_chained_call_successsful() {
     assert!(chained_call_b == ChainedCallForTests::cc_add_token_b());
     assert!(chained_call_lp == ChainedCallForTests::cc_add_pool_lp());
 
+    // The fourth chained call refreshes the pool's TWAP current tick from the post-add price.
+    assert_eq!(chained_calls.len(), 4);
+    assert_update_tick_call(&chained_calls, post_states[1].account());
+
     // The config account is echoed back unchanged as the first post-state.
     assert_eq!(
         *post_states[0].account(),
@@ -1825,6 +1859,8 @@ fn test_call_add_liquidity_uninitialized_config_panics() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1844,6 +1880,8 @@ fn test_call_add_liquidity_wrong_config_pda_panics() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -1863,6 +1901,8 @@ fn test_call_remove_liquidity_vault_a_omitted() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
@@ -1882,6 +1922,8 @@ fn test_call_remove_liquidity_vault_b_omitted() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
@@ -1901,6 +1943,8 @@ fn test_call_remove_liquidity_lp_def_mismatch() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
@@ -1919,9 +1963,11 @@ fn test_call_remove_liquidity_insufficient_liquidity_amount() {
         AccountWithMetadataForTests::pool_lp_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_a(), /* different token account than lp to
-                                                        * create desired
-                                                        * error */
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(), /* different token account than lp to
+                                               * create desired
+                                               * error */
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
@@ -1943,6 +1989,8 @@ fn test_call_remove_liquidity_insufficient_balance_1() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp_1()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
@@ -1963,6 +2011,8 @@ fn test_call_remove_liquidity_pool_at_minimum_liquidity() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_with_balance(MINIMUM_LIQUIDITY),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(MINIMUM_LIQUIDITY).unwrap(),
         1,
         1,
@@ -1985,6 +2035,8 @@ fn test_call_remove_liquidity_exceeds_unlocked_supply() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_with_balance(BalanceForTests::lp_supply_init()),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::lp_supply_init()).unwrap(),
         1,
         1,
@@ -2006,6 +2058,8 @@ fn test_call_remove_liquidity_insufficient_balance_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b(),
@@ -2025,6 +2079,8 @@ fn test_call_remove_liquidity_min_bal_zero_1() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         0,
         BalanceForTests::remove_min_amount_b(),
@@ -2044,6 +2100,8 @@ fn test_call_remove_liquidity_min_bal_zero_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         0,
@@ -2062,6 +2120,8 @@ fn test_call_remove_liquidity_chained_call_successful() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b_low(),
@@ -2082,6 +2142,10 @@ fn test_call_remove_liquidity_chained_call_successful() {
     assert!(chained_call_a == ChainedCallForTests::cc_remove_token_a());
     assert!(chained_call_b == ChainedCallForTests::cc_remove_token_b());
     assert!(chained_call_lp == ChainedCallForTests::cc_remove_pool_lp());
+
+    // The fourth chained call refreshes the pool's TWAP current tick from the post-removal price.
+    assert_eq!(chained_calls.len(), 4);
+    assert_update_tick_call(&chained_calls, post_states[1].account());
 }
 
 #[should_panic(expected = "Balances must be nonzero")]
@@ -2366,6 +2430,8 @@ fn test_call_swap_incorrect_token_type() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_lp_definition_id(),
@@ -2383,6 +2449,8 @@ fn test_call_swap_vault_a_omitted() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
@@ -2400,6 +2468,8 @@ fn test_call_swap_vault_b_omitted() {
         AccountWithMetadataForTests::vault_b_with_wrong_id(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
@@ -2417,6 +2487,8 @@ fn test_call_swap_reserves_vault_mismatch_1() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
@@ -2434,6 +2506,8 @@ fn test_call_swap_reserves_vault_mismatch_2() {
         AccountWithMetadataForTests::vault_b_init_low(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
@@ -2451,6 +2525,8 @@ fn test_call_swap_below_minimum_liquidity() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
@@ -2473,6 +2549,8 @@ fn test_call_swap_rejects_unsupported_fee_tier() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_a_low(),
         IdForTests::token_a_definition_id(),
@@ -2490,6 +2568,8 @@ fn test_call_swap_below_min_out() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out_too_high(),
         IdForTests::token_a_definition_id(),
@@ -2507,6 +2587,8 @@ fn test_call_swap_effective_amount_zero() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         1,
         0,
         IdForTests::token_a_definition_id(),
@@ -2524,6 +2606,8 @@ fn test_call_swap_output_rounds_to_zero() {
         AccountWithMetadataForTests::vault_b_init_low(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         2,
         0,
         IdForTests::token_a_definition_id(),
@@ -2541,6 +2625,8 @@ fn test_call_swap_exact_input_rejects_amount_that_rounds_down_below_target_outpu
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         2,
         1,
         IdForTests::token_a_definition_id(),
@@ -2557,6 +2643,8 @@ fn test_call_swap_exact_input_accepts_smallest_amount_for_rounded_boundary() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         3,
         1,
         IdForTests::token_a_definition_id(),
@@ -2583,6 +2671,39 @@ fn test_call_swap_exact_input_accepts_smallest_amount_for_rounded_boundary() {
     );
 }
 
+/// Asserts the last chained call is the oracle UpdateCurrentTick, carrying the post-operation
+/// spot price and the post-operation pool authorized as the price source.
+fn assert_update_tick_call(chained_calls: &[ChainedCall], pool_post_account: &Account) {
+    let pool_def = PoolDefinition::try_from(&pool_post_account.data)
+        .expect("pool post-state must hold a valid PoolDefinition");
+    let expected_price_source = AccountWithMetadata {
+        account: pool_post_account.clone(),
+        is_authorized: true,
+        account_id: IdForTests::pool_definition_id(),
+    };
+    let expected = ChainedCall::new(
+        TWAP_ORACLE_PROGRAM_ID,
+        vec![
+            AccountWithMetadataForTests::current_tick_account_uninit(),
+            expected_price_source,
+            AccountWithMetadataForTests::clock(),
+        ],
+        &twap_oracle_core::Instruction::UpdateCurrentTick {
+            price: amm_core::spot_price_q64_64(pool_def.reserve_a, pool_def.reserve_b),
+        },
+    )
+    .with_pda_seeds(vec![compute_pool_pda_seed(
+        IdForTests::token_a_definition_id(),
+        IdForTests::token_b_definition_id(),
+    )]);
+    assert_eq!(
+        *chained_calls
+            .last()
+            .expect("expected an UpdateCurrentTick chained call"),
+        expected
+    );
+}
+
 #[test]
 fn test_call_swap_chained_call_successful_1() {
     let (post_states, chained_calls) = swap_exact_input(
@@ -2592,6 +2713,8 @@ fn test_call_swap_chained_call_successful_1() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_a_low(),
         IdForTests::token_a_definition_id(),
@@ -2615,6 +2738,9 @@ fn test_call_swap_chained_call_successful_1() {
         chained_call_b,
         ChainedCallForTests::cc_swap_token_b_test_1()
     );
+
+    assert_eq!(chained_calls.len(), 3);
+    assert_update_tick_call(&chained_calls, pool_post.account());
 }
 
 #[test]
@@ -2626,6 +2752,8 @@ fn test_call_swap_chained_call_successful_2() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_b(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_b_definition_id(),
@@ -2649,6 +2777,9 @@ fn test_call_swap_chained_call_successful_2() {
         chained_call_b,
         ChainedCallForTests::cc_swap_token_b_test_2()
     );
+
+    assert_eq!(chained_calls.len(), 3);
+    assert_update_tick_call(&chained_calls, pool_post.account());
 }
 
 #[should_panic(expected = "AccountId is not a token type for the pool")]
@@ -2661,6 +2792,8 @@ fn call_swap_exact_output_incorrect_token_type() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_lp_definition_id(),
@@ -2678,6 +2811,8 @@ fn call_swap_exact_output_vault_a_omitted() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
@@ -2695,6 +2830,8 @@ fn call_swap_exact_output_vault_b_omitted() {
         AccountWithMetadataForTests::vault_b_with_wrong_id(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
@@ -2712,6 +2849,8 @@ fn call_swap_exact_output_reserves_vault_mismatch_1() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
@@ -2729,6 +2868,8 @@ fn call_swap_exact_output_reserves_vault_mismatch_2() {
         AccountWithMetadataForTests::vault_b_init_low(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
@@ -2746,6 +2887,8 @@ fn call_swap_exact_output_below_minimum_liquidity() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
@@ -2763,6 +2906,8 @@ fn call_swap_exact_output_exceeds_max_in() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         166_u128,
         100_u128,
         IdForTests::token_a_definition_id(),
@@ -2780,6 +2925,8 @@ fn call_swap_exact_output_zero() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         0_u128,
         500_u128,
         IdForTests::token_a_definition_id(),
@@ -2797,6 +2944,8 @@ fn call_swap_exact_output_exceeds_reserve() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::vault_b_reserve_init(),
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
@@ -2813,6 +2962,8 @@ fn call_swap_exact_output_chained_call_successful() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::max_amount_in(),
         BalanceForTests::vault_b_reserve_init(),
         IdForTests::token_a_definition_id(),
@@ -2848,6 +2999,8 @@ fn call_swap_exact_output_chained_call_successful_2() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         285,
         300,
         IdForTests::token_b_definition_id(),
@@ -2886,6 +3039,8 @@ fn call_swap_exact_output_fee_enforced() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         166_u128, // exact_amount_out: token_b
         499_u128, // max_amount_in: still one short after fee rounding
         IdForTests::token_a_definition_id(),
@@ -2906,6 +3061,8 @@ fn call_swap_exact_output_rejects_max_in_that_rounds_down_below_target_output() 
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         1,
         2,
         IdForTests::token_a_definition_id(),
@@ -2922,6 +3079,8 @@ fn call_swap_exact_output_accepts_smallest_max_in_for_rounded_boundary() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         1,
         3,
         IdForTests::token_a_definition_id(),
@@ -3015,6 +3174,8 @@ fn swap_exact_output_overflow_protection() {
         vault_b,
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         2, // exact_amount_out: small, valid (< reserve_b)
         1, // max_amount_in: tiny — real deposit would be enormous, but
         // overflow wraps it to 0, making 0 <= 1 pass silently
@@ -3205,6 +3366,8 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
         AccountForTests::user_holding_a(),
         AccountForTests::user_holding_b(),
         AccountForTests::user_holding_lp_with_balance(user_lp),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(user_lp).unwrap(),
         1,
         1,
@@ -3233,27 +3396,38 @@ fn test_sync_reserves_with_donation() {
     assert_eq!(pool_pre.reserve_a, BalanceForTests::vault_a_reserve_init());
 
     let (post_states, chained_calls) = sync_reserves(
+        AccountWithMetadataForTests::config_init(),
         pool,
         donated_vault_a,
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        AMM_PROGRAM_ID,
     );
-    assert!(chained_calls.is_empty());
-
-    let pool_post = PoolDefinition::try_from(&post_states[0].account().data).unwrap();
+    let pool_post = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
     assert_eq!(
         pool_post.reserve_a,
         BalanceForTests::vault_a_reserve_init() + donation_a
     );
     assert_eq!(pool_post.reserve_b, BalanceForTests::vault_b_reserve_init());
+
+    // Sync refreshes the pool's TWAP current tick via a chained call carrying the synced spot
+    // price, with the synced pool authorized as the price source.
+    assert_eq!(chained_calls.len(), 1);
+    assert_update_tick_call(&chained_calls, post_states[1].account());
 }
 
 #[should_panic(expected = "Sync reserves: vault A balance is less than its reserve")]
 #[test]
 fn test_sync_reserves_panics_when_vault_a_under_collateralized() {
     let _ = sync_reserves(
+        AccountWithMetadataForTests::config_init(),
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init_low(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        AMM_PROGRAM_ID,
     );
 }
 
@@ -3261,9 +3435,13 @@ fn test_sync_reserves_panics_when_vault_a_under_collateralized() {
 #[test]
 fn test_sync_reserves_panics_when_vault_b_under_collateralized() {
     let _ = sync_reserves(
+        AccountWithMetadataForTests::config_init(),
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init_low(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        AMM_PROGRAM_ID,
     );
 }
 
@@ -3271,9 +3449,13 @@ fn test_sync_reserves_panics_when_vault_b_under_collateralized() {
 #[test]
 fn test_sync_reserves_rejects_pool_below_minimum_liquidity() {
     let _ = sync_reserves(
+        AccountWithMetadataForTests::config_init(),
         AccountWithMetadataForTests::pool_definition_below_minimum_liquidity(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        AMM_PROGRAM_ID,
     );
 }
 
@@ -3286,9 +3468,13 @@ fn test_sync_reserves_rejects_unsupported_fee_tier() {
     pool.account.data = Data::from(&pool_def);
 
     let _ = sync_reserves(
+        AccountWithMetadataForTests::config_init(),
         pool,
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        AMM_PROGRAM_ID,
     );
 }
 
@@ -3312,6 +3498,8 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(1).unwrap(),
         100,
         50,
@@ -3325,12 +3513,16 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
     let donated_vault_b_for_synced_add = donated_vault_b.clone();
 
     let (sync_post, _) = sync_reserves(
+        AccountWithMetadataForTests::config_init(),
         AccountWithMetadataForTests::pool_definition_init(),
         donated_vault_a,
         donated_vault_b,
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        AMM_PROGRAM_ID,
     );
     let synced_pool = AccountWithMetadata {
-        account: sync_post[0].account().clone(),
+        account: sync_post[1].account().clone(),
         is_authorized: true,
         account_id: IdForTests::pool_definition_id(),
     };
@@ -3344,6 +3536,8 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(1).unwrap(),
         100,
         50,
@@ -3351,7 +3545,7 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
     );
     let synced_pool_post = PoolDefinition::try_from(&post_synced[1].account().data).unwrap();
     let synced_delta_lp = synced_pool_post.liquidity_pool_supply
-        - PoolDefinition::try_from(&sync_post[0].account().data)
+        - PoolDefinition::try_from(&sync_post[1].account().data)
             .unwrap()
             .liquidity_pool_supply;
 
@@ -3446,6 +3640,8 @@ fn add_liquidity_overflow_protection() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(1).unwrap(),
         500,
         2, // max_amount_b=2 → reserve_a * 2 overflows
@@ -3532,6 +3728,8 @@ fn remove_liquidity_overflow_protection() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         user_lp,
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(2).unwrap(), /* remove_amount=2 → reserve_a * 2
                                    * overflows */
         1,
@@ -3605,6 +3803,8 @@ fn swap_exact_input_overflow_protection() {
         vault_b,
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         3,
         1,
         IdForTests::token_a_definition_id(),
@@ -3680,6 +3880,8 @@ fn test_add_liquidity_rejects_user_holding_a_wrong_program() {
         AccountWithMetadataForTests::user_holding_a_wrong_program(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).expect("test value must be nonzero"),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -3699,6 +3901,8 @@ fn test_add_liquidity_rejects_user_holding_b_wrong_program() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b_wrong_program(),
         AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::add_min_amount_lp()).expect("test value must be nonzero"),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_b(),
@@ -3720,6 +3924,8 @@ fn test_remove_liquidity_rejects_user_holding_a_wrong_program() {
         AccountWithMetadataForTests::user_holding_lp_with_balance(
             BalanceForTests::remove_amount_lp(),
         ),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp()).expect("test value must be nonzero"),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b_low(),
@@ -3741,6 +3947,8 @@ fn test_remove_liquidity_rejects_user_holding_b_wrong_program() {
         AccountWithMetadataForTests::user_holding_lp_with_balance(
             BalanceForTests::remove_amount_lp(),
         ),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp()).expect("test value must be nonzero"),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b_low(),
@@ -3761,6 +3969,8 @@ fn test_remove_liquidity_rejects_amount_exceeding_user_lp_balance() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_with_balance(lp_balance),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         NonZero::new(BalanceForTests::remove_amount_lp()).expect("test value must be nonzero"),
         BalanceForTests::remove_min_amount_a(),
         BalanceForTests::remove_min_amount_b_low(),
@@ -3778,6 +3988,8 @@ fn test_swap_exact_input_rejects_user_holding_a_wrong_program() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a_wrong_program(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
@@ -3795,6 +4007,8 @@ fn test_swap_exact_input_rejects_user_holding_b_wrong_program() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b_wrong_program(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         IdForTests::token_a_definition_id(),
@@ -3812,6 +4026,8 @@ fn test_swap_exact_output_rejects_user_holding_a_wrong_program() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a_wrong_program(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         166,
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),
@@ -3829,6 +4045,8 @@ fn test_swap_exact_output_rejects_user_holding_b_wrong_program() {
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b_wrong_program(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
         166,
         BalanceForTests::max_amount_in(),
         IdForTests::token_a_definition_id(),

@@ -328,6 +328,20 @@ impl Accounts {
         }
     }
 
+    /// The pool's TWAP current-tick account, owned by the oracle program, holding `tick`. Seeded
+    /// into state so swap/sync can refresh it via a chained UpdateCurrentTick call.
+    fn current_tick_account(tick: i32) -> Account {
+        Account {
+            program_owner: Ids::twap_oracle_program(),
+            balance: 0_u128,
+            data: Data::from(&twap_oracle_core::CurrentTickAccount {
+                tick,
+                last_updated: 0,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
     fn user_a_holding() -> Account {
         Account {
             program_owner: Ids::token_program(),
@@ -969,6 +983,16 @@ fn state_for_amm_tests() -> V03State {
     deploy_programs(&mut state);
     state.force_insert_account(Ids::config(), Accounts::config());
     state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_init());
+    // Seed the pool's current-tick account so swaps and syncs can refresh it. Its initial value is
+    // the tick of the opening reserves; swap/sync tests assert it is updated to the new price.
+    let initial_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        Balances::vault_a_init(),
+        Balances::vault_b_init(),
+    ));
+    state.force_insert_account(
+        Ids::current_tick_account(),
+        Accounts::current_tick_account(initial_tick),
+    );
     state.force_insert_account(
         Ids::token_a_definition(),
         Accounts::token_a_definition_account(),
@@ -1096,6 +1120,8 @@ fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_ou
             Ids::vault_b(),
             Ids::user_a(),
             Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![current_nonce(state, Ids::user_a())],
         instruction,
@@ -1126,6 +1152,8 @@ fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_ou
             Ids::vault_b(),
             Ids::user_a(),
             Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![current_nonce(state, Ids::user_b())],
         instruction,
@@ -1163,6 +1191,8 @@ fn execute_add_liquidity(
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![
             current_nonce(state, Ids::user_a()),
@@ -1204,6 +1234,8 @@ fn execute_remove_liquidity(
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![current_nonce(state, Ids::user_lp())],
         instruction,
@@ -1262,6 +1294,28 @@ fn execute_create_price_observations(
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0)
+}
+
+#[cfg(test)]
+fn execute_sync_reserves(state: &mut V03State) {
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::config(),
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![],
+        amm_core::Instruction::SyncReserves,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 }
 
 /// Builds a state whose pool was created through `new_definition`, which also creates the pool's
@@ -1500,7 +1554,10 @@ fn amm_create_price_observations_without_current_tick_account_fails() {
     let mut state = state_for_amm_tests();
     let window_duration = 24 * 60 * 60 * 1_000u64;
 
-    // No current-tick account was created, so there is no authoritative tick to seed from.
+    // Remove the seeded current-tick account: with no authoritative tick to seed from, creation
+    // must be rejected.
+    state.force_insert_account(Ids::current_tick_account(), Account::default());
+
     let result = execute_create_price_observations(&mut state, window_duration);
     assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
     assert_eq!(
@@ -1531,6 +1588,8 @@ fn amm_remove_liquidity() {
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![Nonce(0)],
         instruction,
@@ -1570,6 +1629,18 @@ fn amm_remove_liquidity() {
         state.get_account_by_id(Ids::user_lp()),
         Accounts::user_lp_holding_remove()
     );
+
+    // Removing liquidity also refreshes the pool's TWAP current tick to the post-removal spot
+    // price.
+    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
+        &state.get_account_by_id(Ids::current_tick_account()).data,
+    )
+    .expect("current tick account must hold a valid CurrentTickAccount");
+    let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        Balances::vault_a_remove(),
+        Balances::vault_b_remove(),
+    ));
+    assert_eq!(tick_account.tick, expected_tick);
 }
 
 #[test]
@@ -1595,6 +1666,8 @@ fn amm_remove_liquidity_insufficient_user_lp_fails() {
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![Nonce(0)],
         instruction,
@@ -1834,6 +1907,8 @@ fn amm_add_liquidity() {
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![Nonce(0), Nonce(0)],
         instruction,
@@ -1874,6 +1949,17 @@ fn amm_add_liquidity() {
         state.get_account_by_id(Ids::user_lp()),
         Accounts::user_lp_holding_add()
     );
+
+    // Adding liquidity also refreshes the pool's TWAP current tick to the post-add spot price.
+    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
+        &state.get_account_by_id(Ids::current_tick_account()).data,
+    )
+    .expect("current tick account must hold a valid CurrentTickAccount");
+    let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        Balances::vault_a_add(),
+        Balances::vault_b_add(),
+    ));
+    assert_eq!(tick_account.tick, expected_tick);
 }
 
 #[test]
@@ -1896,6 +1982,8 @@ fn amm_swap_b_to_a() {
             Ids::vault_b(),
             Ids::user_a(),
             Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![Nonce(0)],
         instruction,
@@ -1949,6 +2037,8 @@ fn amm_swap_a_to_b() {
             Ids::vault_b(),
             Ids::user_a(),
             Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![Nonce(0)],
         instruction,
@@ -1980,6 +2070,105 @@ fn amm_swap_a_to_b() {
         state.get_account_by_id(Ids::user_b()),
         Accounts::user_b_holding_swap_2()
     );
+
+    // The swap refreshed the pool's TWAP current tick to the post-swap spot price.
+    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
+        &state.get_account_by_id(Ids::current_tick_account()).data,
+    )
+    .expect("current tick account must hold a valid CurrentTickAccount");
+    let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        Balances::reserve_a_swap_2(),
+        Balances::reserve_b_swap_2(),
+    ));
+    assert_eq!(tick_account.tick, expected_tick);
+}
+
+#[test]
+fn amm_swap_exact_output_refreshes_current_tick() {
+    let mut state = state_for_amm_tests();
+
+    let initial_tick = twap_oracle_core::CurrentTickAccount::try_from(
+        &state.get_account_by_id(Ids::current_tick_account()).data,
+    )
+    .expect("current tick account must hold a valid CurrentTickAccount")
+    .tick;
+
+    let instruction = amm_core::Instruction::SwapExactOutput {
+        exact_amount_out: Balances::swap_min_out(),
+        max_amount_in: Balances::swap_amount_in(),
+        token_definition_id_in: Ids::token_a_definition(),
+        deadline: u64::MAX,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::config(),
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::user_a(),
+            Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // The swap refreshed the pool's TWAP current tick to the post-swap spot price, computed from
+    // the reserves the swap actually settled on.
+    let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
+        &state.get_account_by_id(Ids::current_tick_account()).data,
+    )
+    .expect("current tick account must hold a valid CurrentTickAccount");
+    let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        pool.reserve_a,
+        pool.reserve_b,
+    ));
+    assert_eq!(tick_account.tick, expected_tick);
+    assert_ne!(
+        tick_account.tick, initial_tick,
+        "swap should have moved the current tick"
+    );
+}
+
+#[test]
+fn amm_sync_reserves_updates_pool_and_current_tick() {
+    let mut state = state_for_amm_tests();
+
+    // Donate token A straight into vault A, so the vault balance exceeds the recorded reserve.
+    let donation = 1_000u128;
+    let mut donated_vault_a = Accounts::vault_a_init();
+    donated_vault_a.data = Data::from(&TokenHolding::Fungible {
+        definition_id: Ids::token_a_definition(),
+        balance: Balances::vault_a_init() + donation,
+    });
+    state.force_insert_account(Ids::vault_a(), donated_vault_a);
+
+    execute_sync_reserves(&mut state);
+
+    // Sync reconciles the pool reserves with the actual vault balances.
+    let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    assert_eq!(pool.reserve_a, Balances::vault_a_init() + donation);
+    assert_eq!(pool.reserve_b, Balances::vault_b_init());
+
+    // And refreshes the current tick to the synced spot price.
+    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
+        &state.get_account_by_id(Ids::current_tick_account()).data,
+    )
+    .expect("current tick account must hold a valid CurrentTickAccount");
+    let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        Balances::vault_a_init() + donation,
+        Balances::vault_b_init(),
+    ));
+    assert_eq!(tick_account.tick, expected_tick);
 }
 
 #[test]
@@ -2056,6 +2245,8 @@ fn amm_swap_rejects_expired_deadline() {
             Ids::vault_b(),
             Ids::user_a(),
             Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![Nonce(0)],
         instruction,
@@ -2093,6 +2284,8 @@ fn amm_swap_exact_output_rejects_expired_deadline() {
             Ids::vault_b(),
             Ids::user_a(),
             Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![current_nonce(&state, Ids::user_a())],
         instruction,
@@ -2132,6 +2325,8 @@ fn amm_add_liquidity_rejects_expired_deadline() {
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![
             current_nonce(&state, Ids::user_a()),
@@ -2175,6 +2370,8 @@ fn amm_remove_liquidity_rejects_expired_deadline() {
             Ids::user_a(),
             Ids::user_b(),
             Ids::user_lp(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![current_nonce(&state, Ids::user_lp())],
         instruction,

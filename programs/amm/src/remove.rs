@@ -2,12 +2,15 @@ use std::num::NonZeroU128;
 
 use amm_core::{
     assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda_seed,
-    compute_vault_pda_seed, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_pool_pda_seed, compute_vault_pda_seed, spot_price_q64_64, AmmConfig, PoolDefinition,
+    MINIMUM_LIQUIDITY,
 };
+use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use twap_oracle_core::compute_current_tick_account_pda;
 
 #[expect(
     clippy::too_many_arguments,
@@ -22,6 +25,8 @@ pub fn remove_liquidity(
     user_holding_a: AccountWithMetadata,
     user_holding_b: AccountWithMetadata,
     user_holding_lp: AccountWithMetadata,
+    current_tick_account: AccountWithMetadata,
+    clock: AccountWithMetadata,
     remove_liquidity_amount: NonZeroU128,
     min_amount_to_remove_token_a: u128,
     min_amount_to_remove_token_b: u128,
@@ -29,16 +34,17 @@ pub fn remove_liquidity(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let remove_liquidity_amount: u128 = remove_liquidity_amount.into();
 
-    // The Token Program is taken from the config account, not trusted from a caller-supplied
+    // The program IDs are taken from the config account, not trusted from a caller-supplied
     // holding. Validating the config PDA is also the Program's initialization gate.
     assert_eq!(
         config.account_id,
         compute_config_pda(amm_program_id),
         "Remove liquidity: AMM config Account ID does not match PDA"
     );
-    let token_program_id = AmmConfig::try_from(&config.account.data)
-        .expect("Remove liquidity: AMM Program must be initialized before use")
-        .token_program_id;
+    let config_data = AmmConfig::try_from(&config.account.data)
+        .expect("Remove liquidity: AMM Program must be initialized before use");
+    let token_program_id = config_data.token_program_id;
+    let twap_oracle_program_id = config_data.twap_oracle_program_id;
 
     // 1. Fetch Pool state
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
@@ -77,6 +83,17 @@ pub fn remove_liquidity(
     assert_eq!(
         user_holding_b.account.program_owner, token_program_id,
         "User Token B holding must be owned by the configured Token Program"
+    );
+    // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
+    // clock here so the removal is rejected early with an AMM-level error.
+    assert_eq!(
+        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+        "Remove liquidity: clock account must be the canonical 1-block LEZ clock account"
+    );
+    assert_eq!(
+        current_tick_account.account_id,
+        compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
+        "Remove liquidity: current tick Account ID does not match PDA"
     );
 
     // Vault addresses do not need to be checked with PDA
@@ -221,7 +238,33 @@ pub fn remove_liquidity(
     )
     .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
 
-    let chained_calls = vec![call_token_lp, call_token_b, call_token_a];
+    // Refresh the pool's TWAP current tick from the post-removal spot price. The pool is already
+    // owned by this program, so it is passed (in its post-removal state) as the authorized price
+    // source.
+    let new_price = spot_price_q64_64(
+        pool_post_definition.reserve_a,
+        pool_post_definition.reserve_b,
+    );
+    let pool_price_source = AccountWithMetadata {
+        account: pool_post.clone(),
+        is_authorized: true,
+        account_id: pool.account_id,
+    };
+    let call_update_tick = ChainedCall::new(
+        twap_oracle_program_id,
+        vec![
+            current_tick_account.clone(),
+            pool_price_source,
+            clock.clone(),
+        ],
+        &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
+    )
+    .with_pda_seeds(vec![compute_pool_pda_seed(
+        pool_def_data.definition_token_a_id,
+        pool_def_data.definition_token_b_id,
+    )]);
+
+    let chained_calls = vec![call_token_lp, call_token_b, call_token_a, call_update_tick];
 
     let post_states = vec![
         AccountPostState::new(config.account.clone()),
@@ -232,6 +275,8 @@ pub fn remove_liquidity(
         AccountPostState::new(user_holding_a.account.clone()),
         AccountPostState::new(user_holding_b.account.clone()),
         AccountPostState::new(user_holding_lp.account.clone()),
+        AccountPostState::new(current_tick_account.account.clone()),
+        AccountPostState::new(clock.account.clone()),
     ];
 
     (post_states, chained_calls)

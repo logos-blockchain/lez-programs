@@ -162,6 +162,8 @@ mod amm {
         user_holding_a: AccountWithMetadata,
         user_holding_b: AccountWithMetadata,
         user_holding_lp: AccountWithMetadata,
+        current_tick_account: AccountWithMetadata,
+        clock: AccountWithMetadata,
         min_amount_liquidity: u128,
         max_amount_to_add_token_a: u128,
         max_amount_to_add_token_b: u128,
@@ -176,6 +178,8 @@ mod amm {
             user_holding_a,
             user_holding_b,
             user_holding_lp,
+            current_tick_account,
+            clock,
             NonZeroU128::new(min_amount_liquidity).expect("min_amount_liquidity must be nonzero"),
             max_amount_to_add_token_a,
             max_amount_to_add_token_b,
@@ -201,6 +205,8 @@ mod amm {
         user_holding_a: AccountWithMetadata,
         user_holding_b: AccountWithMetadata,
         user_holding_lp: AccountWithMetadata,
+        current_tick_account: AccountWithMetadata,
+        clock: AccountWithMetadata,
         remove_liquidity_amount: u128,
         min_amount_to_remove_token_a: u128,
         min_amount_to_remove_token_b: u128,
@@ -215,6 +221,8 @@ mod amm {
             user_holding_a,
             user_holding_b,
             user_holding_lp,
+            current_tick_account,
+            clock,
             NonZeroU128::new(remove_liquidity_amount)
                 .expect("remove_liquidity_amount must be nonzero"),
             min_amount_to_remove_token_a,
@@ -239,6 +247,8 @@ mod amm {
         vault_b: AccountWithMetadata,
         user_holding_a: AccountWithMetadata,
         user_holding_b: AccountWithMetadata,
+        current_tick_account: AccountWithMetadata,
+        clock: AccountWithMetadata,
         swap_amount_in: u128,
         min_amount_out: u128,
         token_definition_id_in: AccountId,
@@ -251,6 +261,8 @@ mod amm {
             vault_b,
             user_holding_a,
             user_holding_b,
+            current_tick_account,
+            clock,
             swap_amount_in,
             min_amount_out,
             token_definition_id_in,
@@ -274,6 +286,8 @@ mod amm {
         vault_b: AccountWithMetadata,
         user_holding_a: AccountWithMetadata,
         user_holding_b: AccountWithMetadata,
+        current_tick_account: AccountWithMetadata,
+        clock: AccountWithMetadata,
         exact_amount_out: u128,
         max_amount_in: u128,
         token_definition_id_in: AccountId,
@@ -286,6 +300,8 @@ mod amm {
             vault_b,
             user_holding_a,
             user_holding_b,
+            current_tick_account,
+            clock,
             exact_amount_out,
             max_amount_in,
             token_definition_id_in,
@@ -295,15 +311,26 @@ mod amm {
             .with_timestamp_validity_window(..deadline))
     }
 
-    /// Sync pool reserves with current vault balances.
+    /// Sync pool reserves with current vault balances, refreshing the pool's TWAP current tick.
     #[instruction]
     pub fn sync_reserves(
+        ctx: ProgramContext,
+        config: AccountWithMetadata,
         pool: AccountWithMetadata,
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
+        current_tick_account: AccountWithMetadata,
+        clock: AccountWithMetadata,
     ) -> SpelResult {
-        let (post_states, chained_calls) =
-            amm_program::sync::sync_reserves(pool, vault_a, vault_b);
+        let (post_states, chained_calls) = amm_program::sync::sync_reserves(
+            config,
+            pool,
+            vault_a,
+            vault_b,
+            current_tick_account,
+            clock,
+            ctx.self_program_id,
+        );
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
     }
 }

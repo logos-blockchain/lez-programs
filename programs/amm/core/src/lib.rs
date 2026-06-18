@@ -114,6 +114,10 @@ pub enum Instruction {
     /// - User Holding Account for Token A (authorized)
     /// - User Holding Account for Token B (authorized)
     /// - User Holding Account for Pool Liquidity
+    /// - Current Tick Account, the pool's TWAP PDA derived as
+    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
+    ///   with the new spot price
+    /// - Clock Account (the canonical 1-block LEZ clock)
     AddLiquidity {
         min_amount_liquidity: u128,
         max_amount_to_add_token_a: u128,
@@ -132,6 +136,10 @@ pub enum Instruction {
     /// - User Holding Account for Token A (initialized)
     /// - User Holding Account for Token B (initialized)
     /// - User Holding Account for Pool Liquidity (authorized)
+    /// - Current Tick Account, the pool's TWAP PDA derived as
+    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
+    ///   with the new spot price
+    /// - Clock Account (the canonical 1-block LEZ clock)
     RemoveLiquidity {
         remove_liquidity_amount: u128,
         min_amount_to_remove_token_a: u128,
@@ -149,6 +157,10 @@ pub enum Instruction {
     /// - Vault Holding Account for Token B (initialized)
     /// - User Holding Account for Token A
     /// - User Holding Account for Token B; either is authorized.
+    /// - Current Tick Account, the pool's TWAP PDA derived as
+    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
+    ///   with the new spot price
+    /// - Clock Account (the canonical 1-block LEZ clock)
     SwapExactInput {
         swap_amount_in: u128,
         min_amount_out: u128,
@@ -166,6 +178,10 @@ pub enum Instruction {
     /// - Vault Holding Account for Token B (initialized)
     /// - User Holding Account for Token A
     /// - User Holding Account for Token B; either is authorized.
+    /// - Current Tick Account, the pool's TWAP PDA derived as
+    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
+    ///   with the new spot price
+    /// - Clock Account (the canonical 1-block LEZ clock)
     SwapExactOutput {
         exact_amount_out: u128,
         max_amount_in: u128,
@@ -174,12 +190,16 @@ pub enum Instruction {
         deadline: u64,
     },
 
-    /// Sync pool reserves with current vault balances.
+    /// Sync pool reserves with current vault balances, refreshing the pool's TWAP current tick.
     ///
     /// Required accounts:
     /// - AMM Pool (initialized, with LP supply at or above minimum liquidity)
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
+    /// - Current Tick Account, the pool's TWAP PDA derived as
+    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
+    ///   with the new spot price
+    /// - Clock Account (the canonical 1-block LEZ clock)
     SyncReserves,
 }
 

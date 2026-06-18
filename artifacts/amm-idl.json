@@ -244,6 +244,18 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "current_tick_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
         }
       ],
       "args": [
@@ -315,6 +327,18 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "current_tick_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
         }
       ],
       "args": [
@@ -371,6 +395,18 @@
         },
         {
           "name": "user_holding_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "current_tick_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
           "writable": false,
           "signer": false,
           "init": false
@@ -433,6 +469,18 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "current_tick_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
         }
       ],
       "args": [
@@ -458,6 +506,12 @@
       "name": "sync_reserves",
       "accounts": [
         {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "pool",
           "writable": false,
           "signer": false,
@@ -471,6 +525,18 @@
         },
         {
           "name": "vault_b",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "current_tick_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
           "writable": false,
           "signer": false,
           "init": false

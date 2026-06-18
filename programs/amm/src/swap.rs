@@ -1,12 +1,15 @@
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, read_vault_fungible_balances, AmmConfig,
-    FEE_BPS_DENOMINATOR, MINIMUM_LIQUIDITY,
+    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed,
+    read_vault_fungible_balances, spot_price_q64_64, AmmConfig, FEE_BPS_DENOMINATOR,
+    MINIMUM_LIQUIDITY,
 };
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
+use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use twap_oracle_core::compute_current_tick_account_pda;
 
 /// Validates swap setup: checks pool liquidity is ready, vaults match, and reserves are sufficient.
 fn validate_swap_setup(
@@ -46,16 +49,17 @@ fn validate_swap_setup(
     pool_def_data
 }
 
-/// Creates post-state and returns reserves after swap.
+/// Assembles the swap post-states (including the echoed current-tick and clock accounts) and the
+/// chained call that refreshes the pool's TWAP current tick from the post-swap spot price.
 #[expect(
     clippy::too_many_arguments,
-    reason = "post-state assembly keeps pool, vault, user account, and delta state explicit"
+    reason = "post-state assembly keeps pool, vault, user, oracle, and delta state explicit"
 )]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "consistent with codebase style"
 )]
-fn create_swap_post_states(
+fn finalize_swap(
     config: AccountWithMetadata,
     pool: AccountWithMetadata,
     pool_def_data: PoolDefinition,
@@ -63,12 +67,14 @@ fn create_swap_post_states(
     vault_b: AccountWithMetadata,
     user_holding_a: AccountWithMetadata,
     user_holding_b: AccountWithMetadata,
+    current_tick_account: AccountWithMetadata,
+    clock: AccountWithMetadata,
     deposit_a: u128,
     withdraw_a: u128,
     deposit_b: u128,
     withdraw_b: u128,
-) -> Vec<AccountPostState> {
-    let mut pool_post = pool.account;
+    twap_oracle_program_id: ProgramId,
+) -> (Vec<AccountPostState>, ChainedCall) {
     let pool_post_definition = PoolDefinition {
         reserve_a: pool_def_data
             .reserve_a
@@ -85,16 +91,46 @@ fn create_swap_post_states(
         ..pool_def_data
     };
 
+    let mut pool_post = pool.account.clone();
     pool_post.data = Data::from(&pool_post_definition);
 
-    vec![
+    // Refresh the pool's TWAP current tick from the post-swap spot price. The pool is already owned
+    // by this program, so it is passed (in its post-swap state) as the authorized price source.
+    let new_price = spot_price_q64_64(
+        pool_post_definition.reserve_a,
+        pool_post_definition.reserve_b,
+    );
+    let pool_price_source = AccountWithMetadata {
+        account: pool_post.clone(),
+        is_authorized: true,
+        account_id: pool.account_id,
+    };
+    let update_tick_call = ChainedCall::new(
+        twap_oracle_program_id,
+        vec![
+            current_tick_account.clone(),
+            pool_price_source,
+            clock.clone(),
+        ],
+        &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
+    )
+    .with_pda_seeds(vec![compute_pool_pda_seed(
+        pool_def_data.definition_token_a_id,
+        pool_def_data.definition_token_b_id,
+    )]);
+
+    let post_states = vec![
         AccountPostState::new(config.account),
         AccountPostState::new(pool_post),
         AccountPostState::new(vault_a.account),
         AccountPostState::new(vault_b.account),
         AccountPostState::new(user_holding_a.account),
         AccountPostState::new(user_holding_b.account),
-    ]
+        AccountPostState::new(current_tick_account.account),
+        AccountPostState::new(clock.account),
+    ];
+
+    (post_states, update_tick_call)
 }
 
 #[expect(
@@ -109,6 +145,8 @@ pub fn swap_exact_input(
     vault_b: AccountWithMetadata,
     user_holding_a: AccountWithMetadata,
     user_holding_b: AccountWithMetadata,
+    current_tick_account: AccountWithMetadata,
+    clock: AccountWithMetadata,
     swap_amount_in: u128,
     min_amount_out: u128,
     token_in_id: AccountId,
@@ -116,16 +154,17 @@ pub fn swap_exact_input(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
 
-    // The Token Program is taken from the config account, not trusted from a caller-supplied
+    // The program IDs are taken from the config account, not trusted from a caller-supplied
     // account. Validating the config PDA is also the Program's initialization gate.
     assert_eq!(
         config.account_id,
         compute_config_pda(amm_program_id),
         "Swap exact input: AMM config Account ID does not match PDA"
     );
-    let token_program_id = AmmConfig::try_from(&config.account.data)
-        .expect("Swap exact input: AMM Program must be initialized before use")
-        .token_program_id;
+    let config_data = AmmConfig::try_from(&config.account.data)
+        .expect("Swap exact input: AMM Program must be initialized before use");
+    let token_program_id = config_data.token_program_id;
+    let twap_oracle_program_id = config_data.twap_oracle_program_id;
     assert_eq!(
         vault_a.account.program_owner, token_program_id,
         "Vault A must be owned by the configured Token Program"
@@ -141,6 +180,17 @@ pub fn swap_exact_input(
     assert_eq!(
         user_holding_b.account.program_owner, token_program_id,
         "User Token B holding must be owned by the configured Token Program"
+    );
+    // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
+    // clock here so the swap is rejected early with an AMM-level error.
+    assert_eq!(
+        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+        "Swap exact input: clock account must be the canonical 1-block LEZ clock account"
+    );
+    assert_eq!(
+        current_tick_account.account_id,
+        compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
+        "Swap exact input: current tick Account ID does not match PDA"
     );
 
     let (chained_calls, [deposit_a, withdraw_a], [deposit_b, withdraw_b]) =
@@ -178,7 +228,7 @@ pub fn swap_exact_input(
             panic!("AccountId is not a token type for the pool");
         };
 
-    let post_states = create_swap_post_states(
+    let (post_states, update_tick_call) = finalize_swap(
         config,
         pool,
         pool_def_data,
@@ -186,11 +236,17 @@ pub fn swap_exact_input(
         vault_b,
         user_holding_a,
         user_holding_b,
+        current_tick_account,
+        clock,
         deposit_a,
         withdraw_a,
         deposit_b,
         withdraw_b,
+        twap_oracle_program_id,
     );
+
+    let mut chained_calls = chained_calls;
+    chained_calls.push(update_tick_call);
 
     (post_states, chained_calls)
 }
@@ -291,6 +347,8 @@ pub fn swap_exact_output(
     vault_b: AccountWithMetadata,
     user_holding_a: AccountWithMetadata,
     user_holding_b: AccountWithMetadata,
+    current_tick_account: AccountWithMetadata,
+    clock: AccountWithMetadata,
     exact_amount_out: u128,
     max_amount_in: u128,
     token_in_id: AccountId,
@@ -298,16 +356,17 @@ pub fn swap_exact_output(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
 
-    // The Token Program is taken from the config account, not trusted from a caller-supplied
+    // The program IDs are taken from the config account, not trusted from a caller-supplied
     // account. Validating the config PDA is also the Program's initialization gate.
     assert_eq!(
         config.account_id,
         compute_config_pda(amm_program_id),
         "Swap exact output: AMM config Account ID does not match PDA"
     );
-    let token_program_id = AmmConfig::try_from(&config.account.data)
-        .expect("Swap exact output: AMM Program must be initialized before use")
-        .token_program_id;
+    let config_data = AmmConfig::try_from(&config.account.data)
+        .expect("Swap exact output: AMM Program must be initialized before use");
+    let token_program_id = config_data.token_program_id;
+    let twap_oracle_program_id = config_data.twap_oracle_program_id;
     assert_eq!(
         vault_a.account.program_owner, token_program_id,
         "Vault A must be owned by the configured Token Program"
@@ -323,6 +382,17 @@ pub fn swap_exact_output(
     assert_eq!(
         user_holding_b.account.program_owner, token_program_id,
         "User Token B holding must be owned by the configured Token Program"
+    );
+    // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
+    // clock here so the swap is rejected early with an AMM-level error.
+    assert_eq!(
+        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+        "Swap exact output: clock account must be the canonical 1-block LEZ clock account"
+    );
+    assert_eq!(
+        current_tick_account.account_id,
+        compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
+        "Swap exact output: current tick Account ID does not match PDA"
     );
 
     let (chained_calls, [deposit_a, withdraw_a], [deposit_b, withdraw_b]) =
@@ -360,7 +430,7 @@ pub fn swap_exact_output(
             panic!("AccountId is not a token type for the pool");
         };
 
-    let post_states = create_swap_post_states(
+    let (post_states, update_tick_call) = finalize_swap(
         config,
         pool,
         pool_def_data,
@@ -368,11 +438,17 @@ pub fn swap_exact_output(
         vault_b,
         user_holding_a,
         user_holding_b,
+        current_tick_account,
+        clock,
         deposit_a,
         withdraw_a,
         deposit_b,
         withdraw_b,
+        twap_oracle_program_id,
     );
+
+    let mut chained_calls = chained_calls;
+    chained_calls.push(update_tick_call);
 
     (post_states, chained_calls)
 }
