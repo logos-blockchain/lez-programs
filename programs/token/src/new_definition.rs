@@ -116,12 +116,16 @@ pub fn new_definition_with_metadata(
     );
 
     let (token_definition, token_holding) = match new_definition {
-        NewTokenDefinition::Fungible { name, total_supply } => (
+        NewTokenDefinition::Fungible {
+            name,
+            total_supply,
+            mint_authority,
+        } => (
             TokenDefinition::Fungible {
                 name,
                 total_supply,
                 metadata_id: Some(metadata_target_account.account_id),
-                authority: Authority::renounced(),
+                authority: authority_from(mint_authority),
             },
             TokenHolding::Fungible {
                 definition_id: definition_target_account.account_id,

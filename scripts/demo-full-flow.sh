@@ -35,7 +35,22 @@ fi
 SPEL="${SPEL:-$HOME/rebase-lez/spel/target/release/spel}"
 LEZ_PROGRAMS="${LEZ_PROGRAMS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 IDL="${IDL:-$LEZ_PROGRAMS/artifacts/token-idl.json}"
-TOKEN_BIN="${TOKEN_BIN:-$LEZ_PROGRAMS/target/riscv-guest/token-methods/token-guest/riscv32im-risc0-zkvm-elf/release/token.bin}"
+# Resolve the token guest binary from either build layout, in priority order:
+#   1. `cargo risczero build --manifest-path programs/token/methods/guest/Cargo.toml`
+#      -> programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin
+#      (the build command documented in the README)
+#   2. workspace build (`cargo build` / `cargo test`)
+#      -> target/riscv-guest/token-methods/token-guest/riscv32im-risc0-zkvm-elf/release/token.bin
+# An explicit TOKEN_BIN env var always takes precedence.
+_risc0_token_bin="$LEZ_PROGRAMS/programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin"
+_workspace_token_bin="$LEZ_PROGRAMS/target/riscv-guest/token-methods/token-guest/riscv32im-risc0-zkvm-elf/release/token.bin"
+if [ -z "${TOKEN_BIN:-}" ]; then
+    if [ -f "$_risc0_token_bin" ]; then
+        TOKEN_BIN="$_risc0_token_bin"
+    else
+        TOKEN_BIN="$_workspace_token_bin"
+    fi
+fi
 DEMO_DIR="${DEMO_DIR:-$(pwd)}"
 WALLET_DIR="${WALLET_DIR:-$DEMO_DIR/.scaffold/wallet}"
 

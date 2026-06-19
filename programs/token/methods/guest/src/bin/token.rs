@@ -128,6 +128,7 @@ mod token {
         #[account(mut, signer)]
         definition_account: AccountWithMetadata,
         user_holding_account: AccountWithMetadata,
+        authority_accounts: Vec<AccountWithMetadata>,
         amount_to_mint: u128,
     ) -> SpelResult {
         Ok(spel_framework::SpelOutput::execute(
@@ -135,6 +136,7 @@ mod token {
                 definition_account,
                 user_holding_account,
                 amount_to_mint,
+                authority_accounts,
                 ctx.self_program_id,
             ),
             vec![],
@@ -147,10 +149,15 @@ mod token {
     #[instruction]
     pub fn set_authority(
         definition_account: AccountWithMetadata,
+        authority_accounts: Vec<AccountWithMetadata>,
         new_authority: Option<AccountId>,
     ) -> SpelResult {
         Ok(spel_framework::SpelOutput::execute(
-            token_program::set_authority::set_authority(definition_account, new_authority),
+            token_program::set_authority::set_authority(
+                definition_account,
+                new_authority,
+                authority_accounts,
+            ),
             vec![],
         ))
     }

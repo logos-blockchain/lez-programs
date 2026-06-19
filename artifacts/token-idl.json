@@ -150,6 +150,13 @@
           "writable": true,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "authority_accounts",
+          "writable": false,
+          "signer": false,
+          "init": false,
+          "rest": true
         }
       ],
       "args": [
@@ -167,6 +174,13 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "authority_accounts",
+          "writable": false,
+          "signer": false,
+          "init": false,
+          "rest": true
         }
       ],
       "args": [

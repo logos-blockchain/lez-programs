@@ -90,6 +90,9 @@ pub enum NewTokenDefinition {
     Fungible {
         name: String,
         total_supply: u128,
+        /// Mint authority. `Some(id)` makes the token mintable by `id`; `None`
+        /// fixes the supply.
+        mint_authority: Option<AccountId>,
     },
     NonFungible {
         name: String,

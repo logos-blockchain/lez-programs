@@ -8,20 +8,23 @@ use token_core::TokenDefinition;
 pub fn set_authority(
     definition_account: AccountWithMetadata,
     new_authority: Option<AccountId>,
+    authority_accounts: Vec<AccountWithMetadata>,
 ) -> Vec<AccountPostState> {
     let mut definition = TokenDefinition::try_from(&definition_account.account.data)
         .expect("Token Definition account must be valid");
 
     match &mut definition {
         TokenDefinition::Fungible { .. } => {
-            // The current mint authority must authorize this transaction: the
-            // definition account must be authorized and its id must match the
-            // stored authority.
+            // The current mint authority must authorize this transaction. As in
+            // `mint`, the proof is either the definition account itself (empty
+            // `authority_accounts`, self/PDA authority) or an explicit external
+            // authority account (one entry), so a rotated authority can act.
+            let authority = authority_accounts.first().unwrap_or(&definition_account);
             assert!(
-                definition_account.is_authorized,
+                authority.is_authorized,
                 "Mint authority must authorize the transaction"
             );
-            let signer: [u8; 32] = definition_account
+            let signer: [u8; 32] = authority
                 .account_id
                 .as_ref()
                 .try_into()
@@ -56,5 +59,11 @@ pub fn set_authority(
     let mut definition_post = definition_account.account;
     definition_post.data = Data::from(&definition);
 
-    vec![AccountPostState::new(definition_post)]
+    // Post-states match pre-state order/count: [definition, ...authority_accounts].
+    let mut post_states = Vec::with_capacity(authority_accounts.len().saturating_add(1));
+    post_states.push(AccountPostState::new(definition_post));
+    for authority in authority_accounts {
+        post_states.push(AccountPostState::new(authority.account));
+    }
+    post_states
 }
