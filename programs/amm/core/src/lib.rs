@@ -8,10 +8,10 @@ use nssa_core::{
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
 
-// These stable seed bytes are part of the PDA derivation scheme and must stay unchanged for
-// compatibility.
-const LIQUIDITY_TOKEN_PDA_SEED: [u8; 32] = [0; 32];
-const LP_LOCK_HOLDING_PDA_SEED: [u8; 32] = [1; 32];
+// These stable domain-separation tags are part of the PDA derivation scheme and must stay
+// unchanged for address compatibility.
+const LIQUIDITY_TOKEN_PDA_SEED: &[u8] = b"LIQUIDITY_TOKEN";
+const LP_LOCK_HOLDING_PDA_SEED: &[u8] = b"LP_LOCK_HOLDING";
 
 /// AMM Program Instruction.
 #[derive(Serialize, Deserialize)]
@@ -423,10 +423,9 @@ pub fn compute_liquidity_token_pda(amm_program_id: ProgramId, pool_id: AccountId
 pub fn compute_liquidity_token_pda_seed(pool_id: AccountId) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256};
 
-    let mut bytes = [0; 64];
-    let (pool_bytes, seed_bytes) = bytes.split_at_mut(32);
-    pool_bytes.copy_from_slice(&pool_id.to_bytes());
-    seed_bytes.copy_from_slice(&LIQUIDITY_TOKEN_PDA_SEED);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&pool_id.to_bytes());
+    bytes.extend_from_slice(LIQUIDITY_TOKEN_PDA_SEED);
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
@@ -443,10 +442,9 @@ pub fn compute_lp_lock_holding_pda(amm_program_id: ProgramId, pool_id: AccountId
 pub fn compute_lp_lock_holding_pda_seed(pool_id: AccountId) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256};
 
-    let mut bytes = [0; 64];
-    let (pool_bytes, seed_bytes) = bytes.split_at_mut(32);
-    pool_bytes.copy_from_slice(&pool_id.to_bytes());
-    seed_bytes.copy_from_slice(&LP_LOCK_HOLDING_PDA_SEED);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&pool_id.to_bytes());
+    bytes.extend_from_slice(LP_LOCK_HOLDING_PDA_SEED);
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)

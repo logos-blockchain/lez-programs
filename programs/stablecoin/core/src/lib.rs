@@ -8,8 +8,10 @@ use nssa_core::{
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
 
-const POSITION_PDA_DOMAIN: [u8; 32] = [0; 32];
-const POSITION_VAULT_PDA_DOMAIN: [u8; 32] = [1; 32];
+// Stable domain-separation tags for the position PDAs; these must stay unchanged for address
+// compatibility.
+const POSITION_PDA_DOMAIN: &[u8] = b"POSITION";
+const POSITION_VAULT_PDA_DOMAIN: &[u8] = b"POSITION_VAULT";
 
 /// Stablecoin Program Instruction.
 #[derive(Debug, Serialize, Deserialize)]
@@ -122,10 +124,10 @@ pub fn compute_position_pda_seed(
 ) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256 as _};
 
-    let mut bytes = [0u8; 96];
-    bytes[0..32].copy_from_slice(&owner_id.to_bytes());
-    bytes[32..64].copy_from_slice(&collateral_definition_id.to_bytes());
-    bytes[64..96].copy_from_slice(&POSITION_PDA_DOMAIN);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&owner_id.to_bytes());
+    bytes.extend_from_slice(&collateral_definition_id.to_bytes());
+    bytes.extend_from_slice(POSITION_PDA_DOMAIN);
 
     let mut out = [0u8; 32];
     out.copy_from_slice(Impl::hash_bytes(&bytes).as_bytes());
@@ -151,9 +153,9 @@ pub fn compute_position_pda(
 pub fn compute_position_vault_pda_seed(position_id: AccountId) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256 as _};
 
-    let mut bytes = [0u8; 64];
-    bytes[0..32].copy_from_slice(&position_id.to_bytes());
-    bytes[32..64].copy_from_slice(&POSITION_VAULT_PDA_DOMAIN);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&position_id.to_bytes());
+    bytes.extend_from_slice(POSITION_VAULT_PDA_DOMAIN);
 
     let mut out = [0u8; 32];
     out.copy_from_slice(Impl::hash_bytes(&bytes).as_bytes());

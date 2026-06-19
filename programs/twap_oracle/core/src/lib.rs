@@ -211,7 +211,7 @@ impl From<&PriceObservations> for Data {
 // PDA helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-const PRICE_OBSERVATIONS_PDA_SEED: [u8; 32] = [2; 32];
+const PRICE_OBSERVATIONS_PDA_SEED: &[u8] = b"PRICE_OBSERVATIONS";
 
 /// Derives the [`AccountId`] for a price source's [`PriceObservations`] PDA.
 ///
@@ -232,7 +232,7 @@ pub fn compute_price_observations_pda(
 /// Derives the [`PdaSeed`] for a price source's [`PriceObservations`].
 ///
 /// Hash input: `price_source_id (32 bytes) || window_duration_le (8 bytes) ||
-/// PRICE_OBSERVATIONS_PDA_SEED (32 bytes)`.
+/// PRICE_OBSERVATIONS_PDA_SEED`.
 #[must_use]
 pub fn compute_price_observations_pda_seed(
     price_source_id: AccountId,
@@ -240,10 +240,10 @@ pub fn compute_price_observations_pda_seed(
 ) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256};
 
-    let mut bytes = [0u8; 72];
-    bytes[..32].copy_from_slice(&price_source_id.to_bytes());
-    bytes[32..40].copy_from_slice(&window_duration.to_le_bytes());
-    bytes[40..72].copy_from_slice(&PRICE_OBSERVATIONS_PDA_SEED);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&price_source_id.to_bytes());
+    bytes.extend_from_slice(&window_duration.to_le_bytes());
+    bytes.extend_from_slice(PRICE_OBSERVATIONS_PDA_SEED);
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
@@ -253,7 +253,7 @@ pub fn compute_price_observations_pda_seed(
     )
 }
 
-const ORACLE_PRICE_ACCOUNT_PDA_SEED: [u8; 32] = [3; 32];
+const ORACLE_PRICE_ACCOUNT_PDA_SEED: &[u8] = b"ORACLE_PRICE_ACCOUNT";
 
 /// Derives the [`AccountId`] for a price source's [`OraclePriceAccount`] PDA.
 ///
@@ -274,7 +274,7 @@ pub fn compute_oracle_price_account_pda(
 /// Derives the [`PdaSeed`] for a price source's [`OraclePriceAccount`].
 ///
 /// Hash input: `price_source_id (32 bytes) || window_duration_le (8 bytes) ||
-/// ORACLE_PRICE_ACCOUNT_PDA_SEED (32 bytes)`.
+/// ORACLE_PRICE_ACCOUNT_PDA_SEED`.
 #[must_use]
 pub fn compute_oracle_price_account_pda_seed(
     price_source_id: AccountId,
@@ -282,10 +282,10 @@ pub fn compute_oracle_price_account_pda_seed(
 ) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256};
 
-    let mut bytes = [0u8; 72];
-    bytes[..32].copy_from_slice(&price_source_id.to_bytes());
-    bytes[32..40].copy_from_slice(&window_duration.to_le_bytes());
-    bytes[40..72].copy_from_slice(&ORACLE_PRICE_ACCOUNT_PDA_SEED);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&price_source_id.to_bytes());
+    bytes.extend_from_slice(&window_duration.to_le_bytes());
+    bytes.extend_from_slice(ORACLE_PRICE_ACCOUNT_PDA_SEED);
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
@@ -459,7 +459,7 @@ impl From<&CurrentTickAccount> for Data {
     }
 }
 
-const CURRENT_TICK_ACCOUNT_PDA_SEED: [u8; 32] = [4; 32];
+const CURRENT_TICK_ACCOUNT_PDA_SEED: &[u8] = b"CURRENT_TICK_ACCOUNT";
 
 /// Derives the [`AccountId`] for a price source's [`CurrentTickAccount`] PDA.
 #[must_use]
@@ -475,14 +475,14 @@ pub fn compute_current_tick_account_pda(
 
 /// Derives the [`PdaSeed`] for a price source's [`CurrentTickAccount`].
 ///
-/// Hash input: `price_source_id (32 bytes) || CURRENT_TICK_ACCOUNT_PDA_SEED (32 bytes)`.
+/// Hash input: `price_source_id (32 bytes) || CURRENT_TICK_ACCOUNT_PDA_SEED`.
 #[must_use]
 pub fn compute_current_tick_account_pda_seed(price_source_id: AccountId) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256};
 
-    let mut bytes = [0u8; 64];
-    bytes[..32].copy_from_slice(&price_source_id.to_bytes());
-    bytes[32..64].copy_from_slice(&CURRENT_TICK_ACCOUNT_PDA_SEED);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&price_source_id.to_bytes());
+    bytes.extend_from_slice(CURRENT_TICK_ACCOUNT_PDA_SEED);
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
