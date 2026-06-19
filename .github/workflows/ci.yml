@@ -125,6 +125,37 @@ jobs:
         env:
           RISC0_DEV_MODE: 1
 
+  local-sequencer-integration-tests:
+    name: Local Sequencer Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/install-risc0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cache/logos-scaffold
+            target
+          key: ${{ runner.os }}-cargo-scaffold-test-node-${{ hashFiles('**/Cargo.lock', 'scaffold.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-scaffold-test-node-
+            ${{ runner.os }}-cargo-
+
+      - name: Local sequencer integration tests
+        run: cargo test -p integration_tests --features local-sequencer-tests -- --nocapture
+        env:
+          RISC0_DEV_MODE: 1
+          RUST_TEST_THREADS: 1
+
   build-programs:
     name: Build Guest Programs
     runs-on: ubuntu-latest

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use ata_core::{compute_ata_seed, get_associated_token_account_id};
+use integration_tests::TestState as V03State;
 use nssa::{
     execute_and_prove,
     privacy_preserving_transaction::{
@@ -8,7 +9,7 @@ use nssa::{
     },
     program::Program,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
-    public_transaction, PrivateKey, PublicKey, PublicTransaction, SharedSecretKey, V03State,
+    public_transaction, PrivateKey, PublicKey, PublicTransaction, SharedSecretKey,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},

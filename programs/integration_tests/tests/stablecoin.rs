@@ -1,6 +1,7 @@
+use integration_tests::TestState as V03State;
 use nssa::{
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
-    public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
+    public_transaction, PrivateKey, PublicKey, PublicTransaction,
 };
 use nssa_core::account::{Account, AccountId, Data, Nonce};
 use stablecoin_core::{compute_position_pda, compute_position_vault_pda, Position};

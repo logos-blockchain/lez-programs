@@ -1,9 +1,10 @@
+use integration_tests::TestState as V03State;
 use nssa::{
     execute_and_prove,
     privacy_preserving_transaction::{Message, PrivacyPreservingTransaction, WitnessSet},
     program::Program,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
-    public_transaction, PrivateKey, PublicKey, PublicTransaction, SharedSecretKey, V03State,
+    public_transaction, PrivateKey, PublicKey, PublicTransaction, SharedSecretKey,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},

@@ -67,9 +67,14 @@ RISC0_DEV_MODE=1 cargo test -p token_program -p amm_program -p ata_program -p st
 # Run integration tests (dev mode skips ZK proof generation)
 RISC0_DEV_MODE=1 cargo test -p integration_tests
 
+# Run integration tests through scaffold-managed local sequencer test nodes
+RISC0_DEV_MODE=1 RUST_TEST_THREADS=1 cargo test -p integration_tests --features local-sequencer-tests -- --nocapture
+
 # Run all tests
 make test
 ```
+
+The `local-sequencer-tests` feature mirrors the suite through scaffold-managed test nodes configured by `scaffold.toml`.
 
 Integration tests live in `programs/integration_tests/tests/` and cover `token`, `amm`, and `ata` programs end-to-end through the zkVM using `RISC0_DEV_MODE=1` to skip proof generation. Each test file corresponds to a program:
 

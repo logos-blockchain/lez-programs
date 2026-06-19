@@ -8,10 +8,11 @@ use amm_core::{
     MINIMUM_LIQUIDITY,
 };
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
+use integration_tests::TestState as V03State;
 use nssa::{
     error::LeeError,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
-    public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
+    public_transaction, PrivateKey, PublicKey, PublicTransaction,
 };
 use nssa_core::account::{Account, AccountId, Data, Nonce};
 use token_core::{TokenDefinition, TokenHolding};

@@ -6,10 +6,22 @@ edition = "2021"
 [lints]
 workspace = true
 
+[features]
+local-sequencer-tests = [
+    "dep:base64",
+    "dep:borsh",
+    "dep:logos-scaffold",
+    "dep:rocksdb",
+]
+
 [dependencies]
 nssa = { workspace = true }
 nssa_core = { workspace = true, features = ["host", "test_utils"] }
 clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
+base64 = { version = "0.22", optional = true }
+borsh = { workspace = true, optional = true }
+logos-scaffold = { git = "https://github.com/logos-co/scaffold.git", rev = "9e4d148d08fd86213d3becc17d6863895048e9cb", package = "logos-scaffold", optional = true }
+rocksdb = { version = "0.24.0", default-features = false, features = ["snappy", "bindgen-runtime"], optional = true }
 amm_core = { workspace = true }
 token_core = { workspace = true }
 ata_core = { workspace = true }
