@@ -18,6 +18,7 @@ use crate::{
     mint::mint,
     new_definition::{new_definition_with_metadata, new_fungible_definition},
     print_nft::print_nft,
+    set_authority::set_authority,
     transfer::transfer,
 };
 
@@ -961,6 +962,20 @@ fn test_mint_rejects_foreign_owned_definition() {
 }
 
 #[test]
+#[should_panic(expected = "Token definition must be owned by token program")]
+fn test_set_authority_rejects_foreign_owned_definition() {
+    // A foreign-owned account carrying token-shaped data must not be able to
+    // rotate or revoke its authority through the token program.
+    let definition_account = AccountForTests::definition_account_foreign_owner();
+    let _post_states = set_authority(
+        definition_account,
+        Some(AccountId::new([7_u8; 32])),
+        vec![],
+        TOKEN_PROGRAM_ID,
+    );
+}
+
+#[test]
 #[should_panic(expected = "Mismatch Token Definition and Token Holding")]
 fn test_mint_mismatched_token_definition() {
     //
@@ -1534,13 +1549,19 @@ mod authority_tests {
             def_with_authority(),
             Some(AccountId::new([0u8; 32])),
             vec![],
+            TOKEN_PROGRAM_ID,
         );
     }
 
     #[test]
     fn set_authority_rotates_to_new_key() {
         let new_key = AccountId::new([7_u8; 32]);
-        let post_states = set_authority(def_with_authority(), Some(new_key), vec![]);
+        let post_states = set_authority(
+            def_with_authority(),
+            Some(new_key),
+            vec![],
+            TOKEN_PROGRAM_ID,
+        );
         let [def_post] = post_states.try_into().unwrap();
 
         let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
@@ -1553,7 +1574,7 @@ mod authority_tests {
 
     #[test]
     fn set_authority_revokes_permanently() {
-        let post_states = set_authority(def_with_authority(), None, vec![]);
+        let post_states = set_authority(def_with_authority(), None, vec![], TOKEN_PROGRAM_ID);
         let [def_post] = post_states.try_into().unwrap();
 
         let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
@@ -1571,6 +1592,7 @@ mod authority_tests {
             def_with_authority_revoked(),
             Some(AccountId::new([7_u8; 32])),
             vec![],
+            TOKEN_PROGRAM_ID,
         );
     }
 
@@ -1579,7 +1601,12 @@ mod authority_tests {
     fn set_authority_without_is_authorized_fails() {
         let mut def = def_with_authority();
         def.is_authorized = false;
-        let _ = set_authority(def, Some(AccountId::new([7_u8; 32])), vec![]);
+        let _ = set_authority(
+            def,
+            Some(AccountId::new([7_u8; 32])),
+            vec![],
+            TOKEN_PROGRAM_ID,
+        );
     }
 
     #[test]
@@ -1589,13 +1616,19 @@ mod authority_tests {
             def_wrong_authority(),
             Some(AccountId::new([7_u8; 32])),
             vec![],
+            TOKEN_PROGRAM_ID,
         );
     }
 
     #[test]
     fn set_authority_rotate_then_old_cannot_mint() {
         let new_key = AccountId::new([7_u8; 32]);
-        let post_states = set_authority(def_with_authority(), Some(new_key), vec![]);
+        let post_states = set_authority(
+            def_with_authority(),
+            Some(new_key),
+            vec![],
+            TOKEN_PROGRAM_ID,
+        );
         let [def_post] = post_states.try_into().unwrap();
 
         let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
@@ -1626,6 +1659,7 @@ mod authority_tests {
             def_with_authority(),
             Some(AccountId::new([7_u8; 32])),
             vec![],
+            TOKEN_PROGRAM_ID,
         );
         let [def_post] = rotate_post.try_into().unwrap();
 
@@ -1670,6 +1704,7 @@ mod authority_tests {
             def_with_authority(),
             Some(AccountId::new([7_u8; 32])),
             vec![],
+            TOKEN_PROGRAM_ID,
         );
         let [def_post] = rotate_post.try_into().unwrap();
 

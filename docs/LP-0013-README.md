@@ -15,7 +15,7 @@ The `lez-authority` crate provides a reusable, program-agnostic authority librar
 
 ## Architecture
 
-### Authority Model 
+### Authority Model
 
 `mint_authority: Option<[u8; 32]>` is added to `TokenDefinition::Fungible`:
 - `Some(key)` — the key holder can mint and rotate/revoke

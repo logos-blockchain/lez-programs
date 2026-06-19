@@ -18,7 +18,7 @@
 #   1. Start a local LEZ sequencer
 #   2. Fund the wallet
 #   3. Create token accounts
-#   4. Submit NewFungibleDefinitionWithAuthority transaction
+#   4. Submit NewFungibleDefinition transaction (with mint authority)
 #   5. Submit Mint transaction (authority-gated)
 #   6. Submit SetAuthority (revoke) transaction
 #   7. Run unit tests to verify authority logic (60 tests)
@@ -101,11 +101,11 @@ echo "[4/7] Creating token with mint authority..."
 DEF_ID_HEX=$(b58_to_hex "$DEF_ID")
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
-  -- new-fungible-definition-with-authority \
+  -- new-fungible-definition \
   --definition-target-account "$DEF_ID" \
   --holding-target-account "$SUPPLY_ID" \
   --name "DemoCoin" \
-  --initial-supply 1000000 \
+  --total-supply 1000000 \
   --mint-authority "$DEF_ID_HEX"
 echo "      Token 'DemoCoin' submitted. Initial supply: 1,000,000"
 sleep 2
@@ -115,7 +115,6 @@ NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- mint \
   --definition-account "$DEF_ID" \
-  --authority-account "$DEF_ID" \
   --user-holding-account "$RECIPIENT_ID" \
   --amount-to-mint 500000
 echo "      Mint transaction submitted. New total supply: 1,500,000"
@@ -126,7 +125,6 @@ NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 ${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- set-authority \
   --definition-account "$DEF_ID" \
-  --authority-account "$DEF_ID" \
   --new-authority none
 echo "      Authority revoked. Supply permanently fixed at 1,500,000"
 sleep 2
@@ -139,7 +137,7 @@ echo ""
 echo "================================================================"
 echo " LP-0013 Demo Complete"
 echo " Summary:"
-echo "   [1/4] NewFungibleDefinitionWithAuthority → supply=1,000,000"
+echo "   [1/4] NewFungibleDefinition (with authority) → supply=1,000,000"
 echo "   [2/4] Mint 500,000                       → supply=1,500,000"
 echo "   [3/4] SetAuthority (revoke)               → supply fixed"
 echo "   [4/4] Unit tests passing                 → all authority cases verified"

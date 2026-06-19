@@ -1,7 +1,7 @@
 use lez_authority::Ownable;
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
-    program::AccountPostState,
+    program::{AccountPostState, ProgramId},
 };
 use token_core::TokenDefinition;
 
@@ -9,7 +9,13 @@ pub fn set_authority(
     definition_account: AccountWithMetadata,
     new_authority: Option<AccountId>,
     authority_accounts: Vec<AccountWithMetadata>,
+    token_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
+    assert_eq!(
+        definition_account.account.program_owner, token_program_id,
+        "Token definition must be owned by token program"
+    );
+
     let mut definition = TokenDefinition::try_from(&definition_account.account.data)
         .expect("Token Definition account must be valid");
 

@@ -148,6 +148,7 @@ mod token {
     /// The definition account must be authorized as the current mint authority.
     #[instruction]
     pub fn set_authority(
+        ctx: ProgramContext,
         definition_account: AccountWithMetadata,
         authority_accounts: Vec<AccountWithMetadata>,
         new_authority: Option<AccountId>,
@@ -157,6 +158,7 @@ mod token {
                 definition_account,
                 new_authority,
                 authority_accounts,
+                ctx.self_program_id,
             ),
             vec![],
         ))
