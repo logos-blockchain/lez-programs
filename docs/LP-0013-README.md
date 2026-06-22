@@ -39,7 +39,7 @@ The `lez-authority` crate provides a reusable, program-agnostic authority librar
 |---|---|
 | Mint when authority revoked | Mint authority check failed: Revoked |
 | Mint by non-authority signer | Mint authority check failed: Unauthorized |
-| Mint/SetAuthority without signed authority | Mint authority must sign the transaction |
+| Mint/SetAuthority without signed authority | Mint authority must authorize the transaction |
 | SetAuthority on already-revoked | SetAuthority failed: AlreadyRevoked |
 | SetAuthority by wrong signer | SetAuthority failed: Unauthorized |
 | Create/rotate with all-zero authority | Mint authority must be a valid non-zero account ID |

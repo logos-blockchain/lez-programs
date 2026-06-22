@@ -120,7 +120,7 @@ mod token {
     }
 
     /// Mint new tokens to the holder's account.
-    /// The definition account must be authorized as the current mint authority.
+    /// The current mint authority must authorize the transaction: either the definition account itself when `authority_accounts` is empty (self/PDA authority), or an external authority account passed as the first rest account after rotation.
     /// Fresh public holders must be explicitly authorized in the same transaction.
     #[instruction]
     pub fn mint(
@@ -145,7 +145,7 @@ mod token {
 
     /// Rotate or renounce the mint authority for a fungible token definition.
     /// Pass `new_authority: None` to permanently renounce minting (fixed supply).
-    /// The definition account must be authorized as the current mint authority.
+    /// The current mint authority must authorize the transaction: either the definition account itself when `authority_accounts` is empty (self/PDA authority), or an external authority account passed as the first rest account after rotation.
     #[instruction]
     pub fn set_authority(
         ctx: ProgramContext,

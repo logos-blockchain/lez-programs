@@ -53,11 +53,11 @@ echo "      Holding:    $HOLD_ID"
 echo "[3/4] Creating token with mint authority..."
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
-  -- new-fungible-definition-with-authority \
+  -- new-fungible-definition \
   --definition-target-account "$DEF_ID" \
   --holding-target-account "$HOLD_ID" \
   --name "FixedCoin" \
-  --initial-supply 1000000 \
+  --total-supply 1000000 \
   --mint-authority "$DEF_ID_HEX"
 echo "      Token 'FixedCoin' created. Initial supply: 1,000,000"
 sleep 2

@@ -1069,3 +1069,144 @@ fn token_set_authority_revoke() {
         }
     );
 }
+
+/// Integration test for RFP-001 authority rotation flow:
+/// 1. Create a token where `Ids::token_definition()` is the initial mint authority (self-authority).
+/// 2. Rotate the mint authority to `Ids::authority()` (an external key).
+/// 3. Verify that the new external authority can mint by presenting itself as a rest account.
+/// 4. Verify that the OLD authority (def key) can no longer mint after rotation.
+#[test]
+fn token_rotate_authority_then_new_authority_can_mint() {
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    deploy_token(&mut state);
+
+    let authority_key: [u8; 32] = Ids::authority()
+        .as_ref()
+        .try_into()
+        .expect("AccountId is always 32 bytes");
+
+    // Step 1: Create token with self-authority (def account is initial mint authority).
+    let instruction = token_core::Instruction::NewFungibleDefinition {
+        name: String::from("RotCoin"),
+        total_supply: 1_000_000_u128,
+        mint_authority: Some(AccountId::new(
+            Ids::token_definition()
+                .as_ref()
+                .try_into()
+                .expect("AccountId is always 32 bytes"),
+        )),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder()],
+        vec![Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::def_key(), &Keys::holder_key()],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // Step 2: Rotate mint authority from def_key to Ids::authority() (external key).
+    // Self-authority path: no rest accounts; def_key signs.
+    let instruction = token_core::Instruction::SetAuthority {
+        new_authority: Some(AccountId::new(authority_key)),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition()],
+        vec![Nonce(1)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // Verify the authority slot now holds Ids::authority().
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("RotCoin"),
+                total_supply: 1_000_000_u128,
+                metadata_id: None,
+                authority: token_core::Authority::new(authority_key),
+            }),
+            nonce: Nonce(2),
+        }
+    );
+
+    // Seed the external authority account and the holder so they exist in state.
+    state.force_insert_account(Ids::authority(), Accounts::authority_init());
+    state.force_insert_account(Ids::holder(), Accounts::holder_init());
+
+    // Step 3: New external authority mints by presenting itself as a rest account.
+    // mint accounts: [definition_account, holder_account, ...authority_accounts]
+    let instruction = token_core::Instruction::Mint {
+        amount_to_mint: 500_000_u128,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder(), Ids::authority()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    // Verify total_supply increased and holder balance reflects the mint.
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("RotCoin"),
+                total_supply: 1_500_000_u128,
+                metadata_id: None,
+                authority: token_core::Authority::new(authority_key),
+            }),
+            nonce: Nonce(2),
+        }
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::holder()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 1_500_000_u128,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+
+    // Step 4: OLD authority (def_key self-authority path) must be rejected after rotation.
+    let instruction = token_core::Instruction::Mint {
+        amount_to_mint: 1_u128,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![Ids::token_definition(), Ids::holder()],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    let result = state.transition_from_public_transaction(&tx, 0, 0);
+    assert!(
+        result.is_err(),
+        "Old authority must be rejected after rotation"
+    );
+}

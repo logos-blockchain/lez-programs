@@ -56,11 +56,11 @@ echo "      New authority (rotation target): $NEW_AUTH_ID"
 echo "[3/5] Creating token with mint authority (the definition account)..."
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
 "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
-  -- new-fungible-definition-with-authority \
+  -- new-fungible-definition \
   --definition-target-account "$DEF_ID" \
   --holding-target-account "$HOLD_ID" \
   --name "VarCoin" \
-  --initial-supply 100000 \
+  --total-supply 100000 \
   --mint-authority "$DEF_ID_HEX"
 echo "      Token 'VarCoin' created. Initial supply: 100,000"
 sleep 2
