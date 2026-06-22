@@ -1,5 +1,7 @@
 //! Core data structures and utilities for the Stablecoin Program.
 
+pub mod math;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
