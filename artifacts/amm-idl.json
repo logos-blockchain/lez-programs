@@ -106,6 +106,41 @@
       ]
     },
     {
+      "name": "create_oracle_price_account",
+      "accounts": [
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "oracle_price_account",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "window_duration",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "new_definition",
       "accounts": [
         {

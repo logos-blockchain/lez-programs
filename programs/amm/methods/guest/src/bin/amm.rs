@@ -100,6 +100,36 @@ mod amm {
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
     }
 
+    /// Creates a TWAP oracle price account for a pool over a time window, on behalf of the AMM, via
+    /// a chained call to the configured TWAP oracle program.
+    ///
+    /// Expected accounts:
+    /// 1. `config` — initialized AMM config account.
+    /// 2. `pool` — initialized AMM pool; acts as the (authorized) price source and supplies the
+    ///    asset pair and the initial (spot) price.
+    /// 3. `oracle_price_account` — uninitialized TWAP price-account PDA for `(pool, window_duration)`.
+    /// 4. `clock` — the canonical 1-block LEZ clock account.
+    #[instruction]
+    pub fn create_oracle_price_account(
+        ctx: ProgramContext,
+        config: AccountWithMetadata,
+        pool: AccountWithMetadata,
+        oracle_price_account: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        window_duration: u64,
+    ) -> SpelResult {
+        let (post_states, chained_calls) =
+            amm_program::create_oracle_price_account::create_oracle_price_account(
+                config,
+                pool,
+                oracle_price_account,
+                clock,
+                window_duration,
+                ctx.self_program_id,
+            );
+        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
+    }
+
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
     /// A fresh user LP holding must be explicitly authorized by the caller.
     #[expect(

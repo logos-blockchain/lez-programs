@@ -81,6 +81,30 @@ pub enum Instruction {
         window_duration: u64,
     },
 
+    /// Creates a TWAP oracle price account for a pool over a time window, on behalf of the AMM,
+    /// via a chained call to the configured TWAP oracle program.
+    ///
+    /// The pool acts as the price source: the AMM authorizes it (via its pool PDA seed) so the
+    /// oracle ties the price account to this pool. The base/quote assets are the pool's token
+    /// definitions and the initial price is the pool's current spot price
+    /// (`reserve_b / reserve_a` as a Q64.64), read from the validated pool rather than supplied by
+    /// the caller — so the account cannot be seeded at a forged price. The account is overwritten
+    /// by `PublishPrice` once the feed has observations. Rejects if the price account already
+    /// exists. The clock must be the canonical 1-block LEZ clock.
+    ///
+    /// Required accounts:
+    /// - AMM Config Account (initialized)
+    /// - AMM Pool (initialized; acts as the price source)
+    /// - Oracle Price Account, uninitialized TWAP PDA derived as
+    ///   `compute_oracle_price_account_pda(twap_oracle_program_id, pool.account_id,
+    ///   window_duration)`
+    /// - Clock Account (the canonical 1-block LEZ clock)
+    CreateOraclePriceAccount {
+        /// Duration of the TWAP window this price account serves, in milliseconds. Part of the
+        /// price-account PDA seed, so each window gets a distinct account.
+        window_duration: u64,
+    },
+
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
     ///
     /// On initialization, `MINIMUM_LIQUIDITY` LP tokens are permanently locked

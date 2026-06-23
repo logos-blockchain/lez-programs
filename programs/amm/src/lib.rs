@@ -3,6 +3,7 @@
 pub use amm_core as core;
 
 pub mod add;
+pub mod create_oracle_price_account;
 pub mod create_price_observations;
 pub mod initialize;
 pub mod new_definition;

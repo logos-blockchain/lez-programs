@@ -5,6 +5,7 @@ use nssa_core::{
 };
 use twap_oracle_core::{
     compute_oracle_price_account_pda, compute_oracle_price_account_pda_seed, OraclePriceAccount,
+    OBSERVATIONS_CAPACITY,
 };
 
 /// Creates and initialises an [`OraclePriceAccount`] for a price source account and time window.
@@ -35,6 +36,12 @@ use twap_oracle_core::{
 /// - `clock.account_id` is not [`CLOCK_01_PROGRAM_ACCOUNT_ID`].
 /// - `initial_price` is zero.
 /// - the clock timestamp is zero.
+/// - `window_duration` is smaller than [`OBSERVATIONS_CAPACITY`]. Such a window can never have a
+///   matching [`PriceObservations`] account (`CreatePriceObservations` rejects it for the same
+///   reason), so `PublishPrice` could never update this account — it would be created frozen at its
+///   seed price and squat its PDA forever. Rejecting it here keeps both creation paths symmetric.
+///
+/// [`PriceObservations`]: twap_oracle_core::PriceObservations
 #[expect(
     clippy::too_many_arguments,
     reason = "instruction surface passes explicit account inputs alongside the asset pair, initial price, and window"
@@ -67,6 +74,11 @@ pub fn create_oracle_price_account(
     assert_eq!(
         clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
         "CreateOraclePriceAccount: clock account must be the canonical 1-block LEZ clock account"
+    );
+    assert!(
+        window_duration >= u64::from(OBSERVATIONS_CAPACITY),
+        "CreateOraclePriceAccount: window_duration must be >= OBSERVATIONS_CAPACITY so a matching \
+         PriceObservations account can exist and PublishPrice can update this price account"
     );
 
     let timestamp = ClockAccountData::from_bytes(clock.account.data.as_ref()).timestamp;
@@ -520,5 +532,62 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
+    }
+
+    /// A window smaller than `OBSERVATIONS_CAPACITY` can never have a matching `PriceObservations`
+    /// account, so `PublishPrice` could never update the price account; it must be rejected at
+    /// creation. The uninitialised account is built at the small window's PDA so the window check —
+    /// not the PDA check — is what fires.
+    #[test]
+    #[should_panic(expected = "window_duration must be >= OBSERVATIONS_CAPACITY")]
+    fn window_duration_below_capacity_panics() {
+        let small_window = u64::from(OBSERVATIONS_CAPACITY)
+            .checked_sub(1)
+            .expect("OBSERVATIONS_CAPACITY is non-zero");
+        let uninit = AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: compute_oracle_price_account_pda(
+                ORACLE_PROGRAM_ID,
+                price_source_id(),
+                small_window,
+            ),
+        };
+        create_oracle_price_account(
+            uninit,
+            price_source_authorized(),
+            clock_account(TIMESTAMP),
+            base_asset(),
+            quote_asset(),
+            INITIAL_PRICE,
+            small_window,
+            ORACLE_PROGRAM_ID,
+        );
+    }
+
+    /// A window exactly equal to `OBSERVATIONS_CAPACITY` is the minimum accepted value.
+    #[test]
+    fn window_duration_equal_to_capacity_is_accepted() {
+        let window = u64::from(OBSERVATIONS_CAPACITY);
+        let uninit = AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: compute_oracle_price_account_pda(
+                ORACLE_PROGRAM_ID,
+                price_source_id(),
+                window,
+            ),
+        };
+        let post_states = create_oracle_price_account(
+            uninit,
+            price_source_authorized(),
+            clock_account(TIMESTAMP),
+            base_asset(),
+            quote_asset(),
+            INITIAL_PRICE,
+            window,
+            ORACLE_PROGRAM_ID,
+        );
+        assert_eq!(post_states.len(), 3);
     }
 }

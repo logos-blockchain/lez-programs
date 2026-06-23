@@ -71,6 +71,14 @@ impl Ids {
         )
     }
 
+    fn oracle_price_account(window_duration: u64) -> AccountId {
+        twap_oracle_core::compute_oracle_price_account_pda(
+            Self::twap_oracle_program(),
+            Self::pool_definition(),
+            window_duration,
+        )
+    }
+
     fn token_a_definition() -> AccountId {
         AccountId::new([3; 32])
     }
@@ -1297,6 +1305,31 @@ fn execute_create_price_observations(
 }
 
 #[cfg(test)]
+fn execute_create_oracle_price_account(
+    state: &mut V03State,
+    window_duration: u64,
+) -> Result<(), NssaError> {
+    let instruction = amm_core::Instruction::CreateOraclePriceAccount { window_duration };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::config(),
+            Ids::pool_definition(),
+            Ids::oracle_price_account(window_duration),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0)
+}
+
+#[cfg(test)]
 fn execute_sync_reserves(state: &mut V03State) {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
@@ -1519,6 +1552,69 @@ fn amm_creates_price_observations_on_twap_oracle() {
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
         Accounts::pool_definition_new_init()
+    );
+}
+
+#[test]
+fn amm_creates_oracle_price_account_on_twap_oracle() {
+    let mut state = state_with_pool_created_via_new_definition();
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+
+    // CreateOraclePriceAccount rejects a zero clock timestamp, so advance the clock first.
+    let now = 1_700_000_000_000u64;
+    advance_clock(&mut state, now);
+
+    // The price-account PDA does not exist before the AMM creates it.
+    assert_eq!(
+        state.get_account_by_id(Ids::oracle_price_account(window_duration)),
+        Account::default()
+    );
+
+    execute_create_oracle_price_account(&mut state, window_duration).unwrap();
+
+    // The price account now exists, is owned by the TWAP oracle program, and is seeded with the
+    // pool as its source, the pool's asset pair, and the pool's current spot price (reserve_b /
+    // reserve_a as a Q64.64) — all derived on-chain, none caller-supplied — stamped with the clock.
+    let account = state.get_account_by_id(Ids::oracle_price_account(window_duration));
+    assert_ne!(account, Account::default());
+    assert_eq!(account.program_owner, Ids::twap_oracle_program());
+
+    let price = twap_oracle_core::OraclePriceAccount::try_from(&account.data)
+        .expect("price account must hold a valid OraclePriceAccount");
+    assert_eq!(price.source_id, Ids::pool_definition());
+    assert_eq!(price.base_asset, Ids::token_a_definition());
+    assert_eq!(price.quote_asset, Ids::token_b_definition());
+    assert_eq!(
+        price.price,
+        amm_core::spot_price_q64_64(Balances::vault_a_init(), Balances::vault_b_init())
+    );
+    assert_eq!(price.timestamp, now);
+    assert_eq!(price.confidence_interval, 0);
+
+    // The AMM config and pool are left unchanged by the operation.
+    assert_eq!(state.get_account_by_id(Ids::config()), Accounts::config());
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_new_init()
+    );
+}
+
+#[test]
+fn amm_create_oracle_price_account_rejects_existing_account() {
+    let mut state = state_with_pool_created_via_new_definition();
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+    advance_clock(&mut state, 1_700_000_000_000u64);
+
+    // First creation succeeds.
+    execute_create_oracle_price_account(&mut state, window_duration).unwrap();
+    let after_first = state.get_account_by_id(Ids::oracle_price_account(window_duration));
+
+    // A second creation for the same (pool, window) is rejected and leaves the account intact.
+    let result = execute_create_oracle_price_account(&mut state, window_duration);
+    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert_eq!(
+        state.get_account_by_id(Ids::oracle_price_account(window_duration)),
+        after_first
     );
 }
 
