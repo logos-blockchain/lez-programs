@@ -1720,11 +1720,78 @@ fn read_observations(
 
 #[cfg(test)]
 fn read_current_tick(state: &V03State) -> i32 {
+    read_current_tick_account(state).tick
+}
+
+#[cfg(test)]
+fn read_current_tick_account(state: &V03State) -> twap_oracle_core::CurrentTickAccount {
     twap_oracle_core::CurrentTickAccount::try_from(
         &state.get_account_by_id(Ids::current_tick_account()).data,
     )
     .expect("current tick account must hold a valid CurrentTickAccount")
-    .tick
+}
+
+#[cfg(test)]
+fn read_oracle_price(
+    state: &V03State,
+    window_duration: u64,
+) -> twap_oracle_core::OraclePriceAccount {
+    twap_oracle_core::OraclePriceAccount::try_from(
+        &state
+            .get_account_by_id(Ids::oracle_price_account(window_duration))
+            .data,
+    )
+    .expect("oracle price account must hold a valid OraclePriceAccount")
+}
+
+/// Calls the oracle's permissionless `PublishPrice` directly (the AMM does not wrap it): computes
+/// the TWAP from the pool's observations — extrapolating the tail from the current tick — and
+/// writes it to the oracle price account.
+#[cfg(test)]
+fn execute_publish_price(state: &mut V03State, window_duration: u64) -> Result<(), NssaError> {
+    let instruction = twap_oracle_core::Instruction::PublishPrice {
+        price_source_id: Ids::pool_definition(),
+        window_duration,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::twap_oracle_program(),
+        vec![
+            Ids::price_observations(window_duration),
+            Ids::oracle_price_account(window_duration),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0)
+}
+
+/// Builds a state whose pool feed already holds several observations: creates the observations
+/// account, then (advance clock, swap, record) three times at 60s spacing — above the sampling
+/// guard's ~42s minimum, so every record is accepted. The clock ends at 180_000 and the buffer
+/// holds 4 entries (1 from creation + 3 recorded). Shared scaffolding for the `PublishPrice` tests.
+#[cfg(test)]
+fn state_with_recorded_window(window_duration: u64) -> V03State {
+    let mut state = state_for_amm_tests();
+    execute_create_price_observations(&mut state, window_duration).unwrap();
+    for (step, swap) in [1u64, 2, 3]
+        .into_iter()
+        .zip([Swap::AtoB, Swap::AtoB, Swap::BtoA])
+    {
+        advance_clock(&mut state, step * 60_000);
+        match swap {
+            Swap::AtoB => execute_swap_a_to_b(&mut state, 1_000, 1),
+            Swap::BtoA => execute_swap_b_to_a(&mut state, 1_000, 1),
+        }
+        execute_record_tick(&mut state, window_duration).unwrap();
+    }
+    state
 }
 
 /// End-to-end TWAP accumulation: a pool's price moves over time through real swaps, the oracle
@@ -1873,6 +1940,165 @@ fn amm_twap_record_tick_sampling_guard_skips_calls_below_min_interval() {
 enum Swap {
     AtoB,
     BtoA,
+}
+
+/// `CreateOraclePriceAccount` end-to-end through the zkVM: a signing account acts as the authorized
+/// price source (the AMM does not route this for a pool-owned source), and the oracle claims and
+/// initializes the consumer-facing [`twap_oracle_core::OraclePriceAccount`] PDA.
+#[test]
+fn amm_twap_create_oracle_price_account() {
+    let mut state = state_for_amm_tests();
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+
+    // The price source must be authorized; a signing user provides that (a pool PDA cannot sign).
+    let source = Ids::user_a();
+    let price_account_id = twap_oracle_core::compute_oracle_price_account_pda(
+        Ids::twap_oracle_program(),
+        source,
+        window_duration,
+    );
+
+    // CreateOraclePriceAccount rejects a zero clock timestamp, so move the clock forward first.
+    advance_clock(&mut state, 5_000);
+
+    let initial_price = 1u128 << 64; // Q64.64 1.0
+    let instruction = twap_oracle_core::Instruction::CreateOraclePriceAccount {
+        base_asset: Ids::token_a_definition(),
+        quote_asset: Ids::token_b_definition(),
+        initial_price,
+        window_duration,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::twap_oracle_program(),
+        vec![price_account_id, source, CLOCK_01_PROGRAM_ACCOUNT_ID],
+        vec![current_nonce(&state, source)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    let account = state.get_account_by_id(price_account_id);
+    assert_eq!(account.program_owner, Ids::twap_oracle_program());
+    let price = twap_oracle_core::OraclePriceAccount::try_from(&account.data)
+        .expect("oracle price account must hold a valid OraclePriceAccount");
+    assert_eq!(price.price, initial_price);
+    assert_eq!(price.timestamp, 5_000);
+    assert_eq!(price.source_id, source);
+    assert_eq!(price.base_asset, Ids::token_a_definition());
+    assert_eq!(price.quote_asset, Ids::token_b_definition());
+    assert_eq!(price.confidence_interval, 0);
+}
+
+/// End-to-end publish: with the clock at the newest observation the tail is empty, so the published
+/// price is exactly the stored-window arithmetic-mean tick, converted to a `Q64.64` price. Proves
+/// the full pipeline — observations built by real swaps + `RecordTick`, then consumed by
+/// `PublishPrice` — composes through the zkVM-facing interface.
+#[test]
+fn amm_twap_publish_price_publishes_window_average() {
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+    let mut state = state_with_recorded_window(window_duration);
+    // Register the consumer-facing price account through the AMM (seeded with the pool's spot
+    // price); PublishPrice overwrites its price/timestamp below.
+    execute_create_oracle_price_account(&mut state, window_duration).unwrap();
+
+    // The clock sits at the last record (180_000) == the newest observation's timestamp, so
+    // [t2, now] is empty and the TWAP is the average over [t1, t2].
+    let obs = read_observations(&state, window_duration);
+    assert_eq!(obs.total_entries, 4);
+    let t1 = &obs.entries[0];
+    let t2 = &obs.entries[usize::try_from(obs.write_index).unwrap() - 1];
+    let elapsed = i64::try_from(t2.timestamp - t1.timestamp).unwrap();
+    let expected_tick = (t2.tick_cumulative - t1.tick_cumulative).div_euclid(elapsed);
+    let expected_price =
+        twap_oracle_core::tick_to_oracle_price(i32::try_from(expected_tick).unwrap());
+
+    execute_publish_price(&mut state, window_duration).unwrap();
+
+    let published = read_oracle_price(&state, window_duration);
+    assert_eq!(
+        published.timestamp, t2.timestamp,
+        "publish stamps the price with now"
+    );
+    assert_eq!(published.price, expected_price);
+    // Identity fields are untouched by publish.
+    assert_eq!(published.source_id, Ids::pool_definition());
+    assert_eq!(published.base_asset, Ids::token_a_definition());
+}
+
+/// End-to-end publish with an elapsed tail: the clock advances past the newest observation without
+/// a new record, so `PublishPrice` must project the accumulator to `now` from the current tick. The
+/// published timestamp is `now` (a fresh price, not a stale window), and the value reflects the
+/// extrapolated tail.
+#[test]
+fn amm_twap_publish_price_extrapolates_tail_to_now() {
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+    let mut state = state_with_recorded_window(window_duration);
+    // Register the consumer-facing price account through the AMM (seeded with the pool's spot
+    // price); PublishPrice overwrites its price/timestamp below.
+    execute_create_oracle_price_account(&mut state, window_duration).unwrap();
+
+    // Advance well past the newest observation (180_000) with no intervening record.
+    let now = 240_000u64;
+    advance_clock(&mut state, now);
+
+    // Reproduce the tail split (see twap_oracle::publish_price): [t2, boundary] carries the tick
+    // stored at t2, [boundary, now] carries the clamped live tick.
+    let obs = read_observations(&state, window_duration);
+    let ct = read_current_tick_account(&state);
+    let t1 = &obs.entries[0];
+    let t2 = &obs.entries[usize::try_from(obs.write_index).unwrap() - 1];
+    let boundary = ct.last_updated.clamp(t2.timestamp, now);
+    let pre_ms = i64::try_from(boundary - t2.timestamp).unwrap();
+    let post_ms = i64::try_from(now - boundary).unwrap();
+    let delta = (ct.tick - obs.last_recorded_tick).clamp(
+        -twap_oracle_core::MAX_TICK_DELTA,
+        twap_oracle_core::MAX_TICK_DELTA,
+    );
+    let clamped_tick = obs.last_recorded_tick + delta;
+    let cum_now = t2.tick_cumulative
+        + i64::from(obs.last_recorded_tick) * pre_ms
+        + i64::from(clamped_tick) * post_ms;
+    let elapsed = i64::try_from(now - t1.timestamp).unwrap();
+    let expected_tick = (cum_now - t1.tick_cumulative).div_euclid(elapsed);
+    let expected_price =
+        twap_oracle_core::tick_to_oracle_price(i32::try_from(expected_tick).unwrap());
+
+    execute_publish_price(&mut state, window_duration).unwrap();
+
+    let published = read_oracle_price(&state, window_duration);
+    assert_eq!(
+        published.timestamp, now,
+        "publish must project the timestamp forward to now"
+    );
+    assert_eq!(published.price, expected_price);
+}
+
+/// `PublishPrice` is a no-op when fewer than two observations exist: there is nothing to average,
+/// so the price account is left untouched (consumers keep seeing its prior value).
+#[test]
+fn amm_twap_publish_price_noop_with_fewer_than_two_observations() {
+    let mut state = state_for_amm_tests();
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+
+    // Register the feed and its price account through the AMM. The clock must be non-zero for
+    // CreateOraclePriceAccount, so advance it first; the observations feed keeps only its single
+    // creation entry (no RecordTick), so PublishPrice has nothing to average.
+    advance_clock(&mut state, 100_000);
+    execute_create_price_observations(&mut state, window_duration).unwrap(); // total_entries == 1
+    execute_create_oracle_price_account(&mut state, window_duration).unwrap();
+    let seeded = read_oracle_price(&state, window_duration);
+
+    // Time passes, but the feed still has only the creation observation.
+    advance_clock(&mut state, 500_000);
+    execute_publish_price(&mut state, window_duration).unwrap();
+
+    assert_eq!(
+        read_oracle_price(&state, window_duration),
+        seeded,
+        "publish with < 2 observations must leave the price account unchanged"
+    );
 }
 
 #[test]
