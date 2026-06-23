@@ -1,0 +1,19 @@
+[package]
+name = "benchmark"
+version = "0.1.0"
+edition = "2021"
+
+# Its own workspace root: this crate is EXCLUDED from the repo workspace (see the root Cargo.toml
+# `exclude` list) so that `cargo {test,clippy,build} --workspace`, the Makefile targets, and CI
+# never compile it. It pulls the heavy `risc0-zkvm` `prove` feature and only exists to produce the
+# cycle benchmarks in `tests/`. Run it explicitly:
+#   cargo test --manifest-path programs/benchmark/Cargo.toml -- --ignored --nocapture
+[workspace]
+
+[dependencies]
+nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3" }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3", features = ["host"] }
+twap_oracle_core = { path = "../twap_oracle/core" }
+twap-oracle-methods = { path = "../twap_oracle/methods" }
+# `prove` exposes `ExecutorImpl`/`Session` (the cycle split); we only execute, never prove.
+risc0-zkvm = { version = "=3.0.5", features = ["prove"] }

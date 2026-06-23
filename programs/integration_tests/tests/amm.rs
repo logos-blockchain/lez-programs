@@ -1566,6 +1566,219 @@ fn amm_create_price_observations_without_current_tick_account_fails() {
     );
 }
 
+/// Advances the canonical 1-block clock to `timestamp` by submitting a clock transaction, mirroring
+/// how the sequencer ticks the clock between blocks. `RecordTick` reads this account, so the TWAP
+/// tests use it to simulate the passage of time between observations.
+#[cfg(test)]
+fn advance_clock(state: &mut V03State, timestamp: u64) {
+    let message = public_transaction::Message::try_new(
+        nssa::program::Program::clock().id(),
+        nssa::CLOCK_PROGRAM_ACCOUNT_IDS.to_vec(),
+        vec![],
+        timestamp,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+}
+
+/// Calls the TWAP oracle's permissionless `RecordTick` directly (it is not wrapped by the AMM),
+/// folding the pool's current tick into its observations ring buffer for the given window.
+#[cfg(test)]
+fn execute_record_tick(state: &mut V03State, window_duration: u64) -> Result<(), NssaError> {
+    let instruction = twap_oracle_core::Instruction::RecordTick {
+        price_source_id: Ids::pool_definition(),
+        window_duration,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::twap_oracle_program(),
+        vec![
+            Ids::price_observations(window_duration),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0)
+}
+
+#[cfg(test)]
+fn read_observations(
+    state: &V03State,
+    window_duration: u64,
+) -> twap_oracle_core::PriceObservations {
+    twap_oracle_core::PriceObservations::try_from(
+        &state
+            .get_account_by_id(Ids::price_observations(window_duration))
+            .data,
+    )
+    .expect("observations account must hold a valid PriceObservations")
+}
+
+#[cfg(test)]
+fn read_current_tick(state: &V03State) -> i32 {
+    twap_oracle_core::CurrentTickAccount::try_from(
+        &state.get_account_by_id(Ids::current_tick_account()).data,
+    )
+    .expect("current tick account must hold a valid CurrentTickAccount")
+    .tick
+}
+
+/// End-to-end TWAP accumulation: a pool's price moves over time through real swaps, the oracle
+/// folds each new tick into its observations buffer via `RecordTick`, and the time-weighted average
+/// recovered from two snapshots matches the expected arithmetic mean of the intervening ticks.
+///
+/// This is the headline path the rest of the suite never exercises: every other test stops at the
+/// freshly-created buffer (`write_index == 1`), so the accumulator math and the consult subtraction
+/// are only proven here, through the zkVM-facing instruction interface.
+#[test]
+fn amm_twap_observations_accumulate_across_swaps_and_yield_time_weighted_average() {
+    let mut state = state_for_amm_tests();
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+    execute_create_price_observations(&mut state, window_duration).unwrap();
+
+    // The creation observation sits at index 0 with a zero cumulative and the genesis timestamp.
+    let created = read_observations(&state, window_duration);
+    assert_eq!(created.write_index, 1);
+    assert_eq!(created.total_entries, 1);
+    assert_eq!(created.entries[0].timestamp, 0);
+    assert_eq!(created.entries[0].tick_cumulative, 0);
+
+    // Each step advances the clock by a fixed interval, moves the price with a swap, then records
+    // the resulting tick. The interval (60s) is above the sampling guard's minimum
+    // (window / OBSERVATIONS_CAPACITY ≈ 42s), so every record is accepted.
+    let step_ms = 60_000u64;
+    let mut prev_timestamp = 0u64;
+    let mut prev_cumulative = 0i64;
+    let mut prev_recorded_tick = created.last_recorded_tick;
+    let mut snapshots: Vec<(u64, i32, i64)> = Vec::new();
+
+    for (step, do_swap) in [1u64, 2, 3].into_iter().zip([
+        // a->b, a->b (price keeps falling), then b->a (price rebounds), so the recorded ticks vary
+        // in both directions across the window.
+        Swap::AtoB,
+        Swap::AtoB,
+        Swap::BtoA,
+    ]) {
+        let now = step * step_ms;
+        advance_clock(&mut state, now);
+        match do_swap {
+            Swap::AtoB => execute_swap_a_to_b(&mut state, 1_000, 1),
+            Swap::BtoA => execute_swap_b_to_a(&mut state, 1_000, 1),
+        }
+
+        let current_tick = read_current_tick(&state);
+        // Keep moves within the per-observation clamp so the integrated tick equals the raw tick;
+        // the clamping path itself is covered by the oracle's unit tests.
+        assert!(
+            (current_tick - prev_recorded_tick).abs() <= twap_oracle_core::MAX_TICK_DELTA,
+            "swap move must stay within MAX_TICK_DELTA for this test's exact-equality assertions"
+        );
+
+        execute_record_tick(&mut state, window_duration).unwrap();
+
+        let elapsed = i64::try_from(now - prev_timestamp).unwrap();
+        let expected_cumulative = prev_cumulative + i64::from(current_tick) * elapsed;
+
+        let obs = read_observations(&state, window_duration);
+        let written_index = usize::try_from(step).unwrap();
+        assert_eq!(
+            obs.total_entries,
+            step + 1,
+            "each accepted record appends exactly one entry"
+        );
+        assert_eq!(obs.write_index, u32::try_from(step + 1).unwrap());
+        assert_eq!(obs.entries[written_index].timestamp, now);
+        assert_eq!(
+            obs.entries[written_index].tick_cumulative, expected_cumulative,
+            "cumulative must advance by tick × elapsed_ms"
+        );
+        // last_recorded_tick tracks the raw tick for the next delta computation.
+        assert_eq!(obs.last_recorded_tick, current_tick);
+
+        snapshots.push((now, current_tick, expected_cumulative));
+        prev_timestamp = now;
+        prev_cumulative = expected_cumulative;
+        prev_recorded_tick = current_tick;
+    }
+
+    // Consult the oracle the way a consumer would: the arithmetic-mean tick over [t1, t3] is the
+    // difference of the two cumulative snapshots divided by the elapsed time.
+    let (t1, _tick1, cum1) = snapshots[0];
+    let (t3, _tick3, cum3) = snapshots[2];
+    let time_weighted_tick = (cum3 - cum1) / i64::try_from(t3 - t1).unwrap();
+
+    // With equal 60s intervals the time-weighted mean reduces to the plain average of the ticks
+    // recorded at t2 and t3 (the two increments inside the (t1, t3] window).
+    let tick2 = snapshots[1].1;
+    let tick3 = snapshots[2].1;
+    assert_eq!(
+        time_weighted_tick,
+        (i64::from(tick2) + i64::from(tick3)) / 2
+    );
+
+    // Sanity: the average lies between the extremes it was built from.
+    let lo = i64::from(tick2.min(tick3));
+    let hi = i64::from(tick2.max(tick3));
+    assert!((lo..=hi).contains(&time_weighted_tick));
+}
+
+/// `RecordTick` is permissionless and may be called on every block; its sampling guard silently
+/// skips writes until `window / OBSERVATIONS_CAPACITY` ms have elapsed. This drives that guard
+/// through the real instruction path: a too-soon call is a no-op that also leaves the delta
+/// baseline untouched, and a later call past the interval resumes recording.
+#[test]
+fn amm_twap_record_tick_sampling_guard_skips_calls_below_min_interval() {
+    let mut state = state_for_amm_tests();
+    let window_duration = 24 * 60 * 60 * 1_000u64;
+    execute_create_price_observations(&mut state, window_duration).unwrap();
+
+    let baseline = read_observations(&state, window_duration);
+    let min_interval = window_duration / u64::from(twap_oracle_core::OBSERVATIONS_CAPACITY);
+
+    // Move the price, then record well within the minimum interval: the guard must skip the write.
+    advance_clock(&mut state, min_interval - 1);
+    execute_swap_a_to_b(&mut state, 1_000, 1);
+    execute_record_tick(&mut state, window_duration).unwrap();
+
+    let after_skip = read_observations(&state, window_duration);
+    assert_eq!(
+        after_skip.write_index, baseline.write_index,
+        "a too-soon record must not advance the ring buffer"
+    );
+    assert_eq!(after_skip.total_entries, baseline.total_entries);
+    assert_eq!(
+        after_skip.last_recorded_tick, baseline.last_recorded_tick,
+        "the skipped record must not move the delta baseline either"
+    );
+
+    // Past the minimum interval the same call resumes recording.
+    advance_clock(&mut state, min_interval + 1);
+    let current_tick = read_current_tick(&state);
+    execute_record_tick(&mut state, window_duration).unwrap();
+
+    let after_write = read_observations(&state, window_duration);
+    assert_eq!(after_write.write_index, baseline.write_index + 1);
+    assert_eq!(after_write.total_entries, baseline.total_entries + 1);
+    assert_eq!(after_write.last_recorded_tick, current_tick);
+    let written = usize::try_from(baseline.write_index).unwrap();
+    assert_eq!(after_write.entries[written].timestamp, min_interval + 1);
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum Swap {
+    AtoB,
+    BtoA,
+}
+
 #[test]
 fn amm_remove_liquidity() {
     let mut state = state_for_amm_tests();

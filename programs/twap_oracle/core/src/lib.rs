@@ -168,16 +168,14 @@ pub const MAX_TICK_DELTA: i32 = 9_116;
 
 /// Number of entries in each price feed.
 ///
-/// 6 396 is the maximum that fits within the `DATA_MAX_LENGTH = 100 KiB` runtime ceiling.
-/// Each [`ObservationEntry`] is 16 bytes (`timestamp` 8 + `tick_cumulative` 8); fixed overhead
-/// is 52 bytes (`price_source_id` 32 + `write_index` 4 + `total_entries` 8 +
-/// `last_recorded_tick` 4 + Borsh `Vec` length prefix 4), leaving 102 348 bytes for entries:
-/// `floor(102 348 / 16) = 6 396`.
+/// Bounded by the zkVM cycle budget, not storage: `RecordTick` commits this owned account on both
+/// read and write, so cost scales with size and a full 100 KiB buffer exceeds the public-execution
+/// limit. See `programs/benchmark/README.md` and `programs/benchmark/tests/twap_cycle_bench.rs`.
 ///
-/// The effective history window depends on the `window_duration` used to derive the feed PDA
-/// and the sampling guard: `min_interval = window_duration / OBSERVATIONS_CAPACITY`. A 24 h feed
-/// samples every ~13 s; a 7 d feed every ~94 s; a 30 d feed every ~7 min.
-pub const OBSERVATIONS_CAPACITY: u32 = 6396;
+/// Capacity primarily affects resolution: `min_interval = window_duration / OBSERVATIONS_CAPACITY`
+/// (integer division), so full-buffer coverage is approximately `window_duration` (up to
+/// `< OBSERVATIONS_CAPACITY` ms shorter) — only resolution changes meaningfully.
+pub const OBSERVATIONS_CAPACITY: u32 = 2048;
 
 /// A single price entry written to a [`PriceObservations`].
 #[derive(

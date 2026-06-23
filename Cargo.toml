@@ -23,7 +23,10 @@ exclude = [
     "programs/amm/methods/guest",
     "programs/ata/methods/guest",
     "programs/stablecoin/methods/guest",
-    "programs/twap_oracle/methods/guest"
+    "programs/twap_oracle/methods/guest",
+    # Cycle benchmarks: standalone crate, kept out of --workspace builds/tests/CI. Run on demand
+    # with `cargo test --manifest-path programs/benchmark/Cargo.toml -- --ignored --nocapture`.
+    "programs/benchmark"
 ]
 resolver = "2"
 
