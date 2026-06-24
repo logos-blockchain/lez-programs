@@ -1,6 +1,10 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
 
+import Logos.Theme
+
+import "components/wallet"
+
 // Self-contained navigation bar — styling is independent of any view's theme.
 // Use currentIndex to read the active tab; tabChanged(index) fires on selection.
 Item {
@@ -9,13 +13,20 @@ Item {
     property int currentIndex: 0
     readonly property var tabs: ["Trade", "Liquidity"]
 
+    // Wallet wiring, passed down from Main.qml.
+    property var backend: null
+    property var accountModel: null
+
+    // Address of the account currently selected in the header control.
+    readonly property string selectedAddress: accountControl.selectedAddress
+
     signal tabChanged(int index)
 
     implicitHeight: 56
 
     Rectangle {
         anchors.fill: parent
-        color: "#ffffff"
+        color: Theme.palette.background
 
         // Bottom separator
         Rectangle {
@@ -23,7 +34,7 @@ Item {
             anchors.right:  parent.right
             anchors.bottom: parent.bottom
             height: 1
-            color: Qt.rgba(0, 0, 0, 0.08)
+            color: Theme.palette.borderSecondary
         }
 
         RowLayout {
@@ -35,7 +46,7 @@ Item {
             // App identity
             Text {
                 text: "Logos AMM"
-                color: "#111111"
+                color: Theme.palette.text
                 font.pixelSize: 17
                 font.weight: Font.Bold
             }
@@ -55,7 +66,7 @@ Item {
                         height: 36
                         width:  tabLabel.implicitWidth + 28
                         radius: 18
-                        color:  active ? "#111111" : "transparent"
+                        color:  active ? Theme.palette.backgroundSecondary : "transparent"
 
                         Behavior on color { ColorAnimation { duration: 150 } }
 
@@ -63,7 +74,7 @@ Item {
                             id: tabLabel
                             anchors.centerIn: parent
                             text:        modelData
-                            color:       active ? "#ffffff" : "#666666"
+                            color:       active ? Theme.palette.text : Theme.palette.textSecondary
                             font.pixelSize: 14
                             font.weight: active ? Font.Medium : Font.Normal
 
@@ -80,6 +91,14 @@ Item {
                         }
                     }
                 }
+            }
+
+            // Wallet / account control on the far right.
+            AccountControl {
+                id: accountControl
+                Layout.leftMargin: 12
+                backend: root.backend
+                accountModel: root.accountModel
             }
         }
     }
