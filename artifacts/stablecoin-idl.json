@@ -3,6 +3,168 @@
   "name": "stablecoin",
   "instructions": [
     {
+      "name": "initialize_program",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "redemption_price_state",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_master_holding",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "collateral_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "market_price_oracle",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "freeze_authority_account_id",
+          "type": "account_id"
+        },
+        {
+          "name": "initial_stability_fee_per_millisecond",
+          "type": "u128"
+        },
+        {
+          "name": "initial_controller_proportional_gain",
+          "type": "i128"
+        },
+        {
+          "name": "initial_controller_integral_gain",
+          "type": "i128"
+        },
+        {
+          "name": "initial_minimum_collateralization_ratio",
+          "type": "u128"
+        },
+        {
+          "name": "minimum_milliseconds_between_rate_updates",
+          "type": "u64"
+        },
+        {
+          "name": "maximum_oracle_price_age_milliseconds",
+          "type": "u64"
+        },
+        {
+          "name": "initial_redemption_price",
+          "type": "u128"
+        },
+        {
+          "name": "stablecoin_name",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "accrue_stability_fee",
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_stability_fee_per_millisecond",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "new_rate",
+          "type": "u128"
+        }
+      ]
+    },
+    {
       "name": "open_position",
       "accounts": [
         {
@@ -30,7 +192,19 @@
           "init": false
         },
         {
-          "name": "token_definition",
+          "name": "collateral_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
           "writable": false,
           "signer": false,
           "init": false
@@ -38,7 +212,76 @@
       ],
       "args": [
         {
-          "name": "collateral_amount",
+          "name": "position_nonce",
+          "type": "u64"
+        },
+        {
+          "name": "initial_collateral_amount",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "generate_debt",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "position",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_stablecoin_holding",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "redemption_price_state",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "market_price_oracle",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
           "type": "u128"
         }
       ]
@@ -67,6 +310,30 @@
         {
           "name": "destination",
           "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "redemption_price_state",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
           "signer": false,
           "init": false
         }
@@ -104,6 +371,24 @@
           "writable": true,
           "signer": true,
           "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
         }
       ],
       "args": [
@@ -116,12 +401,20 @@
   ],
   "accounts": [
     {
-      "name": "Position",
+      "name": "ProtocolParameters",
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "collateral_vault_id",
+            "name": "admin_account_id",
+            "type": "account_id"
+          },
+          {
+            "name": "freeze_authority_account_id",
+            "type": "account_id"
+          },
+          {
+            "name": "stablecoin_definition_id",
             "type": "account_id"
           },
           {
@@ -129,12 +422,108 @@
             "type": "account_id"
           },
           {
+            "name": "market_price_oracle_id",
+            "type": "account_id"
+          },
+          {
+            "name": "stability_fee_per_millisecond",
+            "type": "u128"
+          },
+          {
+            "name": "controller_proportional_gain",
+            "type": "i128"
+          },
+          {
+            "name": "controller_integral_gain",
+            "type": "i128"
+          },
+          {
+            "name": "minimum_collateralization_ratio",
+            "type": "u128"
+          },
+          {
+            "name": "minimum_milliseconds_between_rate_updates",
+            "type": "u64"
+          },
+          {
+            "name": "maximum_oracle_price_age_milliseconds",
+            "type": "u64"
+          },
+          {
+            "name": "is_frozen",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StabilityFeeAccumulator",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "accumulated_rate_at_last_accrual",
+            "type": "u128"
+          },
+          {
+            "name": "last_accrued_at",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RedemptionPriceState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "redemption_price_at_last_update",
+            "type": "u128"
+          },
+          {
+            "name": "redemption_rate_per_millisecond",
+            "type": "u128"
+          },
+          {
+            "name": "controller_integral_term",
+            "type": "i128"
+          },
+          {
+            "name": "last_updated_at",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Position",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner_account_id",
+            "type": "account_id"
+          },
+          {
+            "name": "position_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "vault_account_id",
+            "type": "account_id"
+          },
+          {
             "name": "collateral_amount",
             "type": "u128"
           },
           {
-            "name": "debt_amount",
+            "name": "normalized_debt_amount",
             "type": "u128"
+          },
+          {
+            "name": "opened_at",
+            "type": "u64"
           }
         ]
       }
