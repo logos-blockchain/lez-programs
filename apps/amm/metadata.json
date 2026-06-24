@@ -4,14 +4,15 @@
   "type": "ui_qml",
   "category": "amm",
   "description": "UI module for the AMM program",
+  "main": "amm_ui_plugin",
   "view": "qml/Main.qml",
   "icon": "icons/amm.png",
-  "dependencies": [],
+  "dependencies": ["logos_execution_zone"],
 
   "nix": {
     "packages": {
       "build": [],
-      "runtime": []
+      "runtime": ["qt6.qtdeclarative", "zstd", "krb5", "abseil-cpp"]
     },
     "external_libraries": [],
     "cmake": {
