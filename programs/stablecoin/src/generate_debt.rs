@@ -103,6 +103,11 @@ pub fn generate_debt(
         market_price_oracle.account_id, params.market_price_oracle_id,
         "Market price oracle does not match protocol parameters"
     );
+    assert_ne!(
+        market_price_oracle.account,
+        Account::default(),
+        "Market price oracle account must be initialized"
+    );
     let oracle = OraclePriceAccount::try_from(&market_price_oracle.account.data)
         .expect("Market price oracle account must hold a valid OraclePriceAccount");
     assert_eq!(

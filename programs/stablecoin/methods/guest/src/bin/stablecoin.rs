@@ -115,6 +115,10 @@ mod stablecoin {
     }
 
     /// Open a new collateral-only position for the calling owner.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "instruction interface passes explicit position, vault, token, and protocol accounts"
+    )]
     #[instruction]
     pub fn open_position(
         ctx: ProgramContext,
@@ -230,6 +234,10 @@ mod stablecoin {
     }
 
     /// Repay stablecoin debt against an existing position.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "instruction interface passes explicit position, token, fee, and protocol accounts"
+    )]
     #[instruction]
     pub fn repay_debt(
         ctx: ProgramContext,

@@ -24,6 +24,7 @@ use twap_oracle_core::OraclePriceAccount;
 const POSITION_NONCE: u64 = 7;
 const CLOCK_START: u64 = 1_000;
 const Q64_ONE: u128 = 18_446_744_073_709_551_616;
+const TEST_STABILITY_FEE_RATE: u128 = FIXED_POINT_ONE + 1_000_000_000_000_000;
 
 struct Keys;
 struct Ids;
@@ -498,7 +499,7 @@ fn fungible_supply(state: &V03State, account_id: AccountId) -> u128 {
 #[test]
 fn stablecoin_initialize_then_accrue_fee() {
     let mut state = state_for_stablecoin_tests();
-    let rate = FIXED_POINT_ONE + FIXED_POINT_ONE / 10;
+    let rate = TEST_STABILITY_FEE_RATE;
     initialize_protocol(&mut state, rate);
 
     let params = protocol_parameters(&state);
@@ -538,7 +539,7 @@ fn stablecoin_initialize_then_accrue_fee() {
 #[test]
 fn stablecoin_set_fee_rate_anchors_old_rate_before_switching() {
     let mut state = state_for_stablecoin_tests();
-    let old_rate = FIXED_POINT_ONE + FIXED_POINT_ONE / 10;
+    let old_rate = TEST_STABILITY_FEE_RATE;
     initialize_protocol(&mut state, old_rate);
 
     advance_clock(&mut state, CLOCK_START + 2);

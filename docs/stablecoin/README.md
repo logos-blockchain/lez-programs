@@ -594,7 +594,7 @@ These are properties the protocol maintains across every state-changing instruct
 | Constant / parameter | Bound | Rationale |
 |---|---|---|
 | `FIXED_POINT_ONE` | `10^27` | RAY precision; standard. |
-| `stability_fee_per_millisecond` | `FIXED_POINT_ONE ≤ x ≤ FIXED_POINT_ONE * 2` | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). Upper bound is an anti-typo sanity cap (≈100%/ms) — it does **not** by itself prevent `compound_rate` overflow; that is handled by clamping the elapsed window (`MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS`, below). Real values are `1 + ε` where `ε ≈ 1.5×10^15` for ~5% annual. |
+| `stability_fee_per_millisecond` | `FIXED_POINT_ONE ≤ x ≤ FIXED_POINT_ONE + FIXED_POINT_ONE / 100_000_000_000` | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). Upper bound caps the per-ms increment at `1e-11`, so `compound_rate(x, MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS)` stays inside `u128` under the one-day clamp. Real values are `1 + ε` where `ε ≈ 1.5×10^15` for ~5% annual. |
 | `minimum_collateralization_ratio` | `FIXED_POINT_ONE * 1.1 ≤ x ≤ FIXED_POINT_ONE * 10` | Lower bound = 110% (any less is liquidation-immediate); upper bound = 1000% (sanity cap). Real values are 130–200%. |
 | `controller_proportional_gain` magnitude | `|x| ≤ FIXED_POINT_ONE * 10^3` | Practical upper bound for rate-explosion guard (RFP R2). Real values are tiny (≈10^6–10^12 raw) because they scale price-error × per-ms rate-output. Rescaled `÷10^3` from the per-second formulation. |
 | `controller_integral_gain` magnitude | `|x| ≤ FIXED_POINT_ONE` | As proportional, but rescaled `÷10^6` (it also multiplies `Δt`, now in ms): real values ≈10^3–10^9 raw. |

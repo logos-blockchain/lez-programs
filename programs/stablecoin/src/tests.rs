@@ -18,7 +18,7 @@ use stablecoin_core::{
     compute_stablecoin_definition_pda, compute_stablecoin_definition_pda_seed,
     compute_stablecoin_master_holding_pda, compute_stablecoin_master_holding_pda_seed, Position,
     ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator, FIXED_POINT_ONE,
-    MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+    MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS, MAX_STABILITY_FEE_PER_MILLISECOND,
 };
 use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::OraclePriceAccount;
@@ -789,6 +789,19 @@ fn set_stability_fee_rejects_rate_below_one() {
 }
 
 #[test]
+#[should_panic(expected = "Stability fee per millisecond is out of bounds")]
+fn set_stability_fee_rejects_rate_above_safe_maximum() {
+    crate::set_stability_fee_per_millisecond::set_stability_fee_per_millisecond(
+        admin_account(),
+        protocol_parameters_account(false),
+        stability_fee_accumulator_account(FIXED_POINT_ONE, 1_000),
+        clock_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        MAX_STABILITY_FEE_PER_MILLISECOND + 1,
+    );
+}
+
+#[test]
 fn open_position_stores_normalized_position_and_emits_token_calls() {
     let (post_states, chained_calls) = crate::open_position::open_position(
         owner_account(),
@@ -954,6 +967,24 @@ fn generate_debt_rejects_wrong_stablecoin_definition() {
         stability_fee_accumulator_account(FIXED_POINT_ONE, 1_000),
         redemption_price_state_account(FIXED_POINT_ONE, 1_000),
         oracle_account(1_000),
+        protocol_parameters_account(false),
+        clock_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Market price oracle account must be initialized")]
+fn generate_debt_rejects_uninitialized_market_price_oracle() {
+    crate::generate_debt::generate_debt(
+        owner_account(),
+        position_account(1_000, 0),
+        stablecoin_definition_account(0),
+        user_stablecoin_holding(0),
+        stability_fee_accumulator_account(FIXED_POINT_ONE, 1_000),
+        redemption_price_state_account(FIXED_POINT_ONE, 1_000),
+        uninit(oracle_id()),
         protocol_parameters_account(false),
         clock_account(1_000),
         STABLECOIN_PROGRAM_ID,
