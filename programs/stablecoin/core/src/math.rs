@@ -4,7 +4,7 @@
 //! `u128` integers scaled by [`FIXED_POINT_ONE`], so the integer `1.0` is
 //! `10^27`. Multiplications use `U256` intermediates to avoid overflow.
 
-use primitive_types::U256;
+use alloy_primitives::U256;
 
 /// The value `1.0` in our 27-decimal fixed-point representation.
 ///
@@ -50,7 +50,7 @@ pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
         quotient
     } else {
         quotient
-            .checked_add(U256::one())
+            .checked_add(U256::ONE)
             .expect("mul_div_ceil: ceil increment overflows U256")
     };
     ceiled
@@ -70,9 +70,8 @@ pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
 ///
 /// # Overflow
 /// NOT self-bounding. For any `per_millisecond_rate > FIXED_POINT_ONE` this
-/// eventually overflows `u128` as `milliseconds_elapsed` grows — the §8 rate
-/// bound alone does not prevent it. Callers MUST clamp the elapsed window to
-/// `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` (spec §5.3) before calling.
+/// eventually overflows `u128` as `milliseconds_elapsed` grows. Callers MUST
+/// clamp the elapsed window to a bounded maximum before calling.
 #[must_use]
 pub fn compound_rate(per_millisecond_rate: u128, milliseconds_elapsed: u64) -> u128 {
     if milliseconds_elapsed == 0 {

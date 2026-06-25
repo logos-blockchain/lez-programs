@@ -3551,9 +3551,11 @@ dependencies = [
 name = "stablecoin_core"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "borsh",
  "nssa_core",
  "risc0-zkvm",
+ "ruint",
  "serde",
  "spel-framework-macros",
  "twap_oracle_core",
