@@ -1114,6 +1114,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lez-authority"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2047,6 +2055,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "lee_core",
+ "lez-authority",
  "serde",
  "spel-framework-macros",
 ]

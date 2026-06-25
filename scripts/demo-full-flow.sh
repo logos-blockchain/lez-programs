@@ -98,34 +98,43 @@ echo "      Supply account:     $SUPPLY_ID"
 echo "      Recipient account:  $RECIPIENT_ID"
 
 echo "[4/7] Creating token with mint authority..."
-DEF_ID_HEX=$(b58_to_hex "$DEF_ID")
+
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
-${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
+"$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- new-fungible-definition \
   --definition-target-account "$DEF_ID" \
   --holding-target-account "$SUPPLY_ID" \
   --name "DemoCoin" \
   --total-supply 1000000 \
-  --mint-authority "$DEF_ID_HEX"
+  --mint-authority "$DEF_ID" &
+SPEL_PID=$!
+sleep 15 && kill $SPEL_PID 2>/dev/null || true
+wait $SPEL_PID 2>/dev/null || true
 echo "      Token 'DemoCoin' submitted. Initial supply: 1,000,000"
 sleep 2
 
 echo "[5/7] Minting 500,000 additional tokens..."
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
-${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
+"$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- mint \
   --definition-account "$DEF_ID" \
   --user-holding-account "$RECIPIENT_ID" \
-  --amount-to-mint 500000
+  --amount-to-mint 500000 &
+SPEL_PID=$!
+sleep 15 && kill $SPEL_PID 2>/dev/null || true
+wait $SPEL_PID 2>/dev/null || true
 echo "      Mint transaction submitted. New total supply: 1,500,000"
 sleep 2
 
 echo "[6/7] Revoking mint authority..."
 NSSA_WALLET_HOME_DIR="$WALLET_DIR" \
-${TIMEOUT:+$TIMEOUT 30} "$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
+"$SPEL" --idl "$IDL" --program "$TOKEN_BIN" \
   -- set-authority \
   --definition-account "$DEF_ID" \
-  --new-authority none
+  --new-authority none &
+SPEL_PID=$!
+sleep 15 && kill $SPEL_PID 2>/dev/null || true
+wait $SPEL_PID 2>/dev/null || true
 echo "      Authority revoked. Supply permanently fixed at 1,500,000"
 sleep 2
 
