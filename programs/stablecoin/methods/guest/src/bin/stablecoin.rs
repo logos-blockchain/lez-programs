@@ -20,9 +20,13 @@ mod stablecoin {
     #[instruction]
     pub fn open_position(
         ctx: ProgramContext,
+        #[account(signer)]
         owner: AccountWithMetadata,
+        #[account(init)]
         position: AccountWithMetadata,
+        #[account(init)]
         vault: AccountWithMetadata,
+        #[account(mut, signer)]
         user_holding: AccountWithMetadata,
         token_definition: AccountWithMetadata,
         collateral_amount: u128,
@@ -53,9 +57,13 @@ mod stablecoin {
     #[instruction]
     pub fn withdraw_collateral(
         ctx: ProgramContext,
+        #[account(signer)]
         owner: AccountWithMetadata,
+        #[account(mut)]
         position: AccountWithMetadata,
+        #[account(mut)]
         vault: AccountWithMetadata,
+        #[account(mut)]
         destination: AccountWithMetadata,
         amount: u128,
     ) -> SpelResult {
@@ -83,9 +91,13 @@ mod stablecoin {
     #[instruction]
     pub fn repay_debt(
         ctx: ProgramContext,
+        #[account(signer)]
         owner: AccountWithMetadata,
+        #[account(mut)]
         position: AccountWithMetadata,
+        #[account(mut)]
         stablecoin_definition: AccountWithMetadata,
+        #[account(mut, signer)]
         user_stablecoin_holding: AccountWithMetadata,
         amount: u128,
     ) -> SpelResult {

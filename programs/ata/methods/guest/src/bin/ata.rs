@@ -22,8 +22,10 @@ mod ata {
     #[instruction]
     pub fn create(
         ctx: ProgramContext,
+        #[account(mut)]
         owner: AccountWithMetadata,
         token_definition: AccountWithMetadata,
+        #[account(mut)]
         ata_account: AccountWithMetadata,
         token_program_id: ProgramId,
     ) -> SpelResult {
@@ -45,8 +47,11 @@ mod ata {
     #[instruction]
     pub fn transfer(
         ctx: ProgramContext,
+        #[account(signer)]
         owner: AccountWithMetadata,
+        #[account(mut)]
         sender_ata: AccountWithMetadata,
+        #[account(mut)]
         recipient: AccountWithMetadata,
         token_program_id: ProgramId,
         amount: u128,
@@ -69,8 +74,11 @@ mod ata {
     #[instruction]
     pub fn burn(
         ctx: ProgramContext,
+        #[account(signer)]
         owner: AccountWithMetadata,
+        #[account(mut)]
         holder_ata: AccountWithMetadata,
+        #[account(mut)]
         token_definition: AccountWithMetadata,
         token_program_id: ProgramId,
         amount: u128,

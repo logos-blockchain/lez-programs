@@ -7,13 +7,13 @@
       "accounts": [
         {
           "name": "sender",
-          "writable": false,
-          "signer": false,
+          "writable": true,
+          "signer": true,
           "init": false
         },
         {
           "name": "recipient",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         }
@@ -30,15 +30,15 @@
       "accounts": [
         {
           "name": "definition_target_account",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "writable": true,
+          "signer": true,
+          "init": true
         },
         {
           "name": "holding_target_account",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "writable": true,
+          "signer": true,
+          "init": true
         }
       ],
       "args": [
@@ -57,21 +57,21 @@
       "accounts": [
         {
           "name": "definition_target_account",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "writable": true,
+          "signer": true,
+          "init": true
         },
         {
           "name": "holding_target_account",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "writable": true,
+          "signer": true,
+          "init": true
         },
         {
           "name": "metadata_target_account",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "writable": true,
+          "signer": true,
+          "init": true
         }
       ],
       "args": [
@@ -100,9 +100,9 @@
         },
         {
           "name": "account_to_initialize",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "writable": true,
+          "signer": true,
+          "init": true
         }
       ],
       "args": []
@@ -112,14 +112,14 @@
       "accounts": [
         {
           "name": "definition_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_holding_account",
-          "writable": false,
-          "signer": false,
+          "writable": true,
+          "signer": true,
           "init": false
         }
       ],
@@ -135,13 +135,13 @@
       "accounts": [
         {
           "name": "definition_account",
-          "writable": false,
-          "signer": false,
+          "writable": true,
+          "signer": true,
           "init": false
         },
         {
           "name": "user_holding_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         }
@@ -158,15 +158,15 @@
       "accounts": [
         {
           "name": "master_account",
-          "writable": false,
-          "signer": false,
+          "writable": true,
+          "signer": true,
           "init": false
         },
         {
           "name": "printed_account",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "writable": true,
+          "signer": true,
+          "init": true
         }
       ],
       "args": []

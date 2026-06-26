@@ -7,7 +7,7 @@
       "accounts": [
         {
           "name": "owner",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -19,7 +19,7 @@
         },
         {
           "name": "ata_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         }
@@ -37,18 +37,18 @@
         {
           "name": "owner",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
           "name": "sender_ata",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "recipient",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         }
@@ -70,18 +70,18 @@
         {
           "name": "owner",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
           "name": "holder_ata",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "token_definition",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         }

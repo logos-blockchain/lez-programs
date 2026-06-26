@@ -1,4 +1,8 @@
 #![cfg_attr(not(test), no_main)]
+#![allow(
+    clippy::cloned_ref_to_slice_refs,
+    reason = "SPEL macro emits cloned validation slices for one-account instructions"
+)]
 
 use std::num::NonZeroU128;
 
@@ -27,6 +31,7 @@ mod amm {
     #[instruction]
     pub fn initialize(
         ctx: ProgramContext,
+        #[account(init)]
         config: AccountWithMetadata,
         token_program_id: ProgramId,
         twap_oracle_program_id: ProgramId,
@@ -50,7 +55,9 @@ mod amm {
     #[instruction]
     pub fn update_config(
         ctx: ProgramContext,
+        #[account(mut)]
         config: AccountWithMetadata,
+        #[account(signer)]
         authority: AccountWithMetadata,
         token_program_id: Option<ProgramId>,
         twap_oracle_program_id: Option<ProgramId>,
@@ -83,6 +90,7 @@ mod amm {
         config: AccountWithMetadata,
         pool: AccountWithMetadata,
         current_tick_account: AccountWithMetadata,
+        #[account(init)]
         price_observations: AccountWithMetadata,
         clock: AccountWithMetadata,
         window_duration: u64,
@@ -114,6 +122,7 @@ mod amm {
         ctx: ProgramContext,
         config: AccountWithMetadata,
         pool: AccountWithMetadata,
+        #[account(init)]
         oracle_price_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         window_duration: u64,
@@ -140,14 +149,23 @@ mod amm {
     pub fn new_definition(
         ctx: ProgramContext,
         config: AccountWithMetadata,
+        #[account(init)]
         pool: AccountWithMetadata,
+        #[account(mut)]
         vault_a: AccountWithMetadata,
+        #[account(mut)]
         vault_b: AccountWithMetadata,
+        #[account(init)]
         pool_definition_lp: AccountWithMetadata,
+        #[account(init)]
         lp_lock_holding: AccountWithMetadata,
+        #[account(mut, signer)]
         user_holding_a: AccountWithMetadata,
+        #[account(mut, signer)]
         user_holding_b: AccountWithMetadata,
+        #[account(mut)]
         user_holding_lp: AccountWithMetadata,
+        #[account(init)]
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         token_a_amount: u128,
@@ -185,13 +203,21 @@ mod amm {
     pub fn add_liquidity(
         ctx: ProgramContext,
         config: AccountWithMetadata,
+        #[account(mut)]
         pool: AccountWithMetadata,
+        #[account(mut)]
         vault_a: AccountWithMetadata,
+        #[account(mut)]
         vault_b: AccountWithMetadata,
+        #[account(mut)]
         pool_definition_lp: AccountWithMetadata,
+        #[account(mut, signer)]
         user_holding_a: AccountWithMetadata,
+        #[account(mut, signer)]
         user_holding_b: AccountWithMetadata,
+        #[account(mut)]
         user_holding_lp: AccountWithMetadata,
+        #[account(mut)]
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         min_amount_liquidity: u128,
@@ -228,13 +254,21 @@ mod amm {
     pub fn remove_liquidity(
         ctx: ProgramContext,
         config: AccountWithMetadata,
+        #[account(mut)]
         pool: AccountWithMetadata,
+        #[account(mut)]
         vault_a: AccountWithMetadata,
+        #[account(mut)]
         vault_b: AccountWithMetadata,
+        #[account(mut)]
         pool_definition_lp: AccountWithMetadata,
+        #[account(mut)]
         user_holding_a: AccountWithMetadata,
+        #[account(mut)]
         user_holding_b: AccountWithMetadata,
+        #[account(mut, signer)]
         user_holding_lp: AccountWithMetadata,
+        #[account(mut)]
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         remove_liquidity_amount: u128,
@@ -272,11 +306,17 @@ mod amm {
     pub fn swap_exact_input(
         ctx: ProgramContext,
         config: AccountWithMetadata,
+        #[account(mut)]
         pool: AccountWithMetadata,
+        #[account(mut)]
         vault_a: AccountWithMetadata,
+        #[account(mut)]
         vault_b: AccountWithMetadata,
+        #[account(mut)]
         user_holding_a: AccountWithMetadata,
+        #[account(mut)]
         user_holding_b: AccountWithMetadata,
+        #[account(mut)]
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         swap_amount_in: u128,
@@ -311,11 +351,17 @@ mod amm {
     pub fn swap_exact_output(
         ctx: ProgramContext,
         config: AccountWithMetadata,
+        #[account(mut)]
         pool: AccountWithMetadata,
+        #[account(mut)]
         vault_a: AccountWithMetadata,
+        #[account(mut)]
         vault_b: AccountWithMetadata,
+        #[account(mut)]
         user_holding_a: AccountWithMetadata,
+        #[account(mut)]
         user_holding_b: AccountWithMetadata,
+        #[account(mut)]
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         exact_amount_out: u128,
@@ -346,9 +392,14 @@ mod amm {
     pub fn sync_reserves(
         ctx: ProgramContext,
         config: AccountWithMetadata,
+        #[account(mut)]
         pool: AccountWithMetadata,
+        // vault_a / vault_b are only read to compute balances in
+        // amm_program::sync::sync_reserves (their post-states are unchanged
+        // clones), so they are not writable — no `mut` metadata.
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
+        #[account(mut)]
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
     ) -> SpelResult {

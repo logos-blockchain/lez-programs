@@ -7,14 +7,14 @@
       "accounts": [
         {
           "name": "price_observations",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "price_source",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
@@ -40,14 +40,14 @@
       "accounts": [
         {
           "name": "oracle_price_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "price_source",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
@@ -81,14 +81,14 @@
       "accounts": [
         {
           "name": "current_tick_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "price_source",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
@@ -116,7 +116,7 @@
         },
         {
           "name": "oracle_price_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -149,7 +149,7 @@
       "accounts": [
         {
           "name": "price_observations",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -182,14 +182,14 @@
       "accounts": [
         {
           "name": "current_tick_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "price_source",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {

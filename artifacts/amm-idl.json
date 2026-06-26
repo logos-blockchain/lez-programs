@@ -7,9 +7,9 @@
       "accounts": [
         {
           "name": "config",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         }
       ],
       "args": [
@@ -32,14 +32,14 @@
       "accounts": [
         {
           "name": "config",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "authority",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         }
       ],
@@ -87,9 +87,9 @@
         },
         {
           "name": "price_observations",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "clock",
@@ -122,9 +122,9 @@
         },
         {
           "name": "oracle_price_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "clock",
@@ -151,57 +151,57 @@
         },
         {
           "name": "pool",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "vault_a",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "vault_b",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "pool_definition_lp",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "lp_lock_holding",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "user_holding_a",
-          "writable": false,
-          "signer": false,
+          "writable": true,
+          "signer": true,
           "init": false
         },
         {
           "name": "user_holding_b",
-          "writable": false,
-          "signer": false,
+          "writable": true,
+          "signer": true,
           "init": false
         },
         {
           "name": "user_holding_lp",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "current_tick_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "clock",
@@ -240,49 +240,49 @@
         },
         {
           "name": "pool",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "vault_a",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "vault_b",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "pool_definition_lp",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_holding_a",
-          "writable": false,
-          "signer": false,
+          "writable": true,
+          "signer": true,
           "init": false
         },
         {
           "name": "user_holding_b",
-          "writable": false,
-          "signer": false,
+          "writable": true,
+          "signer": true,
           "init": false
         },
         {
           "name": "user_holding_lp",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "current_tick_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -323,49 +323,49 @@
         },
         {
           "name": "pool",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "vault_a",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "vault_b",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "pool_definition_lp",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_holding_a",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_holding_b",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_holding_lp",
-          "writable": false,
-          "signer": false,
+          "writable": true,
+          "signer": true,
           "init": false
         },
         {
           "name": "current_tick_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -406,37 +406,37 @@
         },
         {
           "name": "pool",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "vault_a",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "vault_b",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_holding_a",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_holding_b",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "current_tick_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -477,37 +477,37 @@
         },
         {
           "name": "pool",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "vault_a",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "vault_b",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_holding_a",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_holding_b",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "current_tick_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -548,7 +548,7 @@
         },
         {
           "name": "pool",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -566,7 +566,7 @@
         },
         {
           "name": "current_tick_account",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },

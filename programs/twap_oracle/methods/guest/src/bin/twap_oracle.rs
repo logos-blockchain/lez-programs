@@ -22,7 +22,9 @@ mod twap_oracle {
     #[instruction]
     pub fn create_price_observations(
         ctx: ProgramContext,
+        #[account(init)]
         price_observations: AccountWithMetadata,
+        #[account(signer)]
         price_source: AccountWithMetadata,
         clock: AccountWithMetadata,
         initial_tick: i32,
@@ -56,7 +58,9 @@ mod twap_oracle {
     #[instruction]
     pub fn create_oracle_price_account(
         ctx: ProgramContext,
+        #[account(init)]
         oracle_price_account: AccountWithMetadata,
+        #[account(signer)]
         price_source: AccountWithMetadata,
         clock: AccountWithMetadata,
         base_asset: AccountId,
@@ -89,7 +93,9 @@ mod twap_oracle {
     #[instruction]
     pub fn create_current_tick_account(
         ctx: ProgramContext,
+        #[account(init)]
         current_tick_account: AccountWithMetadata,
+        #[account(signer)]
         price_source: AccountWithMetadata,
         clock: AccountWithMetadata,
         initial_price: u128,
@@ -118,6 +124,7 @@ mod twap_oracle {
     pub fn publish_price(
         ctx: ProgramContext,
         price_observations: AccountWithMetadata,
+        #[account(mut)]
         oracle_price_account: AccountWithMetadata,
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
@@ -145,6 +152,7 @@ mod twap_oracle {
     #[instruction]
     pub fn record_tick(
         ctx: ProgramContext,
+        #[account(mut)]
         price_observations: AccountWithMetadata,
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
@@ -173,7 +181,9 @@ mod twap_oracle {
     #[instruction]
     pub fn update_current_tick(
         ctx: ProgramContext,
+        #[account(mut)]
         current_tick_account: AccountWithMetadata,
+        #[account(signer)]
         price_source: AccountWithMetadata,
         clock: AccountWithMetadata,
         price: u128,
