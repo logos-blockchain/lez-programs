@@ -89,5 +89,10 @@ Item {
             anchors.fill: parent
             visible: navbar.currentIndex === 1
         }
+
+        CreatePoolPage {
+            anchors.fill: parent
+            visible: navbar.currentIndex === 2
+        }
     }
 }
