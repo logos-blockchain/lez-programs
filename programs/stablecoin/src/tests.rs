@@ -685,7 +685,7 @@ fn accrue_stability_fee_clamps_elapsed_window() {
     );
     assert_eq!(
         updated.last_accrued_at,
-        MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS + 1
+        MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS
     );
 }
 

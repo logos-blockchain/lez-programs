@@ -16,7 +16,7 @@ use crate::shared::{
 /// Mints stablecoin debt against an existing position.
 ///
 /// # Panics
-/// Panics if the position is not authorized, the oracle is stale, or the post-mint position would
+/// Panics if the owner is not authorized, the oracle is stale, or the post-mint position would
 /// be undercollateralized.
 #[expect(
     clippy::too_many_arguments,
