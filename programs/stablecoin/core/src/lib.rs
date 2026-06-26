@@ -2,10 +2,15 @@
 
 pub mod math;
 
+pub mod protocol_parameters;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{PdaSeed, ProgramId},
+};
+pub use protocol_parameters::{
+    compute_protocol_parameters_pda, compute_protocol_parameters_pda_seed, ProtocolParameters,
 };
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;

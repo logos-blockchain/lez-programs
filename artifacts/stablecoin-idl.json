@@ -116,6 +116,62 @@
   ],
   "accounts": [
     {
+      "name": "ProtocolParameters",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin_account_id",
+            "type": "account_id"
+          },
+          {
+            "name": "freeze_authority_account_id",
+            "type": "account_id"
+          },
+          {
+            "name": "stablecoin_definition_id",
+            "type": "account_id"
+          },
+          {
+            "name": "collateral_definition_id",
+            "type": "account_id"
+          },
+          {
+            "name": "market_price_oracle_id",
+            "type": "account_id"
+          },
+          {
+            "name": "stability_fee_per_millisecond",
+            "type": "u128"
+          },
+          {
+            "name": "controller_proportional_gain",
+            "type": "i128"
+          },
+          {
+            "name": "controller_integral_gain",
+            "type": "i128"
+          },
+          {
+            "name": "minimum_collateralization_ratio",
+            "type": "u128"
+          },
+          {
+            "name": "minimum_milliseconds_between_rate_updates",
+            "type": "u64"
+          },
+          {
+            "name": "maximum_oracle_price_age_milliseconds",
+            "type": "u64"
+          },
+          {
+            "name": "is_frozen",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
       "name": "Position",
       "type": {
         "kind": "struct",
