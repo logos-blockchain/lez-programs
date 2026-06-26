@@ -45,7 +45,7 @@ Item {
         height: show ? 32 : 0
         visible: height > 0
         clip: true
-        color: Theme.palette.error
+        color: Theme.palette.warning
 
         Behavior on height { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
@@ -56,7 +56,7 @@ Item {
             elide: Text.ElideMiddle
             font.pixelSize: 12
             font.weight: Font.Medium
-            color: Theme.palette.text
+            color: Theme.palette.background
             text: qsTr("Unable to connect to network")
         }
     }
@@ -88,6 +88,8 @@ Item {
 
         LiquidityPage {
             anchors.fill: parent
+            backend: root.ready ? root.backend : null
+            runtime: logos
             visible: navbar.currentIndex === 1
         }
     }

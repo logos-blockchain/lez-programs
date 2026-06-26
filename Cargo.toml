@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "apps/amm/client",
     "programs/token/core",
     "programs/token",
     "programs/token/methods",

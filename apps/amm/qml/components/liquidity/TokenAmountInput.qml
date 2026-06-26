@@ -1,156 +1,135 @@
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Layouts 1.15
+pragma ComponentBehavior: Bound
 
-Rectangle {
+import QtQuick
+
+import "../shared"
+
+AmmTokenAmountSurface {
     id: root
 
-    property alias text: amountField.text
+    property string text: ""
     property string balance: ""
-    property string errorText: ""
     property string helperText: ""
-    property string label: ""
-    property string token: ""
+    property bool showMaxButton: true
+    property var tokenData: null
+    property var tokens: []
+    property string selectedTokenId: ""
+    property bool tokenInvalid: false
+    property bool tokenSelectionEnabled: true
+    property bool editPending: false
+    property string pendingValue: ""
+    property var disabledReasonForCode: function(code) {
+        return qsTr("This token is unavailable (%1).").arg(code || "unknown")
+    }
+    property var detailForToken: function(token) { return "" }
+    property alias popup: tokenModal
+    property alias query: tokenModal.searchText
+    readonly property var rows: tokenModal.rows
 
     signal editingChanged(string value)
+    signal editingCommitted(string value)
     signal maxClicked
+    signal tokenSelected(string tokenId)
+    signal tokenEntered(string value)
 
-    color: "#151515"
-    implicitHeight: content.implicitHeight + 20
-    radius: 8
-    border.color: root.errorText.length > 0 ? "#D85F4B" : amountField.activeFocus ? "#F26A21" : "#343434"
-    border.width: 1
+    amount: root.text
+    supportingText: root.helperText
+    supportingActionText: root.showMaxButton ? qsTr("MAX") : ""
+    accessory: tokenActions
+    accessoryWidth: width < 360 ? 132 : 180
+    accessoryHeight: root.balance.length > 0 ? 58 : 40
 
-    Accessible.name: root.label
-    Accessible.role: Accessible.EditableText
-
-    ColumnLayout {
-        id: content
-
-        anchors.fill: parent
-        anchors.margins: 10
-        spacing: 8
-
-        RowLayout {
-            spacing: 8
-
-            Layout.fillWidth: true
-
-            Text {
-                color: "#A9A098"
-                elide: Text.ElideRight
-                font.pixelSize: 12
-                text: root.label
-
-                Layout.fillWidth: true
-            }
-
-            Text {
-                color: "#E7E1D8"
-                elide: Text.ElideRight
-                font.bold: true
-                font.pixelSize: 12
-                horizontalAlignment: Text.AlignRight
-                text: root.token
-
-                Layout.maximumWidth: 76
-            }
+    onAmountEdited: function(value) {
+        root.pendingValue = value
+        root.editPending = true
+        root.editingChanged(value)
+        commitTimer.restart()
+    }
+    onAmountEditingFinished: function(value) {
+        root.pendingValue = value
+        root.commitPendingEdit()
+    }
+    onSupportingActionClicked: root.maxClicked()
+    onTextChanged: {
+        if (root.editPending && root.text !== root.pendingValue) {
+            commitTimer.stop()
+            root.editPending = false
         }
+    }
 
-        RowLayout {
-            spacing: 8
+    Timer {
+        id: commitTimer
 
-            Layout.fillWidth: true
+        interval: 250
+        repeat: false
+        onTriggered: root.commitPendingEdit()
+    }
 
-            TextField {
-                id: amountField
+    Component {
+        id: tokenActions
 
-                activeFocusOnTab: true
-                color: "#E7E1D8"
-                font.bold: true
-                font.pixelSize: 18
-                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                placeholderText: qsTr("0")
-                selectByMouse: true
-                selectedTextColor: "#151515"
-                selectionColor: "#F26A21"
-                validator: RegularExpressionValidator {
-                    regularExpression: /[0-9]*([.][0-9]*)?/
-                }
-
-                Accessible.name: root.label
-
-                Layout.fillWidth: true
-                Layout.minimumHeight: 44
-
-                onTextEdited: root.editingChanged(text)
-
-                background: Rectangle {
-                    border.color: amountField.activeFocus ? "#F26A21" : "#343434"
-                    border.width: 1
-                    color: amountField.activeFocus ? "#1F1B18" : "#101010"
-                    radius: 6
-                }
-            }
-
-            Button {
-                id: maxButton
-
-                activeFocusOnTab: true
-                focusPolicy: Qt.StrongFocus
-                hoverEnabled: true
-                text: qsTr("MAX")
-
-                Accessible.name: qsTr("Use maximum %1 balance").arg(root.token)
-
-                Layout.minimumHeight: 44
-                Layout.preferredWidth: 58
-
-                onClicked: root.maxClicked()
-
-                contentItem: Text {
-                    color: maxButton.activeFocus || maxButton.hovered ? "#151515" : "#F26A21"
-                    font.bold: true
-                    font.pixelSize: 11
-                    horizontalAlignment: Text.AlignHCenter
-                    text: maxButton.text
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                background: Rectangle {
-                    border.color: "#F26A21"
-                    border.width: 1
-                    color: maxButton.pressed ? "#D95C1E" : maxButton.hovered || maxButton.activeFocus ? "#F26A21" : "#201712"
-                    radius: 6
-                }
-            }
+        AmmTokenAccessory {
+            theme: root.theme
+            enabled: root.tokenSelectionEnabled
+            invalid: root.tokenInvalid
+            hasToken: root.tokenData !== null
+            tokenColor: root.tokenColor(root.tokenData)
+            tokenLetter: root.tokenLetter(root.tokenData)
+            tokenText: root.tokenText(root.tokenData)
+            balance: root.balance
+            accessibleName: qsTr("Select %1").arg(root.label)
+            onClicked: tokenModal.open()
         }
+    }
 
-        RowLayout {
-            spacing: 8
+    TokenSelectorModal {
+        id: tokenModal
 
-            Layout.fillWidth: true
+        theme: root.theme
+        tokens: root.tokens
+        title: qsTr("Select a token")
+        searchPlaceholder: qsTr("Search name or address")
+        popularTitle: qsTr("Quick select")
+        listTitle: qsTr("All tokens")
+        allowCustomEntry: true
+        disabledReasonForCode: root.disabledReasonForCode
+        detailForToken: root.detailForToken
 
-            Text {
-                color: root.errorText.length > 0 ? "#F08A76" : root.helperText.length > 0 ? "#F26A21" : "#A9A098"
-                elide: Text.ElideRight
-                font.pixelSize: 11
-                text: root.errorText.length > 0 ? root.errorText : root.helperText
-                visible: text.length > 0
-
-                Layout.fillWidth: true
-            }
-
-            Text {
-                color: "#A9A098"
-                elide: Text.ElideRight
-                font.pixelSize: 11
-                horizontalAlignment: Text.AlignRight
-                text: qsTr("Balance %1").arg(root.balance)
-
-                Layout.alignment: Qt.AlignRight
-                Layout.maximumWidth: 150
-            }
+        onTokenSelected: function(token) {
+            root.tokenSelected(String(token.definitionId || token.address || ""))
         }
+        onTokenEntered: function(value) { root.tokenEntered(value) }
+    }
+
+    function acceptInput(value) {
+        tokenModal.acceptInput(value)
+    }
+
+    function commitPendingEdit() {
+        if (!root.editPending)
+            return
+        commitTimer.stop()
+        root.editPending = false
+        root.editingCommitted(root.pendingValue)
+    }
+
+    function tokenText(token) {
+        if (!token)
+            return qsTr("Select token")
+        return String(token.symbol || token.name || root.shortId(root.selectedTokenId))
+    }
+
+    function tokenLetter(token) {
+        var text = root.tokenText(token)
+        return token ? String(token.letter || text.charAt(0).toUpperCase()) : ""
+    }
+
+    function tokenColor(token) {
+        return token && token.color ? token.color : root.theme.colors.noTokenCircle
+    }
+
+    function shortId(value) {
+        var text = String(value || "")
+        return text.length > 14 ? text.slice(0, 7) + "..." + text.slice(-5) : text
     }
 }

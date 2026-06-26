@@ -98,10 +98,36 @@
               '';
           }
         );
+
+        # Second AMM client crate (apps/amm/client) — the new-position/pool
+        # flow's protocol lib. Built alongside amm_client_ffi (they coexist:
+        # symbols are prefixed amm_* vs amm_client_*). TODO: consolidate the two
+        # into a single AMM client FFI.
+        ammClientArgs = commonArgs // {
+          pname = "amm_client";
+          cargoExtraArgs = "-p amm_client";
+        };
+        ammClient = craneLib.buildPackage (
+          ammClientArgs
+          // {
+            cargoArtifacts = craneLib.buildDepsOnly ammClientArgs;
+            postInstall =
+              ''
+                mkdir -p $out/include
+                cp apps/amm/client/include/amm_client.h $out/include/
+              ''
+              + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+                if [ -f $out/lib/libamm_client.dylib ]; then
+                  install_name_tool -id "$out/lib/libamm_client.dylib" $out/lib/libamm_client.dylib
+                fi
+              '';
+          }
+        );
       in
       {
         packages.default = ammClientFfi;
         packages.amm_client_ffi = ammClientFfi;
+        packages.amm_client = ammClient;
       }
     );
 
@@ -117,6 +143,7 @@
         flakeInputs = inputs;
         externalLibInputs = {
           amm_client_ffi = { input = self; packages.default = "amm_client_ffi"; };
+          amm_client = { input = self; packages.default = "amm_client"; };
         };
         # The AMM UI links the shared C++ wallet access lib and bundles the
         # Logos.Wallet QML module (apps/shared/wallet). apps/amm/flake.nix wires
@@ -160,10 +187,11 @@
         let
           pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
           ammFfi = crateOutputs.packages.${system}.amm_client_ffi;
+          ammClient = crateOutputs.packages.${system}.amm_client;
         in
         app // {
           program = "${pkgs.writeShellScript "run-amm-ui" ''
-            export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+            export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib:${ammClient}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
             exec ${app.program} "$@"
           ''}";
         };

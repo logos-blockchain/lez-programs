@@ -5,6 +5,9 @@
 class AmmUiBackend
 {
     PROP(bool isWalletOpen READONLY)
+    // False while startup or reconnect is still resolving wallet state. This
+    // stays distinct from isWalletOpen because a disconnected wallet is ready.
+    PROP(bool walletStateReady READONLY)
     PROP(bool walletExists READONLY)
     PROP(QString configPath READONLY)
     PROP(QString storagePath READONLY)
@@ -23,8 +26,16 @@ class AmmUiBackend
     SLOT(void refreshBalances())
     SLOT(QString getBalance(QString accountIdHex, bool isPublic))
 
+    // New Position backend surface. QML calls these through logos.watch(...).
+    // The QVariant payloads are stable maps/lists so the UI never assembles AMM
+    // transactions or duplicates quote state.
+    PROP(QVariantMap newPositionContext READONLY)
+    SLOT(void refreshNewPositionContext(QVariantMap request))
+    SLOT(QVariantMap quoteNewPosition(QVariantMap request))
+    SLOT(QVariantMap submitNewPosition(QVariantMap request, QString quoteHash))
+
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
-    // fresh per-app wallet at walletHome with no path picking. createNew()
+    // fresh wallet at the canonical walletHome with no path picking. createNew()
     // keeps explicit paths for an "advanced" flow. Both return the new wallet's
     // BIP39 mnemonic (empty on failure) so the UI can force a seed-phrase backup
     // before the wallet is usable — this is the only chance to record it.

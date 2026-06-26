@@ -27,10 +27,12 @@ Account/keystore sharing follows the runtime:
   startup the backend **adopts** the already-open wallet (see
   `openOrAdoptWallet()`), surfacing **shared** accounts across apps.
 
-> Follow-up: the wallet FFI requires explicit `config_path`/`storage_path` even
-> though the wallet crate already defines defaults (`~/.lee/wallet`,
-> `from_path_or_initialize_default`). A `wallet_ffi_create_new_default()` /
-> `_open_default()` upstream would let the app drop its path handling entirely.
+> Follow-up: the app reconstructs the wallet paths itself because the
+> `logos_execution_zone` module only exposes path-taking `create_new`/`open`.
+> LEZ's wallet FFI now provides path-free variants (`wallet_ffi_create_new_default`,
+> `wallet_ffi_open_default`, plus `wallet_ffi_default_config_path` /
+> `_storage_path` / `wallet_ffi_wallet_exists_default`). Once the module surfaces
+> those over QtRO, the app can drop its `defaultWalletHome/Config/Storage` logic.
 
 ## Setup
 
@@ -203,6 +205,11 @@ AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-el
 TOKENS_CONFIG=$(pwd)/amm-tokens.json \
 nix run .#amm-ui
 ```
+
+## Validation
+
+New Position validation commands and acceptance criteria live in
+[VALIDATION.md](VALIDATION.md).
 
 ## Updating Dependencies
 

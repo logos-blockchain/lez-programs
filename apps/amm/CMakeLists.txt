@@ -4,6 +4,11 @@ project(AmmUiPlugin LANGUAGES CXX)
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2)
 qt_standard_project_setup(REQUIRES 6.8)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(BASE58 REQUIRED IMPORTED_TARGET libbase58)
+
+include(CTest)
+
 if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
     include($ENV{LOGOS_MODULE_BUILDER_ROOT}/cmake/LogosModule.cmake)
 else()
@@ -31,14 +36,50 @@ logos_module(
         src/AmmUiPlugin.cpp
         src/AmmUiBackend.h
         src/AmmUiBackend.cpp
+        src/ActiveNetwork.h
+        src/ActiveNetwork.cpp
+        src/AmmClient.h
+        src/AmmClient.cpp
+        src/NewPositionRuntime.h
+        src/NewPositionRuntime.cpp
     FIND_PACKAGES
         Qt6Gui
         Qt6Network
     LINK_LIBRARIES
         Qt6::Gui
         Qt6::Network
-    EXTERNAL_LIBS
-        amm_client_ffi
+        PkgConfig::BASE58
     LINK_TARGETS
         logos_wallet_access
+    EXTERNAL_LIBS
+        amm_client_ffi
+        amm_client
 )
+
+qt_add_resources(amm_ui_module_plugin amm_ui_config
+    PREFIX "/amm"
+    FILES
+        config/networks.json
+)
+
+if(BUILD_TESTING)
+    add_executable(amm_active_network_test
+        tests/cpp/ActiveNetworkTest.cpp
+        src/ActiveNetwork.cpp
+    )
+    target_include_directories(amm_active_network_test PRIVATE src)
+    target_link_libraries(amm_active_network_test PRIVATE Qt6::Core)
+    add_test(NAME amm_active_network COMMAND amm_active_network_test)
+
+    add_executable(amm_new_position_runtime_test
+        tests/cpp/NewPositionRuntimeTest.cpp
+        src/NewPositionRuntime.cpp
+    )
+    target_include_directories(amm_new_position_runtime_test PRIVATE src)
+    target_link_libraries(amm_new_position_runtime_test PRIVATE
+        Qt6::Core
+        PkgConfig::BASE58
+        logos_wallet_access
+    )
+    add_test(NAME amm_new_position_runtime COMMAND amm_new_position_runtime_test)
+endif()

@@ -1,31 +1,43 @@
-import QtQuick 2.15
-import QtQuick.Layouts 1.15
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import QtQml
+
+import Logos.Controls
+import Logos.Icons
 import Logos.Wallet
-import "../components/shared"
+
 import "../components/liquidity"
 import "../state"
 
 Item {
     id: root
 
-    property int activeLiquidityTab: 0
-    property real slippageTolerancePercent: 0.5
-    readonly property int pageMargin: 16
-    readonly property int preferredCardWidth: 492
-    readonly property int pageCardY: pageCard.implicitHeight + root.pageMargin * 2 <= scroll.height ? Math.round((scroll.height - pageCard.implicitHeight) / 2) : root.pageMargin
+    property var backend: null
+    property var runtime: null
+    readonly property NewPositionFlow flow: newPositionFlow
 
-    width: parent ? parent.width : implicitWidth
-    height: parent ? parent.height : implicitHeight
-    implicitWidth: root.preferredCardWidth + root.pageMargin * 2
-    implicitHeight: pageCard.implicitHeight + root.pageMargin * 2
+    readonly property int pageMargin: width < 640 ? 16 : 24
+    readonly property int contentMaxWidth: 1200
+    readonly property bool wideLayout: width >= 760
+    readonly property int stepRailWidth: Math.max(210, Math.min(330,
+                                                                  (width - pageMargin * 2) * 0.30))
 
-    DummyPoolState {
-        id: poolState
+    AmmTheme {
+        id: theme
+    }
+
+    NewPositionFlow {
+        id: newPositionFlow
+
+        backend: root.backend
+        runtime: root.runtime
+        active: root.visible
     }
 
     Rectangle {
         anchors.fill: parent
-        color: "#151515"
+        color: theme.colors.background
     }
 
     Flickable {
@@ -33,133 +45,215 @@ Item {
 
         anchors.fill: parent
         clip: true
-        contentHeight: Math.max(height, pageCard.y + pageCard.implicitHeight + root.pageMargin)
         contentWidth: width
-        enabled: !confirmationDialog.visible
+        contentHeight: Math.max(height, pageLayout.y + pageLayout.implicitHeight + root.pageMargin)
+        enabled: !confirmationDialog.opened
         flickableDirection: Flickable.VerticalFlick
+        boundsBehavior: Flickable.StopAtBounds
 
-        Rectangle {
-            id: pageCard
+        ScrollBar.vertical: ScrollBar {
+            policy: ScrollBar.AsNeeded
+        }
 
-            color: "#1B1B1B"
-            implicitHeight: shellContent.implicitHeight + 24
-            radius: 16
-            border.color: "#303030"
-            border.width: 1
-            width: Math.max(0, Math.min(scroll.width - root.pageMargin * 2, root.preferredCardWidth))
+        ColumnLayout {
+            id: pageLayout
+
             x: Math.max(root.pageMargin, (scroll.width - width) / 2)
-            y: root.pageCardY
+            y: root.wideLayout ? 32 : 16
+            width: Math.max(0, Math.min(root.contentMaxWidth,
+                                        scroll.width - root.pageMargin * 2))
+            spacing: 24
 
-            ColumnLayout {
-                id: shellContent
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 16
 
-                anchors.fill: parent
-                anchors.margins: 12
-                spacing: 10
-
-                RowLayout {
-                    spacing: 10
-
+                ColumnLayout {
                     Layout.fillWidth: true
+                    spacing: 4
 
                     Text {
-                        color: "#E7E1D8"
-                        font.bold: true
-                        font.pixelSize: 18
-                        text: qsTr("Liquidity")
+                        text: qsTr("New position")
+                        color: theme.colors.textPrimary
+                        font.pixelSize: 30
+                        font.weight: Font.Bold
+                        font.letterSpacing: 0
+                    }
 
+                    Text {
                         Layout.fillWidth: true
+                        text: form.contextStatusText()
+                        color: theme.colors.textSecondary
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+                }
+
+                LogosIconButton {
+                    objectName: "refreshPositionButton"
+                    iconSource: LogosIcons.refresh
+                    iconColor: theme.colors.textSecondary
+                    iconSize: 18
+                    Layout.preferredWidth: 40
+                    Layout.preferredHeight: 40
+                    enabled: !newPositionFlow.contextLoading && !newPositionFlow.submitting
+                    Accessible.name: qsTr("Refresh position data")
+                    ToolTip.visible: hovered
+                    ToolTip.text: Accessible.name
+                    onClicked: newPositionFlow.refreshContext(true)
+                }
+            }
+
+            Rectangle {
+                id: compactSteps
+
+                objectName: "compactPositionSteps"
+                Layout.fillWidth: true
+                implicitHeight: compactStepRow.implicitHeight + 32
+                visible: !root.wideLayout
+                radius: 16
+                color: theme.colors.cardBg
+                border.color: theme.colors.border
+                border.width: 1
+
+                RowLayout {
+                    id: compactStepRow
+
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    spacing: 12
+
+                    StepMarker {
+                        Layout.fillWidth: true
+                        colors: theme.colors
+                        stepNumber: 1
+                        label: qsTr("Select pair and fees")
+                        active: !form.hasPair
+                        complete: form.hasPair
                     }
 
                     Rectangle {
-                        color: "#211914"
-                        radius: 12
-                        border.color: "#49301F"
-                        border.width: 1
+                        Layout.preferredWidth: 20
+                        Layout.preferredHeight: 1
+                        color: form.hasPair ? theme.colors.ctaBg : theme.colors.divider
+                    }
 
-                        Layout.preferredHeight: 26
-                        Layout.preferredWidth: pairText.implicitWidth + 20
+                    StepMarker {
+                        Layout.fillWidth: true
+                        colors: theme.colors
+                        stepNumber: 2
+                        label: form.missingPool
+                               ? qsTr("Set price and deposit")
+                               : qsTr("Enter deposit amounts")
+                        active: form.hasPair
+                    }
+                }
+            }
 
-                        Text {
-                            id: pairText
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
+                spacing: root.wideLayout ? 40 : 0
 
-                            anchors.centerIn: parent
-                            color: "#F2D8C7"
-                            font.bold: true
-                            font.pixelSize: 12
-                            text: qsTr("%1 / %2").arg(poolState.tokenA).arg(poolState.tokenB)
+                Rectangle {
+                    id: positionStepRail
+
+                    objectName: "positionStepRail"
+                    Layout.preferredWidth: root.stepRailWidth
+                    Layout.alignment: Qt.AlignTop
+                    implicitHeight: verticalSteps.implicitHeight + 40
+                    visible: root.wideLayout
+                    radius: 16
+                    color: theme.colors.cardBg
+                    border.color: theme.colors.border
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: verticalSteps
+
+                        anchors.fill: parent
+                        anchors.margins: 20
+                        spacing: 0
+
+                        StepMarker {
+                            Layout.fillWidth: true
+                            colors: theme.colors
+                            stepNumber: 1
+                            label: qsTr("Select token pair and fees")
+                            active: !form.hasPair
+                            complete: form.hasPair
+                        }
+
+                        Rectangle {
+                            Layout.leftMargin: 17
+                            Layout.preferredWidth: 1
+                            Layout.preferredHeight: 28
+                            color: form.hasPair ? theme.colors.ctaBg : theme.colors.divider
+                        }
+
+                        StepMarker {
+                            Layout.fillWidth: true
+                            colors: theme.colors
+                            stepNumber: 2
+                            label: form.missingPool
+                                   ? qsTr("Set price and deposit amounts")
+                                   : qsTr("Enter deposit amounts")
+                            active: form.hasPair
                         }
                     }
                 }
 
-                LiquidityActionTabs {
-                    currentIndex: root.activeLiquidityTab
+                NewPositionForm {
+                    id: form
 
+                    objectName: "newPositionForm"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: implicitHeight
+                    Layout.alignment: Qt.AlignTop
+                    theme: theme
+                    headingText: form.hasPair ? qsTr("Deposit tokens") : qsTr("Select pair")
+                    headingDetail: form.hasPair
+                                   ? qsTr("Specify the token amounts for your liquidity contribution.")
+                                   : qsTr("Choose two tokens and a fee tier for this position.")
+                    showRefreshAction: false
+                    newPositionContext: newPositionFlow.newPositionContext
+                    flowState: newPositionFlow.viewState
 
-                    onTabRequested: function (index) {
-                        root.activeLiquidityTab = index;
-                    }
-                }
-
-                PoolPositionSummary {
-                    poolState: poolState
-
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: implicitHeight
-                }
-
-                AddLiquidityForm {
-                    id: addLiquidityForm
-
-                    poolState: poolState
-                    slippageTolerancePercent: root.slippageTolerancePercent
-                    visible: root.activeLiquidityTab === 0
-
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: visible ? implicitHeight : 0
-
-                    onSlippageToleranceChangeRequested: function (tolerancePercent) {
-                        root.slippageTolerancePercent = poolState.clampSlippageTolerancePercent(tolerancePercent);
+                    onQuoteRequested: function(immediate, quoteRequest) {
+                        newPositionFlow.scheduleQuote(immediate, quoteRequest)
                     }
 
-                    onAddLiquidityRequested: function (snapshot) {
-                        confirmationDialog.openWithSnapshot(snapshot);
-                    }
-                }
-
-                RemoveLiquidityForm {
-                    id: removeLiquidityForm
-
-                    poolState: poolState
-                    slippageTolerancePercent: root.slippageTolerancePercent
-                    visible: root.activeLiquidityTab === 1
-
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: visible ? implicitHeight : 0
-
-                    onSlippageToleranceChangeRequested: function (tolerancePercent) {
-                        root.slippageTolerancePercent = poolState.clampSlippageTolerancePercent(tolerancePercent);
+                    onConfirmationRequested: function(snapshot) {
+                        confirmationDialog.openWithSnapshot(snapshot)
                     }
 
-                    onRemoveLiquidityRequested: function (snapshot) {
-                        confirmationDialog.openWithSnapshot(snapshot);
+                    onTokenResolveRequested: function(tokenId) {
+                        newPositionFlow.resolveToken(tokenId)
                     }
+
+                    onDraftChanged: newPositionFlow.draftChanged()
+                    onRefreshRequested: newPositionFlow.refreshContext(true)
                 }
             }
+        }
+    }
 
-            SuccessToast {
-                id: successToast
+    Connections {
+        target: newPositionFlow
 
-                width: Math.max(0, Math.min(380, parent.width - 24))
+        function onTokenResolutionFinished(finalResponse) {
+            form.finishTokenResolution(finalResponse)
+        }
 
-                anchors {
-                    bottom: parent.bottom
-                    bottomMargin: 14
-                    horizontalCenter: parent.horizontalCenter
-                }
-            }
+        function onTokenResolutionFailed(code) {
+            form.failTokenResolution(code)
+        }
+
+        function onPoolActivated(quote) {
+            form.acceptPoolActivation(quote)
+        }
+
+        function onQuoteRefreshRequested(immediate) {
+            form.requestQuote(immediate)
         }
     }
 
@@ -171,28 +265,73 @@ Item {
 
     TransactionConfirmationDialog {
         id: confirmationDialog
-        title: snapshot.action === "add"
-            ? qsTr("Confirm add liquidity")
-            : qsTr("Confirm remove liquidity")
+
+        title: qsTr("Confirm new position")
+        confirmText: qsTr("Submit")
+        busy: newPositionFlow.submitting
         summary: liquidityConfirmationSummary
 
-        onConfirmed: function (snapshot) {
-            root.confirmLiquidityAction(snapshot);
+        onConfirmed: function(snapshot) {
+            newPositionFlow.confirm(snapshot)
         }
     }
 
-    function confirmLiquidityAction(snapshot) {
-        if (snapshot.action === "add") {
-            poolState.applyAddLiquidity(snapshot.actualA, snapshot.actualB, snapshot.deltaLp);
-            addLiquidityForm.resetForm();
-            successToast.show(qsTr("Liquidity added"), qsTr("Position updated"));
-            return;
+    component StepMarker: RowLayout {
+        id: marker
+
+        required property var colors
+        required property int stepNumber
+        required property string label
+        property bool active: false
+        property bool complete: false
+
+        spacing: 12
+
+        Rectangle {
+            Layout.preferredWidth: 36
+            Layout.preferredHeight: 36
+            radius: 18
+            color: marker.active
+                   ? marker.colors.ctaBg
+                   : marker.complete ? marker.colors.selection : marker.colors.inputBg
+            border.color: marker.active || marker.complete
+                          ? marker.colors.ctaBg : marker.colors.borderStrong
+            border.width: 1
+            Accessible.ignored: true
+
+            Text {
+                anchors.centerIn: parent
+                text: marker.stepNumber
+                color: marker.active
+                       ? marker.colors.background
+                       : marker.complete ? marker.colors.ctaBg : marker.colors.textPlaceholder
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+            }
         }
 
-        if (snapshot.action === "remove") {
-            poolState.applyRemoveLiquidity(snapshot.withdrawA, snapshot.withdrawB, snapshot.burnAmount);
-            removeLiquidityForm.resetForm();
-            successToast.show(qsTr("Liquidity removed"), qsTr("Position updated"));
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 2
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Step %1").arg(marker.stepNumber)
+                color: marker.active || marker.complete
+                       ? marker.colors.textSecondary : marker.colors.textPlaceholder
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: marker.label
+                color: marker.active || marker.complete
+                       ? marker.colors.textPrimary : marker.colors.textSecondary
+                font.pixelSize: 13
+                font.weight: marker.active ? Font.DemiBold : Font.Normal
+                wrapMode: Text.Wrap
+            }
         }
     }
 }
