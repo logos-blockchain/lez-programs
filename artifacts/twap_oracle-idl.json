@@ -106,6 +106,35 @@
       ]
     },
     {
+      "name": "update_current_tick",
+      "accounts": [
+        {
+          "name": "current_tick_account",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "price_source",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "price",
+          "type": "u128"
+        }
+      ]
+    },
+    {
       "name": "publish_price",
       "accounts": [
         {
@@ -174,35 +203,6 @@
         {
           "name": "window_duration",
           "type": "u64"
-        }
-      ]
-    },
-    {
-      "name": "update_current_tick",
-      "accounts": [
-        {
-          "name": "current_tick_account",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "price_source",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "price",
-          "type": "u128"
         }
       ]
     }
