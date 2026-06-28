@@ -1,4 +1,4 @@
-.PHONY: clippy clippy-guest clippy-all test fmt idl
+.PHONY: clippy clippy-guest clippy-all test integration-test fmt idl
 
 clippy:
 	RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
@@ -12,6 +12,9 @@ clippy-all: clippy clippy-guest
 
 test:
 	RISC0_DEV_MODE=1 cargo test --workspace
+
+integration-test:
+	RISC0_DEV_MODE=1 cargo test -p integration_tests
 
 fmt:
 	cargo +nightly fmt --all
