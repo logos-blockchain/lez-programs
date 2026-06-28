@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 nssa = { workspace = true }
 nssa_core = { workspace = true, features = ["host", "test_utils"] }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
 amm_core = { workspace = true }
 token_core = { workspace = true }
 ata_core = { workspace = true }

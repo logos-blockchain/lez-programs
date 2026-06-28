@@ -11,8 +11,9 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "lez-core-v0.2.0", package = "lee" }
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "lez-core-v0.2.0", features = ["host"], package = "lee_core" }
+nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", package = "lee" }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", features = ["host"], package = "lee_core" }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
 twap_oracle_core = { path = "../twap_oracle/core" }
 twap-oracle-methods = { path = "../twap_oracle/methods" }
 # `prove` exposes `ExecutorImpl`/`Session` (the cycle split); we only execute, never prove.

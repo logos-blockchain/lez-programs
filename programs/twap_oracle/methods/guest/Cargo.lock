@@ -691,7 +691,7 @@ dependencies = [
 [[package]]
 name = "clock_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=lez-core-v0.2.0#fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
 dependencies = [
  "borsh",
  "lee_core",
@@ -1597,7 +1597,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 [[package]]
 name = "lee_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=lez-core-v0.2.0#fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
 dependencies = [
  "base58",
  "borsh",
@@ -2610,7 +2610,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "spel-framework"
 version = "0.5.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#c4e4c7d0f5b487d48a000e71cb7b906294eb4c4b"
+source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#91023c9115bf88173b0d25d2e905f2a55ef0313b"
 dependencies = [
  "borsh",
  "lee_core",
@@ -2622,7 +2622,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-core"
 version = "0.5.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#c4e4c7d0f5b487d48a000e71cb7b906294eb4c4b"
+source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#91023c9115bf88173b0d25d2e905f2a55ef0313b"
 dependencies = [
  "base58",
  "borsh",
@@ -2639,7 +2639,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-macros"
 version = "0.5.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#c4e4c7d0f5b487d48a000e71cb7b906294eb4c4b"
+source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#91023c9115bf88173b0d25d2e905f2a55ef0313b"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -145,7 +145,7 @@ fn deploy_programs(state: &mut V03State) {
 }
 
 fn state_for_ata_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::owner_ata(), Accounts::owner_ata_init());
@@ -160,7 +160,7 @@ fn state_for_ata_tests_with_precreated_recipient_ata() -> V03State {
 
 #[test]
 fn ata_create() {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
@@ -233,7 +233,7 @@ fn ata_create_is_idempotent() {
 
 #[test]
 fn ata_create_rejects_definition_owned_by_unexpected_token_program() {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(
         Ids::token_definition(),
@@ -264,7 +264,7 @@ fn ata_create_rejects_definition_owned_by_unexpected_token_program() {
 
 #[test]
 fn ata_create_rejects_existing_ata_owned_by_unexpected_token_program() {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
@@ -293,7 +293,7 @@ fn ata_create_rejects_existing_ata_owned_by_unexpected_token_program() {
 
 #[test]
 fn ata_create_rejects_existing_ata_with_mismatched_definition() {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
@@ -503,7 +503,7 @@ fn ata_burn() {
 
 #[test]
 fn ata_create_from_private_owner() {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
@@ -535,8 +535,8 @@ fn ata_create_from_private_owner() {
     // Encapsulate a shared secret against the owner's viewing key; the circuit fills the EPK.
     let shared_secret = SharedSecretKey::encapsulate_deterministic(&owner_vpk, &[0u8; 32], 0).0;
 
-    let ata_program = Program::new(ata_methods::ATA_ELF.to_vec()).unwrap();
-    let token_program = Program::new(token_methods::TOKEN_ELF.to_vec()).unwrap();
+    let ata_program = Program::new(ata_methods::ATA_ELF.to_vec().into()).unwrap();
+    let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
     let program_with_deps = ProgramWithDependencies::new(
         ata_program,
         HashMap::from([(Ids::token_program(), token_program)]),

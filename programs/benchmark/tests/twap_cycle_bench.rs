@@ -2,9 +2,9 @@
 //!
 //! This runs the real `twap_oracle` guest ELF directly through the RISC Zero executor (no proving)
 //! with the session limit lifted, so we can measure the zkVM cycle cost of instructions that exceed
-//! the on-chain `MAX_NUM_CYCLES_PUBLIC_EXECUTION = 32 MiCycles` budget — `RecordTick` in particular,
-//! which aborts under the normal runtime and therefore can't be measured through `nssa`'s
-//! `transition_from_public_transaction`.
+//! the on-chain `MAX_NUM_CYCLES_PUBLIC_EXECUTION = 32 MiCycles` budget — `RecordTick` in
+//! particular, which aborts under the normal runtime and therefore can't be measured through
+//! `nssa`'s `transition_from_public_transaction`.
 //!
 //! It reproduces `nssa::program::Program::execute`'s input encoding (four `env.write` calls:
 //! program id, caller program id, pre-states, instruction words) and reports the executor's
@@ -16,7 +16,7 @@
 //! cargo test --manifest-path programs/benchmark/Cargo.toml -- --ignored --nocapture
 //! ```
 
-use nssa::CLOCK_01_PROGRAM_ACCOUNT_ID;
+use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::ProgramId,
@@ -53,14 +53,15 @@ fn price_source_id() -> AccountId {
     AccountId::new(PRICE_SOURCE_BYTES)
 }
 
-/// Borsh layout of `ClockAccountData { block_id: u64, timestamp: u64 }` — two little-endian u64s.
 fn clock_account(timestamp: u64) -> AccountWithMetadata {
-    let mut bytes = Vec::with_capacity(16);
-    bytes.extend_from_slice(&0u64.to_le_bytes()); // block_id
-    bytes.extend_from_slice(&timestamp.to_le_bytes());
+    let data = ClockAccountData {
+        block_id: 0,
+        timestamp,
+    }
+    .to_bytes();
     AccountWithMetadata {
         account: Account {
-            data: Data::try_from(bytes).expect("clock data fits"),
+            data: Data::try_from(data).expect("clock data fits"),
             ..Account::default()
         },
         is_authorized: false,
@@ -270,7 +271,10 @@ fn twap_record_tick_cycle_budget_report() {
     println!("\nUnder the on-chain hard limit (session_limit = {limit} = 2^25):\n");
     let (create_pre, create_instr) = create_inputs();
     let create_ok = completes_under_limit(&create_pre, &create_instr, limit);
-    println!("  CreatePriceObservations (cap {cap}): {}", verdict(create_ok));
+    println!(
+        "  CreatePriceObservations (cap {cap}): {}",
+        verdict(create_ok)
+    );
 
     let (write_pre, write_instr) = record_inputs(cap, min_interval * 4);
     let write_ok = completes_under_limit(&write_pre, &write_instr, limit);
@@ -393,7 +397,10 @@ fn twap_owned_account_commit_cost() {
 
     // (a) Same size, opposite fill: an effectively-empty buffer (write_index = 1, one used entry)
     //     vs an all-non-zero buffer. Both are fully allocated once created.
-    println!("\n(a) fill level, at cap {cap} (both {} bytes):", obs_bytes(cap));
+    println!(
+        "\n(a) fill level, at cap {cap} (both {} bytes):",
+        obs_bytes(cap)
+    );
     let empty = run(
         &[
             observations_account(cap), // entries all default except [0]

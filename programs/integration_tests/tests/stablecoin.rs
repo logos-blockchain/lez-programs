@@ -184,7 +184,7 @@ fn deploy_programs(state: &mut V03State) {
 }
 
 fn state_for_stablecoin_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(
         Ids::collateral_definition(),
@@ -199,7 +199,7 @@ fn current_nonce(state: &V03State, account_id: AccountId) -> Nonce {
 }
 
 fn state_for_stablecoin_repay_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(
         Ids::collateral_definition(),

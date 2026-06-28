@@ -7,11 +7,11 @@ use amm_core::{
     PoolDefinition, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5,
     MINIMUM_LIQUIDITY,
 };
+use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use nssa::{
     error::LeeError,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
-    CLOCK_01_PROGRAM_ACCOUNT_ID,
 };
 use nssa_core::account::{Account, AccountId, Data, Nonce};
 use token_core::{TokenDefinition, TokenHolding};
@@ -977,7 +977,7 @@ fn deploy_programs(state: &mut V03State) {
 }
 
 fn state_for_amm_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(Ids::config(), Accounts::config());
     state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_init());
@@ -1008,11 +1008,14 @@ fn state_for_amm_tests() -> V03State {
     state.force_insert_account(Ids::user_lp(), Accounts::user_lp_holding());
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_init());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_init());
+    // rc6's `V03State::new()` no longer auto-creates the clock account; seed the canonical
+    // 1-block clock so AMM ops that read it (current-tick refresh, TWAP observations) work.
+    advance_clock(&mut state, 0);
     state
 }
 
 fn state_for_amm_tests_with_new_def() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(Ids::config(), Accounts::config());
     state.force_insert_account(
@@ -1025,6 +1028,9 @@ fn state_for_amm_tests_with_new_def() -> V03State {
     );
     state.force_insert_account(Ids::user_a(), Accounts::user_a_holding());
     state.force_insert_account(Ids::user_b(), Accounts::user_b_holding());
+    // rc6's `V03State::new()` no longer auto-creates the clock account; seed the canonical
+    // 1-block clock so the chained TWAP calls in `new_definition` can read it.
+    advance_clock(&mut state, 0);
     state
 }
 
@@ -1394,7 +1400,7 @@ fn fungible_total_supply(account: &Account) -> u128 {
 
 #[test]
 fn amm_initialize_creates_config_account() {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
 
     // Before initialization the config PDA does not exist.
@@ -1448,7 +1454,7 @@ fn config_data(state: &V03State) -> amm_core::AmmConfig {
 }
 
 fn initialized_amm_state() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_programs(&mut state);
     execute_initialize(&mut state);
     state
@@ -1660,21 +1666,26 @@ fn amm_create_price_observations_without_current_tick_account_fails() {
     );
 }
 
-/// Advances the canonical 1-block clock to `timestamp` by submitting a clock transaction, mirroring
-/// how the sequencer ticks the clock between blocks. `RecordTick` reads this account, so the TWAP
-/// tests use it to simulate the passage of time between observations.
+/// Advances the canonical 1-block clock to `timestamp` by writing the clock account directly into
+/// state. `RecordTick` reads this account (`CLOCK_01_PROGRAM_ACCOUNT_ID`), so the TWAP tests use it
+/// to simulate the passage of time between observations.
+///
+/// rc6 moved the clock program out of `nssa` into the separate system-programs crate (gated behind
+/// the guest-building `artifacts` feature), so the clock can no longer be ticked by submitting a
+/// real clock transaction here. Instead we set the account state directly via
+/// `force_insert_account`, matching how the upstream rc6 state-machine tests seed accounts.
 #[cfg(test)]
 fn advance_clock(state: &mut V03State, timestamp: u64) {
-    let message = public_transaction::Message::try_new(
-        nssa::program::Program::clock().id(),
-        nssa::CLOCK_PROGRAM_ACCOUNT_IDS.to_vec(),
-        vec![],
+    let data = ClockAccountData {
+        block_id: 0,
         timestamp,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+    }
+    .to_bytes();
+    let clock_account = Account {
+        data: Data::try_from(data).expect("clock account data fits"),
+        ..Account::default()
+    };
+    state.force_insert_account(CLOCK_01_PROGRAM_ACCOUNT_ID, clock_account);
 }
 
 /// Calls the TWAP oracle's permissionless `RecordTick` directly (it is not wrapped by the AMM),

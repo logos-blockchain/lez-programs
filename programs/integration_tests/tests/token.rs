@@ -113,7 +113,7 @@ fn deploy_token(state: &mut V03State) {
 }
 
 fn state_for_token_tests() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_token(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::holder(), Accounts::holder_init());
@@ -122,7 +122,7 @@ fn state_for_token_tests() -> V03State {
 }
 
 fn state_for_token_tests_without_recipient() -> V03State {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_token(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::holder(), Accounts::holder_init());
@@ -131,7 +131,7 @@ fn state_for_token_tests_without_recipient() -> V03State {
 
 #[test]
 fn token_new_fungible_definition() {
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = V03State::new();
     deploy_token(&mut state);
 
     let instruction = token_core::Instruction::NewFungibleDefinition {
@@ -643,7 +643,7 @@ impl PrivateKeys {
 }
 
 fn token_program() -> Program {
-    Program::new(token_methods::TOKEN_ELF.to_vec()).expect("valid token ELF")
+    Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF")
 }
 
 /// Performs a shielded transfer (public → private) of `amount` tokens from

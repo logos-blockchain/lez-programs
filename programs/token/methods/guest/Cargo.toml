@@ -57,7 +57,7 @@ path = "src/bin/token.rs"
 
 [dependencies]
 spel-framework = { git = "https://github.com/0x-r4bbit/spel.git", branch = "refactor/lez-v020-compat", package = "spel-framework" }
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "lez-core-v0.2.0", package = "lee_core" }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", package = "lee_core" }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
 # Pin ruint (transitive via risc0-binfmt) below 1.18, which raised its MSRV to
 # rustc 1.90. The risc0 guest toolchain ships rustc 1.88, so 1.18+ fails the

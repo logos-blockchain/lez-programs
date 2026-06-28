@@ -697,21 +697,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "bridge_core"
-version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=lez-core-v0.2.0#fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a"
-dependencies = [
- "lee_core",
- "serde",
-]
-
-[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
 dependencies = [
  "tinyvec",
+]
+
+[[package]]
+name = "build_utils"
+version = "0.1.0"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+dependencies = [
+ "anyhow",
+ "risc0-binfmt",
 ]
 
 [[package]]
@@ -861,7 +861,7 @@ dependencies = [
 [[package]]
 name = "clock_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=lez-core-v0.2.0#fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
 dependencies = [
  "borsh",
  "lee_core",
@@ -1438,15 +1438,6 @@ dependencies = [
  "arrayvec",
  "auto_impl",
  "bytes",
-]
-
-[[package]]
-name = "faucet_core"
-version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=lez-core-v0.2.0#fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a"
-dependencies = [
- "lee_core",
- "serde",
 ]
 
 [[package]]
@@ -2060,6 +2051,7 @@ dependencies = [
  "amm_core",
  "ata-methods",
  "ata_core",
+ "clock_core",
  "lee",
  "lee_core",
  "stablecoin-methods",
@@ -2224,20 +2216,17 @@ dependencies = [
 [[package]]
 name = "lee"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=lez-core-v0.2.0#fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
 dependencies = [
  "anyhow",
  "borsh",
- "bridge_core",
- "clock_core",
- "faucet_core",
+ "build_utils",
  "hex",
  "k256",
  "lee_core",
  "log",
  "rand 0.8.6",
  "risc0-binfmt",
- "risc0-build",
  "risc0-zkvm",
  "serde",
  "serde_with",
@@ -2248,7 +2237,7 @@ dependencies = [
 [[package]]
 name = "lee_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=lez-core-v0.2.0#fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
 dependencies = [
  "base58",
  "borsh",
@@ -3694,7 +3683,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-core"
 version = "0.5.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#bef2b158c59d2c2644666df94d47924dd051855d"
+source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#91023c9115bf88173b0d25d2e905f2a55ef0313b"
 dependencies = [
  "base58",
  "borsh",
@@ -3711,7 +3700,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-macros"
 version = "0.5.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#bef2b158c59d2c2644666df94d47924dd051855d"
+source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#91023c9115bf88173b0d25d2e905f2a55ef0313b"
 dependencies = [
  "proc-macro2",
  "quote",
