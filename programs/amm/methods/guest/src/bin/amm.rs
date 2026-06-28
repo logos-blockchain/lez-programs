@@ -163,7 +163,7 @@ mod amm {
         user_holding_a: AccountWithMetadata,
         #[account(mut, signer)]
         user_holding_b: AccountWithMetadata,
-        #[account(mut)]
+        #[account(mut, signer)]
         user_holding_lp: AccountWithMetadata,
         #[account(init)]
         current_tick_account: AccountWithMetadata,
@@ -312,9 +312,9 @@ mod amm {
         vault_a: AccountWithMetadata,
         #[account(mut)]
         vault_b: AccountWithMetadata,
-        #[account(mut)]
+        #[account(mut, signer)]
         user_holding_a: AccountWithMetadata,
-        #[account(mut)]
+        #[account(mut, signer)]
         user_holding_b: AccountWithMetadata,
         #[account(mut)]
         current_tick_account: AccountWithMetadata,
@@ -357,9 +357,9 @@ mod amm {
         vault_a: AccountWithMetadata,
         #[account(mut)]
         vault_b: AccountWithMetadata,
-        #[account(mut)]
+        #[account(mut, signer)]
         user_holding_a: AccountWithMetadata,
-        #[account(mut)]
+        #[account(mut, signer)]
         user_holding_b: AccountWithMetadata,
         #[account(mut)]
         current_tick_account: AccountWithMetadata,

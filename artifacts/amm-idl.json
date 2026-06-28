@@ -194,7 +194,7 @@
         {
           "name": "user_holding_lp",
           "writable": true,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
@@ -425,13 +425,13 @@
         {
           "name": "user_holding_a",
           "writable": true,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
           "name": "user_holding_b",
           "writable": true,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
@@ -496,13 +496,13 @@
         {
           "name": "user_holding_a",
           "writable": true,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
           "name": "user_holding_b",
           "writable": true,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {

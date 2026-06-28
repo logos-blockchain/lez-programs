@@ -533,7 +533,8 @@ impl Accounts {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::user_a_swap_1(),
             }),
-            nonce: Nonce(0),
+            // Both user holdings are now swap signers, so this holding's nonce increments too.
+            nonce: Nonce(1),
         }
     }
 
@@ -612,7 +613,8 @@ impl Accounts {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_swap_2(),
             }),
-            nonce: Nonce(0),
+            // Both user holdings are now swap signers, so this holding's nonce increments too.
+            nonce: Nonce(1),
         }
     }
 
@@ -892,18 +894,6 @@ impl Accounts {
         }
     }
 
-    fn user_lp_holding_new_init_precreated() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: Ids::token_lp_definition(),
-                balance: Balances::lp_user_init(),
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
     fn token_lp_definition_new_init() -> Account {
         Account {
             program_owner: Ids::token_program(),
@@ -1131,12 +1121,16 @@ fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_ou
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![current_nonce(state, Ids::user_a())],
+        vec![
+            current_nonce(state, Ids::user_a()),
+            current_nonce(state, Ids::user_b()),
+        ],
         instruction,
     )
     .unwrap();
 
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -1163,12 +1157,16 @@ fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_ou
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![current_nonce(state, Ids::user_b())],
+        vec![
+            current_nonce(state, Ids::user_a()),
+            current_nonce(state, Ids::user_b()),
+        ],
         instruction,
     )
     .unwrap();
 
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_b()]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -2311,44 +2309,39 @@ fn amm_new_definition_without_user_lp_authorization_fails() {
 }
 
 #[test]
-fn amm_new_definition_precreated_zero_balance_user_lp() {
+fn amm_new_definition_precreated_user_lp_unsigned_fails() {
+    // `user_holding_lp` is now a required signer: even a pre-existing (non-default)
+    // LP holding must be signed. An unsigned transaction is rejected and reverts.
     let mut state = state_for_amm_tests_with_precreated_user_lp_for_new_def();
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
 
-    try_execute_new_definition(&mut state, Balances::fee_tier(), false).unwrap();
+    let result = try_execute_new_definition(&mut state, Balances::fee_tier(), false);
+    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
 
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
-        Accounts::pool_definition_new_init()
+        Account::default()
     );
     assert_eq!(
         state.get_account_by_id(Ids::vault_a()),
-        Accounts::vault_a_init()
+        Accounts::vault_a_reinitializable()
     );
     assert_eq!(
         state.get_account_by_id(Ids::vault_b()),
-        Accounts::vault_b_init()
+        Accounts::vault_b_reinitializable()
     );
     assert_eq!(
         state.get_account_by_id(Ids::token_lp_definition()),
-        Accounts::token_lp_definition_new_init()
+        Account::default()
     );
     assert_eq!(
         state.get_account_by_id(Ids::lp_lock_holding()),
-        Accounts::lp_lock_holding_new_init()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::user_a()),
-        Accounts::user_a_holding_new_init()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::user_b()),
-        Accounts::user_b_holding_new_init()
+        Account::default()
     );
     assert_eq!(
         state.get_account_by_id(Ids::user_lp()),
-        Accounts::user_lp_holding_new_init_precreated()
+        Accounts::user_lp_holding_init_zero()
     );
 }
 
@@ -2520,12 +2513,13 @@ fn amm_swap_b_to_a() {
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![Nonce(0)],
+        vec![Nonce(0), Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_b()]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -2575,12 +2569,13 @@ fn amm_swap_a_to_b() {
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![Nonce(0)],
+        vec![Nonce(0), Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -2647,12 +2642,13 @@ fn amm_swap_exact_output_refreshes_current_tick() {
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![Nonce(0)],
+        vec![Nonce(0), Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
@@ -2783,12 +2779,13 @@ fn amm_swap_rejects_expired_deadline() {
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![Nonce(0)],
+        vec![Nonce(0), Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
     let tx = PublicTransaction::new(message, witness_set);
     assert!(matches!(
         state.transition_from_public_transaction(&tx, 0, block_timestamp_ms),
@@ -2822,12 +2819,16 @@ fn amm_swap_exact_output_rejects_expired_deadline() {
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![current_nonce(&state, Ids::user_a())],
+        vec![
+            current_nonce(&state, Ids::user_a()),
+            current_nonce(&state, Ids::user_b()),
+        ],
         instruction,
     )
     .unwrap();
 
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
     let tx = PublicTransaction::new(message, witness_set);
     assert!(matches!(
         state.transition_from_public_transaction(&tx, 0, block_timestamp_ms),
