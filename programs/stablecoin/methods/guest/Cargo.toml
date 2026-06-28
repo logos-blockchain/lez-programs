@@ -5,6 +5,10 @@ edition = "2021"
 
 [workspace]
 
+[profile.release]
+debug = 0
+strip = "symbols"
+
 [[bin]]
 name = "stablecoin"
 path = "src/bin/stablecoin.rs"

@@ -5,6 +5,10 @@ edition = "2021"
 
 [workspace]
 
+[profile.release]
+debug = 0
+strip = "symbols"
+
 [lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }
 # deny (not forbid) so a targeted per-item #[allow] remains possible if ever needed

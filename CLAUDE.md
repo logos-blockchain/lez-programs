@@ -66,6 +66,16 @@ Generated IDL files live in `artifacts/`. CI checks that every program under `*/
 
 **Note:** `spel` and `wallet` may use different versions of the wallet package. If `spel --idl <IDL> <PROGRAM_FUNCTION> ...` fails, ensure `seq_poll_timeout_millis` is set in the wallet config at `~/.nssa/wallet`.
 
+For testnet and mainnet deployments, build guest binaries with the release profile in each guest manifest:
+
+```toml
+[profile.release]
+debug = 0
+strip = "symbols"
+```
+
+That profile is part of program identity. After every release build, inspect the binary and update every value that depends on the ImageID before submitting transactions: deployed program IDs, client/config files, PDA-derived account addresses, AMM `token_program_id` and `twap_oracle_program_id`, and ATA `token_program_id` inputs. Do not mix raw or old ImageIDs with release-profile binaries.
+
 ```bash
 # Deploy a program binary to the sequencer
 wallet deploy-program <path-to-binary>
