@@ -31,8 +31,8 @@ exclude = [
 resolver = "2"
 
 [workspace.dependencies]
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3", features = ["host"] }
-nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3", features = ["test-utils"] }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "lez-core-v0.2.0", features = ["host"], package = "lee_core" }
+nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "lez-core-v0.2.0", features = ["test-utils"], package = "lee" }
 token_core = { path = "programs/token/core" }
 token_program = { path = "programs/token" }
 amm_core = { path = "programs/amm/core" }

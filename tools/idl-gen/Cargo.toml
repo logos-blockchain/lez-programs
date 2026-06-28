@@ -11,7 +11,7 @@ name = "idl-gen"
 path = "src/main.rs"
 
 [dependencies]
-spel-framework-core = { git = "https://github.com/logos-co/spel.git", tag = "v0.3.0", features = [
+spel-framework-core = { git = "https://github.com/0x-r4bbit/spel.git", branch = "refactor/lez-v020-compat", package = "spel-framework-core", features = [
   "idl-gen",
 ] }
 # `preserve_order` keeps object keys in struct-declaration order when

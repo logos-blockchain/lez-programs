@@ -8,7 +8,7 @@ use amm_core::{
     MINIMUM_LIQUIDITY,
 };
 use nssa::{
-    error::NssaError,
+    error::LeeError,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
     CLOCK_01_PROGRAM_ACCOUNT_ID,
@@ -1043,7 +1043,7 @@ fn try_execute_new_definition(
     state: &mut V03State,
     fees: u128,
     authorize_user_lp: bool,
-) -> Result<(), NssaError> {
+) -> Result<(), LeeError> {
     let instruction = amm_core::Instruction::NewDefinition {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
@@ -1280,7 +1280,7 @@ fn execute_initialize(state: &mut V03State) {
 fn execute_create_price_observations(
     state: &mut V03State,
     window_duration: u64,
-) -> Result<(), NssaError> {
+) -> Result<(), LeeError> {
     let instruction = amm_core::Instruction::CreatePriceObservations { window_duration };
 
     let message = public_transaction::Message::try_new(
@@ -1306,7 +1306,7 @@ fn execute_create_price_observations(
 fn execute_create_oracle_price_account(
     state: &mut V03State,
     window_duration: u64,
-) -> Result<(), NssaError> {
+) -> Result<(), LeeError> {
     let instruction = amm_core::Instruction::CreateOraclePriceAccount { window_duration };
 
     let message = public_transaction::Message::try_new(
@@ -1421,7 +1421,7 @@ fn execute_update_config(
     token_program_id: Option<nssa_core::program::ProgramId>,
     twap_oracle_program_id: Option<nssa_core::program::ProgramId>,
     new_authority: Option<AccountId>,
-) -> Result<(), NssaError> {
+) -> Result<(), LeeError> {
     let signer_id = AccountId::from(&PublicKey::new_from_private_key(signer));
     let instruction = amm_core::Instruction::UpdateConfig {
         token_program_id,
@@ -1482,7 +1482,7 @@ fn amm_update_config_rejects_non_admin() {
     // user_a is not the admin; even though they sign, the update is rejected and the config is
     // left unchanged.
     let result = execute_update_config(&mut state, &Keys::user_a(), Some([123u32; 8]), None, None);
-    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
 
     let config = config_data(&state);
     assert_eq!(config.token_program_id, Ids::token_program());
@@ -1500,7 +1500,7 @@ fn amm_update_config_authority_handoff_revokes_old_admin() {
 
     // The original admin can no longer update.
     let result = execute_update_config(&mut state, &Keys::admin(), Some([123u32; 8]), None, None);
-    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
 
     // The new admin can.
     execute_update_config(&mut state, &Keys::user_a(), Some([124u32; 8]), None, None).unwrap();
@@ -1609,7 +1609,7 @@ fn amm_create_oracle_price_account_rejects_existing_account() {
 
     // A second creation for the same (pool, window) is rejected and leaves the account intact.
     let result = execute_create_oracle_price_account(&mut state, window_duration);
-    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     assert_eq!(
         state.get_account_by_id(Ids::oracle_price_account(window_duration)),
         after_first
@@ -1633,7 +1633,7 @@ fn amm_create_price_observations_rejects_existing_account() {
     // A second creation for the same (pool, window) is rejected because the observations account
     // already exists, and leaves the existing account intact.
     let result = execute_create_price_observations(&mut state, window_duration);
-    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     let feed_after_second = twap_oracle_core::PriceObservations::try_from(
         &state
             .get_account_by_id(Ids::price_observations(window_duration))
@@ -1653,7 +1653,7 @@ fn amm_create_price_observations_without_current_tick_account_fails() {
     state.force_insert_account(Ids::current_tick_account(), Account::default());
 
     let result = execute_create_price_observations(&mut state, window_duration);
-    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     assert_eq!(
         state.get_account_by_id(Ids::price_observations(window_duration)),
         Account::default()
@@ -1680,7 +1680,7 @@ fn advance_clock(state: &mut V03State, timestamp: u64) {
 /// Calls the TWAP oracle's permissionless `RecordTick` directly (it is not wrapped by the AMM),
 /// folding the pool's current tick into its observations ring buffer for the given window.
 #[cfg(test)]
-fn execute_record_tick(state: &mut V03State, window_duration: u64) -> Result<(), NssaError> {
+fn execute_record_tick(state: &mut V03State, window_duration: u64) -> Result<(), LeeError> {
     let instruction = twap_oracle_core::Instruction::RecordTick {
         price_source_id: Ids::pool_definition(),
         window_duration,
@@ -1746,7 +1746,7 @@ fn read_oracle_price(
 /// the TWAP from the pool's observations — extrapolating the tail from the current tick — and
 /// writes it to the oracle price account.
 #[cfg(test)]
-fn execute_publish_price(state: &mut V03State, window_duration: u64) -> Result<(), NssaError> {
+fn execute_publish_price(state: &mut V03State, window_duration: u64) -> Result<(), LeeError> {
     let instruction = twap_oracle_core::Instruction::PublishPrice {
         price_source_id: Ids::pool_definition(),
         window_duration,
@@ -2276,7 +2276,7 @@ fn amm_new_definition_without_user_lp_authorization_fails() {
 
     let result = try_execute_new_definition(&mut state, Balances::fee_tier(), false);
 
-    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
         Account::default()
@@ -2317,8 +2317,8 @@ fn amm_new_definition_precreated_user_lp_unsigned_fails() {
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
 
     let result = try_execute_new_definition(&mut state, Balances::fee_tier(), false);
-    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
 
+    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
         Account::default()
@@ -2380,9 +2380,10 @@ fn amm_new_definition_rejects_unsupported_fee_tier_transaction() {
         Accounts::token_lp_definition_reinitializable(),
     );
 
-    let result = try_execute_new_definition(&mut state, 2, false);
+    // `user_holding_lp` is signed so the rejection isolates the unsupported fee tier.
+    let result = try_execute_new_definition(&mut state, 2, true);
 
-    assert!(matches!(result, Err(NssaError::ProgramExecutionFailed(_))));
+    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
         Accounts::pool_definition_zero_supply_reinitializable()
@@ -2789,7 +2790,7 @@ fn amm_swap_rejects_expired_deadline() {
     let tx = PublicTransaction::new(message, witness_set);
     assert!(matches!(
         state.transition_from_public_transaction(&tx, 0, block_timestamp_ms),
-        Err(NssaError::OutOfValidityWindow)
+        Err(LeeError::OutOfValidityWindow)
     ));
 }
 
@@ -2832,7 +2833,7 @@ fn amm_swap_exact_output_rejects_expired_deadline() {
     let tx = PublicTransaction::new(message, witness_set);
     assert!(matches!(
         state.transition_from_public_transaction(&tx, 0, block_timestamp_ms),
-        Err(NssaError::OutOfValidityWindow)
+        Err(LeeError::OutOfValidityWindow)
     ));
 }
 
@@ -2877,7 +2878,7 @@ fn amm_add_liquidity_rejects_expired_deadline() {
     let tx = PublicTransaction::new(message, witness_set);
     assert!(matches!(
         state.transition_from_public_transaction(&tx, 0, block_timestamp_ms),
-        Err(NssaError::OutOfValidityWindow)
+        Err(LeeError::OutOfValidityWindow)
     ));
 }
 
@@ -2918,7 +2919,7 @@ fn amm_remove_liquidity_rejects_expired_deadline() {
     let tx = PublicTransaction::new(message, witness_set);
     assert!(matches!(
         state.transition_from_public_transaction(&tx, 0, block_timestamp_ms),
-        Err(NssaError::OutOfValidityWindow)
+        Err(LeeError::OutOfValidityWindow)
     ));
 }
 
@@ -2967,7 +2968,7 @@ fn amm_new_definition_rejects_expired_deadline() {
     let tx = PublicTransaction::new(message, witness_set);
     assert!(matches!(
         state.transition_from_public_transaction(&tx, 0, block_timestamp_ms),
-        Err(NssaError::OutOfValidityWindow)
+        Err(LeeError::OutOfValidityWindow)
     ));
 }
 

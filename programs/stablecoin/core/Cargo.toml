@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc3", features = ["host"] }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "lez-core-v0.2.0", features = ["host"], package = "lee_core" }
 borsh = { version = "1.5", features = ["derive"] }
 alloy-primitives = { version = "1", default-features = false }
 # Pin ruint (transitive via alloy-primitives) below 1.18, which raised its MSRV to rustc 1.90.
@@ -14,4 +14,4 @@ ruint = { version = "=1.17.0", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 twap_oracle_core = { path = "../../twap_oracle/core" }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
-spel-framework-macros = { git = "https://github.com/logos-co/spel.git", tag = "v0.3.0", package = "spel-framework-macros" }
+spel-framework-macros = { git = "https://github.com/0x-r4bbit/spel.git", branch = "refactor/lez-v020-compat", package = "spel-framework-macros" }

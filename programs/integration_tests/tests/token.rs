@@ -1,15 +1,14 @@
 use nssa::{
     execute_and_prove,
-    privacy_preserving_transaction::{Message, WitnessSet},
+    privacy_preserving_transaction::{Message, PrivacyPreservingTransaction, WitnessSet},
     program::Program,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
-    public_transaction, PrivacyPreservingTransaction, PrivateKey, PublicKey, PublicTransaction,
-    SharedSecretKey, V03State,
+    public_transaction, PrivateKey, PublicKey, PublicTransaction, SharedSecretKey, V03State,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     encryption::{EphemeralPublicKey, ViewingPublicKey},
-    Commitment, NullifierPublicKey, NullifierSecretKey,
+    Commitment, EncryptedAccountData, InputAccountIdentity, NullifierPublicKey, NullifierSecretKey,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -616,12 +615,14 @@ impl PrivateKeys {
         NullifierPublicKey::from(&Self::holder_nsk())
     }
 
-    fn holder_vsk() -> [u8; 32] {
-        [73; 32]
+    // `ViewingPublicKey::from_seed` needs two 32-byte halves `(d, z)`. We reuse the
+    // legacy viewing scalar as `d` and pick a fixed distinct `z`.
+    fn holder_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[73; 32], &[74; 32])
     }
 
-    fn holder_vpk() -> ViewingPublicKey {
-        ViewingPublicKey::from_scalar(Self::holder_vsk())
+    fn holder_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::holder_npk(), 0)
     }
 
     fn recipient_nsk() -> NullifierSecretKey {
@@ -632,12 +633,12 @@ impl PrivateKeys {
         NullifierPublicKey::from(&Self::recipient_nsk())
     }
 
-    fn recipient_vsk() -> [u8; 32] {
-        [48; 32]
+    fn recipient_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[48; 32], &[49; 32])
     }
 
-    fn recipient_vpk() -> ViewingPublicKey {
-        ViewingPublicKey::from_scalar(Self::recipient_vsk())
+    fn recipient_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::recipient_npk(), 0)
     }
 }
 
@@ -654,13 +655,16 @@ fn shielded_token_transfer(amount: u128, state: &mut V03State) -> Account {
     let sender_account = state.get_account_by_id(sender_id);
     let sender_nonce = sender_account.nonce;
 
-    let sender = AccountWithMetadata::new(sender_account, true, sender_id);
-    let recipient =
-        AccountWithMetadata::new(Account::default(), false, &PrivateKeys::recipient_npk());
+    let recipient_npk = PrivateKeys::recipient_npk();
+    let recipient_vpk = PrivateKeys::recipient_vpk();
+    let recipient_id = PrivateKeys::recipient_id();
 
-    let esk = [99u8; 32];
-    let shared_secret = SharedSecretKey::new(&esk, &PrivateKeys::recipient_vpk());
-    let epk = EphemeralPublicKey::from_scalar(esk);
+    let sender = AccountWithMetadata::new(sender_account, true, sender_id);
+    let recipient = AccountWithMetadata::new(Account::default(), false, recipient_id);
+
+    // Sender encapsulates a shared secret against the recipient's viewing key. The
+    // circuit fills the real EPK, so we pass an empty placeholder in the identity.
+    let shared_secret = SharedSecretKey::encapsulate_deterministic(&recipient_vpk, &[0u8; 32], 0).0;
 
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: amount,
@@ -668,25 +672,22 @@ fn shielded_token_transfer(amount: u128, state: &mut V03State) -> Account {
     let (output, proof) = execute_and_prove(
         vec![sender, recipient],
         Program::serialize_instruction(instruction).unwrap(),
-        vec![0, 2],
-        vec![(PrivateKeys::recipient_npk(), shared_secret)],
-        vec![],
-        vec![None],
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::PrivateUnauthorized {
+                epk: EphemeralPublicKey(Vec::new()),
+                view_tag: EncryptedAccountData::compute_view_tag(&recipient_npk, &recipient_vpk),
+                npk: recipient_npk,
+                ssk: shared_secret,
+                identifier: 0,
+            },
+        ],
         &token_program().into(),
     )
     .unwrap();
 
-    let message = Message::try_from_circuit_output(
-        vec![sender_id],
-        vec![sender_nonce],
-        vec![(
-            PrivateKeys::recipient_npk(),
-            PrivateKeys::recipient_vpk(),
-            epk,
-        )],
-        output,
-    )
-    .unwrap();
+    let message =
+        Message::try_from_circuit_output(vec![sender_id], vec![sender_nonce], output).unwrap();
 
     let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::holder_key()]);
     let tx = PrivacyPreservingTransaction::new(message, witness_set);
@@ -701,7 +702,7 @@ fn shielded_token_transfer(amount: u128, state: &mut V03State) -> Account {
             definition_id: Ids::token_definition(),
             balance: amount,
         }),
-        nonce: Nonce::private_account_nonce_init(&PrivateKeys::recipient_npk()),
+        nonce: Nonce::private_account_nonce_init(&recipient_id),
     }
 }
 
@@ -725,7 +726,7 @@ fn token_shielded_transfer() {
         }
     );
 
-    let recipient_commitment = Commitment::new(&PrivateKeys::recipient_npk(), &recipient_account);
+    let recipient_commitment = Commitment::new(&PrivateKeys::recipient_id(), &recipient_account);
     assert!(state
         .get_proof_for_commitment(&recipient_commitment)
         .is_some());
@@ -742,22 +743,24 @@ fn token_private_transfer() {
     let sender_npk = PrivateKeys::recipient_npk();
     let sender_nsk = PrivateKeys::recipient_nsk();
     let sender_vpk = PrivateKeys::recipient_vpk();
+    let sender_id = PrivateKeys::recipient_id();
 
     let new_recipient_npk = PrivateKeys::holder_npk();
     let new_recipient_vpk = PrivateKeys::holder_vpk();
+    let new_recipient_id = PrivateKeys::holder_id();
 
-    let sender_commitment = Commitment::new(&sender_npk, &sender_account);
+    let sender_commitment = Commitment::new(&sender_id, &sender_account);
+    let membership_proof = state
+        .get_proof_for_commitment(&sender_commitment)
+        .expect("sender's commitment must be in the set");
 
-    let esk_1 = [11u8; 32];
-    let shared_secret_1 = SharedSecretKey::new(&esk_1, &sender_vpk);
-    let epk_1 = EphemeralPublicKey::from_scalar(esk_1);
+    // Distinct `output_index` per private output keeps the encapsulated secrets reproducible.
+    let shared_secret_1 = SharedSecretKey::encapsulate_deterministic(&sender_vpk, &[0u8; 32], 0).0;
+    let shared_secret_2 =
+        SharedSecretKey::encapsulate_deterministic(&new_recipient_vpk, &[0u8; 32], 1).0;
 
-    let esk_2 = [22u8; 32];
-    let shared_secret_2 = SharedSecretKey::new(&esk_2, &new_recipient_vpk);
-    let epk_2 = EphemeralPublicKey::from_scalar(esk_2);
-
-    let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, &sender_npk);
-    let new_recipient_pre = AccountWithMetadata::new(Account::default(), false, &new_recipient_npk);
+    let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, sender_id);
+    let new_recipient_pre = AccountWithMetadata::new(Account::default(), false, new_recipient_id);
 
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: transfer_amount,
@@ -765,27 +768,31 @@ fn token_private_transfer() {
     let (output, proof) = execute_and_prove(
         vec![sender_pre, new_recipient_pre],
         Program::serialize_instruction(instruction).unwrap(),
-        vec![1, 2],
         vec![
-            (sender_npk, shared_secret_1),
-            (new_recipient_npk, shared_secret_2),
+            InputAccountIdentity::PrivateAuthorizedUpdate {
+                epk: EphemeralPublicKey(Vec::new()),
+                view_tag: EncryptedAccountData::compute_view_tag(&sender_npk, &sender_vpk),
+                ssk: shared_secret_1,
+                nsk: sender_nsk,
+                membership_proof,
+                identifier: 0,
+            },
+            InputAccountIdentity::PrivateUnauthorized {
+                epk: EphemeralPublicKey(Vec::new()),
+                view_tag: EncryptedAccountData::compute_view_tag(
+                    &new_recipient_npk,
+                    &new_recipient_vpk,
+                ),
+                npk: new_recipient_npk,
+                ssk: shared_secret_2,
+                identifier: 0,
+            },
         ],
-        vec![sender_nsk],
-        vec![state.get_proof_for_commitment(&sender_commitment), None],
         &token_program().into(),
     )
     .unwrap();
 
-    let message = Message::try_from_circuit_output(
-        vec![],
-        vec![],
-        vec![
-            (sender_npk, sender_vpk, epk_1),
-            (new_recipient_npk, new_recipient_vpk, epk_2),
-        ],
-        output,
-    )
-    .unwrap();
+    let message = Message::try_from_circuit_output(vec![], vec![], output).unwrap();
 
     let witness_set = WitnessSet::for_message(&message, proof, &[]);
     let tx = PrivacyPreservingTransaction::new(message, witness_set);
@@ -794,7 +801,7 @@ fn token_private_transfer() {
         .unwrap();
 
     let sender_nonce_after =
-        Nonce::private_account_nonce_init(&sender_npk).private_account_nonce_increment(&sender_nsk);
+        Nonce::private_account_nonce_init(&sender_id).private_account_nonce_increment(&sender_nsk);
     let new_sender_account = Account {
         program_owner: Ids::token_program(),
         balance: 0,
@@ -805,7 +812,7 @@ fn token_private_transfer() {
         nonce: sender_nonce_after,
     };
     assert!(state
-        .get_proof_for_commitment(&Commitment::new(&sender_npk, &new_sender_account))
+        .get_proof_for_commitment(&Commitment::new(&sender_id, &new_sender_account))
         .is_some());
 
     let new_recipient_account = Account {
@@ -815,10 +822,10 @@ fn token_private_transfer() {
             definition_id: Ids::token_definition(),
             balance: transfer_amount,
         }),
-        nonce: Nonce::private_account_nonce_init(&new_recipient_npk),
+        nonce: Nonce::private_account_nonce_init(&new_recipient_id),
     };
     assert!(state
-        .get_proof_for_commitment(&Commitment::new(&new_recipient_npk, &new_recipient_account))
+        .get_proof_for_commitment(&Commitment::new(&new_recipient_id, &new_recipient_account))
         .is_some());
 }
 
@@ -833,20 +840,22 @@ fn token_deshielded_transfer() {
     let sender_npk = PrivateKeys::recipient_npk();
     let sender_nsk = PrivateKeys::recipient_nsk();
     let sender_vpk = PrivateKeys::recipient_vpk();
+    let sender_id = PrivateKeys::recipient_id();
 
     let public_recipient_id = Ids::recipient();
-    let sender_commitment = Commitment::new(&sender_npk, &sender_account);
+    let sender_commitment = Commitment::new(&sender_id, &sender_account);
+    let membership_proof = state
+        .get_proof_for_commitment(&sender_commitment)
+        .expect("sender's commitment must be in the set");
 
-    let esk = [55u8; 32];
-    let shared_secret = SharedSecretKey::new(&esk, &sender_vpk);
-    let epk = EphemeralPublicKey::from_scalar(esk);
+    let shared_secret = SharedSecretKey::encapsulate_deterministic(&sender_vpk, &[0u8; 32], 0).0;
 
     let public_recipient_pre = AccountWithMetadata::new(
         state.get_account_by_id(public_recipient_id),
         false,
         public_recipient_id,
     );
-    let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, &sender_npk);
+    let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, sender_id);
 
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: deshield_amount,
@@ -854,21 +863,23 @@ fn token_deshielded_transfer() {
     let (output, proof) = execute_and_prove(
         vec![sender_pre, public_recipient_pre],
         Program::serialize_instruction(instruction).unwrap(),
-        vec![1, 0],
-        vec![(sender_npk, shared_secret)],
-        vec![sender_nsk],
-        vec![state.get_proof_for_commitment(&sender_commitment)],
+        vec![
+            InputAccountIdentity::PrivateAuthorizedUpdate {
+                epk: EphemeralPublicKey(Vec::new()),
+                view_tag: EncryptedAccountData::compute_view_tag(&sender_npk, &sender_vpk),
+                ssk: shared_secret,
+                nsk: sender_nsk,
+                membership_proof,
+                identifier: 0,
+            },
+            InputAccountIdentity::Public,
+        ],
         &token_program().into(),
     )
     .unwrap();
 
-    let message = Message::try_from_circuit_output(
-        vec![public_recipient_id],
-        vec![],
-        vec![(sender_npk, sender_vpk, epk)],
-        output,
-    )
-    .unwrap();
+    let message =
+        Message::try_from_circuit_output(vec![public_recipient_id], vec![], output).unwrap();
 
     let witness_set = WitnessSet::for_message(&message, proof, &[]);
     let tx = PrivacyPreservingTransaction::new(message, witness_set);
@@ -890,7 +901,7 @@ fn token_deshielded_transfer() {
     );
 
     let sender_nonce_after =
-        Nonce::private_account_nonce_init(&sender_npk).private_account_nonce_increment(&sender_nsk);
+        Nonce::private_account_nonce_init(&sender_id).private_account_nonce_increment(&sender_nsk);
     let new_sender_account = Account {
         program_owner: Ids::token_program(),
         balance: 0,
@@ -901,6 +912,6 @@ fn token_deshielded_transfer() {
         nonce: sender_nonce_after,
     };
     assert!(state
-        .get_proof_for_commitment(&Commitment::new(&sender_npk, &new_sender_account))
+        .get_proof_for_commitment(&Commitment::new(&sender_id, &new_sender_account))
         .is_some());
 }
