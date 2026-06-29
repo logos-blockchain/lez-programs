@@ -58,6 +58,10 @@ impl Ids {
         AccountId::new([8; 32])
     }
 
+    fn oracle_source() -> AccountId {
+        AccountId::new([10; 32])
+    }
+
     fn redemption_controller() -> AccountId {
         compute_redemption_controller_pda(
             Self::stablecoin_program(),
@@ -189,7 +193,7 @@ impl Accounts {
                 quote_asset: Ids::collateral_definition(),
                 price,
                 timestamp,
-                source_id: String::from("twap"),
+                source_id: Ids::oracle_source(),
                 confidence_interval: 0,
             }),
             nonce: Nonce(0),

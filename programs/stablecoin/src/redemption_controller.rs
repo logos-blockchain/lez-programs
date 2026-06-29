@@ -2,11 +2,16 @@ use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ProgramId},
 };
-use stablecoin_core::{verify_redemption_controller_and_get_seed, RedemptionController};
+use stablecoin_core::{
+    verify_redemption_controller_and_get_seed, RedemptionController, CONTROLLER_GAIN_SCALE,
+};
 use token_core::TokenDefinition;
 use twap_oracle_core::OraclePriceAccount;
 
-const CONTROLLER_GAIN_SCALE_I128: i128 = 1_000_000_000;
+const CONTROLLER_GAIN_SCALE_I128: i128 = {
+    assert!(CONTROLLER_GAIN_SCALE <= i128::MAX as u128);
+    CONTROLLER_GAIN_SCALE as i128
+};
 
 /// Initialize the redemption-rate feedback controller for one stablecoin/feed pair.
 ///
@@ -345,6 +350,10 @@ mod tests {
         AccountId::new([3; 32])
     }
 
+    fn oracle_source_id() -> AccountId {
+        AccountId::new([15; 32])
+    }
+
     fn controller_id() -> AccountId {
         compute_redemption_controller_pda(
             STABLECOIN_PROGRAM_ID,
@@ -393,7 +402,7 @@ mod tests {
                     quote_asset: collateral_definition_id(),
                     price,
                     timestamp,
-                    source_id: "twap".to_owned(),
+                    source_id: oracle_source_id(),
                     confidence_interval: 0,
                 }),
                 nonce: Nonce(0),
