@@ -366,8 +366,10 @@ fn ensure_release_guest_builds() -> DynResult<()> {
 }
 
 struct LocalSequencer {
+    // Fields drop in declaration order; shut the node down before seed cleanup.
     _node: TestNode,
     client: TestNodeClient,
+    _seed_dir: SeedDirGuard,
 }
 
 impl LocalSequencer {
@@ -385,6 +387,7 @@ impl LocalSequencer {
         Ok(Self {
             client: node.client(),
             _node: node,
+            _seed_dir: seed_dir,
         })
     }
 
