@@ -4,7 +4,8 @@ use amm_core::{
     assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda,
     compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
     compute_lp_lock_holding_pda_seed, compute_pool_pda, compute_pool_pda_seed, compute_vault_pda,
-    compute_vault_pda_seed, spot_price_q64_64, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_vault_pda_seed, isqrt_product, spot_price_q64_64, AmmConfig, PoolDefinition,
+    MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
@@ -117,12 +118,9 @@ pub fn new_definition(
         "New definition: clock account must be the canonical 1-block LEZ clock account"
     );
 
-    // LP Token minting calculation
-    let initial_lp = token_a_amount
-        .get()
-        .checked_mul(token_b_amount.get())
-        .expect("token_a * token_b overflows u128")
-        .isqrt();
+    // LP Token minting calculation. The `token_a * token_b` product is computed in U256 (via
+    // `isqrt_product`) so realistic 18-decimal amounts can't overflow u128 before the sqrt.
+    let initial_lp = isqrt_product(token_a_amount.get(), token_b_amount.get());
     assert!(
         initial_lp > MINIMUM_LIQUIDITY,
         "Initial liquidity must exceed minimum liquidity lock"

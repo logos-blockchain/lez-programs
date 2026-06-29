@@ -2,8 +2,8 @@ use std::num::NonZeroU128;
 
 use amm_core::{
     assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda_seed,
-    compute_pool_pda_seed, compute_vault_pda_seed, spot_price_q64_64, AmmConfig, PoolDefinition,
-    MINIMUM_LIQUIDITY,
+    compute_pool_pda_seed, compute_vault_pda_seed, mul_div_floor, spot_price_q64_64, AmmConfig,
+    PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
@@ -156,18 +156,18 @@ pub fn remove_liquidity(
         "Cannot remove locked minimum liquidity"
     );
 
-    let withdraw_amount_a = pool_def_data
-        .reserve_a
-        .checked_mul(remove_liquidity_amount)
-        .expect("reserve_a * remove_liquidity_amount overflows u128")
-        .checked_div(pool_def_data.liquidity_pool_supply)
-        .expect("liquidity supply must be nonzero after validation");
-    let withdraw_amount_b = pool_def_data
-        .reserve_b
-        .checked_mul(remove_liquidity_amount)
-        .expect("reserve_b * remove_liquidity_amount overflows u128")
-        .checked_div(pool_def_data.liquidity_pool_supply)
-        .expect("liquidity supply must be nonzero after validation");
+    // floor(reserve * remove_amount / supply), products widened to U256. Supply exceeds
+    // MINIMUM_LIQUIDITY (asserted above), so the divisor is nonzero.
+    let withdraw_amount_a = mul_div_floor(
+        pool_def_data.reserve_a,
+        remove_liquidity_amount,
+        pool_def_data.liquidity_pool_supply,
+    );
+    let withdraw_amount_b = mul_div_floor(
+        pool_def_data.reserve_b,
+        remove_liquidity_amount,
+        pool_def_data.liquidity_pool_supply,
+    );
 
     // 3. Validate and slippage check
     assert!(

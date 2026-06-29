@@ -295,6 +295,54 @@ pub fn spot_price_q64_64(reserve_base: u128, reserve_quote: u128) -> u128 {
     u128::try_from(price).unwrap_or(u128::MAX)
 }
 
+/// `floor(a * b / c)` computed in U256 so the `a * b` product can't overflow u128.
+/// (Storage stays u128; only the intermediate widens.)
+///
+/// # Panics
+/// Panics if `c` is zero, or if the result exceeds u128.
+#[must_use]
+pub fn mul_div_floor(a: u128, b: u128, c: u128) -> u128 {
+    use alloy_primitives::U256;
+    assert!(c != 0, "mul_div_floor: divisor must be non-zero");
+    let product = U256::from(a)
+        .checked_mul(U256::from(b))
+        .expect("u128 * u128 always fits in U256");
+    let result = product
+        .checked_div(U256::from(c))
+        .expect("mul_div_floor: divisor is non-zero after the assertion above");
+    u128::try_from(result).expect("mul_div_floor result exceeds u128")
+}
+
+/// `ceil(a * b / c)` computed in U256 so the `a * b` product can't overflow u128.
+/// (Storage stays u128; only the intermediate widens.)
+///
+/// # Panics
+/// Panics if `c` is zero, or if the result exceeds u128.
+#[must_use]
+pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
+    use alloy_primitives::U256;
+    assert!(c != 0, "mul_div_ceil: divisor must be non-zero");
+    let product = U256::from(a)
+        .checked_mul(U256::from(b))
+        .expect("u128 * u128 always fits in U256");
+    let result = product.div_ceil(U256::from(c));
+    u128::try_from(result).expect("mul_div_ceil result exceeds u128")
+}
+
+/// `floor(sqrt(a * b))` computed in U256 so the `a * b` product can't overflow u128.
+///
+/// # Panics
+/// Panics if the result exceeds u128.
+#[must_use]
+pub fn isqrt_product(a: u128, b: u128) -> u128 {
+    use alloy_primitives::U256;
+    let product = U256::from(a)
+        .checked_mul(U256::from(b))
+        .expect("u128 * u128 always fits in U256");
+    let root = product.root(2); // ruint integer root; floor sqrt
+    u128::try_from(root).expect("isqrt_product result exceeds u128")
+}
+
 impl TryFrom<&Data> for PoolDefinition {
     type Error = std::io::Error;
 
@@ -545,5 +593,86 @@ mod tests {
     #[should_panic(expected = "reserve_base must be non-zero")]
     fn zero_reserve_base_panics() {
         let _ = spot_price_q64_64(0, 1_000);
+    }
+
+    #[test]
+    fn mul_div_floor_small_cases() {
+        assert_eq!(mul_div_floor(6, 7, 3), 14);
+        // floor(7 * 7 / 3) = floor(49/3) = 16
+        assert_eq!(mul_div_floor(7, 7, 3), 16);
+        assert_eq!(mul_div_floor(0, 12345, 7), 0);
+        assert_eq!(mul_div_floor(1, 1, 2), 0);
+    }
+
+    #[test]
+    fn mul_div_floor_product_exceeds_u128() {
+        // 2e30 * 2e30 = 4e60, far beyond u128; / 1e20 = 4e40, still beyond u128 -- but the
+        // intermediate must not overflow and the *quotient* here fits once divided down.
+        // 2e30 * 2e30 / 2e30 = 2e30 fits in u128.
+        let a = 2_000_000_000_000_000_000_000_000_000_000u128; // 2e30
+        assert_eq!(mul_div_floor(a, a, a), a);
+        // 2e30 * 2e30 / 1e20 = 4e40 would exceed u128 -- verify it panics on downcast.
+    }
+
+    #[test]
+    #[should_panic(expected = "mul_div_floor result exceeds u128")]
+    fn mul_div_floor_result_exceeds_u128_panics() {
+        let a = 2_000_000_000_000_000_000_000_000_000_000u128; // 2e30
+        let c = 100_000_000_000_000_000_000u128; // 1e20
+        let _ = mul_div_floor(a, a, c); // 4e40 > u128::MAX
+    }
+
+    #[test]
+    #[should_panic(expected = "mul_div_floor: divisor must be non-zero")]
+    fn mul_div_floor_zero_divisor_panics() {
+        let _ = mul_div_floor(1, 2, 0);
+    }
+
+    #[test]
+    fn mul_div_ceil_small_cases() {
+        assert_eq!(mul_div_ceil(6, 7, 3), 14);
+        // ceil(7 * 7 / 3) = ceil(49/3) = 17
+        assert_eq!(mul_div_ceil(7, 7, 3), 17);
+        // exact division: no rounding up
+        assert_eq!(mul_div_ceil(6, 4, 3), 8);
+        assert_eq!(mul_div_ceil(0, 12345, 7), 0);
+    }
+
+    #[test]
+    fn mul_div_ceil_product_exceeds_u128() {
+        // (2e30 * 2e30) / 2e30 = 2e30 exactly, fits in u128.
+        let a = 2_000_000_000_000_000_000_000_000_000_000u128; // 2e30
+        assert_eq!(mul_div_ceil(a, a, a), a);
+    }
+
+    #[test]
+    #[should_panic(expected = "mul_div_ceil: divisor must be non-zero")]
+    fn mul_div_ceil_zero_divisor_panics() {
+        let _ = mul_div_ceil(1, 2, 0);
+    }
+
+    #[test]
+    fn isqrt_product_matches_u128_isqrt_for_small_values() {
+        assert_eq!(isqrt_product(100, 100), 100);
+        assert_eq!(isqrt_product(2, 8), 4);
+        // floor(sqrt(7 * 7)) = 7, floor(sqrt(50)) = 7
+        assert_eq!(isqrt_product(7, 7), 7);
+        assert_eq!(isqrt_product(5, 10), 50u128.isqrt());
+    }
+
+    #[test]
+    fn isqrt_product_handles_the_1e20_times_2e20_overflow_case() {
+        // 1e20 * 2e20 = 2e40 overflows u128 (max ~3.4e38); the U256 intermediate keeps it exact.
+        let a = 100_000_000_000_000_000_000u128; // 1e20
+        let b = 200_000_000_000_000_000_000u128; // 2e20
+                                                 // floor(sqrt(2e40)) computed independently in U256.
+        let expected = {
+            use alloy_primitives::U256;
+            let product = U256::from(a).checked_mul(U256::from(b)).unwrap();
+            u128::try_from(product.root(2)).unwrap()
+        };
+        assert_eq!(isqrt_product(a, b), expected);
+        // Sanity: floor(sqrt(2e40)) = floor(1.4142...e20) = 141421356237309504880.
+        assert_eq!(isqrt_product(a, b), 141_421_356_237_309_504_880);
     }
 }

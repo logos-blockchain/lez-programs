@@ -1,6 +1,6 @@
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed,
-    read_vault_fungible_balances, spot_price_q64_64, AmmConfig, FEE_BPS_DENOMINATOR,
+    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed, mul_div_ceil,
+    mul_div_floor, read_vault_fungible_balances, spot_price_q64_64, AmmConfig, FEE_BPS_DENOMINATOR,
     MINIMUM_LIQUIDITY,
 };
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
@@ -270,11 +270,8 @@ fn swap_logic(
     let fee_multiplier = FEE_BPS_DENOMINATOR
         .checked_sub(fee_bps)
         .expect("fee_bps exceeds fee denominator");
-    let effective_amount_in = swap_amount_in
-        .checked_mul(fee_multiplier)
-        .expect("swap_amount_in * (FEE_BPS_DENOMINATOR - fee_bps) overflows u128")
-        .checked_div(FEE_BPS_DENOMINATOR)
-        .expect("fee denominator must be nonzero");
+    // floor(swap_amount_in * fee_multiplier / FEE_BPS_DENOMINATOR), product widened to U256.
+    let effective_amount_in = mul_div_floor(swap_amount_in, fee_multiplier, FEE_BPS_DENOMINATOR);
     assert!(
         effective_amount_in != 0,
         "Effective swap amount should be nonzero"
@@ -283,15 +280,16 @@ fn swap_logic(
     // The recorded pool reserves are updated later with the full
     // `swap_amount_in`, so LP fees accrue inside `reserve_*` via invariant
     // growth rather than as a separate vault balance surplus over `reserve_*`.
-    let withdraw_amount = reserve_withdraw_vault_amount
-        .checked_mul(effective_amount_in)
-        .expect("reserve * effective_amount_in overflows u128")
-        .checked_div(
-            reserve_deposit_vault_amount
-                .checked_add(effective_amount_in)
-                .expect("reserve + effective_amount_in overflows u128"),
-        )
-        .expect("reserve plus effective input must be nonzero");
+    // The denominator sum stays u128 (overflows only near u128::MAX, an unstorable reserve);
+    // only the `reserve * effective` product is widened to U256.
+    let reserve_plus_effective = reserve_deposit_vault_amount
+        .checked_add(effective_amount_in)
+        .expect("reserve + effective_amount_in overflows u128");
+    let withdraw_amount = mul_div_floor(
+        reserve_withdraw_vault_amount,
+        effective_amount_in,
+        reserve_plus_effective,
+    );
 
     // Slippage check
     assert!(
@@ -483,23 +481,24 @@ fn exact_output_swap_logic(
     //
     // Solve constant product for effective_in (fee already removed):
     //   effective_in >= ceil(reserve_in * amount_out / (reserve_out - amount_out))
-    let effective_in_numerator = reserve_deposit_vault_amount
-        .checked_mul(exact_amount_out)
-        .expect("reserve * amount_out overflows u128");
+    // ceil(reserve_in * amount_out / (reserve_out - amount_out)). The `reserve_in * amount_out`
+    // product is widened to U256; the denominator is a subtraction that stays u128.
     let effective_in_denominator = reserve_withdraw_vault_amount
         .checked_sub(exact_amount_out)
         .expect("reserve_out - amount_out underflows");
-    let effective_in_min = effective_in_numerator.div_ceil(effective_in_denominator);
+    let effective_in_min = mul_div_ceil(
+        reserve_deposit_vault_amount,
+        exact_amount_out,
+        effective_in_denominator,
+    );
 
     // Lift back to gross input so that
     //   floor(gross_in * (FEE_DENOM - fee) / FEE_DENOM) >= effective_in_min
+    // ceil(effective_in_min * FEE_BPS_DENOMINATOR / fee_multiplier), product widened to U256.
     let fee_multiplier = FEE_BPS_DENOMINATOR
         .checked_sub(fee_bps)
         .expect("fee_bps exceeds fee denominator");
-    let deposit_amount = effective_in_min
-        .checked_mul(FEE_BPS_DENOMINATOR)
-        .expect("effective_in * FEE_DENOM overflows u128")
-        .div_ceil(fee_multiplier);
+    let deposit_amount = mul_div_ceil(effective_in_min, FEE_BPS_DENOMINATOR, fee_multiplier);
 
     // Slippage check
     assert!(

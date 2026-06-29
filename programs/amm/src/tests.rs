@@ -10,9 +10,9 @@ use std::num::NonZero;
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_liquidity_token_pda_seed,
     compute_lp_lock_holding_pda, compute_lp_lock_holding_pda_seed, compute_pool_pda,
-    compute_pool_pda_seed, compute_vault_pda, compute_vault_pda_seed, AmmConfig, PoolDefinition,
-    FEE_BPS_DENOMINATOR, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5,
-    MINIMUM_LIQUIDITY,
+    compute_pool_pda_seed, compute_vault_pda, compute_vault_pda_seed, isqrt_product, mul_div_floor,
+    AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR, FEE_TIER_BPS_1, FEE_TIER_BPS_100,
+    FEE_TIER_BPS_30, FEE_TIER_BPS_5, MINIMUM_LIQUIDITY,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
@@ -3107,10 +3107,12 @@ fn call_swap_exact_output_accepts_smallest_max_in_for_rounded_boundary() {
     );
 }
 
-// Without the fix, `reserve_a * exact_amount_out` silently wraps to 0 in release mode,
-// making `deposit_amount = 0`. The slippage check `0 <= max_amount_in` always passes,
-// so an attacker receives `exact_amount_out` tokens while paying nothing.
-#[should_panic(expected = "reserve * amount_out overflows u128")]
+// Without widening, `reserve_a * exact_amount_out` silently wraps to 0 in release mode, making
+// `deposit_amount = 0`, so an attacker would receive `exact_amount_out` tokens while paying
+// nothing. Under Option A the product is computed in U256, so the true (enormous) required input
+// is computed exactly and the slippage check `deposit_amount <= max_amount_in` correctly rejects
+// the attacker's tiny `max_amount_in`.
+#[should_panic(expected = "Required input exceeds maximum amount in")]
 #[test]
 fn swap_exact_output_overflow_protection() {
     // reserve_a chosen so that reserve_a * 2 overflows u128:
@@ -3284,6 +3286,42 @@ fn test_new_definition_lp_symmetric_amounts() {
 
     assert_eq!(chained_call_lp_lock, expected_lp_lock_call);
     assert_eq!(chained_call_lp_user, expected_lp_user_call);
+}
+
+#[test]
+fn test_new_definition_large_18_decimal_amounts_no_overflow() {
+    // 100e18 and 200e18 (1e20 / 2e20). The naive `token_a * token_b` product is 2e40, which
+    // overflows u128 (max ~3.4e38) and previously panicked. `isqrt_product` widens the product
+    // to U256, so this must now succeed. Expected LP = floor(sqrt(2e40)).
+    let token_a_amount = 100_000_000_000_000_000_000u128; // 1e20
+    let token_b_amount = 200_000_000_000_000_000_000u128; // 2e20
+    let expected_lp = isqrt_product(token_a_amount, token_b_amount);
+    assert_eq!(expected_lp, 141_421_356_237_309_504_880);
+
+    let (post_states, _chained_calls) = new_definition(
+        AccountWithMetadataForTests::config_init(),
+        AccountWithMetadataForTests::pool_definition_uninit(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_uninit(),
+        AccountWithMetadataForTests::lp_lock_holding_uninit(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_uninit(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        NonZero::new(token_a_amount).unwrap(),
+        NonZero::new(token_b_amount).unwrap(),
+        BalanceForTests::fee_tier(),
+        AMM_PROGRAM_ID,
+    );
+
+    let pool_post = post_states[1].clone();
+    let pool_def = PoolDefinition::try_from(&pool_post.account().data).unwrap();
+    assert_eq!(pool_def.reserve_a, token_a_amount);
+    assert_eq!(pool_def.reserve_b, token_b_amount);
+    assert_eq!(pool_def.liquidity_pool_supply, expected_lp);
+    assert!(pool_def.liquidity_pool_supply > MINIMUM_LIQUIDITY);
 }
 
 #[test]
@@ -3552,12 +3590,14 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
     assert!(synced_delta_lp < unsynced_delta_lp);
 }
 
-#[should_panic(expected = "token_a * token_b overflows u128")]
+// Under Option A the `token_a * token_b` product is computed in U256, so a product that exceeds
+// u128 no longer panics: it is square-rooted exactly. Here `large_amount * 2 = 2^128`, whose
+// integer sqrt is `2^64`. Previously this multiplication overflowed u128 and panicked.
 #[test]
 fn new_definition_overflow_protection() {
-    let large_amount = u128::MAX / 2 + 1;
+    let large_amount = u128::MAX / 2 + 1; // 2^127
 
-    let _result = new_definition(
+    let (post_states, _chained_calls) = new_definition(
         AccountWithMetadataForTests::config_init(),
         AccountWithMetadataForTests::pool_definition_uninit(),
         AccountWithMetadataForTests::vault_a_init(),
@@ -3574,13 +3614,21 @@ fn new_definition_overflow_protection() {
         BalanceForTests::fee_tier(),
         AMM_PROGRAM_ID,
     );
+
+    let pool_def = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
+    // floor(sqrt(2^127 * 2)) = floor(sqrt(2^128)) = 2^64.
+    assert_eq!(pool_def.liquidity_pool_supply, 1u128 << 64);
+    assert_eq!(pool_def.reserve_a, large_amount);
+    assert_eq!(pool_def.reserve_b, 2);
 }
 
-#[should_panic(expected = "reserve_a * max_amount_b overflows u128")]
+// Under Option A the `reserve * max_amount` and `supply * actual` products are computed in U256, so
+// realistic large reserves no longer overflow u128. Here every product (reserve_a * max_b,
+// supply * actual, etc.) is `1e30 * 1e30 = 1e60`, far beyond u128 (max ~3.4e38), yet the add
+// succeeds and computes the correct widened results. Previously these multiplications panicked.
 #[test]
 fn add_liquidity_overflow_protection() {
-    let large_reserve: u128 = u128::MAX / 2 + 1;
-    let reserve_b: u128 = 1_000;
+    let large: u128 = 1_000_000_000_000_000_000_000_000_000_000; // 1e30
 
     let pool = AccountWithMetadata {
         account: Account {
@@ -3592,9 +3640,9 @@ fn add_liquidity_overflow_protection() {
                 vault_a_id: IdForTests::vault_a_id(),
                 vault_b_id: IdForTests::vault_b_id(),
                 liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                liquidity_pool_supply: MINIMUM_LIQUIDITY,
-                reserve_a: large_reserve,
-                reserve_b,
+                liquidity_pool_supply: large,
+                reserve_a: large,
+                reserve_b: large,
                 fees: BalanceForTests::fee_tier(),
             }),
             nonce: Nonce(0),
@@ -3609,7 +3657,7 @@ fn add_liquidity_overflow_protection() {
             balance: 0,
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: IdForTests::token_a_definition_id(),
-                balance: large_reserve,
+                balance: large,
             }),
             nonce: Nonce(0),
         },
@@ -3623,7 +3671,7 @@ fn add_liquidity_overflow_protection() {
             balance: 0,
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: IdForTests::token_b_definition_id(),
-                balance: reserve_b,
+                balance: large,
             }),
             nonce: Nonce(0),
         },
@@ -3631,7 +3679,7 @@ fn add_liquidity_overflow_protection() {
         account_id: IdForTests::vault_b_id(),
     };
 
-    let _result = add_liquidity(
+    let (post_states, _chained_calls) = add_liquidity(
         AccountWithMetadataForTests::config_init(),
         pool,
         vault_a,
@@ -3643,16 +3691,24 @@ fn add_liquidity_overflow_protection() {
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
         NonZero::new(1).unwrap(),
-        500,
-        2, // max_amount_b=2 → reserve_a * 2 overflows
+        large, // max_amount_a
+        large, // max_amount_b
         AMM_PROGRAM_ID,
     );
+
+    let pool_def = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
+    // Balanced add of `1e30` to each `1e30` reserve mints `delta_lp = 1e30`.
+    assert_eq!(pool_def.reserve_a, large + large);
+    assert_eq!(pool_def.reserve_b, large + large);
+    assert_eq!(pool_def.liquidity_pool_supply, large + large);
 }
 
-#[should_panic(expected = "reserve_a * remove_liquidity_amount overflows u128")]
+// Under Option A the `reserve * remove_amount` product is computed in U256, so a product that
+// exceeds u128 no longer panics: `large_reserve * 2 = 2^128` is divided down to a valid u128
+// withdraw. Previously this multiplication overflowed u128 and panicked.
 #[test]
 fn remove_liquidity_overflow_protection() {
-    let large_reserve: u128 = u128::MAX / 2 + 1;
+    let large_reserve: u128 = u128::MAX / 2 + 1; // 2^127
     let reserve_b: u128 = 1_000;
     let lp_supply: u128 = 1_002; // must exceed MINIMUM_LIQUIDITY so remove_amount=2 passes the lock check
 
@@ -3719,7 +3775,7 @@ fn remove_liquidity_overflow_protection() {
         account_id: IdForTests::user_token_lp_id(),
     };
 
-    let _result = remove_liquidity(
+    let (post_states, _chained_calls) = remove_liquidity(
         AccountWithMetadataForTests::config_init(),
         pool,
         vault_a,
@@ -3730,18 +3786,27 @@ fn remove_liquidity_overflow_protection() {
         user_lp,
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
-        NonZero::new(2).unwrap(), /* remove_amount=2 → reserve_a * 2
-                                   * overflows */
+        NonZero::new(2).unwrap(), // remove_amount=2 → reserve_a * 2 = 2^128 (widened to U256)
         1,
         1,
         AMM_PROGRAM_ID,
     );
+
+    // withdraw_a = floor(reserve_a * 2 / supply); withdraw_b = floor(1000 * 2 / 1002) = 1.
+    let expected_withdraw_a = mul_div_floor(large_reserve, 2, lp_supply);
+    let expected_withdraw_b = mul_div_floor(reserve_b, 2, lp_supply);
+    let pool_def = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
+    assert_eq!(pool_def.reserve_a, large_reserve - expected_withdraw_a);
+    assert_eq!(pool_def.reserve_b, reserve_b - expected_withdraw_b);
+    assert_eq!(pool_def.liquidity_pool_supply, lp_supply - 2);
 }
 
-#[should_panic(expected = "reserve * effective_amount_in overflows u128")]
+// Under Option A the `reserve_out * effective_amount_in` product is computed in U256, so a product
+// that exceeds u128 no longer panics: `reserve_b * 2 = 2^128` is divided down to a valid u128
+// withdraw. Previously this multiplication overflowed u128 and panicked.
 #[test]
 fn swap_exact_input_overflow_protection() {
-    let large_reserve: u128 = u128::MAX / 2 + 1;
+    let large_reserve: u128 = u128::MAX / 2 + 1; // 2^127
     let reserve_b: u128 = 1_000;
 
     let pool = AccountWithMetadata {
@@ -3794,9 +3859,9 @@ fn swap_exact_input_overflow_protection() {
     };
 
     // Swap token_a in: withdraw_amount = reserve_b * effective_amount_in / (reserve_a +
-    // effective_amount_in) With fee_bps=30: effective_amount_in = 3 * 9970 / 10000 = 2
-    // reserve_b is large, so reserve_b * 2 overflows
-    let _result = swap_exact_input(
+    // effective_amount_in). With fee_bps=30: effective_amount_in = floor(3 * 9970 / 10000) = 2.
+    // reserve_b is large, so `reserve_b * 2 = 2^128` is widened to U256 rather than overflowing.
+    let (post_states, _chained_calls) = swap_exact_input(
         AccountWithMetadataForTests::config_init(),
         pool,
         vault_a,
@@ -3810,6 +3875,19 @@ fn swap_exact_input_overflow_protection() {
         IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
+
+    let fee_multiplier = FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier();
+    let effective_amount_in = mul_div_floor(3, fee_multiplier, FEE_BPS_DENOMINATOR);
+    let expected_withdraw = mul_div_floor(
+        large_reserve,
+        effective_amount_in,
+        1_000 + effective_amount_in,
+    );
+    let pool_def = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
+    // token_a in: reserve_a grows by the full swap_amount_in (3); reserve_b shrinks by the
+    // withdraw.
+    assert_eq!(pool_def.reserve_a, 1_000 + 3);
+    assert_eq!(pool_def.reserve_b, large_reserve - expected_withdraw);
 }
 
 #[test]

@@ -2,8 +2,8 @@ use std::num::NonZeroU128;
 
 use amm_core::{
     assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda_seed,
-    compute_pool_pda_seed, read_vault_fungible_balances, spot_price_q64_64, AmmConfig,
-    PoolDefinition,
+    compute_pool_pda_seed, mul_div_floor, read_vault_fungible_balances, spot_price_q64_64,
+    AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
@@ -113,18 +113,18 @@ pub fn add_liquidity(
     assert!(pool_def_data.reserve_a != 0, "Reserves must be nonzero");
     assert!(pool_def_data.reserve_b != 0, "Reserves must be nonzero");
 
-    let ideal_a: u128 = pool_def_data
-        .reserve_a
-        .checked_mul(max_amount_to_add_token_b)
-        .expect("reserve_a * max_amount_b overflows u128")
-        .checked_div(pool_def_data.reserve_b)
-        .expect("reserve_b must be nonzero after validation");
-    let ideal_b: u128 = pool_def_data
-        .reserve_b
-        .checked_mul(max_amount_to_add_token_a)
-        .expect("reserve_b * max_amount_a overflows u128")
-        .checked_div(pool_def_data.reserve_a)
-        .expect("reserve_a must be nonzero after validation");
+    // floor(reserve * max_amount / reserve), products widened to U256. Reserves are nonzero
+    // (asserted above), so the divisors are valid.
+    let ideal_a: u128 = mul_div_floor(
+        pool_def_data.reserve_a,
+        max_amount_to_add_token_b,
+        pool_def_data.reserve_b,
+    );
+    let ideal_b: u128 = mul_div_floor(
+        pool_def_data.reserve_b,
+        max_amount_to_add_token_a,
+        pool_def_data.reserve_a,
+    );
 
     let actual_amount_a = if ideal_a > max_amount_to_add_token_a {
         max_amount_to_add_token_a
@@ -151,19 +151,18 @@ pub fn add_liquidity(
     assert!(actual_amount_b != 0, "A trade amount is 0");
 
     // 4. Calculate LP to mint
+    // floor(supply * actual / reserve), products widened to U256.
     let delta_lp = std::cmp::min(
-        pool_def_data
-            .liquidity_pool_supply
-            .checked_mul(actual_amount_a)
-            .expect("liquidity_pool_supply * actual_amount_a overflows u128")
-            .checked_div(pool_def_data.reserve_a)
-            .expect("reserve_a must be nonzero after validation"),
-        pool_def_data
-            .liquidity_pool_supply
-            .checked_mul(actual_amount_b)
-            .expect("liquidity_pool_supply * actual_amount_b overflows u128")
-            .checked_div(pool_def_data.reserve_b)
-            .expect("reserve_b must be nonzero after validation"),
+        mul_div_floor(
+            pool_def_data.liquidity_pool_supply,
+            actual_amount_a,
+            pool_def_data.reserve_a,
+        ),
+        mul_div_floor(
+            pool_def_data.liquidity_pool_supply,
+            actual_amount_b,
+            pool_def_data.reserve_b,
+        ),
     );
 
     assert!(delta_lp != 0, "Payable LP must be nonzero");
