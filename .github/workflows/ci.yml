@@ -153,6 +153,7 @@ jobs:
       - name: Local sequencer integration tests
         run: cargo test -p integration_tests --features local-sequencer-tests -- --nocapture
         env:
+          RISC0_BUILD_DEBUG: 0
           RISC0_DEV_MODE: 1
           RUST_TEST_THREADS: 1
 

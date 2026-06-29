@@ -32,6 +32,7 @@ type DynError = Box<dyn Error + Send + Sync>;
 type DynResult<T> = Result<T, DynError>;
 
 const TEST_NODE_CIRCUITS_VERSION_ENV: &str = "LOGOS_SCAFFOLD_TEST_NODE_CIRCUITS_VERSION";
+const RISC0_BUILD_DEBUG_ENV: &str = "RISC0_BUILD_DEBUG";
 const DEFAULT_CIRCUITS_VERSION: &str = "0.4.2";
 const CF_BLOCK_NAME: &str = "cf_block";
 const CF_META_NAME: &str = "cf_meta";
@@ -351,6 +352,19 @@ fn ensure_risc0_dev_mode() -> DynResult<()> {
     Ok(())
 }
 
+fn ensure_release_guest_builds() -> DynResult<()> {
+    if let Some(value) = env::var_os(RISC0_BUILD_DEBUG_ENV) {
+        let value = value.to_string_lossy();
+        if value.trim() == "1" {
+            return Err(io::Error::other(format!(
+                "{RISC0_BUILD_DEBUG_ENV}=1 enables debug-profile guest ELFs, but local sequencer tests require release-profile guest ELFs; unset {RISC0_BUILD_DEBUG_ENV} or set it to 0"
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
 struct LocalSequencer {
     _node: TestNode,
     client: TestNodeClient,
@@ -359,6 +373,7 @@ struct LocalSequencer {
 impl LocalSequencer {
     fn spawn(state: &nssa::V03State) -> DynResult<Self> {
         ensure_risc0_dev_mode()?;
+        ensure_release_guest_builds()?;
         let seed_dir = SeedDirGuard::from_state(state)?;
         let config = TestNodeConfig {
             state: Some(seed_dir.path().to_path_buf()),

@@ -67,8 +67,10 @@ RISC0_DEV_MODE=1 cargo test -p token_program -p amm_program -p ata_program -p st
 # Run integration tests (dev mode skips ZK proof generation)
 RISC0_DEV_MODE=1 cargo test -p integration_tests
 
-# Run integration tests through scaffold-managed local sequencer test nodes
-RISC0_DEV_MODE=1 RUST_TEST_THREADS=1 cargo test -p integration_tests --features local-sequencer-tests -- --nocapture
+# Run integration tests through scaffold-managed local sequencer test nodes.
+# RISC0_BUILD_DEBUG=0 keeps embedded guest ELFs on the release profile while
+# RISC0_DEV_MODE=1 skips proof generation.
+RISC0_BUILD_DEBUG=0 RISC0_DEV_MODE=1 RUST_TEST_THREADS=1 cargo test -p integration_tests --features local-sequencer-tests -- --nocapture
 
 # Run all tests
 make test
