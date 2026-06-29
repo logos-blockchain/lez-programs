@@ -7,7 +7,7 @@ use nssa_core::{
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
     compute_stability_fee_accumulator_pda, current_accumulated_rate, ProtocolParameters,
-    RedemptionPriceState, StabilityFeeAccumulator, MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+    RedemptionPriceState, StabilityFeeAccumulator,
 };
 
 pub(crate) fn read_clock_timestamp(clock: &AccountWithMetadata) -> u64 {
@@ -84,17 +84,9 @@ pub(crate) fn accrue_stability_fee_state(
     params: &ProtocolParameters,
     now: u64,
 ) -> StabilityFeeAccumulator {
-    let elapsed = now
-        .saturating_sub(accumulator.last_accrued_at)
-        .min(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS);
-    let last_accrued_at = accumulator
-        .last_accrued_at
-        .checked_add(elapsed)
-        .expect("Clamped elapsed timestamp cannot overflow");
-
     StabilityFeeAccumulator {
         accumulated_rate_at_last_accrual: current_accumulated_rate(accumulator, params, now),
-        last_accrued_at,
+        last_accrued_at: now,
     }
 }
 

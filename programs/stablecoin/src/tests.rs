@@ -685,7 +685,7 @@ fn accrue_stability_fee_clamps_elapsed_window() {
     );
     assert_eq!(
         updated.last_accrued_at,
-        MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS
+        MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS + 1
     );
 }
 
@@ -985,6 +985,24 @@ fn generate_debt_rejects_uninitialized_market_price_oracle() {
         stability_fee_accumulator_account(FIXED_POINT_ONE, 1_000),
         redemption_price_state_account(FIXED_POINT_ONE, 1_000),
         uninit(oracle_id()),
+        protocol_parameters_account(false),
+        clock_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Market price oracle timestamp is in the future")]
+fn generate_debt_rejects_future_market_price_oracle() {
+    crate::generate_debt::generate_debt(
+        owner_account(),
+        position_account(1_000, 0),
+        stablecoin_definition_account(0),
+        user_stablecoin_holding(0),
+        stability_fee_accumulator_account(FIXED_POINT_ONE, 1_000),
+        redemption_price_state_account(FIXED_POINT_ONE, 1_000),
+        oracle_account(1_001),
         protocol_parameters_account(false),
         clock_account(1_000),
         STABLECOIN_PROGRAM_ID,

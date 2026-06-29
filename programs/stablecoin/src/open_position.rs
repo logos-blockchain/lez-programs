@@ -22,8 +22,8 @@ use crate::shared::{read_clock_timestamp, read_protocol_parameters};
 /// - `position` or `vault` is already initialized.
 /// - `position.account_id` / `vault.account_id` do not match their PDA derivations.
 /// - `user_holding` cannot be decoded as a [`TokenHolding`].
-/// - `user_holding`'s definition does not match `token_definition`.
-/// - `token_definition.program_owner` does not match `user_holding.program_owner`.
+/// - `user_holding`'s definition does not match `collateral_definition`.
+/// - `collateral_definition.program_owner` does not match `user_holding.program_owner`.
 #[expect(
     clippy::too_many_arguments,
     reason = "instruction surface passes explicit owner, position, vault, collateral, and protocol accounts"

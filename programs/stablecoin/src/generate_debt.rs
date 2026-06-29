@@ -123,8 +123,11 @@ pub fn generate_debt(
         oracle.price != 0,
         "Market price oracle price must be non-zero"
     );
+    let oracle_age = now
+        .checked_sub(oracle.timestamp)
+        .expect("Market price oracle timestamp is in the future");
     assert!(
-        now.saturating_sub(oracle.timestamp) <= params.maximum_oracle_price_age_milliseconds,
+        oracle_age <= params.maximum_oracle_price_age_milliseconds,
         "Market price oracle is stale"
     );
 
