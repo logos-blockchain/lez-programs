@@ -16,8 +16,9 @@ use crate::shared::{
 /// Mints stablecoin debt against an existing position.
 ///
 /// # Panics
-/// Panics if the owner is not authorized, the oracle is stale, or the post-mint position would
-/// be undercollateralized.
+/// Panics if the owner is not authorized, protocol accounts are invalid, the protocol is frozen,
+/// the oracle is stale or malformed, the position is invalid, or the post-mint position would be
+/// undercollateralized.
 #[expect(
     clippy::too_many_arguments,
     reason = "instruction surface passes explicit position, token, oracle, and protocol accounts"
