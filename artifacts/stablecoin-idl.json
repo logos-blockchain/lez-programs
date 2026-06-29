@@ -118,9 +118,9 @@
       "accounts": [
         {
           "name": "controller",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "stablecoin_definition",
@@ -175,7 +175,7 @@
       "accounts": [
         {
           "name": "controller",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },

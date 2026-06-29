@@ -276,12 +276,13 @@ fn compute_next_controller_state(
 
 fn apply_redemption_rate(redemption_price: u128, redemption_rate: i128, elapsed: u64) -> u128 {
     let drift = redemption_rate.saturating_mul(i128::from(elapsed));
-    if drift >= 0 {
+    let next_price = if drift >= 0 {
         redemption_price.saturating_add(u128::try_from(drift).unwrap_or(u128::MAX))
     } else {
         let decrease = u128::try_from(drift.saturating_neg()).unwrap_or(u128::MAX);
         redemption_price.saturating_sub(decrease).max(1)
-    }
+    };
+    next_price.min(i128_max_as_u128())
 }
 
 fn price_error(redemption_price: u128, market_price: u128) -> i128 {
@@ -580,6 +581,31 @@ mod tests {
         assert_eq!(updated.redemption_price, 1_010);
         assert_eq!(updated.redemption_rate, 0);
         assert_eq!(updated.last_update_timestamp, 105);
+    }
+
+    #[test]
+    fn controller_clamps_redemption_price_to_i128_max() {
+        let mut controller = controller_state();
+        controller.redemption_price = i128_max_as_u128() - 5;
+        controller.redemption_rate = 10;
+        controller.proportional_gain = 0;
+
+        let updated = compute_next_controller_state(&controller, i128_max_as_u128(), 101);
+
+        assert_eq!(updated.redemption_price, i128_max_as_u128());
+        assert_eq!(updated.redemption_rate, 0);
+    }
+
+    #[test]
+    fn controller_clamps_existing_redemption_price_above_i128_max() {
+        let mut controller = controller_state();
+        controller.redemption_price = i128_max_as_u128() + 5;
+        controller.redemption_rate = -1;
+        controller.proportional_gain = 0;
+
+        let updated = compute_next_controller_state(&controller, 1, 101);
+
+        assert_eq!(updated.redemption_price, i128_max_as_u128());
     }
 
     #[test]

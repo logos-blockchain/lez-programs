@@ -128,6 +128,7 @@ mod stablecoin {
     #[instruction]
     pub fn initialize_redemption_controller(
         ctx: ProgramContext,
+        #[account(init)]
         controller: AccountWithMetadata,
         stablecoin_definition: AccountWithMetadata,
         price_feed: AccountWithMetadata,
@@ -172,6 +173,7 @@ mod stablecoin {
     #[instruction]
     pub fn update_redemption_controller(
         ctx: ProgramContext,
+        #[account(mut)]
         controller: AccountWithMetadata,
         price_feed: AccountWithMetadata,
         current_timestamp: u64,
