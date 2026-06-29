@@ -8,38 +8,38 @@
         {
           "name": "admin",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
           "name": "protocol_parameters",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "stability_fee_accumulator",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "redemption_price_state",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "stablecoin_definition",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "stablecoin_master_holding",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "collateral_definition",
@@ -105,7 +105,7 @@
         {
           "name": "caller",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
@@ -116,7 +116,7 @@
         },
         {
           "name": "stability_fee_accumulator",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -135,18 +135,18 @@
         {
           "name": "admin",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
           "name": "protocol_parameters",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "stability_fee_accumulator",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -227,24 +227,24 @@
         {
           "name": "owner",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
           "name": "position",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "stablecoin_definition",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
         {
           "name": "user_stablecoin_holding",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },

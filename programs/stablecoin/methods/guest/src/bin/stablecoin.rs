@@ -20,11 +20,17 @@ mod stablecoin {
     #[instruction]
     pub fn initialize_program(
         ctx: ProgramContext,
+        #[account(signer)]
         admin: AccountWithMetadata,
+        #[account(init)]
         protocol_parameters: AccountWithMetadata,
+        #[account(init)]
         stability_fee_accumulator: AccountWithMetadata,
+        #[account(init)]
         redemption_price_state: AccountWithMetadata,
+        #[account(init)]
         stablecoin_definition: AccountWithMetadata,
+        #[account(init)]
         stablecoin_master_holding: AccountWithMetadata,
         collateral_definition: AccountWithMetadata,
         market_price_oracle: AccountWithMetadata,
@@ -70,8 +76,10 @@ mod stablecoin {
     #[instruction]
     pub fn accrue_stability_fee(
         ctx: ProgramContext,
+        #[account(signer)]
         caller: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
+        #[account(mut)]
         stability_fee_accumulator: AccountWithMetadata,
         clock: AccountWithMetadata,
     ) -> SpelResult {
@@ -93,8 +101,11 @@ mod stablecoin {
     #[instruction]
     pub fn set_stability_fee_per_millisecond(
         ctx: ProgramContext,
+        #[account(signer)]
         admin: AccountWithMetadata,
+        #[account(mut)]
         protocol_parameters: AccountWithMetadata,
+        #[account(mut)]
         stability_fee_accumulator: AccountWithMetadata,
         clock: AccountWithMetadata,
         new_rate: u128,
@@ -162,9 +173,13 @@ mod stablecoin {
     #[instruction]
     pub fn generate_debt(
         ctx: ProgramContext,
+        #[account(signer)]
         owner: AccountWithMetadata,
+        #[account(mut)]
         position: AccountWithMetadata,
+        #[account(mut)]
         stablecoin_definition: AccountWithMetadata,
+        #[account(mut)]
         user_stablecoin_holding: AccountWithMetadata,
         stability_fee_accumulator: AccountWithMetadata,
         redemption_price_state: AccountWithMetadata,
