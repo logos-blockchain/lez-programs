@@ -16,6 +16,7 @@ const CONTROLLER_GAIN_SCALE_I128: i128 = {
 /// Initialize the redemption-rate feedback controller for one stablecoin/feed pair.
 ///
 /// # Panics
+/// - `stablecoin_definition` is not authorized.
 /// - `controller` is already initialized.
 /// - `controller.account_id` does not match the stablecoin/feed PDA.
 /// - `stablecoin_definition` is uninitialized or not a fungible token definition.
@@ -39,6 +40,10 @@ pub fn initialize_redemption_controller(
     max_price_feed_age: u64,
     current_timestamp: u64,
 ) -> Vec<AccountPostState> {
+    assert!(
+        stablecoin_definition.is_authorized,
+        "Stablecoin definition authorization is missing"
+    );
     assert_eq!(
         controller.account,
         Account::default(),
@@ -380,7 +385,7 @@ mod tests {
                 }),
                 nonce: Nonce(0),
             },
-            is_authorized: false,
+            is_authorized: true,
             account_id: stablecoin_definition_id(),
         }
     }
@@ -487,6 +492,28 @@ mod tests {
         assert_eq!(controller.redemption_price, 1_000);
         assert_eq!(controller.redemption_rate, 0);
         assert_eq!(controller.last_update_timestamp, 100);
+    }
+
+    #[test]
+    #[should_panic(expected = "Stablecoin definition authorization is missing")]
+    fn initialize_redemption_controller_requires_stablecoin_definition_authorization() {
+        let mut stablecoin_definition = stablecoin_definition_account();
+        stablecoin_definition.is_authorized = false;
+
+        initialize_redemption_controller(
+            uninit_controller_account(),
+            stablecoin_definition,
+            price_feed_account(1_000, 100),
+            STABLECOIN_PROGRAM_ID,
+            collateral_definition_id(),
+            1_000,
+            CONTROLLER_GAIN_SCALE,
+            0,
+            1_000,
+            500,
+            10,
+            100,
+        );
     }
 
     #[test]

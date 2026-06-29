@@ -27,6 +27,10 @@ impl Keys {
     fn user_stablecoin_holding() -> PrivateKey {
         PrivateKey::try_new([43; 32]).expect("valid private key")
     }
+
+    fn stablecoin_definition() -> PrivateKey {
+        PrivateKey::try_new([44; 32]).expect("valid private key")
+    }
 }
 
 impl Ids {
@@ -51,7 +55,9 @@ impl Ids {
     }
 
     fn stablecoin_definition() -> AccountId {
-        AccountId::new([6; 32])
+        AccountId::from(&PublicKey::new_from_private_key(
+            &Keys::stablecoin_definition(),
+        ))
     }
 
     fn price_feed() -> AccountId {
@@ -486,11 +492,12 @@ fn stablecoin_redemption_controller_initializes_and_updates_from_price_feed() {
             Ids::stablecoin_definition(),
             Ids::price_feed(),
         ],
-        vec![],
+        vec![current_nonce(&state, Ids::stablecoin_definition())],
         initialize,
     )
     .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let witness_set =
+        public_transaction::WitnessSet::for_message(&message, &[&Keys::stablecoin_definition()]);
     let tx = PublicTransaction::new(message, witness_set);
     state
         .transition_from_public_transaction(&tx, 0, current_timestamp)

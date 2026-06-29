@@ -91,7 +91,7 @@ pub enum Instruction {
     /// Required accounts (3):
     /// - Redemption controller account (uninitialized, address must match
     ///   `compute_redemption_controller_pda(self_program_id, stablecoin_definition, price_feed)`)
-    /// - Stablecoin token definition account (initialized fungible token)
+    /// - Stablecoin token definition account (authorized initialized fungible token)
     /// - Oracle price feed account (initialized; must decode as the configured
     ///   stablecoin/collateral market price)
     ///

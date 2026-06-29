@@ -125,7 +125,7 @@
         {
           "name": "stablecoin_definition",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {

@@ -130,6 +130,7 @@ mod stablecoin {
         ctx: ProgramContext,
         #[account(init)]
         controller: AccountWithMetadata,
+        #[account(signer)]
         stablecoin_definition: AccountWithMetadata,
         price_feed: AccountWithMetadata,
         collateral_definition_id: AccountId,
