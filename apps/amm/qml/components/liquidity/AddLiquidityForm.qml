@@ -7,7 +7,7 @@ import "../../state"
 Rectangle {
     id: root
 
-    required property DummyPoolState poolState
+    required property PoolState poolState
 
     property real slippageTolerancePercent: 0.5
     property string amountA: ""
@@ -24,7 +24,7 @@ Rectangle {
     readonly property bool zeroTokenDeposit: root.hasAnyAmount && (root.preview.actualA === 0 || root.preview.actualB === 0)
     readonly property bool zeroLpDeposit: root.preview.actualA > 0 && root.preview.actualB > 0 && root.preview.deltaLp === 0
     readonly property bool canSubmit: root.hasAnyAmount && !root.amountAOverBalance && !root.amountBOverBalance && !root.minReceivedIsZero && !root.zeroTokenDeposit && !root.zeroLpDeposit
-    readonly property string submitButtonText: !root.hasAnyAmount ? qsTr("Enter an amount") : root.amountAOverBalance ? qsTr("Insufficient %1 balance").arg(root.poolState.tokenA) : root.amountBOverBalance ? qsTr("Insufficient %1 balance").arg(root.poolState.tokenB) : root.zeroTokenDeposit ? qsTr("Amount rounds to zero") : root.zeroLpDeposit ? qsTr("LP output is 0") : root.minReceivedIsZero ? qsTr("Minimum received is 0") : qsTr("Add Liquidity")
+    readonly property string submitButtonText: !root.hasAnyAmount ? qsTr("Enter an amount") : root.amountAOverBalance ? qsTr("Insufficient %1 balance").arg(root.poolState.tokenA) : root.amountBOverBalance ? qsTr("Insufficient %1 balance").arg(root.poolState.tokenB) : root.zeroTokenDeposit ? qsTr("Amount rounds to zero") : root.zeroLpDeposit ? qsTr("LP output is 0") : root.minReceivedIsZero ? qsTr("Minimum received is 0") : qsTr("Add liquidity")
     readonly property string warningText: root.zeroTokenDeposit ? qsTr("Deposit would be rejected because one token amount rounds to zero") : root.zeroLpDeposit ? qsTr("Deposit would mint 0 LP tokens") : ""
 
     signal slippageToleranceChangeRequested(real tolerancePercent)
@@ -207,13 +207,16 @@ Rectangle {
         return {
             "action": "add",
             "actualA": root.preview.actualA,
+            "actualAValue": Math.floor(root.preview.actualA),
             "actualB": root.preview.actualB,
+            "actualBValue": Math.floor(root.preview.actualB),
             "currentRatio": qsTr("1 %1 = %2 %3").arg(root.poolState.tokenB).arg(root.poolState.formatInteger(root.poolState.tokenAPerTokenB)).arg(root.poolState.tokenA),
             "deltaLp": root.preview.deltaLp,
             "depositA": root.poolState.formatTokenAmount(root.preview.actualA, root.poolState.tokenA),
             "depositB": root.poolState.formatTokenAmount(root.preview.actualB, root.poolState.tokenB),
             "feeTier": root.poolState.feeTier,
             "minLpReceived": root.poolState.formatLpAmount(root.minLpReceived),
+            "minLpReceivedAmount": root.minLpReceived,
             "slippageTolerance": root.poolState.formatPercent(root.slippageTolerancePercent),
             "tokenA": root.poolState.tokenA,
             "tokenB": root.poolState.tokenB

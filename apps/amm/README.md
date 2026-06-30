@@ -27,6 +27,16 @@ Account/keystore sharing follows the runtime:
   startup the backend **adopts** the already-open wallet (see
   `openOrAdoptWallet()`), surfacing **shared** accounts across apps.
 
+Deployment config is chain-aware. `config/supported-chains.json` stores each
+supported chain identity, including the deterministic block-1 fingerprint
+(`genesisBlockHash` + `genesisBlockSignature`). Each `config/*-programs.json`
+deployment uses a short `chainRef` plus program-specific IDs and transaction
+hashes. When a wallet connects, the backend reads the wallet's current
+`sequencer_addr`, probes block 1, selects the matching chain deployment, and
+verifies configured deployment transactions. If no matching AMM deployment is
+configured or deployed on that chain, the UI shows **Unsupported chain** instead
+of submitting transactions.
+
 > Follow-up: the wallet FFI requires explicit `config_path`/`storage_path` even
 > though the wallet crate already defines defaults (`~/.lee/wallet`,
 > `from_path_or_initialize_default`). A `wallet_ffi_create_new_default()` /

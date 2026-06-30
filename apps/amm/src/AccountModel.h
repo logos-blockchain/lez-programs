@@ -11,6 +11,7 @@
 struct AccountEntry {
     QString name;
     QString address;
+    QString displayAddress;
     QString balance;
     bool isPublic = true;
 };
@@ -24,6 +25,7 @@ public:
     enum Role {
         NameRole = Qt::UserRole + 1,
         AddressRole,
+        DisplayAddressRole,
         BalanceRole,
         IsPublicRole
     };

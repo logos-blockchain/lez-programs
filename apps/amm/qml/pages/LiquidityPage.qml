@@ -7,19 +7,27 @@ import "../state"
 Item {
     id: root
 
+    property var poolConfig: ({})
+    property var backend: null
+    property bool unsupportedChain: false
+    property string selectedWalletAccount: ""
     property int activeLiquidityTab: 0
     property real slippageTolerancePercent: 0.5
+    readonly property bool hasPoolConfig: !root.unsupportedChain && !!root.poolConfig.account
     readonly property int pageMargin: 16
     readonly property int preferredCardWidth: 492
     readonly property int pageCardY: pageCard.implicitHeight + root.pageMargin * 2 <= scroll.height ? Math.round((scroll.height - pageCard.implicitHeight) / 2) : root.pageMargin
+
+    onPoolConfigChanged: poolState.loadConfig(root.poolConfig)
 
     width: parent ? parent.width : implicitWidth
     height: parent ? parent.height : implicitHeight
     implicitWidth: root.preferredCardWidth + root.pageMargin * 2
     implicitHeight: pageCard.implicitHeight + root.pageMargin * 2
 
-    DummyPoolState {
+    PoolState {
         id: poolState
+        Component.onCompleted: loadConfig(root.poolConfig)
     }
 
     Rectangle {
@@ -32,6 +40,7 @@ Item {
 
         anchors.fill: parent
         clip: true
+        visible: !root.unsupportedChain
         contentHeight: Math.max(height, pageCard.y + pageCard.implicitHeight + root.pageMargin)
         contentWidth: width
         enabled: !confirmationDialog.visible
@@ -54,6 +63,7 @@ Item {
 
                 anchors.fill: parent
                 anchors.margins: 12
+                enabled: root.hasPoolConfig
                 spacing: 10
 
                 RowLayout {
@@ -162,6 +172,15 @@ Item {
         }
     }
 
+    Text {
+        anchors.centerIn: parent
+        visible: root.unsupportedChain
+        text: qsTr("Unsupported chain")
+        color: "#E7E1D8"
+        font.pixelSize: 18
+        font.bold: true
+    }
+
     LiquidityConfirmationDialog {
         id: confirmationDialog
 
@@ -173,17 +192,69 @@ Item {
     }
 
     function confirmLiquidityAction(snapshot) {
+        if (!root.backend) {
+            successToast.show(qsTr("Transaction failed"), qsTr("Backend is not ready"), "", "error");
+            return;
+        }
+
+        snapshot.selectedWalletAccount = root.selectedWalletAccount;
+        const expectedSubmissionToken = root.submissionToken();
+        logos.watch(root.backend.submitLiquidity(snapshot),
+            function (resultJson) {
+                if (root.submissionToken() !== expectedSubmissionToken)
+                    return;
+                const result = root.parseTransactionResult(resultJson);
+                if (!result.success) {
+                    successToast.show(qsTr("Transaction failed"),
+                                      result.error || qsTr("Transaction rejected"),
+                                      "",
+                                      "error");
+                    return;
+                }
+
+                root.applyConfirmedLiquidityAction(snapshot, result.tx_hash || "");
+            },
+            function (error) {
+                if (root.submissionToken() !== expectedSubmissionToken)
+                    return;
+                successToast.show(qsTr("Transaction failed"), String(error), "", "error");
+            });
+    }
+
+    function submissionToken() {
+        if (!root.backend)
+            return "";
+        return [
+            root.backend.isWalletOpen ? "open" : "closed",
+            root.backend.sequencerAddr || "",
+            root.backend.deploymentNetworkMatched ? "matched" : "unmatched",
+            root.selectedWalletAccount || "",
+            root.activeLiquidityTab
+        ].join("|");
+    }
+
+    function parseTransactionResult(resultJson) {
+        try {
+            return JSON.parse(resultJson);
+        } catch (err) {
+            return { "success": false, "tx_hash": "", "error": String(err) };
+        }
+    }
+
+    function applyConfirmedLiquidityAction(snapshot, transactionId) {
         if (snapshot.action === "add") {
-            poolState.applyAddLiquidity(snapshot.actualA, snapshot.actualB, snapshot.deltaLp);
             addLiquidityForm.resetForm();
-            successToast.show(qsTr("Liquidity added"), qsTr("Position updated"));
+            successToast.show(qsTr("Add liquidity submitted"),
+                              qsTr("Position refreshed from chain"),
+                              transactionId);
             return;
         }
 
         if (snapshot.action === "remove") {
-            poolState.applyRemoveLiquidity(snapshot.withdrawA, snapshot.withdrawB, snapshot.burnAmount);
             removeLiquidityForm.resetForm();
-            successToast.show(qsTr("Liquidity removed"), qsTr("Position updated"));
+            successToast.show(qsTr("Remove liquidity submitted"),
+                              qsTr("Position refreshed from chain"),
+                              transactionId);
         }
     }
 }

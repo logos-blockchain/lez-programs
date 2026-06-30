@@ -1,6 +1,6 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
 
 import Logos.Theme
 import Logos.Controls
@@ -12,6 +12,18 @@ ItemDelegate {
     // Emitted when the user clicks the copy icon; the parent view connects this
     // to its QML-side clipboard helper (AccountControl.copyToClipboard).
     signal copyRequested(string text)
+
+    property bool selectable: model.isPublic ?? false
+    readonly property string displayAddress: model.displayAddress ?? ""
+
+    focusPolicy: root.selectable ? Qt.StrongFocus : Qt.NoFocus
+    activeFocusOnTab: root.selectable
+    Accessible.role: root.selectable ? Accessible.RadioButton : Accessible.ListItem
+    Accessible.name: root.selectable
+                     ? qsTr("Select account %1").arg(root.displayAddress)
+                     : qsTr("Private account %1").arg(root.displayAddress)
+    Accessible.description: root.selectable ? "" : qsTr("Private accounts cannot be used for AMM actions")
+    Accessible.checked: root.highlighted
 
     leftPadding: Theme.spacing.medium
     rightPadding: Theme.spacing.medium
@@ -67,7 +79,7 @@ ItemDelegate {
                 id: addressLabel
                 Layout.fillWidth: true
                 verticalAlignment: Text.AlignVCenter
-                text: model.address ?? ""
+                text: root.displayAddress
                 font.pixelSize: Theme.typography.secondaryText
                 color: Theme.palette.textMuted
                 elide: Text.ElideMiddle
@@ -75,8 +87,9 @@ ItemDelegate {
             LogosCopyButton {
                 Layout.preferredHeight: 40
                 Layout.preferredWidth: 40
-                onCopyText: root.copyRequested(model.address)
-                visible: addressLabel.text
+                accessibleName: qsTr("Copy account address")
+                onCopyText: root.copyRequested(root.displayAddress)
+                visible: root.displayAddress.length > 0
                 icon.color: Theme.palette.textMuted
             }
         }

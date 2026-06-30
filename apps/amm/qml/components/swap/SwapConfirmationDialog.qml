@@ -195,7 +195,7 @@ FocusScope {
                     activeFocusOnTab: true
                     focusPolicy: Qt.StrongFocus
                     hoverEnabled: true
-                    text: qsTr("Confirm Swap")
+                    text: qsTr("Submit")
                     Layout.fillWidth: true
                     Layout.minimumHeight: 48
                     onClicked: root.confirm()

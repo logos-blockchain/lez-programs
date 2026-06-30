@@ -5,8 +5,8 @@ import "../../state"
 Rectangle {
     id: root
 
-    required property DummyPoolState poolState
-    readonly property string estimateHelp: qsTr("This value is an estimate from the current dummy reserves and your share of total LP supply.")
+    required property PoolState poolState
+    readonly property string estimateHelp: qsTr("This value is estimated from the current testnet reserves and your share of total LP supply.")
 
     color: "#151515"
     implicitHeight: content.implicitHeight + 20

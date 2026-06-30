@@ -14,6 +14,18 @@ Item {
     readonly property var accountModel: logos.model("amm_ui", "accountModel")
 
     property bool ready: false
+    readonly property bool deploymentNetworkMatched: !root.ready || !root.backend || root.backend.deploymentNetworkMatched
+    readonly property bool deploymentIdentityPending: root.ready
+                                                       && root.backend
+                                                       && root.backend.isWalletOpen
+                                                       && root.backend.deploymentIdentityPending
+    readonly property bool unsupportedChain: root.ready
+                                             && root.backend
+                                             && root.backend.isWalletOpen
+                                             && !root.backend.deploymentIdentityPending
+                                             && !root.backend.deploymentNetworkMatched
+    readonly property var deploymentTokens: root.deploymentNetworkMatched && root.backend ? root.backend.deploymentTokens : []
+    readonly property var deploymentPoolConfig: root.deploymentNetworkMatched && root.backend ? root.backend.deploymentPool : ({})
 
     Connections {
         target: logos
@@ -36,20 +48,25 @@ Item {
         anchors.right: parent.right
         z: 101
 
-        readonly property bool show: root.ready
-                                     && root.backend
-                                     && root.backend.isWalletOpen
-                                     && root.backend.sequencerAddr.length > 0
-                                     && !root.backend.sequencerReachable
+        readonly property bool show: root.deploymentIdentityPending
+                                     || root.unsupportedChain
+                                     || (root.ready
+                                         && root.backend
+                                         && root.backend.isWalletOpen
+                                         && root.backend.sequencerAddr.length > 0
+                                         && !root.backend.sequencerReachable)
 
         height: show ? 32 : 0
         visible: height > 0
         clip: true
         color: Theme.palette.warning
+        Accessible.role: Accessible.AlertMessage
+        Accessible.name: bannerText.text
 
         Behavior on height { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
         Text {
+            id: bannerText
             anchors.centerIn: parent
             width: parent.width - 40
             horizontalAlignment: Text.AlignHCenter
@@ -57,7 +74,11 @@ Item {
             font.pixelSize: 12
             font.weight: Font.Medium
             color: Theme.palette.background
-            text: qsTr("Unable to connect to network")
+            text: root.deploymentIdentityPending
+                  ? qsTr("Checking chain")
+                  : root.unsupportedChain
+                  ? qsTr("Unsupported chain")
+                  : qsTr("Unable to connect to network")
         }
     }
 
@@ -82,11 +103,20 @@ Item {
 
         SwapPage {
             anchors.fill: parent
+            backend: root.ready ? root.backend : null
+            tokens: root.deploymentTokens
+            poolConfig: root.deploymentPoolConfig
+            unsupportedChain: root.unsupportedChain
+            selectedWalletAccount: navbar.selectedAddress
             visible: navbar.currentIndex === 0
         }
 
         LiquidityPage {
             anchors.fill: parent
+            backend: root.ready ? root.backend : null
+            poolConfig: root.deploymentPoolConfig
+            unsupportedChain: root.unsupportedChain
+            selectedWalletAccount: navbar.selectedAddress
             visible: navbar.currentIndex === 1
         }
     }

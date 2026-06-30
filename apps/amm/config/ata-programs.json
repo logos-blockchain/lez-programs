@@ -1,0 +1,16 @@
+{
+  "chains": [
+    {
+      "chainRef": "local.v0.2.0-rc5",
+      "programs": [
+        {
+          "name": "Associated Token Account Program",
+          "id": "D7TdWT1wVpDiH9wfLBdLfE2R1Kgy8FNW9PWP62uRqu9x",
+          "imageIdHex": "b3f3d685c4bc2ed261503262fd650be78d104c1179ce30ef35738b36d7e11d97",
+          "deploymentTransaction": "988f6f08ac72df65c479e06d475ec08d0dc42c4dc060c4b179f2754094821449",
+          "tokenProgram": "2NPgqw4JxSrkV4MiMAQ4MgW6vcbxXrWkGoWmMMxSaYRV"
+        }
+      ]
+    }
+  ]
+}

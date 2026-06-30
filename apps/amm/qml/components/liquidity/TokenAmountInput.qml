@@ -69,13 +69,13 @@ Rectangle {
                 color: "#E7E1D8"
                 font.bold: true
                 font.pixelSize: 18
-                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                inputMethodHints: Qt.ImhDigitsOnly
                 placeholderText: qsTr("0")
                 selectByMouse: true
                 selectedTextColor: "#151515"
                 selectionColor: "#F26A21"
                 validator: RegularExpressionValidator {
-                    regularExpression: /[0-9]*([.][0-9]*)?/
+                    regularExpression: /[0-9]*/
                 }
 
                 Accessible.name: root.label

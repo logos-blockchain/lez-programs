@@ -206,7 +206,7 @@ FocusScope {
                     activeFocusOnTab: true
                     focusPolicy: Qt.StrongFocus
                     hoverEnabled: true
-                    text: qsTr("Confirm")
+                    text: qsTr("Submit")
 
                     Accessible.name: confirmButton.text
 

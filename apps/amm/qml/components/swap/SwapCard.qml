@@ -15,10 +15,11 @@ Rectangle {
     property string buyInput: ""
     property string editingSide: "sell"
     property real slippageTolerancePercent: 0.5
+    property int feeBps: 30
 
-    DummySwapState {
+    SwapState {
         id: swapState
-        feeBps: 30
+        feeBps: root.feeBps
     }
 
     signal requestTokenSelect(string side)
@@ -77,9 +78,11 @@ Rectangle {
     }
 
     function formatAmountValue(val) {
-        if (val >= 1) return val.toFixed(2)
-        if (val >= 0.0001) return val.toFixed(6)
-        return val.toFixed(8)
+        return Math.floor(val).toString()
+    }
+
+    function formatMaxSentValue(val) {
+        return Math.ceil(val).toString()
     }
 
     readonly property string sellDisplay: editingSide === "sell"
@@ -107,8 +110,12 @@ Rectangle {
             "sellToken": sellToken ? sellToken.symbol : "",
             "buyToken": buyToken ? buyToken.symbol : "",
             "sellAmount": formatAmountValue(parsedSellAmount),
+            "sellAmountValue": formatAmountValue(parsedSellAmount),
             "buyAmount": formatAmountValue(parsedBuyAmount),
+            "buyAmountValue": formatAmountValue(parsedBuyAmount),
             "minReceived": formatAmountValue(minReceivedAmount),
+            "minReceivedAmountValue": formatAmountValue(minReceivedAmount),
+            "maxSentAmountValue": formatMaxSentValue(swapState.maxSent(parsedSellAmount, slippageTolerancePercent)),
             "feeAmount": swapState.formatTokenAmount(feeAmount, sellToken ? sellToken.symbol : ""),
             "priceImpactPercent": swapState.formatPercent(priceImpactPercent),
             "priceImpactPercentValue": priceImpactPercent,

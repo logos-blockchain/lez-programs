@@ -1,19 +1,20 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
 
 import Logos.Theme
 import Logos.Controls
 
-// Password-only wallet creation modal. Storage/config live at the per-app
-// default (backend.walletHome) — no path picking. Opened from the navbar
-// "Connect" button.
+// Password-only wallet creation modal. Storage/config live at the canonical
+// LEZ wallet home (backend.walletHome), with no path picking. Opened from the
+// navbar "Connect" button.
 Popup {
     id: root
 
     // Where the wallet will be stored, shown for transparency.
     property string walletHome: ""
     property string createError: ""
+    readonly property real viewportMargin: Theme.spacing.large
 
     signal createWallet(string password)
 
@@ -25,7 +26,7 @@ Popup {
     // this popup is declared inside.
     parent: Overlay.overlay
     anchors.centerIn: parent
-    width: 380
+    width: Math.min(380, Math.max(0, parent ? parent.width - root.viewportMargin * 2 : 380))
 
     onOpened: {
         passwordField.text = ""

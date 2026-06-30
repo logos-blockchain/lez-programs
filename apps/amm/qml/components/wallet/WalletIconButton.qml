@@ -1,5 +1,5 @@
-import QtQuick
-import QtQuick.Controls
+import QtQuick 2.15
+import QtQuick.Controls 2.15
 
 import Logos.Theme
 
@@ -12,9 +12,12 @@ Button {
     property url iconSource
     property color iconColor: Theme.palette.textSecondary
     property int iconSize: 18
+    property string accessibleName: ""
 
     implicitWidth: 32
     implicitHeight: 32
+    text: root.accessibleName
+    Accessible.name: root.accessibleName
     display: AbstractButton.IconOnly
     flat: true
 

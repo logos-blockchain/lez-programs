@@ -1,0 +1,31 @@
+{
+  "chains": [
+    {
+      "chainRef": "local.v0.2.0-rc5",
+      "programs": [
+        {
+          "name": "AMM Program",
+          "id": "EEkCMCyv7at1incttPxmc6Y1cgwmnzNPKhMwB5ypnKZv",
+          "imageIdHex": "c4ad5271f1d1a076b6c9bcb5ca4e62812c88728b6c3cd00f6634f7305ca5ddf5",
+          "deploymentTransaction": "35c8b75d26e2d1e84f81a77f69e1d17fe31b1e57f824a43599fa5f84926385cf",
+          "tokenProgram": "2NPgqw4JxSrkV4MiMAQ4MgW6vcbxXrWkGoWmMMxSaYRV",
+          "twapOracleProgram": "AjAJzR2rrEyCvwpemcjC9tbzre38WnXTX14YuT6cWugF",
+          "abi": "legacy-v0.2.0-rc3",
+          "configs": [],
+          "pools": [
+            {
+              "name": "AMM197A/AMM197B",
+              "account": "FPCZi416PrSbWBo8gMAuDqXk3DH8nmXw5PFn3NbCsod6",
+              "tokenA": "AMM197A",
+              "tokenB": "AMM197B",
+              "vaultA": "DmoYscM1fKv5fur9kw6wtmVGkxLvjsBvD7L3Tdjiaxoe",
+              "vaultB": "EkVPMUmGQbfo7zZ7dWnwnjMZCQqySEZ16vjN99PEC3dN",
+              "lpDefinitionAccount": "2P5kBN1SfVcjJYCGFggzCDUHKZvVaMsbM9tFG4xj4NVy",
+              "creationTransaction": "4ff22fcc9b70ae0b748b1cb186b547a1b35f76fd55eb96ff21a780b660322ac6"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

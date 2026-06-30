@@ -16,6 +16,16 @@ class AmmUiBackend
     // Defaults true so the UI doesn't flash a warning before the first check.
     PROP(bool sequencerReachable READONLY)
 
+    // Chain-backed deployment state for the configured AMM pool.
+    PROP(QVariantList deploymentTokens READONLY)
+    PROP(QVariantMap deploymentPool READONLY)
+    PROP(bool deploymentNetworkMatched READONLY)
+    PROP(bool deploymentIdentityPending READONLY)
+
+    // AMM transactions. Returns wallet JSON: { success, tx_hash, error }.
+    SLOT(QString submitSwap(QVariantMap snapshot))
+    SLOT(QString submitLiquidity(QVariantMap snapshot))
+
     // Account management
     SLOT(QString createAccountPublic())
     SLOT(QString createAccountPrivate())
@@ -24,10 +34,12 @@ class AmmUiBackend
     SLOT(QString getBalance(QString accountIdHex, bool isPublic))
 
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
-    // fresh per-app wallet at walletHome with no path picking. createNew()
-    // keeps explicit paths for an "advanced" flow.
-    SLOT(bool createNewDefault(QString password))
-    SLOT(bool createNew(QString configPath, QString storagePath, QString password))
+    // fresh wallet at the canonical LEZ wallet home with no path picking.
+    // createNew() exists for the QtRO contract but only accepts canonical
+    // config/storage filenames. Both return the new BIP39 mnemonic, or an
+    // empty string on failure.
+    SLOT(QString createNewDefault(QString password))
+    SLOT(QString createNew(QString configPath, QString storagePath, QString password))
 
     // Re-open the existing on-disk wallet after a disconnect.
     SLOT(bool openExisting())
@@ -38,7 +50,4 @@ class AmmUiBackend
     // Settings. Rewrites the wallet config's sequencer_addr and re-opens the
     // wallet so the new network takes effect immediately.
     SLOT(bool changeSequencerAddr(QString url))
-
-    // Misc
-    SLOT(void copyToClipboard(QString text))
 }

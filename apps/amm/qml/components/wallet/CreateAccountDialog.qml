@@ -1,6 +1,6 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
 
 import Logos.Theme
 import Logos.Controls
@@ -8,6 +8,8 @@ import Logos.Controls
 // Public/private account creation dialog. Ported from the LEZ wallet UI.
 Popup {
     id: root
+
+    readonly property real viewportMargin: Theme.spacing.large
 
     signal createPublicRequested()
     signal createPrivateRequested()
@@ -21,7 +23,7 @@ Popup {
     // this popup is declared inside.
     parent: Overlay.overlay
     anchors.centerIn: parent
-    width: 360
+    width: Math.min(360, Math.max(0, parent ? parent.width - root.viewportMargin * 2 : 360))
 
     background: Rectangle {
         color: Theme.palette.backgroundSecondary
@@ -74,6 +76,8 @@ Popup {
             LogosSwitch {
                 id: privateSwitch
                 checked: false
+                Accessible.name: qsTr("Create private account")
+                Accessible.description: qsTr("Private balance and activity.")
             }
         }
 

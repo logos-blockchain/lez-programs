@@ -24,6 +24,11 @@ Item {
 
     implicitHeight: 56
 
+    function selectTab(index) {
+        root.currentIndex = index
+        root.tabChanged(index)
+    }
+
     Rectangle {
         anchors.fill: parent
         color: Theme.palette.background
@@ -63,12 +68,20 @@ Item {
                     delegate: Rectangle {
                         readonly property bool active: root.currentIndex === index
 
+                        activeFocusOnTab: true
                         height: 36
                         width:  tabLabel.implicitWidth + 28
                         radius: 18
                         color:  active ? Theme.palette.backgroundSecondary : "transparent"
+                        border.width: activeFocus ? 1 : 0
+                        border.color: Theme.palette.overlayOrange
+                        Accessible.role: Accessible.PageTab
+                        Accessible.name: modelData
+                        Accessible.checked: active
 
                         Behavior on color { ColorAnimation { duration: 150 } }
+                        Keys.onReturnPressed: root.selectTab(index)
+                        Keys.onSpacePressed: root.selectTab(index)
 
                         Text {
                             id: tabLabel
@@ -84,10 +97,7 @@ Item {
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                                root.currentIndex = index
-                                root.tabChanged(index)
-                            }
+                            onClicked: root.selectTab(index)
                         }
                     }
                 }

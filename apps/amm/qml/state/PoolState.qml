@@ -3,15 +3,15 @@ import QtQuick 2.15
 QtObject {
     id: root
 
-    property string tokenA: "USDC"
-    property string tokenB: "ETH"
-    property string feeTier: "0.30%"
-    property real userLpBalance: 1118033
-    property real reserveA: 1000000
-    property real reserveB: 500
-    property real totalLpSupply: 22360679
-    property real walletBalanceA: 60000
-    property real walletBalanceB: 20
+    property string tokenA: ""
+    property string tokenB: ""
+    property string feeTier: "0%"
+    property real userLpBalance: 0
+    property real reserveA: 0
+    property real reserveB: 0
+    property real totalLpSupply: 0
+    property real walletBalanceA: 0
+    property real walletBalanceB: 0
     readonly property real minimumLiquidity: 1000
 
     readonly property real poolShare: totalLpSupply > 0 ? userLpBalance / totalLpSupply : 0
@@ -19,38 +19,16 @@ QtObject {
     readonly property real userOwnedB: reserveB * poolShare
     readonly property real tokenAPerTokenB: reserveB > 0 ? Math.floor(reserveA / reserveB) : 0
 
-    function applyAddLiquidity(actualA, actualB, mintedLp) {
-        const safeA = Math.max(0, Number(actualA) || 0);
-        const safeB = Math.max(0, Number(actualB) || 0);
-        const safeLp = Math.max(0, Number(mintedLp) || 0);
-
-        reserveA += safeA;
-        reserveB += safeB;
-        totalLpSupply += safeLp;
-        userLpBalance += safeLp;
-    }
-
-    function applyRemoveLiquidity(withdrawA, withdrawB, burnedLp) {
-        const safeA = Math.max(0, Number(withdrawA) || 0);
-        const safeB = Math.max(0, Number(withdrawB) || 0);
-        const safeLp = Math.max(0, Number(burnedLp) || 0);
-
-        reserveA = Math.max(0, reserveA - safeA);
-        reserveB = Math.max(0, reserveB - safeB);
-        totalLpSupply = Math.max(0, totalLpSupply - safeLp);
-        userLpBalance = Math.max(0, userLpBalance - safeLp);
-    }
-
-    function resetDummyState() {
-        tokenA = "USDC";
-        tokenB = "ETH";
-        feeTier = "0.30%";
-        userLpBalance = 1118033;
-        reserveA = 1000000;
-        reserveB = 500;
-        totalLpSupply = 22360679;
-        walletBalanceA = 60000;
-        walletBalanceB = 20;
+    function loadConfig(config) {
+        tokenA = config.tokenA || "";
+        tokenB = config.tokenB || "";
+        feeTier = config.feeTier || "0%";
+        userLpBalance = Number(config.userLpBalance) || 0;
+        reserveA = Number(config.reserveA) || 0;
+        reserveB = Number(config.reserveB) || 0;
+        totalLpSupply = Number(config.totalLpSupply) || 0;
+        walletBalanceA = Number(config.walletBalanceA) || 0;
+        walletBalanceB = Number(config.walletBalanceB) || 0;
     }
 
     function parseAmount(value) {
@@ -66,7 +44,7 @@ QtObject {
             return 0;
         }
 
-        return reserveB * parseAmount(amountA) / reserveA;
+        return Math.floor(reserveB * parseAmount(amountA) / reserveA);
     }
 
     function amountAForB(amountB) {
@@ -74,16 +52,16 @@ QtObject {
             return 0;
         }
 
-        return reserveA * parseAmount(amountB) / reserveB;
+        return Math.floor(reserveA * parseAmount(amountB) / reserveB);
     }
 
     function addLiquidityPreview(maxA, maxB) {
-        const safeMaxA = parseAmount(maxA);
-        const safeMaxB = parseAmount(maxB);
+        const safeMaxA = floorAmount(maxA);
+        const safeMaxB = floorAmount(maxB);
         const idealA = reserveB > 0 ? reserveA * safeMaxB / reserveB : 0;
         const idealB = reserveA > 0 ? reserveB * safeMaxA / reserveA : 0;
-        const actualA = Math.min(idealA, safeMaxA);
-        const actualB = Math.min(idealB, safeMaxB);
+        const actualA = Math.floor(Math.min(idealA, safeMaxA));
+        const actualB = Math.floor(Math.min(idealB, safeMaxB));
         const lpFromA = reserveA > 0 ? Math.floor(totalLpSupply * actualA / reserveA) : 0;
         const lpFromB = reserveB > 0 ? Math.floor(totalLpSupply * actualB / reserveB) : 0;
 
@@ -101,7 +79,7 @@ QtObject {
     }
 
     function clampBurnAmount(value) {
-        return Math.min(floorAmount(value), Math.max(0, floorAmount(userLpBalance)));
+        return Math.min(floorAmount(value), floorAmount(userLpBalance));
     }
 
     function clampSlippageTolerancePercent(value) {
@@ -117,10 +95,6 @@ QtObject {
 
     function burnAmountForPercent(percent) {
         const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
-
-        if (safePercent === 100) {
-            return clampBurnAmount(userLpBalance);
-        }
 
         return clampBurnAmount(Math.floor(userLpBalance * safePercent / 100));
     }

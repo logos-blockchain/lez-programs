@@ -26763,7 +26763,15 @@
     "root": {
       "inputs": {
         "logos-module-builder": "logos-module-builder",
-        "logos_execution_zone": "logos_execution_zone"
+        "logos-standalone-app": [
+          "logos-module-builder",
+          "logos-standalone-app"
+        ],
+        "logos_execution_zone": "logos_execution_zone",
+        "nixpkgs": [
+          "logos-module-builder",
+          "nixpkgs"
+        ]
       }
     },
     "rust-overlay": {

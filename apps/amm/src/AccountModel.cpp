@@ -16,26 +16,28 @@ int AccountModel::rowCount(const QModelIndex& parent) const
 
 QVariant AccountModel::data(const QModelIndex& index, int role) const
 {
-    if (!index.isValid() || index.row() < 0 || index.row() >= m_entries.size())
+    if (!index.isValid() || index.row() >= m_entries.size())
         return QVariant();
 
     const AccountEntry& e = m_entries.at(index.row());
     switch (role) {
-    case NameRole:     return e.name;
-    case AddressRole:  return e.address;
-    case BalanceRole:  return e.balance;
-    case IsPublicRole: return e.isPublic;
-    default:           return QVariant();
+    case NameRole:            return e.name;
+    case AddressRole:         return e.address;
+    case DisplayAddressRole:  return e.displayAddress;
+    case BalanceRole:         return e.balance;
+    case IsPublicRole:        return e.isPublic;
+    default:                  return QVariant();
     }
 }
 
 QHash<int, QByteArray> AccountModel::roleNames() const
 {
     return {
-        { NameRole,     "name"     },
-        { AddressRole,  "address"  },
-        { BalanceRole,  "balance"  },
-        { IsPublicRole, "isPublic" }
+        { NameRole,           "name"           },
+        { AddressRole,        "address"        },
+        { DisplayAddressRole, "displayAddress" },
+        { BalanceRole,        "balance"        },
+        { IsPublicRole,       "isPublic"       }
     };
 }
 
@@ -52,9 +54,13 @@ void AccountModel::replaceFromJsonArray(const QJsonArray& arr)
         if (v.isObject()) {
             const QJsonObject obj = v.toObject();
             e.address = obj.value(QStringLiteral("account_id")).toString();
+            e.displayAddress = obj.value(QStringLiteral("display_account_id")).toString();
+            if (e.displayAddress.isEmpty())
+                e.displayAddress = e.address;
             e.isPublic = obj.value(QStringLiteral("is_public")).toBool(true);
         } else {
             e.address = v.toString();
+            e.displayAddress = e.address;
             e.isPublic = true;
         }
         m_entries.append(e);

@@ -1,0 +1,15 @@
+{
+  "chains": [
+    {
+      "chainRef": "local.v0.2.0-rc5",
+      "programs": [
+        {
+          "name": "TWAP Oracle Program",
+          "id": "AjAJzR2rrEyCvwpemcjC9tbzre38WnXTX14YuT6cWugF",
+          "imageIdHex": "90861a75ed743edaf5d2ab7dcc7563157435072b6c10f3db5cf50aa93322018c",
+          "deploymentTransaction": "54bc196c66beefe4b8ea5ab8564743332cc6b690c0b1908c55aa1407347af488"
+        }
+      ]
+    }
+  ]
+}

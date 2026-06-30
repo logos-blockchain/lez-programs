@@ -1,0 +1,14 @@
+{
+  "chains": [
+    {
+      "alias": "local.v0.2.0-rc5",
+      "name": "LEZ local",
+      "network": "http://127.0.0.1:3040",
+      "chainId": "lez:block-1:e437c44cac2511b603b96195e6b490217da6ba47a326a1fa6c939167ec3e8656:032f82b1ba318b0028f853d25bbc2da49ace15c100b7337fc06eddcf4bfa777906409810c8e09e57831000462a857c26631bb1b8087391e34a00ab3d2ebf8739",
+      "genesisBlockId": 1,
+      "genesisBlockHash": "e437c44cac2511b603b96195e6b490217da6ba47a326a1fa6c939167ec3e8656",
+      "genesisBlockSignature": "032f82b1ba318b0028f853d25bbc2da49ace15c100b7337fc06eddcf4bfa777906409810c8e09e57831000462a857c26631bb1b8087391e34a00ab3d2ebf8739",
+      "default": true
+    }
+  ]
+}

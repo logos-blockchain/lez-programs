@@ -46,7 +46,7 @@ Rectangle {
 
             Item {
                 Layout.fillWidth: true
-                height: 44
+                Layout.preferredHeight: 44
 
                 TextInput {
                     id: tiInput
@@ -58,7 +58,7 @@ Rectangle {
                     clip: true
                     onTextEdited: root.inputEdited(text)
                     validator: RegularExpressionValidator {
-                        regularExpression: /^[0-9]*\.?[0-9]*$/
+                        regularExpression: /^[0-9]*$/
                     }
                 }
 
@@ -81,10 +81,10 @@ Rectangle {
         }
 
         Rectangle {
-            height: 40
+            Layout.preferredHeight: 40
             radius: 20
             color: tokenBtnHover.containsMouse ? theme.colors.panelHoverBg : theme.colors.panelBg
-            implicitWidth: tokenBtnRow.implicitWidth + 24
+            Layout.preferredWidth: tokenBtnRow.implicitWidth + 24
             Behavior on color { ColorAnimation { duration: 120 } }
 
             RowLayout {
@@ -93,7 +93,9 @@ Rectangle {
                 spacing: 6
 
                 Rectangle {
-                    width: 24; height: 24; radius: 12
+                    Layout.preferredWidth: 24
+                    Layout.preferredHeight: 24
+                    radius: 12
                     color: root.token ? root.token.color : theme.colors.noTokenCircle
                     visible: root.token !== null
                     Text {

@@ -1,0 +1,17 @@
+{
+  "chains": [
+    {
+      "chainRef": "local.v0.2.0-rc5",
+      "programs": [
+        {
+          "name": "Stablecoin Program",
+          "id": "2hMHPg6CRwyNqcou3sP6RTnNpJXnVPBWE8Za8aUFAMQu",
+          "imageIdHex": "1931da57b56bc15a1c26a7965e1632f59dd2895affbf1258ce49e0268265a322",
+          "deploymentTransaction": "85ee89661f478cdad87b4516b381b800f9185b55276c21d37666b30682e171be",
+          "tokenProgram": "2NPgqw4JxSrkV4MiMAQ4MgW6vcbxXrWkGoWmMMxSaYRV",
+          "twapOracleProgram": "AjAJzR2rrEyCvwpemcjC9tbzre38WnXTX14YuT6cWugF"
+        }
+      ]
+    }
+  ]
+}

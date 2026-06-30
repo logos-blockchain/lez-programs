@@ -1,0 +1,35 @@
+{
+  "chains": [
+    {
+      "chainRef": "local.v0.2.0-rc5",
+      "programs": [
+        {
+          "name": "Token Program",
+          "id": "2NPgqw4JxSrkV4MiMAQ4MgW6vcbxXrWkGoWmMMxSaYRV",
+          "imageIdHex": "14568940ba11698d23703dff8d9df6703c32e2412f89ff32efc46a5cad70f500",
+          "deploymentTransaction": "27401f74353c9863fecb27889d2e0fdaccb7e0a652a284929c67bf0fdc6c5470",
+          "definitions": [
+            {
+              "symbol": "AMM197A",
+              "name": "AMM197A",
+              "color": "#2775ca",
+              "letter": "A",
+              "usdPrice": 1,
+              "definitionAccount": "HjkLvjKqUt7PhUCs6CUEbqmrjAAbUJmeQg6TGkTAzLHS",
+              "mintTransaction": "ec430fa48a6990dd31fa3f075eb16f842392bf62d0d6701b46574a3fd4549187"
+            },
+            {
+              "symbol": "AMM197B",
+              "name": "AMM197B",
+              "color": "#26a17b",
+              "letter": "B",
+              "usdPrice": 1,
+              "definitionAccount": "2b4UuHsax4pELYzQBjQe5DieHWN3zn9BrrtTGhpbYX71",
+              "mintTransaction": "2edf40aefe53a8dcb2e3df8e22426841c4c9503d42179665cb8ab94434365e2a"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

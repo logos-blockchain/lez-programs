@@ -7,7 +7,7 @@ import "../../state"
 Rectangle {
     id: root
 
-    required property DummyPoolState poolState
+    required property PoolState poolState
 
     property real slippageTolerancePercent: 0.5
     property int burnAmount: 0
@@ -23,7 +23,7 @@ Rectangle {
     readonly property bool minReceivedIsZero: root.burnAmount > 0 && (root.minTokenAReceived === 0 || root.minTokenBReceived === 0)
     readonly property bool canSubmit: root.hasLpTokens && root.burnAmount > 0 && !root.minReceivedIsZero
     readonly property string estimateHelp: qsTr("Estimated with the same integer floor math used by the remove-liquidity contract path.")
-    readonly property string submitButtonText: !root.hasLpTokens ? qsTr("No LP balance") : root.burnAmount === 0 ? qsTr("Enter an amount") : root.minReceivedIsZero ? qsTr("Minimum received is 0") : qsTr("Remove Liquidity")
+    readonly property string submitButtonText: !root.hasLpTokens ? qsTr("No LP balance") : root.burnAmount === 0 ? qsTr("Enter an amount") : root.minReceivedIsZero ? qsTr("Minimum received is 0") : qsTr("Remove liquidity")
 
     signal slippageToleranceChangeRequested(real tolerancePercent)
     signal removeLiquidityRequested(var snapshot)
@@ -478,7 +478,9 @@ Rectangle {
             "burnPercent": root.poolState.formatPercent(root.removePercent),
             "burnText": root.poolState.formatLpAmount(root.preview.burnedLp),
             "minTokenAReceived": root.poolState.formatTokenAmount(root.minTokenAReceived, root.poolState.tokenA),
+            "minTokenAReceivedAmount": root.minTokenAReceived,
             "minTokenBReceived": root.poolState.formatTokenAmount(root.minTokenBReceived, root.poolState.tokenB),
+            "minTokenBReceivedAmount": root.minTokenBReceived,
             "postRemovalShare": root.poolState.formatPoolShare(root.preview.newUserShare),
             "slippageTolerance": root.poolState.formatPercent(root.slippageTolerancePercent),
             "tokenA": root.poolState.tokenA,

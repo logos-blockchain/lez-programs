@@ -1,5 +1,5 @@
-import QtQuick
-import QtQuick.Controls
+import QtQuick 2.15
+import QtQuick.Controls 2.15
 
 import Logos.Theme
 
@@ -8,12 +8,16 @@ Button {
 
     signal copyText()
 
+    property string accessibleName: ""
+    property string iconSource: Qt.resolvedUrl("icons/copy.svg")
+    property bool copied: false
+
     implicitWidth: 24
     implicitHeight: 24
+    text: root.copied ? qsTr("Copied") : root.accessibleName
+    Accessible.name: text
     display: AbstractButton.IconOnly
     flat: true
-
-    property string iconSource: Qt.resolvedUrl("icons/copy.svg")
 
     icon.source: root.iconSource
     icon.width: 24
@@ -22,6 +26,7 @@ Button {
 
     function reset() {
         iconSource = Qt.resolvedUrl("icons/copy.svg")
+        copied = false
     }
 
     Timer {
@@ -34,6 +39,7 @@ Button {
     onClicked: {
         root.copyText()
         root.iconSource = Qt.resolvedUrl("icons/checkmark.svg")
+        root.copied = true
         resetTimer.restart()
     }
 }

@@ -1,21 +1,61 @@
 import QtQuick 2.15
-import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import "../components/shared"
 import "../components/swap"
-import "../state"
 
 Item {
     id: root
 
-    property var tokens: [
-        { symbol: "TOK1", name: "Token 1", color: "#627eea", letter: "E", address: "0x0000000000000000000000000000000000000000",  usdPrice: 2392.70, balance: 4.25,    reserve: 850     },
-        { symbol: "TOK2", name: "Token 2", color: "#2775ca", letter: "$", address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  usdPrice: 1.00,    balance: 12480,   reserve: 2400000 },
-        { symbol: "TOK3", name: "Token 3", color: "#26a17b", letter: "T", address: "0xdac17f958d2ee523a2206206994597c13d831ec7",  usdPrice: 1.00,    balance: 320,     reserve: 1800000 },
-        { symbol: "TOK4", name: "Token 4", color: "#f7931a", letter: "B", address: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",  usdPrice: 63500,   balance: 0.18,    reserve: 42      },
-        { symbol: "TOK5", name: "Token 5", color: "#627eea", letter: "E", address: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",  usdPrice: 2392.70, balance: 0,       reserve: 600     },
-        { symbol: "TOK6", name: "Token 6", color: "#9b59b6", letter: "L", address: "0x1337000000000000000000000000000000000cafe", usdPrice: 0.42,    balance: 5400,    reserve: 950000  }
-    ]
+    property var tokens: []
+    property var poolConfig: ({})
+    property var backend: null
+    property bool unsupportedChain: false
+    property string selectedWalletAccount: ""
+    readonly property string poolAccount: poolConfig.account || ""
+    readonly property string poolAccountShort: poolAccount.length > 14
+                                               ? poolAccount.substring(0, 8) + "..." + poolAccount.slice(-6)
+                                               : poolAccount
+
+    onTokensChanged: Qt.callLater(selectDefaultTokens)
+
+    Component.onCompleted: Qt.callLater(selectDefaultTokens)
+
+    function selectDefaultTokens() {
+        if (root.tokens.length < 2) {
+            swapCard.setToken("sell", null);
+            swapCard.setToken("buy", null);
+            swapCard.resetAmounts();
+            return;
+        }
+        if (!swapCard.sellToken || swapCard.sellToken.address !== root.tokens[0].address)
+            swapCard.setToken("sell", root.tokens[0]);
+        if (!swapCard.buyToken || swapCard.buyToken.address !== root.tokens[1].address)
+            swapCard.setToken("buy", root.tokens[1]);
+    }
+
+    function parseTransactionResult(resultJson) {
+        try {
+            return JSON.parse(resultJson);
+        } catch (err) {
+            return { "success": false, "tx_hash": "", "error": String(err) };
+        }
+    }
+
+    function withSelectedWalletAccount(snapshot) {
+        snapshot.selectedWalletAccount = root.selectedWalletAccount
+        return snapshot
+    }
+
+    function submissionToken() {
+        if (!root.backend)
+            return ""
+        return [
+            root.backend.isWalletOpen ? "open" : "closed",
+            root.backend.sequencerAddr || "",
+            root.backend.deploymentNetworkMatched ? "matched" : "unmatched",
+            root.selectedWalletAccount || ""
+        ].join("|")
+    }
 
     QtObject {
         id: theme
@@ -92,10 +132,12 @@ Item {
 
             SwapCard {
                 id: swapCard
+                visible: !root.unsupportedChain
                 Layout.alignment: Qt.AlignHCenter
                 theme: theme
                 tokens: root.tokens
-                width: Math.min(480, root.width - 32)
+                feeBps: Number(root.poolConfig.feeBps) || 0
+                Layout.preferredWidth: Math.min(480, root.width - 32)
 
                 onRequestTokenSelect: function(side) {
                     tokenModal.targetSide = side
@@ -108,11 +150,24 @@ Item {
             }
 
             Text {
+                visible: !root.unsupportedChain
                 Layout.alignment: Qt.AlignHCenter
-                text: "Buy and sell crypto on <font color='" + theme.colors.textPrimary + "'>LEZ</font>."
+                text: "Pool <font color='" + theme.colors.textPrimary + "'>" +
+                      root.poolAccountShort +
+                      "</font>"
                 textFormat: Text.RichText
                 color: theme.colors.textSecondary
                 font.pixelSize: 15
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+                visible: root.unsupportedChain
+                Layout.alignment: Qt.AlignHCenter
+                text: qsTr("Unsupported chain")
+                color: theme.colors.textPrimary
+                font.pixelSize: 18
+                font.bold: true
                 horizontalAlignment: Text.AlignHCenter
             }
         }
@@ -150,13 +205,39 @@ Item {
             theme: theme
 
             onConfirmed: function(snapshot) {
-                swapCard.resetAmounts()
-                swapToast.show(qsTr("Swap submitted"),
-                               qsTr("%1 %2 → %3 %4")
-                                    .arg(snapshot.sellAmount)
-                                    .arg(snapshot.sellToken)
-                                    .arg(snapshot.minReceived)
-                                    .arg(snapshot.buyToken))
+                if (!root.backend) {
+                    swapToast.show(qsTr("Swap failed"), qsTr("Backend is not ready"), "", "error")
+                    return
+                }
+
+                const expectedSubmissionToken = root.submissionToken()
+                logos.watch(root.backend.submitSwap(root.withSelectedWalletAccount(snapshot)),
+                    function(resultJson) {
+                        if (root.submissionToken() !== expectedSubmissionToken)
+                            return
+                        const result = root.parseTransactionResult(resultJson)
+                        if (!result.success) {
+                            swapToast.show(qsTr("Swap failed"),
+                                           result.error || qsTr("Transaction rejected"),
+                                           "",
+                                           "error")
+                            return
+                        }
+
+                        swapCard.resetAmounts()
+                        swapToast.show(qsTr("Swap submitted"),
+                                       qsTr("%1 %2 → %3 %4")
+                                            .arg(snapshot.sellAmount)
+                                            .arg(snapshot.sellToken)
+                                            .arg(snapshot.minReceived)
+                                            .arg(snapshot.buyToken),
+                                       result.tx_hash || "")
+                    },
+                    function(error) {
+                        if (root.submissionToken() !== expectedSubmissionToken)
+                            return
+                        swapToast.show(qsTr("Swap failed"), String(error), "", "error")
+                    })
             }
         }
     }
