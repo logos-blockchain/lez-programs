@@ -423,15 +423,15 @@
           "init": false
         },
         {
-          "name": "user_holding_a",
+          "name": "user_input_holding",
           "writable": true,
           "signer": true,
           "init": false
         },
         {
-          "name": "user_holding_b",
+          "name": "user_output_holding",
           "writable": true,
-          "signer": true,
+          "signer": false,
           "init": false
         },
         {
@@ -455,10 +455,6 @@
         {
           "name": "min_amount_out",
           "type": "u128"
-        },
-        {
-          "name": "token_definition_id_in",
-          "type": "account_id"
         },
         {
           "name": "deadline",
@@ -494,15 +490,15 @@
           "init": false
         },
         {
-          "name": "user_holding_a",
+          "name": "user_input_holding",
           "writable": true,
           "signer": true,
           "init": false
         },
         {
-          "name": "user_holding_b",
+          "name": "user_output_holding",
           "writable": true,
-          "signer": true,
+          "signer": false,
           "init": false
         },
         {
@@ -526,10 +522,6 @@
         {
           "name": "max_amount_in",
           "type": "u128"
-        },
-        {
-          "name": "token_definition_id_in",
-          "type": "account_id"
         },
         {
           "name": "deadline",

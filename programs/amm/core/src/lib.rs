@@ -172,15 +172,18 @@ pub enum Instruction {
         deadline: u64,
     },
 
-    /// Swap some quantity of Tokens (either Token A or Token B)
-    /// while maintaining the Pool constant product.
+    /// Swap some quantity of tokens while maintaining the Pool constant product.
+    ///
+    /// Swap direction is determined by the input holding: `user_input_holding`'s token definition
+    /// selects which pool token is sold. That holding must be signed so the downstream token
+    /// transfer can debit it; `user_output_holding` only receives and needs no signature.
     ///
     /// Required accounts:
     /// - AMM Pool (initialized)
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
-    /// - User Holding Account for Token A
-    /// - User Holding Account for Token B; either is authorized.
+    /// - User Input Holding Account (initialized, signed) — the token being sold
+    /// - User Output Holding Account (initialized) — receives the token being bought
     /// - Current Tick Account, the pool's TWAP PDA derived as
     ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
     ///   with the new spot price
@@ -188,20 +191,23 @@ pub enum Instruction {
     SwapExactInput {
         swap_amount_in: u128,
         min_amount_out: u128,
-        token_definition_id_in: AccountId,
         /// Unix timestamp (milliseconds) after which this transaction is invalid.
         deadline: u64,
     },
 
-    /// Swap tokens specifying the exact desired output amount,
-    /// while maintaining the Pool constant product.
+    /// Swap tokens specifying the exact desired output amount while maintaining the Pool constant
+    /// product.
+    ///
+    /// Swap direction is determined by the input holding: `user_input_holding`'s token definition
+    /// selects which pool token is sold. That holding must be signed so the downstream token
+    /// transfer can debit it; `user_output_holding` only receives and needs no signature.
     ///
     /// Required accounts:
     /// - AMM Pool (initialized)
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
-    /// - User Holding Account for Token A
-    /// - User Holding Account for Token B; either is authorized.
+    /// - User Input Holding Account (initialized, signed) — the token being sold
+    /// - User Output Holding Account (initialized) — receives the token being bought
     /// - Current Tick Account, the pool's TWAP PDA derived as
     ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
     ///   with the new spot price
@@ -209,7 +215,6 @@ pub enum Instruction {
     SwapExactOutput {
         exact_amount_out: u128,
         max_amount_in: u128,
-        token_definition_id_in: AccountId,
         /// Unix timestamp (milliseconds) after which this transaction is invalid.
         deadline: u64,
     },

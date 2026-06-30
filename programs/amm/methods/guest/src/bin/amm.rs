@@ -298,6 +298,9 @@ mod amm {
     }
 
     /// Swap some quantity of tokens while maintaining the pool constant product.
+    ///
+    /// The swap direction is the input holding's own token; `user_input_holding` must be signed so
+    /// the downstream token transfer can debit it. `user_output_holding` only receives.
     #[expect(
         clippy::too_many_arguments,
         reason = "instruction interface requires explicit pool, vault, user accounts, and bounds"
@@ -313,15 +316,14 @@ mod amm {
         #[account(mut)]
         vault_b: AccountWithMetadata,
         #[account(mut, signer)]
-        user_holding_a: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_holding_b: AccountWithMetadata,
+        user_input_holding: AccountWithMetadata,
+        #[account(mut)]
+        user_output_holding: AccountWithMetadata,
         #[account(mut)]
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         swap_amount_in: u128,
         min_amount_out: u128,
-        token_definition_id_in: AccountId,
         deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::swap::swap_exact_input(
@@ -329,13 +331,12 @@ mod amm {
             pool,
             vault_a,
             vault_b,
-            user_holding_a,
-            user_holding_b,
+            user_input_holding,
+            user_output_holding,
             current_tick_account,
             clock,
             swap_amount_in,
             min_amount_out,
-            token_definition_id_in,
             ctx.self_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
@@ -343,6 +344,9 @@ mod amm {
     }
 
     /// Swap tokens specifying the exact desired output amount.
+    ///
+    /// The swap direction is the input holding's own token; `user_input_holding` must be signed so
+    /// the downstream token transfer can debit it. `user_output_holding` only receives.
     #[expect(
         clippy::too_many_arguments,
         reason = "instruction interface requires explicit pool, vault, user accounts, and bounds"
@@ -358,15 +362,14 @@ mod amm {
         #[account(mut)]
         vault_b: AccountWithMetadata,
         #[account(mut, signer)]
-        user_holding_a: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_holding_b: AccountWithMetadata,
+        user_input_holding: AccountWithMetadata,
+        #[account(mut)]
+        user_output_holding: AccountWithMetadata,
         #[account(mut)]
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         exact_amount_out: u128,
         max_amount_in: u128,
-        token_definition_id_in: AccountId,
         deadline: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::swap::swap_exact_output(
@@ -374,13 +377,12 @@ mod amm {
             pool,
             vault_a,
             vault_b,
-            user_holding_a,
-            user_holding_b,
+            user_input_holding,
+            user_output_holding,
             current_tick_account,
             clock,
             exact_amount_out,
             max_amount_in,
-            token_definition_id_in,
             ctx.self_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)

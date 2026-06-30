@@ -2424,7 +2424,7 @@ fn test_call_new_definition_chained_call_successful() {
     assert_eq!(post_states.len(), 11);
 }
 
-#[should_panic(expected = "AccountId is not a token type for the pool")]
+#[should_panic(expected = "Swap exact input: input holding token is not part of the pool")]
 #[test]
 fn test_call_swap_incorrect_token_type() {
     let _post_states = swap_exact_input(
@@ -2432,13 +2432,12 @@ fn test_call_swap_incorrect_token_type() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_lp_uninit(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
-        IdForTests::token_lp_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2457,7 +2456,6 @@ fn test_call_swap_vault_a_omitted() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2476,7 +2474,6 @@ fn test_call_swap_vault_b_omitted() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2495,7 +2492,6 @@ fn test_call_swap_reserves_vault_mismatch_1() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2514,7 +2510,6 @@ fn test_call_swap_reserves_vault_mismatch_2() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2533,7 +2528,6 @@ fn test_call_swap_below_minimum_liquidity() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2557,7 +2551,6 @@ fn test_call_swap_rejects_unsupported_fee_tier() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_a_low(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2576,7 +2569,6 @@ fn test_call_swap_below_min_out() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out_too_high(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2595,7 +2587,6 @@ fn test_call_swap_effective_amount_zero() {
         AccountWithMetadataForTests::clock(),
         1,
         0,
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2614,7 +2605,6 @@ fn test_call_swap_output_rounds_to_zero() {
         AccountWithMetadataForTests::clock(),
         2,
         0,
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2633,7 +2623,6 @@ fn test_call_swap_exact_input_rejects_amount_that_rounds_down_below_target_outpu
         AccountWithMetadataForTests::clock(),
         2,
         1,
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2651,7 +2640,6 @@ fn test_call_swap_exact_input_accepts_smallest_amount_for_rounded_boundary() {
         AccountWithMetadataForTests::clock(),
         3,
         1,
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 
@@ -2721,7 +2709,6 @@ fn test_call_swap_chained_call_successful_1() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_a_low(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 
@@ -2754,13 +2741,12 @@ fn test_call_swap_chained_call_successful_2() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_b(),
         BalanceForTests::min_amount_out(),
-        IdForTests::token_b_definition_id(),
         AMM_PROGRAM_ID,
     );
 
@@ -2786,7 +2772,7 @@ fn test_call_swap_chained_call_successful_2() {
     assert_update_tick_call(&chained_calls, pool_post.account());
 }
 
-#[should_panic(expected = "AccountId is not a token type for the pool")]
+#[should_panic(expected = "Swap exact output: input holding token is not part of the pool")]
 #[test]
 fn call_swap_exact_output_incorrect_token_type() {
     let _post_states = swap_exact_output(
@@ -2794,13 +2780,12 @@ fn call_swap_exact_output_incorrect_token_type() {
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_lp_uninit(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
-        IdForTests::token_lp_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2819,7 +2804,6 @@ fn call_swap_exact_output_vault_a_omitted() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2838,7 +2822,6 @@ fn call_swap_exact_output_vault_b_omitted() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2857,7 +2840,6 @@ fn call_swap_exact_output_reserves_vault_mismatch_1() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2876,7 +2858,6 @@ fn call_swap_exact_output_reserves_vault_mismatch_2() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2895,7 +2876,6 @@ fn call_swap_exact_output_below_minimum_liquidity() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2914,7 +2894,6 @@ fn call_swap_exact_output_exceeds_max_in() {
         AccountWithMetadataForTests::clock(),
         166_u128,
         100_u128,
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2933,7 +2912,6 @@ fn call_swap_exact_output_zero() {
         AccountWithMetadataForTests::clock(),
         0_u128,
         500_u128,
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2952,7 +2930,6 @@ fn call_swap_exact_output_exceeds_reserve() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::vault_b_reserve_init(),
         BalanceForTests::max_amount_in(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -2970,7 +2947,6 @@ fn call_swap_exact_output_chained_call_successful() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::max_amount_in(),
         BalanceForTests::vault_b_reserve_init(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 
@@ -3001,13 +2977,12 @@ fn call_swap_exact_output_chained_call_successful_2() {
         AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
         285,
         300,
-        IdForTests::token_b_definition_id(),
         AMM_PROGRAM_ID,
     );
 
@@ -3047,7 +3022,6 @@ fn call_swap_exact_output_fee_enforced() {
         AccountWithMetadataForTests::clock(),
         166_u128, // exact_amount_out: token_b
         499_u128, // max_amount_in: still one short after fee rounding
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -3069,7 +3043,6 @@ fn call_swap_exact_output_rejects_max_in_that_rounds_down_below_target_output() 
         AccountWithMetadataForTests::clock(),
         1,
         2,
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -3087,7 +3060,6 @@ fn call_swap_exact_output_accepts_smallest_max_in_for_rounded_boundary() {
         AccountWithMetadataForTests::clock(),
         1,
         3,
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 
@@ -3185,7 +3157,6 @@ fn swap_exact_output_overflow_protection() {
         2, // exact_amount_out: small, valid (< reserve_b)
         1, // max_amount_in: tiny — real deposit would be enormous, but
         // overflow wraps it to 0, making 0 <= 1 pass silently
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -3878,7 +3849,6 @@ fn swap_exact_input_overflow_protection() {
         AccountWithMetadataForTests::clock(),
         3,
         1,
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 
@@ -4076,7 +4046,6 @@ fn test_swap_exact_input_rejects_user_holding_a_wrong_program() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -4095,7 +4064,6 @@ fn test_swap_exact_input_rejects_user_holding_b_wrong_program() {
         AccountWithMetadataForTests::clock(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -4114,7 +4082,6 @@ fn test_swap_exact_output_rejects_user_holding_a_wrong_program() {
         AccountWithMetadataForTests::clock(),
         166,
         BalanceForTests::max_amount_in(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }
@@ -4133,7 +4100,6 @@ fn test_swap_exact_output_rejects_user_holding_b_wrong_program() {
         AccountWithMetadataForTests::clock(),
         166,
         BalanceForTests::max_amount_in(),
-        IdForTests::token_a_definition_id(),
         AMM_PROGRAM_ID,
     );
 }

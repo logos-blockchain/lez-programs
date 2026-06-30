@@ -65,8 +65,10 @@ fn finalize_swap(
     pool_def_data: PoolDefinition,
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
-    user_holding_a: AccountWithMetadata,
-    user_holding_b: AccountWithMetadata,
+    // Echoed back at the input/output slot positions the guest declared, so the framework matches
+    // each post-state to the correct account regardless of swap direction.
+    user_holding_input: AccountWithMetadata,
+    user_holding_output: AccountWithMetadata,
     current_tick_account: AccountWithMetadata,
     clock: AccountWithMetadata,
     deposit_a: u128,
@@ -124,8 +126,8 @@ fn finalize_swap(
         AccountPostState::new(pool_post),
         AccountPostState::new(vault_a.account),
         AccountPostState::new(vault_b.account),
-        AccountPostState::new(user_holding_a.account),
-        AccountPostState::new(user_holding_b.account),
+        AccountPostState::new(user_holding_input.account),
+        AccountPostState::new(user_holding_output.account),
         AccountPostState::new(current_tick_account.account),
         AccountPostState::new(clock.account),
     ];
@@ -143,13 +145,12 @@ pub fn swap_exact_input(
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
-    user_holding_a: AccountWithMetadata,
-    user_holding_b: AccountWithMetadata,
+    user_input_holding: AccountWithMetadata,
+    user_output_holding: AccountWithMetadata,
     current_tick_account: AccountWithMetadata,
     clock: AccountWithMetadata,
     swap_amount_in: u128,
     min_amount_out: u128,
-    token_in_id: AccountId,
     amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
@@ -173,6 +174,20 @@ pub fn swap_exact_input(
         vault_b.account.program_owner, token_program_id,
         "Vault B must be owned by the configured Token Program"
     );
+
+    // Swap direction is taken from the (signed) input holding's own token definition, then the
+    // role-based holdings are mapped back to the pool's stored A/B order so the rest of the
+    // routine — reserve bookkeeping and finalize — stays keyed to token A/B.
+    let token_in_id = token_core::TokenHolding::try_from(&user_input_holding.account.data)
+        .expect("Swap exact input: input holding must be a valid token holding")
+        .definition_id();
+    let (user_holding_a, user_holding_b) = if token_in_id == pool_def_data.definition_token_a_id {
+        (user_input_holding, user_output_holding)
+    } else if token_in_id == pool_def_data.definition_token_b_id {
+        (user_output_holding, user_input_holding)
+    } else {
+        panic!("Swap exact input: input holding token is not part of the pool");
+    };
     assert_eq!(
         user_holding_a.account.program_owner, token_program_id,
         "User Token A holding must be owned by the configured Token Program"
@@ -228,14 +243,23 @@ pub fn swap_exact_input(
             panic!("AccountId is not a token type for the pool");
         };
 
+    // Echo the two user holdings in the guest's declared slot order (input, then output) so the
+    // framework matches each post-state to the right account. The a/b mapping above only drives the
+    // reserve/vault bookkeeping; post-states are matched to accounts positionally.
+    let (user_holding_input, user_holding_output) =
+        if token_in_id == pool_def_data.definition_token_a_id {
+            (user_holding_a, user_holding_b)
+        } else {
+            (user_holding_b, user_holding_a)
+        };
     let (post_states, update_tick_call) = finalize_swap(
         config,
         pool,
         pool_def_data,
         vault_a,
         vault_b,
-        user_holding_a,
-        user_holding_b,
+        user_holding_input,
+        user_holding_output,
         current_tick_account,
         clock,
         deposit_a,
@@ -343,13 +367,12 @@ pub fn swap_exact_output(
     pool: AccountWithMetadata,
     vault_a: AccountWithMetadata,
     vault_b: AccountWithMetadata,
-    user_holding_a: AccountWithMetadata,
-    user_holding_b: AccountWithMetadata,
+    user_input_holding: AccountWithMetadata,
+    user_output_holding: AccountWithMetadata,
     current_tick_account: AccountWithMetadata,
     clock: AccountWithMetadata,
     exact_amount_out: u128,
     max_amount_in: u128,
-    token_in_id: AccountId,
     amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
@@ -373,6 +396,20 @@ pub fn swap_exact_output(
         vault_b.account.program_owner, token_program_id,
         "Vault B must be owned by the configured Token Program"
     );
+
+    // Swap direction is taken from the (signed) input holding's own token definition, then the
+    // role-based holdings are mapped back to the pool's stored A/B order so the rest of the
+    // routine — reserve bookkeeping and finalize — stays keyed to token A/B.
+    let token_in_id = token_core::TokenHolding::try_from(&user_input_holding.account.data)
+        .expect("Swap exact output: input holding must be a valid token holding")
+        .definition_id();
+    let (user_holding_a, user_holding_b) = if token_in_id == pool_def_data.definition_token_a_id {
+        (user_input_holding, user_output_holding)
+    } else if token_in_id == pool_def_data.definition_token_b_id {
+        (user_output_holding, user_input_holding)
+    } else {
+        panic!("Swap exact output: input holding token is not part of the pool");
+    };
     assert_eq!(
         user_holding_a.account.program_owner, token_program_id,
         "User Token A holding must be owned by the configured Token Program"
@@ -428,14 +465,23 @@ pub fn swap_exact_output(
             panic!("AccountId is not a token type for the pool");
         };
 
+    // Echo the two user holdings in the guest's declared slot order (input, then output) so the
+    // framework matches each post-state to the right account. The a/b mapping above only drives the
+    // reserve/vault bookkeeping; post-states are matched to accounts positionally.
+    let (user_holding_input, user_holding_output) =
+        if token_in_id == pool_def_data.definition_token_a_id {
+            (user_holding_a, user_holding_b)
+        } else {
+            (user_holding_b, user_holding_a)
+        };
     let (post_states, update_tick_call) = finalize_swap(
         config,
         pool,
         pool_def_data,
         vault_a,
         vault_b,
-        user_holding_a,
-        user_holding_b,
+        user_holding_input,
+        user_holding_output,
         current_tick_account,
         clock,
         deposit_a,

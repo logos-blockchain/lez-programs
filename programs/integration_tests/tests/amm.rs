@@ -257,6 +257,46 @@ impl Balances {
         10_415
     }
 
+    fn exact_output_a_to_b_amount_in() -> u128 {
+        437
+    }
+
+    fn reserve_a_swap_exact_output_a_to_b() -> u128 {
+        Self::vault_a_init() + Self::exact_output_a_to_b_amount_in()
+    }
+
+    fn reserve_b_swap_exact_output_a_to_b() -> u128 {
+        Self::vault_b_init() - Self::swap_min_out()
+    }
+
+    fn user_a_swap_exact_output_a_to_b() -> u128 {
+        Self::user_a_init() - Self::exact_output_a_to_b_amount_in()
+    }
+
+    fn user_b_swap_exact_output_a_to_b() -> u128 {
+        Self::user_b_init() + Self::swap_min_out()
+    }
+
+    fn exact_output_b_to_a_amount_in() -> u128 {
+        106
+    }
+
+    fn reserve_a_swap_exact_output_b_to_a() -> u128 {
+        Self::vault_a_init() - Self::swap_min_out()
+    }
+
+    fn reserve_b_swap_exact_output_b_to_a() -> u128 {
+        Self::vault_b_init() + Self::exact_output_b_to_a_amount_in()
+    }
+
+    fn user_a_swap_exact_output_b_to_a() -> u128 {
+        Self::user_a_init() + Self::swap_min_out()
+    }
+
+    fn user_b_swap_exact_output_b_to_a() -> u128 {
+        Self::user_b_init() - Self::exact_output_b_to_a_amount_in()
+    }
+
     fn vault_a_add() -> u128 {
         7_000
     }
@@ -536,8 +576,7 @@ impl Accounts {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::user_a_swap_1(),
             }),
-            // Both user holdings are now swap signers, so this holding's nonce increments too.
-            nonce: Nonce(1),
+            nonce: Nonce(0),
         }
     }
 
@@ -616,7 +655,140 @@ impl Accounts {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_swap_2(),
             }),
-            // Both user holdings are now swap signers, so this holding's nonce increments too.
+            nonce: Nonce(0),
+        }
+    }
+
+    fn pool_definition_swap_exact_output_a_to_b() -> Account {
+        Account {
+            program_owner: Ids::amm_program(),
+            balance: 0_u128,
+            data: Data::from(&PoolDefinition {
+                definition_token_a_id: Ids::token_a_definition(),
+                definition_token_b_id: Ids::token_b_definition(),
+                vault_a_id: Ids::vault_a(),
+                vault_b_id: Ids::vault_b(),
+                liquidity_pool_id: Ids::token_lp_definition(),
+                liquidity_pool_supply: Balances::pool_lp_supply_init(),
+                reserve_a: Balances::reserve_a_swap_exact_output_a_to_b(),
+                reserve_b: Balances::reserve_b_swap_exact_output_a_to_b(),
+                fees: Balances::fee_tier(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn vault_a_swap_exact_output_a_to_b() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_a_definition(),
+                balance: Balances::reserve_a_swap_exact_output_a_to_b(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn vault_b_swap_exact_output_a_to_b() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_b_definition(),
+                balance: Balances::reserve_b_swap_exact_output_a_to_b(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn user_a_holding_swap_exact_output_a_to_b() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_a_definition(),
+                balance: Balances::user_a_swap_exact_output_a_to_b(),
+            }),
+            nonce: Nonce(1),
+        }
+    }
+
+    fn user_b_holding_swap_exact_output_a_to_b() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_b_definition(),
+                balance: Balances::user_b_swap_exact_output_a_to_b(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn pool_definition_swap_exact_output_b_to_a() -> Account {
+        Account {
+            program_owner: Ids::amm_program(),
+            balance: 0_u128,
+            data: Data::from(&PoolDefinition {
+                definition_token_a_id: Ids::token_a_definition(),
+                definition_token_b_id: Ids::token_b_definition(),
+                vault_a_id: Ids::vault_a(),
+                vault_b_id: Ids::vault_b(),
+                liquidity_pool_id: Ids::token_lp_definition(),
+                liquidity_pool_supply: Balances::pool_lp_supply_init(),
+                reserve_a: Balances::reserve_a_swap_exact_output_b_to_a(),
+                reserve_b: Balances::reserve_b_swap_exact_output_b_to_a(),
+                fees: Balances::fee_tier(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn vault_a_swap_exact_output_b_to_a() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_a_definition(),
+                balance: Balances::reserve_a_swap_exact_output_b_to_a(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn vault_b_swap_exact_output_b_to_a() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_b_definition(),
+                balance: Balances::reserve_b_swap_exact_output_b_to_a(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn user_a_holding_swap_exact_output_b_to_a() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_a_definition(),
+                balance: Balances::user_a_swap_exact_output_b_to_a(),
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn user_b_holding_swap_exact_output_b_to_a() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_b_definition(),
+                balance: Balances::user_b_swap_exact_output_b_to_a(),
+            }),
             nonce: Nonce(1),
         }
     }
@@ -990,13 +1162,9 @@ fn state_for_amm_tests() -> V03State {
     state.force_insert_account(Ids::pool_definition(), Accounts::pool_definition_init());
     // Seed the pool's current-tick account so swaps and syncs can refresh it. Its initial value is
     // the tick of the opening reserves; swap/sync tests assert it is updated to the new price.
-    let initial_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
-        Balances::vault_a_init(),
-        Balances::vault_b_init(),
-    ));
     state.force_insert_account(
         Ids::current_tick_account(),
-        Accounts::current_tick_account(initial_tick),
+        Accounts::current_tick_account(initial_pool_tick()),
     );
     state.force_insert_account(
         Ids::token_a_definition(),
@@ -1118,7 +1286,6 @@ fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_ou
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in,
         min_amount_out,
-        token_definition_id_in: Ids::token_a_definition(),
         deadline: u64::MAX,
     };
 
@@ -1134,16 +1301,12 @@ fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_ou
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![
-            current_nonce(state, Ids::user_a()),
-            current_nonce(state, Ids::user_b()),
-        ],
+        vec![current_nonce(state, Ids::user_a())],
         instruction,
     )
     .unwrap();
 
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -1154,10 +1317,10 @@ fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_ou
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in,
         min_amount_out,
-        token_definition_id_in: Ids::token_b_definition(),
         deadline: u64::MAX,
     };
 
+    // Token B is the input, so the B holding occupies the signed input slot.
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
@@ -1165,21 +1328,17 @@ fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_ou
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
-            Ids::user_a(),
             Ids::user_b(),
+            Ids::user_a(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![
-            current_nonce(state, Ids::user_a()),
-            current_nonce(state, Ids::user_b()),
-        ],
+        vec![current_nonce(state, Ids::user_b())],
         instruction,
     )
     .unwrap();
 
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -1389,6 +1548,54 @@ fn fungible_balance(account: &Account) -> u128 {
 
 fn pool_definition(account: &Account) -> PoolDefinition {
     PoolDefinition::try_from(&account.data).expect("expected pool definition")
+}
+
+fn initial_pool_tick() -> i32 {
+    twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        Balances::vault_a_init(),
+        Balances::vault_b_init(),
+    ))
+}
+
+fn assert_initial_swap_state(state: &V03State) {
+    assert_eq!(state.get_account_by_id(Ids::config()), Accounts::config());
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_a()),
+        Accounts::user_a_holding()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::current_tick_account()),
+        Accounts::current_tick_account(initial_pool_tick())
+    );
+}
+
+fn assert_current_tick_matches_pool(state: &V03State) {
+    let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
+        &state.get_account_by_id(Ids::current_tick_account()).data,
+    )
+    .expect("current tick account must hold a valid CurrentTickAccount");
+    let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        pool.reserve_a,
+        pool.reserve_b,
+    ));
+    assert_eq!(tick_account.tick, expected_tick);
 }
 
 fn fungible_total_supply(account: &Account) -> u128 {
@@ -2517,10 +2724,10 @@ fn amm_swap_b_to_a() {
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
-        token_definition_id_in: Ids::token_b_definition(),
         deadline: u64::MAX,
     };
 
+    // Token B is the input, so the B holding occupies the signed input slot.
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
@@ -2528,18 +2735,17 @@ fn amm_swap_b_to_a() {
             Ids::pool_definition(),
             Ids::vault_a(),
             Ids::vault_b(),
-            Ids::user_a(),
             Ids::user_b(),
+            Ids::user_a(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![Nonce(0), Nonce(0)],
+        vec![Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_b()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -2573,7 +2779,6 @@ fn amm_swap_a_to_b() {
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
-        token_definition_id_in: Ids::token_a_definition(),
         deadline: u64::MAX,
     };
 
@@ -2589,13 +2794,12 @@ fn amm_swap_a_to_b() {
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![Nonce(0), Nonce(0)],
+        vec![Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
 
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
@@ -2646,7 +2850,6 @@ fn amm_swap_exact_output_refreshes_current_tick() {
     let instruction = amm_core::Instruction::SwapExactOutput {
         exact_amount_out: Balances::swap_min_out(),
         max_amount_in: Balances::swap_amount_in(),
-        token_definition_id_in: Ids::token_a_definition(),
         deadline: u64::MAX,
     };
 
@@ -2662,15 +2865,35 @@ fn amm_swap_exact_output_refreshes_current_tick() {
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![Nonce(0), Nonce(0)],
+        vec![Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_swap_exact_output_a_to_b()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_swap_exact_output_a_to_b()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_swap_exact_output_a_to_b()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_a()),
+        Accounts::user_a_holding_swap_exact_output_a_to_b()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding_swap_exact_output_a_to_b()
+    );
 
     // The swap refreshed the pool's TWAP current tick to the post-swap spot price, computed from
     // the reserves the swap actually settled on.
@@ -2688,6 +2911,237 @@ fn amm_swap_exact_output_refreshes_current_tick() {
         tick_account.tick, initial_tick,
         "swap should have moved the current tick"
     );
+}
+
+#[test]
+fn amm_swap_exact_output_b_to_a_signs_only_input() {
+    let mut state = state_for_amm_tests();
+
+    let instruction = amm_core::Instruction::SwapExactOutput {
+        exact_amount_out: Balances::swap_min_out(),
+        max_amount_in: Balances::swap_amount_in(),
+        deadline: u64::MAX,
+    };
+
+    // Token B is the input, so the B holding occupies the signed input slot; only it is signed.
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::config(),
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::user_b(),
+            Ids::user_a(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_b()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_swap_exact_output_b_to_a()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_swap_exact_output_b_to_a()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_swap_exact_output_b_to_a()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_a()),
+        Accounts::user_a_holding_swap_exact_output_b_to_a()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding_swap_exact_output_b_to_a()
+    );
+
+    let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    let required_input = pool
+        .reserve_b
+        .checked_sub(Balances::vault_b_init())
+        .expect("swap should increase input-token reserve");
+    let user_a_balance = fungible_balance(&state.get_account_by_id(Ids::user_a()));
+    let user_b_balance = fungible_balance(&state.get_account_by_id(Ids::user_b()));
+
+    assert_eq!(
+        pool.reserve_a,
+        Balances::vault_a_init() - Balances::swap_min_out()
+    );
+    assert_ne!(required_input, 0);
+    assert!(required_input <= Balances::swap_amount_in());
+    assert_eq!(
+        Balances::user_b_init() - user_b_balance,
+        required_input,
+        "user debit must equal pool input reserve increase"
+    );
+    assert_eq!(
+        user_a_balance,
+        Balances::user_a_init() + Balances::swap_min_out()
+    );
+    assert_current_tick_matches_pool(&state);
+}
+
+#[test]
+fn amm_swap_exact_input_requires_input_signature() {
+    let mut state = state_for_amm_tests();
+
+    let instruction = amm_core::Instruction::SwapExactInput {
+        swap_amount_in: Balances::swap_amount_in(),
+        min_amount_out: Balances::swap_min_out(),
+        deadline: u64::MAX,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::config(),
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::user_a(),
+            Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(matches!(
+        state.transition_from_public_transaction(&tx, 0, 0),
+        Err(LeeError::ProgramExecutionFailed(_))
+    ));
+
+    assert_initial_swap_state(&state);
+}
+
+#[test]
+fn amm_swap_exact_input_rejects_when_only_output_holding_signed() {
+    let mut state = state_for_amm_tests();
+
+    let instruction = amm_core::Instruction::SwapExactInput {
+        swap_amount_in: Balances::swap_amount_in(),
+        min_amount_out: Balances::swap_min_out(),
+        deadline: u64::MAX,
+    };
+
+    // Input slot holds token A but only the output (B) holding is signed: the input is unsigned, so
+    // the swap must be rejected.
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::config(),
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::user_a(),
+            Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_b()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(matches!(
+        state.transition_from_public_transaction(&tx, 0, 0),
+        Err(LeeError::ProgramExecutionFailed(_))
+    ));
+
+    assert_initial_swap_state(&state);
+}
+
+#[test]
+fn amm_swap_exact_output_requires_input_signature() {
+    let mut state = state_for_amm_tests();
+
+    let instruction = amm_core::Instruction::SwapExactOutput {
+        exact_amount_out: Balances::swap_min_out(),
+        max_amount_in: Balances::swap_amount_in(),
+        deadline: u64::MAX,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::config(),
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::user_a(),
+            Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(matches!(
+        state.transition_from_public_transaction(&tx, 0, 0),
+        Err(LeeError::ProgramExecutionFailed(_))
+    ));
+
+    assert_initial_swap_state(&state);
+}
+
+#[test]
+fn amm_swap_exact_output_rejects_when_only_output_holding_signed() {
+    let mut state = state_for_amm_tests();
+
+    let instruction = amm_core::Instruction::SwapExactOutput {
+        exact_amount_out: Balances::swap_min_out(),
+        max_amount_in: Balances::swap_amount_in(),
+        deadline: u64::MAX,
+    };
+
+    // Input slot holds token A but only the output (B) holding is signed: the input is unsigned, so
+    // the swap must be rejected.
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::config(),
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::user_a(),
+            Ids::user_b(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_b()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    assert!(matches!(
+        state.transition_from_public_transaction(&tx, 0, 0),
+        Err(LeeError::ProgramExecutionFailed(_))
+    ));
+
+    assert_initial_swap_state(&state);
 }
 
 #[test]
@@ -2783,7 +3237,6 @@ fn amm_swap_rejects_expired_deadline() {
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
-        token_definition_id_in: Ids::token_a_definition(),
         deadline: deadline_ms,
     };
 
@@ -2799,13 +3252,12 @@ fn amm_swap_rejects_expired_deadline() {
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![Nonce(0), Nonce(0)],
+        vec![Nonce(0)],
         instruction,
     )
     .unwrap();
 
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
     let tx = PublicTransaction::new(message, witness_set);
     assert!(matches!(
         state.transition_from_public_transaction(&tx, 0, block_timestamp_ms),
@@ -2823,7 +3275,6 @@ fn amm_swap_exact_output_rejects_expired_deadline() {
     let instruction = amm_core::Instruction::SwapExactOutput {
         exact_amount_out: Balances::swap_min_out(),
         max_amount_in: Balances::swap_amount_in(),
-        token_definition_id_in: Ids::token_a_definition(),
         deadline: deadline_ms,
     };
 
@@ -2839,16 +3290,12 @@ fn amm_swap_exact_output_rejects_expired_deadline() {
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        vec![
-            current_nonce(&state, Ids::user_a()),
-            current_nonce(&state, Ids::user_b()),
-        ],
+        vec![current_nonce(&state, Ids::user_a())],
         instruction,
     )
     .unwrap();
 
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a(), &Keys::user_b()]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::user_a()]);
     let tx = PublicTransaction::new(message, witness_set);
     assert!(matches!(
         state.transition_from_public_transaction(&tx, 0, block_timestamp_ms),
