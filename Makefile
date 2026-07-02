@@ -1,4 +1,7 @@
-.PHONY: clippy clippy-guest clippy-all test integration-test fmt idl
+.PHONY: build-programs clippy clippy-guest clippy-all test integration-test fmt idl
+
+build-programs:
+	./scripts/build-guests.sh
 
 clippy:
 	RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings

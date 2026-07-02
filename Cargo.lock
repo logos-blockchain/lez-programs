@@ -3134,6 +3134,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "risc0-packager"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "risc0-binfmt",
+ "risc0-build",
+]
+
+[[package]]
 name = "risc0-zkos-v1compat"
 version = "2.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

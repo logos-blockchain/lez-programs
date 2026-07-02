@@ -32,11 +32,27 @@ RISC0_DEV_MODE=1 cargo test -p twap_oracle_program
 # Format
 make fmt
 
-# Build the guest ZK binary (requires risc0 toolchain)
+# Build all guest ZK binaries
+make build-programs
+
+# Build one guest directly only when debugging a single guest build
 cargo risczero build --manifest-path programs/<program>/methods/guest/Cargo.toml
 ```
 
-Built binaries output to: `<program>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<program>.bin`
+`make build-programs` uses `scripts/build-guests.sh` and
+`scripts/build-guests.Dockerfile` to compile every guest crate in one Docker
+BuildKit build. Cargo git, registry, and target artifacts are shared through
+BuildKit cache mounts. Each raw guest ELF is packaged into the deployable RISC
+Zero `.bin` format, and only those final program binaries are exported.
+
+Built binaries output to:
+`target/guest/<program>.bin`
+
+Use `RISC0_DOCKER_CONTAINER_TAG` to override the guest builder image tag. Use
+`RISC0_BUILD_CACHE_ID` to isolate BuildKit caches for clean benchmarks or
+parallel experiments. Use `RISC0_DOCKER_BUILD_NETWORK` to opt in to a custom
+Docker build network mode, such as `host`, when the default Docker build
+network is not sufficient.
 
 ## IDL Generation
 
@@ -77,11 +93,14 @@ strip = "symbols"
 That profile is part of program identity. After every release build, inspect the binary and update every value that depends on the ImageID before submitting transactions: deployed program IDs, client/config files, PDA-derived account addresses, AMM `token_program_id` and `twap_oracle_program_id`, and ATA `token_program_id` inputs. Do not mix raw or old ImageIDs with release-profile binaries.
 
 ```bash
+# Build all guest binaries with the shared BuildKit cache
+make build-programs
+
 # Deploy a program binary to the sequencer
-wallet deploy-program <path-to-binary>
+wallet deploy-program target/guest/<program>.bin
 
 # Inspect the ProgramId of a built binary
-spel inspect <path-to-binary>
+spel inspect target/guest/<program>.bin
 ```
 
 ## Workspace Structure

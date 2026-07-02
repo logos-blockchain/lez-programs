@@ -125,6 +125,24 @@ jobs:
         env:
           RISC0_DEV_MODE: 1
 
+  build-programs:
+    name: Build Guest Programs
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build guest program binaries
+        run: make build-programs
+
+      - name: Check guest program binaries
+        run: |
+          set -eu
+          for manifest in programs/*/methods/guest/Cargo.toml; do
+            program="$(basename "$(dirname "$(dirname "$(dirname "${manifest}")")")")"
+            test -s "target/guest/${program}.bin"
+          done
+
   check-idl:
     name: Check IDL
     runs-on: ubuntu-latest

@@ -17,6 +17,7 @@ members = [
     "programs/stablecoin/methods",
     "programs/integration_tests",
     "tools/idl-gen",
+    "tools/risc0-packager",
 ]
 exclude = [
     "programs/token/methods/guest",
