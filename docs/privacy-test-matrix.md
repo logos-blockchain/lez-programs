@@ -9,6 +9,42 @@ record which combinations work, fail, or cannot be expressed. Every row starting
 This is the tracking scaffold, not the final deliverable — `docs/privacy-gap-report.md` gets
 written from the resolved state of this table.
 
+## Key findings so far (highest priority — read this before anything else)
+
+1. **`OpenPosition` cannot be called via a `PrivacyPreservingTransaction` at all**, for any
+   reason related to privacy — confirmed with an all-public control case (zero private
+   accounts, still fails identically). `open_position.rs` issues two chained calls that both
+   reuse `vault`: `Token::InitializeAccount` authorizes it via `pda_seeds`, then
+   `Token::Transfer` re-declares it `is_authorized: false` on its second occurrence (a
+   legitimate choice on the public-transaction path, per that file's own comment). The privacy
+   circuit's `authorized_accounts` bookkeeping is monotonic — once authorized, an account must
+   stay declared `is_authorized: true` on every later occurrence — so this is rejected with
+   `"Inconsistent authorization for account {id}"` (`lee_core`'s `execution_state.rs:301`).
+   Likely fixable by not re-declaring `vault` unauthorized on its second occurrence. See
+   `stablecoin_open_position_via_privacy_transaction_is_not_expressible` and the Stablecoin
+   section below for the full writeup. **Single most actionable item for the protocol team.**
+2. **Private PDAs are structurally impossible under every program's current derivation** — ATA,
+   AMM, and Stablecoin all derive PDAs via `for_public_pda` only, which can never satisfy
+   `PrivatePdaInit`/`PrivatePdaUpdate`'s binding requirement (traced precisely in
+   `execution_state.rs`; see the ATA section). Fixable only by a source change to
+   `for_private_pda` in each `*_core` crate.
+3. **Sending to an existing private account requires the recipient's cooperation** — no
+   "blind credit" path exists; confirmed across Token/ATA/Stablecoin instructions. Real
+   wallet-UX implication, not a bug.
+4. **Group-owned (shared) accounts work identically to personal ones** wherever tried —
+   Transfer, Burn, InitializeAccount, and as the signing `owner` behind a PDA-locked resource
+   (ATA, Stablecoin) — using the real seal/unseal GMS distribution, not just key reuse.
+5. **AMM cannot be privacy-tested at all yet** — a *second*, distinct circuit-level issue
+   blocks every pool-mutating AMM instruction (`Swap*`, `AddLiquidity`, `RemoveLiquidity`,
+   `SyncReserves`) from the privacy-preserving transaction type, confirmed with all-public
+   control tests (zero private accounts, still fails): `"Invalid account_identities length"`
+   inside `execute_and_prove` itself. Ruled out "two different callee programs" as the cause
+   (a TWAP-only instruction fails identically to a Token+TWAP one); leading unconfirmed
+   suspect is AMM's pattern of passing an already-mutated `pool` copy into its chained TWAP
+   call. Root-causing further requires the Docker-based guest rebuild pipeline (`make
+   build-programs`), not plain `cargo test` — parked pending that investment. See the AMM
+   section below for the full bisection trail.
+
 ## Legend
 
 **Dimension** — which cross-cutting Q2 feature (or baseline coverage gap) a row exercises:
@@ -41,7 +77,7 @@ Checked against the 4 Q2 checkboxes explicitly, not assumed:
 | Checkbox | Status | Basis |
 |---|---|---|
 | Private PDAs used as program inputs | **N/A at this layer** | `token_core` has no `for_public_pda`/`for_private_pda` calls anywhere — Token holdings are addressed by arbitrary `AccountId`, not program-derived. Only testable once wrapped by another program's PDA (ATA/AMM/Stablecoin) — correctly deferred, not a gap in Token coverage. |
-| Sharing a private account (group-owned) | **Covered** | `token_group_owned_holding_shared_control` — see finding below. |
+| Sharing a private account (group-owned) | **Covered** | `token_group_owned_holding_shared_control_burn`/`_transfer`/`_initialize` — see finding below. |
 | Sending funds to an existing private account | **Covered** | `token_transfer_into_existing_private_holding` — see finding above. |
 | Multiple private accounts in one tx / private accounts through chained calls | **Partially covered** | "Multiple private accounts in one tx" half: covered, but by the *pre-existing* `token_private_transfer` (two private legs, zero public), not by anything added this phase — none of the new tests this phase have more than one private leg. "Carried through chained calls" half: N/A at this layer, Token issues no `ChainedCall`s (only ATA/AMM/Stablecoin do); deferred. |
 
@@ -49,6 +85,11 @@ Net: of the 4 checkboxes, Token-phase work directly validated 2 (`EXIST`, `GROUP
 pre-existing test for half of a 3rd (`CHAIN`'s multi-account half), and the remaining checkbox
 (`PDA`) plus the other half of `CHAIN` are structurally out of reach until ATA/AMM/Stablecoin
 phases — not oversights specific to this phase.
+
+**Update (2026-07-08):** the one remaining planned row, `token_mint_with_authority_to_private_holding`
+(`BASE`, P3), passed — see the finding under Planned below. It doesn't move any of the 4
+checkboxes above (it's `BASE`, not `PDA`/`GROUP`/`EXIST`/`CHAIN`), but it closes the last open
+instruction/private-recipient combination at this layer. **Token phase is now complete.**
 
 ### Existing
 
@@ -65,8 +106,11 @@ phases — not oversights specific to this phase.
 | Transfer | `EXIST` + `CHAIN` (fully private) | `token_private_transfer_into_existing_private_holding` — both legs private, recipient already existing (not fresh); two distinct accounts both via `PrivateAuthorizedUpdate` in one tx | Pass |
 | InitializeAccount | BASE | `token_initialize_private_account` — self-init of a private holding via `PrivateAuthorizedInit` | Pass |
 | InitializeAccount | new: self-service-only boundary | `token_initialize_private_account_without_nsk_is_not_expressible` | **Not-expressible — confirmed by design, not a gap** |
-| Transfer + Burn | `GROUP` | `token_group_owned_holding_shared_control` — shield into a GMS-derived shared holding, spend from it via an independently-derived key | Pass |
+| Burn | `GROUP` | `token_group_owned_holding_shared_control_burn` — shield into a GMS-derived shared holding, burn from it via an independently-derived key | Pass |
+| Transfer | `GROUP` | `token_group_owned_holding_shared_control_transfer` — group-owned sender spends outward via Transfer to a fresh private recipient, instead of destroying the funds via Burn | Pass |
+| InitializeAccount | `GROUP` | `token_group_owned_holding_shared_control_initialize` — a group member (not the group's creator) self-initializes the shared holding directly via `PrivateAuthorizedInit` | Pass |
 | Mint | `EXIST` | `token_mint_into_existing_private_holding` — mint once to establish the holding, mint again into it via `PrivateAuthorizedUpdate` | Pass |
+| MintWithAuthority | BASE | `token_mint_with_authority_to_private_holding` — external-authority mint (distinct signer from the definition) directly to a fresh private recipient | Pass |
 
 **Finding (`GROUP`, confirmed 2026-07-07):** sharing a private account genuinely works, and the test
 was built to prove *sharing*, not just code reuse: "Alice" creates a `GroupKeyHolder` (fresh GMS)
@@ -78,6 +122,17 @@ the shared holding using his own derivation. Required adding `key_protocol` as a
 (same repo/tag as `nssa`/`nssa_core`) to `integration_tests/Cargo.toml` — it wasn't previously a
 dependency of `lez-programs`. Passed on the first attempt; no gap found for this dimension at the
 Token layer.
+
+**Finding (group-owned spend + self-init, confirmed 2026-07-07):** the `_burn` test only proved
+group funds could be *destroyed*; `token_group_owned_holding_shared_control_transfer` closes
+that gap by having Bob spend outward via `Transfer` to a fresh private recipient instead —
+same seal/unseal rigor, both legs private (group sender via `PrivateAuthorizedUpdate`, fresh
+recipient via `PrivateUnauthorized`), no public account anywhere in the transaction.
+`token_group_owned_holding_shared_control_initialize` closes the other gap: a group *member*
+(not the party who created the group) self-initializing the shared holding directly via
+`InitializeAccount`/`PrivateAuthorizedInit`, rather than the holding only ever coming into
+existence as a side effect of a shield. Both passed on the first attempt — group-owned
+accounts behave identically to personal ones across every instruction tried so far.
 
 **Finding (`EXIST`, confirmed 2026-07-07):** crediting an *existing* private account works, but only if the
 recipient cooperates in the same transaction. Confirmed directly against `InputAccountIdentity`'s
@@ -110,10 +165,28 @@ Passed on the first attempt once modeled on `token_transfer_into_existing_privat
 
 ### Planned
 
+All originally-planned Token rows are now resolved (`token_mint_with_authority_to_private_holding`
+passed — moved into the `Existing` table above) — Token phase is complete.
+
 | Instruction | Dimension | Test | Priority | Depends on | Status |
 |---|---|---|---|---|---|
-| MintWithAuthority | BASE | `token_mint_with_authority_to_private_holding` | P3 | — | Not started |
 | NewFungibleDefinition, NewDefinitionWithMetadata, SetAuthority(WithAuthority), PrintNft | — | **Not planned** — these operate on canonical, publicly-resolvable definitions/authorities; a "private token definition" has no coherent meaning since holders/traders must resolve it | — | — | Out of scope |
+
+**Finding (`token_mint_with_authority_to_private_holding`, confirmed 2026-07-08):** closes the
+last open Token combination — external-authority minting (`MintWithAuthority`, distinct signer
+from the definition account) composed with a private recipient. Every prior `MintWithAuthority`
+coverage minted to a public holder; every prior private-recipient mint test used self/PDA
+authority (plain `Mint`). `mint_inner` never asserts `is_authorized` on `user_holding_account`
+regardless of authority mode, so a passive `PrivateUnauthorized` recipient works here exactly as
+it does under plain `Mint`. Passed on the first attempt after correcting the `Message`
+construction: with two public accounts in the same privacy transaction (`definition`, not a
+signer, plus `authority`, the signer), `public_account_ids` must list *both* — in their
+`execute_and_prove` input order — for the circuit's public post-states to zip correctly, while
+`nonces` lists *only* the signer(s), positionally matched to the witness keys (`signer_account_ids`
+is derived from the witness set's public keys, not from `public_account_ids`). This is the first
+test in the file with more than one public account alongside a private one, so it's worth
+carrying forward: `public_account_ids` (post-state zipping) and `nonces` (signature/nonce
+verification) are two independently-sized lists, not one shared list.
 
 **Correction (`token_initialize_private_account`, resolved 2026-07-07):** originally flagged as a
 plausible `Not-expressible` case because `initialize.rs` hard-asserts `is_authorized == true` while
@@ -180,6 +253,19 @@ Verified in `ata/src/create.rs`: the owner account is **not** forwarded into the
 appear as a top-level tx participant, but does **not** prove a private account traveling
 through a chained call. That gap is still open despite appearances.
 
+**Finding (third-party bootstrap, confirmed 2026-07-07 — positive finding, not a gap):**
+`Create` never asserts `owner.is_authorized`, and the only private identity variant compatible
+with an unauthorized owner (`PrivateUnauthorized`) structurally has no `nsk` field at all — it's
+built from `npk`/`vpk` alone. So `ata_create_from_private_owner` demonstrates something worth
+stating plainly rather than leaving implicit: **any third party can bootstrap another owner's
+ATA using only that owner's public key material, without the owner ever exposing (or even
+needing to possess yet) their `nsk`.** This mirrors Token's finding that anyone can shield funds
+into a fresh private recipient who has never been online — here a wallet provider, faucet, or
+counterparty program can pre-create a user's per-token account the same way, purely from public
+inputs. The boundary is exactly where signing starts: the moment an instruction needs to *move*
+value or prove ongoing control (`Transfer`, `Burn`), `nsk` becomes mandatory — see the
+signer-authorization finding below.
+
 **Finding (`PDA`, confirmed 2026-07-07 — root cause, not just an observation):** the ATA
 holding can never be made a private account as ATA is currently coded, and this is a
 structural fact provable from `lee_core`'s circuit source, not empirical friction. Traced
@@ -212,6 +298,9 @@ is complete.
 | Transfer | `CHAIN` + `EXIST` (collapsed — see finding) | `ata_transfer_to_existing_private_recipient` | Pass |
 | Burn | new: signer-authorization | `ata_burn_with_private_owner_signing` | Pass |
 | Burn | `GROUP` + signer-authorization | `ata_group_owned_owner_signing` | Pass |
+| Transfer | new: signer-authorization | `ata_transfer_with_private_owner_signing` | Pass |
+| Transfer | `GROUP` + signer-authorization | `ata_transfer_with_group_owned_owner_signing` | Pass |
+| Create | `GROUP` (defensive/symmetry only — see finding) | `ata_create_from_group_owned_owner` | Pass |
 
 **Finding (`CHAIN` + `EXIST`, confirmed 2026-07-07):** `ata_program::transfer::transfer_from_associated_token_account`
 hard-asserts `recipient.account != Account::default()` ("Recipient token holding must be
@@ -232,10 +321,45 @@ signer requirement). `ata_burn_with_private_owner_signing` tests whether a priva
 satisfy a signer requirement by self-initializing *and* signing in the same transaction via
 `PrivateAuthorizedInit` — it does, cleanly, on the first attempt. `ata_group_owned_owner_signing`
 composes this with `GROUP`: the GMS is distributed through the real seal/unseal handshake (as
-in `token_group_owned_holding_shared_control`), and "Bob" — who never touches Alice's
+in `token_group_owned_holding_shared_control_burn`), and "Bob" — who never touches Alice's
 `GroupKeyHolder` object — independently re-derives the matching nsk/npk and signs. Both pass.
 Worth feeding back as a positive finding: private/shared accounts can serve as full signing
 authorities for instructions that require it, not just as passive recipients.
+
+**Follow-up (confirmed 2026-07-08 — closing a coverage review gap, not a new dimension):** a
+review pass noticed `Burn` had both personal and group-owned signer coverage but `Transfer`
+(identical `#[account(signer)]` requirement on `owner`) only had the pre-existing public-owner
+test — a private owner had never actually been tried signing `ATA::Transfer`.
+`ata_transfer_with_private_owner_signing` / `ata_transfer_with_group_owned_owner_signing` close
+that gap directly, mirroring the `Burn` pair exactly (self-init + sign via `PrivateAuthorizedInit`,
+personal and group-owned). Both passed on the first attempt, as expected given `Burn`'s identical
+shape. Also added `ata_create_from_group_owned_owner` for symmetry — but **this one is a weaker
+test by construction, not a gap closure**: `Create` places no signer requirement on `owner` at
+all, and its only compatible private identity (`PrivateUnauthorized`) never touches `nsk`, so a
+group-derived `owner` is indistinguishable from a personal one at this instruction. The test
+confirms that empirically (nothing in `Create` secretly assumes anything about where `npk`/`vpk`
+came from) but does **not** demonstrate genuine shared control the way the `Transfer`/`Burn`
+group tests do — there is nothing for `Create` to prove sharing over, since it never asks anyone
+to prove control of `owner` in the first place. Net: `Create`'s "group ownership" question isn't
+an open gap, it's a category mismatch — worth stating that plainly in the gap report rather than
+implying it was untested.
+
+**Finding (ATA cannot originate a fresh private holding, confirmed 2026-07-08 — synthesizes two
+separate facts above into one conclusion worth stating plainly): no ATA instruction can bring a
+new private token holding into existence, for two independent reasons covering the two accounts
+involved.** (1) The ATA's own holding can never be private at all — the confirmed `PDA` finding:
+`Create` authorizes it via `for_public_pda` only, which can never satisfy
+`PrivatePdaInit`/`PrivatePdaUpdate`'s binding requirement. (2) Even a separate, non-ATA private
+recipient can't be freshly created through `ATA::Transfer` — `transfer_from_associated_token_account`
+hard-asserts `recipient.account != Account::default()`, rejecting a shield-style fresh
+`PrivateUnauthorized` recipient outright; only an *already-existing* recipient can be credited
+(per the `CHAIN` + `EXIST` finding above). So ATA can send value *toward* a private destination,
+but only one that already exists via some other path — every private holding that appears in
+these tests was originated by a direct, non-ATA `Token` call
+(`ata_transfer_to_existing_private_recipient`'s setup shields the recipient via `Token::Transfer`
+before the ATA transfer under test ever runs). Worth stating as its own line in the gap report:
+"ATA cannot emit private token holdings" is a real, structural limitation, not a coverage gap
+in the tests written here.
 
 ---
 
@@ -249,57 +373,166 @@ price surface (reserves must be readable to quote a swap; TWAP needs a continuou
 observable tick) — privatizing them fights the AMM's purpose. Vault/LP-lock are the credible
 middle case. User-held token/LP balances are the highest-value target.
 
+### ⚠ Blocked pending investigation (2026-07-08) — read before starting AMM test-writing
+
+Before writing any private AMM test, an all-public control test through `execute_and_prove`
+(the same discipline that found Stablecoin's `OpenPosition` bug) turned up a **second,
+distinct circuit-level issue specific to AMM**, unrelated to any privacy dimension. No AMM
+privacy tests have been written yet — this needs resolving (or explicitly working around)
+first.
+
+**Symptom**: `SwapExactInput` (8 top-level accounts, 3 chained calls: 2×`Token::Transfer` +
+1×`TWAP::UpdateCurrentTick`) fails *inside* `execute_and_prove`, before any private account is
+even involved, with `"Invalid account_identities length"` (`lee_core`'s `output.rs:27`) —
+`account_identities.len()` (8, what we supply) vs `states_iter.len()` (7, what the circuit
+computes). Confirmed with every account `Public`.
+
+**Bisection done so far**:
+- **Ruled out "two different callee programs"**: `SyncReserves` (6 accounts, *one* chained
+  call, into TWAP oracle only — zero Token calls) fails with the identical pattern (6 vs 5).
+  So it's not about chaining into two different programs.
+- **Ruled out "any multi-account reuse in one chained call"**: Stablecoin's
+  `WithdrawCollateral` reuses *two* accounts (`vault`, `destination`) inside its single chained
+  call and works fine — so plain reuse-of-multiple-accounts isn't sufficient on its own to
+  trigger this.
+- **Simplest AMM instruction works**: `UpdateConfig` (2 accounts, zero chained calls) gets
+  *past* `execute_and_prove` cleanly — it fails later, at `transition_from_privacy_preserving_transaction`,
+  with `InvalidInput("Empty commitments and empty nullifiers found in message")`. This looks
+  like an unrelated, general protocol rule (a `PrivacyPreservingTransaction` needs at least one
+  actual private account, or use `PublicTransaction` instead) — not a bug, but worth noting:
+  **the "all-public control" methodology needs at least one trivial private leg to get past
+  this check for future control tests**, not just all-`Public` identities.
+- **Leading structural lead, not yet confirmed**: every AMM instruction that hits the length
+  mismatch passes a *post-update* copy of `pool` (`pool_price_source`, holding `pool_post` —
+  the already-mutated state, not the original pre-state) into its chained TWAP call. This
+  "pass what's about to become the post-state as the next call's own pre-state" pattern is
+  proven correct on the public-transaction path (33 passing tests) but nothing in
+  Token/ATA/Stablecoin ever exercised it under the privacy circuit. Not yet confirmed as *the*
+  cause — only the clearest outlier found.
+
+**Why this wasn't root-caused further**: attempted source-level instrumentation
+(`eprintln!` tracing added directly to the pinned `lee_core` checkout's `execution_state.rs`)
+to watch the exact bookkeeping live. Confirmed `lee`/`lee_core` genuinely recompiled
+(`cargo clean -p lee -p lee_core` + fresh compile logs), but the added prints never
+surfaced, while the original panic still fired from the same file/line. This means the actual
+executed code path isn't rebuilt by a normal `cargo clean`/`cargo test` cycle — almost
+certainly because real guest execution runs a separately cross-compiled RISC-V ELF
+(`risc0_build::embed_methods!`), which per this repo's own `CLAUDE.md` needs the Docker-based
+`make build-programs` pipeline to rebuild, not plain cargo. Instrumentation was cleanly
+reverted (`git status` clean in the checkout; all 52 other tests reconfirmed passing
+afterward) rather than sunk further into standing up that Docker toolchain just for tracing.
+
+**Next step when this is picked back up**: either (a) stand up the guest-rebuild pipeline to
+finish the trace, or (b) construct a minimal synthetic instruction (not part of the real AMM
+program) that isolates the "post-state passed as next call's pre-state" pattern alone, without
+needing to modify any pinned dependency.
+
 ### Existing
 
-0 private tests out of 33 public.
+0 private tests out of 33 public. (No private test-writing attempted yet — blocked above.)
 
 ### Planned
 
 | Instruction | Dimension | Test | Priority | Depends on | Status |
 |---|---|---|---|---|---|
-| SwapExactInput | `CHAIN` | `amm_swap_a_to_b_private_user_holding` | P1 | Token, TWAP oracle (public leg) | Not started |
-| SwapExactOutput | `CHAIN` | `amm_swap_exact_output_private_user_holding` | P1 | Token, TWAP oracle (public leg) | Not started |
-| AddLiquidity | `CHAIN` | `amm_add_liquidity_private_user_holdings` | P1 | Token, TWAP oracle (public leg) | Not started |
-| AddLiquidity | BASE | `amm_add_liquidity_private_lp_holding` — private LP output holding | P1 | Token | Not started |
-| RemoveLiquidity | `CHAIN` | `amm_remove_liquidity_private_lp_holding` | P1 | Token, TWAP oracle (public leg) | Not started |
-| Swap / AddLiquidity | `EXIST` | `amm_swap_into_existing_private_holding` | P2 | Token | Not started |
-| NewDefinition | BASE | `amm_new_definition_private_initial_lp_holder` | P2 | Token | Not started |
-| Swap / AddLiquidity (vault) | `PDA` | `amm_swap_with_private_vault_pda` — predicted **not-expressible** per the ATA `PDA` finding (same `for_public_pda`-only root cause, confirmed in `amm_core`); write as a quick confirmation citing that finding, not a fresh investigation | P2 | Token | Not started |
-| AddLiquidity / RemoveLiquidity | `GROUP` | `amm_group_owned_lp_holding` | P3 | Token, `key_protocol` | Not started |
+| SwapExactInput | `CHAIN` | `amm_swap_a_to_b_private_user_holding` | P1 | Token, TWAP oracle (public leg) | **Blocked** — see above |
+| SwapExactOutput | `CHAIN` | `amm_swap_exact_output_private_user_holding` | P1 | Token, TWAP oracle (public leg) | **Blocked** — see above |
+| AddLiquidity | `CHAIN` | `amm_add_liquidity_private_user_holdings` | P1 | Token, TWAP oracle (public leg) | **Blocked** — see above |
+| AddLiquidity | BASE | `amm_add_liquidity_private_lp_holding` — private LP output holding | P1 | Token | **Blocked** — see above |
+| RemoveLiquidity | `CHAIN` | `amm_remove_liquidity_private_lp_holding` | P1 | Token, TWAP oracle (public leg) | **Blocked** — see above |
+| Swap / AddLiquidity | `EXIST` | `amm_swap_into_existing_private_holding` | P2 | Token | **Blocked** — see above |
+| NewDefinition | BASE | `amm_new_definition_private_initial_lp_holder` | P2 | Token | **Blocked** — see above (also issues chained calls reusing `pool`-derived accounts; check on resolution) |
+| Swap / AddLiquidity (vault) | `PDA` | `amm_swap_with_private_vault_pda` — predicted **not-expressible** per the ATA `PDA` finding (same `for_public_pda`-only root cause, confirmed in `amm_core`); write as a quick confirmation citing that finding, not a fresh investigation | P2 | Token | Not started (also behind the blocker above) |
+| AddLiquidity / RemoveLiquidity | `GROUP` | `amm_group_owned_lp_holding` | P3 | Token, `key_protocol` | **Blocked** — see above |
 | Pool/Config (any) | `PDA` | `amm_attempt_private_pool_pda` — same predicted not-expressible outcome as above; low priority given the vault row already confirms the root cause for this program | P3 | Token | Not started |
 | Initialize, UpdateConfig, CreatePriceObservations, CreateOraclePriceAccount, SyncReserves | — | **Not planned** — admin/infra instructions over public protocol state; a private admin authority is legitimate but low value | — | — | Out of scope (for now) |
 
 Note: every Swap/AddLiquidity/RemoveLiquidity chains to *both* Token (transfers) and TWAP
 oracle (tick refresh) in one instruction — so every `CHAIN` row above is automatically also
 a "some legs private, some public" test. Call that out explicitly when the test is written,
-not as an incidental detail.
+not as an incidental detail. **All of these are currently blocked by the circuit-level issue
+above, since it fires with zero private accounts involved — no privacy dimension can be tested
+on any pool-mutating AMM instruction until it's resolved.**
 
 ---
 
 ## Stablecoin (`stablecoin.rs`) — depends on Token
 
-Only 2 tests total today (`stablecoin_open_position_then_withdraw_collateral`,
-`stablecoin_repay_debt_burns_stablecoins_and_decreases_debt`), 0 private. Both PDAs
-(position, position vault) are `for_public_pda` only.
-
-Arguably the most naturally privacy-motivated program of the four — a CDP's collateral/debt
-is exactly what a user would want hidden — despite having the thinnest existing baseline.
+2 pre-existing public tests (`stablecoin_open_position_then_withdraw_collateral`,
+`stablecoin_repay_debt_burns_stablecoins_and_decreases_debt`). Both PDAs (position, position
+vault) are `for_public_pda` only, per the ATA `PDA` finding.
 
 ### Existing
 
-0 private tests out of 2 public.
+| Instruction | Dimension | Test | Status |
+|---|---|---|---|
+| OpenPosition | new: chained-call re-authorization | `stablecoin_open_position_via_privacy_transaction_is_not_expressible` | **Not-expressible — confirmed, root cause traced** |
+| WithdrawCollateral | `CHAIN` + `EXIST` | `stablecoin_withdraw_collateral_private_destination` | Pass |
+| WithdrawCollateral | `CHAIN` + `EXIST` + `GROUP` | `stablecoin_withdraw_collateral_group_owned_destination` | Pass |
+| RepayDebt | `CHAIN` | `stablecoin_repay_debt_private_stablecoin_holding` | Pass |
+| RepayDebt | `CHAIN` + `GROUP` | `stablecoin_repay_debt_group_owned_stablecoin_holding` | Pass |
+| WithdrawCollateral (owner identity) | `GROUP` | `stablecoin_group_owned_position_owner` | Pass |
 
-### Planned
+**Finding (`OpenPosition`, confirmed 2026-07-08 — the headline finding for this program, and
+arguably the whole exercise): `OpenPosition` cannot be executed through the privacy-preserving
+transaction type at all, for any reason related to privacy.** Confirmed with an all-public
+control test (every account `Public`, zero private accounts) that fails with the *identical*
+error as the private attempt. Root cause traced precisely in `lee_core`'s
+`execution_state.rs`: `authorized_accounts` is a monotonic/sticky set — once an account is
+authorized via one chained call's `pda_seeds` match, every later occurrence of that same
+account must *also* declare `is_authorized: true`, or
+`assert_eq!(pre_is_authorized, is_authorized, "Inconsistent authorization for account {id}")`
+fails. `open_position.rs` issues two chained calls that both reuse `vault`: the first
+(`Token::InitializeAccount`) authorizes it via `pda_seeds`, sticking it as authorized; the
+second (`Token::Transfer`) then deliberately constructs `post_init_vault` with
+`is_authorized: false` — a legitimate choice on the public-transaction path (the file's own
+comment: "the recipient is already initialized, so no second PDA claim is needed here") — but
+the privacy circuit rejects that as inconsistent. **This means no privacy-preserving test can
+ever open a position** — not because of anything about privacy, but because the instruction
+itself is incompatible with the privacy transaction machinery as currently coded. Every test
+below routes around it by seeding position/vault directly via `force_insert_account` (public
+accounts, no real `OpenPosition` call), matching how the pre-existing public
+`stablecoin_repay_debt_burns_stablecoins_and_decreases_debt` test already worked before this
+phase. This is the single most actionable, most severe finding to feed back to the protocol
+team — it blocks privacy for `OpenPosition` categorically, independent of the four Q2
+dimensions, and is likely fixable by having `open_position.rs` mark `post_init_vault` as
+authorized (or otherwise not re-declare it unauthorized) on its second occurrence.
 
-| Instruction | Dimension | Test | Priority | Depends on | Status |
-|---|---|---|---|---|---|
-| OpenPosition | `CHAIN` | `stablecoin_open_position_private_collateral_holding` | P1 | Token | Not started |
-| WithdrawCollateral | `CHAIN` | `stablecoin_withdraw_collateral_private_holding` | P1 | Token | Not started |
-| RepayDebt | `CHAIN` | `stablecoin_repay_debt_private_holding` | P1 | Token | Not started |
-| OpenPosition / Position + Vault | `PDA` | `stablecoin_open_position_private_pda` — predicted **not-expressible** per the ATA `PDA` finding (same `for_public_pda`-only root cause, confirmed in `stablecoin_core`); still worth writing as the clearest real-world case (a CDP position is the most natural thing to want private of anything in this whole exercise), but as a confirmation citing the root cause, not a fresh investigation | P1 (high value as *documentation* of the clearest case, even though the outcome is now predicted) | Token | Not started |
-| OpenPosition / WithdrawCollateral | `EXIST` | `stablecoin_deposit_into_existing_private_holding` | P2 | Token | Not started |
-| OpenPosition (joint CDP) | `GROUP` | `stablecoin_group_owned_position` | P3 | Token, `key_protocol` | Not started |
-| (ProtocolParameters, any) | — | **Not planned** — not yet consumed by any instruction (no freeze/admin logic wired up); nothing to test | — | — | Out of scope |
+**Consequence for the `PDA` dimension**: the originally-planned
+`stablecoin_open_position_private_pda` confirmation test was dropped as redundant. Position and
+vault are *only* ever claimed (via `Claim::Pda` and chained `pda_seeds` respectively) inside
+`OpenPosition` — and since that instruction can't reach the privacy circuit at all, the `PDA`
+question for Stablecoin can't even be isolated independently; it's subsumed by the finding
+above. No separate test needed — the ATA `PDA` finding (same `for_public_pda`-only root cause)
+still stands as the citable reference.
+
+**Finding (`stablecoin_withdraw_collateral_private_destination` / `..._group_owned_destination`,
+confirmed 2026-07-08):** unlike `OpenPosition`, `WithdrawCollateral` issues only *one* chained
+call (`Token::Transfer`, reusing `vault` exactly once) — it doesn't hit the re-authorization
+bug, and passed on the first attempt with a private, pre-existing destination (`EXIST`,
+requiring the destination's `PrivateAuthorizedUpdate` cooperation per the Token/ATA-phase
+finding) and again with a group-owned destination (real seal/unseal distribution, `GROUP`).
+
+**Finding (`stablecoin_repay_debt_private_stablecoin_holding` / `..._group_owned_...`, confirmed
+2026-07-08):** `RepayDebt` also has only one chained call (`Token::Burn`) and isn't affected by
+the `OpenPosition` bug. `user_stablecoin_holding` is notably *not* PDA-locked (unlike ATA's own
+holdings) — it's an ordinary user-controlled token holding — so it's free to be private with no
+structural obstacle at all. Passed personal and group-owned variants on the first attempt.
+
+**Finding (`stablecoin_group_owned_position_owner`, confirmed 2026-07-08 — reframes what
+"group-owned position" means):** the position/vault themselves can never be private or
+group-owned (the `PDA` finding), and can't even be *opened* through the privacy machinery (the
+finding above) — but `owner` is just an `AccountId` used for PDA seed derivation and signer
+verification, so it doesn't need to be a plain public keypair. Directly mirroring
+`ata_group_owned_owner_signing`'s precedent: position/vault are seeded directly (bypassing the
+blocked `OpenPosition`), keyed to a group-derived `owner` identity; "Bob" — who only ever
+receives the sealed GMS — self-initializes *and* signs that owner identity in one transaction
+via `PrivateAuthorizedInit`, then withdraws collateral through it. Passed on the first attempt.
+This is the correct, expressible version of "joint control over a CDP": shared control of the
+*authority* over a PDA-locked resource, not shared privacy of the resource itself.
+
+`ProtocolParameters` remains out of scope — not yet consumed by any instruction (no
+freeze/admin logic wired up), nothing to test.
 
 ---
 
@@ -309,9 +542,13 @@ is exactly what a user would want hidden — despite having the thinnest existin
   `integration_tests/Cargo.toml` pinned to the same repo/tag as `nssa`/`nssa_core`. Unblocks the
   remaining `GROUP` rows in ATA/AMM/Stablecoin; each still needs its own program-specific test
   (PDA-based group ownership, not just the regular-account path proven for Token).
-- Build the shared privacy test kit in `integration_tests/src/lib.rs` (shield / spend /
-  private-PDA fund-spend / group-derive helpers) — still not done. Tests so far (Token and ATA
-  phases) are still hand-rolled per-file; revisit whether to extract shared helpers before AMM.
+- Build the shared privacy test kit in `integration_tests/src/lib.rs` — **partially done**
+  (2026-07-08): `private_unauthorized_identity`/`private_authorized_init_identity`/
+  `private_authorized_update_identity` (build an `InputAccountIdentity` from just the key
+  material) and `setup_group_shared_account` (the Alice-creates/Bob-unseals GMS handshake) now
+  live there and are used throughout `token.rs`. `ata.rs`/`stablecoin.rs` still have their own
+  independent copies of the same patterns — not yet migrated, since that was out of scope for
+  the token.rs-focused cleanup pass. Revisit migrating them before/during AMM.
 
 **Implementation technique worth carrying into AMM/Stablecoin (found 2026-07-07):** private
 account preconditions don't need a real proven transaction to set up. `V03State::with_private_accounts(impl IntoIterator<Item = (Commitment, Nullifier)>)`
@@ -331,7 +568,7 @@ heavier (chained calls, multiple accounts) than a single shield.
 
 | Program | Existing private / confirmed | Planned rows | Out-of-scope instructions noted |
 |---|---|---|---|
-| Token | 13 (3 pre-existing + 10 new: 9 pass + 1 confirmed not-expressible by design) | 1 | 5 |
-| ATA | 5 (4 pass + 1 confirmed not-expressible — phase complete) | 0 | 0 |
+| Token | 16 (3 pre-existing + 13 new: 12 pass + 1 confirmed not-expressible by design) — phase complete | 0 | 5 |
+| ATA | 8 (7 pass + 1 confirmed not-expressible — phase complete) | 0 | 0 |
 | AMM | 0 (2 rows now predicted not-expressible pending confirmation) | 10 | 5 |
-| Stablecoin | 0 | 6 | 1 |
+| Stablecoin | 6 (5 pass + 1 confirmed not-expressible — phase complete) | 0 | 1 |
