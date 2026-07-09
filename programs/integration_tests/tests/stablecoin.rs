@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use key_protocol::key_management::{
-    group_key_holder::{GroupKeyHolder, SealingPublicKey},
-    secret_holders::SecretSpendingKey,
+use integration_tests::{
+    private_authorized_init_identity, private_authorized_update_identity,
+    private_unauthorized_identity, GroupOwner,
 };
 use nssa::{
     execute_and_prove,
@@ -11,13 +11,12 @@ use nssa::{
     },
     program::Program,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
-    public_transaction, PrivateKey, PublicKey, PublicTransaction, SharedSecretKey, V03State,
+    public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    encryption::{EphemeralPublicKey, ViewingPublicKey},
-    Commitment, EncryptedAccountData, InputAccountIdentity, Nullifier, NullifierPublicKey,
-    NullifierSecretKey,
+    encryption::ViewingPublicKey,
+    Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey, NullifierSecretKey,
 };
 use stablecoin_core::{compute_position_pda, compute_position_vault_pda, Position};
 use token_core::{TokenDefinition, TokenHolding};
@@ -465,23 +464,9 @@ fn stablecoin_with_token_deps() -> ProgramWithDependencies {
     )
 }
 
-// Marvin-todo
-/// `OpenPosition` cannot execute through the privacy-preserving transaction type *at all* —
-/// confirmed here with every single account `Public` and zero private accounts involved. Root
-/// cause traced in `lee_core`'s `execution_state.rs`: `authorized_accounts` is a monotonic/sticky
-/// set — once an account is authorized via one chained call's `pda_seeds` match, every later
-/// occurrence of that same account must also declare `is_authorized: true`, or
-/// `assert_eq!(pre_is_authorized, is_authorized, "Inconsistent authorization for account {id}")`
-/// fails. `open_position.rs` issues two chained calls that both reuse `vault`: the first
-/// (`Token::InitializeAccount`) authorizes it via `pda_seeds`, sticking `vault` as authorized;
-/// the second (`Token::Transfer`) then deliberately constructs `post_init_vault` with
-/// `is_authorized: false` (a legitimate choice on the public-transaction path — "the recipient
-/// is already initialized, so no second PDA claim is needed" per that file's own comment) — but
-/// the privacy circuit rejects that as inconsistent. This is not a privacy-dimension gap; it
-/// blocks `OpenPosition` from ever being expressed as a `PrivacyPreservingTransaction`, so every
-/// other instruction that depends on having *opened* a position privately is affected too (see
-/// `stablecoin_group_owned_position_owner`, which routes around it by seeding the position/vault
-/// directly instead of calling `OpenPosition`).
+
+/// `OpenPosition` is blocked by the `privacy_preserving_circuit` due to the handling of
+/// sibling chain calls of (uninitialized) private accounts.
 #[test]
 fn stablecoin_open_position_via_privacy_transaction_is_not_expressible() {
     let mut state = V03State::new();
@@ -545,14 +530,7 @@ fn stablecoin_open_position_via_privacy_transaction_is_not_expressible() {
     );
 }
 
-// Marvin-todo
-/// `WithdrawCollateral` has only *one* chained call (`Token::Transfer`, reusing `vault` exactly
-/// once), unlike `OpenPosition`'s two — so it should avoid the authorization-consistency
-/// blocker confirmed above. Position/vault are seeded directly via `force_insert_account`
-/// (public accounts, no real `OpenPosition` call needed, and none is possible per the finding
-/// above). `withdraw_collateral.rs` hard-asserts `destination.account != Account::default()`,
-/// so `destination` must already exist — same `EXIST` shape as ATA's Transfer, requiring the
-/// destination's cooperation via `PrivateAuthorizedUpdate`.
+/// `WithdrawCollateral` to private account (`PrivateAuthorized`; `nsk` is known).
 #[test]
 fn stablecoin_withdraw_collateral_private_destination() {
     let mut state = V03State::new();
@@ -597,7 +575,6 @@ fn stablecoin_withdraw_collateral_private_destination() {
     state.force_insert_account(vault_id, vault_account);
 
     let destination_nsk = PrivateKeys::destination_nsk();
-    let destination_npk = PrivateKeys::destination_npk();
     let destination_vpk = PrivateKeys::destination_vpk();
     let destination_id = PrivateKeys::destination_id();
     let destination_initial_balance = 100_000_u128;
@@ -629,9 +606,6 @@ fn stablecoin_withdraw_collateral_private_destination() {
         amount: withdraw_amount,
     };
 
-    let shared_secret =
-        SharedSecretKey::encapsulate_deterministic(&destination_vpk, &[0u8; 32], 0).0;
-
     let (output, proof) = execute_and_prove(
         vec![owner_pre, position_pre, vault_pre, destination_pre],
         Program::serialize_instruction(instruction).unwrap(),
@@ -639,17 +613,12 @@ fn stablecoin_withdraw_collateral_private_destination() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            InputAccountIdentity::PrivateAuthorizedUpdate {
-                epk: EphemeralPublicKey(Vec::new()),
-                view_tag: EncryptedAccountData::compute_view_tag(
-                    &destination_npk,
-                    &destination_vpk,
-                ),
-                ssk: shared_secret,
-                nsk: destination_nsk,
+            private_authorized_update_identity(
+                destination_nsk,
+                &destination_vpk,
                 membership_proof,
-                identifier: 0,
-            },
+                0,
+            ),
         ],
         &stablecoin_with_token_deps(),
     )
@@ -703,12 +672,89 @@ fn stablecoin_withdraw_collateral_private_destination() {
         .is_some());
 }
 
-// Marvin-todo
-/// `GROUP` variance on `stablecoin_withdraw_collateral_private_destination`: the destination is
-/// group-owned instead of personal. The GMS is distributed through the real seal/unseal
-/// handshake (as in `token_group_owned_holding_shared_control_burn`); "Bob" — who only ever
-/// receives the sealed GMS — independently re-derives the shared destination's keys and
-/// supplies its `PrivateAuthorizedUpdate` cooperation to receive the withdrawn collateral.
+/// `WithdrawCollateral` blocks withdraws to private accounts (via private donations);
+/// `PrivateUnauthorized` account initialization (e.g., `nsk` is not known) is not permitted
+/// due to the assertion in `withdraw_collateral.rs` asserts `destination.account != Account::default()`
+#[test]
+fn stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible() {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+    state.force_insert_account(
+        Ids::collateral_definition(),
+        Accounts::collateral_definition_init(),
+    );
+
+    let owner_id = Ids::owner();
+    let position_id = compute_position_pda(
+        Ids::stablecoin_program(),
+        owner_id,
+        Ids::collateral_definition(),
+    );
+    let vault_id = compute_position_vault_pda(Ids::stablecoin_program(), position_id);
+
+    let position_collateral = 500_000_u128;
+    let withdraw_amount = 200_000_u128;
+
+    let position_account = Account {
+        program_owner: Ids::stablecoin_program(),
+        balance: 0,
+        data: Data::from(&Position {
+            collateral_vault_id: vault_id,
+            collateral_definition_id: Ids::collateral_definition(),
+            collateral_amount: position_collateral,
+            debt_amount: 0,
+        }),
+        nonce: Nonce(0),
+    };
+    let vault_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::collateral_definition(),
+            balance: position_collateral,
+        }),
+        nonce: Nonce(0),
+    };
+    state.force_insert_account(position_id, position_account);
+    state.force_insert_account(vault_id, vault_account);
+
+    let destination_npk = PrivateKeys::destination_npk();
+    let destination_vpk = PrivateKeys::destination_vpk();
+    let destination_id = PrivateKeys::destination_id();
+
+    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
+    let position_pre =
+        AccountWithMetadata::new(state.get_account_by_id(position_id), false, position_id);
+    let vault_pre = AccountWithMetadata::new(state.get_account_by_id(vault_id), false, vault_id);
+    let destination_pre = AccountWithMetadata::new(Account::default(), false, destination_id);
+
+    let instruction = stablecoin_core::Instruction::WithdrawCollateral {
+        amount: withdraw_amount,
+    };
+
+    let result = execute_and_prove(
+        vec![owner_pre, position_pre, vault_pre, destination_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_unauthorized_identity(destination_npk, &destination_vpk, 0),
+        ],
+        &stablecoin_with_token_deps(),
+    );
+
+    let err = result.expect_err(
+        "WithdrawCollateral must be rejected: destination is a brand-new (default) private \
+         account, but withdraw_collateral.rs requires the destination to already be initialized",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("Destination must be initialized"),
+        "expected the destination-must-be-initialized rejection, got a different error: {message}"
+    );
+}
+
 #[test]
 fn stablecoin_withdraw_collateral_group_owned_destination() {
     let mut state = V03State::new();
@@ -752,30 +798,12 @@ fn stablecoin_withdraw_collateral_group_owned_destination() {
     state.force_insert_account(position_id, position_account);
     state.force_insert_account(vault_id, vault_account);
 
-    // Alice creates the group and derives the shared destination's keys.
-    let alice_holder = GroupKeyHolder::new();
-    let derivation_seed = [7_u8; 32];
-    let alice_keys = alice_holder.derive_keys_for_shared_account(&derivation_seed);
-    let destination_npk = alice_keys.generate_nullifier_public_key();
-    let destination_vpk = alice_keys.generate_viewing_public_key();
-    let destination_id = AccountId::for_regular_private_account(&destination_npk, 0);
-
-    // Alice distributes the GMS to Bob via the real seal/unseal handshake.
-    let bob_sealing_keys = SecretSpendingKey([9_u8; 32]).produce_private_key_holder(None);
-    let bob_sealing_vpk = bob_sealing_keys.generate_viewing_public_key();
-    let bob_sealing_vsk = bob_sealing_keys.viewing_secret_key;
-    let sealed_gms = alice_holder.seal_for(&SealingPublicKey::from_bytes(
-        bob_sealing_vpk.to_bytes().to_vec(),
-    ));
-    let bob_holder =
-        GroupKeyHolder::unseal(&sealed_gms, &bob_sealing_vsk).expect("Bob must unseal the GMS");
-    let bob_keys = bob_holder.derive_keys_for_shared_account(&derivation_seed);
-    let bob_nsk = bob_keys.nullifier_secret_key;
-    assert_eq!(
-        bob_keys.generate_nullifier_public_key(),
-        destination_npk,
-        "Bob must derive the identical npk as Alice from the shared GMS"
-    );
+    // Alice creates the group and derives the shared destination's keys; Bob is admitted via
+    // the real seal/unseal handshake and independently re-derives the same keys.
+    let alice = GroupOwner::new([7_u8; 32]);
+    let bob_nsk = alice.admit_member();
+    let destination_vpk = alice.vpk;
+    let destination_id = alice.id;
 
     let destination_initial_balance = 100_000_u128;
     let destination_account = Account {
@@ -806,9 +834,6 @@ fn stablecoin_withdraw_collateral_group_owned_destination() {
         amount: withdraw_amount,
     };
 
-    let shared_secret =
-        SharedSecretKey::encapsulate_deterministic(&destination_vpk, &[0u8; 32], 0).0;
-
     let (output, proof) = execute_and_prove(
         vec![owner_pre, position_pre, vault_pre, destination_pre],
         Program::serialize_instruction(instruction).unwrap(),
@@ -816,17 +841,7 @@ fn stablecoin_withdraw_collateral_group_owned_destination() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            InputAccountIdentity::PrivateAuthorizedUpdate {
-                epk: EphemeralPublicKey(Vec::new()),
-                view_tag: EncryptedAccountData::compute_view_tag(
-                    &destination_npk,
-                    &destination_vpk,
-                ),
-                ssk: shared_secret,
-                nsk: bob_nsk,
-                membership_proof,
-                identifier: 0,
-            },
+            private_authorized_update_identity(bob_nsk, &destination_vpk, membership_proof, 0),
         ],
         &stablecoin_with_token_deps(),
     )
@@ -870,14 +885,6 @@ fn stablecoin_withdraw_collateral_group_owned_destination() {
         .is_some());
 }
 
-// Marvin-todo
-/// `user_stablecoin_holding` is private, burned via `RepayDebt`'s single chained `Token::Burn`.
-/// Unlike ATA's own holdings (structurally locked to public PDAs), Stablecoin's stablecoin
-/// holding is a regular user-controlled token holding with no PDA involved at all, so it's free
-/// to be private with no structural obstacle. Position/stablecoin-definition are seeded
-/// directly, matching the pre-existing public
-/// `stablecoin_repay_debt_burns_stablecoins_and_decreases_debt` test's fixture approach (no real
-/// `OpenPosition` call, consistent with the finding above).
 #[test]
 fn stablecoin_repay_debt_private_stablecoin_holding() {
     let mut state = V03State::new();
@@ -917,7 +924,6 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
     state.force_insert_account(position_id, position_account);
 
     let stablecoin_holding_nsk = PrivateKeys::stablecoin_holding_nsk();
-    let stablecoin_holding_npk = PrivateKeys::stablecoin_holding_npk();
     let stablecoin_holding_vpk = PrivateKeys::stablecoin_holding_vpk();
     let stablecoin_holding_id = PrivateKeys::stablecoin_holding_id();
     let initial_stablecoin_balance = Balances::user_stablecoin_holding_init();
@@ -959,9 +965,6 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
         amount: repay_amount,
     };
 
-    let shared_secret =
-        SharedSecretKey::encapsulate_deterministic(&stablecoin_holding_vpk, &[0u8; 32], 0).0;
-
     let (output, proof) = execute_and_prove(
         vec![
             owner_pre,
@@ -974,17 +977,12 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            InputAccountIdentity::PrivateAuthorizedUpdate {
-                epk: EphemeralPublicKey(Vec::new()),
-                view_tag: EncryptedAccountData::compute_view_tag(
-                    &stablecoin_holding_npk,
-                    &stablecoin_holding_vpk,
-                ),
-                ssk: shared_secret,
-                nsk: stablecoin_holding_nsk,
+            private_authorized_update_identity(
+                stablecoin_holding_nsk,
+                &stablecoin_holding_vpk,
                 membership_proof,
-                identifier: 0,
-            },
+                0,
+            ),
         ],
         &stablecoin_with_token_deps(),
     )
@@ -1041,11 +1039,6 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
         .is_some());
 }
 
-// Marvin-todo
-/// `GROUP` variance on `stablecoin_repay_debt_private_stablecoin_holding`: the stablecoin
-/// holding being burned from is group-owned instead of personal. Same real seal/unseal
-/// distribution as every other group test in this exercise; Bob independently re-derives the
-/// shared holding's keys and supplies `PrivateAuthorizedUpdate` cooperation for the burn.
 #[test]
 fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
     let mut state = V03State::new();
@@ -1084,30 +1077,12 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
     };
     state.force_insert_account(position_id, position_account);
 
-    // Alice creates the group and derives the shared stablecoin holding's keys.
-    let alice_holder = GroupKeyHolder::new();
-    let derivation_seed = [7_u8; 32];
-    let alice_keys = alice_holder.derive_keys_for_shared_account(&derivation_seed);
-    let holding_npk = alice_keys.generate_nullifier_public_key();
-    let holding_vpk = alice_keys.generate_viewing_public_key();
-    let holding_id = AccountId::for_regular_private_account(&holding_npk, 0);
-
-    // Alice distributes the GMS to Bob via the real seal/unseal handshake.
-    let bob_sealing_keys = SecretSpendingKey([9_u8; 32]).produce_private_key_holder(None);
-    let bob_sealing_vpk = bob_sealing_keys.generate_viewing_public_key();
-    let bob_sealing_vsk = bob_sealing_keys.viewing_secret_key;
-    let sealed_gms = alice_holder.seal_for(&SealingPublicKey::from_bytes(
-        bob_sealing_vpk.to_bytes().to_vec(),
-    ));
-    let bob_holder =
-        GroupKeyHolder::unseal(&sealed_gms, &bob_sealing_vsk).expect("Bob must unseal the GMS");
-    let bob_keys = bob_holder.derive_keys_for_shared_account(&derivation_seed);
-    let bob_nsk = bob_keys.nullifier_secret_key;
-    assert_eq!(
-        bob_keys.generate_nullifier_public_key(),
-        holding_npk,
-        "Bob must derive the identical npk as Alice from the shared GMS"
-    );
+    // Alice creates the group and derives the shared stablecoin holding's keys; Bob is
+    // admitted via the real seal/unseal handshake and independently re-derives the same keys.
+    let alice = GroupOwner::new([7_u8; 32]);
+    let bob_nsk = alice.admit_member();
+    let holding_vpk = alice.vpk;
+    let holding_id = alice.id;
 
     let initial_stablecoin_balance = Balances::user_stablecoin_holding_init();
     let holding_account = Account {
@@ -1141,8 +1116,6 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
         amount: repay_amount,
     };
 
-    let shared_secret = SharedSecretKey::encapsulate_deterministic(&holding_vpk, &[0u8; 32], 0).0;
-
     let (output, proof) = execute_and_prove(
         vec![owner_pre, position_pre, definition_pre, holding_pre],
         Program::serialize_instruction(instruction).unwrap(),
@@ -1150,14 +1123,7 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            InputAccountIdentity::PrivateAuthorizedUpdate {
-                epk: EphemeralPublicKey(Vec::new()),
-                view_tag: EncryptedAccountData::compute_view_tag(&holding_npk, &holding_vpk),
-                ssk: shared_secret,
-                nsk: bob_nsk,
-                membership_proof,
-                identifier: 0,
-            },
+            private_authorized_update_identity(bob_nsk, &holding_vpk, membership_proof, 0),
         ],
         &stablecoin_with_token_deps(),
     )
@@ -1198,18 +1164,6 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
         .is_some());
 }
 
-// Marvin-todo
-/// Reframes what "group-owned position" actually means, given the findings above: the
-/// *position/vault themselves* can never be private or group-owned (the `PDA` finding), and
-/// they can't even be opened through a privacy-preserving transaction at all (the
-/// authorization-consistency finding above). But `owner` is just an `AccountId` used for PDA
-/// seed derivation and signer verification — it doesn't need to be a plain public keypair. So
-/// the real, well-motivated test is: a group-derived `owner` identity controls a PDA-locked
-/// position, even though the position/vault stay public. Position/vault are seeded directly
-/// (bypassing the blocked `OpenPosition`); "Bob" — who only ever receives the sealed GMS —
-/// self-initializes *and* signs the owner identity in one transaction via `PrivateAuthorizedInit`
-/// (since this owner has never proven control before), then withdraws collateral through it.
-/// Directly mirrors `ata_group_owned_owner_signing`'s precedent for a PDA-locked resource.
 #[test]
 fn stablecoin_group_owned_position_owner() {
     let mut state = V03State::new();
@@ -1220,32 +1174,11 @@ fn stablecoin_group_owned_position_owner() {
     );
     state.force_insert_account(Ids::user_holding(), Accounts::user_holding_init());
 
-    // Alice creates the group and derives the shared owner identity's keys.
-    let alice_holder = GroupKeyHolder::new();
-    let derivation_seed = [7_u8; 32];
-    let alice_keys = alice_holder.derive_keys_for_shared_account(&derivation_seed);
-    let owner_npk = alice_keys.generate_nullifier_public_key();
-    let owner_id = AccountId::for_regular_private_account(&owner_npk, 0);
-
-    // Alice distributes the GMS to Bob via the real seal/unseal handshake.
-    let bob_sealing_keys = SecretSpendingKey([9_u8; 32]).produce_private_key_holder(None);
-    let bob_sealing_vpk = bob_sealing_keys.generate_viewing_public_key();
-    let bob_sealing_vsk = bob_sealing_keys.viewing_secret_key;
-    let sealed_gms = alice_holder.seal_for(&SealingPublicKey::from_bytes(
-        bob_sealing_vpk.to_bytes().to_vec(),
-    ));
-    let bob_holder =
-        GroupKeyHolder::unseal(&sealed_gms, &bob_sealing_vsk).expect("Bob must unseal the GMS");
-
-    // Bob independently re-derives the same shared owner keys.
-    let bob_keys = bob_holder.derive_keys_for_shared_account(&derivation_seed);
-    let bob_nsk = bob_keys.nullifier_secret_key;
-    let bob_vpk = bob_keys.generate_viewing_public_key();
-    assert_eq!(
-        bob_keys.generate_nullifier_public_key(),
-        owner_npk,
-        "Bob must derive the identical npk as Alice from the shared GMS"
-    );
+    // Alice creates the group and derives the shared owner identity's keys; Bob is admitted
+    // via the real seal/unseal handshake and independently re-derives the same keys.
+    let alice = GroupOwner::new([7_u8; 32]);
+    let bob_nsk = alice.admit_member();
+    let owner_id = alice.id;
 
     // Position/vault addresses are derived from the group-owned owner_id — still ordinary
     // public PDAs (the seed formula doesn't care whether owner_id is public or private), seeded
@@ -1296,19 +1229,11 @@ fn stablecoin_group_owned_position_owner() {
         amount: withdraw_amount,
     };
 
-    let shared_secret = SharedSecretKey::encapsulate_deterministic(&bob_vpk, &[0u8; 32], 0).0;
-
     let (output, proof) = execute_and_prove(
         vec![owner_pre, position_pre, vault_pre, destination_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
-            InputAccountIdentity::PrivateAuthorizedInit {
-                epk: EphemeralPublicKey(Vec::new()),
-                view_tag: EncryptedAccountData::compute_view_tag(&owner_npk, &bob_vpk),
-                ssk: shared_secret,
-                nsk: bob_nsk,
-                identifier: 0,
-            },
+            private_authorized_init_identity(bob_nsk, &alice.vpk, 0),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,

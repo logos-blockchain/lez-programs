@@ -472,6 +472,7 @@ vault) are `for_public_pda` only, per the ATA `PDA` finding.
 | RepayDebt | `CHAIN` | `stablecoin_repay_debt_private_stablecoin_holding` | Pass |
 | RepayDebt | `CHAIN` + `GROUP` | `stablecoin_repay_debt_group_owned_stablecoin_holding` | Pass |
 | WithdrawCollateral (owner identity) | `GROUP` | `stablecoin_group_owned_position_owner` | Pass |
+| WithdrawCollateral | new: destination must pre-exist | `stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible` | **Not-expressible — confirmed** |
 
 **Finding (`OpenPosition`, confirmed 2026-07-08 — the headline finding for this program, and
 arguably the whole exercise): `OpenPosition` cannot be executed through the privacy-preserving
@@ -531,6 +532,19 @@ via `PrivateAuthorizedInit`, then withdraws collateral through it. Passed on the
 This is the correct, expressible version of "joint control over a CDP": shared control of the
 *authority* over a PDA-locked resource, not shared privacy of the resource itself.
 
+**Finding (`stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`,
+confirmed 2026-07-09 — second, unrelated not-expressible result for this program):**
+`WithdrawCollateral` cannot pay out to a brand-new private destination. `withdraw_collateral.rs`
+hard-asserts `destination.account != Account::default()` before the chained `Token::Transfer` is
+even constructed — a plain host-side program precondition, unrelated to the `OpenPosition`
+authorization-bookkeeping bug above. It fires regardless of privacy: a brand-new *public*
+destination would be rejected identically. Confirmed by attempting `WithdrawCollateral` with a
+`PrivateUnauthorized` destination (fresh `Account::default()` pre-state, only `npk` known) and
+observing the exact `"Destination must be initialized"` panic surface as the circuit-execution
+error. Consequence: every `WithdrawCollateral` test in this phase necessarily uses
+`PrivateAuthorizedUpdate` (`nsk` known) for the destination — a pre-existing private destination
+is the *only* expressible shape, not a coverage choice.
+
 `ProtocolParameters` remains out of scope — not yet consumed by any instruction (no
 freeze/admin logic wired up), nothing to test.
 
@@ -542,13 +556,14 @@ freeze/admin logic wired up), nothing to test.
   `integration_tests/Cargo.toml` pinned to the same repo/tag as `nssa`/`nssa_core`. Unblocks the
   remaining `GROUP` rows in ATA/AMM/Stablecoin; each still needs its own program-specific test
   (PDA-based group ownership, not just the regular-account path proven for Token).
-- Build the shared privacy test kit in `integration_tests/src/lib.rs` — **partially done**
+- Build the shared privacy test kit in `integration_tests/src/lib.rs` — **mostly done**
   (2026-07-08): `private_unauthorized_identity`/`private_authorized_init_identity`/
   `private_authorized_update_identity` (build an `InputAccountIdentity` from just the key
-  material) and `setup_group_shared_account` (the Alice-creates/Bob-unseals GMS handshake) now
-  live there and are used throughout `token.rs`. `ata.rs`/`stablecoin.rs` still have their own
-  independent copies of the same patterns — not yet migrated, since that was out of scope for
-  the token.rs-focused cleanup pass. Revisit migrating them before/during AMM.
+  material) and `GroupOwner` (the Alice-creates/Bob-admitted GMS handshake, via `::new(seed)` +
+  `.admit_member()`) now live there and are used throughout `token.rs`, `stablecoin.rs` (fully
+  migrated), and the newer `ata.rs` group tests. Only the original `ata_group_owned_owner_signing`
+  still has its own independent inline copy — not yet migrated. Low priority; revisit
+  before/during AMM if it's still outstanding then.
 
 **Implementation technique worth carrying into AMM/Stablecoin (found 2026-07-07):** private
 account preconditions don't need a real proven transaction to set up. `V03State::with_private_accounts(impl IntoIterator<Item = (Commitment, Nullifier)>)`
@@ -571,4 +586,4 @@ heavier (chained calls, multiple accounts) than a single shield.
 | Token | 16 (3 pre-existing + 13 new: 12 pass + 1 confirmed not-expressible by design) — phase complete | 0 | 5 |
 | ATA | 8 (7 pass + 1 confirmed not-expressible — phase complete) | 0 | 0 |
 | AMM | 0 (2 rows now predicted not-expressible pending confirmation) | 10 | 5 |
-| Stablecoin | 6 (5 pass + 1 confirmed not-expressible — phase complete) | 0 | 1 |
+| Stablecoin | 7 (5 pass + 2 confirmed not-expressible — phase complete) | 0 | 1 |
