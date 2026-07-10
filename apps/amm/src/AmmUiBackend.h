@@ -1,28 +1,26 @@
 #ifndef AMM_UI_BACKEND_H
 #define AMM_UI_BACKEND_H
 
-#include <memory>
-#include <optional>
-
-#include <QHash>
+#include <QObject>
 #include <QString>
-#include <QVariantList>
+#include <QVariant>
 
 #include "rep_AmmUiBackend_source.h"
 
-#include "ActiveNetwork.h"
-#include "TokenDefinitionCache.h"
-#include "WalletAccountModel.h"
-#include "WalletIdlDecoder.h"
+#include "AccountModel.h"
 
 class LogosAPI;
-class LogosWalletProvider;
+struct LogosModules;
 class QNetworkAccessManager;
-class WalletController;
+class QTimer;
 
+// Source-side implementation of the AmmUiBackend .rep interface.
+// Inheriting from AmmUiBackendSimpleSource gives us the generated PROPs and
+// SLOTs from AmmUiBackend.rep — all the simple ones flow over QtRO. Talks to
+// the core logos_execution_zone wallet module via LogosModules.
 class AmmUiBackend : public AmmUiBackendSimpleSource {
     Q_OBJECT
-    Q_PROPERTY(WalletAccountModel* accountModel READ accountModel CONSTANT)
+    Q_PROPERTY(AccountModel* accountModel READ accountModel CONSTANT)
 
 public:
     explicit AmmUiBackend(LogosAPI* logosAPI = nullptr, QObject* parent = nullptr);
@@ -30,57 +28,59 @@ public:
     explicit AmmUiBackend(WalletProvider& wallet, QObject* parent = nullptr);
     ~AmmUiBackend() override;
 
-    WalletAccountModel* accountModel() const;
+    AccountModel* accountModel() const { return m_accountModel; }
 
 public slots:
+    // Overrides of the pure-virtual slots generated from the .rep.
     QString createAccountPublic() override;
     QString createAccountPrivate() override;
     void refreshAccounts() override;
     void refreshBalances() override;
     QString getBalance(QString accountIdHex, bool isPublic) override;
+    QVariant refreshNewPositionContext() override;
+    QVariant quoteNewPosition(QVariant request) override;
+    QVariant submitNewPosition(QVariant request, QString quoteHash) override;
+    // Return the new wallet's BIP39 mnemonic (empty string on failure) so the
+    // UI can force a one-time seed-phrase backup step.
     QString createNewDefault(QString password) override;
     QString createNew(QString configPath, QString storagePath, QString password) override;
     bool openExisting() override;
     void disconnectWallet() override;
-    bool setAccountAlias(QString accountId, QString alias) override;
-    bool setPrimaryAccount(QString accountId) override;
+    bool changeSequencerAddr(QString url) override;
+    void copyToClipboard(QString text) override;
 
 private:
-    struct TokenInfo {
-        QString id;
-        QString name;
-        QString programOwner;
-        QString status;
-    };
+    // Per-app wallet home (kept distinct from the wallet's canonical
+    // ~/.lee/wallet so standalone instances stay isolated; Basecamp sharing
+    // is handled by adopting an already-open shared wallet on startup).
+    static QString defaultWalletHome();
+    QString defaultConfigPath() const;
+    QString defaultStoragePath() const;
 
-    void syncWalletState();
-    void publishNetworkState();
-    void initialize();
-    void probeNetworkIdentity();
-    void refreshPortfolio();
-    TokenDefinitionCacheKey definitionCacheKey(
-        const ActiveNetworkSnapshot& network) const;
-    void invalidateDefinitionCache();
-    void applyDefinitions(quint64 generation,
-                          const TokenDefinitionCacheKey& key,
-                          const QVector<WalletAccountRead>& reads);
-    void applyWalletPortfolio(quint64 generation);
+    void persistConfigPath(const QString& path);
+    void persistStoragePath(const QString& path);
+    void openOrAdoptWallet();
+    // True when the shared core already has a wallet open — including a freshly
+    // created one with zero accounts. See the definition for why list_accounts()
+    // alone is insufficient.
+    bool sharedWalletIsOpen();
+    void refreshBlockHeights();
+    void refreshSequencerAddr();
+    void saveWallet();
+    QString activeAccountAddress() const;
+    QVariantMap buildNewPositionContext() const;
+    QVariantMap quoteNewPositionMap(const QVariantMap& request) const;
+
+    // Probe the configured sequencer over HTTP and update sequencerReachable.
+    void checkReachability();
+
+    AccountModel* m_accountModel;
 
     LogosAPI* m_logosAPI;
-    std::unique_ptr<LogosWalletProvider> m_ownedWallet;
-    WalletProvider* m_wallet;
-    TokenDefinitionCache m_definitionCache;
-    std::unique_ptr<WalletController> m_walletController;
-    QNetworkAccessManager* m_networkManager;
-    ActiveNetwork m_network;
-    QByteArray m_tokenIdl;
-    QByteArray m_ammIdl;
-    WalletIdlRegistry m_idlRegistry;
-    QVector<TokenInfo> m_tokens;
-    QString m_tokenProgramId;
-    std::optional<TokenDefinitionCacheKey> m_appliedDefinitionKey;
-    bool m_identityProbeInFlight = false;
-    quint64 m_portfolioGeneration = 0;
+    LogosModules* m_logos;
+
+    QNetworkAccessManager* m_net;
+    QTimer* m_reachabilityTimer;
 };
 
 #endif // AMM_UI_BACKEND_H

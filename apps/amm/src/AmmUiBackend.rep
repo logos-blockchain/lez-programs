@@ -38,6 +38,14 @@ class AmmUiBackend
     SLOT(bool setAccountAlias(QString accountId, QString alias))
     SLOT(bool setPrimaryAccount(QString accountId))
 
+    // New Position backend surface. QML calls these through logos.watch(...).
+    // The QVariant payloads are stable maps/lists so the UI never assembles AMM
+    // transactions or duplicates quote state.
+    PROP(QVariant newPositionContext READONLY)
+    SLOT(QVariant refreshNewPositionContext())
+    SLOT(QVariant quoteNewPosition(QVariant request))
+    SLOT(QVariant submitNewPosition(QVariant request, QString quoteHash))
+
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
     // fresh per-app wallet at walletHome with no path picking. createNew()
     // keeps explicit paths for an "advanced" flow. Both return the new wallet's

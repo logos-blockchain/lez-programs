@@ -2,13 +2,46 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import "../shared"
-import "../../state"
 
 Rectangle {
     id: root
 
-    required property NewPositionPrototypeBackend prototypeBackend
-
+    property var newPositionContext: ({})
+    property var quote: ({
+            "status": "error",
+            "error": "",
+            "poolStatus": "unavailable_pool",
+            "statusLabel": qsTr("Unavailable"),
+            "statusDetail": qsTr("Connect a wallet to preview this position."),
+            "instruction": "",
+            "storedFeeBps": 0,
+            "feeBps": root.selectedFeeBps,
+            "feeLabel": root.feeLabel(root.selectedFeeBps),
+            "quoteHash": "",
+            "pool": {
+                "id": "",
+                "priceText": "",
+                "reserveText": ""
+            },
+            "deposit": {
+                "maxA": root.amountValue(0, root.tokenA.symbol),
+                "maxB": root.amountValue(0, root.tokenB.symbol),
+                "actualA": root.amountValue(0, root.tokenA.symbol),
+                "actualB": root.amountValue(0, root.tokenB.symbol)
+            },
+            "lp": {
+                "expected": root.amountValue(0, "LP"),
+                "minimum": root.amountValue(0, "LP"),
+                "locked": root.amountValue(0, "LP")
+            },
+            "position": {
+                "userLp": "0 LP",
+                "share": "-",
+                "ownedA": root.formatTokenAmount(0, root.tokenA.symbol),
+                "ownedB": root.formatTokenAmount(0, root.tokenB.symbol)
+            },
+            "accountChanges": []
+        })
     property int selectedTokenAIndex: 0
     property int selectedTokenBIndex: 1
     property int selectedFeeBps: 30
@@ -19,6 +52,7 @@ Rectangle {
     property string initialPrice: "2500"
     property int depositScale: 1
     property string submitError: ""
+    property bool applyingQuote: false
 
     readonly property var emptyToken: ({
             "symbol": "",
@@ -26,20 +60,21 @@ Rectangle {
             "balanceText": "",
             "accent": "#343434"
         })
-    readonly property var holdings: root.prototypeBackend ? root.prototypeBackend.holdings : []
+    readonly property var holdings: root.newPositionContext && root.newPositionContext.holdings ? root.newPositionContext.holdings : []
+    readonly property var feeTiers: root.newPositionContext && root.newPositionContext.feeTiers ? root.newPositionContext.feeTiers : []
+    readonly property string activeAccount: root.newPositionContext && root.newPositionContext.activeAccountDisplay ? root.newPositionContext.activeAccountDisplay : qsTr("Not connected")
     readonly property var tokenA: root.holdings[root.selectedTokenAIndex] || root.emptyToken
     readonly property var tokenB: root.holdings[root.selectedTokenBIndex] || root.emptyToken
-    readonly property var poolContext: root.prototypeBackend.poolContext(root.tokenA.symbol, root.tokenB.symbol)
-    readonly property string poolStatus: root.poolContext.poolStatus
+    readonly property string poolStatus: root.quote.poolStatus || "unavailable_pool"
     readonly property bool activePool: root.poolStatus === "active_pool"
     readonly property bool missingPool: root.poolStatus === "missing_pool"
     readonly property int slippageBps: Math.round(root.slippageTolerancePercent * 100)
-    readonly property var quote: root.prototypeBackend.quoteNewPosition(root.buildRequest())
     readonly property bool canConfirm: root.quote.status === "ok"
     readonly property bool compact: root.width < 820
     readonly property bool hasActiveInput: root.amountA.length > 0 || root.amountB.length > 0
     readonly property bool showQuoteError: root.quote.status === "error" && (root.poolStatus === "unavailable_pool" || root.missingPool || root.hasActiveInput)
 
+    signal quoteRequested(var request)
     signal confirmationRequested(var snapshot)
 
     color: "#1B1B1B"
@@ -50,9 +85,15 @@ Rectangle {
 
     Component.onCompleted: root.afterPairChanged()
 
+    onNewPositionContextChanged: root.afterPairChanged()
     onSelectedTokenAIndexChanged: root.afterPairChanged()
     onSelectedTokenBIndexChanged: root.afterPairChanged()
     onPoolStatusChanged: root.normalizeFeeSelection()
+    onSelectedFeeBpsChanged: root.requestQuote()
+    onSlippageTolerancePercentChanged: root.requestQuote()
+    onInitialPriceChanged: root.requestQuote()
+    onDepositScaleChanged: root.requestQuote()
+    onQuoteChanged: root.applyQuoteSideEffects()
 
     ColumnLayout {
         id: content
@@ -84,7 +125,7 @@ Rectangle {
                     color: "#A9A098"
                     elide: Text.ElideRight
                     font.pixelSize: 12
-                    text: qsTr("Active account %1").arg(root.prototypeBackend.activeAccount)
+                    text: qsTr("Active account %1").arg(root.activeAccount)
 
                     Layout.fillWidth: true
                 }
@@ -215,7 +256,7 @@ Rectangle {
                             }
 
                             Repeater {
-                                model: root.prototypeBackend.holdings
+                                model: root.holdings
 
                                 delegate: Button {
                                     id: tokenAButton
@@ -298,7 +339,7 @@ Rectangle {
                             }
 
                             Repeater {
-                                model: root.prototypeBackend.holdings
+                                model: root.holdings
 
                                 delegate: Button {
                                     id: tokenBButton
@@ -385,7 +426,7 @@ Rectangle {
                         Layout.fillWidth: true
 
                         Repeater {
-                            model: root.prototypeBackend.feeTiers
+                            model: root.feeTiers
 
                             delegate: Rectangle {
                                 id: feeChip
@@ -830,7 +871,7 @@ Rectangle {
                             label: qsTr("Expected LP")
                             value: root.quote.lp.expected.display
                             estimated: true
-                            estimateHelp: qsTr("Prototype quote mirrors the future backend response shape.")
+                            estimateHelp: qsTr("Backend preview quote. Final submission rechecks the quote hash.")
 
                             Layout.fillWidth: true
                         }
@@ -1000,30 +1041,111 @@ Rectangle {
         return root.holdings.length > 0 ? (index + 1) % root.holdings.length : 0;
     }
 
+    function requestQuote() {
+        root.quoteRequested(root.buildRequest());
+    }
+
+    function parseAmount(value) {
+        const parsed = Number(String(value).replace(/,/g, ""));
+        return isFinite(parsed) && parsed > 0 ? parsed : 0;
+    }
+
+    function formatAmount(value) {
+        const amount = Math.max(0, Number(value) || 0);
+
+        if (amount >= 1000)
+            return amount.toFixed(2).replace(/\.00$/, "");
+
+        if (amount >= 1)
+            return amount.toFixed(4).replace(/0+$/, "").replace(/[.]$/, "");
+
+        return amount.toFixed(6).replace(/0+$/, "").replace(/[.]$/, "");
+    }
+
+    function formatTokenAmount(value, symbol) {
+        return qsTr("%1 %2").arg(root.formatAmount(value)).arg(symbol);
+    }
+
+    function amountValue(value, symbol) {
+        const amount = Math.max(0, Number(value) || 0);
+        return {
+            "value": amount,
+            "input": root.formatAmount(amount),
+            "display": root.formatTokenAmount(amount, symbol),
+            "symbol": symbol
+        };
+    }
+
+    function feeLabel(bps) {
+        if (bps === 1)
+            return "0.01%";
+        if (bps === 5)
+            return "0.05%";
+        if (bps === 30)
+            return "0.30%";
+        if (bps === 100)
+            return "1.00%";
+        return qsTr("%1 bps").arg(bps);
+    }
+
+    function activeRatio(symbolA, symbolB) {
+        if (symbolA === "USDC" && symbolB === "LOGOS")
+            return 8;
+
+        if (symbolA === "LOGOS" && symbolB === "USDC")
+            return 0.125;
+
+        return 1;
+    }
+
+    function defaultInitialPrice(symbolA, symbolB) {
+        if (symbolA === "USDC" && symbolB === "WETH")
+            return 2500;
+
+        if (symbolA === "WETH" && symbolB === "USDC")
+            return 0.0004;
+
+        return 1;
+    }
+
     function afterPairChanged() {
+        if (root.holdings.length < 2) {
+            root.selectedTokenAIndex = 0;
+            root.selectedTokenBIndex = 0;
+            root.submitError = "";
+            root.requestQuote();
+            return;
+        }
+
+        if (root.selectedTokenAIndex >= root.holdings.length)
+            root.selectedTokenAIndex = 0;
+        if (root.selectedTokenBIndex >= root.holdings.length)
+            root.selectedTokenBIndex = root.nextTokenIndex(root.selectedTokenAIndex);
+
         if (root.selectedTokenAIndex === root.selectedTokenBIndex)
             root.selectedTokenBIndex = root.nextTokenIndex(root.selectedTokenAIndex);
 
-        if (root.tokenA.symbol.length === 0 || root.tokenB.symbol.length === 0)
+        if (root.tokenA.symbol.length === 0 || root.tokenB.symbol.length === 0) {
+            root.requestQuote();
             return;
+        }
 
         root.submitError = "";
         root.amountA = "";
         root.amountB = "";
         root.editedSide = "A";
-        root.initialPrice = root.prototypeBackend.formatAmount(root.prototypeBackend.defaultInitialPrice(root.tokenA.symbol, root.tokenB.symbol));
+        root.initialPrice = root.formatAmount(root.defaultInitialPrice(root.tokenA.symbol, root.tokenB.symbol));
         root.depositScale = 1;
         root.normalizeFeeSelection();
+        root.requestQuote();
     }
 
     function normalizeFeeSelection() {
         if (root.tokenA.symbol.length === 0 || root.tokenB.symbol.length === 0)
             return;
 
-        const context = root.prototypeBackend.poolContext(root.tokenA.symbol, root.tokenB.symbol);
-
-        if (context.poolStatus === "active_pool") {
-            root.selectedFeeBps = context.storedFeeBps;
+        if (root.poolStatus === "active_pool" && root.quote.storedFeeBps > 0) {
+            root.selectedFeeBps = root.quote.storedFeeBps;
             return;
         }
 
@@ -1040,8 +1162,8 @@ Rectangle {
         if (!tier.supported)
             return qsTr("Unsupported by the AMM program. Valid fee tiers are 0.01%, 0.05%, 0.30%, and 1.00%.");
 
-        if (root.poolStatus === "active_pool" && tier.bps !== root.poolContext.storedFeeBps)
-            return qsTr("Existing pool uses %1. Fee tier is fixed by pool configuration.").arg(root.prototypeBackend.feeLabel(root.poolContext.storedFeeBps));
+        if (root.poolStatus === "active_pool" && tier.bps !== root.quote.storedFeeBps)
+            return qsTr("Existing pool uses %1. Fee tier is fixed by pool configuration.").arg(root.feeLabel(root.quote.storedFeeBps));
 
         if (root.poolStatus === "unavailable_pool")
             return qsTr("Fee selection is disabled until this pair can be quoted.");
@@ -1058,30 +1180,31 @@ Rectangle {
         else
             root.amountB = value;
 
-        root.syncActiveCounterpart();
+        root.requestQuote();
     }
 
-    function syncActiveCounterpart() {
-        const nextQuote = root.prototypeBackend.quoteNewPosition(root.buildRequest());
-
-        if (nextQuote.status !== "ok" || nextQuote.poolStatus !== "active_pool")
+    function applyQuoteSideEffects() {
+        root.normalizeFeeSelection();
+        if (root.quote.status !== "ok" || root.quote.poolStatus !== "active_pool")
             return;
 
+        root.applyingQuote = true;
         if (root.editedSide === "A")
-            root.amountB = nextQuote.deposit.maxB.input;
+            root.amountB = root.quote.deposit.maxB.input;
         else
-            root.amountA = nextQuote.deposit.maxA.input;
+            root.amountA = root.quote.deposit.maxA.input;
+        root.applyingQuote = false;
     }
 
     function useMaxActive(side) {
-        const ratio = root.prototypeBackend.activeRatio(root.tokenA.symbol, root.tokenB.symbol);
+        const ratio = root.activeRatio(root.tokenA.symbol, root.tokenB.symbol);
         const maxA = Math.min(root.tokenA.balance, root.tokenB.balance / ratio);
         const maxB = Math.min(root.tokenB.balance, root.tokenA.balance * ratio);
 
         if (side === "A")
-            root.editActiveAmount("A", root.prototypeBackend.formatAmount(maxA));
+            root.editActiveAmount("A", root.formatAmount(maxA));
         else
-            root.editActiveAmount("B", root.prototypeBackend.formatAmount(maxB));
+            root.editActiveAmount("B", root.formatAmount(maxB));
     }
 
     function setSubmitError(message) {

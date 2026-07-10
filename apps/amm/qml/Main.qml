@@ -87,6 +87,7 @@ Item {
 
         LiquidityPage {
             anchors.fill: parent
+            backend: root.ready ? root.backend : null
             visible: navbar.currentIndex === 1
         }
 
