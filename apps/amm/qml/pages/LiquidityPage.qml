@@ -8,9 +8,12 @@ Item {
 
     property var backend: null
     property var newPositionContext: ({})
-    property var newPositionQuote: ({})
+    property var newPositionQuote: root.errorQuote(qsTr("Wallet backend is unavailable."), root.currentRequest())
     property int quoteSerial: 0
     property bool formReady: false
+    property bool contextLoading: false
+    property bool quoteLoading: false
+    property bool submitting: false
 
     readonly property int pageMargin: 16
     readonly property int preferredCardWidth: 960
@@ -53,7 +56,10 @@ Item {
             id: newPositionForm
 
             newPositionContext: root.newPositionContext
-            quote: root.newPositionQuote
+            quotePayload: root.newPositionQuote
+            contextLoading: root.contextLoading
+            quoteLoading: root.quoteLoading
+            submitting: root.submitting
             width: Math.max(0, Math.min(scroll.width - root.pageMargin * 2, root.preferredCardWidth))
             x: Math.max(root.pageMargin, (scroll.width - width) / 2)
             y: root.pageCardY
@@ -90,6 +96,7 @@ Item {
         id: confirmationDialog
 
         anchors.fill: parent
+        busy: root.submitting
 
         onConfirmed: function (snapshot) {
             root.confirmNewPosition(snapshot);
@@ -97,28 +104,42 @@ Item {
     }
 
     function confirmNewPosition(snapshot) {
+        if (root.submitting)
+            return;
+
+        root.submitting = true;
+        confirmationDialog.errorText = "";
+        newPositionForm.setSubmitError("");
+
         if (!root.backend || typeof logos === "undefined") {
-            newPositionForm.setSubmitError(qsTr("Wallet backend is unavailable."));
+            root.submitting = false;
+            root.showSubmitError(qsTr("Wallet backend is unavailable."));
             return;
         }
 
         logos.watch(root.backend.submitNewPosition(snapshot.request, snapshot.quoteHash),
             function(result) {
+                root.submitting = false;
                 if (result.status !== "ok") {
-                    newPositionForm.setSubmitError(result.error);
+                    root.showSubmitError(result.error);
                     return;
                 }
 
+                confirmationDialog.closeAfterSuccess();
                 newPositionForm.resetAfterSubmit();
                 successToast.show(result.message, result.detail);
             },
             function(error) {
-                newPositionForm.setSubmitError(qsTr("Error submitting position: %1").arg(error));
+                root.submitting = false;
+                root.showSubmitError(qsTr("Error submitting position: %1").arg(error));
             });
     }
 
     function refreshNewPositionContext() {
+        root.contextLoading = true;
+
         if (!root.backend || typeof logos === "undefined") {
+            root.contextLoading = false;
             root.newPositionContext = {
                 "activeAccountDisplay": qsTr("Not connected"),
                 "holdings": [],
@@ -130,16 +151,21 @@ Item {
 
         logos.watch(root.backend.refreshNewPositionContext(),
             function(context) {
+                root.contextLoading = false;
                 root.newPositionContext = context;
                 root.requestQuote(root.currentRequest());
             },
             function(error) {
+                root.contextLoading = false;
                 root.newPositionQuote = root.errorQuote(qsTr("Error loading position context: %1").arg(error), root.currentRequest());
             });
     }
 
     function requestQuote(request) {
+        root.quoteLoading = true;
+
         if (!root.backend || typeof logos === "undefined") {
+            root.quoteLoading = false;
             root.newPositionQuote = root.errorQuote(qsTr("Wallet backend is unavailable."), request);
             return;
         }
@@ -147,13 +173,23 @@ Item {
         const serial = ++root.quoteSerial;
         logos.watch(root.backend.quoteNewPosition(request),
             function(quote) {
-                if (serial === root.quoteSerial)
+                if (serial === root.quoteSerial) {
+                    root.quoteLoading = false;
                     root.newPositionQuote = quote;
+                }
             },
             function(error) {
-                if (serial === root.quoteSerial)
+                if (serial === root.quoteSerial) {
+                    root.quoteLoading = false;
                     root.newPositionQuote = root.errorQuote(qsTr("Error loading quote: %1").arg(error), request);
+                }
             });
+    }
+
+    function showSubmitError(message) {
+        const text = message && message.length > 0 ? message : qsTr("Position submission failed.");
+        confirmationDialog.errorText = text;
+        newPositionForm.setSubmitError(text);
     }
 
     function amountValue(symbol) {

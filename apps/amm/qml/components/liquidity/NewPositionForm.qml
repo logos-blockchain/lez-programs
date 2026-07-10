@@ -7,41 +7,10 @@ Rectangle {
     id: root
 
     property var newPositionContext: ({})
-    property var quote: ({
-            "status": "error",
-            "error": "",
-            "poolStatus": "unavailable_pool",
-            "statusLabel": qsTr("Unavailable"),
-            "statusDetail": qsTr("Connect a wallet to preview this position."),
-            "instruction": "",
-            "storedFeeBps": 0,
-            "feeBps": root.selectedFeeBps,
-            "feeLabel": root.feeLabel(root.selectedFeeBps),
-            "quoteHash": "",
-            "pool": {
-                "id": "",
-                "priceText": "",
-                "reserveText": ""
-            },
-            "deposit": {
-                "maxA": root.amountValue(0, root.tokenA.symbol),
-                "maxB": root.amountValue(0, root.tokenB.symbol),
-                "actualA": root.amountValue(0, root.tokenA.symbol),
-                "actualB": root.amountValue(0, root.tokenB.symbol)
-            },
-            "lp": {
-                "expected": root.amountValue(0, "LP"),
-                "minimum": root.amountValue(0, "LP"),
-                "locked": root.amountValue(0, "LP")
-            },
-            "position": {
-                "userLp": "0 LP",
-                "share": "-",
-                "ownedA": root.formatTokenAmount(0, root.tokenA.symbol),
-                "ownedB": root.formatTokenAmount(0, root.tokenB.symbol)
-            },
-            "accountChanges": []
-        })
+    property var quotePayload: ({})
+    property bool contextLoading: false
+    property bool quoteLoading: false
+    property bool submitting: false
     property int selectedTokenAIndex: 0
     property int selectedTokenBIndex: 1
     property int selectedFeeBps: 30
@@ -52,7 +21,6 @@ Rectangle {
     property string initialPrice: "2500"
     property int depositScale: 1
     property string submitError: ""
-    property bool applyingQuote: false
 
     readonly property var emptyToken: ({
             "symbol": "",
@@ -65,14 +33,15 @@ Rectangle {
     readonly property string activeAccount: root.newPositionContext && root.newPositionContext.activeAccountDisplay ? root.newPositionContext.activeAccountDisplay : qsTr("Not connected")
     readonly property var tokenA: root.holdings[root.selectedTokenAIndex] || root.emptyToken
     readonly property var tokenB: root.holdings[root.selectedTokenBIndex] || root.emptyToken
+    readonly property var quote: root.completeQuote(root.quotePayload)
     readonly property string poolStatus: root.quote.poolStatus || "unavailable_pool"
     readonly property bool activePool: root.poolStatus === "active_pool"
     readonly property bool missingPool: root.poolStatus === "missing_pool"
     readonly property int slippageBps: Math.round(root.slippageTolerancePercent * 100)
-    readonly property bool canConfirm: root.quote.status === "ok"
+    readonly property bool canConfirm: !root.contextLoading && !root.quoteLoading && !root.submitting && root.quote.status === "ok"
     readonly property bool compact: root.width < 820
     readonly property bool hasActiveInput: root.amountA.length > 0 || root.amountB.length > 0
-    readonly property bool showQuoteError: root.quote.status === "error" && (root.poolStatus === "unavailable_pool" || root.missingPool || root.hasActiveInput)
+    readonly property bool showQuoteError: !root.quoteLoading && root.quote.status === "error" && (root.poolStatus === "unavailable_pool" || root.missingPool || root.hasActiveInput)
 
     signal quoteRequested(var request)
     signal confirmationRequested(var snapshot)
@@ -266,7 +235,7 @@ Rectangle {
                                     readonly property bool duplicate: root.selectedTokenBIndex === index
 
                                     activeFocusOnTab: true
-                                    enabled: !duplicate
+                                    enabled: !duplicate && !root.contextLoading && !root.submitting
                                     focusPolicy: Qt.StrongFocus
                                     hoverEnabled: true
                                     text: holding.symbol
@@ -349,7 +318,7 @@ Rectangle {
                                     readonly property bool duplicate: root.selectedTokenAIndex === index
 
                                     activeFocusOnTab: true
-                                    enabled: !duplicate
+                                    enabled: !duplicate && !root.contextLoading && !root.submitting
                                     focusPolicy: Qt.StrongFocus
                                     hoverEnabled: true
                                     text: holding.symbol
@@ -410,6 +379,17 @@ Rectangle {
                     }
 
                     Text {
+                        color: "#A9A098"
+                        font.pixelSize: 12
+                        lineHeight: 1.2
+                        text: root.contextLoading ? qsTr("Loading wallet holdings.") : root.newPositionContext.statusDetail || qsTr("Connect a wallet to load token holdings.")
+                        visible: root.holdings.length === 0 || root.contextLoading
+                        wrapMode: Text.WordWrap
+
+                        Layout.fillWidth: true
+                    }
+
+                    Text {
                         color: "#E7E1D8"
                         font.bold: true
                         font.pixelSize: 14
@@ -436,7 +416,7 @@ Rectangle {
                                 readonly property bool chipEnabled: disabledReason.length === 0
                                 readonly property bool selected: root.selectedFeeBps === tier.bps
 
-                                activeFocusOnTab: chipEnabled
+                                activeFocusOnTab: chipEnabled && !root.submitting
                                 color: selected ? "#211914" : feeMouse.containsMouse && chipEnabled ? "#202020" : "#101010"
                                 radius: 6
                                 border.color: selected || activeFocus ? "#F26A21" : chipEnabled ? "#343434" : "#2A2A2A"
@@ -451,11 +431,11 @@ Rectangle {
                                 Layout.minimumHeight: 42
 
                                 Keys.onSpacePressed: {
-                                    if (chipEnabled)
+                                    if (chipEnabled && !root.submitting)
                                         root.selectFeeTier(tier.bps);
                                 }
                                 Keys.onReturnPressed: {
-                                    if (chipEnabled)
+                                    if (chipEnabled && !root.submitting)
                                         root.selectFeeTier(tier.bps);
                                 }
 
@@ -471,11 +451,11 @@ Rectangle {
                                     id: feeMouse
 
                                     anchors.fill: parent
-                                    cursorShape: feeChip.chipEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                    cursorShape: feeChip.chipEnabled && !root.submitting ? Qt.PointingHandCursor : Qt.ArrowCursor
                                     hoverEnabled: true
 
                                     onClicked: {
-                                        if (feeChip.chipEnabled) {
+                                        if (feeChip.chipEnabled && !root.submitting) {
                                             feeChip.forceActiveFocus();
                                             root.selectFeeTier(feeChip.tier.bps);
                                         }
@@ -763,7 +743,7 @@ Rectangle {
                         enabled: root.canConfirm
                         focusPolicy: Qt.StrongFocus
                         hoverEnabled: true
-                        text: root.canConfirm ? qsTr("Preview and confirm") : qsTr("Preview unavailable")
+                        text: root.submitting ? qsTr("Submitting") : root.quoteLoading ? qsTr("Updating preview") : root.canConfirm ? qsTr("Preview and confirm") : qsTr("Preview unavailable")
 
                         Accessible.name: confirmButton.text
 
@@ -824,11 +804,11 @@ Rectangle {
                     }
 
                     Text {
-                        color: root.quote.status === "ok" ? "#8FD6A4" : "#F08A76"
+                        color: root.quoteLoading ? "#F2B366" : root.quote.status === "ok" ? "#8FD6A4" : "#F08A76"
                         font.bold: true
                         font.pixelSize: 11
                         horizontalAlignment: Text.AlignRight
-                        text: root.quote.status === "ok" ? qsTr("Ready") : qsTr("Needs input")
+                        text: root.quoteLoading ? qsTr("Updating") : root.quote.status === "ok" ? qsTr("Ready") : qsTr("Needs input")
 
                         Layout.maximumWidth: 120
                     }
@@ -1045,11 +1025,6 @@ Rectangle {
         root.quoteRequested(root.buildRequest());
     }
 
-    function parseAmount(value) {
-        const parsed = Number(String(value).replace(/,/g, ""));
-        return isFinite(parsed) && parsed > 0 ? parsed : 0;
-    }
-
     function formatAmount(value) {
         const amount = Math.max(0, Number(value) || 0);
 
@@ -1073,6 +1048,64 @@ Rectangle {
             "input": root.formatAmount(amount),
             "display": root.formatTokenAmount(amount, symbol),
             "symbol": symbol
+        };
+    }
+
+    function completeAmount(payload, symbol) {
+        const value = payload || root.amountValue(0, symbol);
+        const amount = Math.max(0, Number(value.value) || 0);
+        const input = value.input || root.formatAmount(amount);
+        return {
+            "value": amount,
+            "input": input,
+            "display": value.display || root.formatTokenAmount(amount, symbol),
+            "symbol": value.symbol || symbol
+        };
+    }
+
+    function completeQuote(payload) {
+        const quote = payload || {};
+        const pool = quote.pool || {};
+        const deposit = quote.deposit || {};
+        const lp = quote.lp || {};
+        const position = quote.position || {};
+        const tokenA = root.tokenA.symbol;
+        const tokenB = root.tokenB.symbol;
+
+        return {
+            "status": quote.status || "error",
+            "error": quote.error || "",
+            "poolStatus": quote.poolStatus || "unavailable_pool",
+            "statusLabel": quote.statusLabel || qsTr("Unavailable"),
+            "statusDetail": quote.statusDetail || quote.error || qsTr("Connect a wallet to preview this position."),
+            "instruction": quote.instruction || "",
+            "storedFeeBps": quote.storedFeeBps || 0,
+            "feeBps": quote.feeBps || root.selectedFeeBps,
+            "feeLabel": quote.feeLabel || root.feeLabel(root.selectedFeeBps),
+            "quoteHash": quote.quoteHash || "",
+            "pool": {
+                "id": pool.id || "",
+                "priceText": pool.priceText || "",
+                "reserveText": pool.reserveText || ""
+            },
+            "deposit": {
+                "maxA": root.completeAmount(deposit.maxA, tokenA),
+                "maxB": root.completeAmount(deposit.maxB, tokenB),
+                "actualA": root.completeAmount(deposit.actualA, tokenA),
+                "actualB": root.completeAmount(deposit.actualB, tokenB)
+            },
+            "lp": {
+                "expected": root.completeAmount(lp.expected, "LP"),
+                "minimum": root.completeAmount(lp.minimum, "LP"),
+                "locked": root.completeAmount(lp.locked, "LP")
+            },
+            "position": {
+                "userLp": position.userLp || "0 LP",
+                "share": position.share || "-",
+                "ownedA": position.ownedA || root.formatTokenAmount(0, tokenA),
+                "ownedB": position.ownedB || root.formatTokenAmount(0, tokenB)
+            },
+            "accountChanges": quote.accountChanges || []
         };
     }
 
@@ -1188,12 +1221,10 @@ Rectangle {
         if (root.quote.status !== "ok" || root.quote.poolStatus !== "active_pool")
             return;
 
-        root.applyingQuote = true;
         if (root.editedSide === "A")
             root.amountB = root.quote.deposit.maxB.input;
         else
             root.amountA = root.quote.deposit.maxA.input;
-        root.applyingQuote = false;
     }
 
     function useMaxActive(side) {

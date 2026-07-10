@@ -7,6 +7,8 @@ FocusScope {
 
     property var snapshot: ({})
     property bool open: false
+    property bool busy: false
+    property string errorText: ""
 
     signal canceled
     signal confirmed(var snapshot)
@@ -18,20 +20,28 @@ FocusScope {
 
     function openWithSnapshot(nextSnapshot) {
         root.snapshot = nextSnapshot;
+        root.errorText = "";
         root.open = true;
         root.forceActiveFocus();
         cancelButton.forceActiveFocus();
     }
 
     function cancel() {
+        if (root.busy)
+            return;
         root.open = false;
         root.canceled();
     }
 
     function confirm() {
-        const confirmedSnapshot = root.snapshot;
+        if (root.busy)
+            return;
+        root.errorText = "";
+        root.confirmed(root.snapshot);
+    }
+
+    function closeAfterSuccess() {
         root.open = false;
-        root.confirmed(confirmedSnapshot);
     }
 
     Rectangle {
@@ -154,6 +164,29 @@ FocusScope {
                 Layout.fillWidth: true
             }
 
+            Rectangle {
+                color: "#211914"
+                radius: 8
+                border.color: "#49301F"
+                border.width: 1
+                visible: root.errorText.length > 0
+
+                Layout.fillWidth: true
+                Layout.preferredHeight: visible ? submitError.implicitHeight + 20 : 0
+
+                Text {
+                    id: submitError
+
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    color: "#F08A76"
+                    font.pixelSize: 12
+                    lineHeight: 1.2
+                    text: root.errorText
+                    wrapMode: Text.WordWrap
+                }
+            }
+
             RowLayout {
                 spacing: 8
 
@@ -163,6 +196,7 @@ FocusScope {
                     id: cancelButton
 
                     activeFocusOnTab: true
+                    enabled: !root.busy
                     focusPolicy: Qt.StrongFocus
                     hoverEnabled: true
                     text: qsTr("Cancel")
@@ -196,9 +230,10 @@ FocusScope {
                     id: confirmButton
 
                     activeFocusOnTab: true
+                    enabled: !root.busy
                     focusPolicy: Qt.StrongFocus
                     hoverEnabled: true
-                    text: qsTr("Submit")
+                    text: root.busy ? qsTr("Submitting") : qsTr("Submit")
 
                     Accessible.name: confirmButton.text
 
@@ -208,7 +243,7 @@ FocusScope {
                     onClicked: root.confirm()
 
                     contentItem: Text {
-                        color: "#151515"
+                        color: confirmButton.enabled ? "#151515" : "#7D756E"
                         elide: Text.ElideRight
                         font.bold: true
                         font.pixelSize: 13
@@ -218,9 +253,9 @@ FocusScope {
                     }
 
                     background: Rectangle {
-                        border.color: "#F26A21"
+                        border.color: confirmButton.enabled ? "#F26A21" : "#343434"
                         border.width: 1
-                        color: confirmButton.pressed ? "#D95C1E" : confirmButton.hovered || confirmButton.activeFocus ? "#FF8A3D" : "#F26A21"
+                        color: confirmButton.enabled ? confirmButton.pressed ? "#D95C1E" : confirmButton.hovered || confirmButton.activeFocus ? "#FF8A3D" : "#F26A21" : "#181818"
                         radius: 6
                     }
                 }
