@@ -127,6 +127,11 @@ core module from `result-core/` and the UI plugin from `result-lgx/`:
 4. Choose the core module `.lgx` from `result-core/`, then the UI plugin `.lgx`
    from `result-lgx/`
 
+## Validation
+
+New Position validation commands and acceptance criteria live in
+[VALIDATION.md](VALIDATION.md).
+
 ## Updating Dependencies
 
 To update the pinned versions of dependencies in `flake.lock`:

@@ -35,6 +35,10 @@ namespace {
     // Wallet home env override. Mirrors LEZ's own var so the app shares the
     // canonical wallet (~/.lee/wallet) used by the wallet UI and other apps.
     const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
+    constexpr double MINIMUM_LIQUIDITY = 1000.0;
+    constexpr double ACTIVE_POOL_USDC_RESERVE = 1'250'000.0;
+    constexpr double ACTIVE_POOL_LOGOS_RESERVE = 10'000'000.0;
+    constexpr double ACTIVE_POOL_LP_SUPPLY = 6'875'000.0;
 
     // Normalise file:// URLs and OS paths to a plain local path.
     QString toLocalPath(const QString& path) {
@@ -126,11 +130,11 @@ namespace {
     double devnetBalance(const QString& symbol)
     {
         if (symbol == QStringLiteral("USDC"))
-            return 12450.0;
+            return 125000.0;
         if (symbol == QStringLiteral("LOGOS"))
             return 850000.0;
         if (symbol == QStringLiteral("WETH"))
-            return 3.25;
+            return 100.0;
         return 0.0;
     }
 
@@ -193,10 +197,19 @@ namespace {
     double activeRatio(const QString& symbolA, const QString& symbolB)
     {
         if (symbolA == QStringLiteral("USDC") && symbolB == QStringLiteral("LOGOS"))
-            return 8.0;
+            return ACTIVE_POOL_LOGOS_RESERVE / ACTIVE_POOL_USDC_RESERVE;
         if (symbolA == QStringLiteral("LOGOS") && symbolB == QStringLiteral("USDC"))
-            return 0.125;
+            return ACTIVE_POOL_USDC_RESERVE / ACTIVE_POOL_LOGOS_RESERVE;
         return 1.0;
+    }
+
+    double activePoolReserve(const QString& symbol)
+    {
+        if (symbol == QStringLiteral("USDC"))
+            return ACTIVE_POOL_USDC_RESERVE;
+        if (symbol == QStringLiteral("LOGOS"))
+            return ACTIVE_POOL_LOGOS_RESERVE;
+        return 0.0;
     }
 
     double defaultInitialPrice(const QString& symbolA, const QString& symbolB)
@@ -309,14 +322,20 @@ namespace {
         changes.append(accountChange(QStringLiteral("Vault B"),
                                      stableId(QStringLiteral("devnet:vault:%1:%2").arg(poolId, tokenB)),
                                      missingPool ? QStringLiteral("Update or create") : QStringLiteral("Update")));
+        changes.append(accountChange(QStringLiteral("LP definition"),
+                                     stableId(QStringLiteral("devnet:lp-definition:%1").arg(poolId)),
+                                     missingPool ? QStringLiteral("Create") : QStringLiteral("Update")));
         if (missingPool) {
-            changes.append(accountChange(QStringLiteral("LP definition"),
-                                         stableId(QStringLiteral("devnet:lp-definition:%1").arg(poolId)),
-                                         QStringLiteral("Create")));
             changes.append(accountChange(QStringLiteral("LP lock holding"),
                                          stableId(QStringLiteral("devnet:lp-lock:%1").arg(poolId)),
                                          QStringLiteral("Create")));
         }
+        changes.append(accountChange(QStringLiteral("User holding A"),
+                                     stableId(QStringLiteral("devnet:user-holding:%1").arg(tokenA)),
+                                     QStringLiteral("Update")));
+        changes.append(accountChange(QStringLiteral("User holding B"),
+                                     stableId(QStringLiteral("devnet:user-holding:%1").arg(tokenB)),
+                                     QStringLiteral("Update")));
         changes.append(accountChange(QStringLiteral("User LP holding"),
                                      stableId(QStringLiteral("devnet:user-lp:%1").arg(poolId)),
                                      QStringLiteral("Update or create")));
@@ -783,7 +802,7 @@ QString AmmUiBackend::activeAccountAddress() const
 QVariantMap AmmUiBackend::buildNewPositionContext() const
 {
     QVariantMap context;
-    context.insert(QStringLiteral("minimumLiquidity"), 1000.0);
+    context.insert(QStringLiteral("minimumLiquidity"), MINIMUM_LIQUIDITY);
     context.insert(QStringLiteral("feeTiers"), feeTiers());
 
     QVariantMap network;
@@ -875,7 +894,11 @@ QVariantMap AmmUiBackend::quoteNewPositionMap(const QVariantMap& request) const
         const double ratio = activeRatio(tokenA, tokenB);
         const double amountA = editA ? inputA : inputB / ratio;
         const double amountB = editA ? inputA * ratio : inputB;
-        const double expectedLp = std::floor(std::min(amountA * 5.5, amountB * 0.69));
+        const double reserveA = activePoolReserve(tokenA);
+        const double reserveB = activePoolReserve(tokenB);
+        const double expectedLp = std::floor(std::min(
+            ACTIVE_POOL_LP_SUPPLY * amountA / reserveA,
+            ACTIVE_POOL_LP_SUPPLY * amountB / reserveB));
         const double minimumLp = std::floor(expectedLp * (10000 - slippageBps) / 10000.0);
 
         if (inputA <= 0.0 && inputB <= 0.0)
@@ -900,11 +923,17 @@ QVariantMap AmmUiBackend::quoteNewPositionMap(const QVariantMap& request) const
             parsePositiveAmount(request.value(QStringLiteral("initialPrice")).toString()) > 0.0
                 ? parsePositiveAmount(request.value(QStringLiteral("initialPrice")).toString())
                 : defaultInitialPrice(tokenA, tokenB);
-        const double scale = std::max(1, request.value(QStringLiteral("depositScale")).toInt());
-        const double amountA = price >= 1.0 ? price * scale : scale;
-        const double amountB = price >= 1.0 ? scale : scale / price;
-        const double expectedLp = std::floor(std::sqrt(amountA * amountB) * 48.0);
-        const double userLp = std::max(0.0, expectedLp - 1000.0);
+        const double scaleMultiplier =
+            std::max(1, request.value(QStringLiteral("depositScale")).toInt());
+        const double baseA = price >= 1.0 ? price : 1.0;
+        const double baseB = price >= 1.0 ? 1.0 : 1.0 / price;
+        const double minimumScale =
+            std::floor(MINIMUM_LIQUIDITY / std::sqrt(baseA * baseB)) + 1.0;
+        const double scale = minimumScale * scaleMultiplier;
+        const double amountA = baseA * scale;
+        const double amountB = baseB * scale;
+        const double initialLp = std::floor(std::sqrt(amountA * amountB));
+        const double userLp = std::max(0.0, initialLp - MINIMUM_LIQUIDITY);
         const double minimumLp = std::floor(userLp * (10000 - slippageBps) / 10000.0);
 
         if (amountA > holdingA.value(QStringLiteral("balance")).toDouble())
@@ -921,7 +950,7 @@ QVariantMap AmmUiBackend::quoteNewPositionMap(const QVariantMap& request) const
         position.insert(QStringLiteral("ownedB"), formatTokenAmount(0, tokenB));
 
         QVariantMap quote =
-            quoteOk(context, request, amountA, amountB, amountA, amountB, userLp, minimumLp, 1000.0, position);
+            quoteOk(context, request, amountA, amountB, amountA, amountB, userLp, minimumLp, MINIMUM_LIQUIDITY, position);
         QVariantMap pool = quote.value(QStringLiteral("pool")).toMap();
         pool.insert(QStringLiteral("priceText"),
                     QStringLiteral("1 %1 = %2 %3")
