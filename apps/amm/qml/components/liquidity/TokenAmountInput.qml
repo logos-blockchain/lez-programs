@@ -10,6 +10,8 @@ Rectangle {
     property string errorText: ""
     property string helperText: ""
     property string label: ""
+    property bool readOnly: false
+    property bool showMaxButton: true
     property string token: ""
 
     signal editingChanged(string value)
@@ -71,6 +73,7 @@ Rectangle {
                 font.pixelSize: 18
                 inputMethodHints: Qt.ImhFormattedNumbersOnly
                 placeholderText: qsTr("0")
+                readOnly: root.readOnly
                 selectByMouse: true
                 selectedTextColor: "#151515"
                 selectionColor: "#F26A21"
@@ -83,7 +86,10 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.minimumHeight: 44
 
-                onTextEdited: root.editingChanged(text)
+                onTextEdited: {
+                    if (!root.readOnly)
+                        root.editingChanged(text);
+                }
 
                 background: Rectangle {
                     border.color: amountField.activeFocus ? "#F26A21" : "#343434"
@@ -97,14 +103,16 @@ Rectangle {
                 id: maxButton
 
                 activeFocusOnTab: true
+                enabled: root.showMaxButton && !root.readOnly
                 focusPolicy: Qt.StrongFocus
                 hoverEnabled: true
                 text: qsTr("MAX")
+                visible: root.showMaxButton
 
                 Accessible.name: qsTr("Use maximum %1 balance").arg(root.token)
 
                 Layout.minimumHeight: 44
-                Layout.preferredWidth: 58
+                Layout.preferredWidth: visible ? 58 : 0
 
                 onClicked: root.maxClicked()
 
