@@ -1,6 +1,11 @@
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Layouts 1.15
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+
+import Logos.Controls
+import Logos.Theme
 
 FocusScope {
     id: root
@@ -8,45 +13,50 @@ FocusScope {
     property var snapshot: ({})
     property bool open: false
     property bool busy: false
-    property string errorText: ""
 
     signal canceled
     signal confirmed(var snapshot)
 
-    visible: root.open
-    z: 20
+    visible: open
+    focus: open
+    z: 200
 
-    Keys.onEscapePressed: root.cancel()
+    Keys.onEscapePressed: function(event) {
+        event.accepted = true
+        if (!root.busy)
+            root.cancel()
+    }
 
     function openWithSnapshot(nextSnapshot) {
-        root.snapshot = nextSnapshot;
-        root.errorText = "";
-        root.open = true;
-        root.forceActiveFocus();
-        cancelButton.forceActiveFocus();
+        root.snapshot = nextSnapshot || ({})
+        root.open = true
+        root.forceActiveFocus()
     }
 
     function cancel() {
         if (root.busy)
-            return;
-        root.open = false;
-        root.canceled();
+            return
+        root.open = false
+        root.canceled()
     }
 
     function confirm() {
-        if (root.busy)
-            return;
-        root.errorText = "";
-        root.confirmed(root.snapshot);
+        if (!root.busy)
+            root.confirmed(root.snapshot)
     }
 
     function closeAfterSuccess() {
-        root.open = false;
+        root.open = false
+        root.snapshot = ({})
+    }
+
+    function closeAfterFailure() {
+        root.open = false
     }
 
     Rectangle {
         anchors.fill: parent
-        color: "#99000000"
+        color: "#B0000000"
 
         MouseArea {
             anchors.fill: parent
@@ -54,212 +64,138 @@ FocusScope {
     }
 
     Rectangle {
-        id: panel
-
         anchors.centerIn: parent
-        color: "#1D1D1D"
-        implicitHeight: dialogContent.implicitHeight + 24
+        width: Math.min(520, parent.width - 32)
+        implicitHeight: dialogContent.implicitHeight + 40
         radius: 8
-        width: Math.max(0, Math.min(420, root.width - 32))
-        border.color: "#343434"
+        color: Theme.palette.backgroundElevated
+        border.color: Theme.palette.borderSecondary
         border.width: 1
 
         ColumnLayout {
             id: dialogContent
 
             anchors.fill: parent
-            anchors.margins: 12
-            spacing: 12
+            anchors.margins: 20
+            spacing: 14
 
-            Text {
-                color: "#E7E1D8"
-                font.bold: true
-                font.pixelSize: 16
-                text: qsTr("Confirm new position")
-
+            RowLayout {
                 Layout.fillWidth: true
-            }
-
-            Rectangle {
-                color: "#151515"
-                radius: 8
-                border.color: "#343434"
-                border.width: 1
-
-                Layout.fillWidth: true
-                Layout.preferredHeight: summaryLayout.implicitHeight + 20
-
-                ColumnLayout {
-                    id: summaryLayout
-
-                    anchors.fill: parent
-                    anchors.margins: 10
-                    spacing: 8
-
-                    SummaryRow {
-                        label: qsTr("Pair")
-                        value: root.snapshot.pairText || ""
-
-                        Layout.fillWidth: true
-                    }
-
-                    SummaryRow {
-                        label: qsTr("Instruction")
-                        value: root.snapshot.instructionText || ""
-
-                        Layout.fillWidth: true
-                    }
-
-                    SummaryRow {
-                        label: qsTr("Fee tier")
-                        value: root.snapshot.feeLabel || ""
-
-                        Layout.fillWidth: true
-                    }
-
-                    SummaryRow {
-                        label: qsTr("Deposit %1").arg(root.snapshot.tokenA || "")
-                        value: root.snapshot.depositA || ""
-
-                        Layout.fillWidth: true
-                    }
-
-                    SummaryRow {
-                        label: qsTr("Deposit %1").arg(root.snapshot.tokenB || "")
-                        value: root.snapshot.depositB || ""
-
-                        Layout.fillWidth: true
-                    }
-
-                    SummaryRow {
-                        label: qsTr("Expected LP")
-                        value: root.snapshot.expectedLp || ""
-
-                        Layout.fillWidth: true
-                    }
-
-                    SummaryRow {
-                        label: qsTr("Minimum LP")
-                        value: root.snapshot.minimumLp || ""
-
-                        Layout.fillWidth: true
-                    }
-
-                    SummaryRow {
-                        label: qsTr("Quote hash")
-                        value: root.snapshot.shortQuoteHash || ""
-
-                        Layout.fillWidth: true
-                    }
-                }
-            }
-
-            Text {
-                color: "#A9A098"
-                font.pixelSize: 12
-                lineHeight: 1.25
-                text: qsTr("Submit will re-quote against current wallet and chain state before dispatch.")
-                wrapMode: Text.WordWrap
-
-                Layout.fillWidth: true
-            }
-
-            Rectangle {
-                color: "#211914"
-                radius: 8
-                border.color: "#49301F"
-                border.width: 1
-                visible: root.errorText.length > 0
-
-                Layout.fillWidth: true
-                Layout.preferredHeight: visible ? submitError.implicitHeight + 20 : 0
 
                 Text {
-                    id: submitError
-
-                    anchors.fill: parent
-                    anchors.margins: 10
-                    color: "#F08A76"
-                    font.pixelSize: 12
-                    lineHeight: 1.2
-                    text: root.errorText
-                    wrapMode: Text.WordWrap
+                    text: qsTr("Confirm new position")
+                    color: Theme.palette.text
+                    font.pixelSize: 19
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 0
+                    Layout.fillWidth: true
                 }
+
+                BusyIndicator {
+                    running: root.busy
+                    visible: running
+                    implicitWidth: 24
+                    implicitHeight: 24
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: summary.implicitHeight + 24
+                radius: 6
+                color: Theme.palette.backgroundTertiary
+
+                ColumnLayout {
+                    id: summary
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 9
+
+                    SummaryLine {
+                        label: qsTr("Pair")
+                        value: root.snapshot.pairText || "—"
+                    }
+
+                    SummaryLine {
+                        label: qsTr("Action")
+                        value: root.snapshot.instruction || "—"
+                    }
+
+                    SummaryLine {
+                        label: qsTr("Fee")
+                        value: root.snapshot.feeText || "—"
+                    }
+
+                    SummaryLine {
+                        label: qsTr("Deposit")
+                        value: qsTr("%1 + %2")
+                               .arg(root.snapshot.depositAText || "—")
+                               .arg(root.snapshot.depositBText || "—")
+                    }
+
+                    SummaryLine {
+                        label: qsTr("Expected LP")
+                        value: root.snapshot.expectedLpText || "—"
+                    }
+                }
+            }
+
+            Text {
+                text: root.busy
+                      ? qsTr("Waiting for wallet submission")
+                      : qsTr("Your wallet will review and submit this transaction.")
+                color: Theme.palette.textSecondary
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
             }
 
             RowLayout {
-                spacing: 8
-
                 Layout.fillWidth: true
+                spacing: 10
 
-                Button {
-                    id: cancelButton
-
-                    activeFocusOnTab: true
-                    enabled: !root.busy
-                    focusPolicy: Qt.StrongFocus
-                    hoverEnabled: true
+                LogosButton {
                     text: qsTr("Cancel")
-
-                    Accessible.name: cancelButton.text
-
+                    enabled: !root.busy
                     Layout.fillWidth: true
                     Layout.minimumHeight: 44
-
+                    radius: 6
                     onClicked: root.cancel()
-
-                    contentItem: Text {
-                        color: cancelButton.hovered || cancelButton.activeFocus ? "#151515" : "#E7E1D8"
-                        elide: Text.ElideRight
-                        font.bold: true
-                        font.pixelSize: 13
-                        horizontalAlignment: Text.AlignHCenter
-                        text: cancelButton.text
-                        verticalAlignment: Text.AlignVCenter
-                    }
-
-                    background: Rectangle {
-                        border.color: cancelButton.activeFocus ? "#F26A21" : "#343434"
-                        border.width: 1
-                        color: cancelButton.pressed ? "#343434" : cancelButton.hovered || cancelButton.activeFocus ? "#E7E1D8" : "#151515"
-                        radius: 6
-                    }
                 }
 
-                Button {
-                    id: confirmButton
-
-                    activeFocusOnTab: true
+                LogosButton {
+                    text: root.busy ? qsTr("Submitting…") : qsTr("Submit")
                     enabled: !root.busy
-                    focusPolicy: Qt.StrongFocus
-                    hoverEnabled: true
-                    text: root.busy ? qsTr("Submitting") : qsTr("Submit")
-
-                    Accessible.name: confirmButton.text
-
                     Layout.fillWidth: true
                     Layout.minimumHeight: 44
-
+                    radius: 6
                     onClicked: root.confirm()
-
-                    contentItem: Text {
-                        color: confirmButton.enabled ? "#151515" : "#7D756E"
-                        elide: Text.ElideRight
-                        font.bold: true
-                        font.pixelSize: 13
-                        horizontalAlignment: Text.AlignHCenter
-                        text: confirmButton.text
-                        verticalAlignment: Text.AlignVCenter
-                    }
-
-                    background: Rectangle {
-                        border.color: confirmButton.enabled ? "#F26A21" : "#343434"
-                        border.width: 1
-                        color: confirmButton.enabled ? confirmButton.pressed ? "#D95C1E" : confirmButton.hovered || confirmButton.activeFocus ? "#FF8A3D" : "#F26A21" : "#181818"
-                        radius: 6
-                    }
                 }
             }
+        }
+    }
+
+    component SummaryLine: RowLayout {
+        required property string label
+        required property string value
+        Layout.fillWidth: true
+        spacing: 12
+
+        Text {
+            text: parent.label
+            color: Theme.palette.textSecondary
+            font.pixelSize: 12
+            Layout.fillWidth: true
+        }
+
+        Text {
+            text: parent.value
+            color: Theme.palette.text
+            font.pixelSize: 12
+            font.weight: Font.Medium
+            horizontalAlignment: Text.AlignRight
+            wrapMode: Text.WrapAnywhere
+            Layout.maximumWidth: 320
         }
     }
 }

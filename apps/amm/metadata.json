@@ -15,9 +15,7 @@
       "runtime": ["qt6.qtdeclarative", "zstd", "krb5", "abseil-cpp"]
     },
     "external_libraries": [
-      {
-        "name": "wallet_idl_decoder"
-      }
+      { "name": "amm_client" }
     ],
     "cmake": {
       "find_packages": [],

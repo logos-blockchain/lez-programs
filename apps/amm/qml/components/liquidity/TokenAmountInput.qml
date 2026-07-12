@@ -1,6 +1,6 @@
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Layouts 1.15
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 
 Rectangle {
     id: root
@@ -72,6 +72,7 @@ Rectangle {
                 font.bold: true
                 font.pixelSize: 18
                 inputMethodHints: Qt.ImhFormattedNumbersOnly
+                maximumLength: 80
                 placeholderText: qsTr("0")
                 readOnly: root.readOnly
                 selectByMouse: true

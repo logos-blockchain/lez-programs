@@ -2,8 +2,8 @@
   description = "LEZ program client libraries";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
-    crane.url = "github:ipetkov/crane/v0.23.4";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs = { nixpkgs, crane, ... }:
@@ -23,23 +23,23 @@
           src = craneLib.cleanCargoSource ./.;
           commonArgs = {
             inherit src;
-            pname = "wallet-idl-decoder";
+            pname = "amm_client";
             version = "0.1.0";
             strictDeps = true;
-            cargoExtraArgs = "-p wallet-idl-decoder";
+            cargoExtraArgs = "-p amm_client";
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-          decoder = craneLib.buildPackage (commonArgs // {
+          ammClient = craneLib.buildPackage (commonArgs // {
             inherit cargoArtifacts;
             doCheck = false;
             postInstall = ''
-              install -Dm644 ${./tools/wallet-idl-decoder/include/wallet_idl_decoder.h} \
-                $out/include/wallet_idl_decoder.h
+              install -Dm644 ${./apps/amm/client/include/amm_client.h} \
+                $out/include/amm_client.h
             '';
           });
         in {
-          default = decoder;
-          wallet_idl_decoder = decoder;
+          default = ammClient;
+          amm_client = ammClient;
         });
     };
 }

@@ -28,6 +28,8 @@
       inputs.logos-execution-zone.url =
         "github:logos-blockchain/logos-execution-zone?rev=a7e06a660940a00093b1760560d37ff84aff5a05";
     };
+
+    amm_client.url = "path:../..";
   };
 
   outputs = inputs@{ logos-module-builder, shared_wallet, nixpkgs, crane, ... }:
@@ -43,7 +45,10 @@
         cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${shared_wallet}")
       '';
       externalLibInputs = {
-        wallet_idl_decoder = walletDecoderInput;
+        amm_client = {
+          input = inputs.amm_client;
+          packages.default = "amm_client";
+        };
       };
       postInstall = ''
         # The builder installs the view under lib/qml after this hook. Its

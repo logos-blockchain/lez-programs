@@ -41,10 +41,10 @@ class AmmUiBackend
     // New Position backend surface. QML calls these through logos.watch(...).
     // The QVariant payloads are stable maps/lists so the UI never assembles AMM
     // transactions or duplicates quote state.
-    PROP(QVariant newPositionContext READONLY)
-    SLOT(QVariant refreshNewPositionContext())
-    SLOT(QVariant quoteNewPosition(QVariant request))
-    SLOT(QVariant submitNewPosition(QVariant request, QString quoteHash))
+    PROP(QVariantMap newPositionContext READONLY)
+    SLOT(QVariantMap refreshNewPositionContext(QVariantMap request))
+    SLOT(QVariantMap quoteNewPosition(QVariantMap request))
+    SLOT(QVariantMap submitNewPosition(QVariantMap request, QString quoteHash))
 
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
     // fresh per-app wallet at walletHome with no path picking. createNew()

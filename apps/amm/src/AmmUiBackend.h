@@ -2,7 +2,10 @@
 #define AMM_UI_BACKEND_H
 
 #include <QObject>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 
 #include "rep_AmmUiBackend_source.h"
@@ -37,9 +40,9 @@ public slots:
     void refreshAccounts() override;
     void refreshBalances() override;
     QString getBalance(QString accountIdHex, bool isPublic) override;
-    QVariant refreshNewPositionContext() override;
-    QVariant quoteNewPosition(QVariant request) override;
-    QVariant submitNewPosition(QVariant request, QString quoteHash) override;
+    QVariantMap refreshNewPositionContext(QVariantMap request) override;
+    QVariantMap quoteNewPosition(QVariantMap request) override;
+    QVariantMap submitNewPosition(QVariantMap request, QString quoteHash) override;
     // Return the new wallet's BIP39 mnemonic (empty string on failure) so the
     // UI can force a one-time seed-phrase backup step.
     QString createNewDefault(QString password) override;
@@ -67,9 +70,11 @@ private:
     void refreshBlockHeights();
     void refreshSequencerAddr();
     void saveWallet();
-    QString activeAccountAddress() const;
-    QVariantMap buildNewPositionContext() const;
-    QVariantMap quoteNewPositionMap(const QVariantMap& request) const;
+    bool loadNetworkConfig();
+    void probeNetworkIdentity();
+    QJsonObject readAccount(const QString& accountId) const;
+    QJsonArray walletAccountReads() const;
+    QJsonObject buildQuoteInput(const QVariantMap& request, QJsonObject* error) const;
 
     // Probe the configured sequencer over HTTP and update sequencerReachable.
     void checkReachability();
@@ -81,6 +86,15 @@ private:
 
     QNetworkAccessManager* m_net;
     QTimer* m_reachabilityTimer;
+
+    QString m_networkId;
+    QString m_networkStatus = QStringLiteral("config_missing");
+    QString m_networkFingerprint;
+    QString m_expectedNetworkIdentity;
+    QString m_ammProgramId;
+    QStringList m_configuredTokenIds;
+    bool m_identityProbeInFlight = false;
+    bool m_submitInFlight = false;
 };
 
 #endif // AMM_UI_BACKEND_H

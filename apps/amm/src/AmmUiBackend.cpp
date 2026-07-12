@@ -2,7 +2,7 @@
 
 #include <QClipboard>
 #include <QCoreApplication>
-#include <QCryptographicHash>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -11,9 +11,12 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
+#include <QScopedValueRollback>
 #include <QSettings>
 #include <QTimer>
 #include <QUrl>
@@ -21,425 +24,205 @@
 #include "logos_api.h"
 #include "logos_sdk.h"
 
-#include <algorithm>
-#include <cmath>
+#include "amm_client.h"
 
 namespace {
     const char SETTINGS_ORG[] = "Logos";
     const char SETTINGS_APP[] = "AmmUI";
-    // Sticky "user pressed Disconnect" flag so the wallet stays locked across
-    // relaunches until the user reconnects.
     const char DISCONNECTED_KEY[] = "disconnected";
-    const int WALLET_FFI_SUCCESS = 0;
-
-    // Wallet home env override. Mirrors LEZ's own var so the app shares the
-    // canonical wallet (~/.lee/wallet) used by the wallet UI and other apps.
     const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
-    constexpr double MINIMUM_LIQUIDITY = 1000.0;
-    constexpr double ACTIVE_POOL_USDC_RESERVE = 1'250'000.0;
-    constexpr double ACTIVE_POOL_LOGOS_RESERVE = 10'000'000.0;
-    constexpr double ACTIVE_POOL_LP_SUPPLY = 6'875'000.0;
+    const char NETWORK_ENV[] = "AMM_UI_NETWORK";
+    const char DEVNET_FILE_ENV[] = "AMM_UI_DEVNET_FILE";
+    const int WALLET_FFI_SUCCESS = 0;
+    const int CHECKPOINT_BLOCK_ID = 10;
+    const int BLOCK_HASH_OFFSET = 40;
+    const int BLOCK_HASH_SIZE = 32;
+    const char SCHEMA[] = "new-position.v1";
 
-    // Normalise file:// URLs and OS paths to a plain local path.
-    QString toLocalPath(const QString& path) {
-        if (path.startsWith("file://") || path.contains("/"))
+    using AmmClientOperation = char* (*)(const char*);
+
+    QString toLocalPath(const QString& path)
+    {
+        if (path.startsWith(QStringLiteral("file://")) || path.contains(QLatin1Char('/')))
             return QUrl::fromUserInput(path).toLocalFile();
         return path;
     }
 
-    QString stableId(const QString& key)
+    bool isLowerHex(const QString& value, int size)
     {
-        const QByteArray digest =
-            QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha256).toHex();
-        return QString::fromLatin1(digest);
-    }
-
-    QString shortId(const QString& id)
-    {
-        if (id.length() <= 14)
-            return id;
-        return id.left(6) + QStringLiteral("...") + id.right(4);
-    }
-
-    double parsePositiveAmount(QString value)
-    {
-        value.remove(QLatin1Char(','));
-        bool ok = false;
-        const double parsed = value.toDouble(&ok);
-        return ok && std::isfinite(parsed) && parsed > 0.0 ? parsed : 0.0;
-    }
-
-    QString formatAmount(double amount)
-    {
-        amount = std::max(0.0, amount);
-        const int decimals = amount >= 1000.0 ? 2 : amount >= 1.0 ? 4 : 6;
-        QString text = QString::number(amount, 'f', decimals);
-        while (text.contains(QLatin1Char('.')) && text.endsWith(QLatin1Char('0')))
-            text.chop(1);
-        if (text.endsWith(QLatin1Char('.')))
-            text.chop(1);
-        return text;
-    }
-
-    QString formatTokenAmount(double amount, const QString& symbol)
-    {
-        return QStringLiteral("%1 %2").arg(formatAmount(amount), symbol);
-    }
-
-    QVariantMap amountValue(double amount, const QString& symbol)
-    {
-        QVariantMap value;
-        value.insert(QStringLiteral("value"), amount);
-        value.insert(QStringLiteral("input"), formatAmount(amount));
-        value.insert(QStringLiteral("display"), formatTokenAmount(amount, symbol));
-        value.insert(QStringLiteral("symbol"), symbol);
-        return value;
-    }
-
-    QString feeLabel(int bps)
-    {
-        if (bps == 1)
-            return QStringLiteral("0.01%");
-        if (bps == 5)
-            return QStringLiteral("0.05%");
-        if (bps == 30)
-            return QStringLiteral("0.30%");
-        if (bps == 100)
-            return QStringLiteral("1.00%");
-        return QStringLiteral("%1 bps").arg(bps);
-    }
-
-    bool isSupportedFeeTier(int bps)
-    {
-        return bps == 1 || bps == 5 || bps == 30 || bps == 100;
-    }
-
-    QVariantList feeTiers()
-    {
-        QVariantList tiers;
-        for (const int bps : {1, 5, 25, 30, 100}) {
-            QVariantMap tier;
-            tier.insert(QStringLiteral("bps"), bps);
-            tier.insert(QStringLiteral("label"), feeLabel(bps));
-            tier.insert(QStringLiteral("supported"), isSupportedFeeTier(bps));
-            tiers.append(tier);
+        if (value.size() != size)
+            return false;
+        for (const QChar character : value) {
+            if (!character.isDigit()
+                && (character < QLatin1Char('a') || character > QLatin1Char('f'))) {
+                return false;
+            }
         }
-        return tiers;
+        return true;
     }
 
-    double devnetBalance(const QString& symbol)
+    bool isHex(const QString& value, int size)
     {
-        if (symbol == QStringLiteral("USDC"))
-            return 125000.0;
-        if (symbol == QStringLiteral("LOGOS"))
-            return 850000.0;
-        if (symbol == QStringLiteral("WETH"))
-            return 100.0;
-        return 0.0;
-    }
-
-    QString accentForSymbol(const QString& symbol)
-    {
-        if (symbol == QStringLiteral("USDC"))
-            return QStringLiteral("#2E7CF6");
-        if (symbol == QStringLiteral("LOGOS"))
-            return QStringLiteral("#F26A21");
-        if (symbol == QStringLiteral("WETH"))
-            return QStringLiteral("#B7C2D8");
-        return QStringLiteral("#343434");
-    }
-
-    QVariantMap devnetHolding(const QString& owner, const QString& symbol, const QString& name)
-    {
-        const double balance = devnetBalance(symbol);
-        const QString definitionId = stableId(QStringLiteral("devnet:token-definition:%1").arg(symbol));
-        QVariantMap holding;
-        holding.insert(QStringLiteral("symbol"), symbol);
-        holding.insert(QStringLiteral("name"), name);
-        holding.insert(QStringLiteral("definitionId"), definitionId);
-        holding.insert(QStringLiteral("holdingId"),
-                       stableId(QStringLiteral("devnet:token-holding:%1:%2").arg(owner, symbol)));
-        holding.insert(QStringLiteral("balance"), balance);
-        holding.insert(QStringLiteral("balanceText"), formatTokenAmount(balance, symbol));
-        holding.insert(QStringLiteral("accent"), accentForSymbol(symbol));
-        return holding;
-    }
-
-    QVariantList devnetHoldings(const QString& owner)
-    {
-        if (owner.isEmpty())
-            return {};
-
-        QVariantList holdings;
-        holdings.append(devnetHolding(owner, QStringLiteral("USDC"), QStringLiteral("USD Coin")));
-        holdings.append(devnetHolding(owner, QStringLiteral("LOGOS"), QStringLiteral("Logos")));
-        holdings.append(devnetHolding(owner, QStringLiteral("WETH"), QStringLiteral("Wrapped Ether")));
-        return holdings;
-    }
-
-    QVariantMap holdingBySymbol(const QVariantList& holdings, const QString& symbol)
-    {
-        for (const QVariant& item : holdings) {
-            const QVariantMap holding = item.toMap();
-            if (holding.value(QStringLiteral("symbol")).toString() == symbol)
-                return holding;
+        if (value.size() != size)
+            return false;
+        for (const QChar character : value) {
+            const QChar lower = character.toLower();
+            if (!character.isDigit()
+                && (lower < QLatin1Char('a') || lower > QLatin1Char('f'))) {
+                return false;
+            }
         }
-        return {};
+        return true;
     }
 
-    QString unorderedPairKey(const QString& symbolA, const QString& symbolB)
+    QJsonObject issue(const QString& code, const QJsonArray& blockingFields = {})
     {
-        return symbolA < symbolB
-            ? QStringLiteral("%1/%2").arg(symbolA, symbolB)
-            : QStringLiteral("%1/%2").arg(symbolB, symbolA);
-    }
-
-    double activeRatio(const QString& symbolA, const QString& symbolB)
-    {
-        if (symbolA == QStringLiteral("USDC") && symbolB == QStringLiteral("LOGOS"))
-            return ACTIVE_POOL_LOGOS_RESERVE / ACTIVE_POOL_USDC_RESERVE;
-        if (symbolA == QStringLiteral("LOGOS") && symbolB == QStringLiteral("USDC"))
-            return ACTIVE_POOL_USDC_RESERVE / ACTIVE_POOL_LOGOS_RESERVE;
-        return 1.0;
-    }
-
-    double activePoolReserve(const QString& symbol)
-    {
-        if (symbol == QStringLiteral("USDC"))
-            return ACTIVE_POOL_USDC_RESERVE;
-        if (symbol == QStringLiteral("LOGOS"))
-            return ACTIVE_POOL_LOGOS_RESERVE;
-        return 0.0;
-    }
-
-    double defaultInitialPrice(const QString& symbolA, const QString& symbolB)
-    {
-        if (symbolA == QStringLiteral("USDC") && symbolB == QStringLiteral("WETH"))
-            return 2500.0;
-        if (symbolA == QStringLiteral("WETH") && symbolB == QStringLiteral("USDC"))
-            return 0.0004;
-        return 1.0;
-    }
-
-    QVariantMap poolContext(const QString& symbolA, const QString& symbolB)
-    {
-        QVariantMap context;
-        context.insert(QStringLiteral("poolStatus"), QStringLiteral("unavailable_pool"));
-        context.insert(QStringLiteral("statusLabel"), QStringLiteral("Unavailable"));
-        context.insert(QStringLiteral("detail"), QStringLiteral("Choose two different assets from the active account."));
-        context.insert(QStringLiteral("instruction"), QString());
-        context.insert(QStringLiteral("storedFeeBps"), 0);
-        context.insert(QStringLiteral("poolId"), QString());
-        context.insert(QStringLiteral("priceText"), QString());
-        context.insert(QStringLiteral("reserveText"), QString());
-
-        if (symbolA.isEmpty() || symbolB.isEmpty() || symbolA == symbolB)
-            return context;
-
-        const QString pairKey = unorderedPairKey(symbolA, symbolB);
-        const QString poolId = stableId(QStringLiteral("devnet:amm-pool:%1").arg(pairKey));
-        context.insert(QStringLiteral("poolId"), poolId);
-
-        if (pairKey == QStringLiteral("LOGOS/USDC")) {
-            context.insert(QStringLiteral("poolStatus"), QStringLiteral("active_pool"));
-            context.insert(QStringLiteral("statusLabel"), QStringLiteral("Active pool"));
-            context.insert(QStringLiteral("detail"), QStringLiteral("Deposits are quoted against the existing pool ratio. Nonmatching fee tiers are locked."));
-            context.insert(QStringLiteral("instruction"), QStringLiteral("add_liquidity"));
-            context.insert(QStringLiteral("storedFeeBps"), 30);
-            context.insert(QStringLiteral("priceText"),
-                           symbolA == QStringLiteral("USDC")
-                               ? QStringLiteral("1 USDC = 8 LOGOS")
-                               : QStringLiteral("1 LOGOS = 0.125 USDC"));
-            context.insert(QStringLiteral("reserveText"),
-                           symbolA == QStringLiteral("USDC")
-                               ? QStringLiteral("1,250,000 USDC / 10,000,000 LOGOS")
-                               : QStringLiteral("10,000,000 LOGOS / 1,250,000 USDC"));
-            return context;
-        }
-
-        if (pairKey == QStringLiteral("USDC/WETH")) {
-            context.insert(QStringLiteral("poolStatus"), QStringLiteral("missing_pool"));
-            context.insert(QStringLiteral("statusLabel"), QStringLiteral("Missing pool"));
-            context.insert(QStringLiteral("detail"), QStringLiteral("Set the initial price first, then scale both deposits together."));
-            context.insert(QStringLiteral("instruction"), QStringLiteral("new_definition"));
-            context.insert(QStringLiteral("priceText"), QStringLiteral("No reserves yet"));
-            context.insert(QStringLiteral("reserveText"), QStringLiteral("Pool account is empty"));
-            return context;
-        }
-
-        context.insert(QStringLiteral("detail"), QStringLiteral("A pool account exists, but it cannot be quoted safely for this devnet state."));
-        context.insert(QStringLiteral("priceText"), QStringLiteral("Quote disabled"));
-        context.insert(QStringLiteral("reserveText"), QStringLiteral("Unsupported stored pool state"));
-        return context;
-    }
-
-    QString quoteHash(const QVariantMap& request)
-    {
-        const QStringList parts = {
-            request.value(QStringLiteral("tokenA")).toString(),
-            request.value(QStringLiteral("tokenB")).toString(),
-            QString::number(request.value(QStringLiteral("feeBps")).toInt()),
-            request.value(QStringLiteral("editedSide")).toString(),
-            request.value(QStringLiteral("amountA")).toString(),
-            request.value(QStringLiteral("amountB")).toString(),
-            request.value(QStringLiteral("initialPrice")).toString(),
-            QString::number(request.value(QStringLiteral("depositScale")).toInt()),
-            QString::number(request.value(QStringLiteral("slippageBps")).toInt()),
+        return {
+            { QStringLiteral("code"), code },
+            { QStringLiteral("recoverable"), true },
+            { QStringLiteral("blockingFields"), blockingFields },
+            { QStringLiteral("details"), QJsonObject() },
         };
-        const QByteArray digest =
-            QCryptographicHash::hash(parts.join(QLatin1Char('|')).toUtf8(),
-                                     QCryptographicHash::Sha256).toHex();
-        return QStringLiteral("sha256-%1").arg(QString::fromLatin1(digest));
     }
 
-    QVariantMap accountChange(const QString& role, const QString& id, const QString& action)
+    QJsonObject publicError(const QString& code,
+                            const QJsonArray& blockingFields = {},
+                            const QJsonObject& details = {})
     {
-        QVariantMap change;
-        change.insert(QStringLiteral("role"), role);
-        change.insert(QStringLiteral("id"), id);
-        change.insert(QStringLiteral("action"), action);
-        return change;
+        QJsonObject error = issue(code, blockingFields);
+        error.insert(QStringLiteral("details"), details);
+        return {
+            { QStringLiteral("schema"), QString::fromLatin1(SCHEMA) },
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("canSubmit"), false },
+            { QStringLiteral("code"), code },
+            { QStringLiteral("errors"), QJsonArray { error } },
+            { QStringLiteral("warnings"), QJsonArray() },
+            { QStringLiteral("accountPreview"), QJsonArray() },
+        };
     }
 
-    QVariantList accountChanges(const QVariantMap& request, const QVariantMap& context)
+    QJsonObject contextState(const QString& status,
+                             const QString& networkId,
+                             const QString& fingerprint = {})
     {
-        const QString tokenA = request.value(QStringLiteral("tokenA")).toString();
-        const QString tokenB = request.value(QStringLiteral("tokenB")).toString();
-        const QString poolId = context.value(QStringLiteral("poolId")).toString();
-        const bool missingPool =
-            context.value(QStringLiteral("poolStatus")).toString() == QStringLiteral("missing_pool");
+        return {
+            { QStringLiteral("schema"), QString::fromLatin1(SCHEMA) },
+            { QStringLiteral("status"), status },
+            { QStringLiteral("networkId"), networkId },
+            { QStringLiteral("networkFingerprint"), fingerprint },
+            { QStringLiteral("tokens"), QJsonArray() },
+            { QStringLiteral("feeTiers"), QJsonArray {
+                QJsonObject { { QStringLiteral("feeBps"), 1 }, { QStringLiteral("label"), QStringLiteral("0.01%") }, { QStringLiteral("enabled"), true } },
+                QJsonObject { { QStringLiteral("feeBps"), 5 }, { QStringLiteral("label"), QStringLiteral("0.05%") }, { QStringLiteral("enabled"), true } },
+                QJsonObject { { QStringLiteral("feeBps"), 30 }, { QStringLiteral("label"), QStringLiteral("0.30%") }, { QStringLiteral("enabled"), true } },
+                QJsonObject { { QStringLiteral("feeBps"), 100 }, { QStringLiteral("label"), QStringLiteral("1.00%") }, { QStringLiteral("enabled"), true } },
+            } },
+            { QStringLiteral("warnings"), QJsonArray() },
+        };
+    }
 
-        QVariantList changes;
-        changes.append(accountChange(QStringLiteral("Config"),
-                                     stableId(QStringLiteral("devnet:amm-config")),
-                                     QStringLiteral("Read")));
-        changes.append(accountChange(QStringLiteral("Pool"),
-                                     poolId,
-                                     missingPool ? QStringLiteral("Create") : QStringLiteral("Update")));
-        changes.append(accountChange(QStringLiteral("Vault A"),
-                                     stableId(QStringLiteral("devnet:vault:%1:%2").arg(poolId, tokenA)),
-                                     missingPool ? QStringLiteral("Update or create") : QStringLiteral("Update")));
-        changes.append(accountChange(QStringLiteral("Vault B"),
-                                     stableId(QStringLiteral("devnet:vault:%1:%2").arg(poolId, tokenB)),
-                                     missingPool ? QStringLiteral("Update or create") : QStringLiteral("Update")));
-        changes.append(accountChange(QStringLiteral("LP definition"),
-                                     stableId(QStringLiteral("devnet:lp-definition:%1").arg(poolId)),
-                                     missingPool ? QStringLiteral("Create") : QStringLiteral("Update")));
-        if (missingPool) {
-            changes.append(accountChange(QStringLiteral("LP lock holding"),
-                                         stableId(QStringLiteral("devnet:lp-lock:%1").arg(poolId)),
-                                         QStringLiteral("Create")));
+    QJsonObject callClient(AmmClientOperation operation,
+                           const QJsonObject& request,
+                           bool* ok)
+    {
+        *ok = false;
+        const QByteArray payload = QJsonDocument(request).toJson(QJsonDocument::Compact);
+        char* raw = operation(payload.constData());
+        if (!raw) {
+            qWarning() << "AmmUiBackend: AMM client returned a null response";
+            return {};
         }
-        changes.append(accountChange(QStringLiteral("User holding A"),
-                                     stableId(QStringLiteral("devnet:user-holding:%1").arg(tokenA)),
-                                     QStringLiteral("Update")));
-        changes.append(accountChange(QStringLiteral("User holding B"),
-                                     stableId(QStringLiteral("devnet:user-holding:%1").arg(tokenB)),
-                                     QStringLiteral("Update")));
-        changes.append(accountChange(QStringLiteral("User LP holding"),
-                                     stableId(QStringLiteral("devnet:user-lp:%1").arg(poolId)),
-                                     QStringLiteral("Update or create")));
-        changes.append(accountChange(QStringLiteral("Current tick"),
-                                     stableId(QStringLiteral("devnet:current-tick:%1").arg(poolId)),
-                                     missingPool ? QStringLiteral("Create") : QStringLiteral("Update")));
-        changes.append(accountChange(QStringLiteral("Clock"),
-                                     stableId(QStringLiteral("devnet:clock:canonical")),
-                                     QStringLiteral("Read")));
-        return changes;
+
+        const QByteArray response(raw);
+        amm_free(raw);
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(response, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            qWarning() << "AmmUiBackend: invalid AMM client response";
+            return {};
+        }
+
+        const QJsonObject envelope = document.object();
+        if (!envelope.value(QStringLiteral("ok")).toBool(false)) {
+            qWarning() << "AmmUiBackend: AMM client boundary failure:"
+                       << envelope.value(QStringLiteral("error")).toString();
+            return {};
+        }
+        if (!envelope.value(QStringLiteral("value")).isObject()) {
+            qWarning() << "AmmUiBackend: AMM client value is not an object";
+            return {};
+        }
+        *ok = true;
+        return envelope.value(QStringLiteral("value")).toObject();
     }
 
-    QVariantMap baseQuote(const QVariantMap& context, const QVariantMap& request)
+    QByteArray jsonRpcBody(const QString& method, const QJsonArray& params)
     {
-        QVariantMap quote;
-        quote.insert(QStringLiteral("poolStatus"), context.value(QStringLiteral("poolStatus")));
-        quote.insert(QStringLiteral("statusLabel"), context.value(QStringLiteral("statusLabel")));
-        quote.insert(QStringLiteral("statusDetail"), context.value(QStringLiteral("detail")));
-        quote.insert(QStringLiteral("instruction"), context.value(QStringLiteral("instruction")));
-        quote.insert(QStringLiteral("storedFeeBps"), context.value(QStringLiteral("storedFeeBps")));
-        quote.insert(QStringLiteral("feeBps"), request.value(QStringLiteral("feeBps")).toInt());
-        quote.insert(QStringLiteral("feeLabel"), feeLabel(request.value(QStringLiteral("feeBps")).toInt()));
-        quote.insert(QStringLiteral("quoteHash"), quoteHash(request));
-
-        QVariantMap pool;
-        pool.insert(QStringLiteral("id"), context.value(QStringLiteral("poolId")));
-        pool.insert(QStringLiteral("priceText"), context.value(QStringLiteral("priceText")));
-        pool.insert(QStringLiteral("reserveText"), context.value(QStringLiteral("reserveText")));
-        quote.insert(QStringLiteral("pool"), pool);
-        return quote;
+        return QJsonDocument(QJsonObject {
+            { QStringLiteral("jsonrpc"), QStringLiteral("2.0") },
+            { QStringLiteral("id"), 1 },
+            { QStringLiteral("method"), method },
+            { QStringLiteral("params"), params },
+        }).toJson(QJsonDocument::Compact);
     }
 
-    QVariantMap quoteOk(const QVariantMap& context,
-                        const QVariantMap& request,
-                        double maxA,
-                        double maxB,
-                        double actualA,
-                        double actualB,
-                        double expectedLp,
-                        double minimumLp,
-                        double lockedLp,
-                        const QVariantMap& position)
+    QString blockHashFromResponse(const QByteArray& payload)
     {
-        QVariantMap quote = baseQuote(context, request);
-        const QString tokenA = request.value(QStringLiteral("tokenA")).toString();
-        const QString tokenB = request.value(QStringLiteral("tokenB")).toString();
-        quote.insert(QStringLiteral("status"), QStringLiteral("ok"));
-        quote.insert(QStringLiteral("error"), QString());
-
-        QVariantMap deposit;
-        deposit.insert(QStringLiteral("maxA"), amountValue(maxA, tokenA));
-        deposit.insert(QStringLiteral("maxB"), amountValue(maxB, tokenB));
-        deposit.insert(QStringLiteral("actualA"), amountValue(actualA, tokenA));
-        deposit.insert(QStringLiteral("actualB"), amountValue(actualB, tokenB));
-        quote.insert(QStringLiteral("deposit"), deposit);
-
-        QVariantMap lp;
-        lp.insert(QStringLiteral("expected"), amountValue(expectedLp, QStringLiteral("LP")));
-        lp.insert(QStringLiteral("minimum"), amountValue(minimumLp, QStringLiteral("LP")));
-        lp.insert(QStringLiteral("locked"), amountValue(lockedLp, QStringLiteral("LP")));
-        quote.insert(QStringLiteral("lp"), lp);
-
-        quote.insert(QStringLiteral("position"), position);
-        quote.insert(QStringLiteral("accountChanges"), accountChanges(request, context));
-
-        QVariantMap transaction;
-        transaction.insert(QStringLiteral("instruction"), context.value(QStringLiteral("instruction")));
-        transaction.insert(QStringLiteral("ready"), false);
-        transaction.insert(QStringLiteral("reason"), QStringLiteral("Submission requires real token holding account ids from wallet discovery."));
-        quote.insert(QStringLiteral("transaction"), transaction);
-        return quote;
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject())
+            return {};
+        const QByteArray block =
+            QByteArray::fromBase64(document.object().value(QStringLiteral("result")).toString().toLatin1());
+        if (block.size() < BLOCK_HASH_OFFSET + BLOCK_HASH_SIZE)
+            return {};
+        return QString::fromLatin1(block.mid(BLOCK_HASH_OFFSET, BLOCK_HASH_SIZE).toHex());
     }
 
-    QVariantMap quoteError(const QVariantMap& context, const QVariantMap& request, const QString& errorText)
+    QString channelIdFromResponse(const QByteArray& payload)
     {
-        QVariantMap quote = baseQuote(context, request);
-        const QString tokenA = request.value(QStringLiteral("tokenA")).toString();
-        const QString tokenB = request.value(QStringLiteral("tokenB")).toString();
-        quote.insert(QStringLiteral("status"), QStringLiteral("error"));
-        quote.insert(QStringLiteral("error"), errorText);
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject())
+            return {};
+        const QString channel = document.object().value(QStringLiteral("result")).toString();
+        return isLowerHex(channel, 64) ? channel : QString();
+    }
 
-        QVariantMap deposit;
-        deposit.insert(QStringLiteral("maxA"), amountValue(0, tokenA));
-        deposit.insert(QStringLiteral("maxB"), amountValue(0, tokenB));
-        deposit.insert(QStringLiteral("actualA"), amountValue(0, tokenA));
-        deposit.insert(QStringLiteral("actualB"), amountValue(0, tokenB));
-        quote.insert(QStringLiteral("deposit"), deposit);
+    QJsonArray variantStringArray(const QVariant& value)
+    {
+        QJsonArray result;
+        for (const QVariant& item : value.toList())
+            result.append(item.toString());
+        return result;
+    }
 
-        QVariantMap lp;
-        lp.insert(QStringLiteral("expected"), amountValue(0, QStringLiteral("LP")));
-        lp.insert(QStringLiteral("minimum"), amountValue(0, QStringLiteral("LP")));
-        const bool missingPool =
-            context.value(QStringLiteral("poolStatus")).toString() == QStringLiteral("missing_pool");
-        lp.insert(QStringLiteral("locked"), amountValue(missingPool ? 1000.0 : 0.0, QStringLiteral("LP")));
-        quote.insert(QStringLiteral("lp"), lp);
+    QStringList jsonStringList(const QJsonArray& values)
+    {
+        QStringList result;
+        result.reserve(values.size());
+        for (const QJsonValue& value : values)
+            result.append(value.toString());
+        return result;
+    }
 
-        QVariantMap position;
-        position.insert(QStringLiteral("userLp"), QStringLiteral("0 LP"));
-        position.insert(QStringLiteral("share"), QStringLiteral("-"));
-        position.insert(QStringLiteral("ownedA"), formatTokenAmount(0, tokenA));
-        position.insert(QStringLiteral("ownedB"), formatTokenAmount(0, tokenB));
-        quote.insert(QStringLiteral("position"), position);
-        quote.insert(QStringLiteral("accountChanges"), QVariantList());
-        return quote;
+    QVariantList jsonBoolList(const QJsonArray& values)
+    {
+        QVariantList result;
+        result.reserve(values.size());
+        for (const QJsonValue& value : values)
+            result.append(value.toBool());
+        return result;
+    }
+
+    QVariantList jsonUIntList(const QJsonArray& values)
+    {
+        QVariantList result;
+        result.reserve(values.size());
+        for (const QJsonValue& value : values)
+            result.append(QVariant::fromValue(static_cast<quint32>(value.toInteger())));
+        return result;
     }
 }
 
@@ -566,7 +349,13 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     setWalletHome(defaultWalletHome());
     // Assume reachable until a probe proves otherwise (avoids a startup flash).
     setSequencerReachable(true);
-    setNewPositionContext(buildNewPositionContext());
+    loadNetworkConfig();
+    setNewPositionContext(contextState(
+        m_networkStatus == QStringLiteral("network_unknown")
+            ? QStringLiteral("loading")
+            : m_networkStatus,
+        m_networkId,
+        m_networkFingerprint).toVariantMap());
 
     // Periodically re-probe the sequencer so the banner reacts to a node going
     // up/down while the app is running. Probes are no-ops until a wallet (and
@@ -623,7 +412,6 @@ void AmmUiBackend::openOrAdoptWallet()
         m_accountModel->replaceFromJsonArray(existing);
         refreshBalances();
         refreshSequencerAddr();
-        refreshNewPositionContext();
         return;
     }
 
@@ -647,7 +435,6 @@ void AmmUiBackend::openOrAdoptWallet()
         refreshSequencerAddr();
     } else {
         qWarning() << "AmmUiBackend: wallet open failed, code" << err;
-        refreshNewPositionContext();
     }
 }
 
@@ -693,7 +480,6 @@ QString AmmUiBackend::createNew(QString configPath, QString storagePath, QString
     refreshAccounts();
     refreshBlockHeights();
     refreshSequencerAddr();
-    refreshNewPositionContext();
     return mnemonic;
 }
 
@@ -709,7 +495,6 @@ bool AmmUiBackend::openExisting()
         refreshBalances();
         refreshSequencerAddr();
         QSettings(SETTINGS_ORG, SETTINGS_APP).setValue(DISCONNECTED_KEY, false);
-        refreshNewPositionContext();
         return true;
     }
 
@@ -730,7 +515,6 @@ bool AmmUiBackend::openExisting()
     refreshAccounts();
     refreshBlockHeights();
     refreshSequencerAddr();
-    refreshNewPositionContext();
     return true;
 }
 
@@ -743,7 +527,7 @@ void AmmUiBackend::disconnectWallet()
     setIsWalletOpen(false);
     m_accountModel->replaceFromJsonArray(QJsonArray());
     QSettings(SETTINGS_ORG, SETTINGS_APP).setValue(DISCONNECTED_KEY, true);
-    refreshNewPositionContext();
+    refreshNewPositionContext(QVariantMap());
 }
 
 QString AmmUiBackend::createAccountPublic()
@@ -767,7 +551,6 @@ void AmmUiBackend::refreshAccounts()
     const QJsonArray arr = QJsonArray::fromVariantList(m_logos->logos_execution_zone.list_accounts());
     m_accountModel->replaceFromJsonArray(arr);
     refreshBalances();
-    refreshNewPositionContext();
 }
 
 void AmmUiBackend::refreshBalances()
@@ -783,7 +566,7 @@ void AmmUiBackend::refreshBalances()
         m_accountModel->setBalanceByAddress(addr, getBalance(addr, isPub));
     }
     saveWallet();
-    refreshNewPositionContext();
+    refreshNewPositionContext(QVariantMap());
 }
 
 QString AmmUiBackend::getBalance(QString accountIdHex, bool isPublic)
@@ -791,224 +574,311 @@ QString AmmUiBackend::getBalance(QString accountIdHex, bool isPublic)
     return m_logos->logos_execution_zone.get_balance(accountIdHex, isPublic);
 }
 
-QString AmmUiBackend::activeAccountAddress() const
+
+QJsonObject AmmUiBackend::readAccount(const QString& accountId) const
 {
-    if (m_accountModel->count() <= 0)
-        return {};
-    const QModelIndex idx = m_accountModel->index(0, 0);
-    return m_accountModel->data(idx, AccountModel::AddressRole).toString();
-}
+    QJsonObject read {
+        { QStringLiteral("id"), accountId },
+        { QStringLiteral("status"), QStringLiteral("read_failed") },
+    };
+    if (!isLowerHex(accountId, 64))
+        return read;
 
-QVariantMap AmmUiBackend::buildNewPositionContext() const
-{
-    QVariantMap context;
-    context.insert(QStringLiteral("minimumLiquidity"), MINIMUM_LIQUIDITY);
-    context.insert(QStringLiteral("feeTiers"), feeTiers());
+    const QString payload = m_logos->logos_execution_zone.get_account_public(accountId);
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(payload.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject())
+        return read;
 
-    QVariantMap network;
-    network.insert(QStringLiteral("id"), QStringLiteral("devnet"));
-    network.insert(QStringLiteral("name"), QStringLiteral("Local devnet"));
-    network.insert(QStringLiteral("selector"), QStringLiteral("temporary-file"));
-    context.insert(QStringLiteral("network"), network);
-
-    QVariantMap programIds;
-    programIds.insert(QStringLiteral("amm"), stableId(QStringLiteral("devnet:program:amm")));
-    programIds.insert(QStringLiteral("token"), stableId(QStringLiteral("devnet:program:token")));
-    programIds.insert(QStringLiteral("twapOracle"), stableId(QStringLiteral("devnet:program:twap-oracle")));
-    context.insert(QStringLiteral("programIds"), programIds);
-
-    QVariantMap activeAccount;
-    const bool hasAccount = isWalletOpen() && m_accountModel->count() > 0;
-    if (hasAccount) {
-        const QModelIndex idx = m_accountModel->index(0, 0);
-        const QString address = m_accountModel->data(idx, AccountModel::AddressRole).toString();
-        activeAccount.insert(QStringLiteral("name"), m_accountModel->data(idx, AccountModel::NameRole).toString());
-        activeAccount.insert(QStringLiteral("address"), address);
-        activeAccount.insert(QStringLiteral("display"), shortId(address));
-        activeAccount.insert(QStringLiteral("isPublic"), m_accountModel->data(idx, AccountModel::IsPublicRole).toBool());
-        activeAccount.insert(QStringLiteral("balance"), m_accountModel->data(idx, AccountModel::BalanceRole).toString());
-        context.insert(QStringLiteral("holdings"), devnetHoldings(address));
-        context.insert(QStringLiteral("status"), QStringLiteral("ready"));
-        context.insert(QStringLiteral("statusDetail"), QStringLiteral("Devnet token holdings resolved for the active wallet account."));
-    } else {
-        activeAccount.insert(QStringLiteral("name"), QString());
-        activeAccount.insert(QStringLiteral("address"), QString());
-        activeAccount.insert(QStringLiteral("display"), QStringLiteral("Not connected"));
-        activeAccount.insert(QStringLiteral("isPublic"), true);
-        activeAccount.insert(QStringLiteral("balance"), QString());
-        context.insert(QStringLiteral("holdings"), QVariantList());
-        context.insert(QStringLiteral("status"), isWalletOpen() ? QStringLiteral("no_account") : QStringLiteral("no_wallet"));
-        context.insert(QStringLiteral("statusDetail"),
-                       isWalletOpen()
-                           ? QStringLiteral("Create an account before opening a liquidity position.")
-                           : QStringLiteral("Connect a wallet before opening a liquidity position."));
+    const QJsonObject account = document.object();
+    if (!isLowerHex(account.value(QStringLiteral("program_owner")).toString(), 64)
+        || !isLowerHex(account.value(QStringLiteral("balance")).toString(), 32)
+        || !isLowerHex(account.value(QStringLiteral("nonce")).toString(), 32)) {
+        return read;
     }
-    context.insert(QStringLiteral("activeAccount"), activeAccount);
-    context.insert(QStringLiteral("activeAccountDisplay"), activeAccount.value(QStringLiteral("display")));
-    return context;
+    const QString data = account.value(QStringLiteral("data")).toString();
+    if (data.size() % 2 != 0) {
+        return read;
+    }
+    for (const QChar character : data) {
+        if (!character.isDigit()
+            && (character < QLatin1Char('a') || character > QLatin1Char('f'))) {
+            return read;
+        }
+    }
+
+    read.insert(QStringLiteral("status"), QStringLiteral("ok"));
+    read.insert(QStringLiteral("account"), account);
+    return read;
 }
 
-QVariant AmmUiBackend::refreshNewPositionContext()
+QJsonArray AmmUiBackend::walletAccountReads() const
 {
-    const QVariantMap context = buildNewPositionContext();
-    setNewPositionContext(context);
-    return context;
-}
-
-QVariantMap AmmUiBackend::quoteNewPositionMap(const QVariantMap& request) const
-{
-    const QString tokenA = request.value(QStringLiteral("tokenA")).toString();
-    const QString tokenB = request.value(QStringLiteral("tokenB")).toString();
-    const QVariantMap context = poolContext(tokenA, tokenB);
-
+    QJsonArray reads;
     if (!isWalletOpen())
-        return quoteError(context, request, tr("Connect a wallet to preview this position."));
+        return reads;
 
-    const QString owner = activeAccountAddress();
-    if (owner.isEmpty())
-        return quoteError(context, request, tr("Create an account before previewing this position."));
-
-    const QVariantList holdings = devnetHoldings(owner);
-    const QVariantMap holdingA = holdingBySymbol(holdings, tokenA);
-    const QVariantMap holdingB = holdingBySymbol(holdings, tokenB);
-    if (holdingA.isEmpty() || holdingB.isEmpty())
-        return quoteError(context, request, tr("Choose two token holdings from the active account."));
-
-    const int feeBps = request.value(QStringLiteral("feeBps")).toInt();
-    if (!isSupportedFeeTier(feeBps))
-        return quoteError(context, request, tr("Fee tier is not supported by the AMM program."));
-
-    const QString poolStatus = context.value(QStringLiteral("poolStatus")).toString();
-    const int storedFeeBps = context.value(QStringLiteral("storedFeeBps")).toInt();
-    if (poolStatus == QStringLiteral("active_pool") && feeBps != storedFeeBps)
-        return quoteError(context, request,
-                          tr("Existing pool uses %1.").arg(feeLabel(storedFeeBps)));
-
-    const int slippageBps =
-        std::max(1, std::min(5000, request.value(QStringLiteral("slippageBps")).toInt()));
-
-    if (poolStatus == QStringLiteral("active_pool")) {
-        const double inputA = parsePositiveAmount(request.value(QStringLiteral("amountA")).toString());
-        const double inputB = parsePositiveAmount(request.value(QStringLiteral("amountB")).toString());
-        const bool editA = request.value(QStringLiteral("editedSide")).toString() != QStringLiteral("B");
-        const double ratio = activeRatio(tokenA, tokenB);
-        const double amountA = editA ? inputA : inputB / ratio;
-        const double amountB = editA ? inputA * ratio : inputB;
-        const double reserveA = activePoolReserve(tokenA);
-        const double reserveB = activePoolReserve(tokenB);
-        const double expectedLp = std::floor(std::min(
-            ACTIVE_POOL_LP_SUPPLY * amountA / reserveA,
-            ACTIVE_POOL_LP_SUPPLY * amountB / reserveB));
-        const double minimumLp = std::floor(expectedLp * (10000 - slippageBps) / 10000.0);
-
-        if (inputA <= 0.0 && inputB <= 0.0)
-            return quoteError(context, request, tr("Enter a deposit amount to preview LP output."));
-        if (amountA > holdingA.value(QStringLiteral("balance")).toDouble())
-            return quoteError(context, request, tr("Insufficient %1 balance.").arg(tokenA));
-        if (amountB > holdingB.value(QStringLiteral("balance")).toDouble())
-            return quoteError(context, request, tr("Insufficient %1 balance.").arg(tokenB));
-        if (minimumLp <= 0.0)
-            return quoteError(context, request, tr("LP minimum rounds to zero. Increase deposit amount."));
-
-        QVariantMap position;
-        position.insert(QStringLiteral("userLp"), QStringLiteral("148320 LP"));
-        position.insert(QStringLiteral("share"), QStringLiteral("1.18%"));
-        position.insert(QStringLiteral("ownedA"), formatTokenAmount(tokenA == QStringLiteral("USDC") ? 14750.0 : 118000.0, tokenA));
-        position.insert(QStringLiteral("ownedB"), formatTokenAmount(tokenB == QStringLiteral("LOGOS") ? 118000.0 : 14750.0, tokenB));
-        return quoteOk(context, request, amountA, amountB, amountA, amountB, expectedLp, minimumLp, 0.0, position);
+    const QVariantList accounts = m_logos->logos_execution_zone.list_accounts();
+    for (const QVariant& value : accounts) {
+        const QVariantMap entry = value.toMap();
+        if (!entry.value(QStringLiteral("is_public"), true).toBool())
+            continue;
+        const QString id = entry.value(QStringLiteral("account_id")).toString();
+        if (isLowerHex(id, 64))
+            reads.append(readAccount(id));
     }
-
-    if (poolStatus == QStringLiteral("missing_pool")) {
-        const double price =
-            parsePositiveAmount(request.value(QStringLiteral("initialPrice")).toString()) > 0.0
-                ? parsePositiveAmount(request.value(QStringLiteral("initialPrice")).toString())
-                : defaultInitialPrice(tokenA, tokenB);
-        const double scaleMultiplier =
-            std::max(1, request.value(QStringLiteral("depositScale")).toInt());
-        const double baseA = price >= 1.0 ? price : 1.0;
-        const double baseB = price >= 1.0 ? 1.0 : 1.0 / price;
-        const double minimumScale =
-            std::floor(MINIMUM_LIQUIDITY / std::sqrt(baseA * baseB)) + 1.0;
-        const double scale = minimumScale * scaleMultiplier;
-        const double amountA = baseA * scale;
-        const double amountB = baseB * scale;
-        const double initialLp = std::floor(std::sqrt(amountA * amountB));
-        const double userLp = std::max(0.0, initialLp - MINIMUM_LIQUIDITY);
-        const double minimumLp = std::floor(userLp * (10000 - slippageBps) / 10000.0);
-
-        if (amountA > holdingA.value(QStringLiteral("balance")).toDouble())
-            return quoteError(context, request, tr("Initial deposit exceeds %1 balance.").arg(tokenA));
-        if (amountB > holdingB.value(QStringLiteral("balance")).toDouble())
-            return quoteError(context, request, tr("Initial deposit exceeds %1 balance.").arg(tokenB));
-        if (userLp <= 0.0)
-            return quoteError(context, request, tr("Deposit must mint more than the locked minimum liquidity."));
-
-        QVariantMap position;
-        position.insert(QStringLiteral("userLp"), QStringLiteral("0 LP"));
-        position.insert(QStringLiteral("share"), QStringLiteral("New pool"));
-        position.insert(QStringLiteral("ownedA"), formatTokenAmount(0, tokenA));
-        position.insert(QStringLiteral("ownedB"), formatTokenAmount(0, tokenB));
-
-        QVariantMap quote =
-            quoteOk(context, request, amountA, amountB, amountA, amountB, userLp, minimumLp, MINIMUM_LIQUIDITY, position);
-        QVariantMap pool = quote.value(QStringLiteral("pool")).toMap();
-        pool.insert(QStringLiteral("priceText"),
-                    QStringLiteral("1 %1 = %2 %3")
-                        .arg(tokenB, formatAmount(price), tokenA));
-        quote.insert(QStringLiteral("pool"), pool);
-        return quote;
-    }
-
-    return quoteError(context, request, context.value(QStringLiteral("detail")).toString());
+    return reads;
 }
 
-QVariant AmmUiBackend::quoteNewPosition(QVariant request)
+QJsonObject AmmUiBackend::buildQuoteInput(const QVariantMap& request,
+                                          QJsonObject* error) const
 {
-    return quoteNewPositionMap(request.toMap());
-}
-
-QVariant AmmUiBackend::submitNewPosition(QVariant request, QString quoteHash)
-{
-    const QVariantMap quote = quoteNewPositionMap(request.toMap());
-    if (quote.value(QStringLiteral("status")).toString() != QStringLiteral("ok")) {
-        QVariantMap result;
-        result.insert(QStringLiteral("status"), QStringLiteral("error"));
-        result.insert(QStringLiteral("code"), QStringLiteral("quote_error"));
-        result.insert(QStringLiteral("error"), quote.value(QStringLiteral("error")));
-        result.insert(QStringLiteral("quote"), quote);
-        return result;
+    if (m_networkStatus != QStringLiteral("ready")) {
+        *error = publicError(m_networkStatus);
+        return {};
+    }
+    bool ok = false;
+    const QJsonObject configManifest = callClient(
+        amm_config_id,
+        QJsonObject { { QStringLiteral("ammProgramId"), m_ammProgramId } },
+        &ok);
+    if (!ok) {
+        *error = publicError(QStringLiteral("backend_error"));
+        return {};
+    }
+    const QJsonObject config = readAccount(configManifest.value(QStringLiteral("configId")).toString());
+    const QJsonObject requestObject = QJsonObject::fromVariantMap(request);
+    const QJsonObject pairManifest = callClient(
+        amm_pair_ids,
+        QJsonObject {
+            { QStringLiteral("ammProgramId"), m_ammProgramId },
+            { QStringLiteral("config"), config },
+            { QStringLiteral("tokenAId"), requestObject.value(QStringLiteral("tokenAId")) },
+            { QStringLiteral("tokenBId"), requestObject.value(QStringLiteral("tokenBId")) },
+        },
+        &ok);
+    if (!ok) {
+        *error = publicError(QStringLiteral("backend_error"));
+        return {};
+    }
+    if (pairManifest.value(QStringLiteral("status")).toString() != QStringLiteral("ok")) {
+        *error = publicError(pairManifest.value(QStringLiteral("code")).toString());
+        return {};
     }
 
+    const QJsonObject snapshot {
+        { QStringLiteral("config"), config },
+        { QStringLiteral("tokenA"), readAccount(pairManifest.value(QStringLiteral("tokenAId")).toString()) },
+        { QStringLiteral("tokenB"), readAccount(pairManifest.value(QStringLiteral("tokenBId")).toString()) },
+        { QStringLiteral("pool"), readAccount(pairManifest.value(QStringLiteral("poolId")).toString()) },
+        { QStringLiteral("vaultA"), readAccount(pairManifest.value(QStringLiteral("vaultAId")).toString()) },
+        { QStringLiteral("vaultB"), readAccount(pairManifest.value(QStringLiteral("vaultBId")).toString()) },
+        { QStringLiteral("lpDefinition"), readAccount(pairManifest.value(QStringLiteral("lpDefinitionId")).toString()) },
+        { QStringLiteral("lpLockHolding"), readAccount(pairManifest.value(QStringLiteral("lpLockHoldingId")).toString()) },
+        { QStringLiteral("currentTick"), readAccount(pairManifest.value(QStringLiteral("currentTickId")).toString()) },
+        { QStringLiteral("clock"), readAccount(pairManifest.value(QStringLiteral("clockId")).toString()) },
+        { QStringLiteral("walletAvailable"), isWalletOpen() },
+        { QStringLiteral("walletAccounts"), walletAccountReads() },
+    };
+    return {
+        { QStringLiteral("networkId"), m_networkId },
+        { QStringLiteral("networkFingerprint"), m_networkFingerprint },
+        { QStringLiteral("ammProgramId"), m_ammProgramId },
+        { QStringLiteral("request"), requestObject },
+        { QStringLiteral("snapshot"), snapshot },
+    };
+}
+
+QVariantMap AmmUiBackend::refreshNewPositionContext(QVariantMap request)
+{
+    if (m_networkStatus != QStringLiteral("ready")) {
+        if (m_networkStatus == QStringLiteral("network_unknown"))
+            probeNetworkIdentity();
+        const QJsonObject context =
+            contextState(m_networkStatus, m_networkId, m_networkFingerprint);
+        setNewPositionContext(context.toVariantMap());
+        return context.toVariantMap();
+    }
+    const QJsonObject hints = QJsonObject::fromVariantMap(request);
+    bool ok = false;
+    const QJsonObject configManifest = callClient(
+        amm_config_id,
+        QJsonObject { { QStringLiteral("ammProgramId"), m_ammProgramId } },
+        &ok);
+    if (!ok) {
+        const QJsonObject context = contextState(
+            QStringLiteral("error"), m_networkId, m_networkFingerprint);
+        setNewPositionContext(context.toVariantMap());
+        return context.toVariantMap();
+    }
+    const QJsonObject config = readAccount(configManifest.value(QStringLiteral("configId")).toString());
+    const QJsonArray walletAccounts = walletAccountReads();
+    QJsonArray configured;
+    for (const QString& id : m_configuredTokenIds)
+        configured.append(id);
+    const QJsonArray recent = variantStringArray(hints.value(QStringLiteral("recentTokenIds")).toVariant());
+    const QJsonArray resolved = variantStringArray(hints.value(QStringLiteral("resolvedTokenIds")).toVariant());
+
+    const QJsonObject tokenManifest = callClient(
+        amm_token_ids,
+        QJsonObject {
+            { QStringLiteral("ammProgramId"), m_ammProgramId },
+            { QStringLiteral("config"), config },
+            { QStringLiteral("walletAccounts"), walletAccounts },
+            { QStringLiteral("configuredTokenIds"), configured },
+            { QStringLiteral("recentTokenIds"), recent },
+            { QStringLiteral("resolvedTokenIds"), resolved },
+        },
+        &ok);
+    if (!ok || tokenManifest.value(QStringLiteral("status")).toString() != QStringLiteral("ok")) {
+        const QString code = ok
+            ? tokenManifest.value(QStringLiteral("code")).toString()
+            : QStringLiteral("backend_error");
+        const QJsonObject context =
+            contextState(code.isEmpty() ? QStringLiteral("error") : code,
+                         m_networkId,
+                         m_networkFingerprint);
+        setNewPositionContext(context.toVariantMap());
+        return context.toVariantMap();
+    }
+
+    QJsonArray definitions;
+    for (const QJsonValue& id : tokenManifest.value(QStringLiteral("tokenIds")).toArray())
+        definitions.append(readAccount(id.toString()));
+
+    const QJsonObject context = callClient(
+        amm_context,
+        QJsonObject {
+            { QStringLiteral("networkId"), m_networkId },
+            { QStringLiteral("networkFingerprint"), m_networkFingerprint },
+            { QStringLiteral("ammProgramId"), m_ammProgramId },
+            { QStringLiteral("walletAvailable"), isWalletOpen() },
+            { QStringLiteral("config"), config },
+            { QStringLiteral("walletAccounts"), walletAccounts },
+            { QStringLiteral("tokenDefinitions"), definitions },
+            { QStringLiteral("configuredTokenIds"), configured },
+            { QStringLiteral("recentTokenIds"), recent },
+            { QStringLiteral("resolvedTokenIds"), resolved },
+        },
+        &ok);
+    const QJsonObject result = ok
+        ? context
+        : contextState(QStringLiteral("error"), m_networkId, m_networkFingerprint);
+    setNewPositionContext(result.toVariantMap());
+    return result.toVariantMap();
+}
+
+QVariantMap AmmUiBackend::quoteNewPosition(QVariantMap request)
+{
+    QJsonObject error;
+    const QJsonObject input = buildQuoteInput(request, &error);
+    if (!error.isEmpty())
+        return error.toVariantMap();
+
+    bool ok = false;
+    const QJsonObject quote = callClient(amm_quote, input, &ok);
+    return (ok ? quote : publicError(QStringLiteral("backend_error"))).toVariantMap();
+}
+
+QVariantMap AmmUiBackend::submitNewPosition(QVariantMap request, QString quoteHash)
+{
+    if (m_submitInFlight)
+        return publicError(QStringLiteral("submit_in_progress")).toVariantMap();
+    if (!isWalletOpen())
+        return publicError(QStringLiteral("wallet_unavailable")).toVariantMap();
+    QScopedValueRollback<bool> submitGuard(m_submitInFlight, true);
+
+    QJsonObject error;
+    const QJsonObject input = buildQuoteInput(request, &error);
+    if (!error.isEmpty())
+        return error.toVariantMap();
+
+    bool ok = false;
+    const QJsonObject quote = callClient(amm_quote, input, &ok);
+    if (!ok)
+        return publicError(QStringLiteral("backend_error")).toVariantMap();
     if (quote.value(QStringLiteral("quoteHash")).toString() != quoteHash) {
-        QVariantMap result;
-        result.insert(QStringLiteral("status"), QStringLiteral("error"));
-        result.insert(QStringLiteral("code"), QStringLiteral("quote_changed"));
-        result.insert(QStringLiteral("error"), tr("Quote changed. Refresh preview before submitting."));
+        QJsonObject result = publicError(QStringLiteral("quote_changed"));
         result.insert(QStringLiteral("quote"), quote);
-        return result;
+        return result.toVariantMap();
+    }
+    if (!quote.value(QStringLiteral("canSubmit")).toBool(false)) {
+        QJsonObject result = publicError(QStringLiteral("quote_not_submittable"));
+        result.insert(QStringLiteral("quote"), quote);
+        return result.toVariantMap();
     }
 
-    const QVariantMap transaction = quote.value(QStringLiteral("transaction")).toMap();
-    if (!transaction.value(QStringLiteral("ready")).toBool()) {
-        QVariantMap result;
-        result.insert(QStringLiteral("status"), QStringLiteral("error"));
-        result.insert(QStringLiteral("code"), QStringLiteral("submit_unavailable"));
-        result.insert(QStringLiteral("error"), transaction.value(QStringLiteral("reason")).toString());
-        result.insert(QStringLiteral("quote"), quote);
-        return result;
+    QJsonValue freshLp;
+    if (quote.value(QStringLiteral("requiresFreshLp")).toBool(false)) {
+        const QString accountId = m_logos->logos_execution_zone.create_account_public();
+        if (!isLowerHex(accountId, 64)
+            || m_logos->logos_execution_zone.save() != WALLET_FFI_SUCCESS) {
+            return publicError(QStringLiteral("wallet_submission_failed")).toVariantMap();
+        }
+        const QJsonObject read = readAccount(accountId);
+        if (read.value(QStringLiteral("status")).toString() != QStringLiteral("ok"))
+            return publicError(QStringLiteral("wallet_submission_failed")).toVariantMap();
+        freshLp = read;
     }
 
-    QVariantMap result;
-    result.insert(QStringLiteral("status"), QStringLiteral("ok"));
-    result.insert(QStringLiteral("message"),
-                  quote.value(QStringLiteral("instruction")).toString() == QStringLiteral("new_definition")
-                      ? tr("Pool creation submitted")
-                      : tr("Liquidity deposit submitted"));
-    result.insert(QStringLiteral("detail"),
-                  QStringLiteral("%1 / %2")
-                      .arg(request.toMap().value(QStringLiteral("tokenA")).toString(),
-                           request.toMap().value(QStringLiteral("tokenB")).toString()));
-    return result;
+    QJsonObject planInput = input;
+    planInput.insert(QStringLiteral("quoteHash"), quoteHash);
+    planInput.insert(QStringLiteral("nowMs"), QDateTime::currentMSecsSinceEpoch());
+    if (!freshLp.isUndefined())
+        planInput.insert(QStringLiteral("freshLp"), freshLp);
+
+    const QJsonObject plan = callClient(amm_plan, planInput, &ok);
+    if (!ok)
+        return publicError(QStringLiteral("backend_error")).toVariantMap();
+    if (plan.value(QStringLiteral("status")).toString() != QStringLiteral("ready")) {
+        const QString code = plan.value(QStringLiteral("code")).toString();
+        return publicError(code.isEmpty() ? QStringLiteral("wallet_submission_failed") : code)
+            .toVariantMap();
+    }
+
+    const QStringList accountIds =
+        jsonStringList(plan.value(QStringLiteral("accountIds")).toArray());
+    const QVariantList signingRequirements =
+        jsonBoolList(plan.value(QStringLiteral("signingRequirements")).toArray());
+    const QVariantList instruction =
+        jsonUIntList(plan.value(QStringLiteral("instruction")).toArray());
+    const QString programId = plan.value(QStringLiteral("programId")).toString();
+    bool deadlineValid = false;
+    const qulonglong deadline =
+        plan.value(QStringLiteral("deadlineMs")).toString().toULongLong(&deadlineValid);
+    if (!deadlineValid
+        || static_cast<qulonglong>(QDateTime::currentMSecsSinceEpoch()) >= deadline) {
+        return publicError(QStringLiteral("transaction_deadline_expired")).toVariantMap();
+    }
+    const QString response = m_logos->logos_execution_zone.send_generic_public_transaction(
+        accountIds,
+        signingRequirements,
+        QVariant::fromValue(instruction),
+        programId);
+
+    QJsonParseError parseError;
+    const QJsonDocument responseDocument = QJsonDocument::fromJson(response.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !responseDocument.isObject())
+        return publicError(QStringLiteral("wallet_submission_failed")).toVariantMap();
+    const QJsonObject walletResult = responseDocument.object();
+    const QJsonValue success = walletResult.value(QStringLiteral("success"));
+    const QJsonValue providerError = walletResult.value(QStringLiteral("error"));
+    const QString transactionId = walletResult.value(QStringLiteral("tx_hash")).toString();
+    const bool providerErrorClear = providerError.isUndefined()
+        || providerError.isNull()
+        || (providerError.isString() && providerError.toString().isEmpty());
+    if (!success.isBool()
+        || !success.toBool()
+        || !providerErrorClear
+        || !isHex(transactionId, 64)) {
+        return publicError(QStringLiteral("wallet_submission_failed")).toVariantMap();
+    }
+
+    return QJsonObject {
+        { QStringLiteral("schema"), QString::fromLatin1(SCHEMA) },
+        { QStringLiteral("status"), QStringLiteral("submitted") },
+        { QStringLiteral("transactionId"), transactionId.toLower() },
+    }.toVariantMap();
 }
 
 void AmmUiBackend::refreshBlockHeights()
@@ -1023,32 +893,137 @@ void AmmUiBackend::refreshBlockHeights()
 
 void AmmUiBackend::refreshSequencerAddr()
 {
-    const QString addr = m_logos->logos_execution_zone.get_sequencer_addr();
-    if (sequencerAddr() != addr)
-        setSequencerAddr(addr);
-    // Probe right away so the banner reflects the (possibly new) endpoint
-    // without waiting for the next periodic tick.
+    const QString address = m_logos->logos_execution_zone.get_sequencer_addr();
+    if (sequencerAddr() != address) {
+        setSequencerAddr(address);
+        if (m_networkStatus != QStringLiteral("config_missing")) {
+            m_networkStatus = QStringLiteral("network_unknown");
+            m_networkFingerprint.clear();
+        }
+    }
     checkReachability();
+}
+
+bool AmmUiBackend::loadNetworkConfig()
+{
+    const QByteArray selected = qgetenv(NETWORK_ENV);
+    m_networkId = selected.isEmpty()
+        ? QStringLiteral("testnet")
+        : QString::fromLocal8Bit(selected).trimmed();
+
+    QJsonObject entry;
+    if (m_networkId == QStringLiteral("devnet")) {
+        const QString path = QString::fromLocal8Bit(qgetenv(DEVNET_FILE_ENV));
+        QFile file(path);
+        if (path.isEmpty() || !file.open(QIODevice::ReadOnly)) {
+            m_networkStatus = QStringLiteral("config_missing");
+            return false;
+        }
+        entry = QJsonDocument::fromJson(file.readAll()).object();
+        m_expectedNetworkIdentity = entry.value(QStringLiteral("channelId")).toString();
+    } else {
+        QFile file(QStringLiteral(":/amm/config/networks.json"));
+        if (!file.open(QIODevice::ReadOnly)) {
+            m_networkStatus = QStringLiteral("config_missing");
+            return false;
+        }
+        const QJsonObject networks = QJsonDocument::fromJson(file.readAll()).object();
+        entry = networks.value(m_networkId).toObject();
+        m_expectedNetworkIdentity = entry.value(QStringLiteral("checkpointHash")).toString();
+    }
+
+    m_ammProgramId = entry.value(QStringLiteral("ammProgramId")).toString();
+    if (!isLowerHex(m_expectedNetworkIdentity, 64)
+        || !isLowerHex(m_ammProgramId, 64)) {
+        m_networkStatus = QStringLiteral("config_missing");
+        return false;
+    }
+
+    m_configuredTokenIds.clear();
+    for (const QJsonValue& value : entry.value(QStringLiteral("tokenDefinitionIds")).toArray()) {
+        const QString id = value.toString();
+        if (!isLowerHex(id, 64)) {
+            m_networkStatus = QStringLiteral("config_missing");
+            m_configuredTokenIds.clear();
+            return false;
+        }
+        m_configuredTokenIds.append(id);
+    }
+    m_networkStatus = QStringLiteral("network_unknown");
+    return true;
 }
 
 void AmmUiBackend::checkReachability()
 {
-    const QString addr = sequencerAddr();
-    if (addr.isEmpty())
+    const QString address = sequencerAddr();
+    if (address.isEmpty())
         return;
 
-    QNetworkRequest req{QUrl(addr)};
-    req.setTransferTimeout(4000);
-    QNetworkReply* reply = m_net->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        // Any HTTP response (even a 404) means the node is up; only a transport
-        // failure (connection refused, host not found, timeout) counts as down.
+    QNetworkRequest request{QUrl(address)};
+    request.setTransferTimeout(4000);
+    QNetworkReply* reply = m_net->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, address]() {
+        if (address != sequencerAddr()) {
+            reply->deleteLater();
+            return;
+        }
         const bool gotHttpStatus =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).isValid();
         const bool reachable = gotHttpStatus || reply->error() == QNetworkReply::NoError;
         if (sequencerReachable() != reachable)
             setSequencerReachable(reachable);
         reply->deleteLater();
+
+        if (reachable && m_networkStatus == QStringLiteral("network_unknown"))
+            probeNetworkIdentity();
+    });
+}
+
+void AmmUiBackend::probeNetworkIdentity()
+{
+    if (m_identityProbeInFlight
+        || m_networkStatus == QStringLiteral("config_missing")
+        || sequencerAddr().isEmpty()) {
+        return;
+    }
+    m_identityProbeInFlight = true;
+    const QString address = sequencerAddr();
+    const bool devnet = m_networkId == QStringLiteral("devnet");
+    const QString method = devnet
+        ? QStringLiteral("getChannelId")
+        : QStringLiteral("getBlock");
+    const QJsonArray params = devnet
+        ? QJsonArray()
+        : QJsonArray { CHECKPOINT_BLOCK_ID };
+
+    QNetworkRequest request{QUrl(address)};
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setTransferTimeout(4000);
+    QNetworkReply* reply = m_net->post(request, jsonRpcBody(method, params));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, address, devnet]() {
+        m_identityProbeInFlight = false;
+        if (address != sequencerAddr()) {
+            reply->deleteLater();
+            return;
+        }
+
+        const QByteArray payload = reply->readAll();
+        const QString actual = devnet
+            ? channelIdFromResponse(payload)
+            : blockHashFromResponse(payload);
+        if (actual.isEmpty()) {
+            m_networkStatus = QStringLiteral("network_unknown");
+            m_networkFingerprint.clear();
+        } else if (actual != m_expectedNetworkIdentity) {
+            m_networkStatus = QStringLiteral("network_mismatch");
+            m_networkFingerprint.clear();
+        } else {
+            m_networkStatus = QStringLiteral("ready");
+            m_networkFingerprint =
+                (devnet ? QStringLiteral("channel:") : QStringLiteral("block10:")) + actual;
+        }
+        reply->deleteLater();
+        refreshNewPositionContext(QVariantMap());
     });
 }
 
