@@ -58,16 +58,173 @@ enum QuoteBranch {
     },
 }
 
-struct QuoteComputation {
+struct EvaluatedQuote {
     value: Value,
-    quote_hash: Option<String>,
-    can_submit: bool,
-    requires_fresh_lp: bool,
-    pair: Option<PairIds>,
-    holding_a: Option<SelectedHolding>,
-    holding_b: Option<SelectedHolding>,
-    lp_holding: Option<SelectedHolding>,
-    branch: Option<QuoteBranch>,
+    quote_hash: String,
+    plan: Option<NewPositionPlan>,
+}
+
+enum QuoteComputation {
+    Fatal { value: Value },
+    Evaluated(EvaluatedQuote),
+}
+
+struct NewPositionPlan {
+    accounts: AccountPlan,
+    branch: QuoteBranch,
+}
+
+struct AccountPlan {
+    rows: Vec<AccountPlanRow>,
+    sources: Vec<SourceCommitment>,
+}
+
+struct AccountPlanRow {
+    role: &'static str,
+    account_id: Option<AccountId>,
+    expected_program: Option<ProgramId>,
+    action: &'static str,
+    signer: bool,
+    init: bool,
+}
+
+struct AccountPlanHoldings<'a> {
+    token_a: Option<&'a SelectedHolding>,
+    token_b: Option<&'a SelectedHolding>,
+    lp: Option<&'a SelectedHolding>,
+}
+
+impl QuoteComputation {
+    fn into_value(self) -> Value {
+        match self {
+            Self::Fatal { value } | Self::Evaluated(EvaluatedQuote { value, .. }) => value,
+        }
+    }
+
+    fn quote_hash(&self) -> Option<&str> {
+        match self {
+            Self::Fatal { .. } => None,
+            Self::Evaluated(quote) => Some(&quote.quote_hash),
+        }
+    }
+}
+
+impl NewPositionPlan {
+    fn new(accounts: AccountPlan, branch: QuoteBranch) -> Result<Self, String> {
+        accounts.validate_ready()?;
+        Ok(Self { accounts, branch })
+    }
+
+    fn requires_fresh_lp(&self) -> bool {
+        self.accounts.requires_fresh_lp()
+    }
+}
+
+impl AccountPlan {
+    fn validate_snapshot_ids(pair: &PairIds, snapshot: &PairSnapshot) -> Option<&'static str> {
+        let expected = [
+            (&snapshot.config, pair.config, "config"),
+            (&snapshot.token_a, pair.token_a, "token_a"),
+            (&snapshot.token_b, pair.token_b, "token_b"),
+            (&snapshot.pool, pair.pool, "pool"),
+            (&snapshot.vault_a, pair.vault_a, "vault_a"),
+            (&snapshot.vault_b, pair.vault_b, "vault_b"),
+            (&snapshot.lp_definition, pair.lp_definition, "lp_definition"),
+            (
+                &snapshot.lp_lock_holding,
+                pair.lp_lock_holding,
+                "lp_lock_holding",
+            ),
+            (&snapshot.current_tick, pair.current_tick, "current_tick"),
+            (&snapshot.clock, pair.clock, "clock"),
+        ];
+        expected.into_iter().find_map(|(read, id, role)| {
+            match account_id_from_hex(&read.id, "account id") {
+                Ok(actual) if actual == id => None,
+                _ => Some(role),
+            }
+        })
+    }
+
+    fn preview(&self) -> Vec<Value> {
+        self.rows
+            .iter()
+            .enumerate()
+            .map(|(order, row)| row.preview(order))
+            .collect()
+    }
+
+    fn take_sources(&mut self) -> Vec<SourceCommitment> {
+        std::mem::take(&mut self.sources)
+    }
+
+    fn requires_fresh_lp(&self) -> bool {
+        self.rows
+            .iter()
+            .any(|row| row.role == "user_holding_lp" && row.account_id.is_none())
+    }
+
+    fn validate_ready(&self) -> Result<(), String> {
+        if self.rows.iter().any(|row| {
+            row.account_id.is_none() && !(row.role == "user_holding_lp" && row.signer && row.init)
+        }) {
+            return Err(String::from("submittable quote has an unresolved account"));
+        }
+        Ok(())
+    }
+
+    fn wallet_args(
+        &self,
+        fresh_lp: Option<AccountId>,
+    ) -> Result<(Vec<AccountId>, Vec<bool>), String> {
+        let mut account_ids = Vec::with_capacity(self.rows.len());
+        let mut signing_requirements = Vec::with_capacity(self.rows.len());
+        for row in &self.rows {
+            let account_id = match row.account_id {
+                Some(account_id) => account_id,
+                None if row.role == "user_holding_lp" => {
+                    fresh_lp.ok_or_else(|| String::from("transaction plan has no LP holding"))?
+                }
+                None => return Err(String::from("transaction plan has an unresolved account")),
+            };
+            account_ids.push(account_id);
+            signing_requirements.push(row.signer);
+        }
+        Ok((account_ids, signing_requirements))
+    }
+}
+
+impl AccountPlanRow {
+    fn new(
+        role: &'static str,
+        account_id: Option<AccountId>,
+        expected_program: Option<ProgramId>,
+        action: &'static str,
+        signer: bool,
+        init: bool,
+    ) -> Self {
+        Self {
+            role,
+            account_id,
+            expected_program,
+            action,
+            signer,
+            init,
+        }
+    }
+
+    fn preview(&self, order: usize) -> Value {
+        json!({
+            "order": order,
+            "role": self.role,
+            "accountId": self.account_id.map(|id| id.to_string()),
+            "expectedProgramId": self.expected_program.map(program_id_base58),
+            "action": self.action,
+            "writable": self.action != "read",
+            "signer": self.signer,
+            "init": self.init,
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -526,7 +683,7 @@ fn select_holding(
 }
 
 pub fn quote(request: QuoteRequest) -> Result<Value, String> {
-    Ok(compute_quote(&request)?.value)
+    Ok(compute_quote(&request)?.into_value())
 }
 
 fn compute_quote(input: &QuoteRequest) -> Result<QuoteComputation, String> {
@@ -597,7 +754,7 @@ fn compute_quote(input: &QuoteRequest) -> Result<QuoteComputation, String> {
             ))
         }
     };
-    if let Some(error) = validate_snapshot_ids(&pair, &input.snapshot) {
+    if let Some(error) = AccountPlan::validate_snapshot_ids(&pair, &input.snapshot) {
         return Ok(fatal_quote(
             &input.request,
             "account_read_failed",
@@ -638,31 +795,6 @@ fn compute_quote(input: &QuoteRequest) -> Result<QuoteComputation, String> {
     } else {
         compute_active_quote(input, amm_program, pair, pool_account)
     }
-}
-
-fn validate_snapshot_ids(pair: &PairIds, snapshot: &PairSnapshot) -> Option<&'static str> {
-    let expected = [
-        (&snapshot.config, pair.config, "config"),
-        (&snapshot.token_a, pair.token_a, "token_a"),
-        (&snapshot.token_b, pair.token_b, "token_b"),
-        (&snapshot.pool, pair.pool, "pool"),
-        (&snapshot.vault_a, pair.vault_a, "vault_a"),
-        (&snapshot.vault_b, pair.vault_b, "vault_b"),
-        (&snapshot.lp_definition, pair.lp_definition, "lp_definition"),
-        (
-            &snapshot.lp_lock_holding,
-            pair.lp_lock_holding,
-            "lp_lock_holding",
-        ),
-        (&snapshot.current_tick, pair.current_tick, "current_tick"),
-        (&snapshot.clock, pair.clock, "clock"),
-    ];
-    expected.into_iter().find_map(|(read, id, role)| {
-        match account_id_from_hex(&read.id, "account id") {
-            Ok(actual) if actual == id => None,
-            _ => Some(role),
-        }
-    })
 }
 
 struct DomainError {
@@ -840,7 +972,17 @@ fn compute_missing_quote(
         holding_b.as_ref(),
     );
     let can_submit = funding.is_empty() && input.snapshot.wallet_available;
-    let sources = quote_sources_missing(input, &holding_a, &holding_b)?;
+    let mut account_plan = missing_account_plan(
+        input,
+        pair,
+        amm_program,
+        AccountPlanHoldings {
+            token_a: holding_a.as_ref(),
+            token_b: holding_b.as_ref(),
+            lp: None,
+        },
+    )?;
+    let sources = account_plan.take_sources();
     let funding_commitment = funding_commitments(pair, &holding_a, amount_a, &holding_b, amount_b);
     let commitment = QuoteCommitment {
         schema: String::from(SCHEMA),
@@ -867,7 +1009,7 @@ fn compute_missing_quote(
         warnings: Vec::new(),
     };
     let quote_hash = hash_quote(&commitment)?;
-    let preview = missing_preview(pair, amm_program, holding_a.as_ref(), holding_b.as_ref());
+    let preview = account_plan.preview();
     let value = json!({
         "schema": SCHEMA,
         "status": "ok",
@@ -894,17 +1036,19 @@ fn compute_missing_quote(
         "errors": funding,
         "warnings": [],
     });
-    Ok(QuoteComputation {
+    let plan = if can_submit {
+        Some(NewPositionPlan::new(
+            account_plan,
+            QuoteBranch::Missing { amount_a, amount_b },
+        )?)
+    } else {
+        None
+    };
+    Ok(QuoteComputation::Evaluated(EvaluatedQuote {
         value,
-        quote_hash: Some(quote_hash),
-        can_submit,
-        requires_fresh_lp: true,
-        pair: Some(pair),
-        holding_a,
-        holding_b,
-        lp_holding: None,
-        branch: Some(QuoteBranch::Missing { amount_a, amount_b }),
-    })
+        quote_hash,
+        plan,
+    }))
 }
 
 fn compute_active_quote(
@@ -1103,7 +1247,19 @@ fn compute_active_quote(
         .iter()
         .filter_map(|warning| warning["code"].as_str().map(String::from))
         .collect();
-    let sources = quote_sources_active(input, &holding_a, &holding_b, &lp_holding)?;
+    let mut account_plan = active_account_plan(
+        input,
+        pair,
+        amm_program,
+        &pool,
+        stored_reversed,
+        AccountPlanHoldings {
+            token_a: holding_a.as_ref(),
+            token_b: holding_b.as_ref(),
+            lp: lp_holding.as_ref(),
+        },
+    )?;
+    let sources = account_plan.take_sources();
     let commitment = QuoteCommitment {
         schema: String::from(SCHEMA),
         network_id: input.network_id.clone(),
@@ -1130,15 +1286,7 @@ fn compute_active_quote(
         warnings: warning_codes,
     };
     let quote_hash = hash_quote(&commitment)?;
-    let preview = active_preview(
-        pair,
-        amm_program,
-        &pool,
-        stored_reversed,
-        holding_a.as_ref(),
-        holding_b.as_ref(),
-        lp_holding.as_ref(),
-    );
+    let preview = account_plan.preview();
     let value = json!({
         "schema": SCHEMA,
         "status": "ok",
@@ -1167,22 +1315,24 @@ fn compute_active_quote(
         "errors": funding,
         "warnings": warnings,
     });
-    Ok(QuoteComputation {
+    let plan = if can_submit {
+        Some(NewPositionPlan::new(
+            account_plan,
+            QuoteBranch::Active {
+                max_a,
+                max_b,
+                minimum_lp,
+                stored_reversed,
+            },
+        )?)
+    } else {
+        None
+    };
+    Ok(QuoteComputation::Evaluated(EvaluatedQuote {
         value,
-        quote_hash: Some(quote_hash),
-        can_submit,
-        requires_fresh_lp,
-        pair: Some(pair),
-        holding_a,
-        holding_b,
-        lp_holding,
-        branch: Some(QuoteBranch::Active {
-            max_a,
-            max_b,
-            minimum_lp,
-            stored_reversed,
-        }),
-    })
+        quote_hash,
+        plan,
+    }))
 }
 
 fn validate_active_accounts(
@@ -1482,49 +1632,6 @@ fn funding_commitments(
     .collect()
 }
 
-fn quote_sources_missing(
-    input: &QuoteRequest,
-    holding_a: &Option<SelectedHolding>,
-    holding_b: &Option<SelectedHolding>,
-) -> Result<Vec<SourceCommitment>, String> {
-    let mut sources = sources_from_reads(&[
-        ("config", &input.snapshot.config),
-        ("token_a", &input.snapshot.token_a),
-        ("token_b", &input.snapshot.token_b),
-        ("pool", &input.snapshot.pool),
-        ("vault_a", &input.snapshot.vault_a),
-        ("vault_b", &input.snapshot.vault_b),
-        ("lp_definition", &input.snapshot.lp_definition),
-        ("lp_lock_holding", &input.snapshot.lp_lock_holding),
-        ("current_tick", &input.snapshot.current_tick),
-    ])?;
-    append_holding_source(&mut sources, "holding_a", holding_a);
-    append_holding_source(&mut sources, "holding_b", holding_b);
-    Ok(sources)
-}
-
-fn quote_sources_active(
-    input: &QuoteRequest,
-    holding_a: &Option<SelectedHolding>,
-    holding_b: &Option<SelectedHolding>,
-    lp_holding: &Option<SelectedHolding>,
-) -> Result<Vec<SourceCommitment>, String> {
-    let mut sources = sources_from_reads(&[
-        ("config", &input.snapshot.config),
-        ("token_a", &input.snapshot.token_a),
-        ("token_b", &input.snapshot.token_b),
-        ("pool", &input.snapshot.pool),
-        ("vault_a", &input.snapshot.vault_a),
-        ("vault_b", &input.snapshot.vault_b),
-        ("lp_definition", &input.snapshot.lp_definition),
-        ("current_tick", &input.snapshot.current_tick),
-    ])?;
-    append_holding_source(&mut sources, "holding_a", holding_a);
-    append_holding_source(&mut sources, "holding_b", holding_b);
-    append_holding_source(&mut sources, "holding_lp", lp_holding);
-    Ok(sources)
-}
-
 fn sources_from_reads(reads: &[(&str, &AccountRead)]) -> Result<Vec<SourceCommitment>, String> {
     reads
         .iter()
@@ -1541,7 +1648,7 @@ fn sources_from_reads(reads: &[(&str, &AccountRead)]) -> Result<Vec<SourceCommit
 fn append_holding_source(
     sources: &mut Vec<SourceCommitment>,
     role: &str,
-    holding: &Option<SelectedHolding>,
+    holding: Option<&SelectedHolding>,
 ) {
     if let Some(holding) = holding {
         sources.push(SourceCommitment {
@@ -1573,7 +1680,7 @@ fn fatal_quote(
     fields: &[&str],
     details: Value,
 ) -> QuoteComputation {
-    QuoteComputation {
+    QuoteComputation::Fatal {
         value: json!({
             "schema": SCHEMA,
             "status": "error",
@@ -1586,241 +1693,224 @@ fn fatal_quote(
             "errors": [issue(code, "Position quote is unavailable.", fields, details)],
             "warnings": [],
         }),
-        quote_hash: None,
-        can_submit: false,
-        requires_fresh_lp: false,
-        pair: None,
-        holding_a: None,
-        holding_b: None,
-        lp_holding: None,
-        branch: None,
     }
 }
 
-fn preview_row(
-    order: usize,
-    role: &str,
-    account_id: Option<AccountId>,
-    expected_program: Option<ProgramId>,
-    action: &str,
-    signer: bool,
-    init: bool,
-) -> Value {
-    json!({
-        "order": order,
-        "role": role,
-        "accountId": account_id.map(|id| id.to_string()),
-        "expectedProgramId": expected_program.map(program_id_base58),
-        "action": action,
-        "writable": action != "read",
-        "signer": signer,
-        "init": init,
+fn missing_account_plan(
+    input: &QuoteRequest,
+    pair: PairIds,
+    amm_program: ProgramId,
+    holdings: AccountPlanHoldings<'_>,
+) -> Result<AccountPlan, String> {
+    let mut sources = sources_from_reads(&[
+        ("config", &input.snapshot.config),
+        ("token_a", &input.snapshot.token_a),
+        ("token_b", &input.snapshot.token_b),
+        ("pool", &input.snapshot.pool),
+        ("vault_a", &input.snapshot.vault_a),
+        ("vault_b", &input.snapshot.vault_b),
+        ("lp_definition", &input.snapshot.lp_definition),
+        ("lp_lock_holding", &input.snapshot.lp_lock_holding),
+        ("current_tick", &input.snapshot.current_tick),
+    ])?;
+    append_holding_source(&mut sources, "holding_a", holdings.token_a);
+    append_holding_source(&mut sources, "holding_b", holdings.token_b);
+    Ok(AccountPlan {
+        rows: vec![
+            AccountPlanRow::new(
+                "config",
+                Some(pair.config),
+                Some(amm_program),
+                "read",
+                false,
+                false,
+            ),
+            AccountPlanRow::new(
+                "pool",
+                Some(pair.pool),
+                Some(amm_program),
+                "create",
+                false,
+                true,
+            ),
+            AccountPlanRow::new(
+                "vault_a",
+                Some(pair.vault_a),
+                Some(pair.token_program),
+                "create",
+                false,
+                true,
+            ),
+            AccountPlanRow::new(
+                "vault_b",
+                Some(pair.vault_b),
+                Some(pair.token_program),
+                "create",
+                false,
+                true,
+            ),
+            AccountPlanRow::new(
+                "lp_definition",
+                Some(pair.lp_definition),
+                Some(pair.token_program),
+                "create",
+                false,
+                true,
+            ),
+            AccountPlanRow::new(
+                "lp_lock_holding",
+                Some(pair.lp_lock_holding),
+                Some(pair.token_program),
+                "create",
+                false,
+                true,
+            ),
+            AccountPlanRow::new(
+                "user_holding_a",
+                holdings.token_a.map(|value| value.id),
+                Some(pair.token_program),
+                "update",
+                true,
+                false,
+            ),
+            AccountPlanRow::new(
+                "user_holding_b",
+                holdings.token_b.map(|value| value.id),
+                Some(pair.token_program),
+                "update",
+                true,
+                false,
+            ),
+            AccountPlanRow::new(
+                "user_holding_lp",
+                None,
+                Some(pair.token_program),
+                "create",
+                true,
+                true,
+            ),
+            AccountPlanRow::new(
+                "current_tick",
+                Some(pair.current_tick),
+                Some(pair.twap_program),
+                "create",
+                false,
+                true,
+            ),
+            AccountPlanRow::new("clock", Some(pair.clock), None, "read", false, false),
+        ],
+        sources,
     })
 }
 
-fn missing_preview(
-    pair: PairIds,
-    amm_program: ProgramId,
-    holding_a: Option<&SelectedHolding>,
-    holding_b: Option<&SelectedHolding>,
-) -> Vec<Value> {
-    vec![
-        preview_row(
-            0,
-            "config",
-            Some(pair.config),
-            Some(amm_program),
-            "read",
-            false,
-            false,
-        ),
-        preview_row(
-            1,
-            "pool",
-            Some(pair.pool),
-            Some(amm_program),
-            "create",
-            false,
-            true,
-        ),
-        preview_row(
-            2,
-            "vault_a",
-            Some(pair.vault_a),
-            Some(pair.token_program),
-            "create",
-            false,
-            true,
-        ),
-        preview_row(
-            3,
-            "vault_b",
-            Some(pair.vault_b),
-            Some(pair.token_program),
-            "create",
-            false,
-            true,
-        ),
-        preview_row(
-            4,
-            "lp_definition",
-            Some(pair.lp_definition),
-            Some(pair.token_program),
-            "create",
-            false,
-            true,
-        ),
-        preview_row(
-            5,
-            "lp_lock_holding",
-            Some(pair.lp_lock_holding),
-            Some(pair.token_program),
-            "create",
-            false,
-            true,
-        ),
-        preview_row(
-            6,
-            "user_holding_a",
-            holding_a.map(|value| value.id),
-            Some(pair.token_program),
-            "update",
-            true,
-            false,
-        ),
-        preview_row(
-            7,
-            "user_holding_b",
-            holding_b.map(|value| value.id),
-            Some(pair.token_program),
-            "update",
-            true,
-            false,
-        ),
-        preview_row(
-            8,
-            "user_holding_lp",
-            None,
-            Some(pair.token_program),
-            "create",
-            true,
-            true,
-        ),
-        preview_row(
-            9,
-            "current_tick",
-            Some(pair.current_tick),
-            Some(pair.twap_program),
-            "create",
-            false,
-            true,
-        ),
-        preview_row(10, "clock", Some(pair.clock), None, "read", false, false),
-    ]
-}
-
-fn active_preview(
+fn active_account_plan(
+    input: &QuoteRequest,
     pair: PairIds,
     amm_program: ProgramId,
     pool: &PoolDefinition,
     stored_reversed: bool,
-    holding_a: Option<&SelectedHolding>,
-    holding_b: Option<&SelectedHolding>,
-    lp_holding: Option<&SelectedHolding>,
-) -> Vec<Value> {
+    holdings: AccountPlanHoldings<'_>,
+) -> Result<AccountPlan, String> {
     let (stored_holding_a, stored_holding_b) = if stored_reversed {
-        (holding_b, holding_a)
+        (holdings.token_b, holdings.token_a)
     } else {
-        (holding_a, holding_b)
+        (holdings.token_a, holdings.token_b)
     };
-    vec![
-        preview_row(
-            0,
-            "config",
-            Some(pair.config),
-            Some(amm_program),
-            "read",
-            false,
-            false,
-        ),
-        preview_row(
-            1,
-            "pool",
-            Some(pair.pool),
-            Some(amm_program),
-            "update",
-            false,
-            false,
-        ),
-        preview_row(
-            2,
-            "vault_a",
-            Some(pool.vault_a_id),
-            Some(pair.token_program),
-            "update",
-            false,
-            false,
-        ),
-        preview_row(
-            3,
-            "vault_b",
-            Some(pool.vault_b_id),
-            Some(pair.token_program),
-            "update",
-            false,
-            false,
-        ),
-        preview_row(
-            4,
-            "lp_definition",
-            Some(pair.lp_definition),
-            Some(pair.token_program),
-            "update",
-            false,
-            false,
-        ),
-        preview_row(
-            5,
-            "user_holding_a",
-            stored_holding_a.map(|value| value.id),
-            Some(pair.token_program),
-            "update",
-            true,
-            false,
-        ),
-        preview_row(
-            6,
-            "user_holding_b",
-            stored_holding_b.map(|value| value.id),
-            Some(pair.token_program),
-            "update",
-            true,
-            false,
-        ),
-        preview_row(
-            7,
-            "user_holding_lp",
-            lp_holding.map(|value| value.id),
-            Some(pair.token_program),
-            if lp_holding.is_some() {
-                "update"
-            } else {
-                "create"
-            },
-            lp_holding.is_none(),
-            lp_holding.is_none(),
-        ),
-        preview_row(
-            8,
-            "current_tick",
-            Some(pair.current_tick),
-            Some(pair.twap_program),
-            "update",
-            false,
-            false,
-        ),
-        preview_row(9, "clock", Some(pair.clock), None, "read", false, false),
-    ]
+    let mut sources = sources_from_reads(&[
+        ("config", &input.snapshot.config),
+        ("token_a", &input.snapshot.token_a),
+        ("token_b", &input.snapshot.token_b),
+        ("pool", &input.snapshot.pool),
+        ("vault_a", &input.snapshot.vault_a),
+        ("vault_b", &input.snapshot.vault_b),
+        ("lp_definition", &input.snapshot.lp_definition),
+        ("current_tick", &input.snapshot.current_tick),
+    ])?;
+    append_holding_source(&mut sources, "holding_a", holdings.token_a);
+    append_holding_source(&mut sources, "holding_b", holdings.token_b);
+    append_holding_source(&mut sources, "holding_lp", holdings.lp);
+    Ok(AccountPlan {
+        rows: vec![
+            AccountPlanRow::new(
+                "config",
+                Some(pair.config),
+                Some(amm_program),
+                "read",
+                false,
+                false,
+            ),
+            AccountPlanRow::new(
+                "pool",
+                Some(pair.pool),
+                Some(amm_program),
+                "update",
+                false,
+                false,
+            ),
+            AccountPlanRow::new(
+                "vault_a",
+                Some(pool.vault_a_id),
+                Some(pair.token_program),
+                "update",
+                false,
+                false,
+            ),
+            AccountPlanRow::new(
+                "vault_b",
+                Some(pool.vault_b_id),
+                Some(pair.token_program),
+                "update",
+                false,
+                false,
+            ),
+            AccountPlanRow::new(
+                "lp_definition",
+                Some(pair.lp_definition),
+                Some(pair.token_program),
+                "update",
+                false,
+                false,
+            ),
+            AccountPlanRow::new(
+                "user_holding_a",
+                stored_holding_a.map(|value| value.id),
+                Some(pair.token_program),
+                "update",
+                true,
+                false,
+            ),
+            AccountPlanRow::new(
+                "user_holding_b",
+                stored_holding_b.map(|value| value.id),
+                Some(pair.token_program),
+                "update",
+                true,
+                false,
+            ),
+            AccountPlanRow::new(
+                "user_holding_lp",
+                holdings.lp.map(|value| value.id),
+                Some(pair.token_program),
+                if holdings.lp.is_some() {
+                    "update"
+                } else {
+                    "create"
+                },
+                holdings.lp.is_none(),
+                holdings.lp.is_none(),
+            ),
+            AccountPlanRow::new(
+                "current_tick",
+                Some(pair.current_tick),
+                Some(pair.twap_program),
+                "update",
+                false,
+                false,
+            ),
+            AccountPlanRow::new("clock", Some(pair.clock), None, "read", false, false),
+        ],
+        sources,
+    })
 }
 
 pub fn plan(input: PlanRequest) -> Result<Value, String> {
@@ -1832,34 +1922,37 @@ pub fn plan(input: PlanRequest) -> Result<Value, String> {
         snapshot: input.snapshot,
     };
     let quote = compute_quote(&quote_input)?;
-    if quote.quote_hash.as_deref() != Some(input.quote_hash.as_str()) {
+    if quote.quote_hash() != Some(input.quote_hash.as_str()) {
         return Ok(json!({
             "schema": SCHEMA,
             "status": "error",
             "code": "quote_changed",
             "recoverable": true,
-            "quote": quote.value,
+            "quote": quote.into_value(),
         }));
     }
-    if !quote.can_submit {
+    let evaluated = match quote {
+        QuoteComputation::Evaluated(evaluated) => evaluated,
+        QuoteComputation::Fatal { value } => {
+            return Ok(json!({
+                "schema": SCHEMA,
+                "status": "error",
+                "code": "quote_not_submittable",
+                "recoverable": true,
+                "quote": value,
+            }))
+        }
+    };
+    let Some(plan) = evaluated.plan else {
         return Ok(json!({
             "schema": SCHEMA,
             "status": "error",
             "code": "quote_not_submittable",
             "recoverable": true,
-            "quote": quote.value,
+            "quote": evaluated.value,
         }));
-    }
-    let pair = quote
-        .pair
-        .ok_or_else(|| String::from("submittable quote has no pair"))?;
-    let holding_a = quote
-        .holding_a
-        .ok_or_else(|| String::from("submittable quote has no token A holding"))?;
-    let holding_b = quote
-        .holding_b
-        .ok_or_else(|| String::from("submittable quote has no token B holding"))?;
-    let fresh_lp = if quote.requires_fresh_lp {
+    };
+    let fresh_lp = if plan.requires_fresh_lp() {
         let Some(read) = input.fresh_lp.as_ref() else {
             return Ok(json!({
                 "schema": SCHEMA,
@@ -1877,12 +1970,6 @@ pub fn plan(input: PlanRequest) -> Result<Value, String> {
     } else {
         None
     };
-    let lp_id = quote
-        .lp_holding
-        .as_ref()
-        .map(|holding| holding.id)
-        .or(fresh_lp)
-        .ok_or_else(|| String::from("transaction plan has no LP holding"))?;
     let deadline = input
         .now_ms
         .checked_add(DEADLINE_WINDOW_MS)
@@ -1893,10 +1980,9 @@ pub fn plan(input: PlanRequest) -> Result<Value, String> {
     }
     let amm_program = parse_program_id(&input.amm_program_id)?;
 
-    let (account_ids, signing_requirements, instruction) = match quote
-        .branch
-        .ok_or_else(|| String::from("submittable quote has no branch"))?
-    {
+    let NewPositionPlan { accounts, branch } = plan;
+    let (account_ids, signing_requirements) = accounts.wallet_args(fresh_lp)?;
+    let instruction = match branch {
         QuoteBranch::Missing { amount_a, amount_b } => {
             let instruction = amm_core::Instruction::NewDefinition {
                 token_a_amount: amount_a,
@@ -1904,26 +1990,8 @@ pub fn plan(input: PlanRequest) -> Result<Value, String> {
                 fees: u128::from(quote_input.request.fee_bps),
                 deadline,
             };
-            (
-                vec![
-                    pair.config,
-                    pair.pool,
-                    pair.vault_a,
-                    pair.vault_b,
-                    pair.lp_definition,
-                    pair.lp_lock_holding,
-                    holding_a.id,
-                    holding_b.id,
-                    lp_id,
-                    pair.current_tick,
-                    pair.clock,
-                ],
-                vec![
-                    false, false, false, false, false, false, true, true, true, false, false,
-                ],
-                risc0_zkvm::serde::to_vec(&instruction)
-                    .map_err(|error| format!("instruction serialization failed: {error}"))?,
-            )
+            risc0_zkvm::serde::to_vec(&instruction)
+                .map_err(|error| format!("instruction serialization failed: {error}"))?
         }
         QuoteBranch::Active {
             max_a,
@@ -1931,49 +1999,19 @@ pub fn plan(input: PlanRequest) -> Result<Value, String> {
             minimum_lp,
             stored_reversed,
         } => {
-            let (_, pool_account) = decode_account(&quote_input.snapshot.pool)?;
-            let pool = PoolDefinition::try_from(&pool_account.data)
-                .map_err(|_| String::from("active pool data changed"))?;
-            let (stored_max_a, stored_max_b, stored_holding_a, stored_holding_b) =
-                if stored_reversed {
-                    (max_b, max_a, holding_b.id, holding_a.id)
-                } else {
-                    (max_a, max_b, holding_a.id, holding_b.id)
-                };
+            let (stored_max_a, stored_max_b) = if stored_reversed {
+                (max_b, max_a)
+            } else {
+                (max_a, max_b)
+            };
             let instruction = amm_core::Instruction::AddLiquidity {
                 min_amount_liquidity: minimum_lp,
                 max_amount_to_add_token_a: stored_max_a,
                 max_amount_to_add_token_b: stored_max_b,
                 deadline,
             };
-            (
-                vec![
-                    pair.config,
-                    pair.pool,
-                    pool.vault_a_id,
-                    pool.vault_b_id,
-                    pair.lp_definition,
-                    stored_holding_a,
-                    stored_holding_b,
-                    lp_id,
-                    pair.current_tick,
-                    pair.clock,
-                ],
-                vec![
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    true,
-                    true,
-                    fresh_lp.is_some(),
-                    false,
-                    false,
-                ],
-                risc0_zkvm::serde::to_vec(&instruction)
-                    .map_err(|error| format!("instruction serialization failed: {error}"))?,
-            )
+            risc0_zkvm::serde::to_vec(&instruction)
+                .map_err(|error| format!("instruction serialization failed: {error}"))?
         }
     };
 
@@ -2135,6 +2173,111 @@ mod tests {
         }
     }
 
+    fn assert_preview_matches_plan(
+        quote_value: &Value,
+        plan_value: &Value,
+        fresh_lp: Option<AccountId>,
+    ) {
+        let preview = quote_value["accountPreview"].as_array().unwrap();
+        let account_ids = plan_value["accountIds"].as_array().unwrap();
+        let signing_requirements = plan_value["signingRequirements"].as_array().unwrap();
+        assert_eq!(preview.len(), account_ids.len());
+        assert_eq!(preview.len(), signing_requirements.len());
+
+        for (order, row) in preview.iter().enumerate() {
+            assert_eq!(row["order"], order);
+            assert_eq!(row["signer"], signing_requirements[order]);
+            if let Some(account_id) = row["accountId"].as_str() {
+                let account_id = parse_base58_id(account_id, "preview account id").unwrap();
+                assert_eq!(account_ids[order], account_id_hex(account_id));
+            } else {
+                assert_eq!(row["role"], "user_holding_lp");
+                assert_eq!(account_ids[order], account_id_hex(fresh_lp.unwrap()));
+            }
+        }
+    }
+
+    #[test]
+    fn account_plan_sources_follow_pool_branch() {
+        let pair = ids();
+        let snapshot = base_snapshot(pair);
+        let input = QuoteRequest {
+            network_id: String::from("devnet"),
+            network_fingerprint: String::from("channel:test"),
+            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
+            request: request(pair),
+            snapshot,
+        };
+        let holdings = wallet_holdings(&input.snapshot.wallet_accounts, pair.token_program);
+        let holding_a = select_holding(&holdings, pair.token_a);
+        let holding_b = select_holding(&holdings, pair.token_b);
+
+        let missing = missing_account_plan(
+            &input,
+            pair,
+            AMM_PROGRAM,
+            AccountPlanHoldings {
+                token_a: holding_a.as_ref(),
+                token_b: holding_b.as_ref(),
+                lp: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            missing
+                .sources
+                .iter()
+                .map(|source| source.role.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "config",
+                "token_a",
+                "token_b",
+                "pool",
+                "vault_a",
+                "vault_b",
+                "lp_definition",
+                "lp_lock_holding",
+                "current_tick",
+                "holding_a",
+                "holding_b",
+            ]
+        );
+
+        let active = active_account_plan(
+            &input,
+            pair,
+            AMM_PROGRAM,
+            &PoolDefinition::default(),
+            false,
+            AccountPlanHoldings {
+                token_a: holding_a.as_ref(),
+                token_b: holding_b.as_ref(),
+                lp: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            active
+                .sources
+                .iter()
+                .map(|source| source.role.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "config",
+                "token_a",
+                "token_b",
+                "pool",
+                "vault_a",
+                "vault_b",
+                "lp_definition",
+                "current_tick",
+                "holding_a",
+                "holding_b",
+            ]
+        );
+    }
+
     #[test]
     fn minimum_pair_exceeds_protocol_lock() {
         for price in [1, Q64 / 10, Q64, Q64 * 2, u128::MAX] {
@@ -2294,6 +2437,7 @@ mod tests {
         assert_eq!(plan_value["signingRequirements"][6], true);
         assert_eq!(plan_value["signingRequirements"][7], true);
         assert_eq!(plan_value["signingRequirements"][8], true);
+        assert_preview_matches_plan(&quote_value, &plan_value, Some(fresh_lp));
     }
 
     #[test]
@@ -2422,6 +2566,41 @@ mod tests {
         assert_eq!(plan_value["accountIds"].as_array().unwrap().len(), 10);
         assert_eq!(plan_value["accountIds"][7], account_id_hex(lp_holding));
         assert_eq!(plan_value["signingRequirements"][7], false);
+        assert_preview_matches_plan(&quote_value, &plan_value, None);
+    }
+
+    #[test]
+    fn matching_unfunded_quote_has_no_transaction_plan() {
+        let pair = ids();
+        let request = request(pair);
+        let mut snapshot = base_snapshot(pair);
+        snapshot.wallet_available = false;
+        snapshot.wallet_accounts.clear();
+        let quote_value = quote(QuoteRequest {
+            network_id: String::from("devnet"),
+            network_fingerprint: String::from("channel:test"),
+            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
+            request: request.clone(),
+            snapshot: snapshot.clone(),
+        })
+        .unwrap();
+        assert_eq!(quote_value["canSubmit"], false);
+
+        let plan_value = plan(PlanRequest {
+            network_id: String::from("devnet"),
+            network_fingerprint: String::from("channel:test"),
+            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
+            request,
+            snapshot,
+            quote_hash: quote_value["quoteHash"].as_str().unwrap().to_owned(),
+            now_ms: 2_000,
+            fresh_lp: None,
+        })
+        .unwrap();
+
+        assert_eq!(plan_value["status"], "error");
+        assert_eq!(plan_value["code"], "quote_not_submittable");
+        assert_eq!(plan_value["quote"], quote_value);
     }
 
     #[test]
