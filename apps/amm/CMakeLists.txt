@@ -26,4 +26,6 @@ logos_module(
     LINK_LIBRARIES
         Qt6::Gui
         Qt6::Network
+    EXTERNAL_LIBS
+        amm_client_ffi
 )

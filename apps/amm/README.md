@@ -20,7 +20,7 @@ honors), and its config (`wallet_config.json`) self-initializes.
 
 Account/keystore sharing follows the runtime:
 
-- **Standalone** (`nix run .`): own core-module instance, but the canonical
+- **Standalone** (`nix run .#amm-ui`): own core-module instance, but the canonical
   `~/.lee/wallet` keystore is shared with the LEZ wallet UI and any other LEZ
   app on the machine. A previously-created wallet auto-opens on launch.
 - **Inside Basecamp**: the core wallet module is a single shared instance, so on
@@ -50,13 +50,19 @@ This makes `lgpm` available as a global command.
 
 ## Running the UI standalone
 
-Start the UI with:
+The app is built from the **repository-root** flake (which also provides the
+`amm_client_ffi` library it links). From the repo root, launch it with its named
+attribute:
 
 ```bash
-nix run .
+nix run .#amm-ui
 ```
 
 This builds and runs the application in development mode. The Logos bridge is unavailable in standalone mode, but the UI layout and mock data are fully functional.
+
+Build just the FFI crate with `nix build .#amm_client_ffi`. (Each UI is exposed
+under its own name, so future apps are `nix run .#<name>` — there is no bare
+`nix run .` default.)
 
 ## Running inside Logos Basecamp
 

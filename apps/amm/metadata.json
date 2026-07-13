@@ -14,11 +14,13 @@
       "build": [],
       "runtime": ["qt6.qtdeclarative", "zstd", "krb5", "abseil-cpp"]
     },
-    "external_libraries": [],
+    "external_libraries": [
+      { "name": "amm_client_ffi" }
+    ],
     "cmake": {
       "find_packages": [],
       "extra_sources": [],
-      "extra_include_dirs": [],
+      "extra_include_dirs": ["lib"],
       "extra_link_libraries": []
     }
   }
