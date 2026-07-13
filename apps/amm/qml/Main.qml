@@ -83,6 +83,7 @@ Item {
         SwapPage {
             anchors.fill: parent
             visible: navbar.currentIndex === 0
+            backend: root.ready ? root.backend : null
         }
 
         LiquidityPage {

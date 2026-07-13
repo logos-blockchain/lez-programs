@@ -8,6 +8,11 @@ import "../state"
 Item {
     id: root
 
+    // Real backend replica (logos.module("amm_ui")), wired from Main.qml.
+    // Only used by ManualSwapPanel below — the dummy SwapCard above stays
+    // client-side/demo only until the token picker is backed by real data.
+    property var backend: null
+
     property var tokens: [
         { symbol: "TOK1", name: "Token 1", color: "#627eea", letter: "E", address: "0x0000000000000000000000000000000000000000",  usdPrice: 2392.70, balance: 4.25,    reserve: 850     },
         { symbol: "TOK2", name: "Token 2", color: "#2775ca", letter: "$", address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  usdPrice: 1.00,    balance: 12480,   reserve: 2400000 },
@@ -104,6 +109,23 @@ Item {
 
                 onSubmitRequested: function(snapshot) {
                     swapConfirmationDialog.openWithSnapshot(snapshot)
+                }
+            }
+
+            ManualSwapPanel {
+                id: manualSwapPanel
+                Layout.alignment: Qt.AlignHCenter
+                theme: theme
+                backend: root.backend
+                width: swapCard.width
+
+                onSwapSucceeded: function(snapshot) {
+                    swapToast.show(qsTr("Swap submitted"),
+                                   qsTr("tx %1").arg(snapshot.txHash))
+                }
+
+                onSwapFailed: function(message) {
+                    console.warn("Manual swap failed:", message)
                 }
             }
 
