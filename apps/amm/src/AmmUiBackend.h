@@ -3,10 +3,15 @@
 
 #include <QObject>
 #include <QString>
+#include <QVariantMap>
 
 #include "rep_AmmUiBackend_source.h"
 
 #include "AccountModel.h"
+
+extern "C" {
+#include "amm_client_ffi.h"
+}
 
 class LogosAPI;
 struct LogosModules;
@@ -42,6 +47,12 @@ public slots:
     void disconnectWallet() override;
     bool changeSequencerAddr(QString url) override;
     void copyToClipboard(QString text) override;
+
+    // AMM
+    QVariantMap resolvePool(QString defAHex, QString defBHex) override;
+    QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
+                            QString userOutputHoldingHex, QString amountInDecimal,
+                            QString minOutDecimal, QString deadlineDecimal) override;
 
 private:
     // Per-app wallet home (kept distinct from the wallet's canonical

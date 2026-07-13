@@ -43,4 +43,18 @@ class AmmUiBackend
 
     // Misc
     SLOT(void copyToClipboard(QString text))
+
+    // AMM
+    // Derives the AMM pool's PDAs (config/pool/vaults/current-tick) from the
+    // deployed AMM program's ELF (see AMM_PROGRAM_BIN) and reads the pool's
+    // on-chain reserves. Returns `{ exists: false }` if the AMM program bin
+    // isn't configured, the AMM isn't initialized, or the pool has no
+    // liquidity yet.
+    SLOT(QVariantMap resolvePool(QString defAHex, QString defBHex))
+    // Submits a real on-chain SwapExactInput transaction against the pool for
+    // (defAHex, defBHex). amountInDecimal/minOutDecimal are decimal-string
+    // u128 amounts in base units; deadlineDecimal is a decimal-string u64
+    // unix timestamp. Returns the tx hash, or an empty string on failure
+    // (no pool, unreadable AMM_PROGRAM_BIN, bad inputs, or a failed tx).
+    SLOT(QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountInDecimal, QString minOutDecimal, QString deadlineDecimal))
 }

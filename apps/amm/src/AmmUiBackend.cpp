@@ -20,6 +20,10 @@
 #include "logos_api.h"
 #include "logos_sdk.h"
 
+extern "C" {
+#include "amm_client_ffi.h"
+}
+
 namespace {
     const char SETTINGS_ORG[] = "Logos";
     const char SETTINGS_APP[] = "AmmUI";
@@ -32,11 +36,86 @@ namespace {
     // canonical wallet (~/.lee/wallet) used by the wallet UI and other apps.
     const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
 
+    // Absolute path to the deployed AMM program's compiled ELF (amm.bin). The
+    // app can't safely embed/derive this itself: the wallet module's bundled
+    // AMM program may differ from whatever is actually deployed on the target
+    // sequencer, and the program's ELF bytes are what determine its program id
+    // (and therefore every PDA derived from it). See apps/amm/README.md.
+    const char AMM_PROGRAM_BIN_ENV[] = "AMM_PROGRAM_BIN";
+
     // Normalise file:// URLs and OS paths to a plain local path.
     QString toLocalPath(const QString& path) {
         if (path.startsWith("file://") || path.contains("/"))
             return QUrl::fromUserInput(path).toLocalFile();
         return path;
+    }
+
+    QString bytes32ToHex(const uint8_t (&b)[32]) {
+        return QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(b), 32).toHex());
+    }
+
+    bool hexToBytes32(const QString& hex, uint8_t (&out)[32]) {
+        const QByteArray bytes = QByteArray::fromHex(hex.toUtf8());
+        if (bytes.size() != 32)
+            return false;
+        for (int i = 0; i < 32; ++i)
+            out[i] = static_cast<uint8_t>(bytes[i]);
+        return true;
+    }
+
+    // Little-endian 16-byte u128 -> decimal string. QString has no direct u128
+    // constructor, so accumulate into unsigned __int128 and extract digits.
+    QString u128leToDecimal(const uint8_t (&le)[16]) {
+        unsigned __int128 value = 0;
+        for (int i = 15; i >= 0; --i)
+            value = (value << 8) | static_cast<unsigned __int128>(le[i]);
+
+        if (value == 0)
+            return QStringLiteral("0");
+
+        QString digits;
+        while (value > 0) {
+            const unsigned int digit = static_cast<unsigned int>(value % 10);
+            digits.prepend(QChar(static_cast<char16_t>('0' + digit)));
+            value /= 10;
+        }
+        return digits;
+    }
+
+    // Decimal string -> little-endian 16-byte u128. Inverse of u128leToDecimal.
+    // Returns false (leaving `out` unwritten) on an empty string or a
+    // non-digit character.
+    bool decimalToU128Le(const QString& decimal, uint8_t (&out)[16]) {
+        const QString trimmed = decimal.trimmed();
+        if (trimmed.isEmpty())
+            return false;
+
+        unsigned __int128 value = 0;
+        for (const QChar ch : trimmed) {
+            if (!ch.isDigit())
+                return false;
+            value = value * 10 + static_cast<unsigned int>(ch.digitValue());
+        }
+
+        for (int i = 0; i < 16; ++i) {
+            out[i] = static_cast<uint8_t>(value & 0xFF);
+            value >>= 8;
+        }
+        return true;
+    }
+
+    // Base58 address of the fixed clock account consumed by SwapExactInput's
+    // deadline check. Resolved to hex via the wallet module rather than
+    // hardcoding a guessed hex encoding.
+    const char CLOCK_ACCOUNT_BASE58[] = "4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU";
+
+    // Extracts the hex-encoded raw account bytes from a get_account_public()
+    // JSON reply. Returns an empty string if the account has no data (i.e. is
+    // uninitialized/nonexistent) — note the module always includes the "data"
+    // key, set to "" rather than omitted, when there's nothing to read.
+    QString accountDataHex(const QString& accountJson) {
+        const QJsonObject obj = QJsonDocument::fromJson(accountJson.toUtf8()).object();
+        return obj.value(QStringLiteral("data")).toString();
     }
 }
 
@@ -398,4 +477,200 @@ void AmmUiBackend::copyToClipboard(QString text)
 {
     if (QGuiApplication::clipboard())
         QGuiApplication::clipboard()->setText(text);
+}
+
+QVariantMap AmmUiBackend::resolvePool(QString defAHex, QString defBHex)
+{
+    QVariantMap out;
+    out[QStringLiteral("exists")] = false;
+
+    // 1. Load the deployed AMM program's ELF. We can't derive this ourselves —
+    // it must match whatever is actually deployed on the target sequencer.
+    const QByteArray binPath = qgetenv(AMM_PROGRAM_BIN_ENV);
+    if (binPath.isEmpty()) {
+        qWarning() << "AmmUiBackend::resolvePool: AMM_PROGRAM_BIN not set";
+        return out;
+    }
+    QFile elfFile(QString::fromLocal8Bit(binPath));
+    if (!elfFile.open(QIODevice::ReadOnly)) {
+        qWarning() << "AmmUiBackend::resolvePool: cannot read AMM_PROGRAM_BIN at" << elfFile.fileName();
+        return out;
+    }
+    const QByteArray elf = elfFile.readAll();
+    elfFile.close();
+    if (elf.isEmpty()) {
+        qWarning() << "AmmUiBackend::resolvePool: AMM_PROGRAM_BIN is empty";
+        return out;
+    }
+
+    // 2. Derive the AMM program id from the ELF bytes.
+    ProgramId ammId{};
+    if (!amm_client_program_id_from_elf(reinterpret_cast<const uint8_t*>(elf.constData()),
+                                        static_cast<uintptr_t>(elf.size()), &ammId)) {
+        qWarning() << "AmmUiBackend::resolvePool: amm_client_program_id_from_elf failed";
+        return out;
+    }
+
+    // 3. Read + decode the AMM config account to discover the TWAP oracle
+    // program id (needed for the current-tick PDA below). No data means the
+    // AMM hasn't been initialized on this sequencer yet.
+    uint8_t configPda[32];
+    amm_client_config_pda(&ammId, &configPda);
+    const QString configHex = bytes32ToHex(configPda);
+
+    const QString configJson = m_logos->logos_execution_zone.get_account_public(configHex);
+    const QString configDataHex = accountDataHex(configJson);
+    if (configDataHex.isEmpty()) {
+        qWarning() << "AmmUiBackend::resolvePool: AMM config account has no data (not initialized)";
+        return out;
+    }
+
+    const QByteArray configBytes = QByteArray::fromHex(configDataHex.toUtf8());
+    FfiConfigView configView{};
+    if (!amm_client_decode_config(reinterpret_cast<const uint8_t*>(configBytes.constData()),
+                                  static_cast<uintptr_t>(configBytes.size()), &configView)) {
+        qWarning() << "AmmUiBackend::resolvePool: amm_client_decode_config failed";
+        return out;
+    }
+
+    // 4. Derive the pool PDA and read + decode its account. No data means
+    // there's no pool (or no liquidity) for this token pair yet.
+    uint8_t defA[32];
+    uint8_t defB[32];
+    if (!hexToBytes32(defAHex, defA) || !hexToBytes32(defBHex, defB)) {
+        qWarning() << "AmmUiBackend::resolvePool: invalid defAHex/defBHex";
+        return out;
+    }
+
+    uint8_t poolPda[32];
+    amm_client_pool_pda(&ammId, &defA, &defB, &poolPda);
+    const QString poolHex = bytes32ToHex(poolPda);
+
+    const QString poolJson = m_logos->logos_execution_zone.get_account_public(poolHex);
+    const QString poolDataHex = accountDataHex(poolJson);
+    if (poolDataHex.isEmpty()) {
+        // Not a warning: this is the normal "no liquidity yet" state.
+        return out;
+    }
+
+    const QByteArray poolBytes = QByteArray::fromHex(poolDataHex.toUtf8());
+    FfiPoolView poolView{};
+    if (!amm_client_decode_pool(reinterpret_cast<const uint8_t*>(poolBytes.constData()),
+                                static_cast<uintptr_t>(poolBytes.size()), &poolView)) {
+        qWarning() << "AmmUiBackend::resolvePool: amm_client_decode_pool failed";
+        return out;
+    }
+
+    // 5. Derive the TWAP oracle's current-tick PDA for this pool.
+    uint8_t currentTickPda[32];
+    amm_client_current_tick_pda(&configView.twap_oracle_program_id, &poolPda, &currentTickPda);
+
+    // 6. Assemble the result.
+    out[QStringLiteral("exists")] = true;
+    out[QStringLiteral("configHex")] = configHex;
+    out[QStringLiteral("poolIdHex")] = poolHex;
+    out[QStringLiteral("vaultAHex")] = bytes32ToHex(poolView.vault_a);
+    out[QStringLiteral("vaultBHex")] = bytes32ToHex(poolView.vault_b);
+    out[QStringLiteral("currentTickHex")] = bytes32ToHex(currentTickPda);
+    out[QStringLiteral("reserveA")] = u128leToDecimal(poolView.reserve_a);
+    out[QStringLiteral("reserveB")] = u128leToDecimal(poolView.reserve_b);
+    out[QStringLiteral("feeBps")] = static_cast<int>(poolView.fees);
+    return out;
+}
+
+QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
+                                      QString userOutputHoldingHex, QString amountInDecimal,
+                                      QString minOutDecimal, QString deadlineDecimal)
+{
+    // 1. Resolve the pool's PDAs; refuse if there's no pool (or no liquidity)
+    // for this token pair.
+    const QVariantMap pool = resolvePool(defAHex, defBHex);
+    if (!pool.value(QStringLiteral("exists")).toBool()) {
+        qWarning() << "AmmUiBackend::swapExactInput: no pool for the given token pair";
+        return QString();
+    }
+
+    // 2. Load the deployed AMM program's ELF (must match resolvePool's — both
+    // read the same AMM_PROGRAM_BIN — since the instruction is proven against
+    // this exact binary's image id).
+    const QByteArray binPath = qgetenv(AMM_PROGRAM_BIN_ENV);
+    if (binPath.isEmpty()) {
+        qWarning() << "AmmUiBackend::swapExactInput: AMM_PROGRAM_BIN not set";
+        return QString();
+    }
+    QFile elfFile(QString::fromLocal8Bit(binPath));
+    if (!elfFile.open(QIODevice::ReadOnly)) {
+        qWarning() << "AmmUiBackend::swapExactInput: cannot read AMM_PROGRAM_BIN at" << elfFile.fileName();
+        return QString();
+    }
+    const QByteArray elf = elfFile.readAll();
+    elfFile.close();
+    if (elf.isEmpty()) {
+        qWarning() << "AmmUiBackend::swapExactInput: AMM_PROGRAM_BIN is empty";
+        return QString();
+    }
+
+    // 3. Convert amounts/deadline to the wire types amm_client_swap_words expects.
+    uint8_t amtIn[16];
+    uint8_t minOut[16];
+    if (!decimalToU128Le(amountInDecimal, amtIn) || !decimalToU128Le(minOutDecimal, minOut)) {
+        qWarning() << "AmmUiBackend::swapExactInput: invalid amountInDecimal/minOutDecimal";
+        return QString();
+    }
+    bool deadlineOk = false;
+    const quint64 deadline = deadlineDecimal.toULongLong(&deadlineOk);
+    if (!deadlineOk) {
+        qWarning() << "AmmUiBackend::swapExactInput: invalid deadlineDecimal";
+        return QString();
+    }
+
+    // 4. Build the RISC0 instruction words for SwapExactInput.
+    const AmmWords w = amm_client_swap_words(&amtIn, &minOut, deadline);
+    if (!w.ok) {
+        qWarning() << "AmmUiBackend::swapExactInput: amm_client_swap_words failed";
+        return QString();
+    }
+    const std::vector<uint32_t> instruction(w.ptr, w.ptr + w.len);
+    amm_client_free_words(w);
+
+    // 5. Assemble the account id list (exact IDL order) and parallel signer
+    // flags. The swap's direction is derived from the input holding's own
+    // token, so the two user holdings occupy fixed role slots: user_input_holding
+    // (the token being sold) then user_output_holding (received). Only the input
+    // holding signs — the guest debits it via the downstream token transfer; the
+    // output holding only receives and needs no signature.
+    const QString clockHex =
+        m_logos->logos_execution_zone.account_id_from_base58(QString::fromLatin1(CLOCK_ACCOUNT_BASE58));
+    if (clockHex.isEmpty()) {
+        qWarning() << "AmmUiBackend::swapExactInput: failed to resolve clock account id";
+        return QString();
+    }
+
+    const QStringList accounts = {
+        pool.value(QStringLiteral("configHex")).toString(),
+        pool.value(QStringLiteral("poolIdHex")).toString(),
+        pool.value(QStringLiteral("vaultAHex")).toString(),
+        pool.value(QStringLiteral("vaultBHex")).toString(),
+        userInputHoldingHex,  // user_input_holding — the token being sold (signed)
+        userOutputHoldingHex, // user_output_holding — receives the token being bought
+        pool.value(QStringLiteral("currentTickHex")).toString(),
+        clockHex,
+    };
+    const QVariantList signers = { false, false, false, false, true, false, false, false };
+
+    // 6. Submit through the wallet module's generic public-transaction entry
+    // point. program_dependencies is empty: the sequencer resolves the AMM's
+    // chained token/twap calls on-chain for a public tx.
+    const QString resultJson = m_logos->logos_execution_zone.send_generic_public_transaction(
+        accounts, signers, QVariant::fromValue(instruction), QVariant::fromValue(elf),
+        QVariant::fromValue(std::vector<std::vector<uint8_t>>()));
+
+    const QJsonObject obj = QJsonDocument::fromJson(resultJson.toUtf8()).object();
+    if (!obj.value(QStringLiteral("success")).toBool()) {
+        qWarning() << "AmmUiBackend::swapExactInput: transaction failed:" << resultJson;
+        return QString();
+    }
+
+    refreshBalances();
+    return obj.value(QStringLiteral("tx_hash")).toString();
 }

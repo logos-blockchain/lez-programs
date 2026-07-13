@@ -131,6 +131,32 @@ core module from `result-core/` and the UI plugin from `result-lgx/`:
 4. Choose the core module `.lgx` from `result-core/`, then the UI plugin `.lgx`
    from `result-lgx/`
 
+### AMM program binary (required for swaps)
+
+To execute a swap, the app must submit a transaction against the **exact AMM
+program you deployed** (its ELF determines the program id, and therefore every
+pool/vault/config PDA and the transaction's target). The app therefore needs the
+deployed `amm.bin` bytes at runtime — it does **not** derive them from the wallet
+module (whose embedded AMM program may differ from your deployment).
+
+Point the app at your deployed binary with the `AMM_PROGRAM_BIN` environment
+variable (absolute path):
+
+```bash
+AMM_PROGRAM_BIN=/abs/path/to/amm.bin nix run .#amm-ui
+```
+
+This is the same `amm.bin` you deployed via the testnet runbook
+(`programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin`).
+The app reads it, derives the AMM program id (`amm_client_program_id_from_elf`),
+and reads the on-chain AMM config account to discover the TWAP oracle program id
+for the pool's current-tick PDA. If `AMM_PROGRAM_BIN` is unset or unreadable, the
+Swap view stays disabled (no pool can be resolved).
+
+> **Golden rule (from the runbook):** recompiling the AMM changes its program id
+> and *every* derived PDA. After any redeploy, point `AMM_PROGRAM_BIN` at the new
+> `amm.bin` — never mix a stale binary with a fresh deployment.
+
 ## Updating Dependencies
 
 To update the pinned versions of dependencies in `flake.lock`:
