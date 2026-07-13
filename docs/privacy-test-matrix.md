@@ -402,44 +402,95 @@ computes). Confirmed with every account `Public`.
   actual private account, or use `PublicTransaction` instead) — not a bug, but worth noting:
   **the "all-public control" methodology needs at least one trivial private leg to get past
   this check for future control tests**, not just all-`Public` identities.
-- **Leading structural lead, not yet confirmed**: every AMM instruction that hits the length
+- **Leading structural lead, superseded below**: every AMM instruction that hits the length
   mismatch passes a *post-update* copy of `pool` (`pool_price_source`, holding `pool_post` —
   the already-mutated state, not the original pre-state) into its chained TWAP call. This
   "pass what's about to become the post-state as the next call's own pre-state" pattern is
   proven correct on the public-transaction path (33 passing tests) but nothing in
-  Token/ATA/Stablecoin ever exercised it under the privacy circuit. Not yet confirmed as *the*
-  cause — only the clearest outlier found.
+  Token/ATA/Stablecoin ever exercised it under the privacy circuit. This was the leading lead
+  at the time, but is likely **not** the real cause — see the more precise finding below, which
+  identifies the specific missing account directly.
+- **Precisely identified the missing account (2026-07-13)**: instrumented `execution_state.rs`'s
+  per-account loop in `validate_and_sync_states` with `eprintln!` tracing (see below for how this
+  was made to actually take effect) and confirmed via exact string-level `AccountId` matching
+  that `CLOCK_01_PROGRAM_ACCOUNT_ID` is the account that vanishes — it's supplied as a top-level
+  input and is clearly present in the AMM program's own returned `post_states` (confirmed
+  directly in `sync.rs`'s `sync_reserves` and `swap.rs`'s `finalize_swap`, both of which
+  explicitly include `AccountPostState::new(clock.account...)`), yet it never appears in the
+  circuit-level trace at any call depth, not even inside the TWAP chained call which also
+  explicitly passes `clock.clone()`. Root cause of *why* it's dropped is still not found — the
+  next diagnostic step (checking whether `pre_states.len()`/`post_states.len()` already differ
+  from 8/8 before the per-account validation loop runs, which would localize the drop to either
+  the AMM guest/SPEL-macro layer or the circuit's own processing) was planned but not executed.
+  Instrumentation was fully reverted afterward (verified byte-identical to the original checkout
+  and original artifact) rather than left in place.
+- **Confirmed this also blocks real private-account attempts, not just the all-public control
+  case (2026-07-13)**: three tests — `amm_swap_a_to_b_private_user_holding_is_not_expressible`
+  (private `user_holding_a`, 8 vs 7 accounts), `amm_add_liquidity_private_lp_holding_is_not_expressible`
+  (private `user_holding_lp`, 10 vs 9), `amm_remove_liquidity_private_lp_holding_is_not_expressible`
+  (private `user_holding_lp`, 10 vs 9) — all fail with the identical
+  `"Invalid account_identities length"` panic, always exactly one account short. This rules out
+  "the bug only manifests because there are zero private accounts" as an explanation; it's a
+  structural property of these instructions' account/chained-call shape, independent of privacy
+  entirely.
 
-**Why this wasn't root-caused further**: attempted source-level instrumentation
-(`eprintln!` tracing added directly to the pinned `lee_core` checkout's `execution_state.rs`)
-to watch the exact bookkeeping live. Confirmed `lee`/`lee_core` genuinely recompiled
-(`cargo clean -p lee -p lee_core` + fresh compile logs), but the added prints never
-surfaced, while the original panic still fired from the same file/line. This means the actual
-executed code path isn't rebuilt by a normal `cargo clean`/`cargo test` cycle — almost
-certainly because real guest execution runs a separately cross-compiled RISC-V ELF
-(`risc0_build::embed_methods!`), which per this repo's own `CLAUDE.md` needs the Docker-based
-`make build-programs` pipeline to rebuild, not plain cargo. Instrumentation was cleanly
-reverted (`git status` clean in the checkout; all 52 other tests reconfirmed passing
-afterward) rather than sunk further into standing up that Docker toolchain just for tracing.
+**How the instrumentation was made to actually take effect (2026-07-08 attempt failed, 2026-07-13
+attempt succeeded)**: `eprintln!` tracing added directly to the pinned `lee_core` checkout's
+`execution_state.rs` first appeared to have no effect — prints never surfaced, and the original
+panic kept firing from the same file/line even after `cargo clean -p lee -p lee_core` and a fresh
+compile. Root cause: real guest execution runs a separately cross-compiled RISC-V ELF
+(`risc0_build::embed_methods!`), and the pinned `PRIVACY_PRESERVING_CIRCUIT_ELF` artifact is a
+**pre-built, checked-in binary** (`artifacts/lee/privacy_preserving_circuit/privacy_preserving_circuit.bin`
+in the checkout) embedded via `build_utils::include_artifacts` — editing the `.rs` source alone
+never touches that binary. Fix: rebuild the guest ELF directly with
+`cargo risczero build -p privacy_preserving_circuit_program --manifest-path <checkout>/Cargo.toml`
+(matching the checkout's own `Justfile` `build-artifacts` recipe) and copy the result over the
+checked-in `.bin` — **plus** `cargo clean -p lee -p lee_core` again afterward, since
+`cargo:rerun-if-changed` was scoped to the artifacts *directory*, and overwriting a file's
+content in place doesn't change the directory's own mtime, so cargo's incremental build silently
+kept using the old compiled rlib (with the old bytes baked in via `include_bytes!`) even after
+the file swap. Once both steps were done, the `eprintln!` output finally appeared and led
+directly to the `CLOCK_01_PROGRAM_ACCOUNT_ID` finding above. All instrumentation (source edits,
+rebuilt artifact) was fully reverted afterward and verified byte-identical to the original.
 
-**Next step when this is picked back up**: either (a) stand up the guest-rebuild pipeline to
-finish the trace, or (b) construct a minimal synthetic instruction (not part of the real AMM
-program) that isolates the "post-state passed as next call's pre-state" pattern alone, without
-needing to modify any pinned dependency.
+**Next step when this is picked back up**: check whether `output_pre_states.len()`/
+`output_post_states.len()` already differ from 8/8 (or 6/6, etc.) *before* the per-account
+validation loop in `validate_and_sync_states` runs — that would localize the drop to either the
+AMM guest/SPEL-macro layer or the circuit's own processing, and is the next concrete step now
+that instrumentation is confirmed to work end-to-end.
 
 ### Existing
 
-0 private tests out of 33 public. (No private test-writing attempted yet — blocked above.)
+6 private tests out of 33 pre-existing public + 6 = 39. No test can yet demonstrate an
+actually-working AMM privacy path — five exist purely to confirm the circuit bug also blocks
+real private accounts (not just the all-public control case), and one
+(`amm_remove_liquidity_private_new_user_holdings_is_not_expressible`) found a second, distinct,
+earlier blocker specific to `RemoveLiquidity`.
+
+**Second finding, unrelated to the circuit bug (2026-07-13)**: `remove_liquidity` requires
+`user_holding_a`/`user_holding_b` to already exist and already be owned by the configured Token
+Program (`remove.rs`'s `assert_eq!(user_holding_a.account.program_owner, token_program_id, ...)`)
+— unlike `token::transfer`'s recipient handling, which tolerates `Account::default()` and
+self-initializes it. So `RemoveLiquidity` can never pay out to a brand-new private destination
+(`PrivateUnauthorized` — only `npk` known, no `nsk`, the pattern
+`token_mint_shielded_to_private_unauthorized` uses): the attempt
+(`amm_remove_liquidity_private_new_user_holdings_is_not_expressible`) fails inside the AMM
+program's own precondition check (`"User Token A holding must be owned by the configured Token
+Program"`), *before* any chained call or the privacy-preserving circuit is ever reached — and
+would equally reject a brand-new *public* destination. Same shape of finding as Stablecoin's
+`stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`: a plain
+program-level precondition that predates privacy entirely, not a circuit artifact.
 
 ### Planned
 
 | Instruction | Dimension | Test | Priority | Depends on | Status |
 |---|---|---|---|---|---|
-| SwapExactInput | `CHAIN` | `amm_swap_a_to_b_private_user_holding` | P1 | Token, TWAP oracle (public leg) | **Blocked** — see above |
-| SwapExactOutput | `CHAIN` | `amm_swap_exact_output_private_user_holding` | P1 | Token, TWAP oracle (public leg) | **Blocked** — see above |
-| AddLiquidity | `CHAIN` | `amm_add_liquidity_private_user_holdings` | P1 | Token, TWAP oracle (public leg) | **Blocked** — see above |
-| AddLiquidity | BASE | `amm_add_liquidity_private_lp_holding` — private LP output holding | P1 | Token | **Blocked** — see above |
-| RemoveLiquidity | `CHAIN` | `amm_remove_liquidity_private_lp_holding` | P1 | Token, TWAP oracle (public leg) | **Blocked** — see above |
+| SwapExactInput | `CHAIN` | `amm_swap_a_to_b_private_user_holding_is_not_expressible` | P1 | Token, TWAP oracle (public leg) | **Confirmed not-expressible** — private `user_holding_a`, fails identically to the all-public control (8 vs 7 accounts) |
+| SwapExactOutput | `CHAIN` | `amm_swap_exact_output_private_user_holding_is_not_expressible` | P1 | Token, TWAP oracle (public leg) | **Confirmed not-expressible** — identical 8-account/chained-call shape to `SwapExactInput`, fails identically (8 vs 7 accounts) |
+| AddLiquidity | `CHAIN` | `amm_add_liquidity_private_user_holdings_is_not_expressible` — private deposit legs (`user_holding_a`/`user_holding_b`) | P1 | Token, TWAP oracle (public leg) | **Confirmed not-expressible** — fails identically (10 vs 9 accounts) |
+| AddLiquidity | BASE | `amm_add_liquidity_private_lp_holding_is_not_expressible` — private LP output holding | P1 | Token | **Confirmed not-expressible** — private `user_holding_lp`, fails identically (10 vs 9 accounts) |
+| RemoveLiquidity | `CHAIN` | `amm_remove_liquidity_private_lp_holding_is_not_expressible` | P1 | Token, TWAP oracle (public leg) | **Confirmed not-expressible** — private `user_holding_lp`, fails identically (10 vs 9 accounts) |
+| RemoveLiquidity | `EXIST` (negative) | `amm_remove_liquidity_private_new_user_holdings_is_not_expressible` — brand-new `PrivateUnauthorized` token A/B destinations | P1 | Token | **Confirmed not-expressible for a different reason** — AMM's own precondition requires the destination to already be owned by the Token Program; fails before the circuit bug is even reached |
 | Swap / AddLiquidity | `EXIST` | `amm_swap_into_existing_private_holding` | P2 | Token | **Blocked** — see above |
 | NewDefinition | BASE | `amm_new_definition_private_initial_lp_holder` | P2 | Token | **Blocked** — see above (also issues chained calls reusing `pool`-derived accounts; check on resolution) |
 | Swap / AddLiquidity (vault) | `PDA` | `amm_swap_with_private_vault_pda` — predicted **not-expressible** per the ATA `PDA` finding (same `for_public_pda`-only root cause, confirmed in `amm_core`); write as a quick confirmation citing that finding, not a fresh investigation | P2 | Token | Not started (also behind the blocker above) |
@@ -585,5 +636,5 @@ heavier (chained calls, multiple accounts) than a single shield.
 |---|---|---|---|
 | Token | 16 (3 pre-existing + 13 new: 12 pass + 1 confirmed not-expressible by design) — phase complete | 0 | 5 |
 | ATA | 8 (7 pass + 1 confirmed not-expressible — phase complete) | 0 | 0 |
-| AMM | 0 (2 rows now predicted not-expressible pending confirmation) | 10 | 5 |
+| AMM | 6 (all confirmed not-expressible: Swap/SwapExactOutput/AddLiquidity (both LP and deposit legs)/RemoveLiquidity blocked by the same circuit bug, plus RemoveLiquidity's separate new-destination precondition; 2 further rows predicted not-expressible pending confirmation via the `PDA` finding) | 5 | 5 |
 | Stablecoin | 7 (5 pass + 2 confirmed not-expressible — phase complete) | 0 | 1 |

@@ -3,23 +3,84 @@
     reason = "integration fixtures use fixed balances to assert AMM state transitions"
 )]
 
+use std::collections::HashMap;
+
 use amm_core::{
     PoolDefinition, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5,
     MINIMUM_LIQUIDITY,
 };
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
+use integration_tests::{private_authorized_update_identity, private_unauthorized_identity};
 use nssa::{
     error::LeeError,
+    execute_and_prove,
+    privacy_preserving_transaction::circuit::ProgramWithDependencies,
+    program::Program,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use nssa_core::account::{Account, AccountId, Data, Nonce};
+use nssa_core::{
+    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
+    encryption::ViewingPublicKey,
+    Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey, NullifierSecretKey,
+};
 use token_core::{TokenDefinition, TokenHolding};
 
 struct Keys;
 struct Ids;
 struct Balances;
 struct Accounts;
+struct PrivateKeys;
+
+impl PrivateKeys {
+    fn user_a_nsk() -> NullifierSecretKey {
+        [161; 32]
+    }
+
+    fn user_a_npk() -> NullifierPublicKey {
+        NullifierPublicKey::from(&Self::user_a_nsk())
+    }
+
+    fn user_a_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[171; 32], &[172; 32])
+    }
+
+    fn user_a_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::user_a_npk(), 0)
+    }
+
+    fn user_lp_nsk() -> NullifierSecretKey {
+        [162; 32]
+    }
+
+    fn user_lp_npk() -> NullifierPublicKey {
+        NullifierPublicKey::from(&Self::user_lp_nsk())
+    }
+
+    fn user_lp_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[173; 32], &[174; 32])
+    }
+
+    fn user_lp_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::user_lp_npk(), 0)
+    }
+
+    fn user_b_nsk() -> NullifierSecretKey {
+        [163; 32]
+    }
+
+    fn user_b_npk() -> NullifierPublicKey {
+        NullifierPublicKey::from(&Self::user_b_nsk())
+    }
+
+    fn user_b_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[175; 32], &[176; 32])
+    }
+
+    fn user_b_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::user_b_npk(), 0)
+    }
+}
 
 impl Keys {
     fn user_a() -> PrivateKey {
@@ -3036,5 +3097,671 @@ fn amm_add_liquidity_after_fee_accrual() {
     assert_eq!(
         fungible_total_supply(&state.get_account_by_id(Ids::token_lp_definition())),
         6_437
+    );
+}
+
+fn amm_program_instance() -> Program {
+    Program::new(amm_methods::AMM_ELF.to_vec().into()).expect("valid amm ELF")
+}
+
+fn token_program_instance() -> Program {
+    Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF")
+}
+
+fn twap_oracle_program_instance() -> Program {
+    Program::new(twap_oracle_methods::TWAP_ORACLE_ELF.to_vec().into()).expect("valid twap oracle ELF")
+}
+
+fn amm_with_deps() -> ProgramWithDependencies {
+    ProgramWithDependencies::new(
+        amm_program_instance(),
+        HashMap::from([
+            (Ids::token_program(), token_program_instance()),
+            (Ids::twap_oracle_program(), twap_oracle_program_instance()),
+        ]),
+    )
+}
+
+// Marvin-todo
+/// Confirms the AMM circuit-level `"Invalid account_identities length"` bug (bisected with an
+/// all-`Public` control case in `docs/privacy-test-matrix.md`'s AMM section) also fires when a
+/// real private account is involved in `SwapExactInput`, not just the all-public control shape —
+/// i.e. this isn't an artifact of using zero private accounts, the bug blocks a genuine private
+/// swap identically.
+#[test]
+fn amm_swap_a_to_b_private_user_holding_is_not_expressible() {
+    let mut state = state_for_amm_tests();
+
+    let user_a_nsk = PrivateKeys::user_a_nsk();
+    let user_a_vpk = PrivateKeys::user_a_vpk();
+    let user_a_id = PrivateKeys::user_a_id();
+    let user_a_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::user_a_init(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_a_id),
+    };
+    state = state.with_private_accounts([(
+        Commitment::new(&user_a_id, &user_a_account),
+        Nullifier::for_account_initialization(&user_a_id),
+    )]);
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_a_id, &user_a_account))
+        .expect("user_a's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
+    let vault_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
+    let user_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::SwapExactInput {
+        swap_amount_in: Balances::swap_amount_in(),
+        min_amount_out: Balances::swap_min_out(),
+        token_definition_id_in: Ids::token_a_definition(),
+        deadline: u64::MAX,
+    };
+
+    let result = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            user_a_pre,
+            user_b_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(user_a_nsk, &user_a_vpk, membership_proof, 0),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    );
+
+    let err = result.expect_err(
+        "SwapExactInput must be rejected by the privacy-preserving circuit: the same \
+         'Invalid account_identities length' bug confirmed with an all-public control case \
+         also fires with a real private user holding",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("Invalid account_identities length"),
+        "expected the known circuit-level length-mismatch bug, got a different error: {message}"
+    );
+}
+
+// Marvin-todo
+/// Same confirmation as `amm_swap_a_to_b_private_user_holding_is_not_expressible`, for
+/// `SwapExactOutput` — identical 8-account/chained-call shape to `SwapExactInput`, so the same
+/// circuit-level bug is expected to fire identically.
+#[test]
+fn amm_swap_exact_output_private_user_holding_is_not_expressible() {
+    let mut state = state_for_amm_tests();
+
+    let user_a_nsk = PrivateKeys::user_a_nsk();
+    let user_a_vpk = PrivateKeys::user_a_vpk();
+    let user_a_id = PrivateKeys::user_a_id();
+    let user_a_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::user_a_init(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_a_id),
+    };
+    state = state.with_private_accounts([(
+        Commitment::new(&user_a_id, &user_a_account),
+        Nullifier::for_account_initialization(&user_a_id),
+    )]);
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_a_id, &user_a_account))
+        .expect("user_a's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
+    let vault_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
+    let user_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::SwapExactOutput {
+        exact_amount_out: Balances::swap_min_out(),
+        max_amount_in: Balances::swap_amount_in(),
+        token_definition_id_in: Ids::token_a_definition(),
+        deadline: u64::MAX,
+    };
+
+    let result = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            user_a_pre,
+            user_b_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(user_a_nsk, &user_a_vpk, membership_proof, 0),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    );
+
+    let err = result.expect_err(
+        "SwapExactOutput must be rejected by the privacy-preserving circuit: the same \
+         'Invalid account_identities length' bug also fires with a real private user holding",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("Invalid account_identities length"),
+        "expected the known circuit-level length-mismatch bug, got a different error: {message}"
+    );
+}
+
+// Marvin-todo
+/// Same confirmation as `amm_swap_a_to_b_private_user_holding_is_not_expressible`, for
+/// `AddLiquidity` with a private LP-output holding.
+#[test]
+fn amm_add_liquidity_private_lp_holding_is_not_expressible() {
+    let mut state = state_for_amm_tests();
+
+    let user_lp_nsk = PrivateKeys::user_lp_nsk();
+    let user_lp_vpk = PrivateKeys::user_lp_vpk();
+    let user_lp_id = PrivateKeys::user_lp_id();
+    let user_lp_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_lp_definition(),
+            balance: 500,
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_lp_id),
+    };
+    state = state.with_private_accounts([(
+        Commitment::new(&user_lp_id, &user_lp_account),
+        Nullifier::for_account_initialization(&user_lp_id),
+    )]);
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_lp_id, &user_lp_account))
+        .expect("user_lp's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
+    let vault_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let token_lp_definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        false,
+        Ids::token_lp_definition(),
+    );
+    let user_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
+    let user_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
+    let user_lp_pre = AccountWithMetadata::new(user_lp_account, true, user_lp_id);
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::AddLiquidity {
+        min_amount_liquidity: Balances::add_min_lp(),
+        max_amount_to_add_token_a: Balances::add_max_a(),
+        max_amount_to_add_token_b: Balances::add_max_b(),
+        deadline: u64::MAX,
+    };
+
+    let result = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            token_lp_definition_pre,
+            user_a_pre,
+            user_b_pre,
+            user_lp_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(user_lp_nsk, &user_lp_vpk, membership_proof, 0),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    );
+
+    let err = result.expect_err(
+        "AddLiquidity must be rejected by the privacy-preserving circuit: the same \
+         'Invalid account_identities length' bug also fires with a real private LP holding",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("Invalid account_identities length"),
+        "expected the known circuit-level length-mismatch bug, got a different error: {message}"
+    );
+}
+
+// Marvin-todo
+/// Same confirmation as the two tests above, for `RemoveLiquidity` with a private LP holding
+/// (the account that signs/burns to remove liquidity).
+#[test]
+fn amm_remove_liquidity_private_lp_holding_is_not_expressible() {
+    let mut state = state_for_amm_tests();
+
+    let user_lp_nsk = PrivateKeys::user_lp_nsk();
+    let user_lp_vpk = PrivateKeys::user_lp_vpk();
+    let user_lp_id = PrivateKeys::user_lp_id();
+    let user_lp_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_lp_definition(),
+            balance: Balances::remove_lp(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_lp_id),
+    };
+    state = state.with_private_accounts([(
+        Commitment::new(&user_lp_id, &user_lp_account),
+        Nullifier::for_account_initialization(&user_lp_id),
+    )]);
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_lp_id, &user_lp_account))
+        .expect("user_lp's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
+    let vault_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let token_lp_definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        false,
+        Ids::token_lp_definition(),
+    );
+    let user_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), false, Ids::user_a());
+    let user_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), false, Ids::user_b());
+    let user_lp_pre = AccountWithMetadata::new(user_lp_account, true, user_lp_id);
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::RemoveLiquidity {
+        remove_liquidity_amount: Balances::remove_lp(),
+        min_amount_to_remove_token_a: Balances::remove_min_a(),
+        min_amount_to_remove_token_b: Balances::remove_min_b(),
+        deadline: u64::MAX,
+    };
+
+    let result = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            token_lp_definition_pre,
+            user_a_pre,
+            user_b_pre,
+            user_lp_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(user_lp_nsk, &user_lp_vpk, membership_proof, 0),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    );
+
+    let err = result.expect_err(
+        "RemoveLiquidity must be rejected by the privacy-preserving circuit: the same \
+         'Invalid account_identities length' bug also fires with a real private LP holding",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("Invalid account_identities length"),
+        "expected the known circuit-level length-mismatch bug, got a different error: {message}"
+    );
+}
+
+// Marvin-todo
+/// A distinct, earlier finding from `amm_remove_liquidity_private_lp_holding_is_not_expressible`:
+/// `remove_liquidity` requires `user_holding_a`/`user_holding_b` to already exist and already be
+/// owned by the configured Token Program (`remove.rs`'s
+/// `assert_eq!(user_holding_a.account.program_owner, token_program_id, ...)`), unlike
+/// `token::transfer`'s recipient handling (which tolerates `Account::default()` and
+/// self-initializes it). So `RemoveLiquidity` can never pay out to a brand-new private
+/// destination (`PrivateUnauthorized` — only `npk`/identifier known, no `nsk`, matching how
+/// `token_mint_shielded_to_private_unauthorized` credits a fresh private account it doesn't
+/// control) — this fails inside the AMM guest's own precondition check, before any chained call
+/// or the privacy-preserving circuit is ever reached, and would equally reject a brand-new
+/// *public* destination. Same shape of finding as Stablecoin's
+/// `stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`.
+#[test]
+fn amm_remove_liquidity_private_new_user_holdings_is_not_expressible() {
+    let state = state_for_amm_tests();
+
+    let user_a_npk = PrivateKeys::user_a_npk();
+    let user_a_vpk = PrivateKeys::user_a_vpk();
+    let user_a_id = PrivateKeys::user_a_id();
+    let user_b_npk = PrivateKeys::user_b_npk();
+    let user_b_vpk = PrivateKeys::user_b_vpk();
+    let user_b_id = PrivateKeys::user_b_id();
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
+    let vault_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let token_lp_definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        false,
+        Ids::token_lp_definition(),
+    );
+    let user_a_pre = AccountWithMetadata::new(Account::default(), false, user_a_id);
+    let user_b_pre = AccountWithMetadata::new(Account::default(), false, user_b_id);
+    let user_lp_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_lp()), true, Ids::user_lp());
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::RemoveLiquidity {
+        remove_liquidity_amount: Balances::remove_lp(),
+        min_amount_to_remove_token_a: Balances::remove_min_a(),
+        min_amount_to_remove_token_b: Balances::remove_min_b(),
+        deadline: u64::MAX,
+    };
+
+    let result = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            token_lp_definition_pre,
+            user_a_pre,
+            user_b_pre,
+            user_lp_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_unauthorized_identity(user_a_npk, &user_a_vpk, 0),
+            private_unauthorized_identity(user_b_npk, &user_b_vpk, 1),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    );
+
+    let err = result.expect_err(
+        "RemoveLiquidity must be rejected by the AMM program itself: user_holding_a/b must \
+         already be initialized and owned by the configured Token Program before any chained \
+         call or the privacy-preserving circuit is ever reached",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("User Token A holding must be owned by the configured Token Program"),
+        "expected the AMM program's own initialized-destination precondition, got a different \
+         error: {message}"
+    );
+}
+
+// Marvin-todo
+/// Same confirmation as `amm_add_liquidity_private_lp_holding_is_not_expressible`, but for the
+/// deposit side instead of the LP-mint side: `user_holding_a`/`user_holding_b` (the accounts
+/// debited to fund the deposit) are existing private holdings (`PrivateAuthorizedUpdate` — `nsk`
+/// known, matching how `swap`'s deposit leg is tested), while `user_holding_lp` (the mint
+/// destination) stays public, as in the base `amm_add_liquidity` test. Expected to hit the same
+/// circuit-level `"Invalid account_identities length"` bug regardless of which accounts are
+/// private.
+#[test]
+fn amm_add_liquidity_private_user_holdings_is_not_expressible() {
+    let mut state = state_for_amm_tests();
+
+    let user_a_nsk = PrivateKeys::user_a_nsk();
+    let user_a_vpk = PrivateKeys::user_a_vpk();
+    let user_a_id = PrivateKeys::user_a_id();
+    let user_a_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::user_a_init(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_a_id),
+    };
+
+    let user_b_nsk = PrivateKeys::user_b_nsk();
+    let user_b_vpk = PrivateKeys::user_b_vpk();
+    let user_b_id = PrivateKeys::user_b_id();
+    let user_b_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_b_definition(),
+            balance: Balances::user_b_init(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_b_id),
+    };
+
+    state = state.with_private_accounts([
+        (
+            Commitment::new(&user_a_id, &user_a_account),
+            Nullifier::for_account_initialization(&user_a_id),
+        ),
+        (
+            Commitment::new(&user_b_id, &user_b_account),
+            Nullifier::for_account_initialization(&user_b_id),
+        ),
+    ]);
+    let user_a_membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_a_id, &user_a_account))
+        .expect("user_a's commitment must be in the set");
+    let user_b_membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_b_id, &user_b_account))
+        .expect("user_b's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
+    let vault_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let token_lp_definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        false,
+        Ids::token_lp_definition(),
+    );
+    let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
+    let user_b_pre = AccountWithMetadata::new(user_b_account, true, user_b_id);
+    let user_lp_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_lp()), false, Ids::user_lp());
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::AddLiquidity {
+        min_amount_liquidity: Balances::add_min_lp(),
+        max_amount_to_add_token_a: Balances::add_max_a(),
+        max_amount_to_add_token_b: Balances::add_max_b(),
+        deadline: u64::MAX,
+    };
+
+    let result = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            token_lp_definition_pre,
+            user_a_pre,
+            user_b_pre,
+            user_lp_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(user_a_nsk, &user_a_vpk, user_a_membership_proof, 0),
+            private_authorized_update_identity(user_b_nsk, &user_b_vpk, user_b_membership_proof, 1),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    );
+
+    let err = result.expect_err(
+        "AddLiquidity must be rejected by the privacy-preserving circuit: the same \
+         'Invalid account_identities length' bug also fires with real private deposit holdings",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("Invalid account_identities length"),
+        "expected the known circuit-level length-mismatch bug, got a different error: {message}"
     );
 }

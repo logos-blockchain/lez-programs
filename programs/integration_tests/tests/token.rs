@@ -678,17 +678,21 @@ fn token_shield_into_private_pda_via_external_seed() {
 /// `Ids::holder()` to a new private account keyed by `PrivateKeys::recipient_*`.
 /// Returns the resulting private recipient account.
 #[cfg(test)]
-fn shielded_token_transfer(amount: u128, state: &mut V03State) -> Account {
+fn shielded_token_transfer(
+    amount: u128,
+    state: &mut V03State,
+    recipient_is_authorized: bool,
+    recipient_identity: InputAccountIdentity,
+) -> Account {
     let sender_id = Ids::holder();
     let sender_account = state.get_account_by_id(sender_id);
     let sender_nonce = sender_account.nonce;
 
-    let recipient_npk = PrivateKeys::recipient_npk();
-    let recipient_vpk = PrivateKeys::recipient_vpk();
     let recipient_id = PrivateKeys::recipient_id();
 
     let sender = AccountWithMetadata::new(sender_account, true, sender_id);
-    let recipient = AccountWithMetadata::new(Account::default(), false, recipient_id);
+    let recipient =
+        AccountWithMetadata::new(Account::default(), recipient_is_authorized, recipient_id);
 
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: amount,
@@ -696,10 +700,7 @@ fn shielded_token_transfer(amount: u128, state: &mut V03State) -> Account {
     let (output, proof) = execute_and_prove(
         vec![sender, recipient],
         Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_unauthorized_identity(recipient_npk, &recipient_vpk, 0),
-        ],
+        vec![InputAccountIdentity::Public, recipient_identity],
         &token_program().into(),
     )
     .unwrap();
@@ -721,7 +722,14 @@ fn token_shielded_transfer() {
     let mut state = state_for_token_tests();
     let amount = 500_000_u128;
 
-    let recipient_account = shielded_token_transfer(amount, &mut state);
+    let recipient_npk = PrivateKeys::recipient_npk();
+    let recipient_vpk = PrivateKeys::recipient_vpk();
+    let recipient_account = shielded_token_transfer(
+        amount,
+        &mut state,
+        false,
+        private_unauthorized_identity(recipient_npk, &recipient_vpk, 0),
+    );
 
     assert_eq!(
         state.get_account_by_id(Ids::holder()),
@@ -741,49 +749,25 @@ fn token_shielded_transfer_authorized_private_init() {
     let mut state = state_for_token_tests();
     let amount = 500_000_u128;
 
-    let sender_id = Ids::holder();
-    let sender_account = state.get_account_by_id(sender_id);
-    let sender_nonce = sender_account.nonce;
-
-    let recipient_nsk = PrivateKeys::recipient_nsk();
-    let recipient_vpk = PrivateKeys::recipient_vpk();
-    let recipient_id = PrivateKeys::recipient_id();
-
-    let sender_pre = AccountWithMetadata::new(sender_account, true, sender_id);
-    let recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: amount,
-    };
-    let (output, proof) = execute_and_prove(
-        vec![sender_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(recipient_nsk, &recipient_vpk, 0),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message =
-        Message::try_from_circuit_output(vec![sender_id], vec![sender_nonce], output).unwrap();
-
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::holder_key()]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
+    let recipient_account = shielded_token_transfer(
+        amount,
+        &mut state,
+        true,
+        private_authorized_init_identity(
+            PrivateKeys::recipient_nsk(),
+            &PrivateKeys::recipient_vpk(),
+            0,
+        ),
+    );
 
     assert_eq!(
-        state.get_account_by_id(sender_id),
+        state.get_account_by_id(Ids::holder()),
         Accounts::token_holding(1_000_000 - amount, Nonce(1))
     );
 
-    let recipient_account =
-        Accounts::token_holding(amount, Nonce::private_account_nonce_init(&recipient_id));
+    let recipient_commitment = Commitment::new(&PrivateKeys::recipient_id(), &recipient_account);
     assert!(state
-        .get_proof_for_commitment(&Commitment::new(&recipient_id, &recipient_account))
+        .get_proof_for_commitment(&recipient_commitment)
         .is_some());
 }
 
@@ -794,7 +778,12 @@ fn token_private_transfer() {
     let transfer_amount = 200_000_u128;
 
     // Shield tokens into a private account (becomes the sender for the private transfer).
-    let sender_account = shielded_token_transfer(shielded_amount, &mut state);
+    let sender_account = shielded_token_transfer(
+        shielded_amount,
+        &mut state,
+        false,
+        private_unauthorized_identity(PrivateKeys::recipient_npk(), &PrivateKeys::recipient_vpk(), 0),
+    );
     let sender_nsk = PrivateKeys::recipient_nsk();
     let sender_vpk = PrivateKeys::recipient_vpk();
     let sender_id = PrivateKeys::recipient_id();
@@ -859,7 +848,12 @@ fn token_deshielded_transfer() {
     let deshield_amount = 300_000_u128;
 
     // Shield tokens into a private account, then deshield some back to a public account.
-    let sender_account = shielded_token_transfer(shielded_amount, &mut state);
+    let sender_account = shielded_token_transfer(
+        shielded_amount,
+        &mut state,
+        false,
+        private_unauthorized_identity(PrivateKeys::recipient_npk(), &PrivateKeys::recipient_vpk(), 0),
+    );
     let sender_nsk = PrivateKeys::recipient_nsk();
     let sender_vpk = PrivateKeys::recipient_vpk();
     let sender_id = PrivateKeys::recipient_id();
@@ -917,7 +911,7 @@ fn token_deshielded_transfer() {
 /// Mints directly to a new recipient private holding (`PrivateUnauthorized`).
 /// The recipient's cooperation is unnecessary; only known of the recipient's `npk`, `vpk`.
 #[test]
-fn token_mint_shielded_to_private_unauthorized() {
+fn token_mint_private_unauthorized() {
     let mut state = state_for_token_tests_without_recipient();
     let amount_to_mint = 500_000_u128;
 
