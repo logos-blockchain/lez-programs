@@ -47,6 +47,16 @@ typedef struct FfiPoolView {
 } FfiPoolView;
 
 /**
+ * C-ABI mirror of `pool::ConfigView`.
+ */
+typedef struct FfiConfigView {
+  uint32_t token_program_id[8];
+  uint32_t twap_oracle_program_id[8];
+  uint8_t authority[32];
+  bool ok;
+} FfiConfigView;
+
+/**
  * Builds the RISC0 instruction words for a `SwapExactInput`. `amount_in` and
  * `min_out` are little-endian encoded `u128` values (`[u8; 16]`). The
  * returned buffer must be freed with `amm_client_free_words`.
@@ -131,5 +141,15 @@ void amm_client_current_tick_pda(const ProgramId *twap,
  * valid, non-null pointer to writable memory for a `FfiPoolView`.
  */
 bool amm_client_decode_pool(const uint8_t *bytes, uintptr_t len, struct FfiPoolView *out);
+
+/**
+ * Decodes an `AmmConfig` account's raw bytes into `out`. Returns `false` on
+ * decode failure, leaving `out` unwritten.
+ *
+ * # Safety
+ * `bytes` must be valid for reads of `len` bytes, and `out` must be a
+ * valid, non-null pointer to writable memory for a `FfiConfigView`.
+ */
+bool amm_client_decode_config(const uint8_t *bytes, uintptr_t len, struct FfiConfigView *out);
 
 #endif  /* AMM_CLIENT_FFI_H */

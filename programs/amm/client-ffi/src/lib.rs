@@ -45,6 +45,15 @@ pub struct FfiPoolView {
     pub ok: bool,
 }
 
+/// C-ABI mirror of `pool::ConfigView`.
+#[repr(C)]
+pub struct FfiConfigView {
+    pub token_program_id: [u32; 8],
+    pub twap_oracle_program_id: [u32; 8],
+    pub authority: [u8; 32],
+    pub ok: bool,
+}
+
 /// # Safety
 /// `p` must be a valid, non-null pointer to a readable `[u8; 32]`.
 unsafe fn acc(p: *const [u8; 32]) -> AccountId {
@@ -194,6 +203,33 @@ pub unsafe extern "C" fn amm_client_decode_pool(
                 reserve_b: v.reserve_b.to_le_bytes(),
                 liquidity_supply: v.liquidity_supply.to_le_bytes(),
                 fees: v.fees,
+                ok: true,
+            };
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Decodes an `AmmConfig` account's raw bytes into `out`. Returns `false` on
+/// decode failure, leaving `out` unwritten.
+///
+/// # Safety
+/// `bytes` must be valid for reads of `len` bytes, and `out` must be a
+/// valid, non-null pointer to writable memory for a `FfiConfigView`.
+#[no_mangle]
+pub unsafe extern "C" fn amm_client_decode_config(
+    bytes: *const u8,
+    len: usize,
+    out: *mut FfiConfigView,
+) -> bool {
+    let b = core::slice::from_raw_parts(bytes, len);
+    match pool::decode_config(b) {
+        Ok(v) => {
+            *out = FfiConfigView {
+                token_program_id: v.token_program_id,
+                twap_oracle_program_id: v.twap_oracle_program_id,
+                authority: v.authority,
                 ok: true,
             };
             true
