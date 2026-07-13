@@ -43,6 +43,11 @@ namespace {
     // (and therefore every PDA derived from it). See apps/amm/README.md.
     const char AMM_PROGRAM_BIN_ENV[] = "AMM_PROGRAM_BIN";
 
+    // Absolute path to the JSON token-list config consumed by tokenList()
+    // (see apps/amm/README.md). Config-driven so the Swap view's token picker
+    // doesn't need a hardcoded/dummy token list.
+    const char TOKENS_CONFIG_ENV[] = "TOKENS_CONFIG";
+
     // Normalise file:// URLs and OS paths to a plain local path.
     QString toLocalPath(const QString& path) {
         if (path.startsWith("file://") || path.contains("/"))
@@ -673,4 +678,48 @@ QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString u
 
     refreshBalances();
     return obj.value(QStringLiteral("tx_hash")).toString();
+}
+
+QVariantList AmmUiBackend::tokenList()
+{
+    QVariantList out;
+
+    const QByteArray path = qgetenv(TOKENS_CONFIG_ENV);
+    if (path.isEmpty()) {
+        qWarning() << "AmmUiBackend::tokenList: TOKENS_CONFIG not set";
+        return out;
+    }
+
+    QFile file(QString::fromLocal8Bit(path));
+    if (!file.open(QIODevice::ReadOnly)) {
+        qWarning() << "AmmUiBackend::tokenList: cannot read TOKENS_CONFIG at" << file.fileName();
+        return out;
+    }
+    const QByteArray json = file.readAll();
+    file.close();
+
+    QJsonParseError parseError{};
+    const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isArray()) {
+        qWarning() << "AmmUiBackend::tokenList: TOKENS_CONFIG at" << file.fileName()
+                   << "is not a valid JSON array:" << parseError.errorString();
+        return out;
+    }
+
+    const QJsonArray arr = doc.array();
+    for (const QJsonValue& entry : arr) {
+        if (!entry.isObject()) {
+            qWarning() << "AmmUiBackend::tokenList: skipping non-object entry in TOKENS_CONFIG";
+            continue;
+        }
+        const QJsonObject obj = entry.toObject();
+        QVariantMap token;
+        token[QStringLiteral("symbol")] = obj.value(QStringLiteral("symbol")).toString();
+        token[QStringLiteral("name")] = obj.value(QStringLiteral("name")).toString();
+        token[QStringLiteral("definitionId")] = obj.value(QStringLiteral("definitionId")).toString();
+        token[QStringLiteral("holding")] = obj.value(QStringLiteral("holding")).toString();
+        token[QStringLiteral("decimals")] = obj.value(QStringLiteral("decimals")).toInt();
+        out.append(token);
+    }
+    return out;
 }

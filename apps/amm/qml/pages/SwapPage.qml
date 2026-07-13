@@ -9,18 +9,20 @@ Item {
     id: root
 
     // Real backend replica (logos.module("amm_ui")), wired from Main.qml.
-    // Only used by ManualSwapPanel below — the dummy SwapCard above stays
-    // client-side/demo only until the token picker is backed by real data.
     property var backend: null
 
-    property var tokens: [
-        { symbol: "TOK1", name: "Token 1", color: "#627eea", letter: "E", address: "0x0000000000000000000000000000000000000000",  usdPrice: 2392.70, balance: 4.25,    reserve: 850     },
-        { symbol: "TOK2", name: "Token 2", color: "#2775ca", letter: "$", address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  usdPrice: 1.00,    balance: 12480,   reserve: 2400000 },
-        { symbol: "TOK3", name: "Token 3", color: "#26a17b", letter: "T", address: "0xdac17f958d2ee523a2206206994597c13d831ec7",  usdPrice: 1.00,    balance: 320,     reserve: 1800000 },
-        { symbol: "TOK4", name: "Token 4", color: "#f7931a", letter: "B", address: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",  usdPrice: 63500,   balance: 0.18,    reserve: 42      },
-        { symbol: "TOK5", name: "Token 5", color: "#627eea", letter: "E", address: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",  usdPrice: 2392.70, balance: 0,       reserve: 600     },
-        { symbol: "TOK6", name: "Token 6", color: "#9b59b6", letter: "L", address: "0x1337000000000000000000000000000000000cafe", usdPrice: 0.42,    balance: 5400,    reserve: 950000  }
-    ]
+    // Config-driven token list, loaded from AmmUiBackend::tokenList() (which
+    // reads the TOKENS_CONFIG JSON file — see apps/amm/README.md). Empty
+    // until the backend is ready and the call resolves.
+    property var tokens: []
+
+    onBackendChanged: {
+        if (root.backend) {
+            logos.watch(root.backend.tokenList(),
+                function(list) { root.tokens = list },
+                function(err) { console.warn("tokenList error:", err) })
+        }
+    }
 
     QtObject {
         id: theme
@@ -100,6 +102,7 @@ Item {
                 Layout.alignment: Qt.AlignHCenter
                 theme: theme
                 tokens: root.tokens
+                backend: root.backend
                 width: Math.min(480, root.width - 32)
 
                 onRequestTokenSelect: function(side) {
@@ -110,22 +113,14 @@ Item {
                 onSubmitRequested: function(snapshot) {
                     swapConfirmationDialog.openWithSnapshot(snapshot)
                 }
-            }
 
-            ManualSwapPanel {
-                id: manualSwapPanel
-                Layout.alignment: Qt.AlignHCenter
-                theme: theme
-                backend: root.backend
-                width: swapCard.width
-
-                onSwapSucceeded: function(snapshot) {
+                onSwapSucceeded: function(result) {
                     swapToast.show(qsTr("Swap submitted"),
-                                   qsTr("tx %1").arg(snapshot.txHash))
+                                   qsTr("tx %1").arg(result.txHash))
                 }
 
                 onSwapFailed: function(message) {
-                    console.warn("Manual swap failed:", message)
+                    console.warn("Swap failed:", message)
                 }
             }
 
@@ -172,13 +167,9 @@ Item {
             theme: theme
 
             onConfirmed: function(snapshot) {
-                swapCard.resetAmounts()
-                swapToast.show(qsTr("Swap submitted"),
-                               qsTr("%1 %2 → %3 %4")
-                                    .arg(snapshot.sellAmount)
-                                    .arg(snapshot.sellToken)
-                                    .arg(snapshot.minReceived)
-                                    .arg(snapshot.buyToken))
+                // The dialog only shows a preview snapshot; the actual
+                // on-chain swap runs here, against SwapCard's live state.
+                swapCard.executeSwap()
             }
         }
     }

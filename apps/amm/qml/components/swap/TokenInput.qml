@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
+import "TokenVisuals.js" as TokenVisuals
 
 Rectangle {
     id: root
@@ -94,11 +95,11 @@ Rectangle {
 
                 Rectangle {
                     width: 24; height: 24; radius: 12
-                    color: root.token ? root.token.color : theme.colors.noTokenCircle
+                    color: root.token ? TokenVisuals.colorFor(root.token.symbol) : theme.colors.noTokenCircle
                     visible: root.token !== null
                     Text {
                         anchors.centerIn: parent
-                        text: root.token ? root.token.letter : ""
+                        text: root.token ? TokenVisuals.letterFor(root.token.symbol) : ""
                         color: "#ffffff"
                         font.pixelSize: 10
                         font.weight: Font.Bold

@@ -1,6 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+import "TokenVisuals.js" as TokenVisuals
 
 Item {
     id: root
@@ -127,8 +128,8 @@ Item {
                             spacing: 6
                             Rectangle {
                                 width: 22; height: 22; radius: 11
-                                color: modelData.color
-                                Text { anchors.centerIn: parent; text: modelData.letter; color: "#ffffff"; font.pixelSize: 10; font.weight: Font.Bold }
+                                color: TokenVisuals.colorFor(modelData.symbol)
+                                Text { anchors.centerIn: parent; text: TokenVisuals.letterFor(modelData.symbol); color: "#ffffff"; font.pixelSize: 10; font.weight: Font.Bold }
                             }
                             Text { text: modelData.symbol; color: theme.colors.textPrimary; font.pixelSize: 13; font.weight: Font.Medium }
                         }
@@ -162,9 +163,7 @@ Item {
                     theme: root.theme
                     tokenName: modelData.name
                     tokenSymbol: modelData.symbol
-                    tokenAddress: modelData.address
-                    tokenColor: modelData.color
-                    tokenLetter: modelData.letter
+                    tokenDefinitionId: modelData.definitionId
                     onClicked: root.tokenSelected(modelData)
                 }
             }

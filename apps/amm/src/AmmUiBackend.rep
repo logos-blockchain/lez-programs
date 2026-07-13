@@ -57,4 +57,9 @@ class AmmUiBackend
     // unix timestamp. Returns the tx hash, or an empty string on failure
     // (no pool, unreadable AMM_PROGRAM_BIN, bad inputs, or a failed tx).
     SLOT(QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountInDecimal, QString minOutDecimal, QString deadlineDecimal))
+    // Reads the token list config at TOKENS_CONFIG (absolute path, JSON array
+    // of { symbol, name, definitionId, holding, decimals }) and returns it as
+    // a QVariantList of QVariantMap entries. Returns an empty list if
+    // TOKENS_CONFIG is unset/unreadable/invalid.
+    SLOT(QVariantList tokenList())
 }

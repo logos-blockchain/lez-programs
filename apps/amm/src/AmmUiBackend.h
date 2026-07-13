@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QVariantList>
 #include <QVariantMap>
 
 #include "rep_AmmUiBackend_source.h"
@@ -53,6 +54,9 @@ public slots:
     QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                             QString userOutputHoldingHex, QString amountInDecimal,
                             QString minOutDecimal, QString deadlineDecimal) override;
+    // Reads the token list from TOKENS_CONFIG (see AmmUiBackend.cpp) so the
+    // Swap UI's token picker is config-driven instead of hardcoded.
+    QVariantList tokenList() override;
 
 private:
     // Per-app wallet home (kept distinct from the wallet's canonical

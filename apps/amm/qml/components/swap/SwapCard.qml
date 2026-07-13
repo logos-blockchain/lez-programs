@@ -4,11 +4,18 @@ import QtQuick.Layouts 1.15
 import "../shared"
 import "../../state"
 
+// The real swap UI: two token inputs (sell/buy), a token picker (backed by
+// AmmUiBackend::tokenList()/TOKENS_CONFIG via SwapPage), and a submit flow
+// wired straight to the backend's resolvePool()/swapExactInput() slots — see
+// apps/amm/src/AmmUiBackend.rep for the exact contract.
 Rectangle {
     id: root
 
     property var theme
     property var tokens: []
+    // Real backend replica (logos.module("amm_ui")), wired from SwapPage.
+    property var backend: null
+
     property var sellToken: null
     property var buyToken: null
     property string sellInput: ""
@@ -16,13 +23,33 @@ Rectangle {
     property string editingSide: "sell"
     property real slippageTolerancePercent: 0.5
 
-    DummySwapState {
-        id: swapState
-        feeBps: 30
-    }
+    // ── Pool resolution (backend.resolvePool) ───────────────────────────────
+    // sellToken is always passed as defA and buyToken as defB, so reserveA
+    // always corresponds to sellToken and reserveB to buyToken — no separate
+    // "direction" bookkeeping is needed (unlike a generic A/B picker): the
+    // sell/buy assignment *is* the direction.
+    property bool poolLoading: false
+    property bool poolResolved: false
+    property bool poolExists: false
+    property string poolReserveA: "0"
+    property string poolReserveB: "0"
+    property int poolFeeBps: 30
+    property string poolError: ""
+
+    // ── Swap submission (backend.swapExactInput) ────────────────────────────
+    property bool swapInProgress: false
+    property string swapError: ""
 
     signal requestTokenSelect(string side)
     signal submitRequested(var snapshot)
+    // Emitted after a real swapExactInput call completes.
+    signal swapSucceeded(var result)
+    signal swapFailed(string message)
+
+    DummySwapState {
+        id: swapState
+        feeBps: root.poolFeeBps
+    }
 
     function setToken(side, token) {
         if (side === "sell") root.sellToken = token
@@ -35,8 +62,57 @@ Rectangle {
         root.editingSide = "sell"
     }
 
-    readonly property real sellReserve: sellToken ? (sellToken.reserve || 0) : 0
-    readonly property real buyReserve: buyToken ? (buyToken.reserve || 0) : 0
+    // ── Pool resolution ──────────────────────────────────────────────────────
+    Timer {
+        id: resolveDebounce
+        interval: 500
+        repeat: false
+        onTriggered: root.doResolvePool()
+    }
+
+    function requestResolve() {
+        root.poolResolved = false
+        root.poolExists = false
+        root.poolError = ""
+        if (root.sellToken && root.buyToken)
+            resolveDebounce.restart()
+        else
+            resolveDebounce.stop()
+    }
+
+    onSellTokenChanged: root.requestResolve()
+    onBuyTokenChanged: root.requestResolve()
+
+    function doResolvePool() {
+        if (!root.backend || !root.sellToken || !root.buyToken)
+            return
+
+        root.poolLoading = true
+        logos.watch(root.backend.resolvePool(root.sellToken.definitionId, root.buyToken.definitionId),
+            function (pool) {
+                root.poolLoading = false
+                root.poolResolved = true
+                root.poolExists = !!(pool && pool.exists)
+                root.poolReserveA = (pool && pool.reserveA) || "0"
+                root.poolReserveB = (pool && pool.reserveB) || "0"
+                root.poolFeeBps = (pool && pool.feeBps) || 30
+                root.poolError = ""
+            },
+            function (error) {
+                console.warn("resolvePool error:", error)
+                root.poolLoading = false
+                root.poolResolved = true
+                root.poolExists = false
+                root.poolError = qsTr("Failed to resolve pool: %1").arg(error)
+            })
+    }
+
+    // JS doubles lose precision far below u128 range; these are only used to
+    // drive the *estimate* (expected output / min received / price impact),
+    // never the actual swap amount — the sell amount sent to the backend is
+    // the user's raw input text, passed through verbatim.
+    readonly property real sellReserveNum: Number(root.poolReserveA) || 0
+    readonly property real buyReserveNum: Number(root.poolReserveB) || 0
 
     readonly property real parsedSellInput: {
         var amt = parseFloat(sellInput)
@@ -50,30 +126,49 @@ Rectangle {
 
     readonly property real parsedSellAmount: editingSide === "sell"
         ? parsedSellInput
-        : swapState.amountInFor(parsedBuyInput, sellReserve, buyReserve)
+        : swapState.amountInFor(parsedBuyInput, sellReserveNum, buyReserveNum)
 
     readonly property real parsedBuyAmount: editingSide === "buy"
         ? parsedBuyInput
-        : swapState.amountOutFor(parsedSellInput, sellReserve, buyReserve)
+        : swapState.amountOutFor(parsedSellInput, sellReserveNum, buyReserveNum)
 
     readonly property real feeAmount: swapState.feeAmount(parsedSellAmount)
     readonly property real minReceivedAmount: swapState.minReceived(parsedBuyAmount, slippageTolerancePercent)
-    readonly property real priceImpactPercent: swapState.priceImpactPercent(parsedSellAmount, parsedBuyAmount, sellReserve, buyReserve)
+    readonly property real priceImpactPercent: swapState.priceImpactPercent(parsedSellAmount, parsedBuyAmount, sellReserveNum, buyReserveNum)
 
-    readonly property string swapMode: editingSide === "buy" ? "swap-exact-output" : "swap-exact-input"
-    readonly property string swapModeText: editingSide === "buy" ? qsTr("Exact output") : qsTr("Exact input")
+    readonly property string swapModeText: editingSide === "buy" ? qsTr("Exact output (preview only)") : qsTr("Exact input")
 
     readonly property bool hasAmount: editingSide === "sell" ? parsedSellInput > 0 : parsedBuyInput > 0
     readonly property bool tokensSelected: sellToken !== null && buyToken !== null
-    readonly property bool insufficientBalance: hasAmount && sellToken !== null && parsedSellAmount > (sellToken.balance || 0)
-    readonly property bool insufficientLiquidity: hasAmount && buyToken !== null && parsedBuyAmount > (buyToken.reserve || 0)
-    readonly property bool canSubmit: tokensSelected && hasAmount && parsedSellAmount > 0 && parsedBuyAmount > 0 && !insufficientBalance && !insufficientLiquidity
+    readonly property bool insufficientLiquidity: hasAmount && root.poolExists && parsedBuyAmount > buyReserveNum
+    // The backend only exposes swapExactInput, so only the "I know exactly
+    // how much I'm selling" direction can actually be submitted. Editing the
+    // buy field still previews an estimate (via amountInFor above) but can't
+    // be submitted — see doc comment on AmmUiBackend::swapExactInput.
+    readonly property bool canSubmit: tokensSelected && editingSide === "sell" && hasAmount
+                                       && parsedSellAmount > 0 && parsedBuyAmount > 0
+                                       && root.poolResolved && root.poolExists
+                                       && !insufficientLiquidity && !root.swapInProgress
 
     readonly property string submitButtonText: {
-        if (!hasAmount || !tokensSelected) return qsTr("Enter an amount")
-        if (insufficientBalance) return qsTr("Insufficient balance")
+        if (!tokensSelected) return qsTr("Select tokens")
+        if (root.swapInProgress) return qsTr("Submitting…")
+        if (!hasAmount) return qsTr("Enter an amount")
+        if (editingSide === "buy") return qsTr("Enter a sell amount to swap")
+        if (root.poolLoading || !root.poolResolved) return qsTr("Resolving pool…")
+        if (!root.poolExists) return qsTr("No pool / no liquidity")
         if (insufficientLiquidity) return qsTr("Insufficient liquidity")
+        if (parsedBuyAmount <= 0) return qsTr("Amount too small")
         return qsTr("Swap")
+    }
+
+    readonly property string poolStatusText: {
+        if (!root.backend) return qsTr("Wallet backend not ready.")
+        if (!tokensSelected) return ""
+        if (root.poolLoading) return qsTr("Looking up pool…")
+        if (root.poolError.length > 0) return root.poolError
+        if (root.poolResolved && !root.poolExists) return qsTr("No pool / no liquidity for this pair.")
+        return ""
     }
 
     function formatAmountValue(val) {
@@ -82,40 +177,91 @@ Rectangle {
         return val.toFixed(8)
     }
 
+    // Base units are integers; render the (estimate-only) computed side as a
+    // plain integer string rather than a fractional/scientific one.
+    function formatBaseUnits(value) {
+        if (!isFinite(value) || isNaN(value) || value <= 0)
+            return "0"
+
+        var rounded = Math.floor(value)
+        var s = rounded.toString()
+        if (s.indexOf("e") === -1 && s.indexOf("E") === -1)
+            return s
+
+        var match = s.match(/^(\d)(?:\.(\d+))?e\+(\d+)$/i)
+        if (!match)
+            return s
+
+        var digits = match[1] + (match[2] || "")
+        var exponent = parseInt(match[3], 10)
+        return digits + "0".repeat(Math.max(0, exponent - (match[2] ? match[2].length : 0)))
+    }
+
     readonly property string sellDisplay: editingSide === "sell"
         ? sellInput
-        : (parsedSellAmount > 0 ? formatAmountValue(parsedSellAmount) : "")
+        : (parsedSellAmount > 0 ? formatBaseUnits(parsedSellAmount) : "")
 
     readonly property string buyDisplay: editingSide === "buy"
         ? buyInput
-        : (parsedBuyAmount > 0 ? formatAmountValue(parsedBuyAmount) : "")
-
-    readonly property string sellUsd: {
-        if (!sellToken || parsedSellAmount <= 0) return ""
-        var val = parsedSellAmount * sellToken.usdPrice
-        return "~$" + val.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-    }
-
-    readonly property string buyUsd: {
-        if (!buyToken || parsedBuyAmount <= 0) return ""
-        var val = parsedBuyAmount * buyToken.usdPrice
-        return "~$" + val.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-    }
+        : (parsedBuyAmount > 0 ? formatBaseUnits(parsedBuyAmount) : "")
 
     function buildSnapshot() {
         return {
             "sellToken": sellToken ? sellToken.symbol : "",
             "buyToken": buyToken ? buyToken.symbol : "",
-            "sellAmount": formatAmountValue(parsedSellAmount),
-            "buyAmount": formatAmountValue(parsedBuyAmount),
-            "minReceived": formatAmountValue(minReceivedAmount),
+            "sellAmount": formatBaseUnits(parsedSellAmount),
+            "buyAmount": formatBaseUnits(parsedBuyAmount),
+            "minReceived": formatBaseUnits(minReceivedAmount),
             "feeAmount": swapState.formatTokenAmount(feeAmount, sellToken ? sellToken.symbol : ""),
             "priceImpactPercent": swapState.formatPercent(priceImpactPercent),
             "priceImpactPercentValue": priceImpactPercent,
             "slippageTolerance": swapState.formatSlippagePercent(slippageTolerancePercent),
-            "swapMode": swapMode,
+            "swapMode": "swap-exact-input",
             "swapModeText": swapModeText
         }
+    }
+
+    // Called by SwapPage once the user confirms in SwapConfirmationDialog.
+    // Submits the real on-chain swap for the amounts/tokens selected when the
+    // CTA was pressed (canSubmit already guarantees editingSide === "sell").
+    function executeSwap() {
+        if (!root.backend || !root.canSubmit)
+            return
+
+        root.swapInProgress = true
+        root.swapError = ""
+
+        var minOutStr = root.formatBaseUnits(root.minReceivedAmount)
+        // Max u64 sentinel: "ignore deadline", per AmmUiBackend.rep.
+        var deadline = "18446744073709551615"
+
+        logos.watch(root.backend.swapExactInput(
+                root.sellToken.definitionId, root.buyToken.definitionId,
+                root.sellToken.holding, root.buyToken.holding,
+                root.sellInput, minOutStr, deadline),
+            function (txHash) {
+                root.swapInProgress = false
+                if (txHash && txHash.length > 0) {
+                    root.swapSucceeded({
+                        "txHash": txHash,
+                        "sellToken": root.sellToken.symbol,
+                        "buyToken": root.buyToken.symbol,
+                        "sellAmount": root.sellInput,
+                        "minReceived": minOutStr
+                    })
+                    root.resetAmounts()
+                    resolveDebounce.restart()
+                } else {
+                    root.swapError = qsTr("Swap failed (empty response from sequencer).")
+                    root.swapFailed(root.swapError)
+                }
+            },
+            function (error) {
+                console.warn("swapExactInput error:", error)
+                root.swapInProgress = false
+                root.swapError = qsTr("Swap error: %1").arg(error)
+                root.swapFailed(root.swapError)
+            })
     }
 
     radius: 24
@@ -140,7 +286,6 @@ Rectangle {
             theme: root.theme
             label: "Sell"
             amount: root.sellDisplay
-            usdValue: root.sellUsd
             token: root.sellToken
             active: root.editingSide === "sell"
             onInputEdited: function(v) {
@@ -196,7 +341,6 @@ Rectangle {
             theme: root.theme
             label: "Buy"
             amount: root.buyDisplay
-            usdValue: root.buyUsd
             token: root.buyToken
             active: root.editingSide === "buy"
             onInputEdited: function(v) {
@@ -204,6 +348,30 @@ Rectangle {
                 if (root.editingSide !== "buy") root.editingSide = "buy"
             }
             onTokenClicked: root.requestTokenSelect("buy")
+        }
+
+        Text {
+            Layout.fillWidth: true
+            Layout.topMargin: 8
+            Layout.leftMargin: 16
+            Layout.rightMargin: 16
+            visible: root.poolStatusText.length > 0
+            text: root.poolStatusText
+            color: (root.poolError.length > 0 || (root.poolResolved && !root.poolExists))
+                   ? "#F08A76" : theme.colors.textSecondary
+            font.pixelSize: 12
+            wrapMode: Text.WordWrap
+        }
+
+        Text {
+            Layout.fillWidth: true
+            Layout.leftMargin: 16
+            Layout.rightMargin: 16
+            visible: root.swapError.length > 0
+            text: root.swapError
+            color: "#F08A76"
+            font.pixelSize: 12
+            wrapMode: Text.WordWrap
         }
 
         SwapSummary {

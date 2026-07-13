@@ -157,6 +157,33 @@ Swap view stays disabled (no pool can be resolved).
 > and *every* derived PDA. After any redeploy, point `AMM_PROGRAM_BIN` at the new
 > `amm.bin` — never mix a stale binary with a fresh deployment.
 
+### Token list config (required for the Swap token picker)
+
+The Swap view's token picker is config-driven: it doesn't derive tokens from
+chain state, it reads a flat JSON list from the `TOKENS_CONFIG` environment
+variable (absolute path). Each entry needs, at minimum, the token's
+`definitionId` and **your own** `holding` account address for that token (the
+account the wallet will sign transfers from/to for that token):
+
+```json
+[
+  {
+    "symbol": "TKA",
+    "name": "Token A",
+    "definitionId": "9qbX…",
+    "holding": "4T69…",
+    "decimals": 18
+  }
+]
+```
+
+If `TOKENS_CONFIG` is unset, unreadable, or not a valid JSON array, the token
+picker stays empty (a `qWarning` is logged; no swap can be started).
+
+```bash
+AMM_PROGRAM_BIN=/abs/path/to/amm.bin TOKENS_CONFIG=/abs/path/to/tokens.json nix run .#amm-ui
+```
+
 ## Updating Dependencies
 
 To update the pinned versions of dependencies in `flake.lock`:

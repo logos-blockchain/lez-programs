@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
+import "TokenVisuals.js" as TokenVisuals
 
 Item {
     id: root
@@ -7,9 +8,7 @@ Item {
     property var theme
     property string tokenName: ""
     property string tokenSymbol: ""
-    property string tokenAddress: ""
-    property string tokenColor: "#627eea"
-    property string tokenLetter: ""
+    property string tokenDefinitionId: ""
 
     signal clicked()
 
@@ -29,10 +28,10 @@ Item {
 
             Rectangle {
                 width: 36; height: 36; radius: 18
-                color: root.tokenColor
+                color: TokenVisuals.colorFor(root.tokenSymbol)
                 Text {
                     anchors.centerIn: parent
-                    text: root.tokenLetter
+                    text: TokenVisuals.letterFor(root.tokenSymbol)
                     color: "#ffffff"
                     font.pixelSize: 14
                     font.weight: Font.Bold
@@ -55,8 +54,8 @@ Item {
                     spacing: 6
                     Text { text: root.tokenSymbol; color: theme.colors.textSecondary; font.pixelSize: 12 }
                     Text {
-                        text: root.tokenAddress !== ""
-                              ? root.tokenAddress.substring(0, 6) + "..." + root.tokenAddress.slice(-4)
+                        text: root.tokenDefinitionId !== ""
+                              ? root.tokenDefinitionId.substring(0, 6) + "..." + root.tokenDefinitionId.slice(-4)
                               : ""
                         color: theme.colors.textPlaceholder
                         font.pixelSize: 12
