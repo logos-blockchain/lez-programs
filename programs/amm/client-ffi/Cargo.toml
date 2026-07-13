@@ -1,0 +1,25 @@
+[package]
+name = "amm_client_ffi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "amm_client_ffi"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+amm_core = { path = "../core" }
+twap_oracle_core = { path = "../../twap_oracle/core" }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", features = ["host"], package = "lee_core" }
+borsh = { version = "1.5", features = ["derive"] }
+risc0-zkvm = { version = "=3.0.5", default-features = false }
+risc0-binfmt = { version = "=3.0.4", default-features = false }
+# amm_core's ruint is default-features=false (for the no_std guest); enable std
+# here (host-only) so its Uint::root compiles. Guest build is unaffected.
+ruint = { version = "=1.17.0", default-features = false, features = ["std"] }
+
+[build-dependencies]
+cbindgen = "0.27"

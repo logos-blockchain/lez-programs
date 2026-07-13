@@ -6,6 +6,7 @@ members = [
     "programs/amm/core",
     "programs/amm",
     "programs/amm/methods",
+    "programs/amm/client-ffi",
     "programs/ata/core",
     "programs/ata",
     "programs/ata/methods",
