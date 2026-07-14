@@ -1,0 +1,97 @@
+//! Transport-independent AMM client operations.
+
+mod accounts;
+mod clock;
+mod commitment;
+mod config;
+mod context;
+mod funding;
+mod holding;
+mod pair;
+mod plan;
+mod position;
+mod quote;
+mod quote_error;
+mod request;
+
+#[cfg(test)]
+mod tests;
+
+use std::{error::Error, fmt};
+
+pub use request::{
+    ConfigIdRequest, ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PositionRequest,
+    QuoteRequest, TokenIdsRequest,
+};
+use serde_json::Value;
+
+pub use crate::account::{AccountRead, WalletAccount};
+
+/// Schema identifier expected by position quote and plan requests.
+pub const NEW_POSITION_SCHEMA: &str = "new-position.v1";
+
+pub(crate) const SCHEMA: &str = NEW_POSITION_SCHEMA;
+
+/// JSON response shared by direct Rust callers and transport adapters.
+pub type AmmResponse = Value;
+
+/// Result returned by AMM client operations.
+pub type AmmResult = Result<AmmResponse, AmmApiError>;
+
+/// Failure produced before an AMM response can be constructed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmmApiError {
+    message: String,
+}
+
+impl AmmApiError {
+    /// Returns the stable human-readable failure detail.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for AmmApiError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl Error for AmmApiError {}
+
+impl From<String> for AmmApiError {
+    fn from(message: String) -> Self {
+        Self { message }
+    }
+}
+
+/// Derives the AMM configuration account ID.
+pub fn config_id(request: ConfigIdRequest) -> AmmResult {
+    config::config_id(request).map_err(Into::into)
+}
+
+/// Discovers token definition IDs available to the active wallet and app.
+pub fn token_ids(request: TokenIdsRequest) -> AmmResult {
+    context::token_ids(request).map_err(Into::into)
+}
+
+/// Derives canonical accounts for one token pair.
+pub fn pair_ids(request: PairIdsRequest) -> AmmResult {
+    pair::pair_ids(request).map_err(Into::into)
+}
+
+/// Builds network, token, holding, and fee-tier context.
+pub fn context(request: ContextRequest) -> AmmResult {
+    context::context(request).map_err(Into::into)
+}
+
+/// Evaluates a pool-creation or add-liquidity request.
+pub fn quote(request: QuoteRequest) -> AmmResult {
+    quote::quote(request).map_err(Into::into)
+}
+
+/// Materializes a previously quoted request into wallet submission arguments.
+pub fn plan(request: PlanRequest) -> AmmResult {
+    plan::plan(request).map_err(Into::into)
+}

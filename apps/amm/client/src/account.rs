@@ -6,24 +6,24 @@ use nssa_core::{
 };
 use serde::Deserialize;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AccountRead {
-    pub(crate) id: String,
-    pub(crate) status: String,
+pub struct AccountRead {
+    pub id: String,
+    pub status: String,
     #[serde(default)]
-    pub(crate) account: Option<WalletAccount>,
+    pub account: Option<WalletAccount>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub(crate) struct WalletAccount {
-    pub(crate) program_owner: String,
-    pub(crate) balance: String,
-    pub(crate) nonce: String,
-    pub(crate) data: String,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct WalletAccount {
+    pub program_owner: String,
+    pub balance: String,
+    pub nonce: String,
+    pub data: String,
 }
 
-pub fn parse_hex_32(value: &str, label: &str) -> Result<[u8; 32], String> {
+pub(crate) fn parse_hex_32(value: &str, label: &str) -> Result<[u8; 32], String> {
     if value.len() != 64
         || !value
             .bytes()
@@ -39,7 +39,7 @@ pub fn parse_hex_32(value: &str, label: &str) -> Result<[u8; 32], String> {
     Ok(bytes)
 }
 
-pub fn parse_program_id(value: &str) -> Result<ProgramId, String> {
+pub(crate) fn parse_program_id(value: &str) -> Result<ProgramId, String> {
     let bytes = parse_hex_32(value, "program id")?;
     let mut program_id = [0_u32; 8];
     for (word, chunk) in program_id.iter_mut().zip(bytes.chunks_exact(4)) {
@@ -52,7 +52,7 @@ pub fn parse_program_id(value: &str) -> Result<ProgramId, String> {
 }
 
 #[cfg(test)]
-pub fn program_id_hex(program_id: ProgramId) -> String {
+pub(crate) fn program_id_hex(program_id: ProgramId) -> String {
     let bytes = program_id
         .iter()
         .flat_map(|word| word.to_le_bytes())
@@ -60,11 +60,11 @@ pub fn program_id_hex(program_id: ProgramId) -> String {
     hex::encode(bytes)
 }
 
-pub fn program_id_base58(program_id: ProgramId) -> String {
+pub(crate) fn program_id_base58(program_id: ProgramId) -> String {
     AccountId::new(program_id_bytes(program_id)).to_string()
 }
 
-pub fn program_id_bytes(program_id: ProgramId) -> [u8; 32] {
+pub(crate) fn program_id_bytes(program_id: ProgramId) -> [u8; 32] {
     let mut bytes = [0_u8; 32];
     for (chunk, word) in bytes.chunks_exact_mut(4).zip(program_id) {
         chunk.copy_from_slice(&word.to_le_bytes());
@@ -72,15 +72,15 @@ pub fn program_id_bytes(program_id: ProgramId) -> [u8; 32] {
     bytes
 }
 
-pub fn parse_base58_id(value: &str, label: &str) -> Result<AccountId, String> {
+pub(crate) fn parse_base58_id(value: &str, label: &str) -> Result<AccountId, String> {
     AccountId::from_str(value).map_err(|error| format!("invalid {label}: {error}"))
 }
 
-pub fn account_id_from_hex(value: &str, label: &str) -> Result<AccountId, String> {
+pub(crate) fn account_id_from_hex(value: &str, label: &str) -> Result<AccountId, String> {
     Ok(AccountId::new(parse_hex_32(value, label)?))
 }
 
-pub fn account_id_hex(account_id: AccountId) -> String {
+pub(crate) fn account_id_hex(account_id: AccountId) -> String {
     hex::encode(account_id.into_value())
 }
 
@@ -99,7 +99,7 @@ fn parse_le_u128(value: &str, label: &str) -> Result<u128, String> {
     Ok(u128::from_le_bytes(bytes))
 }
 
-pub fn decode_account(read: &AccountRead) -> Result<(AccountId, Account), String> {
+pub(crate) fn decode_account(read: &AccountRead) -> Result<(AccountId, Account), String> {
     if read.status != "ok" {
         return Err(String::from("account read failed"));
     }
@@ -138,7 +138,7 @@ pub fn decode_account(read: &AccountRead) -> Result<(AccountId, Account), String
 }
 
 #[cfg(test)]
-pub fn account_read(id: AccountId, account: &Account) -> AccountRead {
+pub(crate) fn account_read(id: AccountId, account: &Account) -> AccountRead {
     AccountRead {
         id: account_id_hex(id),
         status: String::from("ok"),
