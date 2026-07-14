@@ -39,6 +39,9 @@ AmmActionCard {
     property string tokenResolutionMessage: ""
     property string confirmedPoolStatus: ""
     property var activePoolQuote: ({})
+    property string headingText: qsTr("New position")
+    property string headingDetail: ""
+    property bool showRefreshAction: true
 
     readonly property var quotePayload: root.flowState.quote || ({})
     readonly property bool contextLoading: root.flowState.contextLoading === true
@@ -101,7 +104,9 @@ AmmActionCard {
     signal draftChanged
     signal refreshRequested
 
-    implicitHeight: content.implicitHeight + 32
+    readonly property int contentPadding: width >= 600 ? 24 : 16
+
+    implicitHeight: content.implicitHeight + root.contentPadding * 2
     implicitWidth: 480
 
     Component.onCompleted: Qt.callLater(root.ensurePair)
@@ -148,7 +153,7 @@ AmmActionCard {
         id: content
 
         anchors.fill: parent
-        anchors.margins: 16
+        anchors.margins: root.contentPadding
         spacing: 16
 
         RowLayout {
@@ -160,7 +165,7 @@ AmmActionCard {
                 spacing: 3
 
                 Text {
-                    text: qsTr("New position")
+                    text: root.headingText
                     color: root.theme.colors.textPrimary
                     font.pixelSize: 18
                     font.weight: Font.DemiBold
@@ -168,7 +173,8 @@ AmmActionCard {
                 }
 
                 Text {
-                    text: root.contextStatusText()
+                    text: root.headingDetail.length > 0
+                          ? root.headingDetail : root.contextStatusText()
                     color: root.theme.colors.textSecondary
                     font.pixelSize: 12
                     elide: Text.ElideRight
@@ -190,6 +196,7 @@ AmmActionCard {
                 Layout.preferredWidth: 36
                 Layout.preferredHeight: 36
                 enabled: !root.contextLoading && !root.submitting
+                visible: root.showRefreshAction
                 Accessible.name: qsTr("Refresh position data")
                 ToolTip.visible: hovered
                 ToolTip.text: Accessible.name
