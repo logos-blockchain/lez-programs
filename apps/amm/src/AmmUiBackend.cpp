@@ -1,5 +1,8 @@
 #include "AmmUiBackend.h"
 
+#include <cctype>
+#include <cstring>
+
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDebug>
@@ -484,6 +487,26 @@ void AmmUiBackend::copyToClipboard(QString text)
         QGuiApplication::clipboard()->setText(text);
 }
 
+QString AmmUiBackend::normalizeAccountId(const QString& id)
+{
+    const QString t = id.trimmed();
+    // Already 64 hex chars?
+    if (t.size() == 64) {
+        bool allHex = true;
+        for (const QChar c : t) {
+            if (!std::isxdigit(static_cast<unsigned char>(c.toLatin1()))) {
+                allHex = false;
+                break;
+            }
+        }
+        if (allHex)
+            return t.toLower();
+    }
+    // Try base58 -> hex via the wallet module.
+    const QString hex = m_logos->logos_execution_zone.account_id_from_base58(t);
+    return hex.toLower(); // account_id_from_base58 returns "" on failure
+}
+
 QVariantMap AmmUiBackend::resolvePool(QString defAHex, QString defBHex)
 {
     QVariantMap out;
@@ -574,6 +597,8 @@ QVariantMap AmmUiBackend::resolvePool(QString defAHex, QString defBHex)
     out[QStringLiteral("exists")] = true;
     out[QStringLiteral("configHex")] = configHex;
     out[QStringLiteral("poolIdHex")] = poolHex;
+    out[QStringLiteral("defAHex")] = bytes32ToHex(poolView.def_a);
+    out[QStringLiteral("defBHex")] = bytes32ToHex(poolView.def_b);
     out[QStringLiteral("vaultAHex")] = bytes32ToHex(poolView.vault_a);
     out[QStringLiteral("vaultBHex")] = bytes32ToHex(poolView.vault_b);
     out[QStringLiteral("currentTickHex")] = bytes32ToHex(currentTickPda);
@@ -713,11 +738,26 @@ QVariantList AmmUiBackend::tokenList()
             continue;
         }
         const QJsonObject obj = entry.toObject();
+        const QString symbol = obj.value(QStringLiteral("symbol")).toString();
+
+        // TOKENS_CONFIG entries may give definitionId/holding as hex or
+        // base58 (the wallet/runbook display base58) — normalize both to
+        // lowercase hex here so every downstream consumer (resolvePool,
+        // swapExactInput, and the QML's hex comparisons) can assume hex.
+        const QString definitionId =
+            normalizeAccountId(obj.value(QStringLiteral("definitionId")).toString());
+        const QString holding = normalizeAccountId(obj.value(QStringLiteral("holding")).toString());
+        if (definitionId.isEmpty() || holding.isEmpty()) {
+            qWarning() << "AmmUiBackend::tokenList: skipping token" << symbol
+                       << "— cannot normalize definitionId/holding to hex (not valid hex or base58)";
+            continue;
+        }
+
         QVariantMap token;
-        token[QStringLiteral("symbol")] = obj.value(QStringLiteral("symbol")).toString();
+        token[QStringLiteral("symbol")] = symbol;
         token[QStringLiteral("name")] = obj.value(QStringLiteral("name")).toString();
-        token[QStringLiteral("definitionId")] = obj.value(QStringLiteral("definitionId")).toString();
-        token[QStringLiteral("holding")] = obj.value(QStringLiteral("holding")).toString();
+        token[QStringLiteral("definitionId")] = definitionId;
+        token[QStringLiteral("holding")] = holding;
         token[QStringLiteral("decimals")] = obj.value(QStringLiteral("decimals")).toInt();
         out.append(token);
     }

@@ -24,15 +24,16 @@ Rectangle {
     property real slippageTolerancePercent: 0.5
 
     // ── Pool resolution (backend.resolvePool) ───────────────────────────────
-    // sellToken is always passed as defA and buyToken as defB, so reserveA
-    // always corresponds to sellToken and reserveB to buyToken — no separate
-    // "direction" bookkeeping is needed (unlike a generic A/B picker): the
-    // sell/buy assignment *is* the direction.
+    // A pool's PoolDefinition stores def_a/def_b in the pool CREATOR's order
+    // (from NewDefinition), not sorted, and not necessarily in (sellToken,
+    // buyToken) order. reserveA/reserveB mirror that same canonical order, so
+    // they must be mapped to sell/buy via poolDefAHex below — never assumed.
     property bool poolLoading: false
     property bool poolResolved: false
     property bool poolExists: false
     property string poolReserveA: "0"
     property string poolReserveB: "0"
+    property string poolDefAHex: ""
     property int poolFeeBps: 30
     property string poolError: ""
 
@@ -95,6 +96,7 @@ Rectangle {
                 root.poolExists = !!(pool && pool.exists)
                 root.poolReserveA = (pool && pool.reserveA) || "0"
                 root.poolReserveB = (pool && pool.reserveB) || "0"
+                root.poolDefAHex = (pool && pool.defAHex) || ""
                 root.poolFeeBps = (pool && pool.feeBps) || 30
                 root.poolError = ""
             },
@@ -111,8 +113,12 @@ Rectangle {
     // drive the *estimate* (expected output / min received / price impact),
     // never the actual swap amount — the sell amount sent to the backend is
     // the user's raw input text, passed through verbatim.
-    readonly property real sellReserveNum: Number(root.poolReserveA) || 0
-    readonly property real buyReserveNum: Number(root.poolReserveB) || 0
+    // The pool's reserveA/reserveB follow the pool's canonical def_a/def_b
+    // order (see poolDefAHex above), which may or may not match sell/buy —
+    // map them explicitly rather than assuming reserveA == sell.
+    readonly property bool sellIsPoolA: !!root.sellToken && root.sellToken.definitionId === root.poolDefAHex
+    readonly property real sellReserveNum: Number(sellIsPoolA ? root.poolReserveA : root.poolReserveB) || 0
+    readonly property real buyReserveNum: Number(sellIsPoolA ? root.poolReserveB : root.poolReserveA) || 0
 
     readonly property real parsedSellInput: {
         var amt = parseFloat(sellInput)

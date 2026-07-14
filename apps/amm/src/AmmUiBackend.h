@@ -68,6 +68,10 @@ private:
 
     void persistConfigPath(const QString& path);
     void persistStoragePath(const QString& path);
+    // Normalizes an account id given as either 64-char lowercase/uppercase hex
+    // or base58 to lowercase hex. Returns an empty QString if `id` is neither
+    // (or the base58 decode fails), so callers can detect and skip it.
+    QString normalizeAccountId(const QString& id);
     void openOrAdoptWallet();
     // True when the shared core already has a wallet open — including a freshly
     // created one with zero accounts. See the definition for why list_accounts()
