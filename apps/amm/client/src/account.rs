@@ -4,8 +4,24 @@ use nssa_core::{
     account::{Account, AccountId, Data, Nonce},
     program::ProgramId,
 };
+use serde::Deserialize;
 
-use crate::model::AccountRead;
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountRead {
+    pub(crate) id: String,
+    pub(crate) status: String,
+    #[serde(default)]
+    pub(crate) account: Option<WalletAccount>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct WalletAccount {
+    pub(crate) program_owner: String,
+    pub(crate) balance: String,
+    pub(crate) nonce: String,
+    pub(crate) data: String,
+}
 
 pub fn parse_hex_32(value: &str, label: &str) -> Result<[u8; 32], String> {
     if value.len() != 64
@@ -123,8 +139,6 @@ pub fn decode_account(read: &AccountRead) -> Result<(AccountId, Account), String
 
 #[cfg(test)]
 pub fn account_read(id: AccountId, account: &Account) -> AccountRead {
-    use crate::model::WalletAccount;
-
     AccountRead {
         id: account_id_hex(id),
         status: String::from("ok"),

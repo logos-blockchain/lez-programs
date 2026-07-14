@@ -10,7 +10,7 @@ Item {
     id: root
 
     property int currentIndex: 0
-    readonly property var tabs: ["Trade", "Liquidity", "Create Pool"]
+    readonly property var tabs: ["Trade", "Liquidity"]
 
     // Wallet wiring, passed down from Main.qml.
     property var backend: null

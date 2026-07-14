@@ -6,6 +6,7 @@ Item {
 
     property string label: ""
     property string value: ""
+    property bool valueWrapAnywhere: false
     property bool estimated: false
     property string estimateHelp: qsTr("This value is derived from your LP token balance, total LP supply, and current pool reserves.")
 
@@ -36,14 +37,16 @@ Item {
 
             Text {
                 color: "#E7E1D8"
-                elide: Text.ElideRight
+                elide: root.valueWrapAnywhere ? Text.ElideNone : Text.ElideRight
                 font.bold: true
                 font.pixelSize: 12
                 horizontalAlignment: Text.AlignRight
                 text: root.value
                 verticalAlignment: Text.AlignVCenter
+                wrapMode: root.valueWrapAnywhere ? Text.WrapAtWordBoundaryOrAnywhere : Text.NoWrap
 
                 Layout.maximumWidth: Math.max(178, root.width * 0.55)
+                Layout.preferredWidth: Math.min(implicitWidth, Math.max(178, root.width * 0.55))
             }
 
             EstimateInfoButton {

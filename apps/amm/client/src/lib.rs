@@ -1,7 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod account;
-mod model;
 mod protocol;
 
 use std::{
@@ -9,12 +8,38 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
 };
 
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Serialize};
 
-use crate::model::{
-    ConfigIdRequest, ContextRequest, Envelope, PairIdsRequest, PlanRequest, QuoteRequest,
-    TokenIdsRequest,
+use crate::protocol::{
+    ConfigIdRequest, ContextRequest, PairIdsRequest, PlanRequest, QuoteRequest, TokenIdsRequest,
 };
+
+#[derive(Serialize)]
+struct Envelope {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl Envelope {
+    fn success(value: serde_json::Value) -> Self {
+        Self {
+            ok: true,
+            value: Some(value),
+            error: None,
+        }
+    }
+
+    fn failure(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            value: None,
+            error: Some(error.into()),
+        }
+    }
+}
 
 fn call<T: DeserializeOwned>(
     request: *const c_char,

@@ -6,21 +6,23 @@
 #include <QJsonObject>
 
 namespace {
-const char NETWORK_ENV[] = "AMM_UI_NETWORK";
-const char DEVNET_FILE_ENV[] = "AMM_UI_DEVNET_FILE";
+    const char NETWORK_ENV[] = "AMM_UI_NETWORK";
+    const char DEVNET_FILE_ENV[] = "AMM_UI_DEVNET_FILE";
 
-bool isLowerHex(const QString& value, int size)
-{
-    if (value.size() != size)
-        return false;
-    for (const QChar character : value) {
-        const bool digit = character >= QLatin1Char('0')
-            && character <= QLatin1Char('9');
-        if (!digit && (character < QLatin1Char('a') || character > QLatin1Char('f')))
+    bool isLowerHex(const QString& value, int size)
+    {
+        if (value.size() != size)
             return false;
+        for (const QChar character : value) {
+            const bool isAsciiDigit = character >= QLatin1Char('0')
+                && character <= QLatin1Char('9');
+            if (!isAsciiDigit
+                && (character < QLatin1Char('a') || character > QLatin1Char('f'))) {
+                return false;
+            }
+        }
+        return true;
     }
-    return true;
-}
 }
 
 bool ActiveNetwork::load()
@@ -28,6 +30,7 @@ bool ActiveNetwork::load()
     m_network = {};
     m_network.status = QStringLiteral("config_missing");
     m_expectedIdentity.clear();
+
     const QByteArray selected = qgetenv(NETWORK_ENV);
     m_network.id = selected.isEmpty()
         ? QStringLiteral("testnet")
@@ -51,7 +54,8 @@ bool ActiveNetwork::load()
         const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
         if (!document.isObject())
             return false;
-        entry = document.object().value(m_network.id).toObject();
+        const QJsonObject networks = document.object();
+        entry = networks.value(m_network.id).toObject();
         m_expectedIdentity = entry.value(QStringLiteral("checkpointHash")).toString();
     }
 
@@ -60,6 +64,7 @@ bool ActiveNetwork::load()
         || !isLowerHex(m_network.ammProgramId, 64)) {
         return false;
     }
+
     for (const QJsonValue& value : entry.value(QStringLiteral("tokenDefinitionIds")).toArray()) {
         const QString id = value.toString();
         if (!isLowerHex(id, 64)) {
@@ -68,8 +73,6 @@ bool ActiveNetwork::load()
         }
         m_network.tokenIds.append(id);
     }
-    if (m_network.tokenIds.isEmpty())
-        return false;
     m_network.status = QStringLiteral("network_unknown");
     return true;
 }
@@ -93,8 +96,7 @@ bool ActiveNetwork::needsIdentityProbe() const
 void ActiveNetwork::sequencerChanged(bool available)
 {
     if (isConfigured())
-        clearIdentity(available ? QStringLiteral("loading")
-                                : QStringLiteral("network_unknown"));
+        clearIdentity(available ? QStringLiteral("loading") : QStringLiteral("network_unknown"));
 }
 
 void ActiveNetwork::reachabilityChanged(bool reachable, bool wasReachable)
@@ -115,11 +117,11 @@ void ActiveNetwork::beginIdentityProbe()
 
 void ActiveNetwork::finishIdentityProbe(const QString& identity)
 {
-    if (identity.isEmpty())
+    if (identity.isEmpty()) {
         clearIdentity(QStringLiteral("network_unknown"));
-    else if (identity != m_expectedIdentity)
+    } else if (identity != m_expectedIdentity) {
         clearIdentity(QStringLiteral("network_mismatch"));
-    else {
+    } else {
         m_network.status = QStringLiteral("ready");
         m_network.fingerprint = (isDevnet() ? QStringLiteral("channel:")
                                             : QStringLiteral("block10:"))

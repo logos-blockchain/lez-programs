@@ -6,35 +6,49 @@ import QtQuick.Layouts
 
 import Logos.Controls
 import Logos.Icons
-import Logos.Theme
+import Logos.Wallet
 
 import "AmountMath.js" as AmountMath
-import "../wallet"
 
-Rectangle {
+AmmActionCard {
     id: root
 
+    theme: fallbackTheme
+
+    AmmTheme {
+        id: fallbackTheme
+    }
+
     property var newPositionContext: ({})
-    property var quotePayload: ({})
-    property bool contextLoading: false
-    property bool quoteLoading: false
-    property bool submitting: false
-    property bool quoteStale: false
+    property var flowState: ({})
     property string selectedTokenAId: ""
     property string selectedTokenBId: ""
     property int selectedFeeBps: 30
     property int slippageBps: 50
     property string amountA: ""
     property string amountB: ""
-    property string initialPrice: "1"
-    property string depositScaleBps: "10000"
-    property string submitError: ""
-    property string transactionId: ""
-    property string refreshWarning: ""
+    property string priceAmountA: "1"
+    property string priceAmountB: "1"
+    property string minimumAmountARaw: ""
+    property string minimumAmountBRaw: ""
     property var localErrors: []
-    property string priceTargetLp: ""
-    property int priceAdjustmentCount: 0
+    property string resolvingTokenId: ""
+    property string resolvingTokenSide: ""
+    property string tokenResolutionError: ""
+    property string tokenResolutionErrorSide: ""
+    property string tokenResolutionMessage: ""
+    property string confirmedPoolStatus: ""
+    property var activePoolQuote: ({})
 
+    readonly property var quotePayload: root.flowState.quote || ({})
+    readonly property bool contextLoading: root.flowState.contextLoading === true
+    readonly property bool quoteLoading: root.flowState.quoteLoading === true
+    readonly property bool submitting: root.flowState.submitting === true
+    readonly property bool quoteStale: root.flowState.quoteStale === true
+    readonly property bool poolCreationPending: root.flowState.poolCreationPending === true
+    readonly property string submitError: root.flowState.errorCode
+                                                  ? root.issueText(root.flowState.errorCode) : ""
+    readonly property string transactionId: String(root.flowState.transactionId || "")
     readonly property var emptyToken: ({
         "definitionId": "",
         "name": "",
@@ -53,55 +67,89 @@ Rectangle {
     readonly property bool displayIsCanonical: root.selectedTokenAId.length > 0
                                                && AmountMath.compareBase58Ids(root.selectedTokenAId,
                                                                               root.selectedTokenBId) > 0
-    readonly property var canonicalTokenA: root.displayIsCanonical ? root.tokenA : root.tokenB
-    readonly property var canonicalTokenB: root.displayIsCanonical ? root.tokenB : root.tokenA
     readonly property int canonicalDecimalsA: root.displayIsCanonical ? root.decimalsA : root.decimalsB
     readonly property int canonicalDecimalsB: root.displayIsCanonical ? root.decimalsB : root.decimalsA
+    readonly property string initialPrice: AmountMath.ratioValue(root.priceAmountA,
+                                                                  root.priceAmountB,
+                                                                  12)
+    readonly property string inverseInitialPrice: AmountMath.ratioValue(root.priceAmountB,
+                                                                         root.priceAmountA,
+                                                                         12)
     readonly property string poolStatus: root.effectivePoolStatus()
     readonly property bool activePool: root.poolStatus === "active_pool"
     readonly property bool missingPool: root.poolStatus === "missing_pool"
     readonly property int poolFeeBps: root.knownPoolFeeBps()
-    readonly property bool compact: root.width < 640
+    readonly property bool compact: root.width < 420
     readonly property bool hasPair: root.selectedTokenAId.length > 0
                                     && root.selectedTokenBId.length > 0
                                     && root.selectedTokenAId !== root.selectedTokenBId
+    readonly property bool resolvingToken: root.resolvingTokenId.length > 0
     readonly property bool canConfirm: root.quotePayload.schema === "new-position.v1"
                                        && root.quotePayload.status === "ok"
                                        && root.quotePayload.canSubmit === true
+                                       && root.quoteMatchesPair()
                                        && String(root.quotePayload.quoteHash || "").length > 0
                                        && !root.contextLoading
                                        && !root.quoteLoading
                                        && !root.quoteStale
                                        && !root.submitting
+                                       && !root.poolCreationPending
 
-    signal quoteRequested(bool immediate)
+    signal quoteRequested(bool immediate, var quoteRequest)
     signal confirmationRequested(var snapshot)
     signal tokenResolveRequested(string tokenId)
     signal draftChanged
     signal refreshRequested
 
-    implicitHeight: content.implicitHeight + 48
-    implicitWidth: 760
-    radius: 8
-    color: Theme.palette.backgroundSecondary
-    border.color: Theme.palette.borderSecondary
-    border.width: 1
+    implicitHeight: content.implicitHeight + 32
+    implicitWidth: 480
 
     Component.onCompleted: Qt.callLater(root.ensurePair)
-    onNewPositionContextChanged: Qt.callLater(root.ensurePair)
-    onQuotePayloadChanged: Qt.callLater(root.applyQuoteSideEffects)
+    onNewPositionContextChanged: Qt.callLater(root.applyContextChange)
+    function applyContextChange() {
+        if (root.resolvingToken)
+            root.finishTokenResolution()
+        else
+            root.ensurePair()
+    }
+    onQuotePayloadChanged: {
+        if (root.quoteStale)
+            return
+        root.rememberPoolStatus()
+        root.rememberActivePoolQuote()
+        Qt.callLater(root.applyQuoteSideEffects)
+    }
 
-    TextEdit {
-        id: clipboardProxy
-        visible: false
+    Component {
+        id: priceAmountAAdjustment
+
+        PriceRatioAdjustment {
+            amount: root.priceAmountA
+            enabled: !root.submitting
+            fieldName: "priceAmountAField"
+            invalid: root.fieldHasError("initialPrice")
+            onEdited: function(value) { root.editPrice("A", value) }
+        }
+    }
+
+    Component {
+        id: priceAmountBAdjustment
+
+        PriceRatioAdjustment {
+            amount: root.priceAmountB
+            enabled: !root.submitting
+            fieldName: "priceAmountBField"
+            invalid: root.fieldHasError("initialPrice")
+            onEdited: function(value) { root.editPrice("B", value) }
+        }
     }
 
     ColumnLayout {
         id: content
 
         anchors.fill: parent
-        anchors.margins: 24
-        spacing: 18
+        anchors.margins: 16
+        spacing: 16
 
         RowLayout {
             Layout.fillWidth: true
@@ -113,15 +161,15 @@ Rectangle {
 
                 Text {
                     text: qsTr("New position")
-                    color: Theme.palette.text
-                    font.pixelSize: 22
+                    color: root.theme.colors.textPrimary
+                    font.pixelSize: 18
                     font.weight: Font.DemiBold
                     font.letterSpacing: 0
                 }
 
                 Text {
                     text: root.contextStatusText()
-                    color: Theme.palette.textSecondary
+                    color: root.theme.colors.textSecondary
                     font.pixelSize: 12
                     elide: Text.ElideRight
                     Layout.fillWidth: true
@@ -135,9 +183,9 @@ Rectangle {
                 implicitHeight: 24
             }
 
-            WalletIconButton {
+            LogosIconButton {
                 iconSource: LogosIcons.refresh
-                iconColor: Theme.palette.textSecondary
+                iconColor: root.theme.colors.textSecondary
                 iconSize: 18
                 Layout.preferredWidth: 36
                 Layout.preferredHeight: 36
@@ -153,8 +201,8 @@ Rectangle {
             Layout.fillWidth: true
             implicitHeight: networkMessage.implicitHeight + 20
             radius: 6
-            color: Theme.palette.backgroundTertiary
-            border.color: Theme.palette.error
+            color: root.theme.colors.panelBg
+            border.color: root.theme.colors.error
             visible: root.contextBlocksForm()
 
             Text {
@@ -162,137 +210,144 @@ Rectangle {
                 anchors.fill: parent
                 anchors.margins: 10
                 text: root.contextErrorText()
-                color: Theme.palette.text
+                color: root.theme.colors.textPrimary
                 font.pixelSize: 12
                 wrapMode: Text.Wrap
                 verticalAlignment: Text.AlignVCenter
             }
         }
 
-        GridLayout {
+        ColumnLayout {
             Layout.fillWidth: true
-            columns: root.compact ? 1 : 3
-            columnSpacing: 10
-            rowSpacing: 8
+            spacing: 0
 
-            LogosComboBox {
-                id: tokenASelector
+            TokenAmountInput {
+                id: tokenAInput
 
+                objectName: "tokenAAmountInput"
                 Layout.fillWidth: true
-                Layout.minimumHeight: 48
-                model: root.tokens
-                currentIndex: root.tokenIndex(root.selectedTokenAId)
-                displayText: root.tokenLabel(root.tokenA)
-                enabled: root.tokens.length > 0 && !root.submitting
-
-                onActivated: function(index) {
-                    root.selectToken("A", root.tokens[index].definitionId)
+                theme: root.theme
+                text: root.amountA
+                label: qsTr("Token A amount")
+                balance: root.contextLoading ? "" : root.balanceText(root.tokenA, root.decimalsA)
+                helperText: root.missingPool && !root.compact
+                            ? root.minimumAmountText("A") : ""
+                errorText: root.formErrorText()
+                invalid: root.fieldHasError("amountA")
+                readOnly: root.submitting || (!root.activePool && !root.missingPool)
+                showMaxButton: root.activePool
+                tokenData: root.tokenA.definitionId ? root.tokenA : null
+                tokens: root.tokens
+                selectedTokenId: root.selectedTokenAId
+                tokenInvalid: root.tokenHasError("A")
+                tokenSelectionEnabled: !root.contextLoading && !root.submitting
+                adjustment: root.missingPool ? priceAmountAAdjustment : null
+                adjustmentWidth: root.missingPool ? (root.compact ? 100 : 142) : 0
+                adjustmentHeight: root.missingPool ? 24 : 0
+                disabledReasonForCode: function(code) { return root.issueText(code) }
+                detailForToken: function(token) { return root.tokenBalanceDetail(token) }
+                onEditingChanged: function(value) {
+                    if (root.activePool)
+                        root.editActiveAmount("A", value)
+                    else
+                        root.editMissingAmount("A", value)
                 }
-
-                delegate: ItemDelegate {
-                    required property var modelData
-                    width: tokenASelector.width
-                    enabled: modelData.selectable === true
-                    text: root.tokenLabel(modelData)
-                    ToolTip.visible: hovered
-                    ToolTip.text: root.tokenDetail(modelData)
+                onEditingCommitted: function(value) {
+                    if (root.activePool)
+                        root.finishActiveAmount("A", value)
+                    else
+                        root.finishMissingAmount("A", value)
                 }
+                onMaxClicked: root.useMaximum()
+                onTokenSelected: function(tokenId) { root.resolveToken("A", tokenId) }
+                onTokenEntered: function(value) { root.resolveToken("A", value) }
             }
 
-            Button {
-                text: "↔"
+            AmmPairSeparator {
+                Layout.fillWidth: true
+                theme: root.theme
                 enabled: root.hasPair && !root.submitting
-                flat: true
-                font.pixelSize: 20
-                Accessible.name: qsTr("Swap token order")
-                ToolTip.visible: hovered
-                ToolTip.text: Accessible.name
-                Layout.alignment: Qt.AlignCenter
-                Layout.preferredWidth: 44
-                Layout.preferredHeight: 44
                 onClicked: root.swapTokens()
-
-                contentItem: Text {
-                    text: parent.text
-                    color: parent.enabled ? Theme.palette.text : Theme.palette.textMuted
-                    font.pixelSize: 20
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                background: Rectangle {
-                    radius: 6
-                    color: Theme.palette.backgroundButton
-                    border.color: Theme.palette.border
-                    border.width: 1
-                }
             }
 
-            LogosComboBox {
-                id: tokenBSelector
+            TokenAmountInput {
+                id: tokenBInput
 
+                objectName: "tokenBAmountInput"
                 Layout.fillWidth: true
-                Layout.minimumHeight: 48
-                model: root.tokens
-                currentIndex: root.tokenIndex(root.selectedTokenBId)
-                displayText: root.tokenLabel(root.tokenB)
-                enabled: root.tokens.length > 0 && !root.submitting
-
-                onActivated: function(index) {
-                    root.selectToken("B", root.tokens[index].definitionId)
+                theme: root.theme
+                text: root.amountB
+                label: qsTr("Token B amount")
+                balance: root.contextLoading ? "" : root.balanceText(root.tokenB, root.decimalsB)
+                helperText: root.missingPool && !root.compact
+                            ? root.minimumAmountText("B") : ""
+                invalid: root.fieldHasError("amountB")
+                readOnly: root.submitting || (!root.activePool && !root.missingPool)
+                showMaxButton: root.activePool
+                tokenData: root.tokenB.definitionId ? root.tokenB : null
+                tokens: root.tokens
+                selectedTokenId: root.selectedTokenBId
+                tokenInvalid: root.tokenHasError("B")
+                tokenSelectionEnabled: !root.contextLoading && !root.submitting
+                adjustment: root.missingPool ? priceAmountBAdjustment : null
+                adjustmentWidth: root.missingPool ? (root.compact ? 100 : 142) : 0
+                adjustmentHeight: root.missingPool ? 24 : 0
+                disabledReasonForCode: function(code) { return root.issueText(code) }
+                detailForToken: function(token) { return root.tokenBalanceDetail(token) }
+                onEditingChanged: function(value) {
+                    if (root.activePool)
+                        root.editActiveAmount("B", value)
+                    else
+                        root.editMissingAmount("B", value)
                 }
-
-                delegate: ItemDelegate {
-                    required property var modelData
-                    width: tokenBSelector.width
-                    enabled: modelData.selectable === true
-                    text: root.tokenLabel(modelData)
-                    ToolTip.visible: hovered
-                    ToolTip.text: root.tokenDetail(modelData)
+                onEditingCommitted: function(value) {
+                    if (root.activePool)
+                        root.finishActiveAmount("B", value)
+                    else
+                        root.finishMissingAmount("B", value)
                 }
+                onMaxClicked: root.useMaximum()
+                onTokenSelected: function(tokenId) { root.resolveToken("B", tokenId) }
+                onTokenEntered: function(value) { root.resolveToken("B", value) }
             }
         }
 
-        RowLayout {
+        Text {
             Layout.fillWidth: true
-            spacing: 8
+            visible: root.resolvingToken || root.tokenResolutionMessage.length > 0
+            text: root.resolvingToken
+                  ? qsTr("Resolving TokenDefinition...")
+                  : root.tokenResolutionMessage
+            color: root.theme.colors.textSecondary
+            font.pixelSize: 11
+            wrapMode: Text.Wrap
+        }
 
-            LogosTextField {
-                id: tokenIdField
-                Layout.fillWidth: true
-                placeholderText: qsTr("Token definition ID")
-                enabled: !root.contextLoading && !root.submitting
-                textInput.maximumLength: 64
-                textInput.selectByMouse: true
-            }
-
-            LogosButton {
-                id: addTokenButton
-                text: qsTr("Add")
-                enabled: tokenIdField.text.length > 0 && !root.contextLoading && !root.submitting
-                Layout.preferredWidth: 80
-                Layout.preferredHeight: 40
-                radius: 6
-                onClicked: {
-                    root.tokenResolveRequested(tokenIdField.text)
-                    tokenIdField.text = ""
-                }
-            }
+        Text {
+            Layout.fillWidth: true
+            visible: text.length > 0
+            text: root.activePool ? root.activePriceText()
+                                  : root.missingPool ? root.depositMultiplierText() : ""
+            color: root.theme.colors.textSecondary
+            font.pixelSize: 12
+            horizontalAlignment: Text.AlignRight
+            wrapMode: Text.Wrap
         }
 
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 1
-            color: Theme.palette.borderSecondary
+            color: root.theme.colors.divider
         }
 
         ColumnLayout {
             Layout.fillWidth: true
             spacing: 8
+            visible: !root.contextLoading
 
             Text {
                 text: qsTr("Fee tier")
-                color: Theme.palette.text
+                color: root.theme.colors.textPrimary
                 font.pixelSize: 13
                 font.weight: Font.Medium
             }
@@ -307,12 +362,18 @@ Rectangle {
                     model: root.feeTiers
 
                     Item {
+                        id: feeTierOption
+
                         required property var modelData
                         readonly property string disabledReason: root.feeDisabledReason(modelData)
+                        readonly property bool invalid: root.fieldHasError("feeBps")
+                                                        && feeTierButton.checked
                         Layout.fillWidth: true
                         implicitHeight: 40
 
                         Button {
+                            id: feeTierButton
+
                             anchors.fill: parent
                             text: parent.modelData.label || root.feeLabel(parent.modelData.feeBps)
                             checkable: true
@@ -321,8 +382,10 @@ Rectangle {
                             onClicked: root.selectFee(parent.modelData.feeBps)
 
                             contentItem: Text {
-                                text: parent.text
-                                color: parent.enabled ? Theme.palette.text : Theme.palette.textMuted
+                                text: feeTierButton.text
+                                color: feeTierButton.enabled
+                                       ? root.theme.colors.textPrimary
+                                       : root.theme.colors.textPlaceholder
                                 font.pixelSize: 12
                                 font.weight: Font.Medium
                                 horizontalAlignment: Text.AlignHCenter
@@ -331,12 +394,14 @@ Rectangle {
 
                             background: Rectangle {
                                 radius: 6
-                                color: parent.checked
-                                       ? Theme.palette.overlayOrange
-                                       : Theme.palette.backgroundButton
-                                border.color: parent.checked
-                                              ? Theme.palette.primary
-                                              : Theme.palette.border
+                                color: feeTierButton.checked
+                                       ? root.theme.colors.selection
+                                       : root.theme.colors.inputBg
+                                border.color: feeTierOption.invalid
+                                              ? root.theme.colors.error
+                                              : feeTierButton.checked
+                                                ? root.theme.colors.ctaBg
+                                                : root.theme.colors.borderStrong
                                 border.width: 1
                             }
                         }
@@ -356,247 +421,51 @@ Rectangle {
             }
         }
 
-        ColumnLayout {
+        RowLayout {
             Layout.fillWidth: true
-            spacing: 12
+            spacing: 10
             visible: root.activePool
 
-            RowLayout {
+            Text {
+                text: qsTr("Slippage")
+                color: root.theme.colors.textSecondary
+                font.pixelSize: 12
                 Layout.fillWidth: true
-
-                Text {
-                    text: qsTr("Deposit amounts")
-                    color: Theme.palette.text
-                    font.pixelSize: 13
-                    font.weight: Font.Medium
-                    Layout.fillWidth: true
-                }
-
-                Text {
-                    text: root.activePriceText()
-                    color: Theme.palette.textSecondary
-                    font.pixelSize: 12
-                    elide: Text.ElideRight
-                    horizontalAlignment: Text.AlignRight
-                    Layout.maximumWidth: root.compact ? 180 : 360
-                }
             }
 
-            GridLayout {
-                Layout.fillWidth: true
-                columns: root.compact ? 1 : 2
-                columnSpacing: 10
-                rowSpacing: 10
-
-                TokenAmountInput {
-                    Layout.fillWidth: true
-                    text: root.amountA
-                    label: root.tokenA.name || qsTr("Token A")
-                    token: root.shortTokenName(root.tokenA)
-                    balance: root.balanceText(root.tokenA, root.decimalsA)
-                    errorText: root.fieldError("amountA")
-                    readOnly: root.submitting
-                    onEditingChanged: function(value) { root.editActiveAmount("A", value) }
-                    onMaxClicked: root.useMaximum()
-                }
-
-                TokenAmountInput {
-                    Layout.fillWidth: true
-                    text: root.amountB
-                    label: root.tokenB.name || qsTr("Token B")
-                    token: root.shortTokenName(root.tokenB)
-                    balance: root.balanceText(root.tokenB, root.decimalsB)
-                    errorText: root.fieldError("amountB")
-                    readOnly: root.submitting
-                    onEditingChanged: function(value) { root.editActiveAmount("B", value) }
-                    onMaxClicked: root.useMaximum()
-                }
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 10
-
-                Text {
-                    text: qsTr("Slippage")
-                    color: Theme.palette.textSecondary
-                    font.pixelSize: 12
-                    Layout.fillWidth: true
-                }
+            Item {
+                Layout.preferredWidth: slippageControl.implicitWidth
+                Layout.preferredHeight: slippageControl.implicitHeight
 
                 LogosSpinBox {
+                    id: slippageControl
+
+                    anchors.fill: parent
                     from: 0
                     to: 5000
                     stepSize: 10
                     editable: true
                     value: root.slippageBps
                     enabled: !root.submitting
-                    textFromValue: function(value) { return qsTr("%1 bps").arg(value) }
+                    textFromValue: function(value) { return root.formatBps(value) }
                     valueFromText: function(text) {
-                        var parsed = Number(String(text).replace(/[^0-9]/g, ""))
-                        return isNaN(parsed) ? root.slippageBps : parsed
+                        var parsed = AmountMath.parseHuman(String(text).replace("%", "").trim(), 2)
+                        return parsed.ok ? AmountMath.toU32(parsed.raw) : root.slippageBps
                     }
                     onValueModified: {
                         root.slippageBps = value
                         root.noteDraftChanged()
-                        root.quoteRequested(true)
-                    }
-                }
-            }
-        }
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 12
-            visible: root.missingPool
-
-            Text {
-                text: qsTr("Initial price")
-                color: Theme.palette.text
-                font.pixelSize: 13
-                font.weight: Font.Medium
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-
-                Text {
-                    text: qsTr("1 %1 =").arg(root.shortTokenName(root.tokenA))
-                    color: Theme.palette.textSecondary
-                    font.pixelSize: 13
-                }
-
-                LogosTextField {
-                    Layout.fillWidth: true
-                    text: root.initialPrice
-                    enabled: !root.submitting
-                    textInput.inputMethodHints: Qt.ImhFormattedNumbersOnly
-                    textInput.maximumLength: 80
-                    textInput.validator: RegularExpressionValidator { regularExpression: /[0-9]*([.][0-9]*)?/ }
-                    textInput.onTextEdited: root.editPrice(textInput.text)
-                }
-
-                Text {
-                    text: root.shortTokenName(root.tokenB)
-                    color: Theme.palette.textSecondary
-                    font.pixelSize: 13
-                }
-            }
-
-            Text {
-                text: root.fieldError("initialPrice")
-                color: Theme.palette.error
-                font.pixelSize: 11
-                visible: text.length > 0
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-
-                Text {
-                    text: qsTr("Deposit scale")
-                    color: Theme.palette.textSecondary
-                    font.pixelSize: 12
-                    Layout.fillWidth: true
-                }
-
-                Button {
-                    text: "−"
-                    enabled: Number(root.depositScaleBps) > 10000 && !root.submitting
-                    Accessible.name: qsTr("Decrease deposit scale")
-                    implicitWidth: 36
-                    onClicked: root.stepScale(-100)
-
-                    contentItem: Text {
-                        text: parent.text
-                        color: parent.enabled ? Theme.palette.text : Theme.palette.textMuted
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-
-                    background: Rectangle {
-                        radius: 6
-                        color: Theme.palette.backgroundButton
-                        border.color: Theme.palette.border
-                        border.width: 1
+                        root.requestQuote(true)
                     }
                 }
 
-                LogosTextField {
-                    id: scaleField
-                    text: root.depositScaleBps
-                    enabled: !root.submitting
-                    textInput.horizontalAlignment: Text.AlignHCenter
-                    textInput.maximumLength: 10
-                    textInput.validator: RegularExpressionValidator { regularExpression: /[0-9]{0,10}/ }
-                    textInput.inputMethodHints: Qt.ImhDigitsOnly
-                    Layout.preferredWidth: 116
-                    textInput.onTextEdited: root.editScale(textInput.text)
-                }
-
-                Text {
-                    text: qsTr("bps")
-                    color: Theme.palette.textSecondary
-                    font.pixelSize: 12
-                }
-
-                Button {
-                    text: "+"
-                    enabled: Number(root.depositScaleBps) <= 4294967195 && !root.submitting
-                    Accessible.name: qsTr("Increase deposit scale")
-                    implicitWidth: 36
-                    onClicked: root.stepScale(100)
-
-                    contentItem: Text {
-                        text: parent.text
-                        color: parent.enabled ? Theme.palette.text : Theme.palette.textMuted
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-
-                    background: Rectangle {
-                        radius: 6
-                        color: Theme.palette.backgroundButton
-                        border.color: Theme.palette.border
-                        border.width: 1
-                    }
-                }
-            }
-
-            Text {
-                text: root.scaleHelpText()
-                color: root.fieldError("depositScale").length > 0 ? Theme.palette.error : Theme.palette.textSecondary
-                font.pixelSize: 11
-                visible: text.length > 0
-                Layout.fillWidth: true
-                wrapMode: Text.Wrap
-            }
-
-            Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: missingDepositRows.implicitHeight + 20
-                radius: 6
-                color: Theme.palette.backgroundTertiary
-
-                ColumnLayout {
-                    id: missingDepositRows
+                Rectangle {
                     anchors.fill: parent
-                    anchors.margins: 10
-                    spacing: 8
-
-                    LabelValueRow {
-                        label: qsTr("%1 deposit").arg(root.shortTokenName(root.tokenA))
-                        value: root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "A")
-                    }
-
-                    LabelValueRow {
-                        label: qsTr("%1 deposit").arg(root.shortTokenName(root.tokenB))
-                        value: root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "B")
-                    }
+                    visible: root.fieldHasError("slippageBps")
+                    color: "transparent"
+                    radius: 6
+                    border.color: root.theme.colors.error
+                    border.width: 1
                 }
             }
         }
@@ -605,16 +474,42 @@ Rectangle {
             Layout.fillWidth: true
             spacing: 9
             visible: root.quotePayload.status === "ok"
+                     && root.quoteMatchesPair()
+                     && !root.quoteStale
 
             Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: 1
-                color: Theme.palette.borderSecondary
+                color: root.theme.colors.divider
             }
 
             LabelValueRow {
                 label: root.activePool ? qsTr("Expected spend") : qsTr("Opening deposit")
                 value: root.depositSummary()
+            }
+
+            LabelValueRow {
+                visible: root.missingPool
+                label: qsTr("Initial price")
+                value: root.initialPriceText(false)
+            }
+
+            LabelValueRow {
+                visible: root.missingPool
+                label: qsTr("Inverse price")
+                value: root.initialPriceText(true)
+            }
+
+            LabelValueRow {
+                visible: root.missingPool
+                label: qsTr("Deposit multiplier")
+                value: root.depositMultiplierValue()
+            }
+
+            LabelValueRow {
+                visible: root.missingPool
+                label: qsTr("Deposit scale")
+                value: root.depositBasisPointsText()
             }
 
             LabelValueRow {
@@ -632,6 +527,7 @@ Rectangle {
             LabelValueRow {
                 label: qsTr("Pool")
                 value: String(root.quotePayload.poolId || "")
+                valueWrapAnywhere: true
             }
 
             LogosButton {
@@ -658,6 +554,7 @@ Rectangle {
                         required property var modelData
                         label: qsTr("%1. %2 · %3").arg(modelData.order + 1).arg(modelData.role).arg(modelData.action)
                         value: modelData.accountId ? modelData.accountId : qsTr("Assigned by wallet")
+                        valueWrapAnywhere: true
                     }
                 }
             }
@@ -667,8 +564,8 @@ Rectangle {
             Layout.fillWidth: true
             implicitHeight: warningTextItem.implicitHeight + 20
             radius: 6
-            color: Theme.palette.backgroundTertiary
-            border.color: Theme.palette.primary
+            color: root.theme.colors.panelBg
+            border.color: root.theme.colors.ctaBg
             visible: root.warningText().length > 0
 
             Text {
@@ -676,115 +573,28 @@ Rectangle {
                 anchors.fill: parent
                 anchors.margins: 10
                 text: root.warningText()
-                color: Theme.palette.text
+                color: root.theme.colors.textPrimary
                 font.pixelSize: 12
                 wrapMode: Text.Wrap
                 verticalAlignment: Text.AlignVCenter
             }
         }
 
-        Rectangle {
+        SubmittedTransaction {
             Layout.fillWidth: true
-            implicitHeight: quoteErrorText.implicitHeight + 20
-            radius: 6
-            color: Theme.palette.backgroundTertiary
-            border.color: Theme.palette.error
-            visible: root.quoteError().length > 0
-
-            Text {
-                id: quoteErrorText
-                anchors.fill: parent
-                anchors.margins: 10
-                text: root.quoteError()
-                color: Theme.palette.text
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
-                verticalAlignment: Text.AlignVCenter
-            }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: successColumn.implicitHeight + 24
-            radius: 6
-            color: Theme.palette.backgroundTertiary
-            border.color: Theme.palette.success
+            title: qsTr("Position submitted")
+            transactionId: root.transactionId
             visible: root.transactionId.length > 0
-
-            ColumnLayout {
-                id: successColumn
-                anchors.fill: parent
-                anchors.margins: 12
-                spacing: 7
-
-                Text {
-                    text: qsTr("Position submitted")
-                    color: Theme.palette.success
-                    font.pixelSize: 14
-                    font.weight: Font.DemiBold
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-
-                    Text {
-                        text: root.transactionId
-                        color: Theme.palette.text
-                        font.family: "monospace"
-                        font.pixelSize: 11
-                        wrapMode: Text.WrapAnywhere
-                        Layout.fillWidth: true
-                    }
-
-                    LogosCopyButton {
-                        Accessible.name: qsTr("Copy transaction ID")
-                        ToolTip.visible: hovered
-                        ToolTip.text: Accessible.name
-                        onCopyText: root.copyToClipboard(root.transactionId)
-                    }
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: root.refreshWarning.length > 0
-
-                    Text {
-                        text: root.refreshWarning
-                        color: Theme.palette.textSecondary
-                        font.pixelSize: 11
-                        wrapMode: Text.Wrap
-                        Layout.fillWidth: true
-                    }
-
-                    WalletIconButton {
-                        iconSource: LogosIcons.refresh
-                        iconColor: Theme.palette.textSecondary
-                        iconSize: 16
-                        Accessible.name: qsTr("Refresh balances")
-                        ToolTip.visible: hovered
-                        ToolTip.text: Accessible.name
-                        onClicked: root.refreshRequested()
-                    }
-                }
-            }
         }
 
-        Text {
-            text: root.submitError
-            color: Theme.palette.error
-            font.pixelSize: 12
-            visible: text.length > 0
-            wrapMode: Text.Wrap
+        AmmPrimaryButton {
             Layout.fillWidth: true
-        }
-
-        LogosButton {
-            Layout.fillWidth: true
-            Layout.minimumHeight: 48
-            radius: 6
+            Layout.minimumHeight: 56
+            theme: root.theme
             text: root.submitting
                   ? qsTr("Submitting…")
+                  : root.contextLoading ? qsTr("Loading…")
+                  : root.poolCreationPending ? qsTr("Waiting for pool")
                   : root.missingPool ? qsTr("Create pool") : qsTr("Add liquidity")
             enabled: root.canConfirm
             onClicked: root.confirmationRequested(root.submissionSnapshot())
@@ -794,12 +604,13 @@ Rectangle {
     component LabelValueRow: RowLayout {
         required property string label
         required property string value
+        property bool valueWrapAnywhere: false
         Layout.fillWidth: true
         spacing: 12
 
         Text {
             text: parent.label
-            color: Theme.palette.textSecondary
+            color: root.theme.colors.textSecondary
             font.pixelSize: 12
             Layout.fillWidth: true
             wrapMode: Text.Wrap
@@ -807,12 +618,70 @@ Rectangle {
 
         Text {
             text: parent.value
-            color: Theme.palette.text
+            color: root.theme.colors.textPrimary
             font.pixelSize: 12
             font.weight: Font.Medium
             horizontalAlignment: Text.AlignRight
-            wrapMode: Text.WrapAnywhere
-            Layout.maximumWidth: root.compact ? 190 : 430
+            wrapMode: parent.valueWrapAnywhere ? Text.WrapAnywhere : Text.Wrap
+            Layout.maximumWidth: root.compact ? 190 : 280
+        }
+    }
+
+    component PriceRatioAdjustment: RowLayout {
+        id: ratioAdjustment
+
+        required property string amount
+        required property string fieldName
+        required property bool invalid
+
+        signal edited(string value)
+
+        implicitWidth: 142
+        implicitHeight: 24
+        spacing: 6
+
+        Text {
+            text: qsTr("Price")
+            color: root.theme.colors.textSecondary
+            font.pixelSize: 11
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 24
+            radius: 6
+            color: root.theme.colors.panelBg
+            border.color: ratioAdjustment.invalid
+                          ? root.theme.colors.error
+                          : ratioInput.activeFocus
+                            ? root.theme.colors.ctaBg
+                            : root.theme.colors.borderStrong
+            border.width: 1
+
+            TextInput {
+                id: ratioInput
+
+                objectName: ratioAdjustment.fieldName
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                text: ratioAdjustment.amount
+                enabled: ratioAdjustment.enabled
+                color: enabled ? root.theme.colors.textPrimary
+                               : root.theme.colors.textSecondary
+                font.pixelSize: 12
+                selectionColor: root.theme.colors.selection
+                selectedTextColor: root.theme.colors.textPrimary
+                horizontalAlignment: Text.AlignRight
+                verticalAlignment: Text.AlignVCenter
+                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                maximumLength: 80
+                validator: RegularExpressionValidator {
+                    regularExpression: /[0-9]*([.][0-9]*)?/
+                }
+                Accessible.name: qsTr("Initial price ratio amount")
+                onTextEdited: ratioAdjustment.edited(text)
+            }
         }
     }
 
@@ -824,14 +693,6 @@ Rectangle {
         return root.emptyToken
     }
 
-    function tokenIndex(tokenId) {
-        for (var i = 0; i < root.tokens.length; ++i) {
-            if (root.tokens[i].definitionId === tokenId)
-                return i
-        }
-        return -1
-    }
-
     function selectableTokenIds() {
         var result = []
         for (var i = 0; i < root.tokens.length; ++i) {
@@ -841,11 +702,97 @@ Rectangle {
         return result
     }
 
+    function isBase58TokenId(tokenId) {
+        return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(tokenId || ""))
+    }
+
+    function resolveToken(side, value) {
+        var tokenId = String(value || "").trim()
+        root.tokenResolutionError = ""
+        root.tokenResolutionErrorSide = ""
+        root.tokenResolutionMessage = ""
+        if (!root.isBase58TokenId(tokenId)) {
+            root.tokenResolutionError = root.issueText("invalid_token_id")
+            root.tokenResolutionErrorSide = side
+            return
+        }
+
+        var current = root.tokenById(tokenId)
+        if (current.definitionId === tokenId) {
+            if (current.selectable === true)
+                root.selectToken(side, tokenId)
+            else {
+                root.tokenResolutionError = root.issueText(current.code || current.status)
+                root.tokenResolutionErrorSide = side
+            }
+            return
+        }
+        root.resolvingTokenId = tokenId
+        root.resolvingTokenSide = side
+        root.tokenResolveRequested(tokenId)
+    }
+
+    function finishTokenResolution(finalResponse) {
+        if (!root.resolvingToken)
+            return
+        var token = root.tokenById(root.resolvingTokenId)
+        if (!token || !token.definitionId) {
+            if (finalResponse === true) {
+                var currentStatus = String(root.newPositionContext.status || "")
+                var code = currentStatus !== "ready" && currentStatus !== "no_wallet"
+                           && currentStatus !== "loading"
+                         ? root.newPositionContext.code || currentStatus
+                         : "token_definition_unreadable"
+                root.failTokenResolution(code)
+            }
+            return
+        }
+        var status = String(root.newPositionContext.status || "")
+        if (status === "loading")
+            return
+        if (status !== "ready" && status !== "no_wallet") {
+            root.failTokenResolution(root.newPositionContext.code || status)
+            return
+        }
+        var side = root.resolvingTokenSide
+        root.resolvingTokenId = ""
+        root.resolvingTokenSide = ""
+        if (token.selectable !== true) {
+            root.tokenResolutionError = root.issueText(token.code || token.status)
+            root.tokenResolutionErrorSide = side
+            return
+        }
+
+        var decimals = AmountMath.implyDecimals(token.totalSupplyRaw || "0")
+        root.tokenResolutionMessage = qsTr("%1 - supply %2 (%3 implied decimals)")
+                .arg(token.name || root.shortId(token.definitionId))
+                .arg(AmountMath.formatRaw(token.totalSupplyRaw || "0", decimals))
+                .arg(decimals)
+        root.selectToken(side, token.definitionId)
+    }
+
+    function failTokenResolution(code) {
+        if (!root.resolvingToken)
+            return
+        var side = root.resolvingTokenSide
+        root.resolvingTokenId = ""
+        root.resolvingTokenSide = ""
+        root.tokenResolutionError = root.issueText(code)
+        root.tokenResolutionErrorSide = side
+    }
+
     function ensurePair() {
+        var status = String(root.newPositionContext.status || "")
+        if (status !== "ready" && status !== "no_wallet")
+            return
+        var previousA = root.selectedTokenAId
+        var previousB = root.selectedTokenBId
         var selectable = root.selectableTokenIds()
         if (selectable.length === 0) {
             root.selectedTokenAId = ""
             root.selectedTokenBId = ""
+            if (previousA.length > 0 || previousB.length > 0)
+                root.resetPairDraft()
             return
         }
         if (selectable.indexOf(root.selectedTokenAId) < 0)
@@ -854,13 +801,17 @@ Rectangle {
                 || root.selectedTokenBId === root.selectedTokenAId) {
             root.selectedTokenBId = selectable.length > 1 ? selectable[1] : ""
         }
-        if (root.hasPair)
-            root.quoteRequested(true)
+        if (root.selectedTokenAId !== previousA || root.selectedTokenBId !== previousB)
+            root.resetPairDraft()
+        else if (root.hasPair)
+            root.requestQuote(true)
     }
 
     function selectToken(side, tokenId) {
         if (tokenId.length === 0)
             return
+        root.tokenResolutionError = ""
+        root.tokenResolutionErrorSide = ""
         if (side === "A") {
             if (tokenId === root.selectedTokenBId)
                 root.selectedTokenBId = root.selectedTokenAId
@@ -880,44 +831,102 @@ Rectangle {
         var amount = root.amountA
         root.amountA = root.amountB
         root.amountB = amount
-        if (root.activePool && root.quotePayload.initialPriceRealRaw)
-            root.initialPrice = root.activePriceValue()
+        var minimum = root.minimumAmountARaw
+        root.minimumAmountARaw = root.minimumAmountBRaw
+        root.minimumAmountBRaw = minimum
+        var priceAmount = root.priceAmountA
+        root.priceAmountA = root.priceAmountB
+        root.priceAmountB = priceAmount
         root.noteDraftChanged()
-        root.quoteRequested(true)
+        root.requestQuote(true)
     }
 
     function resetPairDraft() {
+        root.confirmedPoolStatus = ""
+        root.activePoolQuote = ({})
         root.amountA = ""
         root.amountB = ""
-        root.initialPrice = "1"
-        root.depositScaleBps = "10000"
-        root.priceTargetLp = ""
-        root.priceAdjustmentCount = 0
+        root.priceAmountA = "1"
+        root.priceAmountB = "1"
+        root.minimumAmountARaw = ""
+        root.minimumAmountBRaw = ""
         root.localErrors = []
         root.noteDraftChanged()
-        root.quoteRequested(true)
+        root.requestQuote(true)
+    }
+
+    function acceptPoolActivation(quote) {
+        if (!quote || quote.schema !== "new-position.v1"
+                || quote.status !== "ok"
+                || quote.poolStatus !== "active_pool"
+                || !root.quoteMatchesSelectedPair(quote)) {
+            return false
+        }
+        root.confirmedPoolStatus = "active_pool"
+        root.activePoolQuote = quote
+        root.amountA = ""
+        root.amountB = ""
+        root.minimumAmountARaw = ""
+        root.minimumAmountBRaw = ""
+        root.localErrors = []
+        return true
     }
 
     function noteDraftChanged() {
-        root.submitError = ""
-        root.refreshWarning = ""
         root.draftChanged()
     }
 
     function effectivePoolStatus() {
+        if (root.quoteStale || !root.quoteMatchesPair())
+            return root.confirmedPoolStatus
         var status = String(root.quotePayload.poolStatus || "")
         if (status === "active_pool" || status === "missing_pool")
             return status
         if (root.quotePayload.code === "fee_tier_mismatch")
             return "active_pool"
-        return ""
+        return root.confirmedPoolStatus
+    }
+
+    function rememberPoolStatus() {
+        if (!root.quoteMatchesPair())
+            return
+        var status = String(root.quotePayload.poolStatus || "")
+        if (status === "active_pool" || status === "missing_pool")
+            root.confirmedPoolStatus = status
+        else if (root.quotePayload.code === "fee_tier_mismatch")
+            root.confirmedPoolStatus = "active_pool"
+    }
+
+    function rememberActivePoolQuote() {
+        if (root.quotePayload.status !== "ok"
+                || root.quotePayload.poolStatus !== "active_pool"
+                || !root.quoteMatchesPair()) {
+            return
+        }
+        var reserveA = String(root.quotePayload.reserveARaw || "")
+        var reserveB = String(root.quotePayload.reserveBRaw || "")
+        if (AmountMath.isUnsigned(reserveA) && reserveA !== "0"
+                && AmountMath.isUnsigned(reserveB) && reserveB !== "0") {
+            root.activePoolQuote = root.quotePayload
+        }
     }
 
     function knownPoolFeeBps() {
-        var direct = Number(root.quotePayload.poolFeeBps || 0)
+        var direct = root.feeBpsFromQuote(root.quotePayload)
         if (direct > 0)
             return direct
-        var errors = root.quotePayload.errors || []
+        if (root.quoteMatchesSelectedPair(root.activePoolQuote))
+            return Number(root.activePoolQuote.poolFeeBps || 0)
+        return 0
+    }
+
+    function feeBpsFromQuote(quote) {
+        if (!root.quoteMatchesSelectedPair(quote))
+            return 0
+        var direct = Number(quote.poolFeeBps || 0)
+        if (direct > 0)
+            return direct
+        var errors = quote.errors || []
         for (var i = 0; i < errors.length; ++i) {
             var value = Number(errors[i].details ? errors[i].details.poolFeeBps : 0)
             if (value > 0)
@@ -926,10 +935,22 @@ Rectangle {
         return 0
     }
 
+    function quoteMatchesPair() {
+        return root.quoteMatchesSelectedPair(root.quotePayload)
+    }
+
+    function quoteMatchesSelectedPair(quote) {
+        var tokenAId = String(quote.tokenAId || "")
+        var tokenBId = String(quote.tokenBId || "")
+        return root.hasPair
+                && ((tokenAId === root.selectedTokenAId && tokenBId === root.selectedTokenBId)
+                    || (tokenAId === root.selectedTokenBId && tokenBId === root.selectedTokenAId))
+    }
+
     function selectFee(feeBps) {
         root.selectedFeeBps = feeBps
         root.noteDraftChanged()
-        root.quoteRequested(true)
+        root.requestQuote(true)
     }
 
     function feeDisabledReason(tier) {
@@ -950,7 +971,7 @@ Rectangle {
             return "0.30%"
         if (feeBps === 100)
             return "1.00%"
-        return qsTr("%1 bps").arg(feeBps)
+        return root.formatBps(feeBps)
     }
 
     function buildQuoteRequest() {
@@ -983,19 +1004,68 @@ Rectangle {
                 request.slippageBps = root.slippageBps
             }
         } else {
-            var price = AmountMath.priceToQ64(root.initialPrice,
+            var priceFromAmounts = false
+            var price = AmountMath.ratioToQ64(root.priceAmountA,
+                                              root.priceAmountB,
                                               root.canonicalDecimalsA,
                                               root.canonicalDecimalsB,
                                               root.displayIsCanonical)
             if (!price.ok)
                 errors.push(root.localIssue(price.code, ["initialPrice"]))
-            var scale = root.validScale()
-            if (scale < 0)
-                errors.push(root.localIssue("invalid_deposit_scale", ["depositScale"]))
-            if (errors.length === 0) {
-                request.initialPriceRealRaw = price.raw
-                request.depositScaleBps = scale
+            if (root.missingPool && root.minimumAmountARaw.length > 0) {
+                var parsedMissingA = AmountMath.parseHuman(root.amountA, root.decimalsA)
+                var parsedMissingB = AmountMath.parseHuman(root.amountB, root.decimalsB)
+                if (!parsedMissingA.ok)
+                    errors.push(root.localIssue(parsedMissingA.code, ["amountA"]))
+                if (!parsedMissingB.ok)
+                    errors.push(root.localIssue(parsedMissingB.code, ["amountB"]))
+                if (parsedMissingA.ok && parsedMissingB.ok) {
+                    if (AmountMath.compare(parsedMissingA.raw, root.minimumAmountARaw) < 0)
+                        errors.push(root.localIssue("amount_too_low", ["amountA"]))
+                    if (AmountMath.compare(parsedMissingB.raw, root.minimumAmountBRaw) < 0)
+                        errors.push(root.localIssue("amount_too_low", ["amountB"]))
+                    var pairedB = AmountMath.pairAmount(parsedMissingA.raw,
+                                                        true,
+                                                        root.decimalsA,
+                                                        root.decimalsB,
+                                                        root.priceAmountA,
+                                                        root.priceAmountB)
+                    var pairedA = AmountMath.pairAmount(parsedMissingB.raw,
+                                                        false,
+                                                        root.decimalsA,
+                                                        root.decimalsB,
+                                                        root.priceAmountA,
+                                                        root.priceAmountB)
+                    var matchesA = pairedA.ok
+                            && AmountMath.normalize(pairedA.raw)
+                               === AmountMath.normalize(parsedMissingA.raw)
+                    var matchesB = pairedB.ok
+                            && AmountMath.normalize(pairedB.raw)
+                               === AmountMath.normalize(parsedMissingB.raw)
+                    if (!matchesA && !matchesB) {
+                        errors.push(root.localIssue("deposit_ratio_mismatch", ["amountA", "amountB"]))
+                    }
+                    if (errors.length === 0) {
+                        request.amountARaw = root.displayIsCanonical
+                                ? parsedMissingA.raw : parsedMissingB.raw
+                        request.amountBRaw = root.displayIsCanonical
+                                ? parsedMissingB.raw : parsedMissingA.raw
+                        var actualPrice = AmountMath.ratioToQ64(root.amountA,
+                                                               root.amountB,
+                                                               root.canonicalDecimalsA,
+                                                               root.canonicalDecimalsB,
+                                                               root.displayIsCanonical)
+                        if (actualPrice.ok) {
+                            request.initialPriceRealRaw = actualPrice.raw
+                            priceFromAmounts = true
+                        } else {
+                            errors.push(root.localIssue(actualPrice.code, ["initialPrice"]))
+                        }
+                    }
+                }
             }
+            if (price.ok && !priceFromAmounts)
+                request.initialPriceRealRaw = price.raw
 
             if (!root.missingPool) {
                 var probeA = root.probeRaw(root.tokenA, root.decimalsA)
@@ -1010,18 +1080,36 @@ Rectangle {
         return { "ok": errors.length === 0, "errors": errors, "request": request }
     }
 
-    function probeRaw(token, decimals) {
-        var balance = String(token.balanceRaw || "0")
-        if (AmountMath.isUnsigned(balance) && AmountMath.compare(balance, "0") > 0)
-            return balance
-        return AmountMath.multiply(AmountMath.pow10(decimals), "1000")
+    function requestQuote(immediate) {
+        if (root.activePool && root.amountA.length === 0 && root.amountB.length === 0) {
+            root.localErrors = []
+            return
+        }
+        root.quoteRequested(immediate, root.buildQuoteRequest())
     }
 
-    function validScale() {
-        if (!/^[0-9]+$/.test(root.depositScaleBps))
-            return -1
-        var scale = AmountMath.toU32(root.depositScaleBps)
-        return scale >= 10000 ? scale : -1
+    function probeRaw(token, decimals) {
+        var balance = String(token.balanceRaw || "0")
+        var simulated = AmountMath.multiply(AmountMath.pow10(decimals), "1000")
+        if (AmountMath.isUnsigned(balance) && AmountMath.compare(balance, simulated) > 0)
+            return balance
+        return simulated
+    }
+
+    function poolProbeRequest(request) {
+        var probe = {}
+        for (var field in request)
+            probe[field] = request[field]
+        var amountA = root.probeRaw(root.tokenA, root.decimalsA)
+        var amountB = root.probeRaw(root.tokenB, root.decimalsB)
+        probe.maxAmountARaw = root.displayIsCanonical ? amountA : amountB
+        probe.maxAmountBRaw = root.displayIsCanonical ? amountB : amountA
+        probe.slippageBps = root.slippageBps
+        return probe
+    }
+
+    function formatBps(value) {
+        return qsTr("%1%").arg(AmountMath.formatRaw(String(value), 2))
     }
 
     function localIssue(code, fields) {
@@ -1029,19 +1117,25 @@ Rectangle {
     }
 
     function canonicalFieldToDisplay(field) {
+        if (field === "tokenAId")
+            return root.displayIsCanonical ? "tokenAId" : "tokenBId"
+        if (field === "tokenBId")
+            return root.displayIsCanonical ? "tokenBId" : "tokenAId"
         if (field === "maxAmountARaw")
             return root.displayIsCanonical ? "amountA" : "amountB"
         if (field === "maxAmountBRaw")
             return root.displayIsCanonical ? "amountB" : "amountA"
+        if (field === "amountARaw")
+            return root.displayIsCanonical ? "amountA" : "amountB"
+        if (field === "amountBRaw")
+            return root.displayIsCanonical ? "amountB" : "amountA"
         if (field === "initialPriceRealRaw")
             return "initialPrice"
-        if (field === "depositScaleBps")
-            return "depositScale"
         return field
     }
 
     function fieldError(field) {
-        var collections = [root.localErrors, root.quotePayload.errors || []]
+        var collections = [root.localErrors, root.currentQuoteErrors()]
         for (var c = 0; c < collections.length; ++c) {
             for (var i = 0; i < collections[c].length; ++i) {
                 var fields = collections[c][i].blockingFields || []
@@ -1054,6 +1148,39 @@ Rectangle {
         return ""
     }
 
+    function fieldHasError(field) {
+        return root.fieldError(field).length > 0
+    }
+
+    function tokenHasError(side) {
+        if (root.tokenResolutionError.length > 0
+                && root.tokenResolutionErrorSide === side) {
+            return true
+        }
+        return root.fieldHasError(side === "A" ? "tokenAId" : "tokenBId")
+    }
+
+    function formErrorText() {
+        if (root.tokenResolutionError.length > 0)
+            return root.tokenResolutionError
+        if (root.submitError.length > 0)
+            return root.submitError
+        var collections = [root.localErrors, root.currentQuoteErrors()]
+        for (var c = 0; c < collections.length; ++c) {
+            for (var i = 0; i < collections[c].length; ++i) {
+                var code = String(collections[c][i].code || "")
+                if (code.length > 0)
+                    return root.issueText(code)
+            }
+        }
+        return root.quoteError()
+    }
+
+    function currentQuoteErrors() {
+        return !root.quoteStale && root.quoteMatchesPair()
+                ? root.quotePayload.errors || [] : []
+    }
+
     function issueText(code) {
         var messages = {
             "amount_required": qsTr("Enter a value."),
@@ -1063,10 +1190,10 @@ Rectangle {
             "invalid_raw_amount": qsTr("Value is outside the supported range."),
             "amount_exceeds_balance": qsTr("Amount exceeds the selected holding balance."),
             "amount_too_low": qsTr("Value is too low for this pool."),
-            "invalid_deposit_scale": qsTr("Scale must be an integer of at least 10000 bps."),
-            "amount_overflow": qsTr("Deposit scale produces an amount outside the supported range."),
+            "invalid_token_id": qsTr("Enter a valid base58 TokenDefinition ID."),
+            "deposit_ratio_mismatch": qsTr("Deposit amounts must match the initial price."),
             "minimum_lp_zero": qsTr("Slippage leaves no minimum LP output."),
-            "invalid_slippage": qsTr("Slippage must be between 0 and 5000 bps."),
+            "invalid_slippage": qsTr("Slippage must be between 0% and 50%."),
             "fee_tier_mismatch": qsTr("Select the existing pool fee tier."),
             "no_wallet": qsTr("Connect a wallet to submit this position."),
             "wallet_unavailable": qsTr("Wallet is unavailable."),
@@ -1081,6 +1208,9 @@ Rectangle {
             "token_program_mismatch": qsTr("Token belongs to a different TokenProgram."),
             "token_not_fungible": qsTr("Token is not a public fungible token."),
             "backend_error": qsTr("Position backend failed. Refresh and retry."),
+            "network_unknown": qsTr("Network identity could not be verified. Refresh and retry."),
+            "network_mismatch": qsTr("Connected wallet uses a different network."),
+            "config_missing": qsTr("Network configuration is missing."),
             "account_read_failed": qsTr("Required on-chain state could not be read."),
             "pool_unavailable": qsTr("Pool state is unavailable."),
             "config_unavailable": qsTr("AMM configuration is unavailable."),
@@ -1096,9 +1226,21 @@ Rectangle {
         else
             root.amountB = value
 
-        var reserveA = root.displayRaw("reserveARaw", "reserveBRaw", "A")
-        var reserveB = root.displayRaw("reserveARaw", "reserveBRaw", "B")
-        var parsed = AmountMath.parseHuman(value, side === "A" ? root.decimalsA : root.decimalsB)
+        root.localErrors = []
+        root.noteDraftChanged()
+    }
+
+    function finishActiveAmount(side, value) {
+        var decimals = side === "A" ? root.decimalsA : root.decimalsB
+        value = AmountMath.trimHumanPrecision(value, decimals)
+        if (side === "A")
+            root.amountA = value
+        else
+            root.amountB = value
+
+        var reserveA = root.poolReserve("A")
+        var reserveB = root.poolReserve("B")
+        var parsed = AmountMath.parseHuman(value, decimals)
         if (parsed.ok && reserveA !== "" && reserveB !== ""
                 && reserveA !== "0" && reserveB !== "0") {
             if (side === "A") {
@@ -1109,13 +1251,12 @@ Rectangle {
                 root.amountA = AmountMath.formatRaw(rawA, root.decimalsA)
             }
         }
-        root.noteDraftChanged()
-        root.quoteRequested(false)
+        root.requestQuote(true)
     }
 
     function useMaximum() {
-        var reserveA = root.displayRaw("reserveARaw", "reserveBRaw", "A")
-        var reserveB = root.displayRaw("reserveARaw", "reserveBRaw", "B")
+        var reserveA = root.poolReserve("A")
+        var reserveB = root.poolReserve("B")
         if (!reserveA || !reserveB || reserveA === "0" || reserveB === "0")
             return
         var balanceA = String(root.tokenA.balanceRaw || "0")
@@ -1126,45 +1267,70 @@ Rectangle {
         root.amountA = AmountMath.formatRaw(rawA, root.decimalsA)
         root.amountB = AmountMath.formatRaw(rawB, root.decimalsB)
         root.noteDraftChanged()
-        root.quoteRequested(true)
+        root.requestQuote(true)
     }
 
-    function editPrice(value) {
-        if (root.priceTargetLp.length === 0
-                && root.missingPool
-                && root.quotePayload.status === "ok") {
-            root.priceTargetLp = String(root.quotePayload.expectedLpRaw || "")
-            root.priceAdjustmentCount = 0
+    function editPrice(side, value) {
+        if (side === "A")
+            root.priceAmountA = value
+        else
+            root.priceAmountB = value
+        root.minimumAmountARaw = ""
+        root.minimumAmountBRaw = ""
+        root.amountA = ""
+        root.amountB = ""
+        root.noteDraftChanged()
+        root.requestQuote(false)
+    }
+
+    function editMissingAmount(side, value) {
+        if (side === "A")
+            root.amountA = value
+        else
+            root.amountB = value
+
+        root.localErrors = []
+        root.noteDraftChanged()
+    }
+
+    function finishMissingAmount(side, value) {
+        var decimals = side === "A" ? root.decimalsA : root.decimalsB
+        value = AmountMath.trimHumanPrecision(value, decimals)
+        if (side === "A")
+            root.amountA = value
+        else
+            root.amountB = value
+
+        var parsed = AmountMath.parseHuman(value, decimals)
+        if (parsed.ok) {
+            var paired = AmountMath.pairAmount(parsed.raw,
+                                               side === "A",
+                                               root.decimalsA,
+                                               root.decimalsB,
+                                               root.priceAmountA,
+                                               root.priceAmountB)
+            if (paired.ok) {
+                if (side === "A")
+                    root.amountB = AmountMath.formatRaw(paired.raw, root.decimalsB)
+                else
+                    root.amountA = AmountMath.formatRaw(paired.raw, root.decimalsA)
+            }
         }
-        root.initialPrice = value
-        root.noteDraftChanged()
-        root.quoteRequested(false)
-    }
-
-    function editScale(value) {
-        root.depositScaleBps = value
-        root.priceTargetLp = ""
-        root.priceAdjustmentCount = 0
-        root.noteDraftChanged()
-        root.quoteRequested(false)
-    }
-
-    function stepScale(delta) {
-        var current = root.validScale()
-        if (current < 0)
-            current = 10000
-        var next = Math.max(10000, Math.min(4294967295, current + delta))
-        root.depositScaleBps = String(next)
-        root.priceTargetLp = ""
-        root.priceAdjustmentCount = 0
-        root.noteDraftChanged()
-        root.quoteRequested(true)
+        root.requestQuote(true)
     }
 
     function applyQuoteSideEffects() {
+        if (root.quoteStale)
+            return
         if (root.poolFeeBps > 0 && root.selectedFeeBps !== root.poolFeeBps) {
             root.selectedFeeBps = root.poolFeeBps
-            root.quoteRequested(true)
+            if (root.amountA.length === 0 && root.amountB.length === 0) {
+                root.amountA = AmountMath.formatRaw(
+                            root.probeRaw(root.tokenA, root.decimalsA), root.decimalsA)
+                root.amountB = AmountMath.formatRaw(
+                            root.probeRaw(root.tokenB, root.decimalsB), root.decimalsB)
+            }
+            root.requestQuote(true)
             return
         }
 
@@ -1176,37 +1342,39 @@ Rectangle {
             root.amountB = AmountMath.formatRaw(root.displayRaw("maxAmountARaw", "maxAmountBRaw", "B"), root.decimalsB)
         }
 
-        if (!root.missingPool || root.priceTargetLp.length === 0
-                || root.priceAdjustmentCount >= 3)
-            return
-        var currentLp = String(root.quotePayload.expectedLpRaw || "0")
-        if (currentLp === "0") {
-            root.priceTargetLp = ""
-            return
+        if (root.missingPool) {
+            var rawA = root.displayRaw("actualAmountARaw", "actualAmountBRaw", "A")
+            var rawB = root.displayRaw("actualAmountARaw", "actualAmountBRaw", "B")
+            var minimumA = root.displayRaw("minimumAmountARaw", "minimumAmountBRaw", "A")
+            var minimumB = root.displayRaw("minimumAmountARaw", "minimumAmountBRaw", "B")
+            root.minimumAmountARaw = minimumA.length > 0 ? minimumA : rawA
+            root.minimumAmountBRaw = minimumB.length > 0 ? minimumB : rawB
+            if (rawA.length > 0 && rawB.length > 0) {
+                root.amountA = AmountMath.formatRaw(rawA, root.decimalsA)
+                root.amountB = AmountMath.formatRaw(rawB, root.decimalsB)
+            }
         }
-        var desired = AmountMath.mulDivCeil(root.depositScaleBps,
-                                            root.priceTargetLp,
-                                            currentLp)
-        if (AmountMath.compare(desired, "10000") < 0)
-            desired = "10000"
-        var funded = root.quotePayload.maxFundedScaleBps
-        if (funded !== null && funded !== undefined && Number(funded) >= 10000
-                && AmountMath.compare(desired, String(funded)) > 0) {
-            desired = String(funded)
-        }
-        if (AmountMath.toU32(desired) >= 10000 && desired !== root.depositScaleBps) {
-            root.depositScaleBps = desired
-            ++root.priceAdjustmentCount
-            root.quoteRequested(true)
-            return
-        }
-        root.priceTargetLp = ""
     }
 
     function displayRaw(canonicalAField, canonicalBField, side) {
+        return root.displayQuoteRaw(root.quotePayload, canonicalAField, canonicalBField, side)
+    }
+
+    function displayQuoteRaw(quote, canonicalAField, canonicalBField, side) {
+        if (!root.quoteMatchesSelectedPair(quote))
+            return ""
         if (side === "A")
-            return String(root.quotePayload[root.displayIsCanonical ? canonicalAField : canonicalBField] || "")
-        return String(root.quotePayload[root.displayIsCanonical ? canonicalBField : canonicalAField] || "")
+            return String(quote[root.displayIsCanonical ? canonicalAField : canonicalBField] || "")
+        return String(quote[root.displayIsCanonical ? canonicalBField : canonicalAField] || "")
+    }
+
+    function poolReserve(side) {
+        var reserve = root.displayRaw("reserveARaw", "reserveBRaw", side)
+        if (AmountMath.isUnsigned(reserve) && reserve !== "0")
+            return reserve
+        if (!root.quoteMatchesSelectedPair(root.activePoolQuote))
+            return ""
+        return root.displayQuoteRaw(root.activePoolQuote, "reserveARaw", "reserveBRaw", side)
     }
 
     function quoteAmount(canonicalAField, canonicalBField, side) {
@@ -1224,13 +1392,28 @@ Rectangle {
         return amountA + " + " + amountB
     }
 
+    function initialPriceText(inverse) {
+        var price = inverse ? root.inverseInitialPrice : root.initialPrice
+        if (price.length === 0)
+            return "—"
+        var from = inverse ? root.tokenB : root.tokenA
+        var to = inverse ? root.tokenA : root.tokenB
+        return qsTr("1 %1 = %2 %3")
+                .arg(root.shortTokenName(from))
+                .arg(price)
+                .arg(root.shortTokenName(to))
+    }
+
     function rawLpText(raw) {
         return raw !== undefined && raw !== null && String(raw).length > 0
                 ? qsTr("%1 raw LP").arg(String(raw)) : "—"
     }
 
     function activePriceValue() {
-        return AmountMath.priceFromQ64(String(root.quotePayload.initialPriceRealRaw || ""),
+        var priceRaw = String(root.quotePayload.initialPriceRealRaw || "")
+        if (priceRaw.length === 0 && root.quoteMatchesSelectedPair(root.activePoolQuote))
+            priceRaw = String(root.activePoolQuote.initialPriceRealRaw || "")
+        return AmountMath.priceFromQ64(priceRaw,
                                        root.canonicalDecimalsA,
                                        root.canonicalDecimalsB,
                                        root.displayIsCanonical)
@@ -1247,7 +1430,8 @@ Rectangle {
     }
 
     function accountPreview() {
-        return root.quotePayload.accountPreview || []
+        return !root.quoteStale && root.quoteMatchesPair()
+                ? root.quotePayload.accountPreview || [] : []
     }
 
     function quoteError() {
@@ -1259,26 +1443,18 @@ Rectangle {
     }
 
     function warningText() {
-        var warnings = root.quotePayload.warnings || []
+        var warnings = !root.quoteStale && root.quoteMatchesPair()
+                ? root.quotePayload.warnings || [] : []
         if (warnings.length === 0)
             warnings = root.newPositionContext.warnings || []
         return warnings.length > 0 ? root.issueText(warnings[0].code) : ""
-    }
-
-    function copyToClipboard(text) {
-        if (!text)
-            return
-        clipboardProxy.text = text
-        clipboardProxy.selectAll()
-        clipboardProxy.copy()
-        clipboardProxy.deselect()
-        clipboardProxy.text = ""
     }
 
     function submissionSnapshot() {
         var built = root.buildQuoteRequest()
         return {
             "request": built.request,
+            "poolProbeRequest": root.poolProbeRequest(built.request),
             "quoteHash": String(root.quotePayload.quoteHash || ""),
             "pairText": qsTr("%1 / %2").arg(root.shortTokenName(root.tokenA)).arg(root.shortTokenName(root.tokenB)),
             "feeText": root.feeLabel(root.selectedFeeBps),
@@ -1287,33 +1463,6 @@ Rectangle {
             "expectedLpText": root.rawLpText(root.quotePayload.expectedLpRaw),
             "instruction": String(root.quotePayload.instruction || "")
         }
-    }
-
-    function resetAfterSubmit() {
-        root.amountA = ""
-        root.amountB = ""
-        root.initialPrice = ""
-        root.depositScaleBps = "10000"
-        root.localErrors = []
-        root.submitError = ""
-        root.priceTargetLp = ""
-        root.priceAdjustmentCount = 0
-    }
-
-    function tokenLabel(token) {
-        if (!token || !token.definitionId)
-            return qsTr("Select token")
-        var name = token.name && token.name.length > 0 ? token.name : qsTr("Unknown token")
-        return qsTr("%1 · %2").arg(name).arg(root.shortId(token.definitionId))
-    }
-
-    function tokenDetail(token) {
-        if (!token || !token.definitionId)
-            return ""
-        return qsTr("%1\n%2 implied decimals\nBalance %3")
-                .arg(token.definitionId)
-                .arg(AmountMath.implyDecimals(token.totalSupplyRaw || "0"))
-                .arg(root.balanceText(token, AmountMath.implyDecimals(token.totalSupplyRaw || "0")))
     }
 
     function shortTokenName(token) {
@@ -1326,21 +1475,49 @@ Rectangle {
         return AmountMath.formatRaw(String(token.balanceRaw || "0"), decimals)
     }
 
+    function tokenBalanceDetail(token) {
+        var decimals = AmountMath.implyDecimals(token.totalSupplyRaw || "0")
+        return qsTr("Available %1").arg(root.balanceText(token, decimals))
+    }
+
     function shortId(value) {
         var text = String(value || "")
         return text.length > 14 ? text.slice(0, 7) + "…" + text.slice(-5) : text
     }
 
-    function scaleHelpText() {
-        var error = root.fieldError("depositScale")
-        if (error.length > 0)
-            return error
-        var funded = root.quotePayload.maxFundedScaleBps
-        if (funded === null || funded === undefined)
+    function depositMultiplierText() {
+        var multiplier = root.depositMultiplierValue()
+        var basisPoints = root.depositBasisPointsText()
+        return multiplier.length > 0 ? qsTr("%1 · %2").arg(multiplier).arg(basisPoints) : ""
+    }
+
+    function depositMultiplierValue() {
+        var scale = root.depositScaleValue()
+        return scale.length > 0
+                ? qsTr("%1x minimum").arg(AmountMath.formatRaw(scale, 4)) : ""
+    }
+
+    function depositBasisPointsText() {
+        var scale = root.depositScaleValue()
+        return scale.length > 0 ? qsTr("%1 basis points").arg(scale) : ""
+    }
+
+    function depositScaleValue() {
+        var parsed = AmountMath.parseHuman(root.amountA, root.decimalsA)
+        if (!parsed.ok || !AmountMath.isUnsigned(root.minimumAmountARaw)
+                || root.minimumAmountARaw === "0"
+                || AmountMath.compare(parsed.raw, root.minimumAmountARaw) < 0) {
             return ""
-        if (Number(funded) === 0)
-            return qsTr("Current holdings cannot fund the minimum deposit. Simulation remains available.")
-        return qsTr("Current holdings fund up to %1 bps.").arg(funded)
+        }
+        return AmountMath.divide(AmountMath.multiply(parsed.raw, "10000"),
+                                 root.minimumAmountARaw).quotient
+    }
+
+    function minimumAmountText(side) {
+        var raw = side === "A" ? root.minimumAmountARaw : root.minimumAmountBRaw
+        var decimals = side === "A" ? root.decimalsA : root.decimalsB
+        return raw.length > 0
+                ? qsTr("Min %1").arg(AmountMath.formatRaw(raw, decimals)) : ""
     }
 
     function contextStatusText() {

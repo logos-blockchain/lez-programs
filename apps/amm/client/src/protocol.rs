@@ -14,32 +14,141 @@ use nssa_core::{
     program::ProgramId,
     Commitment,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::{compute_current_tick_account_pda, CurrentTickAccount};
 
-use crate::{
-    account::{
-        account_id_from_hex, account_id_hex, decode_account, parse_base58_id, parse_program_id,
-        program_id_base58, program_id_bytes,
-    },
-    model::{
-        AccountRead, ConfigIdRequest, ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest,
-        PositionRequest, QuoteRequest, TokenIdsRequest, SCHEMA,
-    },
+use crate::account::{
+    account_id_from_hex, account_id_hex, decode_account, parse_base58_id, parse_program_id,
+    program_id_base58, program_id_bytes, AccountRead,
 };
 
+pub(crate) const SCHEMA: &str = "new-position.v1";
 const DEADLINE_WINDOW_MS: u64 = 1_200_000;
 const DEFAULT_SLIPPAGE_BPS: u32 = 50;
 const MAX_SLIPPAGE_BPS: u32 = 5_000;
 const HIGH_SLIPPAGE_BPS: u32 = 2_000;
-const MIN_DEPOSIT_SCALE_BPS: u32 = 10_000;
 const Q64: u128 = 1_u128 << 64;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConfigIdRequest {
+    pub(crate) amm_program_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TokenIdsRequest {
+    pub(crate) amm_program_id: String,
+    pub(crate) config: AccountRead,
+    #[serde(default)]
+    pub(crate) wallet_accounts: Vec<AccountRead>,
+    #[serde(default)]
+    pub(crate) configured_token_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) recent_token_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) resolved_token_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ContextRequest {
+    pub(crate) network_id: String,
+    pub(crate) network_fingerprint: String,
+    pub(crate) amm_program_id: String,
+    pub(crate) wallet_available: bool,
+    pub(crate) config: AccountRead,
+    #[serde(default)]
+    pub(crate) wallet_accounts: Vec<AccountRead>,
+    #[serde(default)]
+    pub(crate) token_definitions: Vec<AccountRead>,
+    #[serde(default)]
+    pub(crate) configured_token_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) recent_token_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) resolved_token_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PairIdsRequest {
+    pub(crate) amm_program_id: String,
+    pub(crate) config: AccountRead,
+    pub(crate) token_a_id: String,
+    pub(crate) token_b_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PositionRequest {
+    pub(crate) schema: String,
+    pub(crate) token_a_id: String,
+    pub(crate) token_b_id: String,
+    pub(crate) fee_bps: u32,
+    #[serde(default)]
+    pub(crate) amount_a_raw: Option<String>,
+    #[serde(default)]
+    pub(crate) amount_b_raw: Option<String>,
+    #[serde(default)]
+    pub(crate) max_amount_a_raw: Option<String>,
+    #[serde(default)]
+    pub(crate) max_amount_b_raw: Option<String>,
+    #[serde(default)]
+    pub(crate) slippage_bps: Option<u32>,
+    #[serde(default)]
+    pub(crate) initial_price_real_raw: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PairSnapshot {
+    pub(crate) config: AccountRead,
+    pub(crate) token_a: AccountRead,
+    pub(crate) token_b: AccountRead,
+    pub(crate) pool: AccountRead,
+    pub(crate) vault_a: AccountRead,
+    pub(crate) vault_b: AccountRead,
+    pub(crate) lp_definition: AccountRead,
+    pub(crate) lp_lock_holding: AccountRead,
+    pub(crate) current_tick: AccountRead,
+    pub(crate) clock: AccountRead,
+    pub(crate) wallet_available: bool,
+    #[serde(default)]
+    pub(crate) wallet_accounts: Vec<AccountRead>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QuoteRequest {
+    pub(crate) network_id: String,
+    pub(crate) network_fingerprint: String,
+    pub(crate) amm_program_id: String,
+    pub(crate) request: PositionRequest,
+    pub(crate) snapshot: PairSnapshot,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlanRequest {
+    pub(crate) network_id: String,
+    pub(crate) network_fingerprint: String,
+    pub(crate) amm_program_id: String,
+    pub(crate) request: PositionRequest,
+    pub(crate) snapshot: PairSnapshot,
+    pub(crate) quote_hash: String,
+    pub(crate) now_ms: u64,
+    #[serde(default)]
+    pub(crate) fresh_lp: Option<AccountRead>,
+}
 
 #[derive(Clone)]
 struct SelectedHolding {
     id: AccountId,
+    definition_id: AccountId,
     balance: u128,
     account: Account,
 }
@@ -65,8 +174,14 @@ struct EvaluatedQuote {
 }
 
 enum QuoteComputation {
-    Fatal { value: Value },
+    Failed(QuoteFailure),
     Evaluated(EvaluatedQuote),
+}
+
+struct QuoteFailure {
+    code: &'static str,
+    fields: Vec<&'static str>,
+    details: Value,
 }
 
 struct NewPositionPlan {
@@ -95,17 +210,40 @@ struct AccountPlanHoldings<'a> {
 }
 
 impl QuoteComputation {
-    fn into_value(self) -> Value {
+    fn into_value(self, request: &PositionRequest) -> Value {
         match self {
-            Self::Fatal { value } | Self::Evaluated(EvaluatedQuote { value, .. }) => value,
+            Self::Failed(failure) => failure.into_value(request),
+            Self::Evaluated(EvaluatedQuote { value, .. }) => value,
         }
     }
 
     fn quote_hash(&self) -> Option<&str> {
         match self {
-            Self::Fatal { .. } => None,
+            Self::Failed(_) => None,
             Self::Evaluated(quote) => Some(&quote.quote_hash),
         }
+    }
+}
+
+impl QuoteFailure {
+    fn into_value(self, request: &PositionRequest) -> Value {
+        json!({
+            "schema": SCHEMA,
+            "status": "error",
+            "canSubmit": false,
+            "code": self.code,
+            "poolStatus": "unavailable_pool",
+            "tokenAId": request.token_a_id,
+            "tokenBId": request.token_b_id,
+            "accountPreview": [],
+            "errors": [issue(
+                self.code,
+                "Position quote is unavailable.",
+                &self.fields,
+                self.details,
+            )],
+            "warnings": [],
+        })
     }
 }
 
@@ -162,6 +300,12 @@ impl AccountPlan {
         self.rows
             .iter()
             .any(|row| row.role == "user_holding_lp" && row.account_id.is_none())
+    }
+
+    fn contains(&self, account_id: AccountId) -> bool {
+        self.rows
+            .iter()
+            .any(|row| row.account_id == Some(account_id))
     }
 
     fn validate_ready(&self) -> Result<(), String> {
@@ -246,8 +390,8 @@ struct PairIds {
 #[derive(BorshSerialize)]
 enum RequestCommitment {
     Missing {
-        initial_price: u128,
-        deposit_scale_bps: u32,
+        amount_a: u128,
+        amount_b: u128,
     },
     Active {
         max_a: u128,
@@ -314,6 +458,7 @@ pub fn token_ids(request: TokenIdsRequest) -> Result<Value, String> {
         return Ok(manifest_error("config_unavailable"));
     };
 
+    let holdings = wallet_holdings(&request.wallet_accounts, config.token_program_id);
     let mut token_ids = BTreeSet::new();
     for id in &request.configured_token_ids {
         if let Ok(id) = account_id_from_hex(id, "configured token id") {
@@ -329,19 +474,7 @@ pub fn token_ids(request: TokenIdsRequest) -> Result<Value, String> {
             token_ids.insert(id);
         }
     }
-    for read in &request.wallet_accounts {
-        let Ok((_, account)) = decode_account(read) else {
-            continue;
-        };
-        if account.program_owner != config.token_program_id {
-            continue;
-        }
-        if let Ok(TokenHolding::Fungible { definition_id, .. }) =
-            TokenHolding::try_from(&account.data)
-        {
-            token_ids.insert(definition_id);
-        }
-    }
+    token_ids.extend(holdings.into_iter().map(|holding| holding.definition_id));
 
     Ok(json!({
         "status": "ok",
@@ -355,8 +488,12 @@ fn manifest_error(code: &str) -> Value {
 
 pub fn pair_ids(request: PairIdsRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
-    let token_a = parse_base58_id(&request.token_a_id, "token A id")?;
-    let token_b = parse_base58_id(&request.token_b_id, "token B id")?;
+    let Ok(token_a) = parse_base58_id(&request.token_a_id, "token A id") else {
+        return Ok(json!({ "status": "error", "code": "invalid_token_id" }));
+    };
+    let Ok(token_b) = parse_base58_id(&request.token_b_id, "token B id") else {
+        return Ok(json!({ "status": "error", "code": "invalid_token_id" }));
+    };
     if token_a == token_b {
         return Ok(json!({ "status": "error", "code": "same_token_pair" }));
     }
@@ -364,7 +501,9 @@ pub fn pair_ids(request: PairIdsRequest) -> Result<Value, String> {
         return Ok(json!({ "status": "error", "code": "non_canonical_pair" }));
     }
 
-    let pair = derive_pair(amm_program, token_a, token_b, &request.config)?;
+    let Ok(pair) = derive_pair(amm_program, token_a, token_b, &request.config) else {
+        return Ok(json!({ "status": "error", "code": "config_unavailable" }));
+    };
     Ok(pair_json(pair))
 }
 
@@ -438,8 +577,8 @@ pub fn context(request: ContextRequest) -> Result<Value, String> {
         return Ok(context_error(&request, "config_unavailable"));
     };
 
-    let source_map = token_sources(&request);
     let holdings = wallet_holdings(&request.wallet_accounts, config.token_program_id);
+    let source_map = token_sources(&request, &holdings);
     let mut rows = Vec::new();
     let mut warnings = Vec::new();
 
@@ -448,73 +587,22 @@ pub fn context(request: ContextRequest) -> Result<Value, String> {
             .token_definitions
             .iter()
             .find(|read| account_id_from_hex(&read.id, "token definition id") == Ok(token_id));
-        let Some(read) = read else {
-            rows.push(unavailable_token_row(
-                token_id,
-                sources,
-                "token_definition_unreadable",
-            ));
-            warnings.push(issue(
-                "token_definition_unreadable",
-                "Token definition could not be read.",
-                &[],
-                json!({ "tokenId": token_id.to_string() }),
-            ));
-            continue;
-        };
-        let Ok((read_id, account)) = decode_account(read) else {
-            rows.push(unavailable_token_row(
-                token_id,
-                sources,
-                "token_definition_unreadable",
-            ));
-            warnings.push(issue(
-                "token_definition_unreadable",
-                "Token definition could not be read.",
-                &[],
-                json!({ "tokenId": token_id.to_string() }),
-            ));
-            continue;
-        };
-        if read_id != token_id {
-            rows.push(unavailable_token_row(
-                token_id,
-                sources,
-                "token_definition_unreadable",
-            ));
-            continue;
-        }
-        if account.program_owner != config.token_program_id {
-            rows.push(unavailable_token_row(
-                token_id,
-                sources,
-                "token_program_mismatch",
-            ));
-            continue;
-        }
-
-        let Ok(definition) = TokenDefinition::try_from(&account.data) else {
-            rows.push(unavailable_token_row(
-                token_id,
-                sources,
-                "token_not_fungible",
-            ));
-            continue;
-        };
-        let TokenDefinition::Fungible {
-            name,
-            total_supply,
-            metadata_id,
-            ..
-        } = definition
-        else {
-            rows.push(unavailable_token_row(
-                token_id,
-                sources,
-                "token_not_fungible",
-            ));
-            continue;
-        };
+        let (name, total_supply, metadata_id) =
+            match fungible_definition(read, token_id, config.token_program_id) {
+                Ok(definition) => definition,
+                Err(error) => {
+                    rows.push(unavailable_token_row(token_id, sources, error.code));
+                    if error.warn {
+                        warnings.push(issue(
+                            error.code,
+                            "Token definition could not be read.",
+                            &[],
+                            json!({ "tokenId": token_id.to_string() }),
+                        ));
+                    }
+                    continue;
+                }
+            };
 
         let selected = select_holding(&holdings, token_id);
         let mut row = json!({
@@ -588,14 +676,17 @@ fn fee_tiers() -> Value {
     ])
 }
 
-fn token_sources(request: &ContextRequest) -> BTreeMap<AccountId, Vec<String>> {
+fn token_sources(
+    request: &ContextRequest,
+    holdings: &[SelectedHolding],
+) -> BTreeMap<AccountId, Vec<String>> {
     let mut sources: BTreeMap<AccountId, BTreeSet<String>> = BTreeMap::new();
     for id in &request.configured_token_ids {
         if let Ok(id) = account_id_from_hex(id, "configured token id") {
             sources
                 .entry(id)
                 .or_default()
-                .insert(String::from("configured"));
+                .insert(String::from("config"));
         }
     }
     for (ids, source) in [
@@ -608,18 +699,11 @@ fn token_sources(request: &ContextRequest) -> BTreeMap<AccountId, Vec<String>> {
             }
         }
     }
-    for read in &request.wallet_accounts {
-        let Ok((_, account)) = decode_account(read) else {
-            continue;
-        };
-        if let Ok(TokenHolding::Fungible { definition_id, .. }) =
-            TokenHolding::try_from(&account.data)
-        {
-            sources
-                .entry(definition_id)
-                .or_default()
-                .insert(String::from("holding"));
-        }
+    for holding in holdings {
+        sources
+            .entry(holding.definition_id)
+            .or_default()
+            .insert(String::from("holding"));
     }
     sources
         .into_iter()
@@ -640,6 +724,54 @@ fn unavailable_token_row(token_id: AccountId, sources: Vec<String>, code: &str) 
     })
 }
 
+struct DefinitionError {
+    code: &'static str,
+    warn: bool,
+}
+
+fn fungible_definition(
+    read: Option<&AccountRead>,
+    token_id: AccountId,
+    token_program: ProgramId,
+) -> Result<(String, u128, Option<AccountId>), DefinitionError> {
+    let Some(read) = read else {
+        return Err(DefinitionError {
+            code: "token_definition_unreadable",
+            warn: true,
+        });
+    };
+    let Ok((id, account)) = decode_account(read) else {
+        return Err(DefinitionError {
+            code: "token_definition_unreadable",
+            warn: true,
+        });
+    };
+    if id != token_id {
+        return Err(DefinitionError {
+            code: "token_definition_unreadable",
+            warn: false,
+        });
+    }
+    if account.program_owner != token_program {
+        return Err(DefinitionError {
+            code: "token_program_mismatch",
+            warn: false,
+        });
+    }
+    match TokenDefinition::try_from(&account.data) {
+        Ok(TokenDefinition::Fungible {
+            name,
+            total_supply,
+            metadata_id,
+            ..
+        }) => Ok((name, total_supply, metadata_id)),
+        _ => Err(DefinitionError {
+            code: "token_not_fungible",
+            warn: false,
+        }),
+    }
+}
+
 fn wallet_holdings(reads: &[AccountRead], token_program: ProgramId) -> Vec<SelectedHolding> {
     reads
         .iter()
@@ -648,13 +780,16 @@ fn wallet_holdings(reads: &[AccountRead], token_program: ProgramId) -> Vec<Selec
             if account.program_owner != token_program {
                 return None;
             }
-            let TokenHolding::Fungible { balance, .. } =
-                TokenHolding::try_from(&account.data).ok()?
+            let TokenHolding::Fungible {
+                definition_id,
+                balance,
+            } = TokenHolding::try_from(&account.data).ok()?
             else {
                 return None;
             };
             Some(SelectedHolding {
                 id,
+                definition_id,
                 balance,
                 account,
             })
@@ -668,12 +803,7 @@ fn select_holding(
 ) -> Option<SelectedHolding> {
     holdings
         .iter()
-        .filter(|holding| {
-            matches!(
-                TokenHolding::try_from(&holding.account.data),
-                Ok(TokenHolding::Fungible { definition_id: id, .. }) if id == definition_id
-            )
-        })
+        .filter(|holding| holding.definition_id == definition_id)
         .max_by(|left, right| {
             left.balance
                 .cmp(&right.balance)
@@ -683,13 +813,12 @@ fn select_holding(
 }
 
 pub fn quote(request: QuoteRequest) -> Result<Value, String> {
-    Ok(compute_quote(&request)?.into_value())
+    Ok(compute_quote(&request)?.into_value(&request.request))
 }
 
 fn compute_quote(input: &QuoteRequest) -> Result<QuoteComputation, String> {
     if input.request.schema != SCHEMA {
         return Ok(fatal_quote(
-            &input.request,
             "unsupported_schema",
             &["schema"],
             json!({ "received": input.request.schema }),
@@ -698,29 +827,14 @@ fn compute_quote(input: &QuoteRequest) -> Result<QuoteComputation, String> {
     let amm_program = parse_program_id(&input.amm_program_id)?;
     let token_a = match parse_base58_id(&input.request.token_a_id, "token A id") {
         Ok(id) => id,
-        Err(_) => {
-            return Ok(fatal_quote(
-                &input.request,
-                "invalid_token_id",
-                &["tokenAId"],
-                json!({}),
-            ))
-        }
+        Err(_) => return Ok(fatal_quote("invalid_token_id", &["tokenAId"], json!({}))),
     };
     let token_b = match parse_base58_id(&input.request.token_b_id, "token B id") {
         Ok(id) => id,
-        Err(_) => {
-            return Ok(fatal_quote(
-                &input.request,
-                "invalid_token_id",
-                &["tokenBId"],
-                json!({}),
-            ))
-        }
+        Err(_) => return Ok(fatal_quote("invalid_token_id", &["tokenBId"], json!({}))),
     };
     if token_a == token_b {
         return Ok(fatal_quote(
-            &input.request,
             "same_token_pair",
             &["tokenAId", "tokenBId"],
             json!({}),
@@ -728,7 +842,6 @@ fn compute_quote(input: &QuoteRequest) -> Result<QuoteComputation, String> {
     }
     if !is_canonical_pair(token_a, token_b) {
         return Ok(fatal_quote(
-            &input.request,
             "non_canonical_pair",
             &["tokenAId", "tokenBId"],
             json!({}),
@@ -736,7 +849,6 @@ fn compute_quote(input: &QuoteRequest) -> Result<QuoteComputation, String> {
     }
     if !is_supported_fee_tier(u128::from(input.request.fee_bps)) {
         return Ok(fatal_quote(
-            &input.request,
             "invalid_fee_tier",
             &["feeBps"],
             json!({ "feeBps": input.request.fee_bps }),
@@ -745,45 +857,32 @@ fn compute_quote(input: &QuoteRequest) -> Result<QuoteComputation, String> {
 
     let pair = match derive_pair(amm_program, token_a, token_b, &input.snapshot.config) {
         Ok(pair) => pair,
-        Err(_) => {
-            return Ok(fatal_quote(
-                &input.request,
-                "config_unavailable",
-                &[],
-                json!({}),
-            ))
-        }
+        Err(_) => return Ok(fatal_quote("config_unavailable", &[], json!({}))),
     };
     if let Some(error) = AccountPlan::validate_snapshot_ids(&pair, &input.snapshot) {
         return Ok(fatal_quote(
-            &input.request,
             "account_read_failed",
             &[],
             json!({ "role": error }),
         ));
     }
-    if let Some(error) = validate_token_definition(
-        &input.snapshot.token_a,
-        token_a,
-        pair.token_program,
-        "tokenAId",
-    ) {
-        return Ok(error_quote(&input.request, error));
-    }
-    if let Some(error) = validate_token_definition(
-        &input.snapshot.token_b,
-        token_b,
-        pair.token_program,
-        "tokenBId",
-    ) {
-        return Ok(error_quote(&input.request, error));
+    for (read, token_id, field) in [
+        (&input.snapshot.token_a, token_a, "tokenAId"),
+        (&input.snapshot.token_b, token_b, "tokenBId"),
+    ] {
+        if let Err(error) = fungible_definition(Some(read), token_id, pair.token_program) {
+            return Ok(fatal_quote(
+                error.code,
+                &[field],
+                json!({ "tokenId": token_id.to_string() }),
+            ));
+        }
     }
 
     let (_, pool_account) = match decode_account(&input.snapshot.pool) {
         Ok(value) => value,
         Err(_) => {
             return Ok(fatal_quote(
-                &input.request,
                 "account_read_failed",
                 &[],
                 json!({ "role": "pool", "accountId": pair.pool.to_string() }),
@@ -795,56 +894,6 @@ fn compute_quote(input: &QuoteRequest) -> Result<QuoteComputation, String> {
     } else {
         compute_active_quote(input, amm_program, pair, pool_account)
     }
-}
-
-struct DomainError {
-    code: &'static str,
-    field: &'static str,
-    details: Value,
-}
-
-fn validate_token_definition(
-    read: &AccountRead,
-    token_id: AccountId,
-    token_program: ProgramId,
-    field: &'static str,
-) -> Option<DomainError> {
-    let Ok((id, account)) = decode_account(read) else {
-        return Some(DomainError {
-            code: "token_definition_unreadable",
-            field,
-            details: json!({ "tokenId": token_id.to_string() }),
-        });
-    };
-    if id != token_id {
-        return Some(DomainError {
-            code: "token_definition_unreadable",
-            field,
-            details: json!({ "tokenId": token_id.to_string() }),
-        });
-    }
-    if account.program_owner != token_program {
-        return Some(DomainError {
-            code: "token_program_mismatch",
-            field,
-            details: json!({ "tokenId": token_id.to_string() }),
-        });
-    }
-    if !matches!(
-        TokenDefinition::try_from(&account.data),
-        Ok(TokenDefinition::Fungible { .. })
-    ) {
-        return Some(DomainError {
-            code: "token_not_fungible",
-            field,
-            details: json!({ "tokenId": token_id.to_string() }),
-        });
-    }
-    None
-}
-
-fn error_quote(request: &PositionRequest, error: DomainError) -> QuoteComputation {
-    fatal_quote(request, error.code, &[error.field], error.details)
 }
 
 fn compute_missing_quote(
@@ -861,7 +910,6 @@ fn compute_missing_quote(
     ] {
         let Ok((_, account)) = decode_account(read) else {
             return Ok(fatal_quote(
-                &input.request,
                 "account_read_failed",
                 &[],
                 json!({ "role": role }),
@@ -869,7 +917,6 @@ fn compute_missing_quote(
         };
         if account != Account::default() {
             return Ok(fatal_quote(
-                &input.request,
                 "pool_unavailable",
                 &[],
                 json!({ "role": role }),
@@ -878,75 +925,65 @@ fn compute_missing_quote(
     }
     if !valid_clock(&input.snapshot.clock, pair.clock) {
         return Ok(fatal_quote(
-            &input.request,
             "account_read_failed",
             &[],
             json!({ "role": "clock" }),
         ));
     }
 
-    let initial_price = match raw_value(
-        input.request.initial_price_real_raw.as_deref(),
-        "initialPriceRealRaw",
-    ) {
+    let requested_price = match raw_value(input.request.initial_price_real_raw.as_deref()) {
         Ok(value) if value > 0 => value,
         Ok(_) => {
             return Ok(fatal_quote(
-                &input.request,
                 "amount_must_be_positive",
                 &["initialPriceRealRaw"],
                 json!({}),
             ))
         }
-        Err(code) => {
+        Err(code) => return Ok(fatal_quote(code, &["initialPriceRealRaw"], json!({}))),
+    };
+    let (minimum_a, minimum_b) = minimum_opening_pair(requested_price)?;
+    let direct_amounts =
+        input.request.amount_a_raw.is_some() || input.request.amount_b_raw.is_some();
+    let (amount_a, amount_b) = if direct_amounts {
+        let amount_a = match raw_value(input.request.amount_a_raw.as_deref()) {
+            Ok(value) if value > 0 => value,
+            Ok(_) => {
+                return Ok(fatal_quote(
+                    "amount_must_be_positive",
+                    &["amountARaw"],
+                    json!({}),
+                ))
+            }
+            Err(code) => return Ok(fatal_quote(code, &["amountARaw"], json!({}))),
+        };
+        let amount_b = match raw_value(input.request.amount_b_raw.as_deref()) {
+            Ok(value) if value > 0 => value,
+            Ok(_) => {
+                return Ok(fatal_quote(
+                    "amount_must_be_positive",
+                    &["amountBRaw"],
+                    json!({}),
+                ))
+            }
+            Err(code) => return Ok(fatal_quote(code, &["amountBRaw"], json!({}))),
+        };
+        if spot_price_q64_64(amount_a, amount_b) != requested_price {
             return Ok(fatal_quote(
-                &input.request,
-                code,
-                &["initialPriceRealRaw"],
+                "deposit_ratio_mismatch",
+                &["amountARaw", "amountBRaw"],
                 json!({}),
-            ))
+            ));
         }
-    };
-    let Some(scale_bps) = input.request.deposit_scale_bps else {
-        return Ok(fatal_quote(
-            &input.request,
-            "invalid_deposit_scale",
-            &["depositScaleBps"],
-            json!({}),
-        ));
-    };
-    if scale_bps < MIN_DEPOSIT_SCALE_BPS {
-        return Ok(fatal_quote(
-            &input.request,
-            "invalid_deposit_scale",
-            &["depositScaleBps"],
-            json!({ "minimum": MIN_DEPOSIT_SCALE_BPS }),
-        ));
-    }
-
-    let (base_a, base_b) = minimum_opening_pair(initial_price)?;
-    let Some(amount_a) = scale_amount(base_a, scale_bps) else {
-        return Ok(fatal_quote(
-            &input.request,
-            "amount_overflow",
-            &["depositScaleBps"],
-            json!({}),
-        ));
-    };
-    let Some(amount_b) = scale_amount(base_b, scale_bps) else {
-        return Ok(fatal_quote(
-            &input.request,
-            "amount_overflow",
-            &["depositScaleBps"],
-            json!({}),
-        ));
+        (amount_a, amount_b)
+    } else {
+        (minimum_a, minimum_b)
     };
     let initial_lp = isqrt_product(amount_a, amount_b);
     if initial_lp <= MINIMUM_LIQUIDITY {
         return Ok(fatal_quote(
-            &input.request,
             "amount_too_low",
-            &["depositScaleBps"],
+            &["amountARaw", "amountBRaw"],
             json!({ "minimumLiquidityRaw": MINIMUM_LIQUIDITY.to_string() }),
         ));
     }
@@ -962,16 +999,9 @@ fn compute_missing_quote(
         amount_a,
         &holding_b,
         amount_b,
-        "depositScaleBps",
+        ["amountARaw", "amountBRaw"],
     );
-    let max_funded_scale = max_funded_scale(
-        input.snapshot.wallet_available,
-        base_a,
-        base_b,
-        holding_a.as_ref(),
-        holding_b.as_ref(),
-    );
-    let can_submit = funding.is_empty() && input.snapshot.wallet_available;
+    let can_submit = funding.is_empty();
     let mut account_plan = missing_account_plan(
         input,
         pair,
@@ -993,10 +1023,7 @@ fn compute_missing_quote(
         token_b_id: pair.token_b.into_value(),
         fee_bps: input.request.fee_bps,
         pool_status: 0,
-        request: RequestCommitment::Missing {
-            initial_price,
-            deposit_scale_bps: scale_bps,
-        },
+        request: RequestCommitment::Missing { amount_a, amount_b },
         max_a: amount_a,
         max_b: amount_b,
         actual_a: amount_a,
@@ -1028,9 +1055,9 @@ fn compute_missing_quote(
         "actualAmountBRaw": amount_b.to_string(),
         "expectedLpRaw": expected_lp.to_string(),
         "lockedLpRaw": MINIMUM_LIQUIDITY.to_string(),
-        "initialPriceRealRaw": initial_price.to_string(),
-        "depositScaleBps": scale_bps,
-        "maxFundedScaleBps": max_funded_scale,
+        "initialPriceRealRaw": spot_price_q64_64(amount_a, amount_b).to_string(),
+        "minimumAmountARaw": minimum_a.to_string(),
+        "minimumAmountBRaw": minimum_b.to_string(),
         "requiresFreshLp": true,
         "accountPreview": preview,
         "errors": funding,
@@ -1059,7 +1086,6 @@ fn compute_active_quote(
 ) -> Result<QuoteComputation, String> {
     if pool_account.program_owner != amm_program {
         return Ok(fatal_quote(
-            &input.request,
             "pool_unavailable",
             &[],
             json!({ "reason": "owner_mismatch" }),
@@ -1067,7 +1093,6 @@ fn compute_active_quote(
     }
     let Ok(pool) = PoolDefinition::try_from(&pool_account.data) else {
         return Ok(fatal_quote(
-            &input.request,
             "pool_unavailable",
             &[],
             json!({ "reason": "invalid_pool_data" }),
@@ -1083,18 +1108,16 @@ fn compute_active_quote(
         true
     } else {
         return Ok(fatal_quote(
-            &input.request,
             "pool_unavailable",
             &[],
             json!({ "reason": "pair_mismatch" }),
         ));
     };
     if pool.reserve_a == 0 || pool.reserve_b == 0 || pool.liquidity_pool_supply == 0 {
-        return Ok(fatal_quote(&input.request, "pool_inactive", &[], json!({})));
+        return Ok(fatal_quote("pool_inactive", &[], json!({})));
     }
     if pool.fees != u128::from(input.request.fee_bps) {
         return Ok(fatal_quote(
-            &input.request,
             "fee_tier_mismatch",
             &["feeBps"],
             json!({ "poolFeeBps": pool.fees.to_string() }),
@@ -1102,55 +1125,37 @@ fn compute_active_quote(
     }
     if !is_supported_fee_tier(pool.fees) {
         return Ok(fatal_quote(
-            &input.request,
             "pool_unavailable",
             &[],
             json!({ "reason": "unsupported_pool_fee" }),
         ));
     }
 
-    let max_a = match raw_value(input.request.max_amount_a_raw.as_deref(), "maxAmountARaw") {
+    let max_a = match raw_value(input.request.max_amount_a_raw.as_deref()) {
         Ok(value) if value > 0 => value,
         Ok(_) => {
             return Ok(fatal_quote(
-                &input.request,
                 "amount_must_be_positive",
                 &["maxAmountARaw"],
                 json!({}),
             ))
         }
-        Err(code) => {
-            return Ok(fatal_quote(
-                &input.request,
-                code,
-                &["maxAmountARaw"],
-                json!({}),
-            ))
-        }
+        Err(code) => return Ok(fatal_quote(code, &["maxAmountARaw"], json!({}))),
     };
-    let max_b = match raw_value(input.request.max_amount_b_raw.as_deref(), "maxAmountBRaw") {
+    let max_b = match raw_value(input.request.max_amount_b_raw.as_deref()) {
         Ok(value) if value > 0 => value,
         Ok(_) => {
             return Ok(fatal_quote(
-                &input.request,
                 "amount_must_be_positive",
                 &["maxAmountBRaw"],
                 json!({}),
             ))
         }
-        Err(code) => {
-            return Ok(fatal_quote(
-                &input.request,
-                code,
-                &["maxAmountBRaw"],
-                json!({}),
-            ))
-        }
+        Err(code) => return Ok(fatal_quote(code, &["maxAmountBRaw"], json!({}))),
     };
     let slippage_bps = input.request.slippage_bps.unwrap_or(DEFAULT_SLIPPAGE_BPS);
     if slippage_bps > MAX_SLIPPAGE_BPS {
         return Ok(fatal_quote(
-            &input.request,
             "invalid_slippage",
             &["slippageBps"],
             json!({ "maximum": MAX_SLIPPAGE_BPS }),
@@ -1168,7 +1173,6 @@ fn compute_active_quote(
     let stored_actual_b = stored_max_b.min(ideal_b);
     if stored_actual_a == 0 || stored_actual_b == 0 {
         return Ok(fatal_quote(
-            &input.request,
             "amount_too_low",
             &["maxAmountARaw", "maxAmountBRaw"],
             json!({}),
@@ -1180,7 +1184,6 @@ fn compute_active_quote(
         );
     if expected_lp == 0 {
         return Ok(fatal_quote(
-            &input.request,
             "amount_too_low",
             &["maxAmountARaw", "maxAmountBRaw"],
             json!({}),
@@ -1192,12 +1195,7 @@ fn compute_active_quote(
         FEE_BPS_DENOMINATOR,
     );
     if minimum_lp == 0 {
-        return Ok(fatal_quote(
-            &input.request,
-            "minimum_lp_zero",
-            &["slippageBps"],
-            json!({}),
-        ));
+        return Ok(fatal_quote("minimum_lp_zero", &["slippageBps"], json!({})));
     }
     let (actual_a, actual_b, reserve_a, reserve_b) = if stored_reversed {
         (
@@ -1227,12 +1225,12 @@ fn compute_active_quote(
         input.snapshot.wallet_available,
         pair,
         &holding_a,
-        max_a,
+        actual_a,
         &holding_b,
-        max_b,
-        "",
+        actual_b,
+        ["maxAmountARaw", "maxAmountBRaw"],
     );
-    let can_submit = funding.is_empty() && input.snapshot.wallet_available;
+    let can_submit = funding.is_empty();
     let warnings = if slippage_bps >= HIGH_SLIPPAGE_BPS {
         vec![issue(
             "high_slippage",
@@ -1282,7 +1280,7 @@ fn compute_active_quote(
         lp_guard: minimum_lp,
         requires_fresh_lp,
         sources,
-        funding: funding_commitments(pair, &holding_a, max_a, &holding_b, max_b),
+        funding: funding_commitments(pair, &holding_a, actual_a, &holding_b, actual_b),
         warnings: warning_codes,
     };
     let quote_hash = hash_quote(&commitment)?;
@@ -1356,7 +1354,6 @@ fn validate_active_accounts(
         || pool.liquidity_pool_id != pair.lp_definition
     {
         return Some(fatal_quote(
-            &input.request,
             "pool_unavailable",
             &[],
             json!({ "reason": "pool_account_mismatch" }),
@@ -1368,7 +1365,6 @@ fn validate_active_accounts(
     );
     let (Ok(vault_a_balance), Ok(vault_b_balance)) = (canonical_vault_a, canonical_vault_b) else {
         return Some(fatal_quote(
-            &input.request,
             "account_read_failed",
             &[],
             json!({ "role": "vault" }),
@@ -1381,7 +1377,6 @@ fn validate_active_accounts(
     };
     if vault_a_balance < reserve_a || vault_b_balance < reserve_b {
         return Some(fatal_quote(
-            &input.request,
             "pool_unavailable",
             &[],
             json!({ "reason": "vault_below_reserve" }),
@@ -1389,7 +1384,6 @@ fn validate_active_accounts(
     }
     let Ok((lp_id, lp_account)) = decode_account(&input.snapshot.lp_definition) else {
         return Some(fatal_quote(
-            &input.request,
             "account_read_failed",
             &[],
             json!({ "role": "lp_definition" }),
@@ -1403,7 +1397,6 @@ fn validate_active_accounts(
         )
     {
         return Some(fatal_quote(
-            &input.request,
             "pool_unavailable",
             &[],
             json!({ "reason": "invalid_lp_definition" }),
@@ -1411,7 +1404,6 @@ fn validate_active_accounts(
     }
     let Ok((tick_id, tick_account)) = decode_account(&input.snapshot.current_tick) else {
         return Some(fatal_quote(
-            &input.request,
             "account_read_failed",
             &[],
             json!({ "role": "current_tick" }),
@@ -1422,7 +1414,6 @@ fn validate_active_accounts(
         || CurrentTickAccount::try_from(&tick_account.data).is_err()
     {
         return Some(fatal_quote(
-            &input.request,
             "pool_unavailable",
             &[],
             json!({ "reason": "invalid_current_tick" }),
@@ -1430,7 +1421,6 @@ fn validate_active_accounts(
     }
     if !valid_clock(&input.snapshot.clock, pair.clock) {
         return Some(fatal_quote(
-            &input.request,
             "account_read_failed",
             &[],
             json!({ "role": "clock" }),
@@ -1464,7 +1454,7 @@ fn valid_clock(read: &AccountRead, expected_id: AccountId) -> bool {
     id == expected_id && borsh::from_slice::<ClockAccountData>(account.data.as_ref()).is_ok()
 }
 
-fn raw_value(value: Option<&str>, _field: &str) -> Result<u128, &'static str> {
+fn raw_value(value: Option<&str>) -> Result<u128, &'static str> {
     let Some(value) = value else {
         return Err("amount_required");
     };
@@ -1478,13 +1468,14 @@ fn raw_value(value: Option<&str>, _field: &str) -> Result<u128, &'static str> {
 }
 
 fn minimum_opening_pair(price: u128) -> Result<(u128, u128), String> {
-    let target_product = U256::from(MINIMUM_LIQUIDITY)
-        .checked_mul(U256::from(MINIMUM_LIQUIDITY))
+    let minimum_initial_lp = U256::from(MINIMUM_LIQUIDITY + 1);
+    let target_product = minimum_initial_lp
+        .checked_mul(minimum_initial_lp)
         .ok_or_else(|| String::from("minimum liquidity product overflow"))?;
     if price >= Q64 {
         let amount_a = binary_search_min(1, MINIMUM_LIQUIDITY + 1, |amount_a| {
             let amount_b = div_ceil_u256(U256::from(amount_a) * U256::from(price), U256::from(Q64));
-            U256::from(amount_a) * amount_b > target_product
+            U256::from(amount_a) * amount_b >= target_product
         });
         let amount_b = div_ceil_u256(U256::from(amount_a) * U256::from(price), U256::from(Q64));
         Ok((
@@ -1494,7 +1485,7 @@ fn minimum_opening_pair(price: u128) -> Result<(u128, u128), String> {
     } else {
         let amount_b = binary_search_min(1, MINIMUM_LIQUIDITY + 1, |amount_b| {
             let amount_a = div_ceil_u256(U256::from(amount_b) * U256::from(Q64), U256::from(price));
-            amount_a * U256::from(amount_b) > target_product
+            amount_a * U256::from(amount_b) >= target_product
         });
         let amount_a = div_ceil_u256(U256::from(amount_b) * U256::from(Q64), U256::from(price));
         Ok((
@@ -1520,39 +1511,6 @@ fn div_ceil_u256(numerator: U256, denominator: U256) -> U256 {
     numerator.div_ceil(denominator)
 }
 
-fn scale_amount(base: u128, scale_bps: u32) -> Option<u128> {
-    let scaled = div_ceil_u256(
-        U256::from(base) * U256::from(scale_bps),
-        U256::from(MIN_DEPOSIT_SCALE_BPS),
-    );
-    u128::try_from(scaled).ok()
-}
-
-fn max_funded_scale(
-    wallet_available: bool,
-    base_a: u128,
-    base_b: u128,
-    holding_a: Option<&SelectedHolding>,
-    holding_b: Option<&SelectedHolding>,
-) -> Value {
-    if !wallet_available {
-        return Value::Null;
-    }
-    let (Some(holding_a), Some(holding_b)) = (holding_a, holding_b) else {
-        return json!(0);
-    };
-    let scale_a =
-        U256::from(holding_a.balance) * U256::from(MIN_DEPOSIT_SCALE_BPS) / U256::from(base_a);
-    let scale_b =
-        U256::from(holding_b.balance) * U256::from(MIN_DEPOSIT_SCALE_BPS) / U256::from(base_b);
-    let funded = scale_a.min(scale_b);
-    if funded < U256::from(MIN_DEPOSIT_SCALE_BPS) {
-        return json!(0);
-    }
-    let capped = funded.min(U256::from(u32::MAX));
-    json!(u32::try_from(capped).unwrap_or(u32::MAX))
-}
-
 fn funding_issues(
     wallet_available: bool,
     pair: PairIds,
@@ -1560,7 +1518,7 @@ fn funding_issues(
     requested_a: u128,
     holding_b: &Option<SelectedHolding>,
     requested_b: u128,
-    derived_field: &str,
+    fields: [&str; 2],
 ) -> Vec<Value> {
     if !wallet_available {
         return vec![issue(
@@ -1572,26 +1530,8 @@ fn funding_issues(
     }
     let mut errors = Vec::new();
     for (token_id, holding, requested, field) in [
-        (
-            pair.token_a,
-            holding_a,
-            requested_a,
-            if derived_field.is_empty() {
-                "maxAmountARaw"
-            } else {
-                derived_field
-            },
-        ),
-        (
-            pair.token_b,
-            holding_b,
-            requested_b,
-            if derived_field.is_empty() {
-                "maxAmountBRaw"
-            } else {
-                derived_field
-            },
-        ),
+        (pair.token_a, holding_a, requested_a, fields[0]),
+        (pair.token_b, holding_b, requested_b, fields[1]),
     ] {
         let available = holding.as_ref().map_or(0, |value| value.balance);
         if available < requested {
@@ -1674,26 +1614,12 @@ fn issue(code: &str, message: &str, fields: &[&str], details: Value) -> Value {
     })
 }
 
-fn fatal_quote(
-    request: &PositionRequest,
-    code: &str,
-    fields: &[&str],
-    details: Value,
-) -> QuoteComputation {
-    QuoteComputation::Fatal {
-        value: json!({
-            "schema": SCHEMA,
-            "status": "error",
-            "canSubmit": false,
-            "code": code,
-            "poolStatus": "unavailable_pool",
-            "tokenAId": request.token_a_id,
-            "tokenBId": request.token_b_id,
-            "accountPreview": [],
-            "errors": [issue(code, "Position quote is unavailable.", fields, details)],
-            "warnings": [],
-        }),
-    }
+fn fatal_quote(code: &'static str, fields: &[&'static str], details: Value) -> QuoteComputation {
+    QuoteComputation::Failed(QuoteFailure {
+        code,
+        fields: fields.to_vec(),
+        details,
+    })
 }
 
 fn missing_account_plan(
@@ -1928,18 +1854,18 @@ pub fn plan(input: PlanRequest) -> Result<Value, String> {
             "status": "error",
             "code": "quote_changed",
             "recoverable": true,
-            "quote": quote.into_value(),
+            "quote": quote.into_value(&quote_input.request),
         }));
     }
     let evaluated = match quote {
         QuoteComputation::Evaluated(evaluated) => evaluated,
-        QuoteComputation::Fatal { value } => {
+        QuoteComputation::Failed(failure) => {
             return Ok(json!({
                 "schema": SCHEMA,
                 "status": "error",
                 "code": "quote_not_submittable",
                 "recoverable": true,
-                "quote": value,
+                "quote": failure.into_value(&quote_input.request),
             }))
         }
     };
@@ -1963,7 +1889,7 @@ pub fn plan(input: PlanRequest) -> Result<Value, String> {
         let Ok((id, account)) = decode_account(read) else {
             return Ok(plan_error("wallet_submission_failed"));
         };
-        if account != Account::default() {
+        if account != Account::default() || plan.accounts.contains(id) {
             return Ok(plan_error("wallet_submission_failed"));
         }
         Some(id)
@@ -1978,8 +1904,6 @@ pub fn plan(input: PlanRequest) -> Result<Value, String> {
     if clock_timestamp >= deadline {
         return Ok(plan_error("transaction_deadline_expired"));
     }
-    let amm_program = parse_program_id(&input.amm_program_id)?;
-
     let NewPositionPlan { accounts, branch } = plan;
     let (account_ids, signing_requirements) = accounts.wallet_args(fresh_lp)?;
     let instruction = match branch {
@@ -2023,7 +1947,6 @@ pub fn plan(input: PlanRequest) -> Result<Value, String> {
         "signingRequirements": signing_requirements,
         "instruction": instruction,
         "deadlineMs": deadline.to_string(),
-        "ammProgramId": program_id_base58(amm_program),
     }))
 }
 
@@ -2165,11 +2088,73 @@ mod tests {
             token_a_id: pair.token_a.to_string(),
             token_b_id: pair.token_b.to_string(),
             fee_bps: 30,
+            amount_a_raw: None,
+            amount_b_raw: None,
             max_amount_a_raw: None,
             max_amount_b_raw: None,
             slippage_bps: None,
             initial_price_real_raw: Some(Q64.to_string()),
-            deposit_scale_bps: Some(MIN_DEPOSIT_SCALE_BPS),
+        }
+    }
+
+    fn amm_program_id() -> String {
+        hex::encode(program_id_bytes(AMM_PROGRAM))
+    }
+
+    struct Scenario {
+        pair: PairIds,
+        request: PositionRequest,
+        snapshot: PairSnapshot,
+        network_id: &'static str,
+        network_fingerprint: &'static str,
+    }
+
+    impl Scenario {
+        fn devnet() -> Self {
+            Self::new("devnet", "channel:test")
+        }
+
+        fn testnet() -> Self {
+            Self::new("testnet", "block10:test")
+        }
+
+        fn new(network_id: &'static str, network_fingerprint: &'static str) -> Self {
+            let pair = ids();
+            Self {
+                pair,
+                request: request(pair),
+                snapshot: base_snapshot(pair),
+                network_id,
+                network_fingerprint,
+            }
+        }
+
+        fn quote_request(&self) -> QuoteRequest {
+            QuoteRequest {
+                network_id: String::from(self.network_id),
+                network_fingerprint: String::from(self.network_fingerprint),
+                amm_program_id: amm_program_id(),
+                request: self.request.clone(),
+                snapshot: self.snapshot.clone(),
+            }
+        }
+
+        fn quote(&self) -> Value {
+            quote(self.quote_request()).unwrap()
+        }
+
+        fn plan(self, quote_hash: impl Into<String>, fresh_lp: Option<AccountRead>) -> Value {
+            plan(PlanRequest {
+                network_id: String::from(self.network_id),
+                network_fingerprint: String::from(self.network_fingerprint),
+                amm_program_id: amm_program_id(),
+                request: self.request,
+                snapshot: self.snapshot,
+                quote_hash: quote_hash.into(),
+                now_ms: 2_000,
+                fresh_lp,
+            })
+            .unwrap()
         }
     }
 
@@ -2199,15 +2184,9 @@ mod tests {
 
     #[test]
     fn account_plan_sources_follow_pool_branch() {
-        let pair = ids();
-        let snapshot = base_snapshot(pair);
-        let input = QuoteRequest {
-            network_id: String::from("devnet"),
-            network_fingerprint: String::from("channel:test"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            request: request(pair),
-            snapshot,
-        };
+        let scenario = Scenario::devnet();
+        let pair = scenario.pair;
+        let input = scenario.quote_request();
         let holdings = wallet_holdings(&input.snapshot.wallet_accounts, pair.token_program);
         let holding_a = select_holding(&holdings, pair.token_a);
         let holding_b = select_holding(&holdings, pair.token_b);
@@ -2280,7 +2259,7 @@ mod tests {
 
     #[test]
     fn minimum_pair_exceeds_protocol_lock() {
-        for price in [1, Q64 / 10, Q64, Q64 * 2, u128::MAX] {
+        for price in [1, Q64 / 2_500, Q64 / 10, Q64, Q64 * 2, u128::MAX] {
             let (amount_a, amount_b) = minimum_opening_pair(price).unwrap();
             assert!(amount_a > 0);
             assert!(amount_b > 0);
@@ -2307,6 +2286,7 @@ mod tests {
         let definition = AccountId::new([9; 32]);
         let holding = |id: u8, balance| SelectedHolding {
             id: AccountId::new([id; 32]),
+            definition_id: definition,
             balance,
             account: account(
                 TOKEN_PROGRAM,
@@ -2329,17 +2309,9 @@ mod tests {
         let token_a = AccountId::new([2; 32]);
         let token_b = AccountId::new([1; 32]);
         let config_id = compute_config_pda(AMM_PROGRAM);
-        let config = account(
-            AMM_PROGRAM,
-            Data::from(&AmmConfig {
-                token_program_id: TOKEN_PROGRAM,
-                twap_oracle_program_id: TWAP_PROGRAM,
-                authority: AccountId::new([7; 32]),
-            }),
-        );
         let result = pair_ids(PairIdsRequest {
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            config: account_read(config_id, &config),
+            amm_program_id: amm_program_id(),
+            config: account_read(config_id, &config_account()),
             token_a_id: token_a.to_string(),
             token_b_id: token_b.to_string(),
         })
@@ -2354,40 +2326,133 @@ mod tests {
     }
 
     #[test]
-    fn context_selects_tokens_without_holdings() {
-        let token_id = AccountId::new([3; 32]);
+    fn pair_manifest_reports_invalid_token_as_domain_error() {
+        let pair = ids();
+        let result = pair_ids(PairIdsRequest {
+            amm_program_id: amm_program_id(),
+            config: account_read(pair.config, &config_account()),
+            token_a_id: String::from("not-a-token-id"),
+            token_b_id: pair.token_b.to_string(),
+        })
+        .expect("invalid user input is a domain result");
+
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["code"], "invalid_token_id");
+    }
+
+    #[test]
+    fn pair_manifest_reports_unavailable_config_as_domain_error() {
+        let pair = ids();
+        let result = pair_ids(PairIdsRequest {
+            amm_program_id: amm_program_id(),
+            config: default_read(pair.config),
+            token_a_id: pair.token_a.to_string(),
+            token_b_id: pair.token_b.to_string(),
+        })
+        .expect("unavailable chain state is a domain result");
+
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["code"], "config_unavailable");
+    }
+
+    #[test]
+    fn token_manifest_includes_compatible_wallet_holdings() {
         let config_id = compute_config_pda(AMM_PROGRAM);
-        let config = account(
-            AMM_PROGRAM,
-            Data::from(&AmmConfig {
-                token_program_id: TOKEN_PROGRAM,
-                twap_oracle_program_id: TWAP_PROGRAM,
-                authority: AccountId::new([7; 32]),
+        let configured = AccountId::new([1; 32]);
+        let held = AccountId::new([2; 32]);
+        let recent = AccountId::new([3; 32]);
+        let resolved = AccountId::new([4; 32]);
+
+        let value = token_ids(TokenIdsRequest {
+            amm_program_id: amm_program_id(),
+            config: account_read(config_id, &config_account()),
+            wallet_accounts: vec![account_read(
+                AccountId::new([5; 32]),
+                &token_holding(held, 9),
+            )],
+            configured_token_ids: vec![account_id_hex(configured)],
+            recent_token_ids: vec![recent.to_string()],
+            resolved_token_ids: vec![resolved.to_string()],
+        })
+        .unwrap();
+
+        assert_eq!(
+            value["tokenIds"],
+            json!([
+                account_id_hex(configured),
+                account_id_hex(held),
+                account_id_hex(recent),
+                account_id_hex(resolved),
+            ])
+        );
+    }
+
+    #[test]
+    fn wrong_program_holdings_do_not_contribute_token_candidates() {
+        let config_id = compute_config_pda(AMM_PROGRAM);
+        let config = config_account();
+        let definition = AccountId::new([2; 32]);
+        let wrong_owner_holding = account(
+            [99; 8],
+            Data::from(&TokenHolding::Fungible {
+                definition_id: definition,
+                balance: 9,
             }),
         );
-        let definition = account(
-            TOKEN_PROGRAM,
-            Data::from(&TokenDefinition::Fungible {
-                name: String::from("Token"),
-                total_supply: 1_000_000,
-                metadata_id: None,
-                authority: None,
-            }),
-        );
+        let wallet_accounts = vec![account_read(AccountId::new([3; 32]), &wrong_owner_holding)];
+
+        let manifest = token_ids(TokenIdsRequest {
+            amm_program_id: amm_program_id(),
+            config: account_read(config_id, &config),
+            wallet_accounts: wallet_accounts.clone(),
+            configured_token_ids: Vec::new(),
+            recent_token_ids: Vec::new(),
+            resolved_token_ids: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(manifest["tokenIds"], json!([]));
+
         let value = context(ContextRequest {
             network_id: String::from("testnet"),
             network_fingerprint: String::from("block10:abc"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
+            amm_program_id: amm_program_id(),
             wallet_available: true,
             config: account_read(config_id, &config),
+            wallet_accounts,
+            token_definitions: vec![account_read(
+                definition,
+                &token_definition("Token", 1_000_000),
+            )],
+            configured_token_ids: Vec::new(),
+            recent_token_ids: Vec::new(),
+            resolved_token_ids: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(value["tokens"], json!([]));
+    }
+
+    #[test]
+    fn context_selects_tokens_without_holdings() {
+        let token_id = AccountId::new([3; 32]);
+        let config_id = compute_config_pda(AMM_PROGRAM);
+        let value = context(ContextRequest {
+            network_id: String::from("testnet"),
+            network_fingerprint: String::from("block10:abc"),
+            amm_program_id: amm_program_id(),
+            wallet_available: true,
+            config: account_read(config_id, &config_account()),
             wallet_accounts: Vec::new(),
-            token_definitions: vec![account_read(token_id, &definition)],
+            token_definitions: vec![account_read(
+                token_id,
+                &token_definition("Token", 1_000_000),
+            )],
             configured_token_ids: vec![account_id_hex(token_id)],
             recent_token_ids: Vec::new(),
             resolved_token_ids: Vec::new(),
         })
         .unwrap();
         assert_eq!(value["tokens"][0]["selectable"], true);
+        assert_eq!(value["tokens"][0]["sources"], json!(["config"]));
         assert!(value["tokens"][0].get("holdingId").is_none());
     }
 
@@ -2402,17 +2467,8 @@ mod tests {
 
     #[test]
     fn missing_pool_quote_and_plan_use_current_account_order() {
-        let pair = ids();
-        let snapshot = base_snapshot(pair);
-        let request = request(pair);
-        let quote_value = quote(QuoteRequest {
-            network_id: String::from("devnet"),
-            network_fingerprint: String::from("channel:test"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            request: request.clone(),
-            snapshot: snapshot.clone(),
-        })
-        .unwrap();
+        let scenario = Scenario::devnet();
+        let quote_value = scenario.quote();
         assert_eq!(quote_value["status"], "ok");
         assert_eq!(quote_value["poolStatus"], "missing_pool");
         assert_eq!(quote_value["canSubmit"], true);
@@ -2420,17 +2476,7 @@ mod tests {
         let quote_hash = quote_value["quoteHash"].as_str().unwrap().to_owned();
 
         let fresh_lp = AccountId::new([63; 32]);
-        let plan_value = plan(PlanRequest {
-            network_id: String::from("devnet"),
-            network_fingerprint: String::from("channel:test"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            request,
-            snapshot,
-            quote_hash,
-            now_ms: 2_000,
-            fresh_lp: Some(default_read(fresh_lp)),
-        })
-        .unwrap();
+        let plan_value = scenario.plan(quote_hash, Some(default_read(fresh_lp)));
         assert_eq!(plan_value["status"], "ready");
         assert_eq!(plan_value["accountIds"].as_array().unwrap().len(), 11);
         assert_eq!(plan_value["accountIds"][8], account_id_hex(fresh_lp));
@@ -2441,22 +2487,43 @@ mod tests {
     }
 
     #[test]
-    fn advancing_clock_does_not_stale_quote() {
-        let pair = ids();
-        let request = request(pair);
-        let snapshot = base_snapshot(pair);
-        let quote_value = quote(QuoteRequest {
-            network_id: String::from("testnet"),
-            network_fingerprint: String::from("block10:test"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            request: request.clone(),
-            snapshot: snapshot.clone(),
-        })
-        .unwrap();
+    fn missing_pool_plan_rejects_fresh_lp_account_collision() {
+        let scenario = Scenario::devnet();
+        let pool = scenario.pair.pool;
+        let quote_value = scenario.quote();
+        let quote_hash = quote_value["quoteHash"].as_str().unwrap().to_owned();
 
-        let mut advanced = snapshot;
-        advanced.clock = account_read(
-            pair.clock,
+        let plan_value = scenario.plan(quote_hash, Some(default_read(pool)));
+
+        assert_eq!(plan_value["status"], "error");
+        assert_eq!(plan_value["code"], "wallet_submission_failed");
+    }
+
+    #[test]
+    fn missing_pool_quote_accepts_large_direct_raw_amounts() {
+        let mut scenario = Scenario::devnet();
+        let amount_a = 100_000_000;
+        let amount_b = 150_000_000;
+        scenario.request.amount_a_raw = Some(amount_a.to_string());
+        scenario.request.amount_b_raw = Some(amount_b.to_string());
+        scenario.request.initial_price_real_raw =
+            Some(spot_price_q64_64(amount_a, amount_b).to_string());
+
+        let quote_value = scenario.quote();
+
+        assert_eq!(quote_value["status"], "ok");
+        assert_eq!(quote_value["actualAmountARaw"], amount_a.to_string());
+        assert_eq!(quote_value["actualAmountBRaw"], amount_b.to_string());
+        assert!(quote_value.get("depositScaleBps").is_none());
+    }
+
+    #[test]
+    fn advancing_clock_does_not_stale_quote() {
+        let mut scenario = Scenario::testnet();
+        let quote_value = scenario.quote();
+
+        scenario.snapshot.clock = account_read(
+            scenario.pair.clock,
             &account(
                 [44; 8],
                 Data::try_from(
@@ -2469,25 +2536,18 @@ mod tests {
                 .unwrap(),
             ),
         );
-        let plan_value = plan(PlanRequest {
-            network_id: String::from("testnet"),
-            network_fingerprint: String::from("block10:test"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            request,
-            snapshot: advanced,
-            quote_hash: quote_value["quoteHash"].as_str().unwrap().to_owned(),
-            now_ms: 2_000,
-            fresh_lp: Some(default_read(AccountId::new([63; 32]))),
-        })
-        .unwrap();
+        let plan_value = scenario.plan(
+            quote_value["quoteHash"].as_str().unwrap(),
+            Some(default_read(AccountId::new([63; 32]))),
+        );
 
         assert_eq!(plan_value["status"], "ready");
     }
 
     #[test]
     fn active_pool_quote_uses_ratio_and_existing_lp_holding() {
-        let pair = ids();
-        let mut snapshot = base_snapshot(pair);
+        let mut scenario = Scenario::testnet();
+        let pair = scenario.pair;
         let pool = PoolDefinition {
             definition_token_a_id: pair.token_a,
             definition_token_b_id: pair.token_b,
@@ -2499,10 +2559,12 @@ mod tests {
             reserve_b: 20_000,
             fees: 30,
         };
-        snapshot.pool = account_read(pair.pool, &account(AMM_PROGRAM, Data::from(&pool)));
-        snapshot.vault_a = account_read(pair.vault_a, &token_holding(pair.token_a, pool.reserve_a));
-        snapshot.vault_b = account_read(pair.vault_b, &token_holding(pair.token_b, pool.reserve_b));
-        snapshot.lp_definition = account_read(
+        scenario.snapshot.pool = account_read(pair.pool, &account(AMM_PROGRAM, Data::from(&pool)));
+        scenario.snapshot.vault_a =
+            account_read(pair.vault_a, &token_holding(pair.token_a, pool.reserve_a));
+        scenario.snapshot.vault_b =
+            account_read(pair.vault_b, &token_holding(pair.token_b, pool.reserve_b));
+        scenario.snapshot.lp_definition = account_read(
             pair.lp_definition,
             &account(
                 TOKEN_PROGRAM,
@@ -2514,7 +2576,7 @@ mod tests {
                 }),
             ),
         );
-        snapshot.current_tick = account_read(
+        scenario.snapshot.current_tick = account_read(
             pair.current_tick,
             &account(
                 TWAP_PROGRAM,
@@ -2524,44 +2586,37 @@ mod tests {
                 }),
             ),
         );
+        scenario.snapshot.wallet_accounts = vec![
+            account_read(
+                AccountId::new([61; 32]),
+                &token_holding(pair.token_a, 1_000),
+            ),
+            account_read(
+                AccountId::new([62; 32]),
+                &token_holding(pair.token_b, 2_000),
+            ),
+        ];
         let lp_holding = AccountId::new([64; 32]);
-        snapshot.wallet_accounts.push(account_read(
+        scenario.snapshot.wallet_accounts.push(account_read(
             lp_holding,
             &token_holding(pair.lp_definition, 500),
         ));
-        let mut request = request(pair);
-        request.initial_price_real_raw = None;
-        request.deposit_scale_bps = None;
-        request.max_amount_a_raw = Some(String::from("1000"));
-        request.max_amount_b_raw = Some(String::from("3000"));
-        request.slippage_bps = Some(50);
+        scenario.request.initial_price_real_raw = None;
+        scenario.request.max_amount_a_raw = Some(String::from("1000"));
+        scenario.request.max_amount_b_raw = Some(String::from("3000"));
+        scenario.request.slippage_bps = Some(50);
 
-        let quote_value = quote(QuoteRequest {
-            network_id: String::from("testnet"),
-            network_fingerprint: String::from("block10:test"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            request: request.clone(),
-            snapshot: snapshot.clone(),
-        })
-        .unwrap();
+        let quote_value = scenario.quote();
         assert_eq!(quote_value["poolStatus"], "active_pool");
         assert_eq!(quote_value["actualAmountARaw"], "1000");
         assert_eq!(quote_value["actualAmountBRaw"], "2000");
         assert_eq!(quote_value["expectedLpRaw"], "1000");
         assert_eq!(quote_value["minimumLpRaw"], "995");
         assert_eq!(quote_value["requiresFreshLp"], false);
+        assert_eq!(quote_value["canSubmit"], true);
+        assert_eq!(quote_value["errors"], json!([]));
 
-        let plan_value = plan(PlanRequest {
-            network_id: String::from("testnet"),
-            network_fingerprint: String::from("block10:test"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            request,
-            snapshot,
-            quote_hash: quote_value["quoteHash"].as_str().unwrap().to_owned(),
-            now_ms: 2_000,
-            fresh_lp: None,
-        })
-        .unwrap();
+        let plan_value = scenario.plan(quote_value["quoteHash"].as_str().unwrap(), None);
         assert_eq!(plan_value["status"], "ready");
         assert_eq!(plan_value["accountIds"].as_array().unwrap().len(), 10);
         assert_eq!(plan_value["accountIds"][7], account_id_hex(lp_holding));
@@ -2571,32 +2626,13 @@ mod tests {
 
     #[test]
     fn matching_unfunded_quote_has_no_transaction_plan() {
-        let pair = ids();
-        let request = request(pair);
-        let mut snapshot = base_snapshot(pair);
-        snapshot.wallet_available = false;
-        snapshot.wallet_accounts.clear();
-        let quote_value = quote(QuoteRequest {
-            network_id: String::from("devnet"),
-            network_fingerprint: String::from("channel:test"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            request: request.clone(),
-            snapshot: snapshot.clone(),
-        })
-        .unwrap();
+        let mut scenario = Scenario::devnet();
+        scenario.snapshot.wallet_available = false;
+        scenario.snapshot.wallet_accounts.clear();
+        let quote_value = scenario.quote();
         assert_eq!(quote_value["canSubmit"], false);
 
-        let plan_value = plan(PlanRequest {
-            network_id: String::from("devnet"),
-            network_fingerprint: String::from("channel:test"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            request,
-            snapshot,
-            quote_hash: quote_value["quoteHash"].as_str().unwrap().to_owned(),
-            now_ms: 2_000,
-            fresh_lp: None,
-        })
-        .unwrap();
+        let plan_value = scenario.plan(quote_value["quoteHash"].as_str().unwrap(), None);
 
         assert_eq!(plan_value["status"], "error");
         assert_eq!(plan_value["code"], "quote_not_submittable");
@@ -2605,18 +2641,7 @@ mod tests {
 
     #[test]
     fn stale_hash_returns_recomputed_quote_without_plan() {
-        let pair = ids();
-        let value = plan(PlanRequest {
-            network_id: String::from("devnet"),
-            network_fingerprint: String::from("channel:test"),
-            amm_program_id: hex::encode(program_id_bytes(AMM_PROGRAM)),
-            request: request(pair),
-            snapshot: base_snapshot(pair),
-            quote_hash: String::from("sha256:deadbeef"),
-            now_ms: 2_000,
-            fresh_lp: None,
-        })
-        .unwrap();
+        let value = Scenario::devnet().plan("sha256:deadbeef", None);
         assert_eq!(value["status"], "error");
         assert_eq!(value["code"], "quote_changed");
         assert_eq!(value["quote"]["status"], "ok");

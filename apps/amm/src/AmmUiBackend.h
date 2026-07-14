@@ -1,29 +1,30 @@
 #ifndef AMM_UI_BACKEND_H
 #define AMM_UI_BACKEND_H
 
+#include <memory>
+
 #include <QObject>
-#include <QJsonArray>
-#include <QJsonObject>
 #include <QString>
-#include <QStringList>
 #include <QVariant>
 
 #include "rep_AmmUiBackend_source.h"
 
-#include "AccountModel.h"
+#include "ActiveNetwork.h"
+#include "WalletAccountModel.h"
 
 class LogosAPI;
-struct LogosModules;
+class AmmClient;
+class LogosWalletProvider;
+class NewPositionRuntime;
 class QNetworkAccessManager;
-class QTimer;
+class WalletController;
 
 // Source-side implementation of the AmmUiBackend .rep interface.
 // Inheriting from AmmUiBackendSimpleSource gives us the generated PROPs and
-// SLOTs from AmmUiBackend.rep — all the simple ones flow over QtRO. Talks to
-// the core logos_execution_zone wallet module via LogosModules.
+// SLOTs from AmmUiBackend.rep — all the simple ones flow over QtRO.
 class AmmUiBackend : public AmmUiBackendSimpleSource {
     Q_OBJECT
-    Q_PROPERTY(AccountModel* accountModel READ accountModel CONSTANT)
+    Q_PROPERTY(WalletAccountModel* accountModel READ accountModel CONSTANT)
 
 public:
     explicit AmmUiBackend(LogosAPI* logosAPI = nullptr, QObject* parent = nullptr);
@@ -31,7 +32,7 @@ public:
     explicit AmmUiBackend(WalletProvider& wallet, QObject* parent = nullptr);
     ~AmmUiBackend() override;
 
-    AccountModel* accountModel() const { return m_accountModel; }
+    WalletAccountModel* accountModel() const;
 
 public slots:
     // Overrides of the pure-virtual slots generated from the .rep.
@@ -40,7 +41,7 @@ public slots:
     void refreshAccounts() override;
     void refreshBalances() override;
     QString getBalance(QString accountIdHex, bool isPublic) override;
-    QVariantMap refreshNewPositionContext(QVariantMap request) override;
+    void refreshNewPositionContext(QVariantMap request) override;
     QVariantMap quoteNewPosition(QVariantMap request) override;
     QVariantMap submitNewPosition(QVariantMap request, QString quoteHash) override;
     // Return the new wallet's BIP39 mnemonic (empty string on failure) so the
@@ -49,52 +50,23 @@ public slots:
     QString createNew(QString configPath, QString storagePath, QString password) override;
     bool openExisting() override;
     void disconnectWallet() override;
-    bool changeSequencerAddr(QString url) override;
-    void copyToClipboard(QString text) override;
 
 private:
-    // Per-app wallet home (kept distinct from the wallet's canonical
-    // ~/.lee/wallet so standalone instances stay isolated; Basecamp sharing
-    // is handled by adopting an already-open shared wallet on startup).
-    static QString defaultWalletHome();
-    QString defaultConfigPath() const;
-    QString defaultStoragePath() const;
-
-    void persistConfigPath(const QString& path);
-    void persistStoragePath(const QString& path);
-    void openOrAdoptWallet();
-    // True when the shared core already has a wallet open — including a freshly
-    // created one with zero accounts. See the definition for why list_accounts()
-    // alone is insufficient.
-    bool sharedWalletIsOpen();
-    void refreshBlockHeights();
-    void refreshSequencerAddr();
-    void saveWallet();
-    bool loadNetworkConfig();
+    void syncWalletState();
     void probeNetworkIdentity();
-    QJsonObject readAccount(const QString& accountId) const;
-    QJsonArray walletAccountReads() const;
-    QJsonObject buildQuoteInput(const QVariantMap& request, QJsonObject* error) const;
-
-    // Probe the configured sequencer over HTTP and update sequencerReachable.
-    void checkReachability();
-
-    AccountModel* m_accountModel;
+    void publishNetworkContext();
 
     LogosAPI* m_logosAPI;
-    LogosModules* m_logos;
+    std::unique_ptr<LogosWalletProvider> m_wallet;
+    std::unique_ptr<WalletController> m_walletController;
+    std::unique_ptr<AmmClient> m_ammClient;
+    std::unique_ptr<NewPositionRuntime> m_newPosition;
 
     QNetworkAccessManager* m_net;
-    QTimer* m_reachabilityTimer;
 
-    QString m_networkId;
-    QString m_networkStatus = QStringLiteral("config_missing");
-    QString m_networkFingerprint;
-    QString m_expectedNetworkIdentity;
-    QString m_ammProgramId;
-    QStringList m_configuredTokenIds;
+    ActiveNetwork m_network;
+    QVariantMap m_newPositionHints;
     bool m_identityProbeInFlight = false;
-    bool m_submitInFlight = false;
 };
 
 #endif // AMM_UI_BACKEND_H

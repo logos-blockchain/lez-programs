@@ -113,26 +113,17 @@ function divide(left, right) {
     return { "quotient": normalize(quotient), "remainder": remainder, "valid": true }
 }
 
-function divideCeil(left, right) {
-    var result = divide(left, right)
-    if (!result.valid || result.remainder === "0")
-        return result.quotient
-    return addSmall(result.quotient, 1)
-}
-
-function addSmall(value, increment) {
+function increment(value) {
     var digits = normalize(value).split("")
-    var carry = increment
-    for (var i = digits.length - 1; i >= 0 && carry > 0; --i) {
-        var sum = Number(digits[i]) + carry
-        digits[i] = String(sum % 10)
-        carry = Math.floor(sum / 10)
+    for (var i = digits.length - 1; i >= 0; --i) {
+        if (digits[i] !== "9") {
+            digits[i] = String(Number(digits[i]) + 1)
+            return digits.join("")
+        }
+        digits[i] = "0"
     }
-    while (carry > 0) {
-        digits.unshift(String(carry % 10))
-        carry = Math.floor(carry / 10)
-    }
-    return normalize(digits.join(""))
+    digits.unshift("1")
+    return digits.join("")
 }
 
 function pow10(exponent) {
@@ -172,6 +163,17 @@ function parseHuman(text, decimals) {
     return { "ok": true, "code": "", "raw": raw }
 }
 
+function trimHumanPrecision(text, decimals) {
+    var value = String(text)
+    var match = /^(0|[1-9][0-9]*)(?:\.([0-9]*))?$/.exec(value)
+    if (!match)
+        return value
+    var fraction = match[2] || ""
+    if (fraction.length <= decimals)
+        return value
+    return decimals > 0 ? match[1] + "." + fraction.slice(0, decimals) : match[1]
+}
+
 function formatRaw(rawValue, decimals) {
     if (!isUnsigned(rawValue))
         return ""
@@ -204,19 +206,36 @@ function parsePrice(text) {
     }
 }
 
-function priceToQ64(text, canonicalDecimalsA, canonicalDecimalsB, displayIsCanonical) {
-    var parsed = parsePrice(text)
-    if (!parsed.ok)
-        return { "ok": false, "code": parsed.code, "raw": "" }
+function parseRatio(amountA, amountB) {
+    var parsedA = parsePrice(amountA)
+    if (!parsedA.ok)
+        return { "ok": false, "code": parsedA.code }
+    var parsedB = parsePrice(amountB)
+    if (!parsedB.ok)
+        return { "ok": false, "code": parsedB.code }
+
+    return {
+        "ok": true,
+        "code": "",
+        "numerator": multiply(parsedB.numerator, pow10(parsedA.scale)),
+        "denominator": multiply(parsedA.numerator, pow10(parsedB.scale))
+    }
+}
+
+function ratioToQ64(amountA, amountB, canonicalDecimalsA, canonicalDecimalsB,
+                    displayIsCanonical) {
+    var ratio = parseRatio(amountA, amountB)
+    if (!ratio.ok)
+        return { "ok": false, "code": ratio.code, "raw": "" }
 
     var numerator
     var denominator
     if (displayIsCanonical) {
-        numerator = multiply(multiply(parsed.numerator, Q64), pow10(canonicalDecimalsB))
-        denominator = pow10(parsed.scale + canonicalDecimalsA)
+        numerator = multiply(multiply(ratio.numerator, Q64), pow10(canonicalDecimalsB))
+        denominator = multiply(ratio.denominator, pow10(canonicalDecimalsA))
     } else {
-        numerator = multiply(multiply(pow10(parsed.scale), Q64), pow10(canonicalDecimalsB))
-        denominator = multiply(parsed.numerator, pow10(canonicalDecimalsA))
+        numerator = multiply(multiply(ratio.denominator, Q64), pow10(canonicalDecimalsB))
+        denominator = multiply(ratio.numerator, pow10(canonicalDecimalsA))
     }
     var raw = divide(numerator, denominator).quotient
     if (raw === "0")
@@ -224,6 +243,39 @@ function priceToQ64(text, canonicalDecimalsA, canonicalDecimalsB, displayIsCanon
     if (compare(raw, U128_MAX) > 0)
         return { "ok": false, "code": "invalid_raw_amount", "raw": "" }
     return { "ok": true, "code": "", "raw": raw }
+}
+
+function pairAmount(raw, fromA, decimalsA, decimalsB, priceAmountA, priceAmountB) {
+    if (!isUnsigned(raw))
+        return { "ok": false, "code": "invalid_raw_amount", "raw": "" }
+    var ratio = parseRatio(priceAmountA, priceAmountB)
+    if (!ratio.ok)
+        return { "ok": false, "code": ratio.code, "raw": "" }
+
+    var numerator
+    var denominator
+    if (fromA) {
+        numerator = multiply(multiply(raw, ratio.numerator), pow10(decimalsB))
+        denominator = multiply(ratio.denominator, pow10(decimalsA))
+    } else {
+        numerator = multiply(multiply(raw, ratio.denominator), pow10(decimalsA))
+        denominator = multiply(ratio.numerator, pow10(decimalsB))
+    }
+    var result = divide(numerator, denominator)
+    if (!result.valid)
+        return { "ok": false, "code": "invalid_raw_amount", "raw": "" }
+    var rounded = compare(multiply(result.remainder, "2"), denominator) >= 0
+            ? increment(result.quotient) : result.quotient
+    if (rounded === "0")
+        return { "ok": false, "code": "amount_too_low", "raw": "" }
+    if (compare(rounded, U128_MAX) > 0)
+        return { "ok": false, "code": "invalid_raw_amount", "raw": "" }
+    return { "ok": true, "code": "", "raw": rounded }
+}
+
+function ratioValue(amountA, amountB, precision) {
+    var ratio = parseRatio(amountA, amountB)
+    return ratio.ok ? formatRatio(ratio.numerator, ratio.denominator, precision) : ""
 }
 
 function formatRatio(numerator, denominator, precision) {
@@ -258,10 +310,6 @@ function priceFromQ64(rawValue, canonicalDecimalsA, canonicalDecimalsB, displayI
 
 function mulDivFloor(left, right, denominator) {
     return divide(multiply(left, right), denominator).quotient
-}
-
-function mulDivCeil(left, right, denominator) {
-    return divideCeil(multiply(left, right), denominator)
 }
 
 function toU32(value) {
