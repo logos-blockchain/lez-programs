@@ -59,7 +59,7 @@ TestCase {
         }
     }
 
-    function equalDecimalsContext() {
+    function rawAmountsContext() {
         return {
             "status": "ready",
             "tokens": [
@@ -118,15 +118,23 @@ TestCase {
         compare(built.request.tokenBId, tokenLow)
     }
 
+    function test_tokenAmountsUseRawUnits() {
+        var form = createForm()
+        compare(form.decimalsA, 0)
+        compare(form.decimalsB, 0)
+        compare(form.balanceText(form.tokenA, form.decimalsA), "1000")
+        compare(form.balanceText(form.tokenB, form.decimalsB), "5000000000")
+    }
+
     function test_missingPoolKeepsMinimumRatioWhileEditingDeposit() {
         var quote = {
             "status": "ok",
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "missing_pool",
-            "minimumAmountARaw": "2000000",
+            "minimumAmountARaw": "2",
             "minimumAmountBRaw": "3",
-            "actualAmountARaw": "2000000",
+            "actualAmountARaw": "2",
             "actualAmountBRaw": "3"
         }
         var form = createForm()
@@ -146,14 +154,14 @@ TestCase {
 
         var built = form.buildQuoteRequest()
         verify(built.ok)
-        compare(built.request.amountARaw, "4000000")
+        compare(built.request.amountARaw, "4")
         compare(built.request.amountBRaw, "6")
     }
 
     function test_missingPoolAcceptsLargeDirectAmountsFromEitherSide() {
         var form = createTemporaryObject(formComponent, testCase, {
             "flowState": flowState(({})),
-            "newPositionContext": equalDecimalsContext()
+            "newPositionContext": rawAmountsContext()
         })
         verify(form)
         wait(0)
@@ -176,8 +184,8 @@ TestCase {
         compare(form.amountB, "100")
         var built = form.buildQuoteRequest()
         verify(built.ok)
-        compare(built.request.amountARaw, "100000000")
-        compare(built.request.amountBRaw, "150000000")
+        compare(built.request.amountARaw, "100")
+        compare(built.request.amountBRaw, "150")
         compare(built.request.initialPriceRealRaw, "27670116110564327424")
         verify(!built.request.hasOwnProperty("depositScaleBps"))
 
@@ -186,14 +194,14 @@ TestCase {
         compare(form.amountB, "200")
         built = form.buildQuoteRequest()
         verify(built.ok)
-        compare(built.request.amountARaw, "200000000")
-        compare(built.request.amountBRaw, "300000000")
+        compare(built.request.amountARaw, "200")
+        compare(built.request.amountBRaw, "300")
     }
 
-    function test_missingPoolRoundsPairedAmountAndTrimsInputPrecision() {
+    function test_missingPoolRoundsPairedRawAmounts() {
         var form = createTemporaryObject(formComponent, testCase, {
             "flowState": flowState(({})),
-            "newPositionContext": equalDecimalsContext()
+            "newPositionContext": rawAmountsContext()
         })
         verify(form)
         wait(0)
@@ -204,22 +212,18 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "missing_pool",
-            "minimumAmountARaw": "26",
-            "minimumAmountBRaw": "39",
-            "actualAmountARaw": "26",
-            "actualAmountBRaw": "39"
+            "minimumAmountARaw": "1",
+            "minimumAmountBRaw": "1",
+            "actualAmountARaw": "1",
+            "actualAmountBRaw": "1"
         })
         wait(0)
 
         var cases = [
-            { "input": "1", "paired": "0.666667", "rawA": "666667", "rawB": "1000000",
-              "price": "27670102275513189667" },
-            { "input": "2", "paired": "1.333333", "rawA": "1333333", "rawB": "2000000",
-              "price": "27670123028095084447" },
-            { "input": "3", "paired": "2", "rawA": "2000000", "rawB": "3000000",
-              "price": "27670116110564327424" },
-            { "input": "4", "paired": "2.666667", "rawA": "2666667", "rawB": "4000000",
-              "price": "27670112651800245948" }
+            { "input": "1", "paired": "1", "rawA": "1", "rawB": "1" },
+            { "input": "2", "paired": "1", "rawA": "1", "rawB": "2" },
+            { "input": "3", "paired": "2", "rawA": "2", "rawB": "3" },
+            { "input": "4", "paired": "3", "rawA": "3", "rawB": "4" }
         ]
         for (var i = 0; i < cases.length; ++i) {
             form.finishMissingAmount("A", cases[i].input)
@@ -228,13 +232,12 @@ TestCase {
             verify(built.ok)
             compare(built.request.amountARaw, cases[i].rawA)
             compare(built.request.amountBRaw, cases[i].rawB)
-            compare(built.request.initialPriceRealRaw, cases[i].price)
         }
 
         form.finishMissingAmount("A", "1.1234567")
-        compare(form.amountA, "1.123456")
-        compare(form.amountB, "0.748971")
-        verify(form.buildQuoteRequest().ok)
+        compare(form.amountA, "1.1234567")
+        verify(!form.buildQuoteRequest().ok)
+        compare(form.fieldError("amountA"), form.issueText("invalid_amount_precision"))
     }
 
     function test_missingPoolUsesTradeStyleInputsWithInlinePrice() {
@@ -374,9 +377,9 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "active_pool",
-            "reserveARaw": "2000000",
+            "reserveARaw": "2",
             "reserveBRaw": "10",
-            "maxAmountARaw": "4000000",
+            "maxAmountARaw": "4",
             "maxAmountBRaw": "20",
             "errors": [{
                 "code": "amount_exceeds_balance",
@@ -404,9 +407,9 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "active_pool",
-            "reserveARaw": "2000000",
+            "reserveARaw": "2",
             "reserveBRaw": "10",
-            "maxAmountARaw": "4000000",
+            "maxAmountARaw": "4",
             "maxAmountBRaw": "20"
         }
         var form = createForm()
@@ -428,11 +431,12 @@ TestCase {
 
         var built = form.buildQuoteRequest()
         verify(built.ok)
-        compare(built.request.maxAmountARaw, "1000000")
+        compare(built.request.maxAmountARaw, "1")
         compare(built.request.maxAmountBRaw, "5")
 
         form.finishActiveAmount("B", "1.1234567")
-        compare(form.amountB, "1.123456")
+        compare(form.amountB, "1.1234567")
+        verify(!form.buildQuoteRequest().ok)
     }
 
     function test_activePoolEditRecoversAfterInvalidQuote() {
@@ -443,9 +447,9 @@ TestCase {
             "tokenBId": tokenLow,
             "poolStatus": "active_pool",
             "poolFeeBps": 30,
-            "reserveARaw": "2000000",
+            "reserveARaw": "2",
             "reserveBRaw": "10",
-            "maxAmountARaw": "4000000",
+            "maxAmountARaw": "4",
             "maxAmountBRaw": "20"
         })
         wait(0)
@@ -466,7 +470,7 @@ TestCase {
 
         var built = form.buildQuoteRequest()
         verify(built.ok)
-        compare(built.request.maxAmountARaw, "1000000")
+        compare(built.request.maxAmountARaw, "1")
         compare(built.request.maxAmountBRaw, "5")
     }
 

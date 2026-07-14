@@ -65,8 +65,8 @@ AmmActionCard {
                                            ? root.newPositionContext.feeTiers : []
     readonly property var tokenA: root.tokenById(root.selectedTokenAId)
     readonly property var tokenB: root.tokenById(root.selectedTokenBId)
-    readonly property int decimalsA: AmountMath.implyDecimals(root.tokenA.totalSupplyRaw || "0")
-    readonly property int decimalsB: AmountMath.implyDecimals(root.tokenB.totalSupplyRaw || "0")
+    readonly property int decimalsA: 0
+    readonly property int decimalsB: 0
     readonly property bool displayIsCanonical: root.selectedTokenAId.length > 0
                                                && AmountMath.compareBase58Ids(root.selectedTokenAId,
                                                                               root.selectedTokenBId) > 0
@@ -770,11 +770,9 @@ AmmActionCard {
             return
         }
 
-        var decimals = AmountMath.implyDecimals(token.totalSupplyRaw || "0")
-        root.tokenResolutionMessage = qsTr("%1 - supply %2 (%3 implied decimals)")
+        root.tokenResolutionMessage = qsTr("%1 - raw supply %2")
                 .arg(token.name || root.shortId(token.definitionId))
-                .arg(AmountMath.formatRaw(token.totalSupplyRaw || "0", decimals))
-                .arg(decimals)
+                .arg(AmountMath.formatRaw(token.totalSupplyRaw || "0", 0))
         root.selectToken(side, token.definitionId)
     }
 
@@ -1193,7 +1191,7 @@ AmmActionCard {
             "amount_required": qsTr("Enter a value."),
             "amount_must_be_positive": qsTr("Value must be greater than zero."),
             "invalid_amount_format": qsTr("Use plain dot-decimal format."),
-            "invalid_amount_precision": qsTr("Too many decimal places for this token."),
+            "invalid_amount_precision": qsTr("Token amounts must use whole raw units."),
             "invalid_raw_amount": qsTr("Value is outside the supported range."),
             "amount_exceeds_balance": qsTr("Amount exceeds the selected holding balance."),
             "amount_too_low": qsTr("Value is too low for this pool."),
@@ -1239,7 +1237,6 @@ AmmActionCard {
 
     function finishActiveAmount(side, value) {
         var decimals = side === "A" ? root.decimalsA : root.decimalsB
-        value = AmountMath.trimHumanPrecision(value, decimals)
         if (side === "A")
             root.amountA = value
         else
@@ -1302,7 +1299,6 @@ AmmActionCard {
 
     function finishMissingAmount(side, value) {
         var decimals = side === "A" ? root.decimalsA : root.decimalsB
-        value = AmountMath.trimHumanPrecision(value, decimals)
         if (side === "A")
             root.amountA = value
         else
@@ -1483,8 +1479,7 @@ AmmActionCard {
     }
 
     function tokenBalanceDetail(token) {
-        var decimals = AmountMath.implyDecimals(token.totalSupplyRaw || "0")
-        return qsTr("Available %1").arg(root.balanceText(token, decimals))
+        return qsTr("Available %1").arg(root.balanceText(token, 0))
     }
 
     function shortId(value) {

@@ -46,9 +46,6 @@ transaction ID is displayed.
   scales either deposit from the minimum that mints more than
   `MINIMUM_LIQUIDITY`.
 - Active Pool flow keeps the reserve ratio and previews expected LP output.
-- Decimal inference keeps small supplies at 0 decimals, medium supplies at 6,
-  large supplies at 9, and massive supplies at 18.
-- Human amount parse/format preserves 0, 6, 9, and 18 decimal values.
 - `new_definition` and `add_liquidity` account lists match the committed AMM IDL
   order.
 - Submit re-quotes and surfaces `quote_changed` when the request no longer

@@ -133,19 +133,6 @@ function pow10(exponent) {
     return value
 }
 
-function implyDecimals(totalSupplyRaw) {
-    if (!isUnsigned(totalSupplyRaw))
-        return 0
-    var digits = normalize(totalSupplyRaw).length
-    if (digits <= 9)
-        return 0
-    if (digits <= 14)
-        return 6
-    if (digits <= 21)
-        return 9
-    return 18
-}
-
 function parseHuman(text, decimals) {
     var value = String(text)
     if (value.length === 0)
@@ -161,17 +148,6 @@ function parseHuman(text, decimals) {
     if (compare(raw, U128_MAX) > 0)
         return { "ok": false, "code": "invalid_raw_amount", "raw": "" }
     return { "ok": true, "code": "", "raw": raw }
-}
-
-function trimHumanPrecision(text, decimals) {
-    var value = String(text)
-    var match = /^(0|[1-9][0-9]*)(?:\.([0-9]*))?$/.exec(value)
-    if (!match)
-        return value
-    var fraction = match[2] || ""
-    if (fraction.length <= decimals)
-        return value
-    return decimals > 0 ? match[1] + "." + fraction.slice(0, decimals) : match[1]
 }
 
 function formatRaw(rawValue, decimals) {
