@@ -3123,12 +3123,6 @@ fn amm_with_deps() -> ProgramWithDependencies {
     )
 }
 
-// Marvin-todo
-/// Confirms the AMM circuit-level `"Invalid account_identities length"` bug (bisected with an
-/// all-`Public` control case in `docs/privacy-test-matrix.md`'s AMM section) also fires when a
-/// real private account is involved in `SwapExactInput`, not just the all-public control shape —
-/// i.e. this isn't an artifact of using zero private accounts, the bug blocks a genuine private
-/// swap identically.
 #[test]
 fn amm_swap_a_to_b_private_user_holding_is_not_expressible() {
     let mut state = state_for_amm_tests();
@@ -3228,10 +3222,6 @@ fn amm_swap_a_to_b_private_user_holding_is_not_expressible() {
     );
 }
 
-// Marvin-todo
-/// Same confirmation as `amm_swap_a_to_b_private_user_holding_is_not_expressible`, for
-/// `SwapExactOutput` — identical 8-account/chained-call shape to `SwapExactInput`, so the same
-/// circuit-level bug is expected to fire identically.
 #[test]
 fn amm_swap_exact_output_private_user_holding_is_not_expressible() {
     let mut state = state_for_amm_tests();
@@ -3330,9 +3320,6 @@ fn amm_swap_exact_output_private_user_holding_is_not_expressible() {
     );
 }
 
-// Marvin-todo
-/// Same confirmation as `amm_swap_a_to_b_private_user_holding_is_not_expressible`, for
-/// `AddLiquidity` with a private LP-output holding.
 #[test]
 fn amm_add_liquidity_private_lp_holding_is_not_expressible() {
     let mut state = state_for_amm_tests();
@@ -3442,9 +3429,6 @@ fn amm_add_liquidity_private_lp_holding_is_not_expressible() {
     );
 }
 
-// Marvin-todo
-/// Same confirmation as the two tests above, for `RemoveLiquidity` with a private LP holding
-/// (the account that signs/burns to remove liquidity).
 #[test]
 fn amm_remove_liquidity_private_lp_holding_is_not_expressible() {
     let mut state = state_for_amm_tests();
@@ -3554,19 +3538,6 @@ fn amm_remove_liquidity_private_lp_holding_is_not_expressible() {
     );
 }
 
-// Marvin-todo
-/// A distinct, earlier finding from `amm_remove_liquidity_private_lp_holding_is_not_expressible`:
-/// `remove_liquidity` requires `user_holding_a`/`user_holding_b` to already exist and already be
-/// owned by the configured Token Program (`remove.rs`'s
-/// `assert_eq!(user_holding_a.account.program_owner, token_program_id, ...)`), unlike
-/// `token::transfer`'s recipient handling (which tolerates `Account::default()` and
-/// self-initializes it). So `RemoveLiquidity` can never pay out to a brand-new private
-/// destination (`PrivateUnauthorized` — only `npk`/identifier known, no `nsk`, matching how
-/// `token_mint_shielded_to_private_unauthorized` credits a fresh private account it doesn't
-/// control) — this fails inside the AMM guest's own precondition check, before any chained call
-/// or the privacy-preserving circuit is ever reached, and would equally reject a brand-new
-/// *public* destination. Same shape of finding as Stablecoin's
-/// `stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`.
 #[test]
 fn amm_remove_liquidity_private_new_user_holdings_is_not_expressible() {
     let state = state_for_amm_tests();
@@ -3667,14 +3638,6 @@ fn amm_remove_liquidity_private_new_user_holdings_is_not_expressible() {
     );
 }
 
-// Marvin-todo
-/// Same confirmation as `amm_add_liquidity_private_lp_holding_is_not_expressible`, but for the
-/// deposit side instead of the LP-mint side: `user_holding_a`/`user_holding_b` (the accounts
-/// debited to fund the deposit) are existing private holdings (`PrivateAuthorizedUpdate` — `nsk`
-/// known, matching how `swap`'s deposit leg is tested), while `user_holding_lp` (the mint
-/// destination) stays public, as in the base `amm_add_liquidity` test. Expected to hit the same
-/// circuit-level `"Invalid account_identities length"` bug regardless of which accounts are
-/// private.
 #[test]
 fn amm_add_liquidity_private_user_holdings_is_not_expressible() {
     let mut state = state_for_amm_tests();
