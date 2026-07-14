@@ -34,7 +34,7 @@ Private account updates require knowledge of the account's `nsk`. E.g., Alice ca
 Only the account owner can (1) update their initialized account, and (2) use functions that require authorization with their account.
 
 ### Remark
-- `PrivateUnauthorized` initialization is used for account initialization. `is_authorized = false` is a protection that does not seem crucial. Artifically, blocks some functions. (TODO: return to and shift to conclusions)
+- `PrivateUnauthorized` initialization is used for account initialization. `is_authorized = false` is a protection that does not seem crucial. Artifically, blocks some functions.
 
 ## Private PDA
 
@@ -60,77 +60,34 @@ distributed via a real seal/unseal handshake (ML-KEM-768), not key reuse:
 
 This ensures that any member of the group can execute programs on shared accounts using either `PrivateAuthorizedInit` or `PrivateAuthorizedUpdate`. From a program's perspective, shared accounts should behave the same as regular public accounts.
 
-# Privacy coverage for LEZ programs objectives (TODO)
+# Privacy coverage for LEZ programs objectives
 
-In this task, we plan to add tests for e
+In this task, we extend testing for LEZ programs to cover privacy features:
 
-|         | description |  |
-|---------|----|----|
-| PDA     |
-| REGULAR |
-| EXIST   |
-| GROUP   |
-| CHAIN   |
+|         | description |
+|---------|----|
+| PDA     | test checks for private PDA functionality. |
+| REGULAR | private accounts usage using `nsk` |
+| EXIST   | private account initialized without `nsk`; `PrivateUnauthorized` | 
+| GROUP   | Shared group account |
+| CHAIN   | private account used in a chain call |
 
-- Regular private accounts
-- `PrivateUnauthorized` accounts; e.g., "transfer to existing accounts".
-- Group shared private accounts
-- Private PDAs.
+# LEZ programs
 
-# LEZ programs (TODO)
+## AMM program (unusual issues)
 
-## AMM program
+| Function tested | Test name | Category | Description of objective | Result |
+|---|---|---|---|---|
+| SwapExactInput | `amm_swap_a_to_b_private_user_holding_is_not_expressible` | REGULAR, CHAIN | Private `user_holding_a` deposit leg — confirms the circuit-level account-count bug also fires with a real private account (8 vs 7 accounts), not just the all-public control case | ❌ (confirmed not-expressible — circuit bug) |
+| SwapExactOutput | `amm_swap_exact_output_private_user_holding_is_not_expressible` | REGULAR, CHAIN | Same confirmation for `SwapExactOutput` — identical account/chained-call shape to `SwapExactInput` (8 vs 7 accounts) | ❌ (confirmed not-expressible — circuit bug) |
+| AddLiquidity | `amm_add_liquidity_private_lp_holding_is_not_expressible` | REGULAR, CHAIN | Private LP-output holding (`user_holding_lp`) — same circuit bug (10 vs 9 accounts) | ❌ (confirmed not-expressible — circuit bug) |
+| AddLiquidity | `amm_add_liquidity_private_user_holdings_is_not_expressible` | REGULAR, CHAIN | Private deposit legs (`user_holding_a` + `user_holding_b`) — same circuit bug (10 vs 9 accounts) | ❌ (confirmed not-expressible — circuit bug) |
+| RemoveLiquidity | `amm_remove_liquidity_private_lp_holding_is_not_expressible` | REGULAR, CHAIN | Private LP holding (the account that signs/burns to remove liquidity) — same circuit bug (10 vs 9 accounts) | ❌ (confirmed not-expressible — circuit bug) |
+| RemoveLiquidity | `amm_remove_liquidity_private_new_user_holdings_is_not_expressible` | EXIST, CHAIN | Brand-new `PrivateUnauthorized` token A/B destinations — rejected by a separate, unrelated program-level precondition (destination must already exist) before the circuit bug is even reached | ❌ (confirmed not-expressible — different reason) |
 
-**Headline finding: no privacy-preserving test can be written for AMM's pool-mutating
-instructions at all right now — not because of privacy, but a distinct circuit-level bug.**
-
-Before any private-account test, an all-public control test through `execute_and_prove` (same
-discipline that caught Stablecoin's `OpenPosition` bug) turned up a second, unrelated
-circuit-level issue specific to AMM: `SwapExactInput` fails inside `execute_and_prove` with
-`"Invalid account_identities length"` — we supply 8 account identities, the circuit's
-`states_iter` only computes 7 — with every account `Public` and zero private accounts involved.
-The same pattern reproduces on `SyncReserves` (6 vs 5). The account that silently vanishes from
-the circuit trace is `CLOCK_01_PROGRAM_ACCOUNT_ID` — present in the top-level input and in the
-AMM program's own returned `post_states` (confirmed in `sync.rs`/`swap.rs` source), but never
-seen by the circuit at any call depth. Root cause not yet found.
-
-Five tests confirm this **also blocks real private-account attempts**, not just the all-public
-control case — `amm_swap_a_to_b_private_user_holding_is_not_expressible` and
-`amm_swap_exact_output_private_user_holding_is_not_expressible` (private `user_holding_a`, 8 vs
-7), `amm_add_liquidity_private_lp_holding_is_not_expressible` (private `user_holding_lp`, 10 vs
-9), `amm_add_liquidity_private_user_holdings_is_not_expressible` (private `user_holding_a` +
-`user_holding_b` deposit legs, 10 vs 9), `amm_remove_liquidity_private_lp_holding_is_not_expressible`
-(private `user_holding_lp`, 10 vs 9) — all five fail with the identical
-`"Invalid account_identities length"` panic, always exactly one account short. **Consequence**:
-Swap (both variants), AddLiquidity, and RemoveLiquidity cannot be tested for any Q2 privacy
-dimension until this circuit bug is fixed — every planned AMM privacy test is blocked on it. See
-`docs/privacy-test-matrix.md`'s AMM section for the full bisection log.
-
-**⚠ To track down later — confirmed `clock` is the account that vanishes, root cause still
-open**: instrumented tracing (`eprintln!`s in the pinned `lee_core` checkout's
-`execution_state.rs`, exact `Display`-string matching against `CLOCK_01_PROGRAM_ACCOUNT_ID`)
-confirmed the circuit's internal per-account processing (`states_iter`) never contains an entry
-for `clock`, at any call depth — not the top-level AMM call, not even inside the TWAP
-`UpdateCurrentTick` chained call, which itself explicitly re-passes `clock.clone()`. Ruled out a
-coincidental `AccountId` collision. **Still unknown**: whether the entry is dropped inside the
-AMM guest's own execution, inside the SPEL-macro-generated `#[lez_program]` wrapper code, or
-inside the circuit's own bookkeeping before `validate_and_sync_states`'s per-account loop even
-runs. **Next concrete step**: check whether `pre_states.len()`/`post_states.len()` already
-differ from N/N *before* that loop runs — that single check localizes the bug to one side or the
-other and was never executed before this investigation was paused.
-
-**A second, distinct finding for `RemoveLiquidity`, unrelated to the circuit bug above:**
-`remove_liquidity` requires `user_holding_a`/`user_holding_b` to already exist and already be
-owned by the configured Token Program (`remove.rs`'s
-`assert_eq!(user_holding_a.account.program_owner, token_program_id, ...)`) — unlike
-`token::transfer`'s recipient handling, which tolerates `Account::default()` and self-initializes
-it. So `RemoveLiquidity` can never pay out to a brand-new private destination
-(`PrivateUnauthorized` — only `npk` known, no `nsk`): the attempt
-(`amm_remove_liquidity_private_new_user_holdings_is_not_expressible`) fails inside the AMM
-program's own precondition check, *before* any chained call or the privacy-preserving circuit is
-ever reached — and would equally reject a brand-new *public* destination. Same shape of finding
-as Stablecoin's `stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`:
-a plain program-level precondition that predates privacy entirely, not a circuit artifact.
+### Remarks
+- `RemoveLiquidity` and `Swap`s may have issues with `PrivateUnauthorized` and `PrivateAuthorizedInit` that match issues detected in Stablecoin; e.g., explicitly requires `is_authorized = true` and non default accounts.
+- `clock` account issue: clock is silent dropped during privacy executions.
 
 ## ATA program
 
@@ -138,93 +95,33 @@ ATA program offers limited usage with private accounts. Private accounts can be 
 
 | Function tested | Test name | Category | Description of objective | Result |
 |---|---|---|---|---|
-| Create | `ata_create_from_private_owner` | BASE (private owner only; ATA account + definition public) | Any third party can bootstrap another owner's ATA using only that owner's public key material (`PrivateUnauthorized` — `npk`/`vpk` only, no `nsk`) — `Create` never asserts `owner.is_authorized` | ✅ |
+| Create | `ata_create_from_private_owner` | REGULAR, EXIST | Any third party can bootstrap another owner's ATA using only that owner's public key material (`PrivateUnauthorized` — `npk`/`vpk` only, no `nsk`) — `Create` never asserts `owner.is_authorized` | ✅ |
 | Create | `ata_create_private_ata_holding_is_not_expressible` | PDA | Attempts to make the ATA holding itself a private account via `PrivatePdaInit`/`PrivatePdaUpdate` — confirms the public-form PDA match ATA authorizes with and the private-form binding those variants require are mutually exclusive for the same account id | ❌ (confirmed not-expressible) |
-| Create | `ata_create_from_group_owned_owner` | GROUP | Group-derived owner identity used to create an ATA — **weaker than the other `GROUP` rows**: `Create` never requires `owner` to prove control, so this can't demonstrate genuine shared control the way the `Transfer`/`Burn` rows below do; it only confirms `Create` doesn't secretly care where `npk`/`vpk` came from | ✅ (defensive/symmetry coverage only) |
-| Transfer | `ata_transfer_to_existing_private_recipient` | EXIST, CHAIN | Sends more into an already-shielded private recipient through ATA's *nested* chained call into Token — the first test in the whole exercise proving a private identity survives a chained call at all | ✅ |
+| Create | `ata_create_from_group_owned_owner` | GROUP | Group-derived owner identity used to create an ATA — **weaker than the other `GROUP` rows**: `Create` never requires `owner` to prove control. | ✅ (defensive/symmetry coverage only) |
+| Transfer | `ata_transfer_to_existing_private_recipient` | REGULAR | Sends more into an already-shielded private recipient through ATA's *nested* chained call into Token — the first test in the whole exercise proving a private identity survives a chained call at all | ✅ |
+| Transfer | `ata_transfer_with_private_owner_signing` | REGULAR | Key discovery: unlike `Create` (merely `mut`), `Transfer` requires `owner` to be a *signer* (`#[account(signer)]`) — a private owner self-initializes and signs in the same transaction via `PrivateAuthorizedInit` | ✅ |
 | Transfer | `ata_transfer_with_group_owned_owner_signing` | GROUP | Group-owned owner (real GMS seal/unseal handshake) signs `ATA::Transfer` as the required authorizing party | ✅ |
+| Burn | `ata_burn_with_private_owner_signing` | REGULAR | Same signer-authorization discovery as `ata_transfer_with_private_owner_signing`, for `Burn` | ✅ |
 | Burn | `ata_group_owned_owner_signing` | GROUP | Group-owned owner signs `ATA::Burn` as the required authorizing party | ✅ |
 
-**`PDA`** is confirmed not-expressible for every ATA instruction, not just `Create` — `Transfer`
-and `Burn` call the same `ata_core::verify_ata_and_get_seed` function, so the identical
-public-form/private-form conflict applies to them too, even though only `Create` has a dedicated
-test asserting it.
-
-Two tests exist outside this table's categories (not `PDA`/`GROUP`/`EXIST`/`CHAIN`, and not
-`BASE` either — tagged `new: signer-authorization` in `docs/privacy-test-matrix.md`) and are
-worth noting separately: `ata_burn_with_private_owner_signing` and
-`ata_transfer_with_private_owner_signing` (a *personal*, non-group private owner signing
-`Burn`/`Transfer`). They were the key discovery that `owner` must be a *signer* for these two
-instructions (unlike `Create`) — a real finding, just a distinct dimension from any tag used
-elsewhere in this table.
+### Remarks
+- Transfer explicitly blocks `PrivateAuthorized`. ATA's transfer checks that the recipient's account is non-default. E.g., ATA can not transfer funds to a third-party's private account.
+- ATA does not permit the creation of private token accounts. E.g., ATA only emits public PDA accounts. This is based on the PDA `AccountId` formulas used.
 
 ## Stablecoin program
 
 | Function tested | Test name | Category | Description of objective | Result |
 |---|---|---|---|---|
-| WithdrawCollateral | `stablecoin_withdraw_collateral_private_destination` | CHAIN, EXIST | Withdraws collateral through the single `Token::Transfer` chained call into an already-existing private destination holding | ✅ |
-| WithdrawCollateral | `stablecoin_withdraw_collateral_group_owned_destination` | CHAIN, EXIST, GROUP | Same, but the destination holding is group-owned (real GMS seal/unseal handshake) | ✅ |
+| WithdrawCollateral | `stablecoin_withdraw_collateral_private_destination` | REGULAR | Withdraws collateral through the single `Token::Transfer` chained call into an already-existing private destination holding | ✅ |
+| WithdrawCollateral | `stablecoin_withdraw_collateral_group_owned_destination` | EXIST, GROUP | Same, but the destination holding is group-owned (real GMS seal/unseal handshake) | ✅ |
 | WithdrawCollateral | `stablecoin_group_owned_position_owner` | GROUP | The position's `owner` identity itself (not the destination) is group-derived — proves shared authority over a CDP by withdrawing collateral through it | ✅ |
-| RepayDebt | `stablecoin_repay_debt_private_stablecoin_holding` | CHAIN | Burns from a private stablecoin holding through the single `Token::Burn` chained call | ✅ |
-| RepayDebt | `stablecoin_repay_debt_group_owned_stablecoin_holding` | CHAIN, GROUP | Same, group-owned holding | ✅ |
+| RepayDebt | `stablecoin_repay_debt_private_stablecoin_holding` | REGULAR | Burns from a private stablecoin holding through the single `Token::Burn` chained call | ✅ |
+| RepayDebt | `stablecoin_repay_debt_group_owned_stablecoin_holding` | GROUP | Same, group-owned holding | ✅ |
 
-**`PDA`** has no rows, and can't even be isolated as its own question for this program: position
-and vault are only ever PDA-claimed *inside* `OpenPosition`, and — see below — that instruction
-can't reach the privacy circuit at all. The `PDA` question is subsumed by that finding rather
-than independently testable; the ATA `PDA` finding (same `for_public_pda`-only root cause,
-confirmed in `stablecoin_core`) stands as the citable reference.
-
-One test sits outside this table's four categories but is the headline finding for the whole
-program, worth stating plainly rather than omitting silently:
-**`stablecoin_open_position_via_privacy_transaction_is_not_expressible`** — `OpenPosition`
-cannot be executed through a privacy-preserving transaction *at all*, for any reason connected
-to privacy. Confirmed with an all-public control case (every account `InputAccountIdentity::Public`,
-zero private accounts) that fails identically, proving it's a protocol incompatibility in the
-`PrivacyPreservingTransaction` code path itself, not a privacy bug — `owner`'s identity type is
-irrelevant. Every test above routes around it by seeding position/vault directly rather than
-calling `OpenPosition` for real.
-
-**Root cause, precisely traced:** `open_position.rs` returns two *sibling* chained calls in one
-shot (`vec![initialize_call, transfer_call]` — both discovered at once from a single execution of
-`open_position`, neither nested inside the other) that both touch `vault`: `InitializeAccount`
-declares it `is_authorized: true` (claimed via its PDA seed), `Transfer` then declares the *same*
-account_id `is_authorized: false` (a hand-predicted post-`InitializeAccount` state, not a value
-threaded through by the framework — the program author is predicting what call 1 will produce,
-not observing it). This reuse of one account across two sibling calls with differing declared
-authorization is the *only* thing that matters here — contrast with AMM's `remove_liquidity`,
-which also returns multiple sibling chained calls at once (4: token A/B withdraw, LP burn, TWAP
-tick update) but never reuses one account across two of them, so it never exercises this code
-path at all.
-
-Both transaction-type validators re-derive `is_authorized` per occurrence and assert it matches
-the declared value — but they scope that derivation differently. `validated_state_diff.rs` (the
-plain `PublicTransaction` validator) computes a fresh `authorized_accounts` set once per parent
-call and clones it independently for each sibling *before* any sibling runs — so `Transfer`'s
-view of `vault` never sees `InitializeAccount`'s PDA-based authorization, re-derives `false`,
-matches. This is why the pre-existing public `stablecoin_open_position_then_withdraw_collateral`
-test works. `execution_state.rs` (the `PrivacyPreservingTransaction`/circuit validator) instead
-keeps one mutable `authorized_accounts: HashSet<AccountId>` on `self`, threaded with no
-per-branch scoping through the entire flat call queue — `InitializeAccount` processing inserts
-`vault` into it, and when `Transfer` is processed next, `resolve_authorization_and_record_bindings`
-short-circuits via `if authorized_accounts.contains(&pre_account_id) { return true; }`, re-deriving
-`true` — which conflicts with the declared `false` and fails
-`assert_eq!(pre_is_authorized, is_authorized, "Inconsistent authorization for account {id}")`.
-
-**This means `OpenPosition` is fixable two ways**: either scope `execution_state.rs`'s
-`authorized_accounts` per sibling branch to match `validated_state_diff.rs`'s behavior (a circuit
-fix, benefits every program with this pattern), or change `open_position.rs` to not re-declare
-`vault` unauthorized on its second occurrence (a one-line fix local to this program, routing
-around the bug rather than fixing it).
-
-A second, unrelated negative result:
-**`stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`** —
-`WithdrawCollateral` cannot pay out to a brand-new private destination (`PrivateUnauthorized`,
-only `npk` known, no `nsk`). `withdraw_collateral.rs` hard-asserts
-`destination.account != Account::default()` before the chained `Token::Transfer` is even
-constructed, so the destination must already exist — this is a plain program precondition, not a
-privacy-circuit artifact, and would equally reject a withdraw to a brand-new *public*
-destination. It's why every `WithdrawCollateral` test above uses `PrivateAuthorizedUpdate`
-(`nsk` known) rather than `PrivateUnauthorized` for the destination.
+### Remarks
+- `OpenPosition` is blocked for use in privacy transactions due to the chained calls usage. `OpenPosition` calls `Token::InitializeAccount` and `Token::Transfer` for the same vault account which is disallowed behavior in privacy preserving circuit. Demonstrated with test `stablecoin_open_position_via_privacy_transaction_is_not_expressible`.
+- `WithdrawCollateral` does not support withdrawals to `PrivateAuthorized` and `PrivateAuthorizedInit`; explicitly checks that the destination account is not default. Demonstrated with teh test `stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`.
+- Vault is explicitly public PDA by formula requirement.
 
 ## Token program
 
@@ -243,37 +140,25 @@ destination. It's why every `WithdrawCollateral` test above uses `PrivateAuthori
 | Burn | `token_private_burn` | REGULAR | Burn from an existing private holding via a single `PrivateAuthorizedUpdate` | ✅ |
 | Burn | `token_group_owned_holding_shared_control_burn` | GROUP | Shield tokens into a GMS-derived shared holding, then burn from it using an independently re-derived key | ✅ |
 | InitializeAccount | `token_initialize_private_account_succeeds_for_canonical_definition` | REGULAR | Self-init of a private holding via `PrivateAuthorizedInit` | ✅ |
+| InitializeAccount | `token_initialize_private_account_without_nsk_is_not_expressible` | EXIST | `InitializeAccount`'s target is `#[account(init, signer)]` — a third party cannot initialize a private holding via `PrivateUnauthorized` (no `nsk`); rejected by the SPEL macro ("must be a signer") before the program's own logic runs | ❌ (confirmed not-expressible by design) |
 | InitializeAccount | `token_group_owned_holding_shared_control_initialize` | GROUP | A group member — not the party who created the group — self-initializes the shared holding directly via `PrivateAuthorizedInit` | ✅ |
 | MintWithAuthority | `token_mint_with_authority_to_private_holding` | EXIST | External-authority mint (distinct signer from the definition) directly to a fresh private recipient | ✅ |
-
-**`PDA`** has no Token-layer rows: Token holdings are addressed by an arbitrary `AccountId`, not
-a program-derived one — there's no PDA to make private at this layer. Only testable once a
-holding is wrapped by another program's PDA (ATA/AMM/Stablecoin).
-
-**`CHAIN`**'s "carried through chained calls" half also has no Token-layer rows: Token issues no
-`ChainedCall`s of its own (only ATA/AMM/Stablecoin do) — that half is exercised for the first
-time in the ATA section instead.
-
-|    | coverage? | explanation | 
-|----|---------|----------------|
-| REGULAR |  full | REGULAR private accounts are used as sender/recipient for initialize, transfer, mint and burn |
-| GROUP   | full | Tested with initialize, transfer, mint and burn |
-| EXIST   | partial | EXIST (`PrivateUnauthorized`) cannot be used with initialize due to `is_authorize = false` |
-| PDA     | N/A  | Token program does not use PDAs |
+| NewFungibleDefinition | `token_new_fungible_definition_private_initial_holder` | REGULAR | Public token definition, private initial holder that self-initializes via `PrivateAuthorizedInit` (own `nsk` supplied) — same self-service shape as `InitializeAccount`'s target | ✅ |
+| NewFungibleDefinition | `token_new_fungible_definition_private_holder_without_nsk_is_not_expressible` | EXIST | The initial holder cannot be created via `PrivateUnauthorized` — rejected by the SPEL macro before the program's own logic runs | ❌ (confirmed not-expressible by design) |
 
 
-
-
-
+### Remarks
+- `Initialization` is not possible for `PrivateUnauthorized` accounts due to `is_authorized = false`.
+- New token definition is not permitted for `PrivateAuthorized` as Token holding due to `is_authorized = false`.E.g., both Token Definition and Token Holding for a new Token must be from an authorized account.
 
 # Conclusions
 
-## Group shared private accounts
-- Group shared accounts are authorized 
+Privacy coverage for LEZ program tests is greatly improved from the added tests. Though, there are a few noticable gaps:
+- `PrivateUnauthorized` accounts can be blocked by programs with a check `is_authorized = true`. However, th
+
 
 # Observations
 - Programs can be made privacy agnostic for PDAs by adjusting private PDA `AccountId` formula to match the public variant. Unclear how to precisely handle this to ensure `AMM program` generates unique pools for token pairs (in public PDA case).
-- A private PDA can be initialized and used for a program without using traditional PDA lifecycle. E.g., TODO(provide example from `token.rs`) 
 
 # TODO
 

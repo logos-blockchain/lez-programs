@@ -3109,7 +3109,8 @@ fn token_program_instance() -> Program {
 }
 
 fn twap_oracle_program_instance() -> Program {
-    Program::new(twap_oracle_methods::TWAP_ORACLE_ELF.to_vec().into()).expect("valid twap oracle ELF")
+    Program::new(twap_oracle_methods::TWAP_ORACLE_ELF.to_vec().into())
+        .expect("valid twap oracle ELF")
 }
 
 fn amm_with_deps() -> ProgramWithDependencies {
@@ -3159,10 +3160,16 @@ fn amm_swap_a_to_b_private_user_holding_is_not_expressible() {
         false,
         Ids::pool_definition(),
     );
-    let vault_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
-    let vault_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
     let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
     let user_b_pre =
         AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
@@ -3256,10 +3263,16 @@ fn amm_swap_exact_output_private_user_holding_is_not_expressible() {
         false,
         Ids::pool_definition(),
     );
-    let vault_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
-    let vault_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
     let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
     let user_b_pre =
         AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
@@ -3351,10 +3364,16 @@ fn amm_add_liquidity_private_lp_holding_is_not_expressible() {
         false,
         Ids::pool_definition(),
     );
-    let vault_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
-    let vault_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
     let token_lp_definition_pre = AccountWithMetadata::new(
         state.get_account_by_id(Ids::token_lp_definition()),
         false,
@@ -3457,10 +3476,16 @@ fn amm_remove_liquidity_private_lp_holding_is_not_expressible() {
         false,
         Ids::pool_definition(),
     );
-    let vault_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
-    let vault_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
     let token_lp_definition_pre = AccountWithMetadata::new(
         state.get_account_by_id(Ids::token_lp_definition()),
         false,
@@ -3560,10 +3585,16 @@ fn amm_remove_liquidity_private_new_user_holdings_is_not_expressible() {
         false,
         Ids::pool_definition(),
     );
-    let vault_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
-    let vault_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
     let token_lp_definition_pre = AccountWithMetadata::new(
         state.get_account_by_id(Ids::token_lp_definition()),
         false,
@@ -3571,8 +3602,11 @@ fn amm_remove_liquidity_private_new_user_holdings_is_not_expressible() {
     );
     let user_a_pre = AccountWithMetadata::new(Account::default(), false, user_a_id);
     let user_b_pre = AccountWithMetadata::new(Account::default(), false, user_b_id);
-    let user_lp_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_lp()), true, Ids::user_lp());
+    let user_lp_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::user_lp()),
+        true,
+        Ids::user_lp(),
+    );
     let current_tick_pre = AccountWithMetadata::new(
         state.get_account_by_id(Ids::current_tick_account()),
         false,
@@ -3695,10 +3729,16 @@ fn amm_add_liquidity_private_user_holdings_is_not_expressible() {
         false,
         Ids::pool_definition(),
     );
-    let vault_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_a()), false, Ids::vault_a());
-    let vault_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::vault_b()), false, Ids::vault_b());
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
     let token_lp_definition_pre = AccountWithMetadata::new(
         state.get_account_by_id(Ids::token_lp_definition()),
         false,
@@ -3706,8 +3746,11 @@ fn amm_add_liquidity_private_user_holdings_is_not_expressible() {
     );
     let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
     let user_b_pre = AccountWithMetadata::new(user_b_account, true, user_b_id);
-    let user_lp_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_lp()), false, Ids::user_lp());
+    let user_lp_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::user_lp()),
+        false,
+        Ids::user_lp(),
+    );
     let current_tick_pre = AccountWithMetadata::new(
         state.get_account_by_id(Ids::current_tick_account()),
         false,

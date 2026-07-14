@@ -418,12 +418,11 @@ computes). Confirmed with every account `Public`.
   directly in `sync.rs`'s `sync_reserves` and `swap.rs`'s `finalize_swap`, both of which
   explicitly include `AccountPostState::new(clock.account...)`), yet it never appears in the
   circuit-level trace at any call depth, not even inside the TWAP chained call which also
-  explicitly passes `clock.clone()`. Root cause of *why* it's dropped is still not found — the
-  next diagnostic step (checking whether `pre_states.len()`/`post_states.len()` already differ
-  from 8/8 before the per-account validation loop runs, which would localize the drop to either
-  the AMM guest/SPEL-macro layer or the circuit's own processing) was planned but not executed.
-  Instrumentation was fully reverted afterward (verified byte-identical to the original checkout
-  and original artifact) rather than left in place.
+  explicitly passes `clock.clone()`. Root cause of *why* it's dropped was not yet found at this
+  point — **since resolved, see "Root cause found" below**: it's a `spel-framework` guest-wrapper
+  filter, not the circuit's own processing. Instrumentation was fully reverted afterward
+  (verified byte-identical to the original checkout and original artifact) rather than left in
+  place.
 - **Confirmed this also blocks real private-account attempts, not just the all-public control
   case (2026-07-13)**: three tests — `amm_swap_a_to_b_private_user_holding_is_not_expressible`
   (private `user_holding_a`, 8 vs 7 accounts), `amm_add_liquidity_private_lp_holding_is_not_expressible`
@@ -458,6 +457,90 @@ rebuilt artifact) was fully reverted afterward and verified byte-identical to th
 validation loop in `validate_and_sync_states` runs — that would localize the drop to either the
 AMM guest/SPEL-macro layer or the circuit's own processing, and is the next concrete step now
 that instrumentation is confirmed to work end-to-end.
+
+### ✅ Root cause found (2026-07-14) — it's in `spel-framework`, not `lee_core`, and not AMM's own code
+
+Investigated (via a Fable 5 subagent, source-reading only — no instrumentation needed this time)
+by comparing the two transaction validators side by side and checking the guest-wrapper code
+that sits between AMM's own functions and either validator. Fully verified by direct inspection
+afterward (both citations below reproduced and confirmed independently).
+
+**The account is deleted before it ever reaches either validator.** The `#[lez_program]` macro's
+generated `main()` — `spel-framework-macros/src/lib.rs:303-329`, in the pinned
+`spel-393b37c2cff64018` checkout at rev `91023c9115bf88173b0d25d2e905f2a55ef0313b` — post-processes
+every guest function's returned `(pre_states, post_states)` pairs before writing the
+`ProgramOutput`:
+
+```rust
+// Filter out non-program-owned, non-default-state accounts from the output.
+//
+// LEZ validate_execution rule 7: if post.program_owner == DEFAULT_PROGRAM_ID
+// and pre.account != Account::default(), validation fails. This would happen
+// for signer accounts (e.g., proposer/executor) whose nonce has been incremented
+// by a prior transaction — they are not owned by the program and must not be
+// returned in the program's post-states.
+.filter(|(pre, post)| {
+    let is_default_owner = pre.account.program_owner == DEFAULT_PROGRAM_ID;
+    let pre_is_default = pre.account == Account::default();
+    let has_claim = post.required_claim().is_some();
+    !is_default_owner || pre_is_default || has_claim
+})
+```
+
+This was written to solve a real, narrow problem: drop *signer* accounts (proposer/executor)
+whose nonce got bumped by a prior transaction, since they're not owned by the program and
+`validate_execution`'s rule 7 would otherwise reject the output. But the predicate is broader
+than that one case, and `clock` happens to satisfy it too:
+
+- `is_default_owner = true` — the clock account is seeded via `force_insert_account` with
+  `Account { data: <real clock bytes>, ..Account::default() }` (`advance_clock` in `amm.rs`),
+  so its `program_owner` stays `DEFAULT_PROGRAM_ID` — it's never claimed by any program.
+- `pre_is_default = false` — its `data` field holds real, non-default clock bytes.
+- `has_claim = false` — AMM never issues a `Claim` for clock; it only reads it.
+
+`!true || false || false` = `false` → the `(pre, post)` pair for `clock` is silently dropped from
+`ProgramOutput.pre_states`/`post_states`, every single time, for every AMM instruction that
+touches it — and for TWAP's `UpdateCurrentTick` too, since it's built with the exact same macro
+at the exact same pin. This is exactly why the earlier `eprintln!` trace never saw `clock` at
+*any* call depth, including inside the nested TWAP call: it was gone before the circuit ever got
+the chance to see it, not dropped by the circuit itself.
+
+**Why the public-transaction path never noticed**: `ValidatedStateDiff::from_public_transaction`
+(`lee/state_machine/src/validated_state_diff.rs`) only ever iterates whatever the program's
+*output* actually contains (`program_output.pre_states`) and zips it against
+`program_output.post_states` to build the state diff. There is no check anywhere that the
+output covers every account the *caller* originally supplied — a silently-dropped, unmodified
+account just never appears in the diff, and nothing asserts it should have. `validate_execution`
+(the rule 7 the filter comment refers to) only checks `pre_states.len() == post_states.len()`
+*within* the already-filtered output (7 == 7 — passes trivially, since both sides of the pair
+were dropped together).
+
+**Why the privacy-preserving path panics**: the circuit builds its own account-tracking state as
+the union of every `ProgramOutput.pre_states` it sees across the whole call tree — 7 accounts,
+no clock. But the *caller* (the test, or in production a real wallet/client) must supply one
+`InputAccountIdentity` per account it believes is involved — 8, including clock, since nothing
+told the caller clock would be dropped. `compute_circuit_output`'s
+`assert_eq!(account_identities.len(), states_iter.len())` (`output.rs:27`) then fails: `8 != 7`.
+The public path tolerates exactly this same silent drop; only the private path's stricter
+1:1 correspondence check turns it into a hard failure.
+
+**This is a `spel-framework` bug, not a `lez_core`/circuit bug, and not an AMM program bug.**
+Neither this repo's own code nor the pinned LEZ dependency is at fault — the defect is in the
+`0x-r4bbit/spel` proc-macro crate's generated wrapper, one layer removed from both. Fix options
+belong upstream: scope the filter to only the specific signer-nonce-bump case it was written for
+(e.g. keep any pair the handler's own logic explicitly returned, rather than blanket-filtering
+by ownership), or have the circuit tolerate identities without a corresponding output pre-state.
+The trigger condition is narrow but real: any account with `program_owner == DEFAULT_PROGRAM_ID`
+that a program reads but never claims will hit this — not just clock, and not just AMM. It just
+happens to be clock here because every pool-mutating AMM instruction reads it.
+
+**Soundness implication, not just a test-writing inconvenience**: because `clock` never reaches
+`public_pre_states` on the privacy-preserving path, the host validator
+(`check_privacy_preserving_circuit_proof_is_valid`) never checks the clock data a proof was
+generated against against real chain state. A malicious prover could in principle supply an
+arbitrary timestamp as a private witness and no check anywhere would catch it. Worth escalating
+to the LEZ/SPEL maintainers independent of whether/when the AMM test-writing blocker itself gets
+prioritized.
 
 ### Existing
 

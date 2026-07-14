@@ -7,14 +7,12 @@ use nssa::{
     privacy_preserving_transaction::{Message, PrivacyPreservingTransaction, WitnessSet},
     program::Program,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
-    public_transaction, PrivateKey, PublicKey, PublicTransaction, SharedSecretKey, V03State,
+    public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    encryption::{EphemeralPublicKey, ViewingPublicKey},
-    program::PdaSeed,
-    Commitment, EncryptedAccountData, InputAccountIdentity, Nullifier, NullifierPublicKey,
-    NullifierSecretKey,
+    encryption::ViewingPublicKey,
+    Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey, NullifierSecretKey,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -605,75 +603,6 @@ fn token_program() -> Program {
     Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF")
 }
 
-/// TODO
-/// EXPERIMENTAL — investigating whether `PrivatePdaInit`'s `seed: Some((seed,
-/// authority_program_id))` external-derivation-check path lets a private-PDA account be used as an
-/// input to an *existing* program's flow (Token) without any chained call, `Claim::Pda`, or
-/// awareness from the `authority_program_id` itself. Per `lee_core`'s
-/// `circuit_io.rs`/`execution_state.rs`, this path binds the position purely via
-/// `AccountId::for_private_pda(authority_program_id, seed, npk, identifier) ==
-/// pre_state.account_id`, checked directly against the top-level `account_identities` — no chained
-/// call needed. Using `Ids::token_program()` as the `authority_program_id` here, but per the
-/// circuit source this is not required to correspond to anything Token itself is aware of; it's
-/// purely a hash input.
-#[test]
-fn token_shield_into_private_pda_via_external_seed() {
-    let mut state = state_for_token_tests();
-    let amount = 500_000_u128;
-
-    let sender_id = Ids::holder();
-    let sender_account = state.get_account_by_id(sender_id);
-    let sender_nonce = sender_account.nonce;
-    let sender_pre = AccountWithMetadata::new(sender_account, true, sender_id);
-
-    let authority_program_id = Ids::token_program();
-    let pda_seed = PdaSeed::new([77u8; 32]);
-    let recipient_nsk: NullifierSecretKey = [123u8; 32];
-    let recipient_npk = NullifierPublicKey::from(&recipient_nsk);
-    let recipient_vpk = ViewingPublicKey::from_seed(&[124u8; 32], &[125u8; 32]);
-    let recipient_id =
-        AccountId::for_private_pda(&authority_program_id, &pda_seed, &recipient_npk, 0);
-
-    let recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
-
-    let shared_secret = SharedSecretKey::encapsulate_deterministic(&recipient_vpk, &[0u8; 32], 0).0;
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: amount,
-    };
-    let (output, proof) = execute_and_prove(
-        vec![sender_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::PrivatePdaInit {
-                epk: EphemeralPublicKey(Vec::new()),
-                view_tag: EncryptedAccountData::compute_view_tag(&recipient_npk, &recipient_vpk),
-                npk: recipient_npk,
-                ssk: shared_secret,
-                identifier: 0,
-                seed: Some((pda_seed, authority_program_id)),
-            },
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message =
-        Message::try_from_circuit_output(vec![sender_id], vec![sender_nonce], output).unwrap();
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::holder_key()]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    let recipient_account =
-        Accounts::token_holding(amount, Nonce::private_account_nonce_init(&recipient_id));
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&recipient_id, &recipient_account))
-        .is_some());
-}
-
 /// Performs a shielded transfer (public → private) of `amount` tokens from
 /// `Ids::holder()` to a new private account keyed by `PrivateKeys::recipient_*`.
 /// Returns the resulting private recipient account.
@@ -782,7 +711,11 @@ fn token_private_transfer() {
         shielded_amount,
         &mut state,
         false,
-        private_unauthorized_identity(PrivateKeys::recipient_npk(), &PrivateKeys::recipient_vpk(), 0),
+        private_unauthorized_identity(
+            PrivateKeys::recipient_npk(),
+            &PrivateKeys::recipient_vpk(),
+            0,
+        ),
     );
     let sender_nsk = PrivateKeys::recipient_nsk();
     let sender_vpk = PrivateKeys::recipient_vpk();
@@ -852,7 +785,11 @@ fn token_deshielded_transfer() {
         shielded_amount,
         &mut state,
         false,
-        private_unauthorized_identity(PrivateKeys::recipient_npk(), &PrivateKeys::recipient_vpk(), 0),
+        private_unauthorized_identity(
+            PrivateKeys::recipient_npk(),
+            &PrivateKeys::recipient_vpk(),
+            0,
+        ),
     );
     let sender_nsk = PrivateKeys::recipient_nsk();
     let sender_vpk = PrivateKeys::recipient_vpk();
@@ -1449,6 +1386,112 @@ fn token_initialize_private_account_without_nsk_is_not_expressible() {
     let err = result.expect_err(
         "initializing a private holding without its nsk must be rejected: InitializeAccount \
          requires is_authorized == true, but PrivateUnauthorized forces is_authorized == false",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("must be a signer"),
+        "expected the self-service-only rejection, got a different error: {message}"
+    );
+}
+
+#[test]
+fn token_new_fungible_definition_private_initial_holder() {
+    let mut state = V03State::new();
+    deploy_token(&mut state);
+
+    let holder_nsk = PrivateKeys::holder_nsk();
+    let holder_vpk = PrivateKeys::holder_vpk();
+    let holder_id = PrivateKeys::holder_id();
+
+    let definition_nonce = state.get_account_by_id(Ids::token_definition()).nonce;
+    let definition_pre =
+        AccountWithMetadata::new(Account::default(), true, Ids::token_definition());
+    let holder_pre = AccountWithMetadata::new(Account::default(), true, holder_id);
+
+    let instruction = token_core::Instruction::NewFungibleDefinition {
+        name: String::from("Gold"),
+        total_supply: 1_000_000_u128,
+        mint_authority: None,
+    };
+    let (output, proof) = execute_and_prove(
+        vec![definition_pre, holder_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            private_authorized_init_identity(holder_nsk, &holder_vpk, 0),
+        ],
+        &token_program().into(),
+    )
+    .unwrap();
+
+    let message = Message::try_from_circuit_output(
+        vec![Ids::token_definition()],
+        vec![definition_nonce],
+        output,
+    )
+    .unwrap();
+    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::def_key()]);
+    let tx = PrivacyPreservingTransaction::new(message, witness_set);
+    state
+        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("Gold"),
+                total_supply: 1_000_000_u128,
+                metadata_id: None,
+                authority: None,
+            }),
+            nonce: Nonce(1),
+        }
+    );
+
+    let holder_account = Accounts::token_holding(
+        1_000_000_u128,
+        Nonce::private_account_nonce_init(&holder_id),
+    );
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&holder_id, &holder_account))
+        .is_some());
+}
+
+#[test]
+fn token_new_fungible_definition_private_holder_without_nsk_is_not_expressible() {
+    let mut state = V03State::new();
+    deploy_token(&mut state);
+
+    let holder_npk = PrivateKeys::holder_npk();
+    let holder_vpk = PrivateKeys::holder_vpk();
+    let holder_id = PrivateKeys::holder_id();
+
+    let definition_pre =
+        AccountWithMetadata::new(Account::default(), true, Ids::token_definition());
+    let holder_pre = AccountWithMetadata::new(Account::default(), false, holder_id);
+
+    let instruction = token_core::Instruction::NewFungibleDefinition {
+        name: String::from("Gold"),
+        total_supply: 1_000_000_u128,
+        mint_authority: None,
+    };
+    let result = execute_and_prove(
+        vec![definition_pre, holder_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            private_unauthorized_identity(holder_npk, &holder_vpk, 0),
+        ],
+        &token_program().into(),
+    );
+
+    let err = result.expect_err(
+        "creating the initial holder via PrivateUnauthorized must be rejected: \
+         NewFungibleDefinition requires is_authorized == true for holding_target_account, but \
+         PrivateUnauthorized forces is_authorized == false",
     );
     let message = format!("{err:?}");
     assert!(
@@ -2100,98 +2143,5 @@ fn token_mint_with_authority_to_private_holding() {
     );
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&recipient_id, &recipient_account))
-        .is_some());
-}
-
-/// TODO
-/// EXPERIMENTAL — follow-up to `token_shield_into_private_pda_via_external_seed`: proves the
-/// *update* half of the same mechanism (crediting an *existing* private PDA, not just creating
-/// one), completing a genuine round trip rather than a one-shot creation. `PrivatePdaUpdate`'s
-/// external seed path has a different pre-condition than `Init`: `execution_state.rs` asserts
-/// `pre_state.is_authorized ^ external_seed.is_some()` — with an external seed supplied, the
-/// pre-state must be *unauthorized*, even though we're touching it with a real `nsk` +
-/// `membership_proof`. That's incompatible with `Transfer`'s sender role, which requires a
-/// framework-level `#[account(signer)]` (`is_authorized: true`) — confirmed empirically: using
-/// the private-PDA holder as `Transfer`'s sender fails at the SPEL macro's own validation
-/// ("must be a signer"), before Token's own logic is ever reached. `Mint`'s
-/// `user_holding_account` has no such requirement (`mint_inner` never asserts `is_authorized` on
-/// it, crediting an existing holding or not), so it's used here instead — mirroring the `EXIST`
-/// dimension's existing-account-crediting pattern (`token_mint_into_existing_private_holding`),
-/// just with a private-PDA holder instead of a regular private account.
-#[test]
-fn token_mint_into_existing_private_pda_via_external_seed() {
-    let mut state = state_for_token_tests_without_recipient();
-    let holding_balance = 500_000_u128;
-    let amount_to_mint = 200_000_u128;
-
-    let authority_program_id = Ids::token_program();
-    let pda_seed = PdaSeed::new([88u8; 32]);
-    let holder_nsk: NullifierSecretKey = [131u8; 32];
-    let holder_npk = NullifierPublicKey::from(&holder_nsk);
-    let holder_vpk = ViewingPublicKey::from_seed(&[132u8; 32], &[133u8; 32]);
-    let holder_id = AccountId::for_private_pda(&authority_program_id, &pda_seed, &holder_npk, 0);
-
-    // Seed the private-PDA holding directly (established technique — no real transaction
-    // needed). Its eligibility as a private PDA is re-derived independently by the update-side
-    // check below; nothing about how it was seeded matters to that check.
-    let holder_account = Accounts::token_holding(
-        holding_balance,
-        Nonce::private_account_nonce_init(&holder_id),
-    );
-    let holder_commitment = Commitment::new(&holder_id, &holder_account);
-    state = state.with_private_accounts([(
-        holder_commitment.clone(),
-        Nullifier::for_account_initialization(&holder_id),
-    )]);
-    let membership_proof = state
-        .get_proof_for_commitment(&holder_commitment)
-        .expect("seeded holder's commitment must be in the set");
-
-    let definition_account = state.get_account_by_id(Ids::token_definition());
-    let definition_nonce = definition_account.nonce;
-    let definition_pre =
-        AccountWithMetadata::new(definition_account, true, Ids::token_definition());
-    let holder_pre = AccountWithMetadata::new(holder_account, false, holder_id);
-
-    let shared_secret = SharedSecretKey::encapsulate_deterministic(&holder_vpk, &[0u8; 32], 0).0;
-
-    let instruction = token_core::Instruction::Mint { amount_to_mint };
-    let (output, proof) = execute_and_prove(
-        vec![definition_pre, holder_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::PrivatePdaUpdate {
-                epk: EphemeralPublicKey(Vec::new()),
-                view_tag: EncryptedAccountData::compute_view_tag(&holder_npk, &holder_vpk),
-                ssk: shared_secret,
-                nsk: holder_nsk,
-                membership_proof,
-                identifier: 0,
-                seed: Some((pda_seed, authority_program_id)),
-            },
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::try_from_circuit_output(
-        vec![Ids::token_definition()],
-        vec![definition_nonce],
-        output,
-    )
-    .unwrap();
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::def_key()]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    let holder_nonce_after =
-        Nonce::private_account_nonce_init(&holder_id).private_account_nonce_increment(&holder_nsk);
-    let new_holder_account =
-        Accounts::token_holding(holding_balance + amount_to_mint, holder_nonce_after);
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&holder_id, &new_holder_account))
         .is_some());
 }

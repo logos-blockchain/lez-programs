@@ -464,7 +464,6 @@ fn stablecoin_with_token_deps() -> ProgramWithDependencies {
     )
 }
 
-
 /// `OpenPosition` is blocked by the `privacy_preserving_circuit` due to the handling of
 /// sibling chain calls of (uninitialized) private accounts.
 #[test]
@@ -674,7 +673,8 @@ fn stablecoin_withdraw_collateral_private_destination() {
 
 /// `WithdrawCollateral` blocks withdraws to private accounts (via private donations);
 /// `PrivateUnauthorized` account initialization (e.g., `nsk` is not known) is not permitted
-/// due to the assertion in `withdraw_collateral.rs` asserts `destination.account != Account::default()`
+/// due to the assertion in `withdraw_collateral.rs` asserts `destination.account !=
+/// Account::default()`
 #[test]
 fn stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible() {
     let mut state = V03State::new();
