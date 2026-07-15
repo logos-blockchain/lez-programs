@@ -2,8 +2,7 @@ import QtQuick 2.15
 import QtQuick.Layouts 1.15
 
 import Logos.Theme
-
-import "components/wallet"
+import Logos.Wallet
 
 // Self-contained navigation bar — styling is independent of any view's theme.
 // Use currentIndex to read the active tab; tabChanged(index) fires on selection.
@@ -94,11 +93,15 @@ Item {
             }
 
             // Wallet / account control on the far right.
-            AccountControl {
+            WalletControl {
                 id: accountControl
                 Layout.leftMargin: 12
-                backend: root.backend
+                wallet: root.backend
                 accountModel: root.accountModel
+                viewportWidth: root.width
+                watchCall: function(result, success, failure) {
+                    logos.watch(result, success, failure)
+                }
             }
         }
     }

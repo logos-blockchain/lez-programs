@@ -37,13 +37,6 @@ class AmmUiBackend
     // Basecamp, does not close the wallet other apps share.
     SLOT(void disconnectWallet())
 
-    // Settings. Rewrites the wallet config's sequencer_addr and re-opens the
-    // wallet so the new network takes effect immediately.
-    SLOT(bool changeSequencerAddr(QString url))
-
-    // Misc
-    SLOT(void copyToClipboard(QString text))
-
     // AMM
     // Derives the AMM pool's PDAs (config/pool/vaults/current-tick) from the
     // deployed AMM program binary (see AMM_PROGRAM_BIN — a RISC Zero

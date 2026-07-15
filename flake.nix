@@ -118,6 +118,27 @@
         externalLibInputs = {
           amm_client_ffi = { input = self; packages.default = "amm_client_ffi"; };
         };
+        # The AMM UI links the shared C++ wallet access lib and bundles the
+        # Logos.Wallet QML module (apps/shared/wallet). apps/amm/flake.nix wires
+        # these via its `shared_wallet` input; when built from this root flake
+        # the source lives in-tree, so point CMake straight at it and stage the
+        # built QML module the same way. Keep in sync with apps/amm/flake.nix.
+        preConfigure = ''
+          cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${./apps/shared/wallet}")
+        '';
+        postInstall = ''
+          test -f ${./apps/amm/qml}/Logos/Wallet/qmldir
+
+          walletQmlDir="shared-wallet/qml/Logos/Wallet"
+          if [ ! -d "$walletQmlDir" ]; then
+            echo "Built Logos.Wallet QML module not found"
+            exit 1
+          fi
+          walletQmlInstallDir="$out/lib/Logos/Wallet"
+          mkdir -p "$walletQmlInstallDir"
+          cp -r "$walletQmlDir/." "$walletQmlInstallDir/"
+          test -f "$walletQmlInstallDir/qmldir"
+        '';
       };
 
       # Expose the AMM QML UI as a NAMED app/package (`amm-ui`) rather than

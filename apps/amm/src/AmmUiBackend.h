@@ -1,14 +1,15 @@
 #ifndef AMM_UI_BACKEND_H
 #define AMM_UI_BACKEND_H
 
-#include <QObject>
+#include <memory>
+
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
 
 #include "rep_AmmUiBackend_source.h"
 
-#include "AccountModel.h"
+#include "WalletAccountModel.h"
 
 extern "C" {
 #include "amm_client_ffi.h"
@@ -16,38 +17,29 @@ extern "C" {
 
 class LogosAPI;
 struct LogosModules;
-class QNetworkAccessManager;
-class QTimer;
+class LogosWalletProvider;
+class WalletController;
 
-// Source-side implementation of the AmmUiBackend .rep interface.
-// Inheriting from AmmUiBackendSimpleSource gives us the generated PROPs and
-// SLOTs from AmmUiBackend.rep — all the simple ones flow over QtRO. Talks to
-// the core logos_execution_zone wallet module via LogosModules.
 class AmmUiBackend : public AmmUiBackendSimpleSource {
     Q_OBJECT
-    Q_PROPERTY(AccountModel* accountModel READ accountModel CONSTANT)
+    Q_PROPERTY(WalletAccountModel* accountModel READ accountModel CONSTANT)
 
 public:
     explicit AmmUiBackend(LogosAPI* logosAPI = nullptr, QObject* parent = nullptr);
     ~AmmUiBackend() override;
 
-    AccountModel* accountModel() const { return m_accountModel; }
+    WalletAccountModel* accountModel() const;
 
 public slots:
-    // Overrides of the pure-virtual slots generated from the .rep.
     QString createAccountPublic() override;
     QString createAccountPrivate() override;
     void refreshAccounts() override;
     void refreshBalances() override;
     QString getBalance(QString accountIdHex, bool isPublic) override;
-    // Return the new wallet's BIP39 mnemonic (empty string on failure) so the
-    // UI can force a one-time seed-phrase backup step.
     QString createNewDefault(QString password) override;
     QString createNew(QString configPath, QString storagePath, QString password) override;
     bool openExisting() override;
     void disconnectWallet() override;
-    bool changeSequencerAddr(QString url) override;
-    void copyToClipboard(QString text) override;
 
     // AMM
     QVariantMap resolvePool(QString defAHex, QString defBHex) override;
@@ -59,43 +51,27 @@ public slots:
     QVariantList tokenList() override;
 
 private:
-    // Per-app wallet home (kept distinct from the wallet's canonical
-    // ~/.lee/wallet so standalone instances stay isolated; Basecamp sharing
-    // is handled by adopting an already-open shared wallet on startup).
-    static QString defaultWalletHome();
-    QString defaultConfigPath() const;
-    QString defaultStoragePath() const;
+    void syncWalletState();
 
-    void persistConfigPath(const QString& path);
-    void persistStoragePath(const QString& path);
     // Normalizes an account id given as either 64-char lowercase/uppercase hex
     // or base58 to lowercase hex. Returns an empty QString if `id` is neither
     // (or the base58 decode fails), so callers can detect and skip it.
     QString normalizeAccountId(const QString& id);
-    void openOrAdoptWallet();
-    // True when the shared core already has a wallet open — including a freshly
-    // created one with zero accounts. See the definition for why list_accounts()
-    // alone is insufficient.
-    bool sharedWalletIsOpen();
-    void refreshBlockHeights();
-    void refreshSequencerAddr();
-    void saveWallet();
 
     // Returns the deployed AMM program-binary bytes (a RISC Zero ProgramBinary
     // .bin, not a raw ELF) from $AMM_PROGRAM_BIN, or an empty QByteArray (with a
     // qWarning) if the env var is unset/unreadable/empty.
     QByteArray loadAmmElf();
 
-    // Probe the configured sequencer over HTTP and update sequencerReachable.
-    void checkReachability();
-
-    AccountModel* m_accountModel;
-
     LogosAPI* m_logosAPI;
-    LogosModules* m_logos;
-
-    QNetworkAccessManager* m_net;
-    QTimer* m_reachabilityTimer;
+    // Direct module handle for the AMM/swap path (resolvePool/swapExactInput/
+    // tokenList). The shared wallet provider exposes only wallet-level ops, not
+    // the raw account-id / get_account_public / send_generic_public_transaction
+    // calls the AMM path needs, so keep a thin LogosModules over the same
+    // LogosAPI as the wallet provider.
+    std::unique_ptr<LogosModules> m_logos;
+    std::unique_ptr<LogosWalletProvider> m_wallet;
+    std::unique_ptr<WalletController> m_walletController;
 };
 
 #endif // AMM_UI_BACKEND_H

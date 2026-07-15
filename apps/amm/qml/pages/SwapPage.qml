@@ -1,9 +1,10 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick 2.15
-import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+import Logos.Wallet
 import "../components/shared"
 import "../components/swap"
-import "../state"
 
 Item {
     id: root
@@ -25,7 +26,7 @@ Item {
     }
 
     QtObject {
-        id: theme
+        id: pageTheme
         property bool isDark: true
         property var colors: isDark ? dark : light
 
@@ -68,7 +69,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: theme.colors.background
+        color: pageTheme.colors.background
         Behavior on color { ColorAnimation { duration: 300 } }
 
         // Theme toggle
@@ -77,19 +78,19 @@ Item {
             anchors.right:  parent.right
             anchors.margins: 16
             width: 44; height: 24; radius: 12
-            color: theme.colors.panelBg
-            border.color: theme.colors.border
+            color: pageTheme.colors.panelBg
+            border.color: pageTheme.colors.border
             border.width: 1
             Text {
                 anchors.centerIn: parent
-                text: theme.isDark ? "☀" : "☾"
+                text: pageTheme.isDark ? "☀" : "☾"
                 font.pixelSize: 13
-                color: theme.colors.textSecondary
+                color: pageTheme.colors.textSecondary
             }
             MouseArea {
                 anchors.fill: parent
                 cursorShape: Qt.PointingHandCursor
-                onClicked: theme.isDark = !theme.isDark
+                onClicked: pageTheme.isDark = !pageTheme.isDark
             }
         }
 
@@ -100,7 +101,7 @@ Item {
             SwapCard {
                 id: swapCard
                 Layout.alignment: Qt.AlignHCenter
-                theme: theme
+                theme: pageTheme
                 tokens: root.tokens
                 backend: root.backend
                 width: Math.min(480, root.width - 32)
@@ -126,9 +127,9 @@ Item {
 
             Text {
                 Layout.alignment: Qt.AlignHCenter
-                text: "Buy and sell crypto on <font color='" + theme.colors.textPrimary + "'>LEZ</font>."
+                text: "Buy and sell crypto on <font color='" + pageTheme.colors.textPrimary + "'>LEZ</font>."
                 textFormat: Text.RichText
-                color: theme.colors.textSecondary
+                color: pageTheme.colors.textSecondary
                 font.pixelSize: 15
                 horizontalAlignment: Text.AlignHCenter
             }
@@ -138,7 +139,7 @@ Item {
             id: tokenModal
             anchors.fill: parent
             z: 10
-            theme: theme
+            theme: pageTheme
             tokens: root.tokens
 
             property string targetSide: "sell"
@@ -161,10 +162,19 @@ Item {
             }
         }
 
-        SwapConfirmationDialog {
+        Component {
+            id: swapConfirmationSummary
+
+            SwapConfirmationSummary {
+                theme: pageTheme
+            }
+        }
+
+        TransactionConfirmationDialog {
             id: swapConfirmationDialog
-            anchors.fill: parent
-            theme: theme
+            title: qsTr("Confirm swap")
+            confirmText: qsTr("Confirm swap")
+            summary: swapConfirmationSummary
 
             onConfirmed: function(snapshot) {
                 // The dialog only shows a preview snapshot; the actual
