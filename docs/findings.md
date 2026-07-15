@@ -105,7 +105,7 @@ ATA program offers limited usage with private accounts. Private accounts can be 
 | Burn | `ata_group_owned_owner_signing` | GROUP | Group-owned owner signs `ATA::Burn` as the required authorizing party | ✅ |
 
 ### Remarks
-- Transfer explicitly blocks `PrivateAuthorized`. ATA's transfer checks that the recipient's account is non-default. E.g., ATA can not transfer funds to a third-party's private account.
+- Transfer explicitly blocks `PrivateUnauthorized`and `PrivateAuthorizedInit`. ATA's transfer checks that the recipient's account is non-default. E.g., ATA can not transfer funds to a third-party's private account.
 - ATA does not permit the creation of private token accounts. E.g., ATA only emits public PDA accounts. This is based on the PDA `AccountId` formulas used.
 
 ## Stablecoin program
@@ -120,7 +120,7 @@ ATA program offers limited usage with private accounts. Private accounts can be 
 
 ### Remarks
 - `OpenPosition` is blocked for use in privacy transactions due to the chained calls usage. `OpenPosition` calls `Token::InitializeAccount` and `Token::Transfer` for the same vault account which is disallowed behavior in privacy preserving circuit. Demonstrated with test `stablecoin_open_position_via_privacy_transaction_is_not_expressible`.
-- `WithdrawCollateral` does not support withdrawals to `PrivateAuthorized` and `PrivateAuthorizedInit`; explicitly checks that the destination account is not default. Demonstrated with teh test `stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`.
+- `WithdrawCollateral` does not support withdrawals to `PrivateUnauthorized` and `PrivateAuthorizedInit`; explicitly checks that the destination account is not default. Demonstrated with the test `stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`.
 - Vault is explicitly public PDA by formula requirement.
 
 ## Token program
@@ -149,68 +149,11 @@ ATA program offers limited usage with private accounts. Private accounts can be 
 
 ### Remarks
 - `Initialization` is not possible for `PrivateUnauthorized` accounts due to `is_authorized = false`.
-- New token definition is not permitted for `PrivateAuthorized` as Token holding due to `is_authorized = false`.E.g., both Token Definition and Token Holding for a new Token must be from an authorized account.
+- New token definition is not permitted for `PrivateUnauthorized` as Token holding due to `is_authorized = false`.E.g., both Token Definition and Token Holding for a new Token must be from an authorized account.
 
 # Conclusions
 
 Privacy coverage for LEZ program tests is greatly improved from the added tests. Though, there are a few noticable gaps:
-- `PrivateUnauthorized` accounts can be blocked by programs with a check `is_authorized = true`. However, th
-
-
-# Observations
-- Programs can be made privacy agnostic for PDAs by adjusting private PDA `AccountId` formula to match the public variant. Unclear how to precisely handle this to ensure `AMM program` generates unique pools for token pairs (in public PDA case).
-
-# TODO
-
-- [ ] **Private PDAs used as program inputs across the above flows.**
-
-      **Not achieved — structurally blocked, not a test gap.** Every program with PDAs (ATA,
-      AMM, Stablecoin) derives them via `for_public_pda(program_id, seed)` only. The private
-      formula, `for_private_pda(program_id, seed, npk, identifier)`, additionally requires an
-      `npk` — but none of `ata_core`/`amm_core`/`stablecoin_core`'s seed-computation functions
-      accept an `npk` today, so it's never reachable through these programs as coded. Confirmed
-      empirically not-expressible for ATA (`ata_create_private_ata_holding_is_not_expressible`);
-      the same root cause applies to AMM and Stablecoin (identical `for_public_pda`-only
-      pattern, verified directly in their `*_core` crates). Token has no PDAs at all — N/A at
-      that layer, not a gap.
-      *Re: "could we compose a test program that uses private PDAs with these pre-existing?"* —
-      no. None of the four existing programs can be made to produce a `for_private_pda` address
-      through a test alone, since the formula choice is hardcoded in their source. Demonstrating
-      the mechanism at all would require either changing one of the `*_core` crates to derive via
-      `for_private_pda`, or standing up a small purpose-built program whose only job is to
-      exercise it — both are source changes, not test-writing. **This is the single most
-      actionable item to feed back to the protocol team.**
-
-- Group owned shared private account as input to programs.
-
-- [x] **Sending funds to an existing private account.**
-      **Achieved, with one real condition: cooperation is required.** Confirmed across Token
-      (`Transfer`, `Mint`), ATA (`Transfer`, including through a nested chained call into
-      Token), and Stablecoin (`WithdrawCollateral`). Every path that touches an *existing*
-      private account (`PrivateAuthorizedUpdate`) requires that account's own `nsk` plus a
-      membership proof, supplied in the same transaction — there is no blind-credit analog to
-      `PrivateUnauthorized` for existing accounts (only *fresh* accounts can be credited by a
-      stranger). This isn't partial — it's a clean, fully-confirmed yes with one unavoidable,
-      real-world condition: the recipient must be reachable to supply their `nsk` (online or
-      pre-coordinated). That's a protocol/wallet-UX property to design around, not a bug or an
-      untested edge.
-
-- [~] **Multiple private accounts in one transaction, and private accounts carried through
-      chained calls.** This is two separate sub-objectives with different status — worth
-      splitting:
-      - **Multiple private accounts in one tx — Achieved.** `token_private_transfer` (sender +
-        recipient, both private, zero public accounts anywhere) and
-        `token_private_transfer_into_existing_private_holding` (same, recipient already
-        existing).
-      - **Carried through a chained call — Achieved, but only single-hop so far.**
-        `ata_transfer_to_existing_private_recipient` proves a private identity survives one
-        chained call (ATA → Token) — the first test in the whole exercise to prove this works
-        at all. Every private Stablecoin `WithdrawCollateral`/`RepayDebt` test also carries a
-        private account through exactly one chained call (Stablecoin → Token). **Not yet
-        tested:** deeper, multi-hop chaining — an instruction issuing more than one chained
-        call with a private account threaded through it (e.g. AMM's `SwapExactInput` chains
-        into *both* Token and the TWAP oracle in one instruction). That case is currently
-        unreachable: AMM is blocked entirely by a separate, privacy-unrelated circuit bug (see
-        the AMM section) before any chaining depth can even be exercised. So: not unclear —
-        genuinely proven for the single-hop case, with the deeper case blocked pending AMM.
-
+- `PrivateUnauthorized` accounts can be blocked by programs with a check `is_authorized = true`. However, this issue can be avoided by defining `is_authorized = true` for account initialization with `PrivateUnauthorized` (e.g., no knowledge of `npk`). Account initialization cannot be used to maliciously alter a pre-existing account, and thus `is_authorized = true` would not offer any malicious path forward for the third-party initializing the account.
+- Privacy transactions have issues with chain calls in which multiple calls affect the same private account. This issue can be mitigated by adopting account diff paradigm instead of the current "account state replacement" that we currently use.
+- AMM tests are blocked by issues with the clock account; bug in `spel-framework`.
