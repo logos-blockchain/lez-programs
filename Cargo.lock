@@ -724,7 +724,7 @@ dependencies = [
 [[package]]
 name = "authenticated_transfer_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "serde",
 ]
@@ -1024,7 +1024,7 @@ dependencies = [
 [[package]]
 name = "bridge_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "lee_core",
  "serde",
@@ -1238,7 +1238,7 @@ dependencies = [
 [[package]]
 name = "common"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "anyhow",
  "authenticated_transfer_core",
@@ -2030,7 +2030,7 @@ dependencies = [
 [[package]]
 name = "faucet_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "lee_core",
  "serde",
@@ -3171,7 +3171,7 @@ dependencies = [
 [[package]]
 name = "key_protocol"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5355,7 +5355,7 @@ dependencies = [
 [[package]]
 name = "programs"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "build_utils",
  "lee",
@@ -6924,7 +6924,7 @@ dependencies = [
 [[package]]
 name = "system_accounts"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "bridge_core",
  "clock_core",
