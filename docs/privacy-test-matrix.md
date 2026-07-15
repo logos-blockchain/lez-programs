@@ -542,13 +542,58 @@ arbitrary timestamp as a private witness and no check anywhere would catch it. W
 to the LEZ/SPEL maintainers independent of whether/when the AMM test-writing blocker itself gets
 prioritized.
 
+**Upstream provenance checked (2026-07-15)**: cloned both `logos-co/spel` (upstream) and
+`0x-r4bbit/spel` (the pinned fork) to check whether the filter was fork-introduced. It isn't.
+`git log -S"is_default_owner"` on upstream `logos-co/spel` finds it added in PR #126, squash-merged
+to upstream `main` as commit `1f51875` ("`SpelOutput::execute()` with auto-claim support"), still
+present at upstream's current HEAD (`0cb7e09`, v0.6.0). Walking the fork's history back to its
+merge point from `logos-co/release/v0.5.0` (commit `73fc462`) shows the filter already present
+there too, before any of the fork's own commits. **This is an upstream `logos-co/spel` bug**,
+inherited unchanged by the pinned fork — report it against the former, not the latter.
+
+### ✅ Fixed for these tests (2026-07-15) — test-fixture clock ownership, not a circuit workaround
+
+The immediate blocker for all five `CHAIN`-dimension AMM privacy tests below was that
+`advance_clock` (`programs/integration_tests/tests/amm.rs`) constructed the clock account with
+`..Account::default()`, leaving `program_owner == DEFAULT_PROGRAM_ID` and tripping the
+`spel-framework` filter above on every AMM/TWAP call that echoes it back. The *real* production
+clock account is owned by a dedicated clock program (`lez/system_accounts/src/lib.rs`'s
+`clock_account()`: `program_owner: programs::clock().id()`), not `DEFAULT_PROGRAM_ID` — but that
+constructor lives behind the gated `system-programs`/`artifacts` feature this test crate can't
+reach, so `advance_clock` fabricates the account directly and never set an owner.
+
+Fix applied: `advance_clock` now sets `program_owner` to a placeholder non-default `ProgramId`
+(`[42_u32; 8]`, a stand-in — not the real production clock program ID, which isn't reachable from
+this crate). Nothing in AMM/TWAP-oracle logic checks the clock's `program_owner` value (only its
+`account_id` against `CLOCK_01_PROGRAM_ACCOUNT_ID`), and `validate_execution`'s other rules
+(no-ownership-change, no-unauthorized-data/balance-change) are satisfied trivially since clock is
+echoed unchanged — so this is a safe, minimal, test-only fix. All five previously-blocked tests
+were rewritten from `_is_not_expressible`/`expect_err` assertions to real success assertions
+(rebuilding the `PrivacyPreservingTransaction`, applying it via
+`transition_from_privacy_preserving_transaction`, and checking resulting public state +
+commitments for the private accounts) and now pass. Full `amm.rs` suite: 40/40 passing.
+
+The `spel-framework` dispatcher filter itself is untouched and remains an open upstream bug
+(confirmed to originate in `logos-co/spel`, not the pinned fork — see above) — it would still
+silently drop any other `DEFAULT_PROGRAM_ID`-owned, non-default, unclaimed account threaded
+through a chained call. Worth reporting upstream regardless of this fixture-level fix.
+
 ### Existing
 
-6 private tests out of 33 pre-existing public + 6 = 39. No test can yet demonstrate an
-actually-working AMM privacy path — five exist purely to confirm the circuit bug also blocks
-real private accounts (not just the all-public control case), and one
-(`amm_remove_liquidity_private_new_user_holdings_is_not_expressible`) found a second, distinct,
-earlier blocker specific to `RemoveLiquidity`.
+10 private tests out of 34 pre-existing public + 10 = 44. Six demonstrate an actually-working AMM
+privacy path end-to-end (private account touched, transaction applied, resulting public state and
+private commitments verified): the five chained-call tests unblocked by the clock test-fixture fix
+above, plus `amm_new_definition_private_initial_lp_holder` (pool creation with a fresh
+`PrivateAuthorizedInit` LP holder — `new_definition.rs` explicitly permits this, unlike
+`swap`/`remove`). Four are confirmed not-expressible, splitting into two distinct root causes:
+`amm_remove_liquidity_private_new_user_holdings_is_not_expressible` and
+`amm_swap_a_to_b_private_authorized_init_destination_is_not_expressible` both hit the same
+"destination must already exist and be Token-Program-owned" precondition;
+`amm_swap_a_to_b_private_unauthorized_destination_is_not_expressible` and
+`amm_new_definition_private_unauthorized_lp_holder_is_not_expressible` both hit an earlier, more
+fundamental guest-ABI signer requirement that a `PrivateUnauthorized` identity can never satisfy —
+any account declared a required signer in the guest ABI structurally excludes `PrivateUnauthorized`
+recipients, regardless of what the program's own internal precondition would otherwise allow.
 
 **Second finding, unrelated to the circuit bug (2026-07-13)**: `remove_liquidity` requires
 `user_holding_a`/`user_holding_b` to already exist and already be owned by the configured Token
@@ -568,25 +613,28 @@ program-level precondition that predates privacy entirely, not a circuit artifac
 
 | Instruction | Dimension | Test | Priority | Depends on | Status |
 |---|---|---|---|---|---|
-| SwapExactInput | `CHAIN` | `amm_swap_a_to_b_private_user_holding_is_not_expressible` | P1 | Token, TWAP oracle (public leg) | **Confirmed not-expressible** — private `user_holding_a`, fails identically to the all-public control (8 vs 7 accounts) |
-| SwapExactOutput | `CHAIN` | `amm_swap_exact_output_private_user_holding_is_not_expressible` | P1 | Token, TWAP oracle (public leg) | **Confirmed not-expressible** — identical 8-account/chained-call shape to `SwapExactInput`, fails identically (8 vs 7 accounts) |
-| AddLiquidity | `CHAIN` | `amm_add_liquidity_private_user_holdings_is_not_expressible` — private deposit legs (`user_holding_a`/`user_holding_b`) | P1 | Token, TWAP oracle (public leg) | **Confirmed not-expressible** — fails identically (10 vs 9 accounts) |
-| AddLiquidity | BASE | `amm_add_liquidity_private_lp_holding_is_not_expressible` — private LP output holding | P1 | Token | **Confirmed not-expressible** — private `user_holding_lp`, fails identically (10 vs 9 accounts) |
-| RemoveLiquidity | `CHAIN` | `amm_remove_liquidity_private_lp_holding_is_not_expressible` | P1 | Token, TWAP oracle (public leg) | **Confirmed not-expressible** — private `user_holding_lp`, fails identically (10 vs 9 accounts) |
-| RemoveLiquidity | `EXIST` (negative) | `amm_remove_liquidity_private_new_user_holdings_is_not_expressible` — brand-new `PrivateUnauthorized` token A/B destinations | P1 | Token | **Confirmed not-expressible for a different reason** — AMM's own precondition requires the destination to already be owned by the Token Program; fails before the circuit bug is even reached |
-| Swap / AddLiquidity | `EXIST` | `amm_swap_into_existing_private_holding` | P2 | Token | **Blocked** — see above |
-| NewDefinition | BASE | `amm_new_definition_private_initial_lp_holder` | P2 | Token | **Blocked** — see above (also issues chained calls reusing `pool`-derived accounts; check on resolution) |
-| Swap / AddLiquidity (vault) | `PDA` | `amm_swap_with_private_vault_pda` — predicted **not-expressible** per the ATA `PDA` finding (same `for_public_pda`-only root cause, confirmed in `amm_core`); write as a quick confirmation citing that finding, not a fresh investigation | P2 | Token | Not started (also behind the blocker above) |
-| AddLiquidity / RemoveLiquidity | `GROUP` | `amm_group_owned_lp_holding` | P3 | Token, `key_protocol` | **Blocked** — see above |
+| SwapExactInput | `CHAIN` | `amm_swap_a_to_b_private_user_holding` | P1 | Token, TWAP oracle (public leg) | ✅ **Expressible** — private `user_holding_a`, unblocked by the clock test-fixture fix |
+| SwapExactOutput | `CHAIN` | `amm_swap_exact_output_private_user_holding` | P1 | Token, TWAP oracle (public leg) | ✅ **Expressible** — same fix |
+| AddLiquidity | `CHAIN` | `amm_add_liquidity_private_user_holdings` — private deposit legs (`user_holding_a`/`user_holding_b`) | P1 | Token, TWAP oracle (public leg) | ✅ **Expressible** — same fix |
+| AddLiquidity | BASE | `amm_add_liquidity_private_lp_holding` — private LP output holding | P1 | Token | ✅ **Expressible** — private `user_holding_lp`, same fix |
+| RemoveLiquidity | `CHAIN` | `amm_remove_liquidity_private_lp_holding` | P1 | Token, TWAP oracle (public leg) | ✅ **Expressible** — private `user_holding_lp`, same fix |
+| RemoveLiquidity | `EXIST` (negative) | `amm_remove_liquidity_private_new_user_holdings_is_not_expressible` — brand-new `PrivateUnauthorized` token A/B destinations | P1 | Token | **Confirmed not-expressible for a different reason** — AMM's own precondition requires the destination to already be owned by the Token Program; unrelated to the clock issue |
+| Swap | `EXIST` (negative) | `amm_swap_a_to_b_private_unauthorized_destination_is_not_expressible` — brand-new `PrivateUnauthorized` recipient (`npk` only) | P1 | Token | **Confirmed not-expressible** — the guest ABI (`#[account(mut, signer)]` on both `user_holding_a`/`user_holding_b` in `methods/guest/src/bin/amm.rs`) requires every swap participant to be a signer; `PrivateUnauthorized` is authorized by nobody by construction, so it can never satisfy this, independent of the destination-must-exist issue below |
+| Swap | `EXIST` (negative) | `amm_swap_a_to_b_private_authorized_init_destination_is_not_expressible` — brand-new `PrivateAuthorizedInit` recipient (self-initializes with its own `nsk`, satisfies the signer requirement) | P1 | Token | **Confirmed not-expressible for a different reason** — same "destination must already exist and be Token-Program-owned" precondition as `RemoveLiquidity`'s finding above (`swap.rs` asserts `user_holding_b.account.program_owner == token_program_id` unconditionally) |
+| Swap / AddLiquidity | `EXIST` | `amm_swap_into_existing_private_holding` | P2 | Token | Not started — swap into an *already-existing* private destination (`PrivateAuthorizedUpdate`); distinct from the two fresh-destination rows above, which are both confirmed not-expressible |
+| NewDefinition | BASE | `amm_new_definition_private_initial_lp_holder` | P2 | Token | ✅ **Expressible** — `new_definition.rs`'s own precondition on `user_holding_lp` (`account != Account::default() || is_authorized`) explicitly permits a fresh, authorized LP holder; confirmed working with a `PrivateAuthorizedInit` initial LP holder, unblocked by the clock fix above |
+| NewDefinition | `EXIST` (negative), BASE | `amm_new_definition_private_unauthorized_lp_holder_is_not_expressible` — `PrivateUnauthorized` initial LP holder (`npk` only) | P2 | Token | **Confirmed not-expressible** — same guest-ABI signer requirement as the `Swap` `PrivateUnauthorized` finding above: `user_holding_lp` is `#[account(mut, signer)]` unconditionally, so it's rejected before `new_definition.rs`'s own "fresh LP holding requires user authorization" precondition is ever reached |
+| Swap / AddLiquidity (vault) | `PDA` | `amm_swap_with_private_vault_pda` — predicted **not-expressible** per the ATA `PDA` finding (same `for_public_pda`-only root cause, confirmed in `amm_core`); write as a quick confirmation citing that finding, not a fresh investigation | P2 | Token | Not started — blocked by the separate PDA-formula finding, not the clock issue |
+| AddLiquidity / RemoveLiquidity | `GROUP` | `amm_group_owned_lp_holding` | P3 | Token, `key_protocol` | Not started — no longer blocked by the clock issue (fixed above) |
 | Pool/Config (any) | `PDA` | `amm_attempt_private_pool_pda` — same predicted not-expressible outcome as above; low priority given the vault row already confirms the root cause for this program | P3 | Token | Not started |
 | Initialize, UpdateConfig, CreatePriceObservations, CreateOraclePriceAccount, SyncReserves | — | **Not planned** — admin/infra instructions over public protocol state; a private admin authority is legitimate but low value | — | — | Out of scope (for now) |
 
 Note: every Swap/AddLiquidity/RemoveLiquidity chains to *both* Token (transfers) and TWAP
 oracle (tick refresh) in one instruction — so every `CHAIN` row above is automatically also
 a "some legs private, some public" test. Call that out explicitly when the test is written,
-not as an incidental detail. **All of these are currently blocked by the circuit-level issue
-above, since it fires with zero private accounts involved — no privacy dimension can be tested
-on any pool-mutating AMM instruction until it's resolved.**
+not as an incidental detail. **The clock-account blocker above is fixed (2026-07-15) — the
+remaining unwritten rows are open to pick up, except the `PDA` rows, which are separately
+blocked by the `for_public_pda`-only formula finding.**
 
 ---
 

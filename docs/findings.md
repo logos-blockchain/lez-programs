@@ -78,16 +78,20 @@ In this task, we extend testing for LEZ programs to cover privacy features:
 
 | Function tested | Test name | Category | Description of objective | Result |
 |---|---|---|---|---|
-| SwapExactInput | `amm_swap_a_to_b_private_user_holding_is_not_expressible` | REGULAR, CHAIN | Private `user_holding_a` deposit leg — confirms the circuit-level account-count bug also fires with a real private account (8 vs 7 accounts), not just the all-public control case | ❌ (confirmed not-expressible — circuit bug) |
-| SwapExactOutput | `amm_swap_exact_output_private_user_holding_is_not_expressible` | REGULAR, CHAIN | Same confirmation for `SwapExactOutput` — identical account/chained-call shape to `SwapExactInput` (8 vs 7 accounts) | ❌ (confirmed not-expressible — circuit bug) |
-| AddLiquidity | `amm_add_liquidity_private_lp_holding_is_not_expressible` | REGULAR, CHAIN | Private LP-output holding (`user_holding_lp`) — same circuit bug (10 vs 9 accounts) | ❌ (confirmed not-expressible — circuit bug) |
-| AddLiquidity | `amm_add_liquidity_private_user_holdings_is_not_expressible` | REGULAR, CHAIN | Private deposit legs (`user_holding_a` + `user_holding_b`) — same circuit bug (10 vs 9 accounts) | ❌ (confirmed not-expressible — circuit bug) |
-| RemoveLiquidity | `amm_remove_liquidity_private_lp_holding_is_not_expressible` | REGULAR, CHAIN | Private LP holding (the account that signs/burns to remove liquidity) — same circuit bug (10 vs 9 accounts) | ❌ (confirmed not-expressible — circuit bug) |
-| RemoveLiquidity | `amm_remove_liquidity_private_new_user_holdings_is_not_expressible` | EXIST, CHAIN | Brand-new `PrivateUnauthorized` token A/B destinations — rejected by a separate, unrelated program-level precondition (destination must already exist) before the circuit bug is even reached | ❌ (confirmed not-expressible — different reason) |
+| SwapExactInput | `amm_swap_a_to_b_private_user_holding` | REGULAR, CHAIN | Private `user_holding_a` deposit leg, through the Token + TWAP-oracle chained calls | ✅ |
+| SwapExactOutput | `amm_swap_exact_output_private_user_holding` | REGULAR, CHAIN | Same coverage for `SwapExactOutput` | ✅ |
+| AddLiquidity | `amm_add_liquidity_private_lp_holding` | REGULAR, CHAIN | Private LP-output holding (`user_holding_lp`) receives newly-minted LP on top of an existing private balance | ✅ |
+| AddLiquidity | `amm_add_liquidity_private_user_holdings` | REGULAR, CHAIN | Private deposit legs (`user_holding_a` + `user_holding_b`), public LP recipient | ✅ |
+| RemoveLiquidity | `amm_remove_liquidity_private_lp_holding` | REGULAR, CHAIN | Private LP holding (the account that signs/burns to remove liquidity) | ✅ |
+| RemoveLiquidity | `amm_remove_liquidity_private_new_user_holdings_is_not_expressible` | EXIST, CHAIN | Brand-new `PrivateUnauthorized` token A/B destinations — rejected by a separate, unrelated program-level precondition (destination must already exist) | ❌ (confirmed not-expressible — different reason) |
+| SwapExactInput | `amm_swap_a_to_b_private_unauthorized_destination_is_not_expressible` | EXIST, CHAIN | Swap paying out to a brand-new `PrivateUnauthorized` destination (`npk` only, no `nsk`) | ❌ (confirmed not-expressible — guest ABI requires both swap legs to be signers, which `PrivateUnauthorized` can never satisfy by construction) |
+| SwapExactInput | `amm_swap_a_to_b_private_authorized_init_destination_is_not_expressible` | REGULAR, CHAIN | Swap paying out to a brand-new `PrivateAuthorizedInit` destination (owner self-initializes with its own `nsk`) | ❌ (confirmed not-expressible — same "destination must already exist" precondition as `RemoveLiquidity`) |
+| NewDefinition | `amm_new_definition_private_initial_lp_holder` | REGULAR | Pool creation with a private `PrivateAuthorizedInit` initial LP holder | ✅ |
+| NewDefinition | `amm_new_definition_private_unauthorized_lp_holder_is_not_expressible` | EXIST, REGULAR | Pool creation with a `PrivateUnauthorized` initial LP holder (`npk` only, no `nsk`) | ❌ (confirmed not-expressible — guest ABI requires `user_holding_lp` to be a signer, which `PrivateUnauthorized` can never satisfy; same shape as the `Swap` `PrivateUnauthorized` finding above) |
 
 ### Remarks
-- `RemoveLiquidity` and `Swap`s may have issues with `PrivateUnauthorized` and `PrivateAuthorizedInit` that match issues detected in Stablecoin; e.g., explicitly requires `is_authorized = true` and non default accounts.
-- `clock` account issue: clock is silent dropped during privacy executions.
+- `Swap` and `Remove` rejects any uninitialized destination account; this is a AMM design choice, and not Token program requirement.
+- AMM tests were initially blocked by a bug.
 
 ## ATA program
 
@@ -156,4 +160,6 @@ ATA program offers limited usage with private accounts. Private accounts can be 
 Privacy coverage for LEZ program tests is greatly improved from the added tests. Though, there are a few noticable gaps:
 - `PrivateUnauthorized` accounts can be blocked by programs with a check `is_authorized = true`. However, this issue can be avoided by defining `is_authorized = true` for account initialization with `PrivateUnauthorized` (e.g., no knowledge of `npk`). Account initialization cannot be used to maliciously alter a pre-existing account, and thus `is_authorized = true` would not offer any malicious path forward for the third-party initializing the account.
 - Privacy transactions have issues with chain calls in which multiple calls affect the same private account. This issue can be mitigated by adopting account diff paradigm instead of the current "account state replacement" that we currently use.
-- AMM tests are blocked by issues with the clock account; bug in `spel-framework`.
+
+Additional observation:
+AMM's chained-call privacy tests were blocked by the clock account being `DEFAULT_PROGRAM_ID`-owned in the test fixture, which trips a `spel-framework` dispatcher bug (upstream in `logos-co/spel`, confirmed present through v0.6.0) that silently drops any default-owned, non-default, unclaimed account from a program's output. Fixed by giving the fixture's clock account a non-default owner; see the AMM section. The dispatcher bug itself remains open upstream.
