@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
+import Logos.Wallet
 import "../components/shared"
 import "../components/liquidity"
 import "../state"
@@ -162,10 +163,18 @@ Item {
         }
     }
 
-    LiquidityConfirmationDialog {
-        id: confirmationDialog
+    Component {
+        id: liquidityConfirmationSummary
 
-        anchors.fill: parent
+        LiquidityConfirmationSummary { }
+    }
+
+    TransactionConfirmationDialog {
+        id: confirmationDialog
+        title: snapshot.action === "add"
+            ? qsTr("Confirm add liquidity")
+            : qsTr("Confirm remove liquidity")
+        summary: liquidityConfirmationSummary
 
         onConfirmed: function (snapshot) {
             root.confirmLiquidityAction(snapshot);
