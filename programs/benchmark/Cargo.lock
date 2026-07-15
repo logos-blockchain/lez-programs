@@ -688,7 +688,7 @@ dependencies = [
 [[package]]
 name = "build_utils"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "anyhow",
  "risc0-binfmt",
@@ -843,7 +843,7 @@ dependencies = [
 [[package]]
 name = "clock_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "borsh",
  "lee_core",
@@ -2437,7 +2437,7 @@ dependencies = [
 [[package]]
 name = "lee"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "anyhow",
  "borsh",
@@ -2458,7 +2458,7 @@ dependencies = [
 [[package]]
 name = "lee_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "base58",
  "borsh",
@@ -4357,8 +4357,8 @@ dependencies = [
 
 [[package]]
 name = "spel-framework-core"
-version = "0.5.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#91023c9115bf88173b0d25d2e905f2a55ef0313b"
+version = "0.6.0"
+source = "git+https://github.com/logos-co/spel.git?tag=v0.6.0#0cb7e0980535af619482cf1c823f4d394b3ebd61"
 dependencies = [
  "base58",
  "borsh",
@@ -4374,8 +4374,8 @@ dependencies = [
 
 [[package]]
 name = "spel-framework-macros"
-version = "0.5.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?branch=refactor%2Flez-v020-compat#91023c9115bf88173b0d25d2e905f2a55ef0313b"
+version = "0.6.0"
+source = "git+https://github.com/logos-co/spel.git?tag=v0.6.0#0cb7e0980535af619482cf1c823f4d394b3ebd61"
 dependencies = [
  "proc-macro2",
  "quote",
