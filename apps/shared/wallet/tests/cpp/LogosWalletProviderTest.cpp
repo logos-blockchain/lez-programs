@@ -1,13 +1,17 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QtTest>
 
 #include "FakeWalletProvider.h"
 #include "LogosWalletProvider.h"
 #include "WalletAccountModel.h"
+#include "WalletController.h"
 #include "logos_sdk.h"
 
 namespace {
@@ -53,6 +57,8 @@ private slots:
     void rejectsInvalidSubmissionResponses();
     void exposesStableAccountModelRoles();
     void fakeProviderImplementsConsumerContract();
+    void controllerOwnsUiWalletFlow();
+    void controllerStopsReachabilityChecksAfterDisconnect();
 };
 
 void LogosWalletProviderTest::adoptsOpenWalletAndCachesSnapshots()
@@ -355,11 +361,90 @@ void LogosWalletProviderTest::fakeProviderImplementsConsumerContract()
 
     QCOMPARE(provider.snapshot(true).accounts.size(), 1);
     QVERIFY(provider.lastForceRefresh);
+    QCOMPARE(provider.readPublicAccount(ACCOUNT_B).accountId, ACCOUNT_B);
+    QCOMPARE(provider.readCalls, 1);
     WalletTransaction transaction { PROGRAM_ID, { ACCOUNT_A }, { true }, { 9 } };
     QVERIFY(provider.submitPublicTransaction(transaction).accepted());
     QCOMPARE(provider.lastTransaction.instruction, transaction.instruction);
     provider.disconnect();
     QCOMPARE(provider.disconnectCalls, 1);
+}
+
+void LogosWalletProviderTest::controllerOwnsUiWalletFlow()
+{
+    const QString settingsApplication = QStringLiteral("WalletControllerTest");
+    QSettings settings(QStringLiteral("Logos"), settingsApplication);
+    settings.clear();
+
+    FakeWalletProvider provider;
+    provider.connectResult.snapshot.accounts = {
+        { ACCOUNT_A, QStringLiteral("5"), true },
+    };
+    provider.connectResult.snapshot.lastSyncedBlock = 7;
+    provider.connectResult.snapshot.currentBlockHeight = 8;
+
+    WalletController controller(provider, settingsApplication);
+    QSignalSpy stateChanged(&controller, &WalletController::stateChanged);
+
+    QVERIFY(controller.open());
+    QCOMPARE(provider.connectCalls, 1);
+    QVERIFY(controller.state().isWalletOpen);
+    QVERIFY(controller.state().walletExists);
+    QCOMPARE(controller.state().lastSyncedBlock, 7);
+    QCOMPARE(controller.state().currentBlockHeight, 8);
+    QCOMPARE(controller.accountModel()->count(), 1);
+
+    provider.snapshotResult.accounts = {
+        { ACCOUNT_A, QStringLiteral("9"), true },
+    };
+    controller.refresh();
+    QVERIFY(provider.lastForceRefresh);
+    QCOMPARE(controller.balance(ACCOUNT_A, true), QStringLiteral("9"));
+
+    provider.createAccountResult.accountId = ACCOUNT_B;
+    provider.createAccountResult.snapshot.accounts = {
+        { ACCOUNT_A, QStringLiteral("9"), true },
+        { ACCOUNT_B, QStringLiteral("3"), false },
+    };
+    QCOMPARE(controller.createAccount(false), ACCOUNT_B);
+    QVERIFY(!provider.lastAccountWasPublic);
+    QCOMPARE(controller.accountModel()->count(), 2);
+
+    controller.disconnect();
+    QCOMPARE(provider.disconnectCalls, 1);
+    QVERIFY(!controller.state().isWalletOpen);
+    QCOMPARE(controller.accountModel()->count(), 0);
+    QVERIFY(stateChanged.count() >= 4);
+
+    settings.clear();
+}
+
+void LogosWalletProviderTest::controllerStopsReachabilityChecksAfterDisconnect()
+{
+    const QString settingsApplication = QStringLiteral("WalletReachabilityTest");
+    QSettings settings(QStringLiteral("Logos"), settingsApplication);
+    settings.clear();
+
+    FakeWalletProvider provider;
+    provider.connectResult.snapshot.sequencerAddress = QStringLiteral("http://127.0.0.1:1");
+    WalletController controller(provider, settingsApplication);
+    auto* network = controller.findChild<QNetworkAccessManager*>();
+    QVERIFY(network);
+    QSignalSpy finished(network, &QNetworkAccessManager::finished);
+
+    QVERIFY(controller.open());
+    QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 1000);
+    controller.disconnect();
+    finished.clear();
+
+    auto* timer = controller.findChild<QTimer*>();
+    QVERIFY(timer);
+    timer->setInterval(1);
+    controller.start();
+    QTest::qWait(50);
+    QCOMPARE(finished.count(), 0);
+
+    settings.clear();
 }
 
 QTEST_GUILESS_MAIN(LogosWalletProviderTest)

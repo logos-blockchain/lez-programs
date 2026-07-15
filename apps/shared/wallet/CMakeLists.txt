@@ -18,6 +18,9 @@ if(LOGOS_WALLET_BUILD_ACCESS
 endif()
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core)
+if(LOGOS_WALLET_BUILD_ACCESS OR BUILD_TESTING)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS Network)
+endif()
 set(CMAKE_AUTOMOC ON)
 
 if(LOGOS_WALLET_BUILD_ACCESS)
@@ -28,6 +31,8 @@ if(LOGOS_WALLET_BUILD_ACCESS)
         src/LogosWalletProvider.cpp
         src/WalletAccountModel.h
         src/WalletAccountModel.cpp
+        src/WalletController.h
+        src/WalletController.cpp
     )
     set_target_properties(logos_wallet_access PROPERTIES
         AUTOMOC ON
@@ -41,7 +46,10 @@ if(LOGOS_WALLET_BUILD_ACCESS)
             "${LOGOS_WALLET_GENERATED_DIR}"
             "${LOGOS_WALLET_GENERATED_DIR}/include"
     )
-    target_link_libraries(logos_wallet_access PUBLIC Qt6::Core)
+    target_link_libraries(logos_wallet_access
+        PUBLIC Qt6::Core
+        PRIVATE Qt6::Network
+    )
 endif()
 
 if(LOGOS_WALLET_BUILD_QML)
@@ -127,6 +135,8 @@ if(BUILD_TESTING)
         src/LogosWalletProvider.cpp
         src/WalletAccountModel.cpp
         src/WalletAccountModel.h
+        src/WalletController.cpp
+        src/WalletController.h
     )
     set_target_properties(logos_wallet_access_test PROPERTIES AUTOMOC ON)
     target_compile_features(logos_wallet_access_test PRIVATE cxx_std_17)
@@ -135,7 +145,11 @@ if(BUILD_TESTING)
         tests/support
         src
     )
-    target_link_libraries(logos_wallet_access_test PRIVATE Qt6::Core Qt6::Test)
+    target_link_libraries(logos_wallet_access_test PRIVATE
+        Qt6::Core
+        Qt6::Network
+        Qt6::Test
+    )
     add_test(NAME logos_wallet_access COMMAND logos_wallet_access_test)
 
     if(LOGOS_WALLET_BUILD_QML)

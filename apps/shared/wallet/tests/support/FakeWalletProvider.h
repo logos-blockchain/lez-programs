@@ -55,10 +55,12 @@ public:
         return createAccountResult;
     }
 
-    WalletAccountRead readPublicAccount(const QString&) const override
+    WalletAccountRead readPublicAccount(const QString& accountId) const override
     {
         ++readCalls;
-        return readResult;
+        WalletAccountRead result = readResult;
+        result.accountId = accountId;
+        return result;
     }
 
     WalletSubmission submitPublicTransaction(
