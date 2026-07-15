@@ -74,7 +74,7 @@ In this task, we extend testing for LEZ programs to cover privacy features:
 
 # LEZ programs
 
-## AMM program (unusual issues)
+## AMM program
 
 | Function tested | Test name | Category | Description of objective | Result |
 |---|---|---|---|---|
@@ -162,4 +162,4 @@ Privacy coverage for LEZ program tests is greatly improved from the added tests.
 - Privacy transactions have issues with chain calls in which multiple calls affect the same private account. This issue can be mitigated by adopting account diff paradigm instead of the current "account state replacement" that we currently use.
 
 Additional observation:
-AMM's chained-call privacy tests were blocked by the clock account being `DEFAULT_PROGRAM_ID`-owned in the test fixture, which trips a `spel-framework` dispatcher bug (upstream in `logos-co/spel`, confirmed present through v0.6.0) that silently drops any default-owned, non-default, unclaimed account from a program's output. Fixed by giving the fixture's clock account a non-default owner; see the AMM section. The dispatcher bug itself remains open upstream.
+AMM's chained-call privacy tests were blocked by the clock account being `DEFAULT_PROGRAM_ID`-owned in the test fixture, which trips a `spel-framework` dispatcher filter (upstream in `logos-co/spel`) that silently drops any default-owned, non-default, unclaimed account from a program's output. Fixed by giving the fixture's clock account a non-default owner; see the AMM section. But the deeper bug is in `logos-execution-zone` itself: `ValidatedStateDiff::from_public_transaction` never checks that the accounts touched in a program's output match the caller-declared `message.account_ids` — no count, no membership check, nothing like the privacy circuit's own `account_identities.len() == states_iter.len()` assertion. That's why the `spel-framework` drop went unnoticed by every pre-existing public AMM test: the public path has no validation capable of catching a silently-dropped account at all. Both remain open upstream.

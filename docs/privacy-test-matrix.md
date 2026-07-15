@@ -551,6 +551,26 @@ merge point from `logos-co/release/v0.5.0` (commit `73fc462`) shows the filter a
 there too, before any of the fork's own commits. **This is an upstream `logos-co/spel` bug**,
 inherited unchanged by the pinned fork — report it against the former, not the latter.
 
+**Correction — there's a second, independent bug in `logos-execution-zone` itself (2026-07-15)**:
+the "not a `lez_core`/circuit bug" claim above is too narrow. `ValidatedStateDiff::
+from_public_transaction` (`lee/state_machine/src/validated_state_diff.rs`) never checks that the
+accounts touched in a program's output match the caller-declared `message.account_ids` — no count
+check, no membership check, nothing analogous to the privacy circuit's own `account_identities.
+len() == states_iter.len()` assertion in `compute_circuit_output`. The reconciliation loop just
+does `state_diff.insert(pre.account_id, post.account().clone())` for whatever pairs the program's
+output happens to contain, however many that is, and returns `Ok(...)` regardless.
+
+That absence is why the `spel-framework` drop went unnoticed by every one of this repo's ~34
+pre-existing public AMM tests: the public path has no validation capable of catching a
+silently-dropped account at all, so a bug with zero privacy dimension to it hid behind passing
+public tests until the privacy circuit's stricter, positional bookkeeping happened to expose it.
+Two independent upstream defects, not one: `spel-framework`'s over-broad filter (which creates the
+drop) and `logos-execution-zone`'s missing account-accounting check on the public path (which lets
+any such drop — from this or any future bug — go completely undetected). The latter is arguably
+the more consequential of the two, since it's a general soundness gap independent of clock, AMM,
+or privacy entirely. Both should be reported upstream; report the `lee` gap against
+`logos-co/logos-execution-zone`, not `logos-co/spel`.
+
 ### ✅ Fixed for these tests (2026-07-15) — test-fixture clock ownership, not a circuit workaround
 
 The immediate blocker for all five `CHAIN`-dimension AMM privacy tests below was that
