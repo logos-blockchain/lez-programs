@@ -14,7 +14,18 @@
     # match the metadata.json `dependencies` entry so the builder can resolve
     # it as a module dependency. This revision exposes generic transaction
     # submission by deployed program ID.
-    logos_execution_zone.url = "github:logos-blockchain/logos-execution-zone-module?rev=d70225ced646934d2294fd9e8f8b03615c104b80";
+    logos_execution_zone = {
+      url = "github:logos-blockchain/logos-execution-zone-module?rev=d70225ced646934d2294fd9e8f8b03615c104b80";
+
+      # The module pins the monorepo at v0.2.0-rc6 (e37876a), which owns the
+      # xcrun wrapper in its flake.nix. Override that transitive input to the
+      # head of PR #629 (fix(macos): nuke xcrun cache) so the Metal/xcrun build
+      # works on macOS. Note: #629 branches off `dev`, so this also pulls dev's
+      # drift from rc6 — if the wallet_ffi ABI mismatches the module build, fall
+      # back to cherry-picking #629's one line onto e37876a and pin that commit.
+      inputs.logos-execution-zone.url =
+        "github:logos-blockchain/logos-execution-zone?rev=a7e06a660940a00093b1760560d37ff84aff5a05";
+    };
   };
 
   outputs = inputs@{ logos-module-builder, shared_wallet, ... }:
