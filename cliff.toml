@@ -1,0 +1,114 @@
+# git-cliff configuration
+# https://git-cliff.org/docs/configuration
+#
+# Generate/refresh the changelog with:
+#   git cliff -o CHANGELOG.md
+# See the "changelog" make target for the canonical invocation.
+
+[changelog]
+# A Tera template rendered for the whole changelog header.
+header = """
+# Changelog
+
+All notable changes to the LEZ programs in this repository are documented here.
+This file is generated from Conventional Commit messages by [git-cliff](https://git-cliff.org).
+"""
+# Rendered once per release (tag). With no tags, everything lands under "unreleased".
+#
+# Commits are grouped by type into sections (### Features, etc.), then within each
+# section grouped by Conventional Commit scope into a nested list. Scopeless commits
+# are listed flat at the end of their section. Nested items carry a `@@` sentinel that
+# the "@@ -> two spaces" postprocessor turns into real indentation (leading whitespace
+# would be stripped by `trim = true`, which we rely on to keep the flat lines clean).
+#
+# Breaking changes (Conventional Commit `!` marker or a `BREAKING CHANGE:` footer) are
+# surfaced twice: once up front in a dedicated "Breaking Changes" section carrying the
+# migration note (the footer text, or the subject as a fallback), and again inline in
+# their type section with a **[breaking]** badge.
+body = """
+{% set repo_url = "https://github.com/logos-blockchain/lez-programs" %}
+{% if version -%}
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+## [unreleased]
+{% endif %}
+{% set breaking = commits | filter(attribute="breaking", value=true) -%}
+{% if breaking | length > 0 %}
+### ⚠️ Breaking Changes
+{% for commit in breaking %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{{ commit.breaking_description | replace(from="\n", to=" ") | trim | upper_first }} \
+([{{ commit.id | truncate(length=7, end="") }}]({{ repo_url }}/commit/{{ commit.id }}))
+{%- endfor %}
+{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for scope, scoped in commits | filter(attribute="scope") | group_by(attribute="scope") %}
+- **{{ scope }}:**
+{%- for commit in scoped %}
+@@- {{ commit.message | upper_first }}{% if commit.breaking %} **[breaking]**{% endif %} ([{{ commit.id | truncate(length=7, end="") }}]({{ repo_url }}/commit/{{ commit.id }}))
+{%- endfor %}
+{%- endfor %}
+{%- for commit in commits %}
+{%- if not commit.scope %}
+- {{ commit.message | upper_first }}{% if commit.breaking %} **[breaking]**{% endif %} ([{{ commit.id | truncate(length=7, end="") }}]({{ repo_url }}/commit/{{ commit.id }}))
+{%- endif %}
+{%- endfor %}
+{% endfor -%}
+"""
+trim = true
+# Run on the fully-rendered changelog text.
+postprocessors = [
+    # Turn the nested-item sentinel into two-space markdown indentation.
+    { pattern = '(?m)^@@', replace = "  " },
+    # Collapse any run of 3+ newlines into a single blank line.
+    { pattern = '\n{3,}', replace = "\n\n" },
+    # Normalize trailing blank lines to a single one. (Postprocessors run per
+    # release body, so the trailing newline here also forms the blank-line
+    # separator before the next version header — do not drop it to "".)
+    { pattern = '\n+\z', replace = "\n" },
+]
+footer = ""
+
+[git]
+# Parse commits as Conventional Commits.
+conventional_commits = true
+# Keep non-conventional commits out of the changelog.
+filter_unconventional = true
+split_commits = false
+# Tidy up messages before grouping.
+commit_preprocessors = [
+    # Strip accidental leading whitespace (e.g. " build: ...").
+    { pattern = '^\s+', replace = "" },
+    # Insert a missing colon after a "type(scope)" prefix, e.g. "fix(x) msg".
+    { pattern = '^(\w+\([^)]+\))\s+(\w)', replace = "${1}: ${2}" },
+    # Drop trailing "(#123)" PR-number noise if present.
+    { pattern = '\s*\(#[0-9]+\)', replace = "" },
+]
+# Map commit types to changelog sections. Order here controls section order.
+commit_parsers = [
+    # Release commits (from `make release`) point the tag at themselves; keep them
+    # out of the next version's changelog.
+    { message = "^chore\\(release\\)", skip = true },
+    { message = "^feat", group = "<!-- 0 -->Features" },
+    { message = "^fix", group = "<!-- 1 -->Bug Fixes" },
+    { message = "^perf", group = "<!-- 2 -->Performance" },
+    { message = "^refactor", group = "<!-- 3 -->Refactor" },
+    { message = "^docs", group = "<!-- 4 -->Documentation" },
+    { message = "^test", group = "<!-- 5 -->Testing" },
+    { message = "^build", group = "<!-- 6 -->Build System" },
+    { message = "^ci", group = "<!-- 7 -->CI" },
+    { message = "^chore", group = "<!-- 8 -->Chores" },
+    { message = "^cleanup", group = "<!-- 8 -->Chores" },
+    { message = "^skills", group = "<!-- 8 -->Chores" },
+    { message = "^style", group = "<!-- 9 -->Styling" },
+    { message = "^revert", group = "<!-- 10 -->Reverts" },
+    # Anything else conventional but unmatched is skipped.
+    { message = ".*", skip = true },
+]
+# Sort commits newest-first within each group.
+sort_commits = "newest"
+# Never let a breaking commit be filtered out of the changelog.
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v[0-9].*"
