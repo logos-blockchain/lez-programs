@@ -50,6 +50,9 @@ nix profile install 'github:logos-co/logos-package-manager#cli'
 
 This makes `lgpm` available as a global command.
 
+For macOS prerequisites, the Metal toolchain requirement, and common Nix
+recovery steps, see [macOS setup](MACOS.md).
+
 ## Running the UI standalone
 
 The app is built from the **repository-root** flake (which also provides the
@@ -82,9 +85,11 @@ nix build '.#lgx' --out-link result-lgx
 # Portable variant (self-contained, works without nix)
 nix build '.#lgx-portable' --out-link result-lgx-portable
 
-# The core wallet module it depends on. Use the same rev this app pins as the
-# `logos_execution_zone` input in flake.nix so the ImageID/ABI match.
-nix build 'github:logos-blockchain/logos-execution-zone-module?rev=d2e9400ac06c3cdbfc2405b4f153fff9841a453c#lgx' \
+# The core wallet module it depends on. These are the same immutable upstream
+# revisions used by this app's flake, including the merged macOS Metal fix.
+nix build 'github:logos-blockchain/logos-execution-zone-module?rev=d70225ced646934d2294fd9e8f8b03615c104b80#lgx' \
+  --override-input logos-execution-zone \
+  'github:logos-blockchain/logos-execution-zone?rev=a7e06a660940a00093b1760560d37ff84aff5a05' \
   --out-link result-core
 ```
 
