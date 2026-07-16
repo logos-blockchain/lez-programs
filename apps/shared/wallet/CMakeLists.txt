@@ -106,11 +106,18 @@ if(LOGOS_WALLET_BUILD_QML)
         Qt6::Quick
         Qt6::QuickControls2
     )
+    # Resolve the sibling liblogos_wallet_qml.dylib/.so next to the plugin.
+    # macOS dyld does not expand the ELF "$ORIGIN" token — it uses @loader_path.
+    if(APPLE)
+        set(wallet_qml_rpath "@loader_path")
+    else()
+        set(wallet_qml_rpath "$ORIGIN")
+    endif()
     set_target_properties(logos_wallet_qml logos_wallet_qmlplugin PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${wallet_qml_output_dir}"
         RUNTIME_OUTPUT_DIRECTORY "${wallet_qml_output_dir}"
         BUILD_WITH_INSTALL_RPATH ON
-        INSTALL_RPATH "$ORIGIN"
+        INSTALL_RPATH "${wallet_qml_rpath}"
     )
 
     set(wallet_qml_install_dir "lib/qml/Logos/Wallet")
