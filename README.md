@@ -30,15 +30,29 @@ mkdir -p ~/.config/nix && echo "experimental-features = nix-command flakes" >> ~
 
 ### Example (`apps/amm`)
 
-```bash
-cd apps/amm
+The AMM UI is built from the **repository-root** flake (which also provides the
+`amm_client_ffi` library it links). Run it from the repo root by its named
+attribute — there is no bare `nix run .` default, so future apps are
+`nix run .#<name>`:
 
-# Run the app
-nix run .
+```bash
+# Run the app (from the repo root)
+nix run .#amm-ui
 
 # Update pinned dependencies
 nix flake update
 ```
+
+To use the Swap view, also set `AMM_PROGRAM_BIN` (your deployed `amm.bin`) and
+`TOKENS_CONFIG` (your token list) — use absolute paths, from the repo root:
+
+```bash
+AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+TOKENS_CONFIG=$(pwd)/amm-tokens.json \
+nix run .#amm-ui
+```
+
+See `apps/amm/README.md` for full details on both variables.
 
 ## Prerequisites
 

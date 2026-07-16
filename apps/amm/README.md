@@ -131,6 +131,20 @@ core module from `result-core/` and the UI plugin from `result-lgx/`:
 4. Choose the core module `.lgx` from `result-core/`, then the UI plugin `.lgx`
    from `result-lgx/`
 
+To actually use the Swap view you must also set `AMM_PROGRAM_BIN` and
+`TOKENS_CONFIG` (both explained below). Run this **from the repo root** — use
+absolute paths (`$(pwd)/…`), because `nix run` may not preserve the working
+directory, so relative paths won't resolve:
+
+```bash
+AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+TOKENS_CONFIG=$(pwd)/amm-tokens.json \
+nix run .#amm-ui
+```
+
+Without `AMM_PROGRAM_BIN` the Swap view stays disabled; without `TOKENS_CONFIG`
+the token picker is empty. Each is detailed below.
+
 ### AMM program binary (required for swaps)
 
 To execute a swap, the app must submit a transaction against the **exact AMM
@@ -178,10 +192,16 @@ account the wallet will sign transfers from/to for that token):
 ```
 
 If `TOKENS_CONFIG` is unset, unreadable, or not a valid JSON array, the token
-picker stays empty (a `qWarning` is logged; no swap can be started).
+picker stays empty (a `qWarning` naming the exact cause is logged to stderr; no
+swap can be started). `definitionId`/`holding` may be given as base58 (as the
+wallet/runbook display them) or hex — the app normalizes both to hex.
+
+Full command with both variables set (absolute paths, from the repo root):
 
 ```bash
-AMM_PROGRAM_BIN=/abs/path/to/amm.bin TOKENS_CONFIG=/abs/path/to/tokens.json nix run .#amm-ui
+AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+TOKENS_CONFIG=$(pwd)/amm-tokens.json \
+nix run .#amm-ui
 ```
 
 ## Updating Dependencies

@@ -97,8 +97,10 @@ Rectangle {
                 root.poolReserveA = (pool && pool.reserveA) || "0"
                 root.poolReserveB = (pool && pool.reserveB) || "0"
                 root.poolDefAHex = (pool && pool.defAHex) || ""
-                root.poolFeeBps = (pool && pool.feeBps) || 30
-                root.poolError = ""
+                // feeBps === 0 is a legitimate zero-fee pool; only fall back
+                // to the 30bps default when the backend didn't send a value.
+                root.poolFeeBps = (pool && pool.feeBps !== undefined) ? pool.feeBps : 30
+                root.poolError = (pool && pool.error && pool.error !== "no_pool") ? pool.error : ""
             },
             function (error) {
                 console.warn("resolvePool error:", error)
@@ -294,6 +296,9 @@ Rectangle {
             amount: root.sellDisplay
             token: root.sellToken
             active: root.editingSide === "sell"
+            // Sell amount is sent to the backend as a raw base-units integer
+            // string; reject fractional entry rather than fail opaquely.
+            digitsOnly: true
             onInputEdited: function(v) {
                 root.sellInput = v
                 if (root.editingSide !== "sell") root.editingSide = "sell"
