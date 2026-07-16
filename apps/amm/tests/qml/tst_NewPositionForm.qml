@@ -91,15 +91,31 @@ TestCase {
         }
     }
 
-    function createForm() {
+    function createEmptyForm(context) {
         var form = createTemporaryObject(formComponent, testCase, {
-            "flowState": flowState(({}))
+            "flowState": flowState(({})),
+            "newPositionContext": context || readyContext()
         })
         verify(form)
         wait(0)
+        return form
+    }
+
+    function createForm(context) {
+        var form = createEmptyForm(context)
+        form.selectToken("A", tokenLow)
+        form.selectToken("B", tokenHigh)
         compare(form.selectedTokenAId, tokenLow)
         compare(form.selectedTokenBId, tokenHigh)
         return form
+    }
+
+    function test_walletTokensDoNotPrefillPosition() {
+        var form = createEmptyForm()
+        compare(form.selectedTokenAId, "")
+        compare(form.selectedTokenBId, "")
+        compare(form.amountA, "")
+        compare(form.amountB, "")
     }
 
     function test_displayOrderMapsToCanonicalRequestAfterSwap() {
@@ -159,12 +175,7 @@ TestCase {
     }
 
     function test_missingPoolAcceptsLargeDirectAmountsFromEitherSide() {
-        var form = createTemporaryObject(formComponent, testCase, {
-            "flowState": flowState(({})),
-            "newPositionContext": rawAmountsContext()
-        })
-        verify(form)
-        wait(0)
+        var form = createForm(rawAmountsContext())
         form.priceAmountA = "15"
         form.priceAmountB = "10"
         form.flowState = flowState({
@@ -199,12 +210,7 @@ TestCase {
     }
 
     function test_missingPoolRoundsPairedRawAmounts() {
-        var form = createTemporaryObject(formComponent, testCase, {
-            "flowState": flowState(({})),
-            "newPositionContext": rawAmountsContext()
-        })
-        verify(form)
-        wait(0)
+        var form = createForm(rawAmountsContext())
         form.priceAmountA = "15"
         form.priceAmountB = "10"
         form.flowState = flowState({
@@ -415,14 +421,14 @@ TestCase {
         var form = createForm()
         form.flowState = flowState(quote)
         wait(0)
-        compare(form.amountA, "20")
-        compare(form.amountB, "4")
+        compare(form.amountA, "")
+        compare(form.amountB, "")
 
         quoteRequestedSpy.target = form
         quoteRequestedSpy.clear()
         form.editActiveAmount("A", "5")
         compare(form.amountA, "5")
-        compare(form.amountB, "4")
+        compare(form.amountB, "")
         compare(quoteRequestedSpy.count, 0)
 
         form.finishActiveAmount("A", "5")
@@ -509,6 +515,8 @@ TestCase {
         wait(0)
 
         compare(form.selectedFeeBps, 5)
+        compare(form.amountA, "")
+        compare(form.amountB, "")
         compare(quoteRequestedSpy.count, 1)
         verify(quoteRequestedSpy.signalArguments[0][1].ok)
         compare(quoteRequestedSpy.signalArguments[0][1].request.maxAmountARaw, "5000000000")
@@ -582,8 +590,8 @@ TestCase {
         }
         wait(0)
 
-        compare(form.selectedTokenAId, tokenHigh)
-        compare(form.selectedTokenBId, tokenThird)
+        compare(form.selectedTokenAId, "")
+        compare(form.selectedTokenBId, tokenHigh)
         compare(form.amountA, "")
         compare(form.amountB, "")
         compare(form.minimumAmountARaw, "")
