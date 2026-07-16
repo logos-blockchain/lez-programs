@@ -21,7 +21,11 @@
     # match the metadata.json `dependencies` entry so the builder can resolve
     # it as a module dependency. This rev pins LEZ (lssa) at fb8cbac4, which
     # includes the macOS Metal-build fix, so no `--override-input` is needed.
-    logos_execution_zone.url = "github:logos-blockchain/logos-execution-zone-module?rev=d2e9400ac06c3cdbfc2405b4f153fff9841a453c";
+    # Fork of logos-blockchain/logos-execution-zone-module @ d2e9400a with the
+    # QtRO serialization fix: send_generic_public_transaction's `instruction` and
+    # `program_dependencies` use byte-string IPC types so the args survive the
+    # cross-process boundary. See docs/amm-swap-qtro-serialization-bug.md.
+    logos_execution_zone.url = "github:gravityblast/logos-execution-zone-module?ref=fix/generic-tx-bstr-serialization";
   };
 
   outputs =

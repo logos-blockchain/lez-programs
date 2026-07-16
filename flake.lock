@@ -24345,17 +24345,17 @@
         "nix-bundle-lgx": "nix-bundle-lgx_40"
       },
       "locked": {
-        "lastModified": 1782313954,
-        "narHash": "sha256-psh5EtcIZh6kzFD4pQDT8bae9JS9eVtk5nPWxR2aGSA=",
-        "owner": "logos-blockchain",
+        "lastModified": 1784205966,
+        "narHash": "sha256-9qDpsio9ms7sz2yf8umH2bZLL4esjNuNDWUvsPzdNYc=",
+        "owner": "gravityblast",
         "repo": "logos-execution-zone-module",
-        "rev": "d2e9400ac06c3cdbfc2405b4f153fff9841a453c",
+        "rev": "a48fd1c7447885895c15a929b945b713cebf2032",
         "type": "github"
       },
       "original": {
-        "owner": "logos-blockchain",
+        "owner": "gravityblast",
+        "ref": "fix/generic-tx-bstr-serialization",
         "repo": "logos-execution-zone-module",
-        "rev": "d2e9400ac06c3cdbfc2405b4f153fff9841a453c",
         "type": "github"
       }
     },
