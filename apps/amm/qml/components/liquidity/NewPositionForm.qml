@@ -109,13 +109,13 @@ AmmActionCard {
     implicitHeight: content.implicitHeight + root.contentPadding * 2
     implicitWidth: 480
 
-    Component.onCompleted: Qt.callLater(root.ensurePair)
+    Component.onCompleted: Qt.callLater(root.reconcileSelection)
     onNewPositionContextChanged: Qt.callLater(root.applyContextChange)
     function applyContextChange() {
         if (root.resolvingToken)
             root.finishTokenResolution()
         else
-            root.ensurePair()
+            root.reconcileSelection()
     }
     onQuotePayloadChanged: {
         if (root.quoteStale)
@@ -786,26 +786,23 @@ AmmActionCard {
         root.tokenResolutionErrorSide = side
     }
 
-    function ensurePair() {
+    function reconcileSelection() {
         var status = String(root.newPositionContext.status || "")
         if (status !== "ready" && status !== "no_wallet")
             return
         var previousA = root.selectedTokenAId
         var previousB = root.selectedTokenBId
         var selectable = root.selectableTokenIds()
-        if (selectable.length === 0) {
+        if (root.selectedTokenAId.length > 0
+                && selectable.indexOf(root.selectedTokenAId) < 0) {
             root.selectedTokenAId = ""
+        }
+        if (root.selectedTokenBId.length > 0
+                && selectable.indexOf(root.selectedTokenBId) < 0) {
             root.selectedTokenBId = ""
-            if (previousA.length > 0 || previousB.length > 0)
-                root.resetPairDraft()
-            return
         }
-        if (selectable.indexOf(root.selectedTokenAId) < 0)
-            root.selectedTokenAId = selectable[0]
-        if (selectable.indexOf(root.selectedTokenBId) < 0
-                || root.selectedTokenBId === root.selectedTokenAId) {
-            root.selectedTokenBId = selectable.length > 1 ? selectable[1] : ""
-        }
+        if (root.selectedTokenBId === root.selectedTokenAId)
+            root.selectedTokenBId = ""
         if (root.selectedTokenAId !== previousA || root.selectedTokenBId !== previousB)
             root.resetPairDraft()
         else if (root.hasPair)
@@ -987,14 +984,7 @@ AmmActionCard {
             return { "ok": false, "errors": errors, "request": ({}) }
         }
 
-        var canonicalAId = root.displayIsCanonical ? root.selectedTokenAId : root.selectedTokenBId
-        var canonicalBId = root.displayIsCanonical ? root.selectedTokenBId : root.selectedTokenAId
-        var request = {
-            "schema": "new-position.v1",
-            "tokenAId": canonicalAId,
-            "tokenBId": canonicalBId,
-            "feeBps": root.selectedFeeBps
-        }
+        var request = root.pairRequest()
 
         if (root.activePool) {
             var parsedA = AmountMath.parseHuman(root.amountA, root.decimalsA)
@@ -1083,6 +1073,17 @@ AmmActionCard {
 
         root.localErrors = errors
         return { "ok": errors.length === 0, "errors": errors, "request": request }
+    }
+
+    function pairRequest() {
+        return {
+            "schema": "new-position.v1",
+            "tokenAId": root.displayIsCanonical
+                        ? root.selectedTokenAId : root.selectedTokenBId,
+            "tokenBId": root.displayIsCanonical
+                        ? root.selectedTokenBId : root.selectedTokenAId,
+            "feeBps": root.selectedFeeBps
+        }
     }
 
     function requestQuote(immediate) {
@@ -1327,23 +1328,17 @@ AmmActionCard {
             return
         if (root.poolFeeBps > 0 && root.selectedFeeBps !== root.poolFeeBps) {
             root.selectedFeeBps = root.poolFeeBps
-            if (root.amountA.length === 0 && root.amountB.length === 0) {
-                root.amountA = AmountMath.formatRaw(
-                            root.probeRaw(root.tokenA, root.decimalsA), root.decimalsA)
-                root.amountB = AmountMath.formatRaw(
-                            root.probeRaw(root.tokenB, root.decimalsB), root.decimalsB)
-            }
-            root.requestQuote(true)
+            root.localErrors = []
+            root.quoteRequested(true, {
+                "ok": true,
+                "errors": [],
+                "request": root.poolProbeRequest(root.pairRequest())
+            })
             return
         }
 
         if (root.quotePayload.status !== "ok")
             return
-
-        if (root.activePool && root.amountA.length === 0 && root.amountB.length === 0) {
-            root.amountA = AmountMath.formatRaw(root.displayRaw("maxAmountARaw", "maxAmountBRaw", "A"), root.decimalsA)
-            root.amountB = AmountMath.formatRaw(root.displayRaw("maxAmountARaw", "maxAmountBRaw", "B"), root.decimalsB)
-        }
 
         if (root.missingPool) {
             var rawA = root.displayRaw("actualAmountARaw", "actualAmountBRaw", "A")
