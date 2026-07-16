@@ -1,10 +1,17 @@
 [package]
 name = "amm_client_ffi"
 version = "0.1.0"
+# 2021 (not the repo's 2024): matches amm_core and keeps plain #[no_mangle]
+# (edition 2024 requires #[unsafe(no_mangle)]).
 edition = "2021"
 
 [lib]
 name = "amm_client_ffi"
+# The logos module builder's macOS find_library only locates SHARED libs
+# (lib<name>.dylib), never a static .a — so we must ship the cdylib. The flake
+# gives the dylib an ABSOLUTE store-path install-name (not @rpath), so the plugin
+# links it by its /nix/store path (kept in the closure) and dlopen resolves it at
+# runtime without any rpath staging. staticlib/rlib kept for other consumers/tests.
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [lints]

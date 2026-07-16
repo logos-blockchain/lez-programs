@@ -5,4 +5,6 @@ fn main() {
         .expect("cbindgen")
         .write_to_file(format!("{crate_dir}/amm_client_ffi.h"));
     println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=cbindgen.toml");
 }

@@ -71,8 +71,14 @@
                 cp programs/amm/client-ffi/amm_client_ffi.h $out/include/
               ''
               + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+                # Set the dylib's install-name to its ABSOLUTE store path (NOT
+                # @rpath): the logos module builder links this lib into the plugin
+                # but never stages it into the plugin's runtime rpath, so an
+                # @rpath id fails to dlopen at launch. An absolute /nix/store id
+                # is recorded in the plugin's LC_LOAD_DYLIB, kept in the closure
+                # by Nix, and resolved directly at runtime — no rpath needed.
                 if [ -f $out/lib/libamm_client_ffi.dylib ]; then
-                  install_name_tool -id @rpath/libamm_client_ffi.dylib $out/lib/libamm_client_ffi.dylib
+                  install_name_tool -id "$out/lib/libamm_client_ffi.dylib" $out/lib/libamm_client_ffi.dylib
                 fi
               '';
           }
@@ -108,9 +114,27 @@
       appApps = appOutputs.apps or { };
       appPkgs = appOutputs.packages or { };
 
+      # Wrap the app launcher to export DYLD_FALLBACK_LIBRARY_PATH pointing at the
+      # amm_client_ffi lib. The logos module builder links the plugin against
+      # @rpath/libamm_client_ffi.dylib but does NOT stage that dylib into the
+      # plugin-dir it loads at runtime, so dlopen fails with "Failed to load UI
+      # plugin". Adding the crate's store lib dir to DYLD's fallback search path
+      # lets the loader find it (the store path stays in the closure).
+      wrapWithDyld = system: app:
+        let
+          pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
+          ammFfi = crateOutputs.packages.${system}.amm_client_ffi;
+        in
+        app // {
+          program = "${pkgs.writeShellScript "run-amm-ui" ''
+            export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+            exec ${app.program} "$@"
+          ''}";
+        };
+
       renamedApps = builtins.mapAttrs (
         system: attrs:
-        (builtins.removeAttrs attrs [ "default" ]) // (if attrs ? default then { amm-ui = attrs.default; } else { })
+        (builtins.removeAttrs attrs [ "default" ]) // (if attrs ? default then { amm-ui = wrapWithDyld system attrs.default; } else { })
       ) appApps;
 
       mergedPackages = builtins.mapAttrs (
