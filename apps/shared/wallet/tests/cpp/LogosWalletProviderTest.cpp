@@ -52,6 +52,7 @@ private slots:
     void adoptsOpenWalletAndCachesSnapshots();
     void opensConfiguredWalletWhenNoSharedSessionExists();
     void opensAndReadsAsynchronously();
+    void avoidsSavingAfterUnchangedAsynchronousSnapshots();
     void createsAndPersistsWallet();
     void validatesCompletePublicAccountPayloads();
     void fallsBackToBalanceWhenPublicReadFails();
@@ -180,6 +181,29 @@ void LogosWalletProviderTest::opensAndReadsAsynchronously()
                 && !reads.at(1).ok();
         });
     QVERIFY(batchRead);
+}
+
+void LogosWalletProviderTest::avoidsSavingAfterUnchangedAsynchronousSnapshots()
+{
+    LogosModules modules;
+    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.logos_execution_zone.currentBlockHeight = 12;
+    modules.logos_execution_zone.lastSyncedBlock = 12;
+    LogosWalletProvider provider(&modules);
+
+    bool connected = false;
+    provider.connectAsync({}, [&connected](WalletSession session) {
+        connected = session.ok();
+    });
+    QVERIFY(connected);
+    QCOMPARE(modules.logos_execution_zone.saveCalls, 0);
+
+    bool refreshed = false;
+    provider.snapshotAsync(true, [&refreshed](WalletSnapshot snapshot) {
+        refreshed = snapshot.ok();
+    });
+    QVERIFY(refreshed);
+    QCOMPARE(modules.logos_execution_zone.saveCalls, 0);
 }
 
 void LogosWalletProviderTest::createsAndPersistsWallet()

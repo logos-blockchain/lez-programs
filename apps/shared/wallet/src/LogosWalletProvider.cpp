@@ -609,18 +609,11 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback
                                                     state->snapshot.publicAccountReads.append(
                                                         state->publicReads.at(index));
                                             }
-                                            m_impl->logos->logos_execution_zone.saveAsync(
-                                                [this, generation, state](int result) mutable {
-                                                    if (generation != m_generation)
-                                                        return;
-                                                    if (result != WALLET_FFI_SUCCESS)
-                                                        state->snapshot.failure = WalletFailure::SaveFailed;
-                                                    if (state->snapshot.ok()) {
-                                                        m_snapshot = state->snapshot;
-                                                        m_snapshotReady = true;
-                                                    }
-                                                    state->callback(std::move(state->snapshot));
-                                                });
+                                            if (state->snapshot.ok()) {
+                                                m_snapshot = state->snapshot;
+                                                m_snapshotReady = true;
+                                            }
+                                            state->callback(std::move(state->snapshot));
                                         };
 
                                         if (entries.isEmpty()) {
