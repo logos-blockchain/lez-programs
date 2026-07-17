@@ -19,6 +19,11 @@ namespace {
             return {};
         }
 
+        void connectAsync(const WalletPaths&, SessionCallback callback) override
+        {
+            callback({});
+        }
+
         WalletCreation createWallet(const WalletPaths&, const QString&) override
         {
             return {};
@@ -27,6 +32,11 @@ namespace {
         WalletSnapshot snapshot(bool) override
         {
             return {};
+        }
+
+        void snapshotAsync(bool, SnapshotCallback callback) override
+        {
+            callback({});
         }
 
         void clearSnapshot() override {}
@@ -102,7 +112,7 @@ namespace {
         AmmClientResult quote(const QJsonObject&) const override
         {
             return success({
-                { QStringLiteral("schema"), QStringLiteral("new-position.v1") },
+                { QStringLiteral("schema"), QStringLiteral("new-position.v2") },
                 { QStringLiteral("status"), QStringLiteral("ok") },
                 { QStringLiteral("canSubmit"), true },
                 { QStringLiteral("quoteHash"), quoteHash },
@@ -116,12 +126,19 @@ namespace {
             return success({
                 { QStringLiteral("status"), QStringLiteral("ready") },
                 { QStringLiteral("accountIds"), QJsonArray { QStringLiteral("account") } },
+                { QStringLiteral("affectedAccountIds"),
+                  QJsonArray { QStringLiteral("account") } },
                 { QStringLiteral("signingRequirements"), QJsonArray { true } },
                 { QStringLiteral("instruction"), QJsonArray { 1 } },
                 { QStringLiteral("programId"), QStringLiteral("program") },
                 { QStringLiteral("deadlineMs"),
                   QString::number(QDateTime::currentMSecsSinceEpoch() + 60'000) },
             });
+        }
+
+        AmmClientResult normalizeAccountRpc(const QJsonObject&) const override
+        {
+            return {};
         }
 
         static AmmClientResult success(const QJsonObject& value)
@@ -149,7 +166,7 @@ namespace {
 int main()
 {
     const QVariantMap request {
-        { QStringLiteral("schema"), QStringLiteral("new-position.v1") },
+        { QStringLiteral("schema"), QStringLiteral("new-position.v2") },
         { QStringLiteral("tokenAId"), QStringLiteral("token-a") },
         { QStringLiteral("tokenBId"), QStringLiteral("token-b") },
         { QStringLiteral("feeBps"), 30 },
@@ -167,6 +184,10 @@ int main()
     if (!expect(result.value(QStringLiteral("transactionId")).toString()
                     == QStringLiteral("1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"),
                 "native hash should become the expected base58 transaction ID"))
+        return 1;
+    if (!expect(result.value(QStringLiteral("nativeTransactionHash")).toString()
+                    == wallet.transactionHash,
+                "submitted result should preserve the native hash for polling"))
         return 1;
     if (!expect(wallet.createdAccounts == 1 && client.sawFreshLp,
                 "fresh LP account should enter the plan"))

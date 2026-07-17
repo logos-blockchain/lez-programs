@@ -255,6 +255,10 @@ Item {
         function onQuoteRefreshRequested(immediate) {
             form.requestQuote(immediate)
         }
+
+        function onConfirmationQuoteReady(snapshot) {
+            confirmationDialog.updateSnapshot(snapshot)
+        }
     }
 
     Component {
@@ -269,7 +273,15 @@ Item {
         title: qsTr("Confirm new position")
         confirmText: qsTr("Submit")
         busy: newPositionFlow.submitting
+              || (opened && snapshot.quoteReady === false
+                  && newPositionFlow.quoteLoading)
+        confirmEnabled: snapshot.quoteReady === true
+                        && newPositionFlow.walletCanSubmit
         summary: liquidityConfirmationSummary
+
+        onSummaryEdited: function(snapshot) {
+            newPositionFlow.requoteConfirmation(snapshot)
+        }
 
         onConfirmed: function(snapshot) {
             newPositionFlow.confirm(snapshot)

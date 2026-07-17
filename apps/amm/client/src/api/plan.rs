@@ -77,6 +77,7 @@ pub(super) fn plan(input: PlanRequest) -> Result<Value, String> {
         return Ok(plan_error("transaction_deadline_expired"));
     }
     let NewPositionPlan { accounts, branch } = plan;
+    let affected_account_ids = accounts.writable_account_ids(fresh_lp)?;
     let (account_ids, signing_requirements) = accounts.wallet_args(fresh_lp)?;
     let instruction = match branch {
         QuoteBranch::Missing { amount_a, amount_b } => {
@@ -116,6 +117,10 @@ pub(super) fn plan(input: PlanRequest) -> Result<Value, String> {
         "status": "ready",
         "programId": input.amm_program_id,
         "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
+        "affectedAccountIds": affected_account_ids
+            .into_iter()
+            .map(account_id_hex)
+            .collect::<Vec<_>>(),
         "signingRequirements": signing_requirements,
         "instruction": instruction,
         "deadlineMs": deadline.to_string(),

@@ -4,17 +4,43 @@
 #include <QJsonObject>
 #include <QString>
 #include <QVariantMap>
+#include <QVector>
+
+#include <functional>
 
 #include "ActiveNetwork.h"
 
 class AmmClient;
 class WalletProvider;
+class SequencerClient;
+struct WalletAccount;
 
 class NewPositionRuntime {
 public:
-    NewPositionRuntime(WalletProvider* wallet, AmmClient* client);
+    using ResultCallback = std::function<void(QVariantMap)>;
+
+    NewPositionRuntime(WalletProvider* wallet,
+                       AmmClient* client,
+                       SequencerClient* sequencer = nullptr);
 
     void clearWalletAccounts();
+    void setWalletAccounts(const QVector<WalletAccount>& accounts);
+
+    void contextAsync(const QVariantMap& request,
+                      const ActiveNetworkSnapshot& network,
+                      bool walletOpen,
+                      bool refreshPublicData,
+                      ResultCallback callback);
+    void quoteAsync(const QVariantMap& request,
+                    const ActiveNetworkSnapshot& network,
+                    bool walletOpen,
+                    bool forceRefresh,
+                    ResultCallback callback);
+    void submitAsync(const QVariantMap& request,
+                     const QString& quoteHash,
+                     const ActiveNetworkSnapshot& network,
+                     bool walletCanSubmit,
+                     ResultCallback callback);
 
     QVariantMap context(const QVariantMap& request,
                         const ActiveNetworkSnapshot& network,
@@ -35,8 +61,15 @@ private:
                                 bool walletOpen,
                                 bool freshWalletAccounts,
                                 QJsonObject* error) const;
+    void buildQuoteInputAsync(const QVariantMap& request,
+                              const ActiveNetworkSnapshot& network,
+                              bool walletOpen,
+                              bool forceRefresh,
+                              std::function<void(QJsonObject, QJsonObject)> callback) const;
 
     WalletProvider* m_wallet;
     AmmClient* m_client;
+    SequencerClient* m_sequencer;
+    QStringList m_walletPublicAccountIds;
     bool m_submitInFlight = false;
 };

@@ -6,8 +6,8 @@ use std::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
-    self, AmmApiError, AmmResult, ConfigIdRequest, ContextRequest, PairIdsRequest, PlanRequest,
-    QuoteRequest, TokenIdsRequest,
+    self, AmmApiError, AmmResult, ConfigIdRequest, ContextRequest, NormalizeAccountRpcRequest,
+    PairIdsRequest, PlanRequest, QuoteRequest, TokenIdsRequest,
 };
 
 #[derive(Serialize)]
@@ -104,6 +104,11 @@ pub extern "C" fn amm_quote(request_json: *const c_char) -> *mut c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_plan(request_json: *const c_char) -> *mut c_char {
     call::<PlanRequest>(request_json, api::plan)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_normalize_account_rpc(request_json: *const c_char) -> *mut c_char {
+    call::<NormalizeAccountRpcRequest>(request_json, api::normalize_account_rpc)
 }
 
 /// Releases a string returned by an `amm_*` operation.

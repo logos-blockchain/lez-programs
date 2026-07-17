@@ -17,7 +17,7 @@ use super::{
     commitment::{QuoteCommitment, RequestCommitment},
     context::fungible_definition,
     funding::{funding_commitments, funding_issues, hash_quote},
-    holding::{decode_fungible_holding, select_holding, wallet_holdings},
+    holding::{decode_fungible_holding, holding_options, select_holding, wallet_holdings},
     pair::{derive_pair, is_canonical_pair, PairIds},
     position::{
         AccountPlan, AccountPlanHoldings, EvaluatedQuote, NewPositionPlan, QuoteBranch,
@@ -213,9 +213,18 @@ fn compute_missing_quote(
     let expected_lp = initial_lp - MINIMUM_LIQUIDITY;
 
     let holdings = wallet_holdings(&input.snapshot.wallet_accounts, pair.token_program);
-    let holding_a = select_holding(&holdings, pair.token_a);
-    let holding_b = select_holding(&holdings, pair.token_b);
-    let funding = funding_issues(
+    let holding_a = select_holding(
+        &holdings,
+        pair.token_a,
+        input.request.holding_a_id.as_deref(),
+    );
+    let holding_b = select_holding(
+        &holdings,
+        pair.token_b,
+        input.request.holding_b_id.as_deref(),
+    );
+    let mut funding = holding_selection_issues(input, pair, &holdings, &holding_a, &holding_b);
+    funding.extend(funding_issues(
         input.snapshot.wallet_available,
         pair,
         &holding_a,
@@ -223,7 +232,7 @@ fn compute_missing_quote(
         &holding_b,
         amount_b,
         ["amountARaw", "amountBRaw"],
-    );
+    ));
     let can_submit = funding.is_empty();
     let mut account_plan = missing_account_plan(
         input,
@@ -440,11 +449,31 @@ fn compute_active_quote(
         return Ok(error);
     }
     let holdings = wallet_holdings(&input.snapshot.wallet_accounts, pair.token_program);
-    let holding_a = select_holding(&holdings, pair.token_a);
-    let holding_b = select_holding(&holdings, pair.token_b);
-    let lp_holding = select_holding(&holdings, pair.lp_definition);
-    let requires_fresh_lp = lp_holding.is_none();
-    let funding = funding_issues(
+    let holding_a = select_holding(
+        &holdings,
+        pair.token_a,
+        input.request.holding_a_id.as_deref(),
+    );
+    let holding_b = select_holding(
+        &holdings,
+        pair.token_b,
+        input.request.holding_b_id.as_deref(),
+    );
+    let lp_options = holding_options(&holdings, pair.lp_definition);
+    let lp_holding = if input.request.create_fresh_lp {
+        None
+    } else {
+        select_holding(
+            &holdings,
+            pair.lp_definition,
+            input.request.lp_holding_id.as_deref(),
+        )
+    };
+    let lp_destination_selected =
+        input.request.create_fresh_lp || lp_holding.is_some() || lp_options.is_empty();
+    let requires_fresh_lp = input.request.create_fresh_lp || lp_options.is_empty();
+    let mut funding = holding_selection_issues(input, pair, &holdings, &holding_a, &holding_b);
+    funding.extend(funding_issues(
         input.snapshot.wallet_available,
         pair,
         &holding_a,
@@ -452,7 +481,15 @@ fn compute_active_quote(
         &holding_b,
         actual_b,
         ["maxAmountARaw", "maxAmountBRaw"],
-    );
+    ));
+    if !lp_destination_selected {
+        funding.push(issue(
+            "lp_destination_required",
+            "Select an LP token destination.",
+            &["lpHoldingId", "createFreshLp"],
+            json!({ "available": lp_options.len() }),
+        ));
+    }
     let can_submit = funding.is_empty();
     let warnings = if slippage_bps >= HIGH_SLIPPAGE_BPS {
         vec![issue(
@@ -532,6 +569,12 @@ fn compute_active_quote(
         "minimumLpRaw": minimum_lp.to_string(),
         "initialPriceRealRaw": spot_price_q64_64(reserve_a, reserve_b).to_string(),
         "requiresFreshLp": requires_fresh_lp,
+        "lpDestinationRequired": !lp_destination_selected,
+        "lpHoldingOptions": lp_options.iter().map(|holding| json!({
+            "holdingId": holding.id.to_string(),
+            "balanceRaw": holding.balance.to_string(),
+        })).collect::<Vec<_>>(),
+        "selectedLpHoldingId": lp_holding.as_ref().map(|holding| holding.id.to_string()),
         "accountPreview": preview,
         "errors": funding,
         "warnings": warnings,
@@ -554,6 +597,52 @@ fn compute_active_quote(
         quote_hash,
         plan,
     }))
+}
+
+fn holding_selection_issues(
+    input: &QuoteRequest,
+    pair: PairIds,
+    holdings: &[super::holding::SelectedHolding],
+    holding_a: &Option<super::holding::SelectedHolding>,
+    holding_b: &Option<super::holding::SelectedHolding>,
+) -> Vec<Value> {
+    if !input.snapshot.wallet_available {
+        return Vec::new();
+    }
+
+    let mut errors = Vec::new();
+    for (definition_id, requested, selected, field) in [
+        (
+            pair.token_a,
+            input.request.holding_a_id.as_deref(),
+            holding_a,
+            "holdingAId",
+        ),
+        (
+            pair.token_b,
+            input.request.holding_b_id.as_deref(),
+            holding_b,
+            "holdingBId",
+        ),
+    ] {
+        let options = holding_options(holdings, definition_id);
+        if !options.is_empty() && selected.is_none() {
+            errors.push(issue(
+                if requested.is_some() {
+                    "invalid_holding_selection"
+                } else {
+                    "holding_selection_required"
+                },
+                "Select a wallet holding for this token.",
+                &[field],
+                json!({
+                    "tokenId": definition_id.to_string(),
+                    "available": options.len(),
+                }),
+            ));
+        }
+    }
+    errors
 }
 
 fn validate_active_accounts(

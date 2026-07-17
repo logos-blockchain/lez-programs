@@ -4,6 +4,13 @@ use crate::account::AccountRead;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct NormalizeAccountRpcRequest {
+    pub account_id: String,
+    pub response: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigIdRequest {
     pub amm_program_id: String,
 }
@@ -59,6 +66,14 @@ pub struct PositionRequest {
     pub token_a_id: String,
     pub token_b_id: String,
     pub fee_bps: u32,
+    #[serde(default)]
+    pub holding_a_id: Option<String>,
+    #[serde(default)]
+    pub holding_b_id: Option<String>,
+    #[serde(default)]
+    pub lp_holding_id: Option<String>,
+    #[serde(default)]
+    pub create_fresh_lp: bool,
     #[serde(default)]
     pub amount_a_raw: Option<String>,
     #[serde(default)]

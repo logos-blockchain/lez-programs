@@ -5,6 +5,9 @@ use nssa_core::{
     program::ProgramId,
 };
 use serde::Deserialize;
+use serde_json::{json, Value};
+
+use crate::api::NormalizeAccountRpcRequest;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -137,6 +140,47 @@ pub(crate) fn decode_account(read: &AccountRead) -> Result<(AccountId, Account),
     ))
 }
 
+#[derive(Deserialize)]
+struct RpcEnvelope {
+    #[serde(default)]
+    result: Option<RpcAccount>,
+    #[serde(default)]
+    error: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct RpcAccount {
+    program_owner: ProgramId,
+    balance: u128,
+    data: Vec<u8>,
+    nonce: u128,
+}
+
+pub(crate) fn normalize_account_rpc(request: NormalizeAccountRpcRequest) -> Result<Value, String> {
+    parse_hex_32(&request.account_id, "account id")?;
+    let envelope: RpcEnvelope = serde_json::from_str(&request.response)
+        .map_err(|error| format!("invalid sequencer response: {error}"))?;
+    if envelope.error.is_some() {
+        return Err(String::from("sequencer returned an account-read error"));
+    }
+    let account = envelope
+        .result
+        .ok_or_else(|| String::from("sequencer returned no account"))?;
+    let data = Data::try_from(account.data)
+        .map_err(|error| format!("account data is too large: {error}"))?;
+
+    Ok(json!({
+        "id": request.account_id,
+        "status": "ok",
+        "account": {
+            "program_owner": hex::encode(program_id_bytes(account.program_owner)),
+            "balance": hex::encode(account.balance.to_le_bytes()),
+            "nonce": hex::encode(account.nonce.to_le_bytes()),
+            "data": hex::encode(data.as_ref()),
+        },
+    }))
+}
+
 #[cfg(test)]
 pub(crate) fn account_read(id: AccountId, account: &Account) -> AccountRead {
     AccountRead {
@@ -148,5 +192,37 @@ pub(crate) fn account_read(id: AccountId, account: &Account) -> AccountRead {
             nonce: hex::encode(account.nonce.0.to_le_bytes()),
             data: hex::encode(account.data.as_ref()),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_rpc_u128_without_precision_loss() {
+        let account_id = hex::encode([7_u8; 32]);
+        let value = normalize_account_rpc(NormalizeAccountRpcRequest {
+            account_id: account_id.clone(),
+            response: String::from(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"program_owner":[1,2,3,4,5,6,7,8],"balance":340282366920938463463374607431768211455,"data":[0,255],"nonce":18446744073709551617}}"#,
+            ),
+        })
+        .unwrap();
+
+        assert_eq!(value["id"], account_id);
+        assert_eq!(
+            value["account"]["balance"],
+            "ffffffffffffffffffffffffffffffff"
+        );
+        assert_eq!(
+            value["account"]["nonce"],
+            "01000000000000000100000000000000"
+        );
+        assert_eq!(value["account"]["data"], "00ff");
+        assert_eq!(
+            value["account"]["program_owner"],
+            "0100000002000000030000000400000005000000060000000700000008000000"
+        );
     }
 }

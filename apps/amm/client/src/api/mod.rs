@@ -20,15 +20,15 @@ mod tests;
 use std::{error::Error, fmt};
 
 pub use request::{
-    ConfigIdRequest, ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PositionRequest,
-    QuoteRequest, TokenIdsRequest,
+    ConfigIdRequest, ContextRequest, NormalizeAccountRpcRequest, PairIdsRequest, PairSnapshot,
+    PlanRequest, PositionRequest, QuoteRequest, TokenIdsRequest,
 };
 use serde_json::Value;
 
 pub use crate::account::{AccountRead, WalletAccount};
 
 /// Schema identifier expected by position quote and plan requests.
-pub const NEW_POSITION_SCHEMA: &str = "new-position.v1";
+pub const NEW_POSITION_SCHEMA: &str = "new-position.v2";
 
 pub(crate) const SCHEMA: &str = NEW_POSITION_SCHEMA;
 
@@ -94,4 +94,9 @@ pub fn quote(request: QuoteRequest) -> AmmResult {
 /// Materializes a previously quoted request into wallet submission arguments.
 pub fn plan(request: PlanRequest) -> AmmResult {
     plan::plan(request).map_err(Into::into)
+}
+
+/// Converts one raw sequencer `getAccount` response into precision-safe account-read JSON.
+pub fn normalize_account_rpc(request: NormalizeAccountRpcRequest) -> AmmResult {
+    crate::account::normalize_account_rpc(request).map_err(Into::into)
 }

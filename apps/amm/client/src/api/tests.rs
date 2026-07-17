@@ -144,6 +144,10 @@ fn request(pair: PairIds) -> PositionRequest {
         token_a_id: pair.token_a.to_string(),
         token_b_id: pair.token_b.to_string(),
         fee_bps: 30,
+        holding_a_id: Some(AccountId::new([61; 32]).to_string()),
+        holding_b_id: Some(AccountId::new([62; 32]).to_string()),
+        lp_holding_id: None,
+        create_fresh_lp: false,
         amount_a_raw: None,
         amount_b_raw: None,
         max_amount_a_raw: None,
@@ -244,8 +248,16 @@ fn account_plan_sources_follow_pool_branch() {
     let pair = scenario.pair;
     let input = scenario.quote_request();
     let holdings = wallet_holdings(&input.snapshot.wallet_accounts, pair.token_program);
-    let holding_a = select_holding(&holdings, pair.token_a);
-    let holding_b = select_holding(&holdings, pair.token_b);
+    let holding_a = select_holding(
+        &holdings,
+        pair.token_a,
+        input.request.holding_a_id.as_deref(),
+    );
+    let holding_b = select_holding(
+        &holdings,
+        pair.token_b,
+        input.request.holding_b_id.as_deref(),
+    );
 
     let missing = missing_account_plan(
         &input,
@@ -337,7 +349,7 @@ fn minimum_pair_is_minimal_on_price_base_side() {
 }
 
 #[test]
-fn highest_balance_holding_wins_then_lowest_id() {
+fn holding_selection_uses_requested_id() {
     let definition = AccountId::new([9; 32]);
     let holding = |id: u8, balance| SelectedHolding {
         id: AccountId::new([id; 32]),
@@ -354,9 +366,10 @@ fn highest_balance_holding_wins_then_lowest_id() {
     let selected = select_holding(
         &[holding(4, 10), holding(2, 20), holding(1, 20)],
         definition,
+        Some(&AccountId::new([4; 32]).to_string()),
     )
     .unwrap();
-    assert_eq!(selected.id, AccountId::new([1; 32]));
+    assert_eq!(selected.id, AccountId::new([4; 32]));
 }
 
 #[test]
@@ -512,6 +525,43 @@ fn context_selects_tokens_without_holdings() {
 }
 
 #[test]
+fn context_lists_all_holdings_without_preselecting_one() {
+    let token_id = AccountId::new([3; 32]);
+    let first = AccountId::new([4; 32]);
+    let second = AccountId::new([5; 32]);
+    let config_id = compute_config_pda(AMM_PROGRAM);
+    let value = context(ContextRequest {
+        network_id: String::from("testnet"),
+        network_fingerprint: String::from("block10:abc"),
+        amm_program_id: amm_program_id(),
+        wallet_available: true,
+        config: account_read(config_id, &config_account()),
+        wallet_accounts: vec![
+            account_read(second, &token_holding(token_id, 20)),
+            account_read(first, &token_holding(token_id, 10)),
+        ],
+        token_definitions: vec![account_read(
+            token_id,
+            &token_definition("Token", 1_000_000),
+        )],
+        configured_token_ids: vec![account_id_hex(token_id)],
+        recent_token_ids: Vec::new(),
+        resolved_token_ids: Vec::new(),
+    })
+    .unwrap();
+
+    assert!(value["tokens"][0].get("holdingId").is_none());
+    assert_eq!(value["tokens"][0]["balanceRaw"], "30");
+    assert_eq!(
+        value["tokens"][0]["holdings"],
+        json!([
+            { "holdingId": first.to_string(), "balanceRaw": "10" },
+            { "holdingId": second.to_string(), "balanceRaw": "20" },
+        ])
+    );
+}
+
+#[test]
 fn missing_pool_snapshot_defaults_remain_real_accounts() {
     let id = AccountId::new([5; 32]);
     let read = default_read(id);
@@ -529,6 +579,8 @@ fn missing_pool_quote_and_plan_use_current_account_order() {
     assert_eq!(quote_value["canSubmit"], true);
     assert_eq!(quote_value["accountPreview"].as_array().unwrap().len(), 11);
     let quote_hash = quote_value["quoteHash"].as_str().unwrap().to_owned();
+    let config_id = scenario.pair.config;
+    let clock_id = scenario.pair.clock;
 
     let fresh_lp = AccountId::new([63; 32]);
     let plan_value = scenario.plan(quote_hash, Some(default_read(fresh_lp)));
@@ -538,6 +590,10 @@ fn missing_pool_quote_and_plan_use_current_account_order() {
     assert_eq!(plan_value["signingRequirements"][6], true);
     assert_eq!(plan_value["signingRequirements"][7], true);
     assert_eq!(plan_value["signingRequirements"][8], true);
+    let affected = plan_value["affectedAccountIds"].as_array().unwrap();
+    assert_eq!(affected.len(), 9);
+    assert!(!affected.contains(&json!(account_id_hex(config_id))));
+    assert!(!affected.contains(&json!(account_id_hex(clock_id))));
     assert_preview_matches_plan(&quote_value, &plan_value, Some(fresh_lp));
 }
 
@@ -660,6 +716,15 @@ fn active_pool_quote_uses_ratio_and_existing_lp_holding() {
     scenario.request.max_amount_a_raw = Some(String::from("1000"));
     scenario.request.max_amount_b_raw = Some(String::from("3000"));
     scenario.request.slippage_bps = Some(50);
+
+    let awaiting_destination = scenario.quote();
+    assert_eq!(awaiting_destination["lpDestinationRequired"], true);
+    assert_eq!(awaiting_destination["canSubmit"], false);
+    assert_eq!(
+        awaiting_destination["errors"][0]["code"],
+        "lp_destination_required"
+    );
+    scenario.request.lp_holding_id = Some(lp_holding.to_string());
 
     let quote_value = scenario.quote();
     assert_eq!(quote_value["poolStatus"], "active_pool");

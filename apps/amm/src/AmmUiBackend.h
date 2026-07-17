@@ -4,7 +4,9 @@
 #include <memory>
 
 #include <QObject>
+#include <QHash>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 
 #include "rep_AmmUiBackend_source.h"
@@ -17,6 +19,8 @@ class AmmClient;
 class LogosWalletProvider;
 class NewPositionRuntime;
 class QNetworkAccessManager;
+class QTimer;
+class SequencerClient;
 class WalletController;
 
 // Source-side implementation of the AmmUiBackend .rep interface.
@@ -42,8 +46,12 @@ public slots:
     void refreshBalances() override;
     QString getBalance(QString accountIdHex, bool isPublic) override;
     void refreshNewPositionContext(QVariantMap request) override;
-    QVariantMap quoteNewPosition(QVariantMap request) override;
-    QVariantMap submitNewPosition(QVariantMap request, QString quoteHash) override;
+    void requestNewPositionQuote(QVariantMap request,
+                                 int requestId,
+                                 bool forceRefresh) override;
+    void requestNewPositionSubmit(QVariantMap request,
+                                  QString quoteHash,
+                                  int requestId) override;
     // Return the new wallet's BIP39 mnemonic (empty string on failure) so the
     // UI can force a one-time seed-phrase backup step.
     QString createNewDefault(QString password) override;
@@ -55,18 +63,31 @@ private:
     void syncWalletState();
     void probeNetworkIdentity();
     void publishNetworkContext();
+    void watchTransaction(const QVariantMap& result);
+    void pollTransactions();
+    void refreshAffectedAccounts(const QStringList& accountIds, int attempt = 0);
 
     LogosAPI* m_logosAPI;
     std::unique_ptr<LogosWalletProvider> m_wallet;
     std::unique_ptr<WalletController> m_walletController;
     std::unique_ptr<AmmClient> m_ammClient;
+    std::unique_ptr<SequencerClient> m_sequencer;
     std::unique_ptr<NewPositionRuntime> m_newPosition;
 
     QNetworkAccessManager* m_net;
+    QTimer* m_transactionTimer;
 
     ActiveNetwork m_network;
     QVariantMap m_newPositionHints;
+    QString m_sequencerConfigPath;
     bool m_identityProbeInFlight = false;
+    quint64 m_contextGeneration = 0;
+    struct PendingTransaction {
+        QString nativeHash;
+        QStringList affectedAccountIds;
+        qint64 deadlineMs = 0;
+    };
+    QHash<QString, PendingTransaction> m_pendingTransactions;
 };
 
 #endif // AMM_UI_BACKEND_H

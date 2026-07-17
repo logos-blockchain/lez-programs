@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QDateTime>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -13,6 +14,7 @@
 #include "AmmClient.h"
 #include "LogosWalletProvider.h"
 #include "NewPositionRuntime.h"
+#include "SequencerClient.h"
 #include "WalletController.h"
 #include "logos_api.h"
 
@@ -151,22 +153,24 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
       m_walletController(std::make_unique<WalletController>(
           *m_wallet, QStringLiteral("AmmUI"))),
       m_ammClient(std::make_unique<BundledAmmClient>()),
-      m_newPosition(std::make_unique<NewPositionRuntime>(m_wallet.get(), m_ammClient.get())),
-      m_net(new QNetworkAccessManager(this))
+      m_sequencer(std::make_unique<SequencerClient>(m_ammClient.get(), this)),
+      m_newPosition(std::make_unique<NewPositionRuntime>(
+          m_wallet.get(), m_ammClient.get(), m_sequencer.get())),
+      m_net(new QNetworkAccessManager(this)),
+      m_transactionTimer(new QTimer(this))
 {
-    setWalletStateReady(false);
+    setNewPositionQuoteResult({});
+    setNewPositionSubmitResult({});
+    m_transactionTimer->setInterval(5000);
+    connect(m_transactionTimer, &QTimer::timeout,
+            this, &AmmUiBackend::pollTransactions);
     m_network.load();
-    setNewPositionContext(m_newPosition->context(
-        QVariantMap(), m_network.snapshot(), false, false));
 
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);
     syncWalletState();
+    refreshNewPositionContext({});
     m_walletController->start();
-    QTimer::singleShot(0, this, [this]() {
-        setWalletStateReady(true);
-        syncWalletState();
-    });
 }
 
 AmmUiBackend::~AmmUiBackend() = default;
@@ -178,28 +182,22 @@ WalletAccountModel* AmmUiBackend::accountModel() const
 
 QString AmmUiBackend::createNewDefault(QString password)
 {
-    setWalletStateReady(false);
     const QString mnemonic = m_walletController->createDefaultWallet(password);
-    setWalletStateReady(true);
     syncWalletState();
     return mnemonic;
 }
 
 QString AmmUiBackend::createNew(QString configPath, QString storagePath, QString password)
 {
-    setWalletStateReady(false);
     const QString mnemonic =
         m_walletController->createWallet(configPath, storagePath, password);
-    setWalletStateReady(true);
     syncWalletState();
     return mnemonic;
 }
 
 bool AmmUiBackend::openExisting()
 {
-    setWalletStateReady(false);
     const bool opened = m_walletController->open();
-    setWalletStateReady(true);
     syncWalletState();
     return opened;
 }
@@ -207,7 +205,6 @@ bool AmmUiBackend::openExisting()
 void AmmUiBackend::disconnectWallet()
 {
     m_walletController->disconnect();
-    setWalletStateReady(true);
     m_newPosition->clearWalletAccounts();
     refreshNewPositionContext(QVariantMap());
 }
@@ -250,19 +247,38 @@ void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
     }
     if (m_network.status() == QStringLiteral("network_unknown"))
         probeNetworkIdentity();
-    setNewPositionContext(m_newPosition->context(
-        request, m_network.snapshot(), isWalletOpen(), refreshWalletAccounts));
+    const quint64 generation = ++m_contextGeneration;
+    m_newPosition->contextAsync(
+        request, m_network.snapshot(), isWalletOpen(), refreshWalletAccounts,
+        [this, generation](QVariantMap result) {
+            if (generation == m_contextGeneration)
+                setNewPositionContext(std::move(result));
+        });
 }
 
-QVariantMap AmmUiBackend::quoteNewPosition(QVariantMap request)
+void AmmUiBackend::requestNewPositionQuote(QVariantMap request,
+                                           int requestId,
+                                           bool forceRefresh)
 {
-    return m_newPosition->quote(request, m_network.snapshot(), isWalletOpen());
+    m_newPosition->quoteAsync(
+        request, m_network.snapshot(), isWalletOpen(), forceRefresh,
+        [this, requestId](QVariantMap result) {
+            result.insert(QStringLiteral("requestId"), requestId);
+            setNewPositionQuoteResult(std::move(result));
+        });
 }
 
-QVariantMap AmmUiBackend::submitNewPosition(QVariantMap request, QString quoteHash)
+void AmmUiBackend::requestNewPositionSubmit(QVariantMap request,
+                                            QString quoteHash,
+                                            int requestId)
 {
-    return m_newPosition->submit(
-        request, quoteHash, m_network.snapshot(), isWalletOpen());
+    m_newPosition->submitAsync(
+        request, quoteHash, m_network.snapshot(), walletCanSubmit(),
+        [this, requestId](QVariantMap result) {
+            result.insert(QStringLiteral("requestId"), requestId);
+            setNewPositionSubmitResult(result);
+            watchTransaction(result);
+        });
 }
 
 void AmmUiBackend::syncWalletState()
@@ -273,6 +289,11 @@ void AmmUiBackend::syncWalletState()
     const QString previousAddress = sequencerAddr();
 
     setIsWalletOpen(state.isWalletOpen);
+    setWalletSyncStatus(state.syncStatus);
+    setWalletSyncError(state.syncError);
+    setWalletCanSubmit(state.canSubmit());
+    setWalletStateReady(state.syncStatus != QStringLiteral("opening")
+                        && state.syncStatus != QStringLiteral("syncing"));
     setWalletExists(state.walletExists);
     setConfigPath(state.configPath);
     setStoragePath(state.storagePath);
@@ -282,14 +303,27 @@ void AmmUiBackend::syncWalletState()
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
 
+    if (m_sequencerConfigPath != state.configPath || !m_sequencer->isConfigured()) {
+        m_sequencerConfigPath = state.configPath;
+        m_sequencer->configure(state.configPath);
+    }
+
     const bool addressChanged = previousAddress != state.sequencerAddress;
-    if (addressChanged)
+    if (addressChanged) {
+        m_pendingTransactions.clear();
+        m_transactionTimer->stop();
         m_network.sequencerChanged(!state.sequencerAddress.isEmpty());
+    }
     if (addressChanged || wasReachable != state.sequencerReachable) {
         m_network.reachabilityChanged(state.sequencerReachable, wasReachable);
     }
     if (walletWasOpen && !state.isWalletOpen)
         m_newPosition->clearWalletAccounts();
+    if (state.canSubmit()) {
+        const WalletSnapshot snapshot = m_wallet->snapshot();
+        if (snapshot.ok())
+            m_newPosition->setWalletAccounts(snapshot.accounts);
+    }
 
     publishNetworkContext();
     if (state.sequencerReachable && m_network.needsIdentityProbe())
@@ -318,6 +352,7 @@ void AmmUiBackend::probeNetworkIdentity()
     QNetworkRequest request{QUrl(address)};
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     request.setTransferTimeout(4000);
+    m_sequencer->applyAuthorization(request);
     QNetworkReply* reply = m_net->post(request, jsonRpcBody(method, params));
     connect(reply, &QNetworkReply::finished, this, [this, reply, address, devnet]() {
         m_identityProbeInFlight = false;
@@ -343,6 +378,78 @@ void AmmUiBackend::probeNetworkIdentity()
 
 void AmmUiBackend::publishNetworkContext()
 {
-    setNewPositionContext(m_newPosition->context(
-        m_newPositionHints, m_network.snapshot(), isWalletOpen(), false));
+    refreshNewPositionContext(m_newPositionHints);
+}
+
+void AmmUiBackend::watchTransaction(const QVariantMap& result)
+{
+    if (result.value(QStringLiteral("status")).toString()
+            != QStringLiteral("submitted")) {
+        return;
+    }
+    const QString nativeHash = result.value(
+        QStringLiteral("nativeTransactionHash")).toString();
+    bool deadlineValid = false;
+    const qint64 deadline = result.value(QStringLiteral("deadlineMs"))
+        .toString().toLongLong(&deadlineValid);
+    QStringList affected;
+    for (const QVariant& value : result.value(
+             QStringLiteral("affectedAccountIds")).toList()) {
+        affected.append(value.toString());
+    }
+    if (nativeHash.isEmpty() || !deadlineValid || affected.isEmpty())
+        return;
+    m_pendingTransactions.insert(nativeHash, {
+        nativeHash,
+        affected,
+        deadline,
+    });
+    if (!m_transactionTimer->isActive())
+        m_transactionTimer->start();
+    QTimer::singleShot(0, this, &AmmUiBackend::pollTransactions);
+}
+
+void AmmUiBackend::pollTransactions()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const QList<PendingTransaction> pending = m_pendingTransactions.values();
+    for (const PendingTransaction& transaction : pending) {
+        if (now >= transaction.deadlineMs) {
+            m_pendingTransactions.remove(transaction.nativeHash);
+            continue;
+        }
+        m_sequencer->queryTransaction(transaction.nativeHash,
+            [this, transaction](bool ok, bool included) {
+                if (!ok || !included
+                    || !m_pendingTransactions.contains(transaction.nativeHash)) {
+                    return;
+                }
+                m_pendingTransactions.remove(transaction.nativeHash);
+                refreshAffectedAccounts(transaction.affectedAccountIds);
+                if (m_pendingTransactions.isEmpty())
+                    m_transactionTimer->stop();
+            });
+    }
+    if (m_pendingTransactions.isEmpty())
+        m_transactionTimer->stop();
+}
+
+void AmmUiBackend::refreshAffectedAccounts(const QStringList& accountIds, int attempt)
+{
+    m_sequencer->readAccounts(accountIds, true,
+        [this, accountIds, attempt](QVector<WalletAccountRead> reads) {
+            QStringList failed;
+            for (qsizetype index = 0; index < reads.size(); ++index) {
+                if (!reads.at(index).ok())
+                    failed.append(accountIds.value(index));
+            }
+            if (!failed.isEmpty() && attempt < 2) {
+                QTimer::singleShot(1000, this,
+                    [this, failed, attempt]() {
+                        refreshAffectedAccounts(failed, attempt + 1);
+                    });
+                return;
+            }
+            refreshNewPositionContext({});
+        });
 }

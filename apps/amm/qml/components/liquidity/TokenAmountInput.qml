@@ -1,6 +1,8 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 
 import "../shared"
 
@@ -16,6 +18,9 @@ AmmTokenAmountSurface {
     property string selectedTokenId: ""
     property bool tokenInvalid: false
     property bool tokenSelectionEnabled: true
+    property var holdings: []
+    property string selectedHoldingId: ""
+    property bool holdingSelectionEnabled: true
     property bool editPending: false
     property string pendingValue: ""
     property var disabledReasonForCode: function(code) {
@@ -31,13 +36,15 @@ AmmTokenAmountSurface {
     signal maxClicked
     signal tokenSelected(string tokenId)
     signal tokenEntered(string value)
+    signal holdingSelected(string holdingId)
 
     amount: root.text
     supportingText: root.helperText
     supportingActionText: root.showMaxButton ? qsTr("MAX") : ""
     accessory: tokenActions
     accessoryWidth: width < 360 ? 132 : 180
-    accessoryHeight: root.balance.length > 0 ? 58 : 40
+    accessoryHeight: root.holdings.length > 1 ? 88
+                     : root.balance.length > 0 ? 58 : 40
 
     onAmountEdited: function(value) {
         root.pendingValue = value
@@ -68,17 +75,46 @@ AmmTokenAmountSurface {
     Component {
         id: tokenActions
 
-        AmmTokenAccessory {
-            theme: root.theme
-            enabled: root.tokenSelectionEnabled
-            invalid: root.tokenInvalid
-            hasToken: root.tokenData !== null
-            tokenColor: root.tokenColor(root.tokenData)
-            tokenLetter: root.tokenLetter(root.tokenData)
-            tokenText: root.tokenText(root.tokenData)
-            balance: root.balance
-            accessibleName: qsTr("Select %1").arg(root.label)
-            onClicked: tokenModal.open()
+        ColumnLayout {
+            spacing: 4
+
+            AmmTokenAccessory {
+                Layout.fillWidth: true
+                theme: root.theme
+                enabled: root.tokenSelectionEnabled
+                invalid: root.tokenInvalid
+                hasToken: root.tokenData !== null
+                tokenColor: root.tokenColor(root.tokenData)
+                tokenLetter: root.tokenLetter(root.tokenData)
+                tokenText: root.tokenText(root.tokenData)
+                balance: root.balance
+                accessibleName: qsTr("Select %1").arg(root.label)
+                onClicked: tokenModal.open()
+            }
+
+            ComboBox {
+                id: holdingPicker
+
+                objectName: "holdingPicker"
+                Layout.fillWidth: true
+                visible: root.holdings.length > 1
+                enabled: root.holdingSelectionEnabled && root.holdings.length > 1
+                model: root.holdings
+                currentIndex: root.holdingIndex()
+                displayText: currentIndex >= 0
+                             ? root.holdingLabel(root.holdings[currentIndex])
+                             : qsTr("Select holding")
+                Accessible.name: qsTr("Wallet holding for %1").arg(root.label)
+                onActivated: function(index) {
+                    root.holdingSelected(String(root.holdings[index].holdingId || ""))
+                }
+
+                delegate: ItemDelegate {
+                    required property var modelData
+                    width: holdingPicker.width
+                    text: root.holdingLabel(modelData)
+                }
+            }
         }
     }
 
@@ -131,5 +167,21 @@ AmmTokenAmountSurface {
     function shortId(value) {
         var text = String(value || "")
         return text.length > 14 ? text.slice(0, 7) + "..." + text.slice(-5) : text
+    }
+
+    function holdingIndex() {
+        for (var i = 0; i < root.holdings.length; ++i) {
+            if (String(root.holdings[i].holdingId || "") === root.selectedHoldingId)
+                return i
+        }
+        return -1
+    }
+
+    function holdingLabel(holding) {
+        if (!holding)
+            return qsTr("Select holding")
+        return qsTr("%1 · %2")
+                .arg(root.shortId(String(holding.holdingId || "")))
+                .arg(String(holding.balanceRaw || "0"))
     }
 }

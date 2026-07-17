@@ -1,5 +1,5 @@
 // QtRO view contract for the AMM UI backend. PROPs auto-sync to every QML
-// replica; SLOTs are the async surface QML calls via logos.watch(...).
+// replica; SLOTs dispatch asynchronous backend work.
 // The account list is exposed separately as a Q_PROPERTY model on the backend
 // (reached from QML via logos.model("amm_ui", "accountModel")).
 class AmmUiBackend
@@ -8,6 +8,9 @@ class AmmUiBackend
     // False while startup or reconnect is still resolving wallet state. This
     // stays distinct from isWalletOpen because a disconnected wallet is ready.
     PROP(bool walletStateReady READONLY)
+    PROP(QString walletSyncStatus READONLY)
+    PROP(QString walletSyncError READONLY)
+    PROP(bool walletCanSubmit READONLY)
     PROP(bool walletExists READONLY)
     PROP(QString configPath READONLY)
     PROP(QString storagePath READONLY)
@@ -37,13 +40,15 @@ class AmmUiBackend
     SLOT(bool setAccountAlias(QString accountId, QString alias))
     SLOT(bool setPrimaryAccount(QString accountId))
 
-    // New Position backend surface. QML calls these through logos.watch(...).
-    // The QVariant payloads are stable maps/lists so the UI never assembles AMM
-    // transactions or duplicates quote state.
+    // New Position backend surface. QML dispatches request slots and observes
+    // request-tagged result properties. QVariant payloads are stable maps/lists
+    // so the UI never assembles AMM transactions or duplicates quote state.
     PROP(QVariantMap newPositionContext READONLY)
+    PROP(QVariantMap newPositionQuoteResult READONLY)
+    PROP(QVariantMap newPositionSubmitResult READONLY)
     SLOT(void refreshNewPositionContext(QVariantMap request))
-    SLOT(QVariantMap quoteNewPosition(QVariantMap request))
-    SLOT(QVariantMap submitNewPosition(QVariantMap request, QString quoteHash))
+    SLOT(void requestNewPositionQuote(QVariantMap request, int requestId, bool forceRefresh))
+    SLOT(void requestNewPositionSubmit(QVariantMap request, QString quoteHash, int requestId))
 
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
     // fresh wallet at the canonical walletHome with no path picking. createNew()

@@ -7,19 +7,24 @@ QtObject {
     property var runtime: null
     property bool active: false
 
-    readonly property bool walletStateReady: root.backend !== null
-                                               && root.backend.walletStateReady === true
-    readonly property var newPositionContext: root.walletStateReady
+    readonly property bool backendReady: root.backend !== null
+    readonly property bool walletCanSubmit: root.backendReady
+                                             && root.backend.walletCanSubmit === true
+    readonly property var newPositionContext: root.backendReady
                                               && root.backend.newPositionContext
+                                              && root.backend.newPositionContext.schema
                                               ? root.backend.newPositionContext
                                               : root.loadingContext()
     readonly property var viewState: ({
         "quote": root.newPositionQuote,
-        "contextLoading": root.contextLoading || !root.walletStateReady
+        "contextLoading": root.contextLoading
                           || root.newPositionContext.status === "loading",
         "quoteLoading": root.quoteLoading,
         "quoteStale": root.quoteStale,
         "submitting": root.submitting,
+        "walletCanSubmit": root.walletCanSubmit,
+        "walletSyncStatus": root.backendReady
+                            ? String(root.backend.walletSyncStatus || "closed") : "closed",
         "poolCreationPending": root.selectedPoolCreationPending(),
         "transactionId": root.transactionId,
         "errorCode": root.flowErrorCode || root.contextErrorCode
@@ -28,8 +33,13 @@ QtObject {
 
     property var newPositionQuote: ({})
     property var resolvedTokenIds: []
-    property int contextSerial: 0
     property int quoteSerial: 0
+    property int operationSerial: 0
+    property int activeQuoteRequestId: 0
+    property int submitRequestId: 0
+    property int poolProbeRequestId: 0
+    property var pendingSubmitSnapshot: ({})
+    property var pendingConfirmationSnapshot: null
     property bool contextLoading: false
     property bool quoteLoading: false
     property bool quoteStale: true
@@ -38,6 +48,7 @@ QtObject {
     property string flowErrorCode: ""
     property string contextErrorCode: ""
     property string quoteErrorCode: ""
+    property var pendingContextCompletion: null
     property var pendingQuoteRequest: ({ "ok": false, "request": ({}) })
     property var pendingPoolProbes: []
     property bool poolProbeInFlight: false
@@ -48,6 +59,7 @@ QtObject {
     signal quoteRefreshRequested(bool immediate)
     signal submitSucceeded
     signal submitFailed
+    signal confirmationQuoteReady(var snapshot)
 
     objectName: "newPositionFlow"
 
@@ -64,25 +76,37 @@ QtObject {
         onTriggered: root.pollPendingPool()
     }
 
-    onNewPositionContextChanged: root.invalidateQuote()
+    property Connections backendConnections: Connections {
+        target: root.backend
+        ignoreUnknownSignals: true
 
-    onWalletStateReadyChanged: {
-        ++root.contextSerial
-        if (!root.walletStateReady)
-            root.contextLoading = false
+        function onNewPositionQuoteResultChanged() {
+            root.acceptQuoteResult(root.backend.newPositionQuoteResult || ({}))
+        }
+
+        function onNewPositionSubmitResultChanged() {
+            root.acceptSubmitResult(root.backend.newPositionSubmitResult || ({}))
+        }
+    }
+
+    onNewPositionContextChanged: {
+        root.contextLoading = false
+        root.contextErrorCode = root.newPositionContext.status === "error"
+                                ? String(root.newPositionContext.code || "backend_error") : ""
         root.invalidateQuote()
+        const completed = root.pendingContextCompletion
+        root.pendingContextCompletion = null
+        root.tokenResolutionFinished(true)
+        if (completed)
+            completed()
     }
 
     onActiveChanged: {
-        if (!root.active)
-            return
-        Qt.callLater(function() {
-            if (root.active && root.walletStateReady)
-                root.quoteRefreshRequested(true)
-        })
+        if (root.active && root.backendReady)
+            Qt.callLater(function() { root.quoteRefreshRequested(true) })
     }
 
-    function contextHints(refreshWalletAccounts) {
+    function contextHints(refreshPublicData) {
         const request = root.pendingQuoteRequest.request || {}
         const recent = []
         if (request.tokenAId)
@@ -92,48 +116,24 @@ QtObject {
         return {
             "recentTokenIds": recent,
             "resolvedTokenIds": root.resolvedTokenIds,
-            "refreshWalletAccounts": refreshWalletAccounts === true
+            "refreshWalletAccounts": refreshPublicData === true
         }
     }
 
-    function refreshContext(refreshWalletAccounts, completed) {
-        const serial = ++root.contextSerial
+    function refreshContext(refreshPublicData, completed) {
         root.contextLoading = true
-        if (!root.walletStateReady || root.runtime === null) {
+        root.pendingContextCompletion = completed || null
+        if (!root.backendReady) {
             root.contextLoading = false
             return
         }
-
-        root.runtime.watch(root.backend.refreshNewPositionContext(
-                               root.contextHints(refreshWalletAccounts)),
-            function() {
-                root.finishContextRefresh(serial, completed)
-            },
-            function(error) {
-                root.failContextRefresh(serial)
-            })
-    }
-
-    function finishContextRefresh(serial, completed) {
-        if (serial !== root.contextSerial)
-            return
-        root.contextLoading = false
-        root.contextErrorCode = ""
-        Qt.callLater(function() {
-            if (serial !== root.contextSerial)
-                return
-            root.tokenResolutionFinished(true)
-            if (completed)
-                completed()
-        })
-    }
-
-    function failContextRefresh(serial) {
-        if (serial !== root.contextSerial)
-            return
-        root.contextLoading = false
-        root.contextErrorCode = "backend_error"
-        root.tokenResolutionFailed("backend_error")
+        try {
+            root.backend.refreshNewPositionContext(root.contextHints(refreshPublicData))
+        } catch (_error) {
+            root.contextLoading = false
+            root.contextErrorCode = "backend_error"
+            root.tokenResolutionFailed("backend_error")
+        }
     }
 
     function resolveToken(tokenId) {
@@ -152,9 +152,9 @@ QtObject {
         ++root.quoteSerial
         root.pendingQuoteRequest = quoteRequest
         root.quoteStale = true
-        root.quoteLoading = root.walletStateReady && root.active
+        root.quoteLoading = root.backendReady && root.active
         root.quoteDebounce.stop()
-        if (!root.walletStateReady || !root.active)
+        if (!root.backendReady || !root.active)
             return
         if (immediate)
             root.requestQuoteNow(root.quoteSerial)
@@ -166,86 +166,107 @@ QtObject {
         if (serial !== root.quoteSerial)
             return
         const built = root.pendingQuoteRequest
-        if (!built.ok) {
+        if (!built.ok || !root.backendReady || !root.active) {
             root.quoteLoading = false
             return
         }
-        if (!root.walletStateReady || !root.active || root.runtime === null) {
-            root.quoteLoading = false
-            return
-        }
+        root.activeQuoteRequestId = ++root.operationSerial
+        root.backend.requestNewPositionQuote(
+            built.request, root.activeQuoteRequestId, true)
+    }
 
-        root.runtime.watch(root.backend.quoteNewPosition(built.request),
-            function(quote) {
-                if (serial !== root.quoteSerial)
-                    return
-                root.quoteLoading = false
-                root.quoteStale = false
-                root.quoteErrorCode = ""
-                if (!quote || quote.schema !== "new-position.v1")
-                    root.newPositionQuote = root.quoteError("unsupported_schema")
-                else
-                    root.newPositionQuote = quote
-            },
-            function(error) {
-                if (serial !== root.quoteSerial)
-                    return
-                root.quoteLoading = false
-                root.quoteStale = true
-                root.quoteErrorCode = "backend_error"
-            })
+    function acceptQuoteResult(result) {
+        const requestId = Number(result.requestId || 0)
+        if (requestId === root.poolProbeRequestId) {
+            root.finishPoolProbe(root.pendingPoolProbes[0], result)
+            return
+        }
+        if (requestId !== root.activeQuoteRequestId)
+            return
+        root.quoteLoading = false
+        root.quoteStale = false
+        root.quoteErrorCode = ""
+        root.newPositionQuote = result.schema === "new-position.v2"
+                                ? result : root.quoteError("unsupported_schema")
+        if (root.pendingConfirmationSnapshot) {
+            var snapshot = root.pendingConfirmationSnapshot
+            root.pendingConfirmationSnapshot = null
+            snapshot.quoteHash = String(root.newPositionQuote.quoteHash || "")
+            snapshot.expectedLpText = String(root.newPositionQuote.expectedLpRaw || "")
+                                  + " raw LP"
+            snapshot.instruction = String(root.newPositionQuote.instruction || "")
+            snapshot.lpHoldingOptions = root.newPositionQuote.lpHoldingOptions || []
+            snapshot.selectedLpHoldingId = String(
+                root.newPositionQuote.selectedLpHoldingId || "")
+            snapshot.createFreshLp = root.newPositionQuote.requiresFreshLp === true
+            snapshot.lpDestinationRequired =
+                root.newPositionQuote.lpDestinationRequired === true
+            snapshot.quoteReady = root.newPositionQuote.canSubmit === true
+            root.confirmationQuoteReady(snapshot)
+        }
+    }
+
+    function requoteConfirmation(snapshot) {
+        root.pendingConfirmationSnapshot = snapshot
+        root.scheduleQuote(true, {
+            "ok": true,
+            "errors": [],
+            "request": snapshot.request
+        })
     }
 
     function confirm(snapshot) {
         if (root.submitting)
             return
-        root.submitting = true
-        root.flowErrorCode = ""
-
-        if (!root.backend || root.runtime === null) {
-            root.finishSubmitFailure(root.quoteError("wallet_unavailable"))
+        if (!root.walletCanSubmit) {
+            root.finishSubmitFailure(root.quoteError("wallet_syncing"))
             return
         }
+        root.submitting = true
+        root.flowErrorCode = ""
+        root.submitRequestId = ++root.operationSerial
+        root.pendingSubmitSnapshot = snapshot
+        root.backend.requestNewPositionSubmit(
+            snapshot.request, snapshot.quoteHash, root.submitRequestId)
+    }
 
-        root.runtime.watch(root.backend.submitNewPosition(snapshot.request, snapshot.quoteHash),
-            function(result) {
-                if (result && result.schema === "new-position.v1"
-                        && result.status === "submitted"
-                        && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(
-                            String(result.transactionId || ""))) {
-                    if (snapshot.request.initialPriceRealRaw !== undefined)
-                        root.watchPoolCreation(snapshot.poolProbeRequest, result.deadlineMs)
-                    root.submitting = false
-                    root.transactionId = result.transactionId
-                    root.flowErrorCode = ""
-                    root.contextErrorCode = ""
-                    root.quoteErrorCode = ""
-                    root.invalidateQuote()
-                    root.submitSucceeded()
-                    return
-                }
-                root.finishSubmitFailure(result || root.quoteError("wallet_submission_failed"))
-            },
-            function(error) {
-                root.finishSubmitFailure(root.quoteError("wallet_submission_failed"))
-            })
+    function acceptSubmitResult(result) {
+        if (Number(result.requestId || 0) !== root.submitRequestId)
+            return
+        if (result.schema === "new-position.v2"
+                && result.status === "submitted"
+                && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(
+                    String(result.transactionId || ""))) {
+            root.submitting = false
+            root.transactionId = result.transactionId
+            root.flowErrorCode = ""
+            root.contextErrorCode = ""
+            root.quoteErrorCode = ""
+            const poolProbe = root.pendingSubmitSnapshot.poolProbeRequest || null
+            if (String(root.pendingSubmitSnapshot.instruction || "")
+                    === "NewDefinition" && poolProbe)
+                root.watchPoolCreation(poolProbe, result.deadlineMs)
+            root.invalidateQuote()
+            root.submitSucceeded()
+            return
+        }
+        root.finishSubmitFailure(result || root.quoteError("wallet_submission_failed"))
     }
 
     function finishSubmitFailure(result) {
         root.submitting = false
         const hasFreshQuote = result && result.quote
-                              && result.quote.schema === "new-position.v1"
+                              && result.quote.schema === "new-position.v2"
         if (hasFreshQuote) {
             root.newPositionQuote = result.quote
             root.quoteLoading = false
             root.quoteStale = false
         }
-        const code = result && result.code ? result.code : "wallet_submission_failed"
-        root.flowErrorCode = code
+        root.flowErrorCode = result && result.code
+                             ? result.code : "wallet_submission_failed"
         root.submitFailed()
-        if (hasFreshQuote)
-            return
-        root.scheduleQuote(true, root.pendingQuoteRequest)
+        if (!hasFreshQuote)
+            root.scheduleQuote(true, root.pendingQuoteRequest)
     }
 
     function watchPoolCreation(request, deadlineMs) {
@@ -256,40 +277,33 @@ QtObject {
         const pending = root.pendingPoolProbes.filter(function(item) {
             return item.key !== key
         })
-        pending.push({
-            "key": key,
-            "request": request,
-            "deadlineMs": deadline
-        })
+        pending.push({ "key": key, "request": request, "deadlineMs": deadline })
         root.pendingPoolProbes = pending
         Qt.callLater(root.pollPendingPool)
     }
 
     function pollPendingPool() {
         if (root.poolProbeInFlight || root.pendingPoolProbes.length === 0
-                || !root.walletStateReady || root.runtime === null) {
+                || !root.backendReady)
             return
-        }
         const pending = root.pendingPoolProbes[0]
         root.poolProbeInFlight = true
-        root.runtime.watch(root.backend.quoteNewPosition(pending.request),
-            function(quote) {
-                root.finishPoolProbe(pending, quote)
-            },
-            function(error) {
-                root.finishPoolProbe(pending, null)
-            })
+        root.poolProbeRequestId = ++root.operationSerial
+        root.backend.requestNewPositionQuote(pending.request, root.poolProbeRequestId, true)
     }
 
     function finishPoolProbe(pending, quote) {
+        if (!pending)
+            return
         root.poolProbeInFlight = false
-        if (quote && quote.schema === "new-position.v1"
+        root.poolProbeRequestId = 0
+        if (quote && quote.schema === "new-position.v2"
                 && quote.poolStatus === "active_pool") {
             root.removePendingPool(pending.key)
             if (root.matchesSelectedPair(pending.request)) {
                 root.poolActivated(quote)
                 root.invalidateQuote()
-                root.refreshContext(true)
+                root.refreshContext(false)
             }
             return
         }
@@ -313,9 +327,7 @@ QtObject {
         if (!request.tokenAId || !request.tokenBId)
             return false
         const selected = root.pairKey(request)
-        return root.pendingPoolProbes.some(function(item) {
-            return item.key === selected
-        })
+        return root.pendingPoolProbes.some(function(item) { return item.key === selected })
     }
 
     function removePendingPool(key) {
@@ -342,6 +354,7 @@ QtObject {
 
     function invalidateQuote() {
         ++root.quoteSerial
+        root.activeQuoteRequestId = 0
         root.quoteDebounce.stop()
         root.quoteLoading = false
         root.quoteStale = true
@@ -349,7 +362,7 @@ QtObject {
 
     function loadingContext() {
         return {
-            "schema": "new-position.v1",
+            "schema": "new-position.v2",
             "status": "loading",
             "tokens": [],
             "feeTiers": []
@@ -358,7 +371,7 @@ QtObject {
 
     function quoteError(code) {
         return {
-            "schema": "new-position.v1",
+            "schema": "new-position.v2",
             "status": "error",
             "canSubmit": false,
             "code": code,

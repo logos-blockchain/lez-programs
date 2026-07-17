@@ -11,6 +11,7 @@ char *amm_pair_ids(const char *request_json);
 char *amm_context(const char *request_json);
 char *amm_quote(const char *request_json);
 char *amm_plan(const char *request_json);
+char *amm_normalize_account_rpc(const char *request_json);
 void amm_free(char *value);
 
 #ifdef __cplusplus

@@ -46,6 +46,10 @@ TestCase {
                     "name": "Low",
                     "totalSupplyRaw": "1000000",
                     "balanceRaw": "1000",
+                    "holdings": [{
+                        "holdingId": "44444444444444444444444444444444",
+                        "balanceRaw": "1000"
+                    }],
                     "selectable": true
                 },
                 {
@@ -53,6 +57,10 @@ TestCase {
                     "name": "High",
                     "totalSupplyRaw": "1000000000000",
                     "balanceRaw": "5000000000",
+                    "holdings": [{
+                        "holdingId": "55555555555555555555555555555555",
+                        "balanceRaw": "5000000000"
+                    }],
                     "selectable": true
                 }
             ]
@@ -68,6 +76,10 @@ TestCase {
                     "name": "Sir Mints-a-Lot",
                     "totalSupplyRaw": "1000000000000",
                     "balanceRaw": "1000000000",
+                    "holdings": [{
+                        "holdingId": "44444444444444444444444444444444",
+                        "balanceRaw": "1000000000"
+                    }],
                     "selectable": true
                 },
                 {
@@ -75,7 +87,41 @@ TestCase {
                     "name": "Aurora",
                     "totalSupplyRaw": "1000000000000",
                     "balanceRaw": "1000000000",
+                    "holdings": [{
+                        "holdingId": "55555555555555555555555555555555",
+                        "balanceRaw": "1000000000"
+                    }],
                     "selectable": true
+                }
+            ]
+        }
+    }
+
+    function holdingContext() {
+        return {
+            "status": "ready",
+            "tokens": [
+                {
+                    "definitionId": tokenLow,
+                    "name": "Low",
+                    "balanceRaw": "10",
+                    "selectable": true,
+                    "holdings": [
+                        { "holdingId": "44444444444444444444444444444444",
+                          "balanceRaw": "10" }
+                    ]
+                },
+                {
+                    "definitionId": tokenHigh,
+                    "name": "High",
+                    "balanceRaw": "50",
+                    "selectable": true,
+                    "holdings": [
+                        { "holdingId": "55555555555555555555555555555555",
+                          "balanceRaw": "20" },
+                        { "holdingId": "66666666666666666666666666666666",
+                          "balanceRaw": "30" }
+                    ]
                 }
             ]
         }
@@ -87,7 +133,9 @@ TestCase {
             "contextLoading": false,
             "quoteLoading": false,
             "quoteStale": false,
-            "submitting": false
+            "submitting": false,
+            "walletCanSubmit": true,
+            "walletSyncStatus": "ready"
         }
     }
 
@@ -116,6 +164,23 @@ TestCase {
         compare(form.selectedTokenBId, "")
         compare(form.amountA, "")
         compare(form.amountB, "")
+    }
+
+    function test_holdingSelectionAutoSelectsOneAndRequiresExplicitMultiple() {
+        var form = createForm(holdingContext())
+        wait(0)
+        compare(form.selectedHoldingAId,
+                "44444444444444444444444444444444")
+        compare(form.selectedHoldingBId, "")
+        verify(!form.buildQuoteRequest().ok)
+
+        form.selectHolding("B", "66666666666666666666666666666666")
+        var built = form.buildQuoteRequest()
+        verify(built.ok)
+        compare(built.request.holdingAId,
+                "66666666666666666666666666666666")
+        compare(built.request.holdingBId,
+                "44444444444444444444444444444444")
     }
 
     function test_displayOrderMapsToCanonicalRequestAfterSwap() {
@@ -354,7 +419,7 @@ TestCase {
         form.minimumAmountBRaw = "2000000"
 
         verify(form.acceptPoolActivation({
-            "schema": "new-position.v1",
+            "schema": "new-position.v2",
             "status": "ok",
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
@@ -378,7 +443,7 @@ TestCase {
 
     function test_staleQuoteErrorsDoNotMarkCurrentDraft() {
         var quote = {
-            "schema": "new-position.v1",
+            "schema": "new-position.v2",
             "status": "ok",
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,

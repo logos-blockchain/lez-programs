@@ -9,5 +9,5 @@ fn direct_rust_api_does_not_require_ffi() {
 
     assert_eq!(response["status"], "ok");
     assert!(response["configId"].is_string());
-    assert_eq!(NEW_POSITION_SCHEMA, "new-position.v1");
+    assert_eq!(NEW_POSITION_SCHEMA, "new-position.v2");
 }

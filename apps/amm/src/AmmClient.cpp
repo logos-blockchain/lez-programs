@@ -69,3 +69,8 @@ AmmClientResult BundledAmmClient::plan(const QJsonObject& request) const
 {
     return call(amm_plan, request);
 }
+
+AmmClientResult BundledAmmClient::normalizeAccountRpc(const QJsonObject& request) const
+{
+    return call(amm_normalize_account_rpc, request);
+}

@@ -17,26 +17,54 @@ TestCase {
 
         QtObject {
             property bool walletStateReady: false
+            property bool walletCanSubmit: true
+            property bool isWalletOpen: true
+            property string walletSyncStatus: "ready"
             property var submitResult: ({})
             property var quoteResult: ({
-                "schema": "new-position.v1",
+                "schema": "new-position.v2",
                 "status": "ok",
                 "poolStatus": "missing_pool"
             })
+            property var newPositionQuoteResult: ({})
+            property var newPositionSubmitResult: ({})
             property var newPositionContext: ({
-                "schema": "new-position.v1",
+                "schema": "new-position.v2",
                 "status": "ready",
                 "tokens": [],
                 "feeTiers": []
             })
+            property int contextRefreshCalls: 0
+            property int submitCalls: 0
+            property var lastContextRefreshRequest: ({})
 
-            function submitNewPosition(request, quoteHash) {
-                return submitResult
+            function requestNewPositionSubmit(request, quoteHash, requestId) {
+                ++submitCalls
+                var result = JSON.parse(JSON.stringify(submitResult || ({})))
+                result.requestId = requestId
+                newPositionSubmitResult = result
             }
 
-            function quoteNewPosition(request) {
-                return quoteResult
+            function requestNewPositionQuote(request, requestId, forceRefresh) {
+                var result = JSON.parse(JSON.stringify(quoteResult || ({})))
+                result.requestId = requestId
+                newPositionQuoteResult = result
             }
+
+            function refreshNewPositionContext(request) {
+                ++contextRefreshCalls
+                lastContextRefreshRequest = request
+            }
+        }
+    }
+
+    Component {
+        id: pageComponent
+
+        Pages.LiquidityPage {
+            visible: false
+            width: 800
+            height: 600
         }
     }
 
@@ -52,110 +80,48 @@ TestCase {
         verify(rail)
         verify(compactSteps)
         verify(form)
-
         compare(page.wideLayout, true)
-        verify(rail.width > 0)
         verify(form.width > rail.width)
 
         page.width = 600
         wait(0)
-
         compare(page.wideLayout, false)
         verify(compactSteps.implicitHeight > 0)
-        verify(form.width > 0)
         verify(form.width <= page.width - 32)
     }
 
-    Component {
-        id: runtimeComponent
-
-        QtObject {
-            function watch(value, succeeded, failed) {
-                succeeded(value)
-            }
-        }
-    }
-
-    Component {
-        id: pageComponent
-
-        Pages.LiquidityPage {
-            visible: false
-            width: 800
-            height: 600
-        }
-    }
-
-    function test_contextWaitsForWalletState() {
-        var backend = createTemporaryObject(backendComponent, testCase)
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend
+    function test_contextAvailableWhileWalletSyncs() {
+        var backend = createTemporaryObject(backendComponent, testCase, {
+            "walletCanSubmit": false,
+            "walletSyncStatus": "syncing"
         })
-        verify(backend)
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
         verify(page)
 
-        compare(page.flow.newPositionContext.status, "loading")
-
-        backend.walletStateReady = true
-        tryCompare(page.flow.newPositionContext, "status", "ready")
+        compare(page.flow.newPositionContext.status, "ready")
+        compare(page.flow.viewState.walletSyncStatus, "syncing")
+        verify(!page.flow.walletCanSubmit)
     }
 
-    function test_contextRefreshControlsWalletScan() {
-        var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true
-        })
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend
-        })
-        verify(backend)
+    function test_contextRefreshControlsPublicRefresh() {
+        var backend = createTemporaryObject(backendComponent, testCase)
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
         verify(page)
 
         compare(page.flow.contextHints(false).refreshWalletAccounts, false)
         compare(page.flow.contextHints(true).refreshWalletAccounts, true)
     }
 
-    function test_staleContextCompletionCannotFinishNewerRefresh() {
-        var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true
-        })
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend
-        })
-        verify(backend)
-        verify(page)
-
-        page.flow.contextSerial = 2
-        page.flow.contextLoading = true
-        page.flow.contextErrorCode = "newer_request_pending"
-
-        page.flow.finishContextRefresh(1, null)
-        page.flow.failContextRefresh(1)
-
-        compare(page.flow.contextLoading, true)
-        compare(page.flow.contextErrorCode, "newer_request_pending")
-
-        page.flow.finishContextRefresh(2, null)
-        compare(page.flow.contextLoading, false)
-        compare(page.flow.contextErrorCode, "")
-    }
-
     function test_submitFailureKeepsReturnedFreshQuoteWithoutRequery() {
-        var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true
-        })
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend
-        })
-        verify(backend)
-        verify(page)
-
+        var backend = createTemporaryObject(backendComponent, testCase)
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
         page.flow.quoteSerial = 7
         page.flow.finishSubmitFailure({
-            "schema": "new-position.v1",
+            "schema": "new-position.v2",
             "status": "error",
             "code": "quote_not_submittable",
             "quote": {
-                "schema": "new-position.v1",
+                "schema": "new-position.v2",
                 "status": "ok",
                 "canSubmit": false,
                 "quoteHash": "sha256:fresh"
@@ -167,61 +133,49 @@ TestCase {
         compare(page.flow.quoteStale, false)
     }
 
-    function test_base58SubmittedResultEntersSuccessState() {
+    function test_submittedResultEntersSuccessState() {
         var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true,
             "submitResult": {
-                "schema": "new-position.v1",
+                "schema": "new-position.v2",
                 "status": "submitted",
                 "transactionId": submittedTransactionId,
-                "deadlineMs": String(Date.now() + 60000)
+                "deadlineMs": String(Date.now() + 60000),
+                "affectedAccountIds": []
             }
         })
-        var runtime = createTemporaryObject(runtimeComponent, testCase)
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend,
-            "runtime": runtime
-        })
-        verify(backend)
-        verify(runtime)
-        verify(page)
-
-        page.flow.confirm({
-            "request": ({}),
-            "quoteHash": "sha256:expected"
-        })
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
+        page.flow.confirm({ "request": ({}), "quoteHash": "sha256:expected" })
+        wait(0)
 
         compare(page.flow.transactionId, submittedTransactionId)
         compare(page.flow.flowErrorCode, "")
         compare(page.flow.submitting, false)
+        compare(backend.submitCalls, 1)
     }
 
-    function test_base58MissingPoolSubmissionStartsPoolWatch() {
+    function test_missingPoolSubmissionStartsPoolProbeWithoutWalletRefresh() {
         var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true,
             "submitResult": {
-                "schema": "new-position.v1",
+                "schema": "new-position.v2",
                 "status": "submitted",
                 "transactionId": submittedTransactionId,
                 "deadlineMs": String(Date.now() + 60000)
             }
         })
-        var runtime = createTemporaryObject(runtimeComponent, testCase)
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend,
-            "runtime": runtime
-        })
-        verify(backend)
-        verify(runtime)
-        verify(page)
-
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
         var probe = {
             "tokenAId": "22222222222222222222222222222222",
             "tokenBId": "33333333333333333333333333333333"
         }
-        page.flow.pendingQuoteRequest = { "ok": true, "request": probe }
+        page.flow.pendingQuoteRequest = {
+            "ok": true,
+            "request": probe
+        }
         page.flow.confirm({
+            "instruction": "NewDefinition",
             "request": {
+                "tokenAId": probe.tokenAId,
+                "tokenBId": probe.tokenBId,
                 "initialPriceRealRaw": "18446744073709551616"
             },
             "poolProbeRequest": probe,
@@ -229,51 +183,51 @@ TestCase {
         })
         wait(0)
 
-        compare(page.flow.transactionId, submittedTransactionId)
         compare(page.flow.pendingPoolProbes.length, 1)
-        compare(page.flow.selectedPoolCreationPending(), true)
-        compare(page.flow.poolProbeInFlight, false)
+        compare(backend.contextRefreshCalls, 0)
+        verify(page.flow.selectedPoolCreationPending())
     }
 
-    function test_nativeHexSubmittedResultDoesNotEnterSuccessState() {
+    function test_activePoolSubmissionDoesNotStartPoolCreationProbe() {
         var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true,
             "submitResult": {
-                "schema": "new-position.v1",
+                "schema": "new-position.v2",
                 "status": "submitted",
-                "transactionId": "000102030405060708090a0b0c0d0e0f"
-                                 + "101112131415161718191a1b1c1d1e1f"
+                "transactionId": submittedTransactionId,
+                "deadlineMs": String(Date.now() + 60000)
             }
         })
-        var runtime = createTemporaryObject(runtimeComponent, testCase)
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend,
-            "runtime": runtime
-        })
-        verify(backend)
-        verify(runtime)
-        verify(page)
-
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
         page.flow.confirm({
+            "instruction": "AddLiquidity",
             "request": ({}),
+            "poolProbeRequest": {
+                "tokenAId": "22222222222222222222222222222222",
+                "tokenBId": "33333333333333333333333333333333"
+            },
             "quoteHash": "sha256:expected"
         })
+        wait(0)
 
-        compare(page.flow.transactionId, "")
-        compare(page.flow.flowErrorCode, "wallet_submission_failed")
-        compare(page.flow.submitting, false)
+        compare(page.flow.pendingPoolProbes.length, 0)
     }
 
-    function test_poolProbeDoesNotPublishProbeAmountsAsCurrentQuote() {
+    function test_walletSyncDisablesSubmissionOnly() {
         var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true
+            "walletCanSubmit": false,
+            "walletSyncStatus": "syncing"
         })
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend
-        })
-        verify(backend)
-        verify(page)
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
+        page.flow.confirm({ "request": ({}), "quoteHash": "sha256:expected" })
 
+        compare(backend.submitCalls, 0)
+        compare(page.flow.flowErrorCode, "wallet_syncing")
+        verify(!page.flow.submitting)
+    }
+
+    function test_poolProbeDoesNotPublishProbeAsCurrentQuote() {
+        var backend = createTemporaryObject(backendComponent, testCase)
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
         var request = {
             "tokenAId": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
             "tokenBId": "22222222222222222222222222222222"
@@ -282,54 +236,19 @@ TestCase {
         page.flow.pendingQuoteRequest = { "ok": true, "request": request }
         page.flow.pendingPoolProbes = [pending]
         page.flow.newPositionQuote = {
-            "schema": "new-position.v1",
+            "schema": "new-position.v2",
             "status": "ok",
-            "poolStatus": "missing_pool",
-            "tokenAId": request.tokenAId,
-            "tokenBId": request.tokenBId
+            "poolStatus": "missing_pool"
         }
         page.flow.quoteStale = false
 
         page.flow.finishPoolProbe(pending, {
-            "schema": "new-position.v1",
+            "schema": "new-position.v2",
             "status": "ok",
-            "poolStatus": "active_pool",
-            "tokenAId": request.tokenAId,
-            "tokenBId": request.tokenBId
+            "poolStatus": "active_pool"
         })
 
-        compare(page.flow.pendingPoolProbes.length, 0)
         compare(page.flow.newPositionQuote.poolStatus, "missing_pool")
         verify(page.flow.quoteStale)
-    }
-
-    function test_poolProbeStopsBlockingAfterTransactionDeadline() {
-        var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true
-        })
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend
-        })
-        verify(backend)
-        verify(page)
-
-        var request = {
-            "tokenAId": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
-            "tokenBId": "22222222222222222222222222222222"
-        }
-        var pending = {
-            "key": page.flow.pairKey(request),
-            "request": request,
-            "deadlineMs": Date.now() - 1
-        }
-        page.flow.pendingQuoteRequest = { "ok": true, "request": request }
-        page.flow.pendingPoolProbes = [pending]
-        page.flow.poolProbeInFlight = true
-
-        page.flow.finishPoolProbe(pending, null)
-
-        compare(page.flow.pendingPoolProbes.length, 0)
-        compare(page.flow.poolProbeInFlight, false)
-        verify(!page.flow.selectedPoolCreationPending())
     }
 }

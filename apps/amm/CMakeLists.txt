@@ -42,6 +42,8 @@ logos_module(
         src/AmmClient.cpp
         src/NewPositionRuntime.h
         src/NewPositionRuntime.cpp
+        src/SequencerClient.h
+        src/SequencerClient.cpp
     FIND_PACKAGES
         Qt6Gui
         Qt6Network
@@ -73,10 +75,13 @@ if(BUILD_TESTING)
     add_executable(amm_new_position_runtime_test
         tests/cpp/NewPositionRuntimeTest.cpp
         src/NewPositionRuntime.cpp
+        src/SequencerClient.cpp
+        src/SequencerClient.h
     )
     target_include_directories(amm_new_position_runtime_test PRIVATE src)
     target_link_libraries(amm_new_position_runtime_test PRIVATE
         Qt6::Core
+        Qt6::Network
         PkgConfig::BASE58
         logos_wallet_access
     )
