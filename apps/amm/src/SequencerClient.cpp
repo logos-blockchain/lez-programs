@@ -155,6 +155,8 @@ void SequencerClient::readAccount(const QString& accountId,
             });
         return;
     }
+    if (forceRefresh)
+        m_cache.remove(accountId);
     if (!forceRefresh && m_cache.contains(accountId)) {
         const WalletAccountRead cached = m_cache.value(accountId);
         QTimer::singleShot(0, this,

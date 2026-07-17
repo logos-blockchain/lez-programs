@@ -14,6 +14,8 @@
 #include <QTemporaryFile>
 #include <QTimer>
 
+#include <utility>
+
 namespace {
     bool expect(bool condition, const char* message)
     {
@@ -48,6 +50,7 @@ namespace {
         }
 
         int requestCount() const { return m_requestCount; }
+        void failNextRequest() { ++m_failuresRemaining; }
 
     private:
         void process(QTcpSocket* socket)
@@ -71,10 +74,16 @@ namespace {
                 return;
 
             ++m_requestCount;
+            const bool fail = m_failuresRemaining > 0;
+            if (fail)
+                --m_failuresRemaining;
             const QByteArray payload = QByteArrayLiteral(
                 R"({"jsonrpc":"2.0","id":1,"result":null})");
-            QByteArray response = QByteArrayLiteral(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ");
+            QByteArray response = fail
+                ? QByteArrayLiteral(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: ")
+                : QByteArrayLiteral(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ");
             response += QByteArray::number(payload.size());
             response += QByteArrayLiteral("\r\nConnection: close\r\n\r\n");
             response += payload;
@@ -86,6 +95,7 @@ namespace {
         QTcpServer m_server;
         QHash<QTcpSocket*, QByteArray> m_requests;
         int m_requestCount = 0;
+        int m_failuresRemaining = 0;
     };
 
     class FakeWallet final : public WalletProvider {
@@ -262,6 +272,28 @@ namespace {
             loop.exec();
         return completed;
     }
+
+    bool waitForAccounts(SequencerClient& sequencer,
+                         const QStringList& accountIds,
+                         bool forceRefresh,
+                         QVector<WalletAccountRead>* reads)
+    {
+        bool completed = false;
+        QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+        sequencer.readAccounts(accountIds, forceRefresh,
+            [&](QVector<WalletAccountRead> result) {
+                *reads = std::move(result);
+                completed = true;
+                loop.quit();
+            });
+        timeout.start(3000);
+        if (!completed)
+            loop.exec();
+        return completed;
+    }
 }
 
 int main(int argc, char** argv)
@@ -389,6 +421,28 @@ int main(int argc, char** argv)
         return 1;
     if (!expect(server.requestCount() == 4,
                 "forced context should reread config and wallet holding"))
+        return 1;
+
+    server.failNextRequest();
+    QVector<WalletAccountRead> failedRefresh;
+    if (!expect(waitForAccounts(sequencer, { holding.address }, true,
+                                &failedRefresh),
+                "failed forced holding refresh should complete"))
+        return 1;
+    if (!expect(failedRefresh.size() == 1 && !failedRefresh.constFirst().ok(),
+                "forced holding refresh should surface the sequencer failure"))
+        return 1;
+    const int requestsAfterFailure = server.requestCount();
+    QVector<WalletAccountRead> recoveredRead;
+    if (!expect(waitForAccounts(sequencer, { holding.address }, false,
+                                &recoveredRead),
+                "holding read after failure should complete"))
+        return 1;
+    if (!expect(server.requestCount() == requestsAfterFailure + 1,
+                "failed forced refresh should evict the stale holding cache"))
+        return 1;
+    if (!expect(recoveredRead.size() == 1 && recoveredRead.constFirst().ok(),
+                "holding read should recover from the sequencer"))
         return 1;
 
     return 0;
