@@ -5,6 +5,7 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QHash>
 #include <QHostAddress>
@@ -51,8 +52,39 @@ namespace {
 
         int requestCount() const { return m_requestCount; }
         void failNextRequest() { ++m_failuresRemaining; }
+        void holdResponses() { m_holdResponses = true; }
+        void releaseNextResponse()
+        {
+            if (m_heldResponses.isEmpty())
+                return;
+            const HeldResponse held = m_heldResponses.takeFirst();
+            respond(held.socket, held.fail);
+        }
 
     private:
+        struct HeldResponse {
+            QTcpSocket* socket = nullptr;
+            bool fail = false;
+        };
+
+        static void respond(QTcpSocket* socket, bool fail)
+        {
+            if (!socket)
+                return;
+            const QByteArray payload = QByteArrayLiteral(
+                R"({"jsonrpc":"2.0","id":1,"result":null})");
+            QByteArray response = fail
+                ? QByteArrayLiteral(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: ")
+                : QByteArrayLiteral(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ");
+            response += QByteArray::number(payload.size());
+            response += QByteArrayLiteral("\r\nConnection: close\r\n\r\n");
+            response += payload;
+            socket->write(response);
+            socket->disconnectFromHost();
+        }
+
         void process(QTcpSocket* socket)
         {
             QByteArray& request = m_requests[socket];
@@ -77,26 +109,39 @@ namespace {
             const bool fail = m_failuresRemaining > 0;
             if (fail)
                 --m_failuresRemaining;
-            const QByteArray payload = QByteArrayLiteral(
-                R"({"jsonrpc":"2.0","id":1,"result":null})");
-            QByteArray response = fail
-                ? QByteArrayLiteral(
-                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: ")
-                : QByteArrayLiteral(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ");
-            response += QByteArray::number(payload.size());
-            response += QByteArrayLiteral("\r\nConnection: close\r\n\r\n");
-            response += payload;
-            socket->write(response);
-            socket->disconnectFromHost();
             m_requests.remove(socket);
+            if (m_holdResponses) {
+                m_heldResponses.append({ socket, fail });
+                return;
+            }
+            respond(socket, fail);
         }
 
         QTcpServer m_server;
         QHash<QTcpSocket*, QByteArray> m_requests;
         int m_requestCount = 0;
         int m_failuresRemaining = 0;
+        bool m_holdResponses = false;
+        QVector<HeldResponse> m_heldResponses;
     };
+
+    bool waitForRequestCount(const LocalRpcServer& server, int expected)
+    {
+        QElapsedTimer timer;
+        timer.start();
+        while (server.requestCount() < expected && timer.elapsed() < 3000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        return server.requestCount() >= expected;
+    }
+
+    bool waitForCallbacks(const bool& first, const bool& second)
+    {
+        QElapsedTimer timer;
+        timer.start();
+        while ((!first || !second) && timer.elapsed() < 3000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        return first && second;
+    }
 
     class FakeWallet final : public WalletProvider {
     public:
@@ -479,6 +524,48 @@ int main(int argc, char** argv)
         return 1;
     if (!expect(replacementServer.requestCount() == 1,
                 "same-path endpoint update should clear cache and use new sequencer"))
+        return 1;
+
+    LocalRpcServer forcedRefreshServer;
+    if (!expect(forcedRefreshServer.listen(),
+                "forced-refresh sequencer should listen"))
+        return 1;
+    forcedRefreshServer.holdResponses();
+    if (!expect(sequencerConfig.resize(0) && sequencerConfig.seek(0),
+                "forced-refresh config should rewind"))
+        return 1;
+    sequencerConfig.write(QJsonDocument(QJsonObject {
+        { QStringLiteral("sequencer_addr"), forcedRefreshServer.endpoint() },
+    }).toJson(QJsonDocument::Compact));
+    sequencerConfig.flush();
+    if (!expect(sequencer.configure(sequencerConfig.fileName()),
+                "forced-refresh sequencer should configure"))
+        return 1;
+
+    bool ordinaryCompleted = false;
+    bool forcedCompleted = false;
+    sequencer.readAccounts({ holding.address }, false,
+        [&](QVector<WalletAccountRead>) { ordinaryCompleted = true; });
+    if (!expect(waitForRequestCount(forcedRefreshServer, 1),
+                "ordinary read should reach sequencer"))
+        return 1;
+    sequencer.readAccounts({ holding.address }, true,
+        [&](QVector<WalletAccountRead>) { forcedCompleted = true; });
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    if (!expect(forcedRefreshServer.requestCount() == 1,
+                "forced refresh should wait for active account read"))
+        return 1;
+
+    forcedRefreshServer.releaseNextResponse();
+    if (!expect(waitForRequestCount(forcedRefreshServer, 2),
+                "forced refresh should issue a follow-up account read"))
+        return 1;
+    if (!expect(ordinaryCompleted && !forcedCompleted,
+                "pre-refresh result must not complete forced callback"))
+        return 1;
+    forcedRefreshServer.releaseNextResponse();
+    if (!expect(waitForCallbacks(ordinaryCompleted, forcedCompleted),
+                "forced follow-up read should complete"))
         return 1;
 
     return 0;

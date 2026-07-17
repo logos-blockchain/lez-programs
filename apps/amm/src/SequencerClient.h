@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QObject>
 #include <QQueue>
+#include <QSet>
 #include <QStringList>
 #include <QUrl>
 #include <QVector>
@@ -55,7 +56,9 @@ private:
     QByteArray m_authorization;
     QHash<QString, WalletAccountRead> m_cache;
     QHash<QString, QVector<AccountCallback>> m_waiters;
+    QHash<QString, QVector<AccountCallback>> m_forcedWaiters;
     QQueue<PendingRead> m_pending;
+    QSet<QString> m_activeReadIds;
     int m_activeReads = 0;
     quint64 m_generation = 0;
 };

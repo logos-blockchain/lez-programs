@@ -167,6 +167,10 @@ void SequencerClient::readAccount(const QString& accountId,
             [callback = std::move(callback), cached]() mutable { callback(cached); });
         return;
     }
+    if (forceRefresh && m_activeReadIds.contains(accountId)) {
+        m_forcedWaiters[accountId].append(std::move(callback));
+        return;
+    }
 
     const bool alreadyPending = m_waiters.contains(accountId);
     m_waiters[accountId].append(std::move(callback));
@@ -180,6 +184,7 @@ void SequencerClient::startPendingReads()
     while (m_activeReads < MAX_CONCURRENT_READS && !m_pending.isEmpty()) {
         const PendingRead pending = m_pending.dequeue();
         ++m_activeReads;
+        m_activeReadIds.insert(pending.accountId);
         startRead(pending.accountId);
     }
 }
@@ -226,7 +231,14 @@ void SequencerClient::completeRead(const QString& accountId,
     if (read.ok())
         m_cache.insert(accountId, read);
     const QVector<AccountCallback> callbacks = m_waiters.take(accountId);
+    const QVector<AccountCallback> forcedCallbacks = m_forcedWaiters.take(accountId);
+    m_activeReadIds.remove(accountId);
     --m_activeReads;
+    if (!forcedCallbacks.isEmpty()) {
+        m_cache.remove(accountId);
+        m_waiters.insert(accountId, forcedCallbacks);
+        m_pending.enqueue({ accountId });
+    }
     for (const AccountCallback& callback : callbacks)
         callback(read);
     startPendingReads();
@@ -279,7 +291,13 @@ void SequencerClient::cancelPendingReads()
 {
     decltype(m_waiters) waiters;
     waiters.swap(m_waiters);
+    for (auto iterator = m_forcedWaiters.cbegin();
+         iterator != m_forcedWaiters.cend(); ++iterator) {
+        waiters[iterator.key()].append(iterator.value());
+    }
+    m_forcedWaiters.clear();
     m_pending.clear();
+    m_activeReadIds.clear();
     m_activeReads = 0;
     for (auto iterator = waiters.cbegin(); iterator != waiters.cend(); ++iterator) {
         const WalletAccountRead failed { iterator.key() };
