@@ -28,6 +28,7 @@ TestCase {
             })
             property var newPositionQuoteResult: ({})
             property var newPositionSubmitResult: ({})
+            property bool deferSubmitResult: false
             property var newPositionContext: ({
                 "schema": "new-position.v2",
                 "status": "ready",
@@ -43,7 +44,8 @@ TestCase {
                 ++submitCalls
                 var result = JSON.parse(JSON.stringify(submitResult || ({})))
                 result.requestId = requestId
-                newPositionSubmitResult = result
+                if (!deferSubmitResult)
+                    newPositionSubmitResult = result
             }
 
             function requestNewPositionQuote(request, requestId, forceRefresh) {
@@ -242,6 +244,40 @@ TestCase {
         compare(backend.submitCalls, 0)
         compare(page.flow.flowErrorCode, "wallet_syncing")
         verify(!page.flow.submitting)
+    }
+
+    function test_backendLossEndsSubmissionWithUnknownStatus() {
+        var backend = createTemporaryObject(backendComponent, testCase, {
+            "deferSubmitResult": true,
+            "submitResult": {
+                "schema": "new-position.v2",
+                "status": "submitted",
+                "transactionId": submittedTransactionId
+            }
+        })
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
+        verify(page)
+
+        page.flow.confirm({ "request": ({}), "quoteHash": "sha256:expected" })
+        const staleRequestId = page.flow.submitRequestId
+        verify(page.flow.submitting)
+        verify(staleRequestId > 0)
+
+        page.backend = null
+        tryCompare(page.flow, "submitting", false)
+        compare(page.flow.submitRequestId, 0)
+        compare(page.flow.flowErrorCode, "submission_status_unknown")
+
+        page.backend = backend
+        backend.newPositionSubmitResult = {
+            "schema": "new-position.v2",
+            "status": "submitted",
+            "transactionId": submittedTransactionId,
+            "requestId": staleRequestId
+        }
+        wait(0)
+        compare(page.flow.transactionId, "")
+        compare(page.flow.flowErrorCode, "submission_status_unknown")
     }
 
     function test_poolProbeDoesNotPublishProbeAsCurrentQuote() {

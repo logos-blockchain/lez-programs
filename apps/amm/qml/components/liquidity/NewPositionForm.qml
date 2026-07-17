@@ -1300,6 +1300,7 @@ AmmActionCard {
             "wallet_unavailable": qsTr("Wallet is unavailable."),
             "wallet_syncing": qsTr("Wallet is still syncing. Review the quote while it finishes."),
             "wallet_submission_failed": qsTr("Wallet submission failed. Review and retry manually."),
+            "submission_status_unknown": qsTr("Connection was lost before submission status was known. Check wallet activity before retrying."),
             "signature_rejected": qsTr("Wallet approval was rejected."),
             "quote_changed": qsTr("Pool or wallet state changed. Review the refreshed quote."),
             "quote_not_submittable": qsTr("Current quote cannot be submitted."),

@@ -106,6 +106,16 @@ QtObject {
             Qt.callLater(function() { root.quoteRefreshRequested(true) })
     }
 
+    onBackendReadyChanged: {
+        if (root.backendReady || !root.submitting)
+            return
+        root.submitRequestId = 0
+        root.submitting = false
+        root.pendingSubmitSnapshot = ({})
+        root.flowErrorCode = "submission_status_unknown"
+        root.submitFailed()
+    }
+
     function contextHints(refreshPublicData) {
         const request = root.pendingQuoteRequest.request || {}
         const recent = []
