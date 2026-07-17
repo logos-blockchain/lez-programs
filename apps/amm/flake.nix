@@ -8,27 +8,77 @@
 
     # Core wallet module (the LEZ wallet FFI Qt plugin). The input name must
     # match the metadata.json `dependencies` entry so the builder can resolve
-    # it as a module dependency. This revision exposes generic transaction
-    # submission by deployed program ID.
+    # it as a module dependency. Public testnet still exposes the v0.2.0-rc6
+    # wallet RPC contract.
     logos_execution_zone = {
       url = "github:logos-blockchain/logos-execution-zone-module?rev=d70225ced646934d2294fd9e8f8b03615c104b80";
-
-      # The module pins the monorepo at v0.2.0-rc6 (e37876a). Override that
-      # transitive input with the merged macOS xcrun-cache fix.
       inputs.logos-execution-zone.url =
-        "github:logos-blockchain/logos-execution-zone?rev=a7e06a660940a00093b1760560d37ff84aff5a05";
+        "github:logos-blockchain/logos-execution-zone?rev=e37876a64028a335eb693198a1ed6a0e875ec5b4";
     };
   };
 
-  outputs = inputs@{ logos-module-builder, nixpkgs, crane, ... }:
+  outputs = inputs@{
+    logos-module-builder,
+    logos_execution_zone,
+    nixpkgs,
+    crane,
+    ...
+  }:
     let
+      # Preserve the macOS Metal workaround without moving the wallet past the
+      # RPC contract currently deployed on public testnet. Crane builds the
+      # dependency artifacts separately, so both derivations need the setting.
+      withXcrunNoCache = package:
+        package.overrideAttrs (previous:
+          {
+            xcrun_nocache = "1";
+          }
+          // (if previous ? cargoArtifacts && previous.cargoArtifacts ? overrideAttrs
+            then {
+              cargoArtifacts = previous.cargoArtifacts.overrideAttrs (_: {
+                xcrun_nocache = "1";
+              });
+            }
+            else { }));
+
+      executionZone = logos_execution_zone.inputs.logos-execution-zone;
+      testnetExecutionZone = executionZone // {
+        packages = builtins.mapAttrs
+          (system: packages:
+            if builtins.match ".*-darwin" system == null then packages
+            else
+              let
+                wallet = withXcrunNoCache packages.wallet;
+              in
+              packages // {
+                inherit wallet;
+                default = wallet;
+              })
+          executionZone.packages;
+      };
+
+      # Evaluate the pinned module source with the testnet-compatible wallet.
+      # This is ordinary flake composition, not a relative flake input, keeping
+      # Nix 2.25 lock and build behavior portable.
+      logosExecutionZoneModule =
+        (import "${logos_execution_zone.outPath}/flake.nix").outputs {
+          logos-module-builder = logos_execution_zone.inputs.logos-module-builder;
+          logos-execution-zone = testnetExecutionZone;
+          nix-bundle-lgx = logos_execution_zone.inputs.nix-bundle-lgx;
+        };
+
+      # Name must match metadata.json so the builder resolves the core module.
+      moduleInputs = inputs // {
+        logos_execution_zone = logosExecutionZoneModule;
+      };
+
       ammClientInput = (import ../../flake.nix).outputs {
         inherit nixpkgs crane;
       };
       moduleBuild = logos-module-builder.lib.mkLogosQmlModule {
         src = ./.;
         configFile = ./metadata.json;
-        flakeInputs = inputs;
+        flakeInputs = moduleInputs;
         preConfigure = ''
           cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${../shared/wallet}")
         '';
@@ -68,12 +118,45 @@
 
             moduleDeps =
               logos-module-builder.lib.common.collectAllModuleDeps
-                system inputs moduleBuild.config.dependencies;
+                system moduleInputs moduleBuild.config.dependencies;
           };
         }
       );
+
+      publicPackages = builtins.mapAttrs
+        (system: packages: packages // {
+          logos_execution_zone-lgx =
+            logosExecutionZoneModule.packages.${system}.lgx;
+          logos_execution_zone-lgx-portable =
+            logosExecutionZoneModule.packages.${system}.lgx-portable;
+        })
+        moduleBuild.packages;
+
+      linuxChecks =
+        let
+          pkgs = nixpkgs.legacyPackages.x86_64-linux;
+          walletModule = logosExecutionZoneModule.packages.x86_64-linux.lib;
+        in
+        {
+          wallet-rpc-contract = pkgs.runCommand "amm-wallet-rpc-contract" { } ''
+            wallet="${walletModule}/lib/libwallet_ffi.so"
+            test -f "$wallet"
+            ${pkgs.binutils}/bin/strings "$wallet" > methods
+            ${pkgs.gnugrep}/bin/grep -Fq sendTransaction methods
+            ${pkgs.gnugrep}/bin/grep -Fq getProofForCommitment methods
+            if ${pkgs.gnugrep}/bin/grep -Fq getProofsAndRoot methods; then
+              echo "wallet uses unsupported testnet RPC method getProofsAndRoot"
+              exit 1
+            fi
+            touch "$out"
+          '';
+        };
     in
     moduleBuild // {
       apps = publicApps;
+      packages = publicPackages;
+      checks = (moduleBuild.checks or { }) // {
+        x86_64-linux = (moduleBuild.checks.x86_64-linux or { }) // linuxChecks;
+      };
     };
 }

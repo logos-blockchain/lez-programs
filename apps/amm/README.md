@@ -79,12 +79,10 @@ nix build '.#lgx' --out-link result-lgx
 # Portable variant (self-contained, works without nix)
 nix build '.#lgx-portable' --out-link result-lgx-portable
 
-# The core wallet module it depends on. These are the same immutable upstream
-# revisions used by this app's flake, including the merged macOS Metal fix.
-nix build 'github:logos-blockchain/logos-execution-zone-module?rev=d70225ced646934d2294fd9e8f8b03615c104b80#lgx' \
-  --override-input logos-execution-zone \
-  'github:logos-blockchain/logos-execution-zone?rev=a7e06a660940a00093b1760560d37ff84aff5a05' \
-  --out-link result-core
+# The matching core wallet module. This uses the public-testnet RPC contract
+# and carries the macOS Metal workaround without pulling newer wallet RPCs.
+nix build '.#logos_execution_zone-lgx' --out-link result-core
+nix build '.#logos_execution_zone-lgx-portable' --out-link result-core-portable
 ```
 
 ### 2. Install into Basecamp
@@ -106,6 +104,7 @@ lgpm --ui-plugins-dir "$BASECAMP_DIR/plugins" \
 ```
 
 > **Note:** Use matching variants throughout — dev with dev, portable with portable. Mixing variants causes loading failures. The portable build uses the `LogosBasecamp` data directory instead of `LogosBasecampDev`.
+> For the portable pair, install the core module from `result-core-portable/`.
 
 ### 3. Launch Basecamp
 
