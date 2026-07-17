@@ -93,6 +93,7 @@ Item {
 
             SwapCard {
                 id: swapCard
+                objectName: "swapCard"
                 Layout.alignment: Qt.AlignHCenter
                 theme: pageTheme
                 tokens: root.tokens
@@ -103,18 +104,20 @@ Item {
                     tokenModal.open()
                 }
 
-                onSubmitRequested: function(snapshot) {
+                onPreviewRequested: function(snapshot) {
                     swapConfirmationDialog.openWithSnapshot(snapshot)
                 }
             }
 
             Text {
+                objectName: "swapPreviewNotice"
                 Layout.alignment: Qt.AlignHCenter
-                text: "Buy and sell crypto on <font color='" + pageTheme.colors.textPrimary + "'>LEZ</font>."
-                textFormat: Text.RichText
+                Layout.maximumWidth: Math.max(0, Math.min(480, root.width - 32))
+                text: qsTr("Preview only — sample data. No swap will be submitted.")
                 color: pageTheme.colors.textSecondary
                 font.pixelSize: 15
                 horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
             }
         }
 
@@ -133,18 +136,6 @@ Item {
             }
         }
 
-        SuccessToast {
-            id: swapToast
-
-            width: Math.max(0, Math.min(380, parent.width - 32))
-
-            anchors {
-                bottom: parent.bottom
-                bottomMargin: 24
-                horizontalCenter: parent.horizontalCenter
-            }
-        }
-
         Component {
             id: swapConfirmationSummary
 
@@ -155,19 +146,11 @@ Item {
 
         TransactionConfirmationDialog {
             id: swapConfirmationDialog
-            title: qsTr("Confirm swap")
-            confirmText: qsTr("Confirm swap")
+            objectName: "swapPreviewDialog"
+            title: qsTr("Swap preview")
+            cancelText: qsTr("Back")
+            confirmText: qsTr("Done")
             summary: swapConfirmationSummary
-
-            onConfirmed: function(snapshot) {
-                swapCard.resetAmounts()
-                swapToast.show(qsTr("Swap submitted"),
-                               qsTr("%1 %2 → %3 %4")
-                                    .arg(snapshot.sellAmount)
-                                    .arg(snapshot.sellToken)
-                                    .arg(snapshot.minReceived)
-                                    .arg(snapshot.buyToken))
-            }
         }
     }
 }

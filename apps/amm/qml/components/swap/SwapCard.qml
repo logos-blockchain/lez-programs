@@ -22,17 +22,11 @@ Rectangle {
     }
 
     signal requestTokenSelect(string side)
-    signal submitRequested(var snapshot)
+    signal previewRequested(var snapshot)
 
     function setToken(side, token) {
         if (side === "sell") root.sellToken = token
         else root.buyToken = token
-    }
-
-    function resetAmounts() {
-        root.sellInput = ""
-        root.buyInput = ""
-        root.editingSide = "sell"
     }
 
     readonly property real sellReserve: sellToken ? (sellToken.reserve || 0) : 0
@@ -73,7 +67,7 @@ Rectangle {
         if (!hasAmount || !tokensSelected) return qsTr("Enter an amount")
         if (insufficientBalance) return qsTr("Insufficient balance")
         if (insufficientLiquidity) return qsTr("Insufficient liquidity")
-        return qsTr("Swap")
+        return qsTr("Preview swap")
     }
 
     function formatAmountValue(val) {
@@ -235,6 +229,7 @@ Rectangle {
 
         Rectangle {
             id: ctaBox
+            objectName: "swapPreviewButton"
             Layout.fillWidth: true
             Layout.topMargin: 8
             Layout.bottomMargin: 8
@@ -262,7 +257,7 @@ Rectangle {
                 enabled: root.canSubmit
                 cursorShape: root.canSubmit ? Qt.PointingHandCursor : Qt.ArrowCursor
                 onClicked: {
-                    if (root.canSubmit) root.submitRequested(root.buildSnapshot())
+                    if (root.canSubmit) root.previewRequested(root.buildSnapshot())
                 }
             }
         }
