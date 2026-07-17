@@ -80,20 +80,24 @@ SequencerClient::SequencerClient(AmmClient* client, QObject* parent)
 {
 }
 
-bool SequencerClient::configure(const QString& configPath)
+bool SequencerClient::configure(const QString& configPath,
+                                const QString& effectiveEndpoint)
 {
-    QUrl endpoint;
+    QUrl configuredEndpoint;
     QByteArray authorization;
     QFile file(configPath);
-    bool valid = file.open(QIODevice::ReadOnly);
-    if (valid) {
+    bool configValid = file.open(QIODevice::ReadOnly);
+    if (configValid) {
         const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
         const QJsonObject config = document.object();
-        endpoint = QUrl(config.value(QStringLiteral("sequencer_addr")).toString());
-        const QString scheme = endpoint.scheme().toLower();
-        valid = document.isObject() && endpoint.isValid() && !endpoint.host().isEmpty()
+        configuredEndpoint = QUrl(
+            config.value(QStringLiteral("sequencer_addr")).toString());
+        const QString scheme = configuredEndpoint.scheme().toLower();
+        configValid = document.isObject()
+            && configuredEndpoint.isValid()
+            && !configuredEndpoint.host().isEmpty()
             && (scheme == QStringLiteral("http") || scheme == QStringLiteral("https"));
-        if (valid) {
+        if (configValid) {
             const QJsonObject basicAuth = config.value(QStringLiteral("basic_auth")).toObject();
             const QString username = basicAuth.value(QStringLiteral("username")).toString();
             const QString password = basicAuth.value(QStringLiteral("password")).toString();
@@ -103,10 +107,18 @@ bool SequencerClient::configure(const QString& configPath)
             }
         }
     }
-    if (!valid) {
+
+    QUrl endpoint = effectiveEndpoint.isEmpty()
+        ? configuredEndpoint : QUrl(effectiveEndpoint);
+    const QString scheme = endpoint.scheme().toLower();
+    const bool valid = endpoint.isValid()
+        && !endpoint.host().isEmpty()
+        && (scheme == QStringLiteral("http") || scheme == QStringLiteral("https"))
+        && (configValid || !effectiveEndpoint.isEmpty());
+    if (!valid)
         endpoint = QUrl();
+    if (!configValid || configuredEndpoint != endpoint)
         authorization.clear();
-    }
     if (endpoint == m_endpoint && authorization == m_authorization)
         return valid;
 

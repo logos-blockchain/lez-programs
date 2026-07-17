@@ -53,6 +53,10 @@ namespace {
         }
 
         int requestCount() const { return m_requestCount; }
+        QByteArray lastRequest() const
+        {
+            return m_lastRequest;
+        }
         void failNextRequest() { ++m_failuresRemaining; }
         void holdResponses() { m_holdResponses = true; }
         void releaseNextResponse()
@@ -108,6 +112,7 @@ namespace {
                 return;
 
             ++m_requestCount;
+            m_lastRequest = request;
             const bool fail = m_failuresRemaining > 0;
             if (fail)
                 --m_failuresRemaining;
@@ -121,6 +126,7 @@ namespace {
 
         QTcpServer m_server;
         QHash<QTcpSocket*, QByteArray> m_requests;
+        QByteArray m_lastRequest;
         int m_requestCount = 0;
         int m_failuresRemaining = 0;
         bool m_holdResponses = false;
@@ -478,6 +484,64 @@ int main(int argc, char** argv)
         return 1;
     if (!expect(staleWallet.createdAccounts == 0 && staleWallet.submissions == 0,
                 "stale quote should have no wallet side effects"))
+        return 1;
+
+    LocalRpcServer configuredEndpointServer;
+    LocalRpcServer adoptedEndpointServer;
+    if (!expect(configuredEndpointServer.listen()
+                    && adoptedEndpointServer.listen(),
+                "endpoint-alignment sequencers should listen"))
+        return 1;
+    QTemporaryFile endpointConfig;
+    if (!expect(endpointConfig.open(), "endpoint-alignment config should open"))
+        return 1;
+    endpointConfig.write(QJsonDocument(QJsonObject {
+        { QStringLiteral("sequencer_addr"), configuredEndpointServer.endpoint() },
+        { QStringLiteral("basic_auth"), QJsonObject {
+            { QStringLiteral("username"), QStringLiteral("user") },
+            { QStringLiteral("password"), QStringLiteral("pass") },
+        } },
+    }).toJson(QJsonDocument::Compact));
+    endpointConfig.flush();
+    FakeAmmClient endpointClient;
+    SequencerClient alignedSequencer(&endpointClient);
+    if (!expect(alignedSequencer.configure(
+                    endpointConfig.fileName(), adoptedEndpointServer.endpoint()),
+                "adopted wallet endpoint should configure"))
+        return 1;
+    if (!expect(alignedSequencer.endpoint() == adoptedEndpointServer.endpoint(),
+                "adopted wallet endpoint should override stale config"))
+        return 1;
+    QVector<WalletAccountRead> adoptedEndpointReads;
+    const QString endpointAccount(64, QLatin1Char('3'));
+    if (!expect(waitForAccounts(
+                    alignedSequencer, { endpointAccount }, false,
+                    &adoptedEndpointReads),
+                "adopted endpoint read should complete"))
+        return 1;
+    if (!expect(configuredEndpointServer.requestCount() == 0
+                    && adoptedEndpointServer.requestCount() == 1,
+                "direct reads should follow adopted wallet endpoint"))
+        return 1;
+    if (!expect(!adoptedEndpointServer.lastRequest().toLower().contains(
+                    "authorization:"),
+                "stale config credentials must not reach adopted endpoint"))
+        return 1;
+
+    if (!expect(alignedSequencer.configure(
+                    endpointConfig.fileName(), configuredEndpointServer.endpoint()),
+                "matching wallet endpoint should configure"))
+        return 1;
+    QVector<WalletAccountRead> configuredEndpointReads;
+    if (!expect(waitForAccounts(
+                    alignedSequencer, { endpointAccount }, false,
+                    &configuredEndpointReads),
+                "matching endpoint read should complete"))
+        return 1;
+    if (!expect(configuredEndpointServer.requestCount() == 1
+                    && configuredEndpointServer.lastRequest().toLower().contains(
+                        "authorization: basic dxnlcjpwyxnz"),
+                "matching endpoint should retain configured credentials"))
         return 1;
 
     LocalRpcServer server;

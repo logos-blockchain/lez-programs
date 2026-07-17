@@ -25,7 +25,8 @@ public:
 
     explicit SequencerClient(AmmClient* client, QObject* parent = nullptr);
 
-    bool configure(const QString& configPath);
+    bool configure(const QString& configPath,
+                   const QString& effectiveEndpoint = {});
     QString endpoint() const { return m_endpoint.toString(); }
     bool isConfigured() const { return m_endpoint.isValid() && !m_endpoint.isEmpty(); }
     void applyAuthorization(QNetworkRequest& request) const;
