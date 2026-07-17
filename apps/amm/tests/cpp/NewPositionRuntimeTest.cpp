@@ -1,8 +1,18 @@
 #include "AmmClient.h"
 #include "NewPositionRuntime.h"
+#include "SequencerClient.h"
 #include "WalletProvider.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QEventLoop>
+#include <QHash>
+#include <QHostAddress>
+#include <QJsonDocument>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QTemporaryFile>
+#include <QTimer>
 
 namespace {
     bool expect(bool condition, const char* message)
@@ -11,6 +21,72 @@ namespace {
             qCritical("%s", message);
         return condition;
     }
+
+    class LocalRpcServer final {
+    public:
+        LocalRpcServer()
+        {
+            QObject::connect(&m_server, &QTcpServer::newConnection, [&]() {
+                while (m_server.hasPendingConnections()) {
+                    QTcpSocket* socket = m_server.nextPendingConnection();
+                    QObject::connect(socket, &QTcpSocket::readyRead, socket,
+                                     [this, socket]() { process(socket); });
+                    if (socket->bytesAvailable() > 0)
+                        process(socket);
+                }
+            });
+        }
+
+        bool listen()
+        {
+            return m_server.listen(QHostAddress::LocalHost);
+        }
+
+        QString endpoint() const
+        {
+            return QStringLiteral("http://127.0.0.1:%1").arg(m_server.serverPort());
+        }
+
+        int requestCount() const { return m_requestCount; }
+
+    private:
+        void process(QTcpSocket* socket)
+        {
+            QByteArray& request = m_requests[socket];
+            request.append(socket->readAll());
+            const qsizetype headerEnd = request.indexOf("\r\n\r\n");
+            if (headerEnd < 0)
+                return;
+
+            qsizetype contentLength = 0;
+            for (QByteArray line : request.first(headerEnd).split('\n')) {
+                line = line.trimmed();
+                if (line.toLower().startsWith("content-length:")) {
+                    contentLength = line.mid(sizeof("content-length:") - 1)
+                                        .trimmed().toLongLong();
+                }
+            }
+            const qsizetype bodyStart = headerEnd + 4;
+            if (request.size() - bodyStart < contentLength)
+                return;
+
+            ++m_requestCount;
+            const QByteArray payload = QByteArrayLiteral(
+                R"({"jsonrpc":"2.0","id":1,"result":null})");
+            QByteArray response = QByteArrayLiteral(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ");
+            response += QByteArray::number(payload.size());
+            response += QByteArrayLiteral("\r\nConnection: close\r\n\r\n");
+            response += payload;
+            socket->write(response);
+            socket->disconnectFromHost();
+            m_requests.remove(socket);
+        }
+
+        QTcpServer m_server;
+        QHash<QTcpSocket*, QByteArray> m_requests;
+        int m_requestCount = 0;
+    };
 
     class FakeWallet final : public WalletProvider {
     public:
@@ -80,7 +156,9 @@ namespace {
     public:
         AmmClientResult configId(const QJsonObject&) const override
         {
-            return success({ { QStringLiteral("configId"), QStringLiteral("config") } });
+            return success({
+                { QStringLiteral("configId"), QString(64, QLatin1Char('1')) },
+            });
         }
 
         AmmClientResult tokenIds(const QJsonObject&) const override
@@ -136,9 +214,14 @@ namespace {
             });
         }
 
-        AmmClientResult normalizeAccountRpc(const QJsonObject&) const override
+        AmmClientResult normalizeAccountRpc(const QJsonObject& request) const override
         {
-            return {};
+            return success({
+                { QStringLiteral("id"),
+                  request.value(QStringLiteral("accountId")).toString() },
+                { QStringLiteral("status"), QStringLiteral("ok") },
+                { QStringLiteral("account"), QJsonObject() },
+            });
         }
 
         static AmmClientResult success(const QJsonObject& value)
@@ -161,10 +244,29 @@ namespace {
             {},
         };
     }
+
+    bool waitForContext(NewPositionRuntime& runtime, bool forceRefresh)
+    {
+        bool completed = false;
+        QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+        runtime.contextAsync({}, readyNetwork(), true, forceRefresh,
+            [&](QVariantMap) {
+                completed = true;
+                loop.quit();
+            });
+        timeout.start(3000);
+        if (!completed)
+            loop.exec();
+        return completed;
+    }
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    QCoreApplication application(argc, argv);
     const QVariantMap request {
         { QStringLiteral("schema"), QStringLiteral("new-position.v2") },
         { QStringLiteral("tokenAId"), QStringLiteral("token-a") },
@@ -245,6 +347,48 @@ int main()
         return 1;
     if (!expect(staleWallet.createdAccounts == 0 && staleWallet.submissions == 0,
                 "stale quote should have no wallet side effects"))
+        return 1;
+
+    LocalRpcServer server;
+    if (!expect(server.listen(), "local sequencer should listen"))
+        return 1;
+    QTemporaryFile sequencerConfig;
+    if (!expect(sequencerConfig.open(), "sequencer config should open"))
+        return 1;
+    sequencerConfig.write(QJsonDocument(QJsonObject {
+        { QStringLiteral("sequencer_addr"), server.endpoint() },
+    }).toJson(QJsonDocument::Compact));
+    sequencerConfig.flush();
+
+    FakeWallet refreshWallet;
+    FakeAmmClient refreshClient;
+    SequencerClient sequencer(&refreshClient);
+    if (!expect(sequencer.configure(sequencerConfig.fileName()),
+                "sequencer client should configure"))
+        return 1;
+    NewPositionRuntime refreshRuntime(&refreshWallet, &refreshClient, &sequencer);
+    WalletAccount holding;
+    holding.address = QString(64, QLatin1Char('2'));
+    holding.isPublic = true;
+    refreshRuntime.setWalletAccounts({ holding });
+
+    if (!expect(waitForContext(refreshRuntime, false),
+                "initial context should complete"))
+        return 1;
+    if (!expect(server.requestCount() == 2,
+                "initial context should read config and wallet holding"))
+        return 1;
+    if (!expect(waitForContext(refreshRuntime, false),
+                "cached context should complete"))
+        return 1;
+    if (!expect(server.requestCount() == 2,
+                "cached context should not reread accounts"))
+        return 1;
+    if (!expect(waitForContext(refreshRuntime, true),
+                "forced context should complete"))
+        return 1;
+    if (!expect(server.requestCount() == 4,
+                "forced context should reread config and wallet holding"))
         return 1;
 
     return 0;

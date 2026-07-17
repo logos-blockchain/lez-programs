@@ -279,7 +279,7 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
         [this, request, network, walletOpen, refreshPublicData,
          callback = std::move(callback)](QVector<WalletAccountRead> configReads) mutable {
             const QJsonObject config = accountReadJson(configReads.value(0));
-            m_sequencer->readAccounts(m_walletPublicAccountIds, false,
+            m_sequencer->readAccounts(m_walletPublicAccountIds, refreshPublicData,
                 [this, request, network, walletOpen, refreshPublicData, config,
                  callback = std::move(callback)](
                     QVector<WalletAccountRead> walletReads) mutable {
