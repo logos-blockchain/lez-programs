@@ -72,4 +72,5 @@ private:
     SequencerClient* m_sequencer;
     QStringList m_walletPublicAccountIds;
     bool m_submitInFlight = false;
+    quint64 m_walletGeneration = 0;
 };

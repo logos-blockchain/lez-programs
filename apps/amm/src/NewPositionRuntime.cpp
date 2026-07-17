@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 
 #include <QByteArray>
 #include <QDateTime>
@@ -169,17 +170,21 @@ NewPositionRuntime::NewPositionRuntime(WalletProvider* wallet,
 
 void NewPositionRuntime::clearWalletAccounts()
 {
+    ++m_walletGeneration;
     m_walletPublicAccountIds.clear();
     m_wallet->clearSnapshot();
 }
 
 void NewPositionRuntime::setWalletAccounts(const QVector<WalletAccount>& accounts)
 {
-    m_walletPublicAccountIds.clear();
+    QStringList publicAccountIds;
     for (const WalletAccount& account : accounts) {
         if (account.isPublic)
-            m_walletPublicAccountIds.append(account.address);
+            publicAccountIds.append(account.address);
     }
+    if (publicAccountIds != m_walletPublicAccountIds)
+        ++m_walletGeneration;
+    m_walletPublicAccountIds = std::move(publicAccountIds);
 }
 
 QJsonArray NewPositionRuntime::walletAccountReads(bool walletOpen, bool refresh) const
@@ -501,13 +506,18 @@ void NewPositionRuntime::submitAsync(const QVariantMap& request,
         return;
     }
     m_submitInFlight = true;
+    const quint64 walletGeneration = m_walletGeneration;
     auto finish = [this, callback = std::move(callback)](QVariantMap result) mutable {
         m_submitInFlight = false;
         callback(std::move(result));
     };
     buildQuoteInputAsync(request, network, true, true,
-        [this, quoteHash, finish = std::move(finish)](
+        [this, quoteHash, walletGeneration, finish = std::move(finish)](
             QJsonObject input, QJsonObject error) mutable {
+            if (walletGeneration != m_walletGeneration) {
+                finish(publicError(QStringLiteral("wallet_unavailable")).toVariantMap());
+                return;
+            }
             if (!error.isEmpty()) {
                 finish(error.toVariantMap());
                 return;
@@ -533,6 +543,10 @@ void NewPositionRuntime::submitAsync(const QVariantMap& request,
 
             QJsonValue freshLp;
             if (quote.value(QStringLiteral("requiresFreshLp")).toBool(false)) {
+                if (walletGeneration != m_walletGeneration) {
+                    finish(publicError(QStringLiteral("wallet_unavailable")).toVariantMap());
+                    return;
+                }
                 const WalletAccountCreation creation = m_wallet->createAccount(true);
                 if (!creation.ok() || !creation.publicAccount.ok()) {
                     finish(publicError(QStringLiteral("wallet_submission_failed")).toVariantMap());
@@ -574,6 +588,10 @@ void NewPositionRuntime::submitAsync(const QVariantMap& request,
             if (!deadlineValid
                 || static_cast<qulonglong>(QDateTime::currentMSecsSinceEpoch()) >= deadline) {
                 finish(publicError(QStringLiteral("transaction_deadline_expired")).toVariantMap());
+                return;
+            }
+            if (walletGeneration != m_walletGeneration) {
+                finish(publicError(QStringLiteral("wallet_unavailable")).toVariantMap());
                 return;
             }
             const WalletSubmission submission = m_wallet->submitPublicTransaction({

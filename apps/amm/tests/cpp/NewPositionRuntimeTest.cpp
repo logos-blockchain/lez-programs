@@ -581,5 +581,49 @@ int main(int argc, char** argv)
                 "forced follow-up read should complete"))
         return 1;
 
+    LocalRpcServer cancelledSubmitServer;
+    if (!expect(cancelledSubmitServer.listen(),
+                "cancelled-submit sequencer should listen"))
+        return 1;
+    cancelledSubmitServer.holdResponses();
+    if (!expect(sequencerConfig.resize(0) && sequencerConfig.seek(0),
+                "cancelled-submit config should rewind"))
+        return 1;
+    sequencerConfig.write(QJsonDocument(QJsonObject {
+        { QStringLiteral("sequencer_addr"), cancelledSubmitServer.endpoint() },
+    }).toJson(QJsonDocument::Compact));
+    sequencerConfig.flush();
+    if (!expect(sequencer.configure(sequencerConfig.fileName()),
+                "cancelled-submit sequencer should configure"))
+        return 1;
+
+    FakeWallet cancelledWallet;
+    FakeAmmClient cancelledClient;
+    NewPositionRuntime cancelledRuntime(
+        &cancelledWallet, &cancelledClient, &sequencer);
+    bool cancelledCompleted = false;
+    QVariantMap cancelledResult;
+    cancelledRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            cancelledResult = std::move(result);
+            cancelledCompleted = true;
+        });
+    if (!expect(waitForRequestCount(cancelledSubmitServer, 1),
+                "submit should begin account reads"))
+        return 1;
+    cancelledRuntime.clearWalletAccounts();
+    cancelledRuntime.setWalletAccounts({});
+    cancelledSubmitServer.releaseNextResponse();
+    if (!expect(waitForCallbacks(cancelledCompleted, cancelledCompleted),
+                "cancelled submit should complete"))
+        return 1;
+    if (!expect(cancelledResult.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("wallet_unavailable")
+                    && cancelledWallet.createdAccounts == 0
+                    && cancelledWallet.submissions == 0,
+                "wallet change should cancel submit before side effects"))
+        return 1;
+
     return 0;
 }
