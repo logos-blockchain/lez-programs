@@ -173,7 +173,6 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);
     syncWalletState();
-    refreshNewPositionContext({});
     m_walletController->start();
 }
 
@@ -186,31 +185,22 @@ WalletAccountModel* AmmUiBackend::accountModel() const
 
 QString AmmUiBackend::createNewDefault(QString password)
 {
-    const QString mnemonic = m_walletController->createDefaultWallet(password);
-    syncWalletState();
-    return mnemonic;
+    return m_walletController->createDefaultWallet(password);
 }
 
 QString AmmUiBackend::createNew(QString configPath, QString storagePath, QString password)
 {
-    const QString mnemonic =
-        m_walletController->createWallet(configPath, storagePath, password);
-    syncWalletState();
-    return mnemonic;
+    return m_walletController->createWallet(configPath, storagePath, password);
 }
 
 bool AmmUiBackend::openExisting()
 {
-    const bool opened = m_walletController->open();
-    syncWalletState();
-    return opened;
+    return m_walletController->open();
 }
 
 void AmmUiBackend::disconnectWallet()
 {
     m_walletController->disconnect();
-    m_newPosition->clearWalletAccounts();
-    refreshNewPositionContext(QVariantMap());
 }
 
 QString AmmUiBackend::createAccountPublic()
