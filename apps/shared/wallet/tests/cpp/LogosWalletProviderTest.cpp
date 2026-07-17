@@ -319,12 +319,14 @@ void LogosWalletProviderTest::createsAndPersistsAccounts()
     QVERIFY(provider.connect({}).ok());
 
     const int savesBeforeCreate = modules.logos_execution_zone.saveCalls;
+    const int publicReadsBeforeCreate = modules.logos_execution_zone.publicReadCalls;
     const WalletAccountCreation creation = provider.createAccount(true);
     QVERIFY(creation.ok());
     QCOMPARE(creation.accountId, ACCOUNT_A);
     QVERIFY(creation.publicAccount.ok());
     QCOMPARE(creation.snapshot.accounts.size(), 1);
     QVERIFY(modules.logos_execution_zone.saveCalls > savesBeforeCreate);
+    QCOMPARE(modules.logos_execution_zone.publicReadCalls, publicReadsBeforeCreate + 1);
 
     modules.logos_execution_zone.saveResult = 1;
     QCOMPARE(provider.createAccount(true).failure, WalletFailure::SaveFailed);

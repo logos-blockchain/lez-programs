@@ -329,9 +329,16 @@ WalletAccountCreation LogosWalletProvider::createAccount(bool isPublic)
         return creation;
     }
 
-    if (isPublic)
-        creation.publicAccount = readPublicAccount(creation.accountId);
     creation.snapshot = snapshot(true);
+    if (isPublic) {
+        for (const WalletAccountRead& read : creation.snapshot.publicAccountReads) {
+            if (read.accountId == creation.accountId) {
+                creation.publicAccount = read;
+                return creation;
+            }
+        }
+        creation.publicAccount = readPublicAccount(creation.accountId);
+    }
     return creation;
 }
 
