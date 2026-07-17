@@ -52,10 +52,16 @@ Rectangle {
 
     readonly property real feeAmount: swapState.feeAmount(parsedSellAmount)
     readonly property real minReceivedAmount: swapState.minReceived(parsedBuyAmount, slippageTolerancePercent)
+    readonly property real maxSentAmount: swapState.maxSent(parsedSellAmount, slippageTolerancePercent)
     readonly property real priceImpactPercent: swapState.priceImpactPercent(parsedSellAmount, parsedBuyAmount, sellReserve, buyReserve)
 
-    readonly property string swapMode: editingSide === "buy" ? "swap-exact-output" : "swap-exact-input"
-    readonly property string swapModeText: editingSide === "buy" ? qsTr("Exact output") : qsTr("Exact input")
+    readonly property bool exactOutput: editingSide === "buy"
+    readonly property string swapMode: exactOutput ? "swap-exact-output" : "swap-exact-input"
+    readonly property string swapModeText: exactOutput ? qsTr("Exact output") : qsTr("Exact input")
+    readonly property string limitLabel: exactOutput ? qsTr("Max sent") : qsTr("Min received")
+    readonly property string limitText: exactOutput
+        ? swapState.formatTokenAmount(maxSentAmount, sellToken ? sellToken.symbol : "")
+        : swapState.formatTokenAmount(minReceivedAmount, buyToken ? buyToken.symbol : "")
 
     readonly property bool hasAmount: editingSide === "sell" ? parsedSellInput > 0 : parsedBuyInput > 0
     readonly property bool tokensSelected: sellToken !== null && buyToken !== null
@@ -102,7 +108,8 @@ Rectangle {
             "buyToken": buyToken ? buyToken.symbol : "",
             "sellAmount": formatAmountValue(parsedSellAmount),
             "buyAmount": formatAmountValue(parsedBuyAmount),
-            "minReceived": formatAmountValue(minReceivedAmount),
+            "minReceived": exactOutput ? "" : formatAmountValue(minReceivedAmount),
+            "maxSent": exactOutput ? formatAmountValue(maxSentAmount) : "",
             "feeAmount": swapState.formatTokenAmount(feeAmount, sellToken ? sellToken.symbol : ""),
             "priceImpactPercent": swapState.formatPercent(priceImpactPercent),
             "priceImpactPercentValue": priceImpactPercent,
@@ -211,7 +218,8 @@ Rectangle {
             feeText: swapState.formatTokenAmount(root.feeAmount, root.sellToken ? root.sellToken.symbol : "")
             priceImpactText: swapState.formatPercent(root.priceImpactPercent)
             priceImpactPercent: root.priceImpactPercent
-            minReceivedText: swapState.formatTokenAmount(root.minReceivedAmount, root.buyToken ? root.buyToken.symbol : "")
+            limitLabel: root.limitLabel
+            limitText: root.limitText
         }
 
         SlippageToleranceControl {

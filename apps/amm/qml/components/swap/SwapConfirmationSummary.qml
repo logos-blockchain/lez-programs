@@ -22,16 +22,22 @@ ColumnLayout {
             spacing: 4
 
             Text {
+                objectName: "swapPayLabel"
                 Layout.fillWidth: true
-                text: qsTr("You pay")
+                text: root.snapshot.swapMode === "swap-exact-output"
+                    ? qsTr("You pay at most")
+                    : qsTr("You pay")
                 color: root.theme.colors.textSecondary
                 font.pixelSize: 12
             }
 
             Text {
+                objectName: "swapPayAmount"
                 Layout.fillWidth: true
                 text: qsTr("%1 %2")
-                    .arg(root.snapshot.sellAmount || "")
+                    .arg(root.snapshot.swapMode === "swap-exact-output"
+                        ? root.snapshot.maxSent || ""
+                        : root.snapshot.sellAmount || "")
                     .arg(root.snapshot.sellToken || "")
                 color: root.theme.colors.textPrimary
                 font.bold: true
@@ -54,16 +60,22 @@ ColumnLayout {
             spacing: 4
 
             Text {
+                objectName: "swapReceiveLabel"
                 Layout.fillWidth: true
-                text: qsTr("You receive at least")
+                text: root.snapshot.swapMode === "swap-exact-output"
+                    ? qsTr("You receive")
+                    : qsTr("You receive at least")
                 color: root.theme.colors.textSecondary
                 font.pixelSize: 12
             }
 
             Text {
+                objectName: "swapReceiveAmount"
                 Layout.fillWidth: true
                 text: qsTr("%1 %2")
-                    .arg(root.snapshot.minReceived || "")
+                    .arg(root.snapshot.swapMode === "swap-exact-output"
+                        ? root.snapshot.buyAmount || ""
+                        : root.snapshot.minReceived || "")
                     .arg(root.snapshot.buyToken || "")
                 color: root.theme.colors.textPrimary
                 font.bold: true
@@ -81,8 +93,11 @@ ColumnLayout {
         priceImpactText: root.snapshot.priceImpactPercent || ""
         priceImpactPercent: Number(root.snapshot.priceImpactPercentValue) || 0
         slippageText: root.snapshot.slippageTolerance || ""
-        minReceivedText: qsTr("%1 %2")
-            .arg(root.snapshot.minReceived || "")
-            .arg(root.snapshot.buyToken || "")
+        limitLabel: root.snapshot.swapMode === "swap-exact-output"
+            ? qsTr("Max sent")
+            : qsTr("Min received")
+        limitText: root.snapshot.swapMode === "swap-exact-output"
+            ? qsTr("%1 %2").arg(root.snapshot.maxSent || "").arg(root.snapshot.sellToken || "")
+            : qsTr("%1 %2").arg(root.snapshot.minReceived || "").arg(root.snapshot.buyToken || "")
     }
 }

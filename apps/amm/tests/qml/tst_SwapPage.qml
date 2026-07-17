@@ -53,5 +53,59 @@ Item {
             tryCompare(dialog, "opened", false)
             compare(card.sellInput, "1")
         }
+
+        function test_exactOutputUsesMaximumInputLimit() {
+            const page = createTemporaryObject(pageComponent, root)
+            verify(page)
+
+            const card = findChild(page, "swapCard")
+            const dialog = findChild(page, "swapPreviewDialog")
+            verify(card)
+            verify(dialog)
+
+            card.setToken("sell", page.tokens[0])
+            card.setToken("buy", page.tokens[1])
+            card.slippageTolerancePercent = 10
+            card.buyInput = "1000"
+            card.editingSide = "buy"
+            tryCompare(card, "canSubmit", true)
+
+            const snapshot = card.buildSnapshot()
+            compare(snapshot.swapMode, "swap-exact-output")
+            compare(snapshot.buyAmount, "1000.00")
+            compare(snapshot.minReceived, "")
+            verify(snapshot.maxSent.length > 0)
+            verify(Number(snapshot.maxSent) > Number(snapshot.sellAmount))
+
+            dialog.openWithSnapshot(snapshot)
+            tryCompare(dialog, "opened", true)
+            tryCompare(findChild(dialog, "swapPayLabel"), "text", "You pay at most")
+            compare(findChild(dialog, "swapPayAmount").text, snapshot.maxSent + " " + snapshot.sellToken)
+            compare(findChild(dialog, "swapReceiveLabel").text, "You receive")
+            compare(findChild(dialog, "swapReceiveAmount").text, snapshot.buyAmount + " " + snapshot.buyToken)
+            compare(findChild(dialog, "swapLimitLabel").text, "Max sent")
+            compare(findChild(dialog, "swapLimitValue").text, snapshot.maxSent + " " + snapshot.sellToken)
+        }
+
+        function test_exactInputUsesMinimumOutputLimit() {
+            const page = createTemporaryObject(pageComponent, root)
+            verify(page)
+
+            const card = findChild(page, "swapCard")
+            verify(card)
+            card.setToken("sell", page.tokens[0])
+            card.setToken("buy", page.tokens[1])
+            card.slippageTolerancePercent = 10
+            card.sellInput = "1"
+            card.editingSide = "sell"
+            tryCompare(card, "canSubmit", true)
+
+            const snapshot = card.buildSnapshot()
+            compare(snapshot.swapMode, "swap-exact-input")
+            compare(snapshot.sellAmount, "1.00")
+            compare(snapshot.maxSent, "")
+            verify(snapshot.minReceived.length > 0)
+            verify(Number(snapshot.minReceived) < Number(snapshot.buyAmount))
+        }
     }
 }

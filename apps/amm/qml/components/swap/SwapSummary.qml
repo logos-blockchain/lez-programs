@@ -10,7 +10,8 @@ Item {
     property string priceImpactText: ""
     property real priceImpactPercent: 0
     property string slippageText: ""
-    property string minReceivedText: ""
+    property string limitLabel: qsTr("Min received")
+    property string limitText: ""
 
     readonly property color priceImpactColor: {
         if (root.priceImpactPercent > 5) return "#F08A76";
@@ -126,20 +127,22 @@ Item {
             Layout.fillWidth: true
 
             Text {
+                objectName: "swapLimitLabel"
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 color: root.theme.colors.textSecondary
                 font.pixelSize: 12
-                text: qsTr("Min received")
+                text: root.limitLabel
             }
 
             Text {
+                objectName: "swapLimitValue"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 color: root.theme.colors.textPrimary
                 font.bold: true
                 font.pixelSize: 12
-                text: root.minReceivedText
+                text: root.limitText
             }
         }
     }
