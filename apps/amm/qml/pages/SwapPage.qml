@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick 2.15
+import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import Logos.Wallet
 import "../components/shared"
@@ -87,37 +88,61 @@ Item {
             }
         }
 
-        ColumnLayout {
-            anchors.centerIn: parent
-            spacing: 28
+        Flickable {
+            id: swapScroll
 
-            SwapCard {
-                id: swapCard
-                objectName: "swapCard"
-                Layout.alignment: Qt.AlignHCenter
-                theme: pageTheme
-                tokens: root.tokens
-                width: Math.min(480, root.width - 32)
+            objectName: "swapScroll"
+            anchors.fill: parent
+            clip: true
+            contentWidth: width
+            contentHeight: Math.max(height,
+                                    swapContent.y + swapContent.implicitHeight + 16)
+            flickableDirection: Flickable.VerticalFlick
+            boundsBehavior: Flickable.StopAtBounds
 
-                onRequestTokenSelect: function(side) {
-                    tokenModal.targetSide = side
-                    tokenModal.open()
-                }
-
-                onPreviewRequested: function(snapshot) {
-                    swapConfirmationDialog.openWithSnapshot(snapshot)
-                }
+            ScrollBar.vertical: ScrollBar {
+                policy: ScrollBar.AsNeeded
             }
 
-            Text {
-                objectName: "swapPreviewNotice"
-                Layout.alignment: Qt.AlignHCenter
-                Layout.maximumWidth: Math.max(0, Math.min(480, root.width - 32))
-                text: qsTr("Preview only — sample data. No swap will be submitted.")
-                color: pageTheme.colors.textSecondary
-                font.pixelSize: 15
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
+            ColumnLayout {
+                id: swapContent
+
+                objectName: "swapContent"
+                x: 16
+                y: Math.max(56, Math.round((swapScroll.height - implicitHeight) / 2))
+                width: Math.max(0, swapScroll.width - 32)
+                spacing: 28
+
+                SwapCard {
+                    id: swapCard
+                    objectName: "swapCard"
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 480
+                    Layout.alignment: Qt.AlignHCenter
+                    theme: pageTheme
+                    tokens: root.tokens
+
+                    onRequestTokenSelect: function(side) {
+                        tokenModal.targetSide = side
+                        tokenModal.open()
+                    }
+
+                    onPreviewRequested: function(snapshot) {
+                        swapConfirmationDialog.openWithSnapshot(snapshot)
+                    }
+                }
+
+                Text {
+                    objectName: "swapPreviewNotice"
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 480
+                    Layout.alignment: Qt.AlignHCenter
+                    text: qsTr("Preview only — sample data. No swap will be submitted.")
+                    color: pageTheme.colors.textSecondary
+                    font.pixelSize: 15
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
             }
         }
 

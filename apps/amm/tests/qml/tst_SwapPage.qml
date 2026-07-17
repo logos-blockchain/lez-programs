@@ -138,5 +138,43 @@ Item {
             verify(!card.canSubmit)
             compare(card.submitButtonText, "Select different tokens")
         }
+
+        function test_tradeContentStaysReachable_data() {
+            return [
+                { "tag": "short", "width": 360, "height": 184 },
+                { "tag": "expanded", "width": 400, "height": 544 }
+            ]
+        }
+
+        function test_tradeContentStaysReachable(data) {
+            const page = createTemporaryObject(pageComponent, root, {
+                "width": data.width,
+                "height": data.height
+            })
+            verify(page)
+
+            const scroll = findChild(page, "swapScroll")
+            const card = findChild(page, "swapCard")
+            const notice = findChild(page, "swapPreviewNotice")
+            verify(scroll)
+            verify(card)
+            verify(notice)
+            card.setToken("sell", page.tokens[0])
+            card.setToken("buy", page.tokens[1])
+            card.sellInput = "1"
+            card.editingSide = "sell"
+            wait(0)
+
+            const cardPosition = card.mapToItem(page, 0, 0)
+            verify(cardPosition.x >= 16)
+            verify(cardPosition.x + card.width <= page.width - 16)
+
+            if (scroll.contentHeight > scroll.height)
+                scroll.contentY = scroll.contentHeight - scroll.height
+            wait(0)
+            const noticePosition = notice.mapToItem(scroll, 0, 0)
+            verify(noticePosition.y >= 0)
+            verify(noticePosition.y + notice.height <= scroll.height)
+        }
     }
 }
