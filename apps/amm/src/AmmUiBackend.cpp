@@ -303,6 +303,7 @@ void AmmUiBackend::syncWalletState()
     if (addressChanged) {
         m_identityRetryTimer->stop();
         m_pendingTransactions.clear();
+        m_transactionPollsInFlight.clear();
         m_transactionTimer->stop();
         m_network.sequencerChanged(!state.sequencerAddress.isEmpty());
     }
@@ -415,8 +416,12 @@ void AmmUiBackend::pollTransactions()
             m_pendingTransactions.remove(transaction.nativeHash);
             continue;
         }
+        if (m_transactionPollsInFlight.contains(transaction.nativeHash))
+            continue;
+        m_transactionPollsInFlight.insert(transaction.nativeHash);
         m_sequencer->queryTransaction(transaction.nativeHash,
             [this, transaction](bool ok, bool included) {
+                m_transactionPollsInFlight.remove(transaction.nativeHash);
                 if (!ok || !included
                     || !m_pendingTransactions.contains(transaction.nativeHash)) {
                     return;

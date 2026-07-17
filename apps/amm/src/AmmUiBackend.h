@@ -5,6 +5,7 @@
 
 #include <QObject>
 #include <QHash>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -88,6 +89,7 @@ private:
         qint64 deadlineMs = 0;
     };
     QHash<QString, PendingTransaction> m_pendingTransactions;
+    QSet<QString> m_transactionPollsInFlight;
 };
 
 #endif // AMM_UI_BACKEND_H
