@@ -2,6 +2,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QObject>
 #include <QString>
 #include <QVariantMap>
 #include <QVector>
@@ -15,7 +16,7 @@ class WalletProvider;
 class SequencerClient;
 struct WalletAccount;
 
-class NewPositionRuntime {
+class NewPositionRuntime : public QObject {
 public:
     using ResultCallback = std::function<void(QVariantMap)>;
 
@@ -41,6 +42,7 @@ public:
                      const ActiveNetworkSnapshot& network,
                      bool walletCanSubmit,
                      ResultCallback callback);
+    void cancelSubmit();
 
     QVariantMap context(const QVariantMap& request,
                         const ActiveNetworkSnapshot& network,
@@ -65,7 +67,15 @@ private:
                               const ActiveNetworkSnapshot& network,
                               bool walletOpen,
                               bool forceRefresh,
-                              std::function<void(QJsonObject, QJsonObject)> callback) const;
+                              std::function<void(QJsonObject, QJsonObject)> callback);
+    void submitPlanAsync(QJsonObject input,
+                         const QString& quoteHash,
+                         QJsonValue freshLp,
+                         quint64 submitGeneration,
+                         quint64 walletGeneration);
+    void finishSubmit(quint64 submitGeneration, QVariantMap result);
+    bool submitIsCurrent(quint64 submitGeneration,
+                         quint64 walletGeneration) const;
 
     WalletProvider* m_wallet;
     AmmClient* m_client;
@@ -73,4 +83,6 @@ private:
     QStringList m_walletPublicAccountIds;
     bool m_submitInFlight = false;
     quint64 m_walletGeneration = 0;
+    quint64 m_submitGeneration = 0;
+    ResultCallback m_submitCallback;
 };

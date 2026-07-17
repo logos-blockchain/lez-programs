@@ -8,6 +8,7 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QJsonObject>
+#include <QPointer>
 #include <QScopedValueRollback>
 #include <libbase58.h>
 
@@ -171,6 +172,7 @@ NewPositionRuntime::NewPositionRuntime(WalletProvider* wallet,
 void NewPositionRuntime::clearWalletAccounts()
 {
     ++m_walletGeneration;
+    cancelSubmit();
     m_walletPublicAccountIds.clear();
     m_wallet->clearSnapshot();
 }
@@ -182,9 +184,42 @@ void NewPositionRuntime::setWalletAccounts(const QVector<WalletAccount>& account
         if (account.isPublic)
             publicAccountIds.append(account.address);
     }
-    if (publicAccountIds != m_walletPublicAccountIds)
+    if (publicAccountIds != m_walletPublicAccountIds) {
         ++m_walletGeneration;
+        cancelSubmit();
+    }
     m_walletPublicAccountIds = std::move(publicAccountIds);
+}
+
+void NewPositionRuntime::cancelSubmit()
+{
+    if (!m_submitInFlight)
+        return;
+    ++m_submitGeneration;
+    m_submitInFlight = false;
+    ResultCallback callback = std::move(m_submitCallback);
+    m_submitCallback = {};
+    if (callback)
+        callback(publicError(QStringLiteral("wallet_unavailable")).toVariantMap());
+}
+
+void NewPositionRuntime::finishSubmit(quint64 submitGeneration, QVariantMap result)
+{
+    if (!m_submitInFlight || submitGeneration != m_submitGeneration)
+        return;
+    m_submitInFlight = false;
+    ResultCallback callback = std::move(m_submitCallback);
+    m_submitCallback = {};
+    if (callback)
+        callback(std::move(result));
+}
+
+bool NewPositionRuntime::submitIsCurrent(quint64 submitGeneration,
+                                         quint64 walletGeneration) const
+{
+    return m_submitInFlight
+        && submitGeneration == m_submitGeneration
+        && walletGeneration == m_walletGeneration;
 }
 
 QJsonArray NewPositionRuntime::walletAccountReads(bool walletOpen, bool refresh) const
@@ -280,14 +315,20 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
     }
     const QString configId = configResult.value.value(
         QStringLiteral("configId")).toString();
+    QPointer<NewPositionRuntime> guard(this);
     m_sequencer->readAccounts({ configId }, refreshPublicData,
-        [this, request, network, walletOpen, refreshPublicData,
+        [guard, request, network, walletOpen, refreshPublicData,
          callback = std::move(callback)](QVector<WalletAccountRead> configReads) mutable {
+            if (!guard)
+                return;
             const QJsonObject config = accountReadJson(configReads.value(0));
-            m_sequencer->readAccounts(m_walletPublicAccountIds, refreshPublicData,
-                [this, request, network, walletOpen, refreshPublicData, config,
+            guard->m_sequencer->readAccounts(
+                guard->m_walletPublicAccountIds, refreshPublicData,
+                [guard, request, network, walletOpen, refreshPublicData, config,
                  callback = std::move(callback)](
                     QVector<WalletAccountRead> walletReads) mutable {
+                    if (!guard)
+                        return;
                     const QJsonObject hints = QJsonObject::fromVariantMap(request);
                     QJsonArray configured;
                     for (const QString& id : network.tokenIds)
@@ -297,7 +338,7 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
                     const QJsonArray resolved = variantStringArray(
                         hints.value(QStringLiteral("resolvedTokenIds")).toVariant());
                     const QJsonArray walletAccounts = accountReadsJson(walletReads);
-                    const AmmClientResult tokenResult = m_client->tokenIds(QJsonObject {
+                    const AmmClientResult tokenResult = guard->m_client->tokenIds(QJsonObject {
                         { QStringLiteral("ammProgramId"), network.ammProgramId },
                         { QStringLiteral("config"), config },
                         { QStringLiteral("walletAccounts"), walletAccounts },
@@ -322,12 +363,14 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
                              .value(QStringLiteral("tokenIds")).toArray()) {
                         definitionIds.append(id.toString());
                     }
-                    m_sequencer->readAccounts(definitionIds, refreshPublicData,
-                        [this, network, walletOpen, config, walletAccounts,
+                    guard->m_sequencer->readAccounts(definitionIds, refreshPublicData,
+                        [guard, network, walletOpen, config, walletAccounts,
                          configured, recent, resolved,
                          callback = std::move(callback)](
                             QVector<WalletAccountRead> definitions) mutable {
-                            const AmmClientResult result = m_client->context(QJsonObject {
+                            if (!guard)
+                                return;
+                            const AmmClientResult result = guard->m_client->context(QJsonObject {
                                 { QStringLiteral("networkId"), network.id },
                                 { QStringLiteral("networkFingerprint"), network.fingerprint },
                                 { QStringLiteral("ammProgramId"), network.ammProgramId },
@@ -354,7 +397,7 @@ void NewPositionRuntime::buildQuoteInputAsync(
     const ActiveNetworkSnapshot& network,
     bool walletOpen,
     bool forceRefresh,
-    std::function<void(QJsonObject, QJsonObject)> callback) const
+    std::function<void(QJsonObject, QJsonObject)> callback)
 {
     if (network.status != QStringLiteral("ready")) {
         callback({}, publicError(network.status));
@@ -372,12 +415,15 @@ void NewPositionRuntime::buildQuoteInputAsync(
     }
     const QString configId = configResult.value.value(
         QStringLiteral("configId")).toString();
+    QPointer<NewPositionRuntime> guard(this);
     m_sequencer->readAccounts({ configId }, forceRefresh,
-        [this, request, network, walletOpen, forceRefresh,
+        [guard, request, network, walletOpen, forceRefresh,
          callback = std::move(callback)](QVector<WalletAccountRead> configReads) mutable {
+            if (!guard)
+                return;
             const QJsonObject config = accountReadJson(configReads.value(0));
             const QJsonObject requestObject = QJsonObject::fromVariantMap(request);
-            const AmmClientResult pairResult = m_client->pairIds(QJsonObject {
+            const AmmClientResult pairResult = guard->m_client->pairIds(QJsonObject {
                 { QStringLiteral("ammProgramId"), network.ammProgramId },
                 { QStringLiteral("config"), config },
                 { QStringLiteral("tokenAId"),
@@ -407,15 +453,20 @@ void NewPositionRuntime::buildQuoteInputAsync(
                 pair.value(QStringLiteral("currentTickId")).toString(),
                 pair.value(QStringLiteral("clockId")).toString(),
             };
-            m_sequencer->readAccounts(fixedIds, forceRefresh,
-                [this, requestObject, network, walletOpen, config, pair,
+            guard->m_sequencer->readAccounts(fixedIds, forceRefresh,
+                [guard, requestObject, network, walletOpen, config, pair,
                  callback = std::move(callback)](
                     QVector<WalletAccountRead> fixedReads) mutable {
-                    m_sequencer->readAccounts(m_walletPublicAccountIds, false,
-                        [this, requestObject, network, walletOpen, config, pair,
+                    if (!guard)
+                        return;
+                    guard->m_sequencer->readAccounts(
+                        guard->m_walletPublicAccountIds, false,
+                        [guard, requestObject, network, walletOpen, config, pair,
                          fixedReads = std::move(fixedReads),
                          callback = std::move(callback)](
                             QVector<WalletAccountRead> walletReads) mutable {
+                            if (!guard)
+                                return;
                             QStringList selectedIds;
                             for (const QString& key : {
                                      QStringLiteral("holdingAId"),
@@ -426,8 +477,7 @@ void NewPositionRuntime::buildQuoteInputAsync(
                                 if (!id.isEmpty() && !selectedIds.contains(id))
                                     selectedIds.append(id);
                             }
-                            auto finish = [this, requestObject, network, walletOpen,
-                                           config, pair,
+                            auto finish = [requestObject, network, walletOpen, config,
                                            fixedReads = std::move(fixedReads),
                                            walletReads = std::move(walletReads),
                                            callback = std::move(callback)](
@@ -464,7 +514,7 @@ void NewPositionRuntime::buildQuoteInputAsync(
                             if (selectedIds.isEmpty())
                                 finish({});
                             else
-                                m_sequencer->readAccounts(
+                                guard->m_sequencer->readAccounts(
                                     selectedIds, true, std::move(finish));
                         });
                 });
@@ -477,14 +527,17 @@ void NewPositionRuntime::quoteAsync(const QVariantMap& request,
                                     bool forceRefresh,
                                     ResultCallback callback)
 {
+    QPointer<NewPositionRuntime> guard(this);
     buildQuoteInputAsync(request, network, walletOpen, forceRefresh,
-        [this, callback = std::move(callback)](
+        [guard, callback = std::move(callback)](
             QJsonObject input, QJsonObject error) mutable {
+            if (!guard)
+                return;
             if (!error.isEmpty()) {
                 callback(error.toVariantMap());
                 return;
             }
-            const AmmClientResult result = m_client->quote(input);
+            const AmmClientResult result = guard->m_client->quote(input);
             callback((result.ok ? result.value
                                 : publicError(QStringLiteral("backend_error")))
                          .toVariantMap());
@@ -506,114 +559,154 @@ void NewPositionRuntime::submitAsync(const QVariantMap& request,
         return;
     }
     m_submitInFlight = true;
+    const quint64 submitGeneration = ++m_submitGeneration;
     const quint64 walletGeneration = m_walletGeneration;
-    auto finish = [this, callback = std::move(callback)](QVariantMap result) mutable {
-        m_submitInFlight = false;
-        callback(std::move(result));
-    };
+    m_submitCallback = std::move(callback);
+    QPointer<NewPositionRuntime> guard(this);
     buildQuoteInputAsync(request, network, true, true,
-        [this, quoteHash, walletGeneration, finish = std::move(finish)](
+        [guard, quoteHash, submitGeneration, walletGeneration](
             QJsonObject input, QJsonObject error) mutable {
-            if (walletGeneration != m_walletGeneration) {
-                finish(publicError(QStringLiteral("wallet_unavailable")).toVariantMap());
+            if (!guard
+                || !guard->submitIsCurrent(submitGeneration, walletGeneration))
                 return;
-            }
             if (!error.isEmpty()) {
-                finish(error.toVariantMap());
+                guard->finishSubmit(submitGeneration, error.toVariantMap());
                 return;
             }
-            const AmmClientResult quoteResult = m_client->quote(input);
+            const AmmClientResult quoteResult = guard->m_client->quote(input);
             if (!quoteResult.ok) {
-                finish(publicError(QStringLiteral("backend_error")).toVariantMap());
+                guard->finishSubmit(
+                    submitGeneration,
+                    publicError(QStringLiteral("backend_error")).toVariantMap());
                 return;
             }
             const QJsonObject quote = quoteResult.value;
             if (quote.value(QStringLiteral("quoteHash")).toString() != quoteHash) {
                 QJsonObject result = publicError(QStringLiteral("quote_changed"));
                 result.insert(QStringLiteral("quote"), quote);
-                finish(result.toVariantMap());
+                guard->finishSubmit(submitGeneration, result.toVariantMap());
                 return;
             }
             if (!quote.value(QStringLiteral("canSubmit")).toBool(false)) {
                 QJsonObject result = publicError(QStringLiteral("quote_not_submittable"));
                 result.insert(QStringLiteral("quote"), quote);
-                finish(result.toVariantMap());
+                guard->finishSubmit(submitGeneration, result.toVariantMap());
                 return;
             }
 
-            QJsonValue freshLp;
             if (quote.value(QStringLiteral("requiresFreshLp")).toBool(false)) {
-                if (walletGeneration != m_walletGeneration) {
-                    finish(publicError(QStringLiteral("wallet_unavailable")).toVariantMap());
-                    return;
-                }
-                const WalletAccountCreation creation = m_wallet->createAccount(true);
-                if (!creation.ok() || !creation.publicAccount.ok()) {
-                    finish(publicError(QStringLiteral("wallet_submission_failed")).toVariantMap());
-                    return;
-                }
-                freshLp = accountReadJson(creation.publicAccount);
-                if (!m_walletPublicAccountIds.contains(creation.accountId))
-                    m_walletPublicAccountIds.append(creation.accountId);
+                guard->m_wallet->createAccountAsync(
+                    true,
+                    [guard, input = std::move(input), quoteHash,
+                     submitGeneration, walletGeneration](
+                        WalletAccountCreation creation) mutable {
+                        if (!guard
+                            || !guard->submitIsCurrent(
+                                submitGeneration, walletGeneration))
+                            return;
+                        if (!creation.ok() || !creation.publicAccount.ok()) {
+                            const QString code = creation.failure
+                                    == WalletFailure::WalletUnavailable
+                                ? QStringLiteral("wallet_unavailable")
+                                : QStringLiteral("wallet_submission_failed");
+                            guard->finishSubmit(
+                                submitGeneration, publicError(code).toVariantMap());
+                            return;
+                        }
+                        if (!guard->m_walletPublicAccountIds.contains(creation.accountId))
+                            guard->m_walletPublicAccountIds.append(creation.accountId);
+                        guard->submitPlanAsync(
+                            std::move(input), quoteHash,
+                            accountReadJson(creation.publicAccount),
+                            submitGeneration, walletGeneration);
+                    });
+                return;
             }
+            guard->submitPlanAsync(
+                std::move(input), quoteHash, {},
+                submitGeneration, walletGeneration);
+        });
+}
 
-            QJsonObject planInput = input;
-            planInput.insert(QStringLiteral("quoteHash"), quoteHash);
-            planInput.insert(QStringLiteral("nowMs"), QDateTime::currentMSecsSinceEpoch());
-            if (!freshLp.isUndefined())
-                planInput.insert(QStringLiteral("freshLp"), freshLp);
-            const AmmClientResult planResult = m_client->plan(planInput);
-            if (!planResult.ok) {
-                finish(publicError(QStringLiteral("backend_error")).toVariantMap());
-                return;
-            }
-            const QJsonObject plan = planResult.value;
-            if (plan.value(QStringLiteral("status")).toString()
-                != QStringLiteral("ready")) {
-                const QString code = plan.value(QStringLiteral("code")).toString();
-                finish(publicError(code.isEmpty()
-                    ? QStringLiteral("wallet_submission_failed") : code).toVariantMap());
-                return;
-            }
+void NewPositionRuntime::submitPlanAsync(QJsonObject input,
+                                         const QString& quoteHash,
+                                         QJsonValue freshLp,
+                                         quint64 submitGeneration,
+                                         quint64 walletGeneration)
+{
+    if (!submitIsCurrent(submitGeneration, walletGeneration))
+        return;
 
-            const QStringList accountIds = jsonStringList(
-                plan.value(QStringLiteral("accountIds")).toArray());
-            const QVector<bool> signingRequirements = jsonBoolList(
-                plan.value(QStringLiteral("signingRequirements")).toArray());
-            const QVector<quint32> instruction = jsonUIntList(
-                plan.value(QStringLiteral("instruction")).toArray());
-            bool deadlineValid = false;
-            const qulonglong deadline = plan.value(QStringLiteral("deadlineMs"))
-                .toString().toULongLong(&deadlineValid);
-            if (!deadlineValid
-                || static_cast<qulonglong>(QDateTime::currentMSecsSinceEpoch()) >= deadline) {
-                finish(publicError(QStringLiteral("transaction_deadline_expired")).toVariantMap());
+    input.insert(QStringLiteral("quoteHash"), quoteHash);
+    input.insert(QStringLiteral("nowMs"), QDateTime::currentMSecsSinceEpoch());
+    if (!freshLp.isUndefined() && !freshLp.isNull())
+        input.insert(QStringLiteral("freshLp"), std::move(freshLp));
+    const AmmClientResult planResult = m_client->plan(input);
+    if (!planResult.ok) {
+        finishSubmit(
+            submitGeneration,
+            publicError(QStringLiteral("backend_error")).toVariantMap());
+        return;
+    }
+    const QJsonObject plan = planResult.value;
+    if (plan.value(QStringLiteral("status")).toString()
+        != QStringLiteral("ready")) {
+        const QString code = plan.value(QStringLiteral("code")).toString();
+        finishSubmit(
+            submitGeneration,
+            publicError(code.isEmpty()
+                ? QStringLiteral("wallet_submission_failed") : code).toVariantMap());
+        return;
+    }
+
+    bool deadlineValid = false;
+    const qulonglong deadline = plan.value(QStringLiteral("deadlineMs"))
+        .toString().toULongLong(&deadlineValid);
+    if (!deadlineValid
+        || static_cast<qulonglong>(QDateTime::currentMSecsSinceEpoch()) >= deadline) {
+        finishSubmit(
+            submitGeneration,
+            publicError(QStringLiteral("transaction_deadline_expired")).toVariantMap());
+        return;
+    }
+    if (!submitIsCurrent(submitGeneration, walletGeneration))
+        return;
+
+    WalletTransaction transaction {
+        plan.value(QStringLiteral("programId")).toString(),
+        jsonStringList(plan.value(QStringLiteral("accountIds")).toArray()),
+        jsonBoolList(plan.value(QStringLiteral("signingRequirements")).toArray()),
+        jsonUIntList(plan.value(QStringLiteral("instruction")).toArray()),
+    };
+    QPointer<NewPositionRuntime> guard(this);
+    m_wallet->submitPublicTransactionAsync(
+        transaction,
+        [guard, submitGeneration, walletGeneration, deadlineMs =
+             plan.value(QStringLiteral("deadlineMs")), affectedAccountIds =
+             plan.value(QStringLiteral("affectedAccountIds"))](
+                WalletSubmission submission) mutable {
+            if (!guard
+                || !guard->submitIsCurrent(submitGeneration, walletGeneration))
                 return;
-            }
-            if (walletGeneration != m_walletGeneration) {
-                finish(publicError(QStringLiteral("wallet_unavailable")).toVariantMap());
-                return;
-            }
-            const WalletSubmission submission = m_wallet->submitPublicTransaction({
-                plan.value(QStringLiteral("programId")).toString(),
-                accountIds,
-                signingRequirements,
-                instruction,
-            });
             const QString transactionId = submission.accepted()
                 ? base58TransactionId(submission.nativeHash) : QString();
             if (transactionId.isEmpty()) {
-                finish(publicError(QStringLiteral("wallet_submission_failed")).toVariantMap());
+                const QString code = submission.failure
+                        == WalletFailure::WalletUnavailable
+                    ? QStringLiteral("wallet_unavailable")
+                    : QStringLiteral("wallet_submission_failed");
+                guard->finishSubmit(
+                    submitGeneration, publicError(code).toVariantMap());
                 return;
             }
-            finish(QJsonObject {
+            guard->finishSubmit(submitGeneration, QJsonObject {
                 { QStringLiteral("schema"), QString::fromLatin1(SCHEMA) },
                 { QStringLiteral("status"), QStringLiteral("submitted") },
                 { QStringLiteral("transactionId"), transactionId },
                 { QStringLiteral("nativeTransactionHash"), submission.nativeHash },
-                { QStringLiteral("deadlineMs"), plan.value(QStringLiteral("deadlineMs")) },
+                { QStringLiteral("deadlineMs"), deadlineMs },
                 { QStringLiteral("affectedAccountIds"),
-                  plan.value(QStringLiteral("affectedAccountIds")) },
+                  affectedAccountIds },
             }.toVariantMap());
         });
 }

@@ -15,6 +15,8 @@
 #include <QTemporaryFile>
 #include <QTimer>
 
+#include <functional>
+#include <memory>
 #include <utility>
 
 namespace {
@@ -143,6 +145,15 @@ namespace {
         return first && second;
     }
 
+    bool waitForCondition(const std::function<bool()>& condition)
+    {
+        QElapsedTimer timer;
+        timer.start();
+        while (!condition() && timer.elapsed() < 3000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        return condition();
+    }
+
     class FakeWallet final : public WalletProvider {
     public:
         WalletSession connect(const WalletPaths&) override
@@ -182,6 +193,17 @@ namespace {
             return creation;
         }
 
+        void createAccountAsync(bool isPublic, AccountCreationCallback callback) override
+        {
+            WalletAccountCreation creation = createAccount(isPublic);
+            if (deferAccountCreation) {
+                pendingAccountCreation = std::move(callback);
+                pendingCreation = std::move(creation);
+            } else {
+                callback(std::move(creation));
+            }
+        }
+
         WalletAccountRead readPublicAccount(const QString& accountId) const override
         {
             WalletAccountRead read;
@@ -197,6 +219,32 @@ namespace {
             return { WalletFailure::None, transactionHash };
         }
 
+        void submitPublicTransactionAsync(
+            const WalletTransaction& transaction, SubmissionCallback callback) override
+        {
+            WalletSubmission submission = submitPublicTransaction(transaction);
+            if (deferSubmission) {
+                pendingSubmissionCallback = std::move(callback);
+                pendingSubmission = std::move(submission);
+            } else {
+                callback(std::move(submission));
+            }
+        }
+
+        void finishAccountCreation()
+        {
+            AccountCreationCallback callback = std::move(pendingAccountCreation);
+            if (callback)
+                callback(std::move(pendingCreation));
+        }
+
+        void finishSubmission()
+        {
+            SubmissionCallback callback = std::move(pendingSubmissionCallback);
+            if (callback)
+                callback(std::move(pendingSubmission));
+        }
+
         void disconnect() override {}
 
         QString transactionHash = QStringLiteral(
@@ -205,6 +253,12 @@ namespace {
         int createdAccounts = 0;
         int submissions = 0;
         WalletTransaction submitted;
+        bool deferAccountCreation = false;
+        bool deferSubmission = false;
+        AccountCreationCallback pendingAccountCreation;
+        SubmissionCallback pendingSubmissionCallback;
+        WalletAccountCreation pendingCreation;
+        WalletSubmission pendingSubmission;
     };
 
     class FakeAmmClient final : public AmmClient {
@@ -623,6 +677,114 @@ int main(int argc, char** argv)
                     && cancelledWallet.createdAccounts == 0
                     && cancelledWallet.submissions == 0,
                 "wallet change should cancel submit before side effects"))
+        return 1;
+
+    LocalRpcServer asyncSubmitServer;
+    if (!expect(asyncSubmitServer.listen(), "async-submit sequencer should listen"))
+        return 1;
+    if (!expect(sequencerConfig.resize(0) && sequencerConfig.seek(0),
+                "async-submit config should rewind"))
+        return 1;
+    sequencerConfig.write(QJsonDocument(QJsonObject {
+        { QStringLiteral("sequencer_addr"), asyncSubmitServer.endpoint() },
+    }).toJson(QJsonDocument::Compact));
+    sequencerConfig.flush();
+    if (!expect(sequencer.configure(sequencerConfig.fileName()),
+                "async-submit sequencer should configure"))
+        return 1;
+
+    FakeWallet asyncWallet;
+    asyncWallet.deferAccountCreation = true;
+    asyncWallet.deferSubmission = true;
+    FakeAmmClient asyncClient;
+    NewPositionRuntime asyncRuntime(&asyncWallet, &asyncClient, &sequencer);
+    int asyncCallbackCount = 0;
+    QVariantMap asyncResult;
+    asyncRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            ++asyncCallbackCount;
+            asyncResult = std::move(result);
+        });
+    if (!expect(waitForCondition([&]() { return asyncWallet.createdAccounts == 1; }),
+                "submit should asynchronously request a fresh account"))
+        return 1;
+    if (!expect(asyncCallbackCount == 0 && asyncWallet.submissions == 0,
+                "account creation should not block or finish submission"))
+        return 1;
+
+    QVariantMap concurrentResult;
+    asyncRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) { concurrentResult = std::move(result); });
+    if (!expect(concurrentResult.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("submit_in_progress"),
+                "concurrent submit should fail while async mutation is pending"))
+        return 1;
+
+    asyncWallet.finishAccountCreation();
+    if (!expect(waitForCondition([&]() { return asyncWallet.submissions == 1; }),
+                "fresh account completion should dispatch transaction"))
+        return 1;
+    if (!expect(asyncCallbackCount == 0,
+                "transaction submission should remain asynchronous"))
+        return 1;
+    asyncWallet.finishSubmission();
+    if (!expect(asyncCallbackCount == 1
+                    && asyncResult.value(QStringLiteral("status")).toString()
+                        == QStringLiteral("submitted"),
+                "async wallet completion should finish exactly once"))
+        return 1;
+
+    FakeWallet cancelledMutationWallet;
+    cancelledMutationWallet.deferAccountCreation = true;
+    FakeAmmClient cancelledMutationClient;
+    NewPositionRuntime cancelledMutationRuntime(
+        &cancelledMutationWallet, &cancelledMutationClient, &sequencer);
+    int cancelledMutationCallbacks = 0;
+    QVariantMap cancelledMutationResult;
+    cancelledMutationRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            ++cancelledMutationCallbacks;
+            cancelledMutationResult = std::move(result);
+        });
+    if (!expect(waitForCondition(
+                    [&]() { return cancelledMutationWallet.createdAccounts == 1; }),
+                "cancellable submit should reach account creation"))
+        return 1;
+    cancelledMutationRuntime.clearWalletAccounts();
+    if (!expect(cancelledMutationCallbacks == 1
+                    && cancelledMutationResult.value(QStringLiteral("code")).toString()
+                        == QStringLiteral("wallet_unavailable"),
+                "wallet change should immediately cancel pending mutation"))
+        return 1;
+    cancelledMutationWallet.finishAccountCreation();
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    if (!expect(cancelledMutationCallbacks == 1
+                    && cancelledMutationWallet.submissions == 0,
+                "stale account completion should have no transaction side effect"))
+        return 1;
+
+    FakeWallet destroyedRuntimeWallet;
+    destroyedRuntimeWallet.deferSubmission = true;
+    FakeAmmClient destroyedRuntimeClient;
+    destroyedRuntimeClient.requiresFreshLp = false;
+    int destroyedRuntimeCallbacks = 0;
+    auto destroyedRuntime = std::make_unique<NewPositionRuntime>(
+        &destroyedRuntimeWallet, &destroyedRuntimeClient, &sequencer);
+    destroyedRuntime->submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap) { ++destroyedRuntimeCallbacks; });
+    if (!expect(waitForCondition(
+                    [&]() { return destroyedRuntimeWallet.submissions == 1; }),
+                "lifetime test should reach async submission"))
+        return 1;
+    destroyedRuntime.reset();
+    destroyedRuntimeWallet.finishSubmission();
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    if (!expect(destroyedRuntimeCallbacks == 0,
+                "destroyed runtime should ignore late wallet completion"))
         return 1;
 
     return 0;

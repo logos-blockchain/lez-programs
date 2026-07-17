@@ -279,6 +279,7 @@ void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
     const bool walletWasOpen = isWalletOpen();
+    const bool walletCouldSubmit = walletCanSubmit();
     const bool wasReachable = sequencerReachable();
     const QString previousAddress = sequencerAddr();
 
@@ -300,6 +301,8 @@ void AmmUiBackend::syncWalletState()
     m_sequencer->configure(state.configPath);
 
     const bool addressChanged = previousAddress != state.sequencerAddress;
+    if ((walletCouldSubmit && !state.canSubmit()) || addressChanged)
+        m_newPosition->cancelSubmit();
     if (addressChanged) {
         m_identityRetryTimer->stop();
         m_pendingTransactions.clear();
