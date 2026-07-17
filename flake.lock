@@ -3413,17 +3413,17 @@
         "rust-rapidsnark": "rust-rapidsnark"
       },
       "locked": {
-        "lastModified": 1782310268,
-        "narHash": "sha256-tIIIO+V+w/C/KLtKnLIv8O8/GoJ4PzgJSWrlQCXJ2P4=",
+        "lastModified": 1783788663,
+        "narHash": "sha256-Tl3CDPFWdTgRliX03oUI92E4+8XbpsFpnwooNxM3q+s=",
         "owner": "logos-blockchain",
-        "repo": "lssa",
-        "rev": "fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a",
+        "repo": "logos-execution-zone",
+        "rev": "415964d7f9043a1bfe28da8d0e8b3a6f64abb258",
         "type": "github"
       },
       "original": {
         "owner": "logos-blockchain",
-        "repo": "lssa",
-        "rev": "fb8cbac40e0bda4f152415ff4f181cdc6bca6d4a",
+        "repo": "logos-execution-zone",
+        "rev": "415964d7f9043a1bfe28da8d0e8b3a6f64abb258",
         "type": "github"
       }
     },
@@ -24345,16 +24345,16 @@
         "nix-bundle-lgx": "nix-bundle-lgx_40"
       },
       "locked": {
-        "lastModified": 1784205966,
-        "narHash": "sha256-9qDpsio9ms7sz2yf8umH2bZLL4esjNuNDWUvsPzdNYc=",
+        "lastModified": 1784294670,
+        "narHash": "sha256-4II7lLMMcvwKBprA8QMAvtYklQMwstlL3C9UuvT+2Ow=",
         "owner": "gravityblast",
         "repo": "logos-execution-zone-module",
-        "rev": "a48fd1c7447885895c15a929b945b713cebf2032",
+        "rev": "4513e21f08dbd69c8e75edd76da99a78d23b79f2",
         "type": "github"
       },
       "original": {
         "owner": "gravityblast",
-        "ref": "fix/generic-tx-bstr-serialization",
+        "ref": "fix/generic-tx-instruction-bstr",
         "repo": "logos-execution-zone-module",
         "type": "github"
       }

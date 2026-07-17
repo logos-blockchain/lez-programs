@@ -32,13 +32,14 @@ extern "C" {
 // arguments — including the account_id_to_base58 round-trips used to render
 // accounts — are NOT evaluated, so there's no per-call overhead.
 //
-// NOTE: `send_generic_public_transaction` takes `instruction` and
-// `program_dependencies` as byte strings (`bstr`). Declaring them as Vec<u32> /
-// Vec<Vec<u8>> makes the module's Qt/QtRO glue downgrade them to an opaque `any`
-// the separate module process can't deserialize, silently dropping every
-// argument. We therefore send `instruction` as the little-endian bytes of the
-// u32 words and `program_dependencies` empty. Requires the wallet module built
-// with byte-string params; see docs/amm-swap-qtro-serialization-bug.md.
+// NOTE: `send_generic_public_transaction(account_ids, signing_requirements,
+// instruction, program_id_hex)`. `instruction` is a byte string (`bstr`):
+// declaring it as Vec<u32> makes the module's Qt/QtRO glue downgrade it to an
+// opaque `any` the separate module process can't deserialize, silently dropping
+// every argument. We send `instruction` as the little-endian bytes of the u32
+// words, and the deployed program by its id hex (not the raw ELF). Requires the
+// wallet module built with the byte-string param; see
+// docs/amm-swap-qtro-serialization-bug.md.
 static bool ammDebugEnabled()
 {
     static const bool on = qEnvironmentVariableIsSet("AMM_DEBUG");
@@ -775,15 +776,38 @@ QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString u
     }
 
     // 6. Submit through the wallet module's generic public-transaction entry
-    // point. `instruction` is sent as the little-endian bytes of the u32 words
-    // (see the note atop this file); program_dependencies is empty because the
-    // sequencer resolves the AMM's chained token/twap calls on-chain for a
-    // public tx.
+    // point. The module API takes `instruction` (as bytes — see the note atop
+    // this file) plus the program's id as hex, not the raw ELF: the program is
+    // already deployed and referenced by id. There is no program_dependencies
+    // arg — the sequencer resolves the AMM's chained token/twap calls on-chain.
     const QByteArray instructionBytes(reinterpret_cast<const char*>(instruction.data()),
                                       static_cast<int>(instruction.size() * sizeof(uint32_t)));
+
+    // Derive the deployed AMM program id from the ELF and hex-encode it as the
+    // canonical 32-byte hex (little-endian per u32 word — matches `spel
+    // program-id` and the on-chain config's *_program_id fields).
+    ProgramId ammId;
+    if (!amm_client_program_id_from_elf(reinterpret_cast<const uint8_t*>(elf.constData()),
+                                        static_cast<uintptr_t>(elf.size()), &ammId)) {
+        qWarning() << "AmmUiBackend::swapExactInput: amm_client_program_id_from_elf failed";
+        return QString();
+    }
+    QByteArray programIdBytes;
+    programIdBytes.reserve(32);
+    for (int i = 0; i < 8; ++i) {
+        const uint32_t w = ammId[i];
+        programIdBytes.append(static_cast<char>(w & 0xff));
+        programIdBytes.append(static_cast<char>((w >> 8) & 0xff));
+        programIdBytes.append(static_cast<char>((w >> 16) & 0xff));
+        programIdBytes.append(static_cast<char>((w >> 24) & 0xff));
+    }
+    const QString programIdHex = QString::fromLatin1(programIdBytes.toHex());
+    AMM_DBG() << "[amm-debug] swapExactInput: program_id_hex=" << programIdHex;
+
+    // `instruction` is a QVariant (bstr); `program_id_hex` is a plain QString
+    // (tstr) in the generated proxy — pass it directly, not QVariant-wrapped.
     const QString resultJson = m_logos->logos_execution_zone.send_generic_public_transaction(
-        accounts, signers, QVariant::fromValue(instructionBytes), QVariant::fromValue(elf),
-        QVariant::fromValue(QByteArray()));
+        accounts, signers, QVariant::fromValue(instructionBytes), programIdHex);
     AMM_DBG() << "[amm-debug] swapExactInput: send_generic_public_transaction ->"
                          << resultJson.size() << "chars; raw:" << resultJson.left(600);
 

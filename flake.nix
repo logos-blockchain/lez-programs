@@ -18,14 +18,25 @@
     logos-module-builder.url = "github:logos-co/logos-module-builder";
 
     # Core wallet module (the LEZ wallet FFI Qt plugin). The input name must
-    # match the metadata.json `dependencies` entry so the builder can resolve
-    # it as a module dependency. This rev pins LEZ (lssa) at fb8cbac4, which
-    # includes the macOS Metal-build fix, so no `--override-input` is needed.
-    # Fork of logos-blockchain/logos-execution-zone-module @ d2e9400a with the
-    # QtRO serialization fix: send_generic_public_transaction's `instruction` and
-    # `program_dependencies` use byte-string IPC types so the args survive the
-    # cross-process boundary. See docs/amm-swap-qtro-serialization-bug.md.
-    logos_execution_zone.url = "github:gravityblast/logos-execution-zone-module?ref=fix/generic-tx-bstr-serialization";
+    # match the metadata.json `dependencies` entry so the builder can resolve it
+    # as a module dependency.
+    #
+    # Fork of logos-blockchain/logos-execution-zone-module @ d70225ced with the
+    # QtRO serialization fix: send_generic_public_transaction's `instruction` uses
+    # a byte-string IPC type so the args survive the cross-process boundary (at
+    # d70225ced the API already takes program_id_hex instead of program_elf/deps).
+    # See docs/amm-swap-qtro-serialization-bug.md.
+    logos_execution_zone = {
+      url = "github:gravityblast/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr";
+
+      # Override the module's pinned LEZ monorepo (logos-execution-zone) to the
+      # SAME rev the target sequencer runs (415964d7): the wallet client and the
+      # sequencer must agree on the JSON-RPC API, or tx submission fails at
+      # runtime with `MethodNotFound`. 415964d7's wallet_ffi takes a program id
+      # for send_generic_public_transaction, matching the d70225ced module.
+      inputs.logos-execution-zone.url =
+        "github:logos-blockchain/logos-execution-zone?rev=415964d7f9043a1bfe28da8d0e8b3a6f64abb258";
+    };
   };
 
   outputs =

@@ -83,7 +83,7 @@ dependencies = [
  "amm_core",
  "borsh",
  "cbindgen",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6)",
+ "lee_core",
  "risc0-binfmt",
  "risc0-zkvm",
  "ruint",
@@ -96,7 +96,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "borsh",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "risc0-zkvm",
  "ruint",
  "serde",
@@ -110,7 +110,7 @@ version = "0.1.0"
 dependencies = [
  "amm_core",
  "clock_core",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "token_core",
  "twap_oracle_core",
 ]
@@ -544,7 +544,7 @@ name = "ata_core"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "risc0-zkvm",
  "serde",
 ]
@@ -554,7 +554,7 @@ name = "ata_program"
 version = "0.1.0"
 dependencies = [
  "ata_core",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "token_core",
 ]
 
@@ -974,7 +974,7 @@ version = "0.1.0"
 source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
 dependencies = [
  "borsh",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
 ]
 
 [[package]]
@@ -2175,7 +2175,7 @@ dependencies = [
  "ata_core",
  "clock_core",
  "lee",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "stablecoin-methods",
  "stablecoin_core",
  "token-methods",
@@ -2351,7 +2351,7 @@ dependencies = [
  "build_utils",
  "hex",
  "k256",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "log",
  "rand 0.8.6",
  "risc0-binfmt",
@@ -2366,23 +2366,6 @@ dependencies = [
 name = "lee_core"
 version = "0.1.0"
 source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
-dependencies = [
- "base58",
- "borsh",
- "bytemuck",
- "bytesize",
- "chacha20",
- "ml-kem",
- "risc0-zkvm",
- "serde",
- "serde_with",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "lee_core"
-version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0-rc6#e37876a64028a335eb693198a1ed6a0e875ec5b4"
 dependencies = [
  "base58",
  "borsh",
@@ -3847,7 +3830,7 @@ source = "git+https://github.com/logos-co/spel.git?tag=v0.6.0#0cb7e0980535af6194
 dependencies = [
  "base58",
  "borsh",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "proc-macro2",
  "serde",
  "serde_json",
@@ -3927,7 +3910,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "borsh",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "risc0-zkvm",
  "ruint",
  "serde",
@@ -3939,7 +3922,7 @@ dependencies = [
 name = "stablecoin_program"
 version = "0.1.0"
 dependencies = [
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "stablecoin_core",
  "token_core",
 ]
@@ -4153,7 +4136,7 @@ name = "token_core"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "serde",
  "spel-framework-macros",
 ]
@@ -4162,7 +4145,7 @@ dependencies = [
 name = "token_program"
 version = "0.1.0"
 dependencies = [
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "token_core",
 ]
 
@@ -4382,7 +4365,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "borsh",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "risc0-zkvm",
  "ruint",
  "serde",
@@ -4395,7 +4378,7 @@ name = "twap_oracle_program"
 version = "0.1.0"
 dependencies = [
  "clock_core",
- "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "lee_core",
  "twap_oracle_core",
 ]
 
