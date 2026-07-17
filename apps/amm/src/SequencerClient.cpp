@@ -82,36 +82,40 @@ SequencerClient::SequencerClient(AmmClient* client, QObject* parent)
 
 bool SequencerClient::configure(const QString& configPath)
 {
+    QUrl endpoint;
+    QByteArray authorization;
+    QFile file(configPath);
+    bool valid = file.open(QIODevice::ReadOnly);
+    if (valid) {
+        const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+        const QJsonObject config = document.object();
+        endpoint = QUrl(config.value(QStringLiteral("sequencer_addr")).toString());
+        const QString scheme = endpoint.scheme().toLower();
+        valid = document.isObject() && endpoint.isValid() && !endpoint.host().isEmpty()
+            && (scheme == QStringLiteral("http") || scheme == QStringLiteral("https"));
+        if (valid) {
+            const QJsonObject basicAuth = config.value(QStringLiteral("basic_auth")).toObject();
+            const QString username = basicAuth.value(QStringLiteral("username")).toString();
+            const QString password = basicAuth.value(QStringLiteral("password")).toString();
+            if (!username.isEmpty()) {
+                authorization = QByteArrayLiteral("Basic ")
+                    + (username + QLatin1Char(':') + password).toUtf8().toBase64();
+            }
+        }
+    }
+    if (!valid) {
+        endpoint = QUrl();
+        authorization.clear();
+    }
+    if (endpoint == m_endpoint && authorization == m_authorization)
+        return valid;
+
     ++m_generation;
     cancelPendingReads();
     clear();
-    QFile file(configPath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        m_endpoint = QUrl();
-        m_authorization.clear();
-        return false;
-    }
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
-    const QJsonObject config = document.object();
-    const QUrl endpoint(config.value(QStringLiteral("sequencer_addr")).toString());
-    const QString scheme = endpoint.scheme().toLower();
-    if (!document.isObject() || !endpoint.isValid() || endpoint.host().isEmpty()
-        || (scheme != QStringLiteral("http") && scheme != QStringLiteral("https"))) {
-        m_endpoint = QUrl();
-        m_authorization.clear();
-        return false;
-    }
-
     m_endpoint = endpoint;
-    m_authorization.clear();
-    const QJsonObject basicAuth = config.value(QStringLiteral("basic_auth")).toObject();
-    const QString username = basicAuth.value(QStringLiteral("username")).toString();
-    const QString password = basicAuth.value(QStringLiteral("password")).toString();
-    if (!username.isEmpty()) {
-        m_authorization = QByteArrayLiteral("Basic ")
-            + (username + QLatin1Char(':') + password).toUtf8().toBase64();
-    }
-    return true;
+    m_authorization = authorization;
+    return valid;
 }
 
 void SequencerClient::readAccounts(const QStringList& accountIds,

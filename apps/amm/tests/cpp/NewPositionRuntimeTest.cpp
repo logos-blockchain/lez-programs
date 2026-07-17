@@ -445,5 +445,41 @@ int main(int argc, char** argv)
                 "holding read should recover from the sequencer"))
         return 1;
 
+    const int requestsBeforeUnchangedConfig = server.requestCount();
+    if (!expect(sequencer.configure(sequencerConfig.fileName()),
+                "unchanged sequencer config should remain valid"))
+        return 1;
+    QVector<WalletAccountRead> unchangedConfigRead;
+    if (!expect(waitForAccounts(sequencer, { holding.address }, false,
+                                &unchangedConfigRead),
+                "cached read after unchanged config should complete"))
+        return 1;
+    if (!expect(server.requestCount() == requestsBeforeUnchangedConfig,
+                "unchanged config should preserve the account cache"))
+        return 1;
+
+    LocalRpcServer replacementServer;
+    if (!expect(replacementServer.listen(),
+                "replacement sequencer should listen"))
+        return 1;
+    if (!expect(sequencerConfig.resize(0) && sequencerConfig.seek(0),
+                "sequencer config should rewind"))
+        return 1;
+    sequencerConfig.write(QJsonDocument(QJsonObject {
+        { QStringLiteral("sequencer_addr"), replacementServer.endpoint() },
+    }).toJson(QJsonDocument::Compact));
+    sequencerConfig.flush();
+    if (!expect(sequencer.configure(sequencerConfig.fileName()),
+                "same-path endpoint update should configure"))
+        return 1;
+    QVector<WalletAccountRead> replacementRead;
+    if (!expect(waitForAccounts(sequencer, { holding.address }, false,
+                                &replacementRead),
+                "same-path endpoint read should complete"))
+        return 1;
+    if (!expect(replacementServer.requestCount() == 1,
+                "same-path endpoint update should clear cache and use new sequencer"))
+        return 1;
+
     return 0;
 }

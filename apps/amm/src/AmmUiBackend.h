@@ -80,7 +80,6 @@ private:
 
     ActiveNetwork m_network;
     QVariantMap m_newPositionHints;
-    QString m_sequencerConfigPath;
     bool m_identityProbeInFlight = false;
     quint64 m_contextGeneration = 0;
     struct PendingTransaction {

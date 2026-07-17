@@ -305,10 +305,7 @@ void AmmUiBackend::syncWalletState()
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
 
-    if (m_sequencerConfigPath != state.configPath || !m_sequencer->isConfigured()) {
-        m_sequencerConfigPath = state.configPath;
-        m_sequencer->configure(state.configPath);
-    }
+    m_sequencer->configure(state.configPath);
 
     const bool addressChanged = previousAddress != state.sequencerAddress;
     if (addressChanged) {
