@@ -108,6 +108,25 @@ Item {
             verify(Number(snapshot.minReceived) < Number(snapshot.buyAmount))
         }
 
+        function test_exactOutputRequiresBalanceForMaximumInput() {
+            const page = createTemporaryObject(pageComponent, root)
+            verify(page)
+
+            const card = findChild(page, "swapCard")
+            verify(card)
+            card.setToken("sell", page.tokens[0])
+            card.setToken("buy", page.tokens[1])
+            card.slippageTolerancePercent = 10
+            card.buyInput = "11500"
+            card.editingSide = "buy"
+
+            verify(card.parsedSellAmount < card.sellToken.balance)
+            verify(card.maxSentAmount > card.sellToken.balance)
+            verify(card.insufficientBalance)
+            verify(!card.canSubmit)
+            compare(card.submitButtonText, "Insufficient balance")
+        }
+
         function test_reselectingOppositeTokenSwapsPair() {
             const page = createTemporaryObject(pageComponent, root)
             verify(page)

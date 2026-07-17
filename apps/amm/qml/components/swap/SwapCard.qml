@@ -79,11 +79,13 @@ Rectangle {
     readonly property string limitText: exactOutput
         ? swapState.formatTokenAmount(maxSentAmount, sellToken ? sellToken.symbol : "")
         : swapState.formatTokenAmount(minReceivedAmount, buyToken ? buyToken.symbol : "")
+    readonly property real sellBalanceRequirement: exactOutput
+        ? maxSentAmount : parsedSellAmount
 
     readonly property bool hasAmount: editingSide === "sell" ? parsedSellInput > 0 : parsedBuyInput > 0
     readonly property bool tokensSelected: sellToken !== null && buyToken !== null
     readonly property bool sameTokenSelected: isSameToken(sellToken, buyToken)
-    readonly property bool insufficientBalance: hasAmount && sellToken !== null && parsedSellAmount > (sellToken.balance || 0)
+    readonly property bool insufficientBalance: hasAmount && sellToken !== null && sellBalanceRequirement > (sellToken.balance || 0)
     readonly property bool insufficientLiquidity: hasAmount && buyToken !== null && parsedBuyAmount > (buyToken.reserve || 0)
     readonly property bool canSubmit: tokensSelected && !sameTokenSelected && hasAmount && parsedSellAmount > 0 && parsedBuyAmount > 0 && !insufficientBalance && !insufficientLiquidity
 
