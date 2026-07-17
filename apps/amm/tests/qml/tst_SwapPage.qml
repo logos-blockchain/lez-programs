@@ -127,6 +127,23 @@ Item {
             compare(card.submitButtonText, "Insufficient balance")
         }
 
+        function test_exactOutputCannotConsumeEntireReserve() {
+            const page = createTemporaryObject(pageComponent, root)
+            verify(page)
+
+            const card = findChild(page, "swapCard")
+            verify(card)
+            card.setToken("sell", page.tokens[0])
+            card.setToken("buy", page.tokens[1])
+            card.buyInput = String(card.buyToken.reserve)
+            card.editingSide = "buy"
+
+            compare(card.parsedBuyAmount, card.buyToken.reserve)
+            verify(card.insufficientLiquidity)
+            verify(!card.canSubmit)
+            compare(card.submitButtonText, "Insufficient liquidity")
+        }
+
         function test_reselectingOppositeTokenSwapsPair() {
             const page = createTemporaryObject(pageComponent, root)
             verify(page)

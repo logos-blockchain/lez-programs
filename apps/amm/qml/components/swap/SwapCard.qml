@@ -86,7 +86,7 @@ Rectangle {
     readonly property bool tokensSelected: sellToken !== null && buyToken !== null
     readonly property bool sameTokenSelected: isSameToken(sellToken, buyToken)
     readonly property bool insufficientBalance: hasAmount && sellToken !== null && sellBalanceRequirement > (sellToken.balance || 0)
-    readonly property bool insufficientLiquidity: hasAmount && buyToken !== null && parsedBuyAmount > (buyToken.reserve || 0)
+    readonly property bool insufficientLiquidity: hasAmount && buyToken !== null && parsedBuyAmount >= (buyToken.reserve || 0)
     readonly property bool canSubmit: tokensSelected && !sameTokenSelected && hasAmount && parsedSellAmount > 0 && parsedBuyAmount > 0 && !insufficientBalance && !insufficientLiquidity
 
     readonly property string submitButtonText: {
