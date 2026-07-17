@@ -458,15 +458,28 @@ void LogosWalletProviderTest::exposesStableAccountModelRoles()
              QStringLiteral("program"));
     QVERIFY(!model.data(model.index(2), WalletAccountModel::CanBePrimaryRole).toBool());
 
-    model.applyPresentations({ {
-        ACCOUNT_C,
-        QStringLiteral("token_holding"),
-        QStringLiteral("TEST holding"),
-        QStringLiteral("Token"),
-        QStringLiteral("TokenHolding"),
-        ACCOUNT_A,
-        true,
-    } });
+    QSignalSpy presentationsChanged(&model, &QAbstractItemModel::dataChanged);
+    model.applyPresentations({
+        {
+            ACCOUNT_A,
+            QStringLiteral("program"),
+            {},
+            QStringLiteral("System"),
+            QStringLiteral("UserAccount"),
+            {},
+            false,
+        },
+        {
+            ACCOUNT_C,
+            QStringLiteral("token_holding"),
+            QStringLiteral("TEST holding"),
+            QStringLiteral("Token"),
+            QStringLiteral("TokenHolding"),
+            ACCOUNT_A,
+            true,
+        },
+    });
+    QCOMPARE(presentationsChanged.count(), 1);
     QCOMPARE(model.data(model.index(2), WalletAccountModel::SectionRole).toString(),
              QStringLiteral("hidden"));
     QCOMPARE(model.data(model.index(2), WalletAccountModel::NameRole).toString(),

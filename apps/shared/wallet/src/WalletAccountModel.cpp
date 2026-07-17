@@ -130,11 +130,21 @@ void WalletAccountModel::replaceAccounts(const QVector<WalletAccount>& accounts,
 void WalletAccountModel::applyPresentations(
     const QVector<WalletAccountPresentation>& presentations)
 {
+    QHash<QString, int> rowsByAddress;
+    rowsByAddress.reserve(m_accounts.size());
+    for (int row = 0; row < m_accounts.size(); ++row) {
+        const QString& address = m_accounts.at(row).address;
+        if (!rowsByAddress.contains(address))
+            rowsByAddress.insert(address, row);
+    }
+
+    int firstChanged = m_accounts.size();
+    int lastChanged = -1;
     for (const WalletAccountPresentation& presentation : presentations) {
-        const int row = indexOf(presentation.address);
-        if (row < 0)
+        const auto row = rowsByAddress.constFind(presentation.address);
+        if (row == rowsByAddress.cend())
             continue;
-        Entry& entry = m_accounts[row];
+        Entry& entry = m_accounts[row.value()];
         if (!presentation.kind.isEmpty())
             entry.kind = presentation.kind;
         entry.programName = presentation.programName;
@@ -147,9 +157,23 @@ void WalletAccountModel::applyPresentations(
         if (!entry.canBePrimary)
             entry.isPrimary = false;
         updateEntryName(entry);
-        const QModelIndex changed = index(row);
-        emit dataChanged(changed, changed);
+        if (row.value() < firstChanged)
+            firstChanged = row.value();
+        if (row.value() > lastChanged)
+            lastChanged = row.value();
     }
+    if (lastChanged < 0)
+        return;
+    emit dataChanged(index(firstChanged), index(lastChanged), {
+        NameRole,
+        KindRole,
+        SectionRole,
+        ProgramNameRole,
+        AccountTypeRole,
+        CanBePrimaryRole,
+        IsPrimaryRole,
+        DefinitionIdRole,
+    });
 }
 
 void WalletAccountModel::setAlias(const QString& address, const QString& alias)
