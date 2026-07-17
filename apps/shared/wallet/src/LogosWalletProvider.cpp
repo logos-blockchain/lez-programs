@@ -229,15 +229,7 @@ void LogosWalletProvider::connectAsync(const WalletPaths& paths, SessionCallback
                 finishOpen(true, WalletFailure::None);
                 return;
             }
-            m_impl->logos->logos_execution_zone.list_accountsAsync(
-                [this, generation, finishOpen, openStored](QVariantList accounts) mutable {
-                    if (generation != m_generation)
-                        return;
-                    if (!accounts.isEmpty())
-                        finishOpen(true, WalletFailure::None);
-                    else
-                        openStored();
-                });
+            openStored();
         });
 }
 
@@ -468,9 +460,8 @@ bool LogosWalletProvider::sharedWalletIsOpen() const
 {
     if (!m_impl->logos)
         return false;
-    if (!m_impl->logos->logos_execution_zone.get_sequencer_addr().isEmpty())
-        return true;
-    return !m_impl->logos->logos_execution_zone.list_accounts().isEmpty();
+    // A live wallet always has a configured, non-empty sequencer URL.
+    return !m_impl->logos->logos_execution_zone.get_sequencer_addr().isEmpty();
 }
 
 WalletSnapshot LogosWalletProvider::loadSnapshot()

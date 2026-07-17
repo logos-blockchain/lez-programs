@@ -51,6 +51,7 @@ class LogosWalletProviderTest : public QObject {
 private slots:
     void adoptsOpenWalletAndCachesSnapshots();
     void opensConfiguredWalletWhenNoSharedSessionExists();
+    void opensStoredWalletAsynchronouslyWithoutAccountProbe();
     void opensAndReadsAsynchronously();
     void avoidsSavingAfterUnchangedAsynchronousSnapshots();
     void createsAndPersistsWallet();
@@ -144,11 +145,34 @@ void LogosWalletProviderTest::opensConfiguredWalletWhenNoSharedSessionExists()
     QVERIFY(!session.adopted);
     QCOMPARE(modules.logos_execution_zone.openCalls, 1);
     QCOMPARE(modules.logos_execution_zone.openedStorage, storage);
+    QCOMPARE(modules.logos_execution_zone.listCalls, 1);
 
     LogosModules missingModules;
     LogosWalletProvider missingProvider(&missingModules);
     QCOMPARE(missingProvider.connect({ QStringLiteral("config"), QStringLiteral("missing") }).failure,
              WalletFailure::WalletMissing);
+}
+
+void LogosWalletProviderTest::opensStoredWalletAsynchronouslyWithoutAccountProbe()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString storage = directory.filePath(QStringLiteral("storage.json"));
+    QFile file(storage);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.close();
+
+    LogosModules modules;
+    LogosWalletProvider provider(&modules);
+    bool connected = false;
+    provider.connectAsync({ directory.filePath(QStringLiteral("wallet.json")), storage },
+                          [&connected](WalletSession session) {
+                              connected = session.ok() && !session.adopted;
+                          });
+
+    QVERIFY(connected);
+    QCOMPARE(modules.logos_execution_zone.openCalls, 1);
+    QCOMPARE(modules.logos_execution_zone.listCalls, 1);
 }
 
 void LogosWalletProviderTest::opensAndReadsAsynchronously()
