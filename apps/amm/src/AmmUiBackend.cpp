@@ -253,8 +253,10 @@ void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
     m_newPosition->contextAsync(
         request, m_network.snapshot(), isWalletOpen(), refreshWalletAccounts,
         [this, generation](QVariantMap result) {
-            if (generation == m_contextGeneration)
+            if (generation == m_contextGeneration) {
+                result.insert(QStringLiteral("requestId"), generation);
                 setNewPositionContext(std::move(result));
+            }
         });
 }
 

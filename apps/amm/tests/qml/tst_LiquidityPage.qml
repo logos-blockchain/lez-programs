@@ -35,6 +35,7 @@ TestCase {
                 "feeTiers": []
             })
             property int contextRefreshCalls: 0
+            property int contextRequestId: 0
             property int submitCalls: 0
             property var lastContextRefreshRequest: ({})
 
@@ -54,6 +55,9 @@ TestCase {
             function refreshNewPositionContext(request) {
                 ++contextRefreshCalls
                 lastContextRefreshRequest = request
+                var result = JSON.parse(JSON.stringify(newPositionContext))
+                result.requestId = ++contextRequestId
+                newPositionContext = result
             }
         }
     }
@@ -110,6 +114,21 @@ TestCase {
 
         compare(page.flow.contextHints(false).refreshWalletAccounts, false)
         compare(page.flow.contextHints(true).refreshWalletAccounts, true)
+    }
+
+    function test_repeatedIdenticalContextCompletesRefresh() {
+        var backend = createTemporaryObject(backendComponent, testCase)
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
+        verify(page)
+
+        page.flow.refreshContext(false)
+        tryCompare(page.flow, "contextLoading", false)
+        compare(backend.contextRequestId, 1)
+
+        page.flow.refreshContext(false)
+        tryCompare(page.flow, "contextLoading", false)
+        compare(backend.contextRequestId, 2)
+        compare(page.flow.newPositionContext.status, "ready")
     }
 
     function test_submitFailureKeepsReturnedFreshQuoteWithoutRequery() {
