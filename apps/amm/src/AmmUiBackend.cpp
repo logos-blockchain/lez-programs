@@ -361,10 +361,17 @@ void AmmUiBackend::probeNetworkIdentity()
             return;
         }
 
-        const QByteArray payload = reply->readAll();
-        const QString actual = devnet
-            ? channelIdFromResponse(payload)
-            : blockHashFromResponse(payload);
+        const QVariant statusValue = reply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute);
+        const int status = statusValue.toInt();
+        const bool successfulResponse = reply->error() == QNetworkReply::NoError
+            && statusValue.isValid()
+            && status >= 200
+            && status < 300;
+        const QByteArray payload = successfulResponse ? reply->readAll() : QByteArray();
+        const QString actual = successfulResponse
+            ? (devnet ? channelIdFromResponse(payload) : blockHashFromResponse(payload))
+            : QString();
         m_network.finishIdentityProbe(actual);
         const int retryDelay = m_network.identityRetryDelayMs();
         if (retryDelay > 0)
