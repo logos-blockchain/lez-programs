@@ -531,6 +531,13 @@ int main(int argc, char** argv)
                 "forced-refresh sequencer should listen"))
         return 1;
     forcedRefreshServer.holdResponses();
+    bool staleCachedCompleted = false;
+    QVector<WalletAccountRead> staleCachedRead;
+    sequencer.readAccounts({ holding.address }, false,
+        [&](QVector<WalletAccountRead> reads) {
+            staleCachedRead = std::move(reads);
+            staleCachedCompleted = true;
+        });
     if (!expect(sequencerConfig.resize(0) && sequencerConfig.seek(0),
                 "forced-refresh config should rewind"))
         return 1;
@@ -540,6 +547,12 @@ int main(int argc, char** argv)
     sequencerConfig.flush();
     if (!expect(sequencer.configure(sequencerConfig.fileName()),
                 "forced-refresh sequencer should configure"))
+        return 1;
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    if (!expect(staleCachedCompleted
+                    && staleCachedRead.size() == 1
+                    && !staleCachedRead.constFirst().ok(),
+                "cached read should fail after sequencer reconfiguration"))
         return 1;
 
     bool ordinaryCompleted = false;

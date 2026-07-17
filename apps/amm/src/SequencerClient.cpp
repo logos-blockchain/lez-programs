@@ -163,8 +163,13 @@ void SequencerClient::readAccount(const QString& accountId,
         m_cache.remove(accountId);
     if (!forceRefresh && m_cache.contains(accountId)) {
         const WalletAccountRead cached = m_cache.value(accountId);
+        const quint64 generation = m_generation;
         QTimer::singleShot(0, this,
-            [callback = std::move(callback), cached]() mutable { callback(cached); });
+            [this, callback = std::move(callback), cached, accountId,
+             generation]() mutable {
+                callback(generation == m_generation
+                    ? cached : WalletAccountRead { accountId });
+            });
         return;
     }
     if (forceRefresh && m_activeReadIds.contains(accountId)) {
