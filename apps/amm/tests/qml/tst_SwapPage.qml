@@ -107,5 +107,36 @@ Item {
             verify(snapshot.minReceived.length > 0)
             verify(Number(snapshot.minReceived) < Number(snapshot.buyAmount))
         }
+
+        function test_reselectingOppositeTokenSwapsPair() {
+            const page = createTemporaryObject(pageComponent, root)
+            verify(page)
+
+            const card = findChild(page, "swapCard")
+            verify(card)
+            card.setToken("sell", page.tokens[0])
+            card.setToken("buy", page.tokens[1])
+            card.setToken("buy", page.tokens[0])
+
+            compare(card.sellToken.address, page.tokens[1].address)
+            compare(card.buyToken.address, page.tokens[0].address)
+            verify(!card.sameTokenSelected)
+        }
+
+        function test_sameTokenPairCannotBePreviewed() {
+            const page = createTemporaryObject(pageComponent, root)
+            verify(page)
+
+            const card = findChild(page, "swapCard")
+            verify(card)
+            card.sellToken = page.tokens[0]
+            card.buyToken = page.tokens[0]
+            card.sellInput = "1"
+            card.editingSide = "sell"
+
+            verify(card.sameTokenSelected)
+            verify(!card.canSubmit)
+            compare(card.submitButtonText, "Select different tokens")
+        }
     }
 }

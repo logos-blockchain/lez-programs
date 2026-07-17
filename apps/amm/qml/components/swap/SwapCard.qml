@@ -24,9 +24,26 @@ Rectangle {
     signal requestTokenSelect(string side)
     signal previewRequested(var snapshot)
 
+    function isSameToken(left, right) {
+        if (!left || !right)
+            return false
+        if (left.address && right.address)
+            return String(left.address) === String(right.address)
+        return left === right
+    }
+
     function setToken(side, token) {
-        if (side === "sell") root.sellToken = token
-        else root.buyToken = token
+        if (side === "sell") {
+            const previousSellToken = root.sellToken
+            if (root.isSameToken(token, root.buyToken))
+                root.buyToken = previousSellToken
+            root.sellToken = token
+        } else {
+            const previousBuyToken = root.buyToken
+            if (root.isSameToken(token, root.sellToken))
+                root.sellToken = previousBuyToken
+            root.buyToken = token
+        }
     }
 
     readonly property real sellReserve: sellToken ? (sellToken.reserve || 0) : 0
@@ -65,11 +82,13 @@ Rectangle {
 
     readonly property bool hasAmount: editingSide === "sell" ? parsedSellInput > 0 : parsedBuyInput > 0
     readonly property bool tokensSelected: sellToken !== null && buyToken !== null
+    readonly property bool sameTokenSelected: isSameToken(sellToken, buyToken)
     readonly property bool insufficientBalance: hasAmount && sellToken !== null && parsedSellAmount > (sellToken.balance || 0)
     readonly property bool insufficientLiquidity: hasAmount && buyToken !== null && parsedBuyAmount > (buyToken.reserve || 0)
-    readonly property bool canSubmit: tokensSelected && hasAmount && parsedSellAmount > 0 && parsedBuyAmount > 0 && !insufficientBalance && !insufficientLiquidity
+    readonly property bool canSubmit: tokensSelected && !sameTokenSelected && hasAmount && parsedSellAmount > 0 && parsedBuyAmount > 0 && !insufficientBalance && !insufficientLiquidity
 
     readonly property string submitButtonText: {
+        if (sameTokenSelected) return qsTr("Select different tokens")
         if (!hasAmount || !tokensSelected) return qsTr("Enter an amount")
         if (insufficientBalance) return qsTr("Insufficient balance")
         if (insufficientLiquidity) return qsTr("Insufficient liquidity")
