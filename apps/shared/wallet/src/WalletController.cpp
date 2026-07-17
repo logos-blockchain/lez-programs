@@ -3,8 +3,12 @@
 #include <utility>
 
 #include <QDebug>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -18,12 +22,36 @@ namespace {
 const char SETTINGS_ORG[] = "Logos";
 const char DISCONNECTED_KEY[] = "disconnected";
 const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
+const char WALLET_SETTINGS_GROUP[] = "wallets";
+const char ALIASES_KEY[] = "aliases";
+const char PRIMARY_ACCOUNT_KEY[] = "primaryAccount";
+constexpr qsizetype MAX_ALIAS_LENGTH = 40;
 
 QString toLocalPath(const QString& path)
 {
     if (path.startsWith(QStringLiteral("file://")) || path.contains(QLatin1Char('/')))
         return QUrl::fromUserInput(path).toLocalFile();
     return path;
+}
+
+QString configuredSequencer(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!document.isObject())
+        return {};
+    return document.object().value(QStringLiteral("sequencer_addr")).toString();
+}
+
+QString canonicalStoragePath(const QString& path)
+{
+    const QFileInfo info(path);
+    const QString canonical = info.canonicalFilePath();
+    return canonical.isEmpty()
+        ? QDir::cleanPath(info.absoluteFilePath())
+        : canonical;
 }
 }
 
@@ -38,7 +66,10 @@ WalletController::WalletController(WalletProvider& wallet,
       m_reachabilityTimer(new QTimer(this))
 {
     m_state.walletHome = defaultWalletHome();
+    m_state.configPath = defaultConfigPath();
+    m_state.storagePath = defaultStoragePath();
     m_state.walletExists = QFileInfo::exists(defaultStoragePath());
+    m_state.sequencerAddress = configuredSequencer(defaultConfigPath());
 
     m_reachabilityTimer->setInterval(10000);
     connect(m_reachabilityTimer, &QTimer::timeout,
@@ -83,20 +114,60 @@ void WalletController::openOnStartup()
 
     const QString config = defaultConfigPath();
     const QString storage = defaultStoragePath();
-    const WalletSession session = m_wallet.connect({ config, storage });
-    if (session.failure == WalletFailure::WalletMissing)
-        return;
-    if (!session.ok()) {
-        qWarning() << "WalletController: wallet connection failed"
-                   << walletFailureCode(session.failure);
-        return;
+    beginOpen(config, storage);
+}
+
+bool WalletController::beginOpen(const QString& config, const QString& storage)
+{
+    if (m_state.syncStatus == QStringLiteral("opening")
+        || m_state.syncStatus == QStringLiteral("syncing")) {
+        return false;
     }
 
+    const quint64 generation = ++m_operationGeneration;
     m_state.configPath = config;
     m_state.storagePath = storage;
-    m_state.walletExists = QFileInfo::exists(storage) || session.adopted;
-    m_state.isWalletOpen = true;
-    applySnapshot(session.snapshot);
+    m_state.syncStatus = QStringLiteral("opening");
+    m_state.syncError.clear();
+    const QString endpoint = configuredSequencer(config);
+    if (!endpoint.isEmpty())
+        m_state.sequencerAddress = endpoint;
+    emit stateChanged();
+
+    QTimer::singleShot(0, this, [this, generation]() {
+        if (generation == m_operationGeneration
+            && m_state.syncStatus == QStringLiteral("opening")) {
+            m_state.syncStatus = QStringLiteral("syncing");
+            emit stateChanged();
+        }
+    });
+    m_wallet.connectAsync({ config, storage },
+        [this, generation, config, storage](WalletSession session) {
+            if (generation != m_operationGeneration)
+                return;
+            if (session.failure == WalletFailure::WalletMissing) {
+                m_state.syncStatus = QStringLiteral("closed");
+                m_state.walletExists = false;
+                emit stateChanged();
+                return;
+            }
+            if (!session.ok()) {
+                qWarning() << "WalletController: wallet connection failed"
+                           << walletFailureCode(session.failure);
+                m_state.syncStatus = QStringLiteral("error");
+                m_state.syncError = walletFailureCode(session.failure);
+                emit stateChanged();
+                return;
+            }
+
+            m_state.configPath = config;
+            m_state.storagePath = storage;
+            m_state.walletExists = QFileInfo::exists(storage) || session.adopted;
+            m_state.isWalletOpen = true;
+            m_state.syncStatus = QStringLiteral("ready");
+            applySnapshot(session.snapshot);
+        });
+    return true;
 }
 
 QString WalletController::createDefaultWallet(const QString& password)
@@ -112,7 +183,9 @@ QString WalletController::createWallet(const QString& configPath,
     const QString storage = toLocalPath(storagePath);
     const WalletCreation creation = m_wallet.createWallet(
         { config, storage }, password);
-    if (creation.mnemonic.isEmpty()) {
+    const bool createdButUnreadable = creation.failure == WalletFailure::ReadFailed;
+    if (creation.mnemonic.isEmpty()
+        || (!creation.ok() && !createdButUnreadable)) {
         qWarning() << "WalletController: wallet creation failed"
                    << walletFailureCode(creation.failure);
         return {};
@@ -122,14 +195,18 @@ QString WalletController::createWallet(const QString& configPath,
     m_state.storagePath = storage;
     m_state.walletExists = true;
     QSettings(SETTINGS_ORG, m_settingsApplication).setValue(DISCONNECTED_KEY, false);
-    if (!creation.ok()) {
-        qWarning() << "WalletController: wallet creation failed"
-                   << walletFailureCode(creation.failure);
+    m_state.isWalletOpen = true;
+    if (!creation.snapshot.ok()) {
+        qWarning() << "WalletController: wallet creation refresh failed"
+                   << walletFailureCode(creation.snapshot.failure);
+        m_state.syncStatus = QStringLiteral("error");
+        m_state.syncError = walletFailureCode(creation.snapshot.failure);
         emit stateChanged();
         return creation.mnemonic;
     }
 
-    m_state.isWalletOpen = true;
+    m_state.syncStatus = QStringLiteral("ready");
+    m_state.syncError.clear();
     applySnapshot(creation.snapshot);
     return creation.mnemonic;
 }
@@ -140,28 +217,66 @@ bool WalletController::open()
         ? defaultConfigPath() : m_state.configPath;
     const QString storage = m_state.storagePath.isEmpty()
         ? defaultStoragePath() : m_state.storagePath;
-    const WalletSession session = m_wallet.connect({ config, storage });
-    if (!session.ok()) {
-        qWarning() << "WalletController: wallet open failed"
-                   << walletFailureCode(session.failure);
-        return false;
-    }
-
-    m_state.configPath = config;
-    m_state.storagePath = storage;
-    m_state.walletExists = true;
-    m_state.isWalletOpen = true;
     QSettings(SETTINGS_ORG, m_settingsApplication).setValue(DISCONNECTED_KEY, false);
-    applySnapshot(session.snapshot);
-    return true;
+    return beginOpen(config, storage);
 }
 
 void WalletController::disconnect()
 {
+    ++m_operationGeneration;
     m_wallet.disconnect();
     m_state.isWalletOpen = false;
+    m_state.syncStatus = QStringLiteral("closed");
+    m_state.syncError.clear();
+    m_state.primaryAccountAddress.clear();
+    m_state.primaryAccountName.clear();
+    m_snapshot = {};
+    m_aliases.clear();
     m_accountModel->replaceAccounts({});
     QSettings(SETTINGS_ORG, m_settingsApplication).setValue(DISCONNECTED_KEY, true);
+    emit stateChanged();
+    emit snapshotChanged();
+}
+
+bool WalletController::setAccountAlias(const QString& address, const QString& alias)
+{
+    if (!m_accountModel->contains(address))
+        return false;
+    const QString normalized = alias.trimmed();
+    if (normalized.size() > MAX_ALIAS_LENGTH)
+        return false;
+    if (normalized.isEmpty())
+        m_aliases.remove(address);
+    else
+        m_aliases.insert(address, normalized);
+    m_accountModel->setAlias(address, normalized);
+    storeAliases(m_aliases);
+    updatePrimaryState(m_state.primaryAccountAddress);
+    emit stateChanged();
+    return true;
+}
+
+bool WalletController::setPrimaryAccount(const QString& address)
+{
+    if (!m_accountModel->canBePrimary(address))
+        return false;
+    m_accountModel->setPrimaryAddress(address);
+    storePrimaryAccount(address);
+    updatePrimaryState(address);
+    emit stateChanged();
+    return true;
+}
+
+void WalletController::applyAccountPresentations(
+    const QVector<WalletAccountPresentation>& presentations)
+{
+    m_accountModel->applyPresentations(presentations);
+    QString primary = m_state.primaryAccountAddress;
+    if (!m_accountModel->canBePrimary(primary))
+        primary = m_accountModel->firstAutomaticPrimary();
+    m_accountModel->setPrimaryAddress(primary);
+    storePrimaryAccount(primary);
+    updatePrimaryState(primary);
     emit stateChanged();
 }
 
@@ -174,23 +289,41 @@ QString WalletController::createAccount(bool isPublic)
         return {};
     }
     if (creation.snapshot.ok()) {
+        m_state.syncStatus = QStringLiteral("ready");
+        m_state.syncError.clear();
         applySnapshot(creation.snapshot);
     } else {
         qWarning() << "WalletController: account refresh failed"
                    << walletFailureCode(creation.snapshot.failure);
+        m_state.syncStatus = QStringLiteral("error");
+        m_state.syncError = walletFailureCode(creation.snapshot.failure);
+        emit stateChanged();
     }
     return creation.accountId;
 }
 
 void WalletController::refresh()
 {
-    const WalletSnapshot next = m_wallet.snapshot(true);
-    if (next.ok()) {
-        applySnapshot(next);
-    } else {
-        qWarning() << "WalletController: wallet refresh failed"
-                   << walletFailureCode(next.failure);
-    }
+    if (!m_state.isWalletOpen || m_state.syncStatus == QStringLiteral("syncing"))
+        return;
+    const quint64 generation = ++m_operationGeneration;
+    m_state.syncStatus = QStringLiteral("syncing");
+    m_state.syncError.clear();
+    emit stateChanged();
+    m_wallet.snapshotAsync(true, [this, generation](WalletSnapshot next) {
+        if (generation != m_operationGeneration)
+            return;
+        if (next.ok()) {
+            m_state.syncStatus = QStringLiteral("ready");
+            applySnapshot(next);
+        } else {
+            qWarning() << "WalletController: wallet refresh failed"
+                       << walletFailureCode(next.failure);
+            m_state.syncStatus = QStringLiteral("error");
+            m_state.syncError = walletFailureCode(next.failure);
+            emit stateChanged();
+        }
+    });
 }
 
 QString WalletController::balance(const QString& accountId, bool isPublic)
@@ -205,12 +338,83 @@ QString WalletController::balance(const QString& accountId, bool isPublic)
 
 void WalletController::applySnapshot(const WalletSnapshot& snapshot)
 {
-    m_accountModel->replaceAccounts(snapshot.accounts);
+    m_snapshot = snapshot;
+    m_aliases = loadAliases();
+    QString primary = loadPrimaryAccount();
+    m_accountModel->replaceAccounts(snapshot.accounts, m_aliases, primary);
+    if (!m_accountModel->canBePrimary(primary))
+        primary = m_accountModel->firstAutomaticPrimary();
+    m_accountModel->setPrimaryAddress(primary);
+    storePrimaryAccount(primary);
+    updatePrimaryState(primary);
     m_state.lastSyncedBlock = static_cast<int>(snapshot.lastSyncedBlock);
     m_state.currentBlockHeight = static_cast<int>(snapshot.currentBlockHeight);
-    m_state.sequencerAddress = snapshot.sequencerAddress;
+    if (!snapshot.sequencerAddress.isEmpty())
+        m_state.sequencerAddress = snapshot.sequencerAddress;
+    emit snapshotChanged();
     emit stateChanged();
     checkReachability();
+}
+
+QString WalletController::walletSettingsGroup() const
+{
+    const QByteArray hash = QCryptographicHash::hash(
+        canonicalStoragePath(m_state.storagePath).toUtf8(),
+        QCryptographicHash::Sha256).toHex();
+    return QStringLiteral("%1/%2")
+        .arg(QString::fromLatin1(WALLET_SETTINGS_GROUP), QString::fromLatin1(hash));
+}
+
+QHash<QString, QString> WalletController::loadAliases() const
+{
+    QSettings settings(SETTINGS_ORG, m_settingsApplication);
+    settings.beginGroup(walletSettingsGroup());
+    const QVariantMap stored = settings.value(ALIASES_KEY).toMap();
+    QHash<QString, QString> aliases;
+    for (auto iterator = stored.cbegin(); iterator != stored.cend(); ++iterator) {
+        const QString alias = iterator.value().toString().trimmed();
+        if (!alias.isEmpty() && alias.size() <= MAX_ALIAS_LENGTH)
+            aliases.insert(iterator.key(), alias);
+    }
+    return aliases;
+}
+
+QString WalletController::loadPrimaryAccount() const
+{
+    QSettings settings(SETTINGS_ORG, m_settingsApplication);
+    settings.beginGroup(walletSettingsGroup());
+    return settings.value(PRIMARY_ACCOUNT_KEY).toString();
+}
+
+void WalletController::storeAliases(const QHash<QString, QString>& aliases) const
+{
+    QVariantMap stored;
+    for (auto iterator = aliases.cbegin(); iterator != aliases.cend(); ++iterator)
+        stored.insert(iterator.key(), iterator.value());
+    QSettings settings(SETTINGS_ORG, m_settingsApplication);
+    settings.beginGroup(walletSettingsGroup());
+    settings.setValue(ALIASES_KEY, stored);
+}
+
+void WalletController::storePrimaryAccount(const QString& address) const
+{
+    QSettings settings(SETTINGS_ORG, m_settingsApplication);
+    settings.beginGroup(walletSettingsGroup());
+    if (address.isEmpty())
+        settings.remove(PRIMARY_ACCOUNT_KEY);
+    else
+        settings.setValue(PRIMARY_ACCOUNT_KEY, address);
+}
+
+void WalletController::updatePrimaryState(const QString& address)
+{
+    m_state.primaryAccountAddress = address;
+    m_state.primaryAccountName.clear();
+    const int row = m_accountModel->indexOf(address);
+    if (row >= 0) {
+        m_state.primaryAccountName = m_accountModel->data(
+            m_accountModel->index(row), WalletAccountModel::NameRole).toString();
+    }
 }
 
 void WalletController::checkReachability()

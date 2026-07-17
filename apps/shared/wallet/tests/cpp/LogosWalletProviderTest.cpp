@@ -10,6 +10,7 @@
 
 #include "FakeWalletProvider.h"
 #include "LogosWalletProvider.h"
+#include "WalletAccountId.h"
 #include "WalletAccountModel.h"
 #include "WalletController.h"
 #include "logos_sdk.h"
@@ -17,7 +18,9 @@
 namespace {
 const QString ACCOUNT_A(64, QLatin1Char('a'));
 const QString ACCOUNT_B(64, QLatin1Char('b'));
+const QString ACCOUNT_C(64, QLatin1Char('d'));
 const QString PROGRAM_ID(64, QLatin1Char('c'));
+const QString EOA_OWNER(64, QLatin1Char('0'));
 
 QString publicAccountJson(const QString& owner = PROGRAM_ID,
                           const QString& balance = QStringLiteral("01000000000000000000000000000000"),
@@ -39,6 +42,7 @@ QVariantMap accountEntry(const QString& id, bool isPublic)
         { QStringLiteral("is_public"), isPublic },
     };
 }
+
 }
 
 class LogosWalletProviderTest : public QObject {
@@ -47,6 +51,7 @@ class LogosWalletProviderTest : public QObject {
 private slots:
     void adoptsOpenWalletAndCachesSnapshots();
     void opensConfiguredWalletWhenNoSharedSessionExists();
+    void opensAndReadsAsynchronously();
     void createsAndPersistsWallet();
     void validatesCompletePublicAccountPayloads();
     void fallsBackToBalanceWhenPublicReadFails();
@@ -55,9 +60,12 @@ private slots:
     void preservesCreatedAccountWhenSnapshotRefreshFails();
     void dispatchesExactGenericTransaction();
     void rejectsInvalidSubmissionResponses();
+    void encodesAccountIdsForDisplay();
     void exposesStableAccountModelRoles();
+    void persistsHumanizedWalletPreferences();
     void fakeProviderImplementsConsumerContract();
     void controllerOwnsUiWalletFlow();
+    void controllerReportsCreationPersistenceAndRefreshFailures();
     void controllerStopsReachabilityChecksAfterDisconnect();
 };
 
@@ -84,6 +92,10 @@ void LogosWalletProviderTest::adoptsOpenWalletAndCachesSnapshots()
     QCOMPARE(session.snapshot.accounts.at(0).balance, QStringLiteral("1"));
     QCOMPARE(session.snapshot.accounts.at(1).balance, QStringLiteral("42"));
     QCOMPARE(session.snapshot.publicAccountReads.size(), 1);
+    QCOMPARE(session.snapshot.accounts.at(0).readStatus, QStringLiteral("ok"));
+    QCOMPARE(session.snapshot.accounts.at(0).programOwner, PROGRAM_ID);
+    QCOMPARE(session.snapshot.accounts.at(0).dataHex, QStringLiteral("00ff"));
+    QCOMPARE(session.snapshot.accounts.at(1).readStatus, QStringLiteral("private"));
     QCOMPARE(session.snapshot.currentBlockHeight, quint64(12));
     QCOMPARE(session.snapshot.lastSyncedBlock, quint64(11));
 
@@ -136,6 +148,38 @@ void LogosWalletProviderTest::opensConfiguredWalletWhenNoSharedSessionExists()
     LogosWalletProvider missingProvider(&missingModules);
     QCOMPARE(missingProvider.connect({ QStringLiteral("config"), QStringLiteral("missing") }).failure,
              WalletFailure::WalletMissing);
+}
+
+void LogosWalletProviderTest::opensAndReadsAsynchronously()
+{
+    LogosModules modules;
+    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.logos_execution_zone.accounts = { accountEntry(ACCOUNT_A, true) };
+    modules.logos_execution_zone.publicAccounts.insert(
+        ACCOUNT_A, publicAccountJson(EOA_OWNER));
+    LogosWalletProvider provider(&modules);
+
+    bool connected = false;
+    provider.connectAsync({}, [&connected](WalletSession session) {
+        connected = session.ok() && session.snapshot.accounts.size() == 1;
+    });
+    QVERIFY(connected);
+
+    bool refreshed = false;
+    provider.snapshotAsync(true, [&refreshed](WalletSnapshot snapshot) {
+        refreshed = snapshot.ok() && snapshot.accounts.at(0).programOwner == EOA_OWNER;
+    });
+    QVERIFY(refreshed);
+
+    bool batchRead = false;
+    provider.readPublicAccountsAsync(
+        { ACCOUNT_A, ACCOUNT_B },
+        [&batchRead](QVector<WalletAccountRead> reads) {
+            batchRead = reads.size() == 2
+                && reads.at(0).ok()
+                && !reads.at(1).ok();
+        });
+    QVERIFY(batchRead);
 }
 
 void LogosWalletProviderTest::createsAndPersistsWallet()
@@ -338,19 +382,92 @@ void LogosWalletProviderTest::exposesStableAccountModelRoles()
     WalletAccountModel model;
     QSignalSpy countChanged(&model, &WalletAccountModel::countChanged);
     model.replaceAccounts({
-        { ACCOUNT_A, QStringLiteral("10"), true },
-        { ACCOUNT_B, QStringLiteral("20"), false },
-    });
+        { ACCOUNT_A, QStringLiteral("10"), true, QStringLiteral("ok"), EOA_OWNER, {} },
+        { ACCOUNT_B, QStringLiteral("20"), false, QStringLiteral("private"), {}, {} },
+        { ACCOUNT_C, QStringLiteral("30"), true, QStringLiteral("ok"), PROGRAM_ID, QStringLiteral("00") },
+    }, { { ACCOUNT_A, QStringLiteral("Trading") } }, ACCOUNT_A);
 
-    QCOMPARE(model.count(), 2);
+    QCOMPARE(model.count(), 3);
     QCOMPARE(countChanged.count(), 1);
     QCOMPARE(model.roleNames().value(WalletAccountModel::NameRole), QByteArray("name"));
     QCOMPARE(model.data(model.index(0), WalletAccountModel::NameRole).toString(),
-             QStringLiteral("Account 1"));
+             QStringLiteral("Trading"));
+    QCOMPARE(model.data(model.index(0), WalletAccountModel::KindRole).toString(),
+             QStringLiteral("user"));
+    QVERIFY(model.data(model.index(0), WalletAccountModel::CanBePrimaryRole).toBool());
+    QVERIFY(model.data(model.index(0), WalletAccountModel::IsPrimaryRole).toBool());
     QCOMPARE(model.data(model.index(1), WalletAccountModel::AddressRole).toString(), ACCOUNT_B);
+    QCOMPARE(model.roleNames().value(WalletAccountModel::DisplayAddressRole),
+             QByteArray("displayAddress"));
+    QCOMPARE(model.data(model.index(1), WalletAccountModel::DisplayAddressRole).toString(),
+             walletAccountIdToBase58(ACCOUNT_B));
     QCOMPARE(model.data(model.index(1), WalletAccountModel::BalanceRole).toString(),
              QStringLiteral("20"));
     QVERIFY(!model.data(model.index(1), WalletAccountModel::IsPublicRole).toBool());
+    QCOMPARE(model.data(model.index(2), WalletAccountModel::KindRole).toString(),
+             QStringLiteral("program"));
+    QVERIFY(!model.data(model.index(2), WalletAccountModel::CanBePrimaryRole).toBool());
+
+    model.applyPresentations({ {
+        ACCOUNT_C,
+        QStringLiteral("token_holding"),
+        QStringLiteral("TEST holding"),
+        QStringLiteral("Token"),
+        QStringLiteral("TokenHolding"),
+        ACCOUNT_A,
+        true,
+    } });
+    QCOMPARE(model.data(model.index(2), WalletAccountModel::SectionRole).toString(),
+             QStringLiteral("hidden"));
+    QCOMPARE(model.data(model.index(2), WalletAccountModel::NameRole).toString(),
+             QStringLiteral("TEST holding"));
+    model.setAlias(ACCOUNT_C, QStringLiteral("Reserve"));
+    QCOMPARE(model.data(model.index(2), WalletAccountModel::NameRole).toString(),
+             QStringLiteral("Reserve"));
+    model.setAlias(ACCOUNT_C, {});
+    QCOMPARE(model.data(model.index(2), WalletAccountModel::NameRole).toString(),
+             QStringLiteral("TEST holding"));
+}
+
+void LogosWalletProviderTest::encodesAccountIdsForDisplay()
+{
+    QCOMPARE(walletAccountIdToBase58(
+                 QStringLiteral("00fe99e4fbd4c71f92e47c384c6235244c8cce39b6d6367e1e338eca0ffe01cb")),
+             QStringLiteral("14tAtixMByFyJrcZVyWibitnijLgd59PfyrjdnYzo8La"));
+    QCOMPARE(walletAccountIdToBase58(QString(64, QLatin1Char('0'))),
+             QString(32, QLatin1Char('1')));
+    QVERIFY(walletAccountIdToBase58(QStringLiteral("not-an-account-id")).isEmpty());
+}
+
+void LogosWalletProviderTest::persistsHumanizedWalletPreferences()
+{
+    const QString application = QStringLiteral("HumanizedWalletPreferencesTest");
+    QSettings settings(QStringLiteral("Logos"), application);
+    settings.clear();
+    FakeWalletProvider provider;
+    provider.connectResult.adopted = true;
+    provider.connectResult.snapshot.accounts = {
+        { ACCOUNT_A, QStringLiteral("10"), true, QStringLiteral("ok"), EOA_OWNER, {} },
+        { ACCOUNT_B, QStringLiteral("20"), false, QStringLiteral("private"), {}, {} },
+        { ACCOUNT_C, QStringLiteral("30"), true, QStringLiteral("ok"), PROGRAM_ID, {} },
+    };
+
+    {
+        WalletController controller(provider, application);
+        QVERIFY(controller.open());
+        QCOMPARE(controller.state().primaryAccountAddress, ACCOUNT_A);
+        QVERIFY(!controller.setPrimaryAccount(ACCOUNT_C));
+        QVERIFY(controller.setAccountAlias(ACCOUNT_B, QStringLiteral("  Private savings  ")));
+        QVERIFY(controller.setPrimaryAccount(ACCOUNT_B));
+        QCOMPARE(controller.state().primaryAccountName, QStringLiteral("Private savings"));
+        QVERIFY(!controller.setAccountAlias(ACCOUNT_A, QString(41, QLatin1Char('x'))));
+    }
+
+    WalletController reopened(provider, application);
+    QVERIFY(reopened.open());
+    QCOMPARE(reopened.state().primaryAccountAddress, ACCOUNT_B);
+    QCOMPARE(reopened.state().primaryAccountName, QStringLiteral("Private savings"));
+    settings.clear();
 }
 
 void LogosWalletProviderTest::fakeProviderImplementsConsumerContract()
@@ -415,6 +532,65 @@ void LogosWalletProviderTest::controllerOwnsUiWalletFlow()
     QVERIFY(!controller.state().isWalletOpen);
     QCOMPARE(controller.accountModel()->count(), 0);
     QVERIFY(stateChanged.count() >= 4);
+
+    settings.clear();
+}
+
+void LogosWalletProviderTest::controllerReportsCreationPersistenceAndRefreshFailures()
+{
+    const QString settingsApplication = QStringLiteral("WalletCreationFailureTest");
+    QSettings settings(QStringLiteral("Logos"), settingsApplication);
+    settings.clear();
+
+    FakeWalletProvider provider;
+    WalletController controller(provider, settingsApplication);
+    const WalletUiState baseline = controller.state();
+    const int baselineAccountCount = controller.accountModel()->count();
+    QSignalSpy snapshotChanged(&controller, &WalletController::snapshotChanged);
+
+    provider.createWalletResult.mnemonic = QStringLiteral("alpha beta gamma");
+    provider.createWalletResult.failure = WalletFailure::SaveFailed;
+    provider.createWalletResult.snapshot.failure = WalletFailure::SaveFailed;
+    QCOMPARE(controller.createWallet(QStringLiteral("config"), QStringLiteral("storage"),
+                                     QStringLiteral("secret")),
+             QString());
+    QCOMPARE(controller.state().isWalletOpen, baseline.isWalletOpen);
+    QCOMPARE(controller.state().walletExists, baseline.walletExists);
+    QCOMPARE(controller.state().syncStatus, baseline.syncStatus);
+    QCOMPARE(controller.state().syncError, baseline.syncError);
+    QCOMPARE(controller.accountModel()->count(), baselineAccountCount);
+    QCOMPARE(snapshotChanged.count(), 0);
+
+    provider.createWalletResult.failure = WalletFailure::ReadFailed;
+    provider.createWalletResult.snapshot.failure = WalletFailure::ReadFailed;
+    QCOMPARE(controller.createWallet(QStringLiteral("config"), QStringLiteral("storage"),
+                                     QStringLiteral("secret")),
+             QStringLiteral("alpha beta gamma"));
+    QVERIFY(controller.state().isWalletOpen);
+    QVERIFY(controller.state().walletExists);
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("error"));
+    QCOMPARE(controller.state().syncError, QStringLiteral("read_failed"));
+    QCOMPARE(controller.accountModel()->count(), baselineAccountCount);
+    QCOMPARE(snapshotChanged.count(), 0);
+
+    provider.createAccountResult.accountId = ACCOUNT_B;
+    provider.createAccountResult.snapshot.failure = WalletFailure::ReadFailed;
+    QCOMPARE(controller.createAccount(true), ACCOUNT_B);
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("error"));
+    QCOMPARE(controller.state().syncError, QStringLiteral("read_failed"));
+    QCOMPARE(controller.accountModel()->count(), baselineAccountCount);
+    QCOMPARE(snapshotChanged.count(), 0);
+
+    provider.createAccountResult.snapshot = {};
+    provider.createAccountResult.snapshot.accounts = {
+        { ACCOUNT_A, QStringLiteral("5"), true, QStringLiteral("ok"), EOA_OWNER, {} },
+        { ACCOUNT_B, QStringLiteral("3"), true, QStringLiteral("ok"), EOA_OWNER, {} },
+    };
+    QCOMPARE(controller.createAccount(true), ACCOUNT_B);
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("ready"));
+    QVERIFY(controller.state().syncError.isEmpty());
+    QCOMPARE(controller.accountModel()->count(), 2);
+    QCOMPARE(snapshotChanged.count(), 1);
 
     settings.clear();
 }

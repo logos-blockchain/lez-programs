@@ -5,6 +5,10 @@
 class AmmUiBackend
 {
     PROP(bool isWalletOpen READONLY)
+    PROP(bool walletStateReady READONLY)
+    PROP(QString walletSyncStatus READONLY)
+    PROP(QString walletSyncError READONLY)
+    PROP(bool walletCanSubmit READONLY)
     PROP(bool walletExists READONLY)
     PROP(QString configPath READONLY)
     PROP(QString storagePath READONLY)
@@ -15,6 +19,15 @@ class AmmUiBackend
     // Whether the configured sequencer answered the last reachability probe.
     // Defaults true so the UI doesn't flash a warning before the first check.
     PROP(bool sequencerReachable READONLY)
+    PROP(QString primaryAccountAddress READONLY)
+    PROP(QString primaryAccountName READONLY)
+
+    PROP(QString activeNetwork READONLY)
+    PROP(QString networkStatus READONLY)
+    PROP(QString networkFingerprint READONLY)
+    PROP(QVariantList assets READONLY)
+    PROP(QString assetStatus READONLY)
+    PROP(QString assetError READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
@@ -22,6 +35,8 @@ class AmmUiBackend
     SLOT(void refreshAccounts())
     SLOT(void refreshBalances())
     SLOT(QString getBalance(QString accountIdHex, bool isPublic))
+    SLOT(bool setAccountAlias(QString accountId, QString alias))
+    SLOT(bool setPrimaryAccount(QString accountId))
 
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
     // fresh per-app wallet at walletHome with no path picking. createNew()

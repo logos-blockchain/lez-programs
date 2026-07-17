@@ -29,6 +29,8 @@ if(LOGOS_WALLET_BUILD_ACCESS)
         src/WalletProvider.cpp
         src/LogosWalletProvider.h
         src/LogosWalletProvider.cpp
+        src/WalletAccountId.h
+        src/WalletAccountId.cpp
         src/WalletAccountModel.h
         src/WalletAccountModel.cpp
         src/WalletController.h
@@ -140,6 +142,8 @@ if(BUILD_TESTING)
         tests/cpp/LogosWalletProviderTest.cpp
         src/WalletProvider.cpp
         src/LogosWalletProvider.cpp
+        src/WalletAccountId.cpp
+        src/WalletAccountId.h
         src/WalletAccountModel.cpp
         src/WalletAccountModel.h
         src/WalletController.cpp

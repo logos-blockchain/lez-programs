@@ -14,12 +14,16 @@ public:
     ~LogosWalletProvider() override;
 
     WalletSession connect(const WalletPaths& paths) override;
+    void connectAsync(const WalletPaths& paths, SessionCallback callback) override;
     WalletCreation createWallet(const WalletPaths& paths,
                                 const QString& password) override;
     WalletSnapshot snapshot(bool forceRefresh = false) override;
+    void snapshotAsync(bool forceRefresh, SnapshotCallback callback) override;
     void clearSnapshot() override;
     WalletAccountCreation createAccount(bool isPublic) override;
     WalletAccountRead readPublicAccount(const QString& accountId) const override;
+    void readPublicAccountsAsync(const QStringList& accountIds,
+                                 AccountReadsCallback callback) override;
     WalletSubmission submitPublicTransaction(
         const WalletTransaction& transaction) override;
     void disconnect() override;
@@ -27,6 +31,7 @@ public:
 private:
     bool sharedWalletIsOpen() const;
     WalletSnapshot loadSnapshot();
+    void loadSnapshotAsync(quint64 generation, SnapshotCallback callback);
     bool save() const;
 
     struct Impl;
@@ -34,4 +39,5 @@ private:
     WalletSnapshot m_snapshot;
     bool m_snapshotReady = false;
     bool m_connected = false;
+    quint64 m_generation = 0;
 };

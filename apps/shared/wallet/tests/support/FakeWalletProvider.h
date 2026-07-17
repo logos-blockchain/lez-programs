@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include "WalletProvider.h"
 
 class FakeWalletProvider final : public WalletProvider {
@@ -9,6 +11,7 @@ public:
     WalletSnapshot snapshotResult;
     WalletAccountCreation createAccountResult;
     WalletAccountRead readResult;
+    QVector<WalletAccountRead> readResults;
     WalletSubmission submissionResult;
 
     int connectCalls = 0;
@@ -31,6 +34,13 @@ public:
         return connectResult;
     }
 
+    void connectAsync(const WalletPaths& paths, SessionCallback callback) override
+    {
+        ++connectCalls;
+        lastPaths = paths;
+        callback(connectResult);
+    }
+
     WalletCreation createWallet(const WalletPaths& paths,
                                 const QString&) override
     {
@@ -44,6 +54,13 @@ public:
         ++snapshotCalls;
         lastForceRefresh = forceRefresh;
         return snapshotResult;
+    }
+
+    void snapshotAsync(bool forceRefresh, SnapshotCallback callback) override
+    {
+        ++snapshotCalls;
+        lastForceRefresh = forceRefresh;
+        callback(snapshotResult);
     }
 
     void clearSnapshot() override { ++clearCalls; }
@@ -61,6 +78,21 @@ public:
         WalletAccountRead result = readResult;
         result.accountId = accountId;
         return result;
+    }
+
+    void readPublicAccountsAsync(const QStringList& accountIds,
+                                 AccountReadsCallback callback) override
+    {
+        QVector<WalletAccountRead> results = readResults;
+        if (results.isEmpty()) {
+            results.reserve(accountIds.size());
+            for (const QString& accountId : accountIds) {
+                WalletAccountRead result = readResult;
+                result.accountId = accountId;
+                results.append(std::move(result));
+            }
+        }
+        callback(std::move(results));
     }
 
     WalletSubmission submitPublicTransaction(

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -38,6 +39,9 @@ struct WalletAccount {
     QString address;
     QString balance;
     bool isPublic = true;
+    QString readStatus;
+    QString programOwner;
+    QString dataHex;
 };
 
 struct WalletSnapshot {
@@ -92,15 +96,23 @@ struct WalletSubmission {
 
 class WalletProvider {
 public:
+    using SessionCallback = std::function<void(WalletSession)>;
+    using SnapshotCallback = std::function<void(WalletSnapshot)>;
+    using AccountReadsCallback = std::function<void(QVector<WalletAccountRead>)>;
+
     virtual ~WalletProvider() = default;
 
     virtual WalletSession connect(const WalletPaths& paths) = 0;
+    virtual void connectAsync(const WalletPaths& paths, SessionCallback callback) = 0;
     virtual WalletCreation createWallet(const WalletPaths& paths,
                                         const QString& password) = 0;
     virtual WalletSnapshot snapshot(bool forceRefresh = false) = 0;
+    virtual void snapshotAsync(bool forceRefresh, SnapshotCallback callback) = 0;
     virtual void clearSnapshot() = 0;
     virtual WalletAccountCreation createAccount(bool isPublic) = 0;
     virtual WalletAccountRead readPublicAccount(const QString& accountId) const = 0;
+    virtual void readPublicAccountsAsync(const QStringList& accountIds,
+                                         AccountReadsCallback callback) = 0;
     virtual WalletSubmission submitPublicTransaction(
         const WalletTransaction& transaction) = 0;
     virtual void disconnect() = 0;

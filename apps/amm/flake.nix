@@ -3,6 +3,8 @@
 
   inputs = {
     logos-module-builder.url = "github:logos-co/logos-module-builder";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
+    crane.url = "github:ipetkov/crane/v0.23.4";
 
     # Shared C++ wallet access and Logos.Wallet QML sources.
     shared_wallet = {
@@ -28,14 +30,21 @@
     };
   };
 
-  outputs = inputs@{ logos-module-builder, shared_wallet, ... }:
-    logos-module-builder.lib.mkLogosQmlModule {
+  outputs = inputs@{ logos-module-builder, shared_wallet, nixpkgs, crane, ... }:
+    let
+      walletDecoderInput = (import ../../flake.nix).outputs {
+        inherit nixpkgs crane;
+      };
+    in logos-module-builder.lib.mkLogosQmlModule {
       src = ./.;
       configFile = ./metadata.json;
       flakeInputs = inputs;
       preConfigure = ''
         cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${shared_wallet}")
       '';
+      externalLibInputs = {
+        wallet_idl_decoder = walletDecoderInput;
+      };
       postInstall = ''
         # The builder installs the view under lib/qml after this hook. Its
         # import descriptor points back to this compiled shared QML module.

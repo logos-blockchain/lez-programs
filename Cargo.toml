@@ -18,6 +18,7 @@ members = [
     "programs/integration_tests",
     "tools/idl-gen",
     "tools/risc0-packager",
+    "tools/wallet-idl-decoder",
 ]
 exclude = [
     "programs/token/methods/guest",
