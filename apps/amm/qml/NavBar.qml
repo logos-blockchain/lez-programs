@@ -1,6 +1,4 @@
 import QtQuick 2.15
-import QtQuick.Layouts 1.15
-
 import Logos.Theme
 import Logos.Wallet
 
@@ -11,6 +9,7 @@ Item {
 
     property int currentIndex: 0
     readonly property var tabs: ["Trade", "Liquidity"]
+    readonly property bool compactLayout: width < 480
 
     // Wallet wiring, passed down from Main.qml.
     property var backend: null
@@ -36,72 +35,80 @@ Item {
             color: Theme.palette.borderSecondary
         }
 
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin:  20
-            anchors.rightMargin: 20
+        // App identity
+        Text {
+            id: appTitle
+
+            objectName: "navAppTitle"
+            anchors.left: parent.left
+            anchors.leftMargin: 20
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.width >= 600
+            text: "Logos AMM"
+            color: Theme.palette.text
+            font.pixelSize: 17
+            font.weight: Font.Bold
+        }
+
+        // Tab pills stay centered independently of title and wallet widths.
+        Row {
+            anchors.centerIn: parent
             spacing: 4
 
-            // App identity
-            Text {
-                text: "Logos AMM"
-                color: Theme.palette.text
-                font.pixelSize: 17
-                font.weight: Font.Bold
-            }
+            Repeater {
+                model: root.tabs
 
-            Item { Layout.fillWidth: true }
+                delegate: Rectangle {
+                    required property int index
+                    required property string modelData
+                    readonly property bool active: root.currentIndex === index
 
-            // Tab pills
-            Row {
-                spacing: 4
+                    objectName: "navTab" + index
+                    height: 36
+                    width: tabLabel.implicitWidth + (root.compactLayout ? 16 : 28)
+                    radius: 18
+                    color: active ? Theme.palette.backgroundSecondary : "transparent"
 
-                Repeater {
-                    model: root.tabs
+                    Behavior on color { ColorAnimation { duration: 150 } }
 
-                    delegate: Rectangle {
-                        readonly property bool active: root.currentIndex === index
-
-                        height: 36
-                        width:  tabLabel.implicitWidth + 28
-                        radius: 18
-                        color:  active ? Theme.palette.backgroundSecondary : "transparent"
+                    Text {
+                        id: tabLabel
+                        anchors.centerIn: parent
+                        text: modelData
+                        color: active ? Theme.palette.text : Theme.palette.textSecondary
+                        font.pixelSize: root.compactLayout ? 13 : 14
+                        font.weight: active ? Font.Medium : Font.Normal
 
                         Behavior on color { ColorAnimation { duration: 150 } }
+                    }
 
-                        Text {
-                            id: tabLabel
-                            anchors.centerIn: parent
-                            text:        modelData
-                            color:       active ? Theme.palette.text : Theme.palette.textSecondary
-                            font.pixelSize: 14
-                            font.weight: active ? Font.Medium : Font.Normal
-
-                            Behavior on color { ColorAnimation { duration: 150 } }
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                                root.currentIndex = index
-                                root.tabChanged(index)
-                            }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            root.currentIndex = index
+                            root.tabChanged(index)
                         }
                     }
                 }
             }
+        }
 
-            // Wallet / account control on the far right.
-            WalletControl {
-                id: accountControl
-                Layout.leftMargin: 12
-                wallet: root.backend
-                accountModel: root.accountModel
-                viewportWidth: root.width
-                watchCall: function(result, success, failure) {
-                    logos.watch(result, success, failure)
-                }
+        // Wallet / account control on the far right.
+        WalletControl {
+            id: accountControl
+
+            anchors.right: parent.right
+            anchors.rightMargin: root.compactLayout ? 8 : 20
+            anchors.verticalCenter: parent.verticalCenter
+            width: implicitWidth
+            height: implicitHeight
+            compact: root.compactLayout
+            wallet: root.backend
+            accountModel: root.accountModel
+            viewportWidth: root.width
+            watchCall: function(result, success, failure) {
+                logos.watch(result, success, failure)
             }
         }
     }
