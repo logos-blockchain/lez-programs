@@ -19,6 +19,7 @@ public:
     bool isConfigured() const;
     bool isDevnet() const;
     bool needsIdentityProbe() const;
+    int identityRetryDelayMs() const;
     ActiveNetworkSnapshot snapshot() const { return m_network; }
 
     void sequencerChanged(bool available);
@@ -33,4 +34,5 @@ private:
 
     ActiveNetworkSnapshot m_network;
     QString m_expectedIdentity;
+    int m_failedIdentityProbes = 0;
 };

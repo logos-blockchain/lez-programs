@@ -40,7 +40,24 @@ int main()
                 "loaded network should await identity"))
         return 1;
 
+    network.finishIdentityProbe({});
+    if (!expect(network.identityRetryDelayMs() == 1000,
+                "first failed identity probe should back off for one second"))
+        return 1;
+    network.finishIdentityProbe({});
+    if (!expect(network.identityRetryDelayMs() == 2000,
+                "repeated identity failures should increase the delay"))
+        return 1;
+    for (int attempt = 0; attempt < 8; ++attempt)
+        network.finishIdentityProbe({});
+    if (!expect(network.identityRetryDelayMs() == 30000,
+                "identity retry delay should cap at thirty seconds"))
+        return 1;
+
     network.sequencerChanged(true);
+    if (!expect(network.identityRetryDelayMs() == 0,
+                "sequencer changes should reset identity retry backoff"))
+        return 1;
     network.finishIdentityProbe(QString(64, QLatin1Char('d')));
     if (!expect(network.status() == QStringLiteral("network_mismatch"),
                 "wrong identity should block the network"))

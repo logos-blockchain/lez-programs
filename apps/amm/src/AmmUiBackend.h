@@ -76,6 +76,7 @@ private:
 
     QNetworkAccessManager* m_net;
     QTimer* m_transactionTimer;
+    QTimer* m_identityRetryTimer;
 
     ActiveNetwork m_network;
     QVariantMap m_newPositionHints;

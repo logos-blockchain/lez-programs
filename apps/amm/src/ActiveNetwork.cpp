@@ -1,5 +1,8 @@
 #include "ActiveNetwork.h"
 
+#include <algorithm>
+#include <iterator>
+
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -30,6 +33,7 @@ bool ActiveNetwork::load()
     m_network = {};
     m_network.status = QStringLiteral("config_missing");
     m_expectedIdentity.clear();
+    m_failedIdentityProbes = 0;
 
     const QByteArray selected = qgetenv(NETWORK_ENV);
     m_network.id = selected.isEmpty()
@@ -93,8 +97,28 @@ bool ActiveNetwork::needsIdentityProbe() const
         || m_network.status == QStringLiteral("network_unknown");
 }
 
+int ActiveNetwork::identityRetryDelayMs() const
+{
+    static constexpr int retryDelays[] = {
+        1000,
+        2000,
+        4000,
+        8000,
+        16000,
+        30000,
+    };
+    if (m_failedIdentityProbes <= 0
+        || m_network.status != QStringLiteral("network_unknown")) {
+        return 0;
+    }
+    const int index = (std::min)(m_failedIdentityProbes,
+                                 static_cast<int>(std::size(retryDelays))) - 1;
+    return retryDelays[index];
+}
+
 void ActiveNetwork::sequencerChanged(bool available)
 {
+    m_failedIdentityProbes = 0;
     if (isConfigured())
         clearIdentity(available ? QStringLiteral("loading") : QStringLiteral("network_unknown"));
 }
@@ -103,6 +127,8 @@ void ActiveNetwork::reachabilityChanged(bool reachable, bool wasReachable)
 {
     if (!isConfigured())
         return;
+    if (!reachable || !wasReachable)
+        m_failedIdentityProbes = 0;
     if (!reachable)
         clearIdentity(QStringLiteral("network_unknown"));
     else if (!wasReachable)
@@ -118,10 +144,13 @@ void ActiveNetwork::beginIdentityProbe()
 void ActiveNetwork::finishIdentityProbe(const QString& identity)
 {
     if (identity.isEmpty()) {
+        m_failedIdentityProbes = (std::min)(m_failedIdentityProbes + 1, 6);
         clearIdentity(QStringLiteral("network_unknown"));
     } else if (identity != m_expectedIdentity) {
+        m_failedIdentityProbes = 0;
         clearIdentity(QStringLiteral("network_mismatch"));
     } else {
+        m_failedIdentityProbes = 0;
         m_network.status = QStringLiteral("ready");
         m_network.fingerprint = (isDevnet() ? QStringLiteral("channel:")
                                             : QStringLiteral("block10:"))

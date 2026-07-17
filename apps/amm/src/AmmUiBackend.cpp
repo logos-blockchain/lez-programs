@@ -157,13 +157,17 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
       m_newPosition(std::make_unique<NewPositionRuntime>(
           m_wallet.get(), m_ammClient.get(), m_sequencer.get())),
       m_net(new QNetworkAccessManager(this)),
-      m_transactionTimer(new QTimer(this))
+      m_transactionTimer(new QTimer(this)),
+      m_identityRetryTimer(new QTimer(this))
 {
     setNewPositionQuoteResult({});
     setNewPositionSubmitResult({});
     m_transactionTimer->setInterval(5000);
     connect(m_transactionTimer, &QTimer::timeout,
             this, &AmmUiBackend::pollTransactions);
+    m_identityRetryTimer->setSingleShot(true);
+    connect(m_identityRetryTimer, &QTimer::timeout,
+            this, &AmmUiBackend::probeNetworkIdentity);
     m_network.load();
 
     connect(m_walletController.get(), &WalletController::stateChanged,
@@ -245,8 +249,6 @@ void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
     else {
         request = m_newPositionHints;
     }
-    if (m_network.status() == QStringLiteral("network_unknown"))
-        probeNetworkIdentity();
     const quint64 generation = ++m_contextGeneration;
     m_newPosition->contextAsync(
         request, m_network.snapshot(), isWalletOpen(), refreshWalletAccounts,
@@ -310,11 +312,13 @@ void AmmUiBackend::syncWalletState()
 
     const bool addressChanged = previousAddress != state.sequencerAddress;
     if (addressChanged) {
+        m_identityRetryTimer->stop();
         m_pendingTransactions.clear();
         m_transactionTimer->stop();
         m_network.sequencerChanged(!state.sequencerAddress.isEmpty());
     }
     if (addressChanged || wasReachable != state.sequencerReachable) {
+        m_identityRetryTimer->stop();
         m_network.reachabilityChanged(state.sequencerReachable, wasReachable);
     }
     if (walletWasOpen && !state.isWalletOpen)
@@ -333,6 +337,7 @@ void AmmUiBackend::syncWalletState()
 void AmmUiBackend::probeNetworkIdentity()
 {
     if (m_identityProbeInFlight
+        || m_identityRetryTimer->isActive()
         || !m_network.isConfigured()
         || sequencerAddr().isEmpty()) {
         return;
@@ -371,6 +376,9 @@ void AmmUiBackend::probeNetworkIdentity()
             ? channelIdFromResponse(payload)
             : blockHashFromResponse(payload);
         m_network.finishIdentityProbe(actual);
+        const int retryDelay = m_network.identityRetryDelayMs();
+        if (retryDelay > 0)
+            m_identityRetryTimer->start(retryDelay);
         reply->deleteLater();
         publishNetworkContext();
     });
