@@ -509,24 +509,28 @@ void NewPositionRuntime::buildQuoteInputAsync(
                     QVector<WalletAccountRead> fixedReads) mutable {
                     if (!guard)
                         return;
+                    QStringList selectedIds;
+                    for (const QString& key : {
+                             QStringLiteral("holdingAId"),
+                             QStringLiteral("holdingBId"),
+                             QStringLiteral("lpHoldingId") }) {
+                        const QString id = accountIdHex(
+                            requestObject.value(key).toString());
+                        if (!id.isEmpty() && !selectedIds.contains(id))
+                            selectedIds.append(id);
+                    }
+                    QStringList walletIds = guard->m_walletPublicAccountIds;
+                    for (const QString& id : selectedIds)
+                        walletIds.removeAll(id);
                     guard->m_sequencer->readAccounts(
-                        guard->m_walletPublicAccountIds, false,
+                        walletIds, false,
                         [guard, requestObject, network, walletOpen, config, pair,
+                         selectedIds = std::move(selectedIds),
                          fixedReads = std::move(fixedReads),
                          callback = std::move(callback)](
                             QVector<WalletAccountRead> walletReads) mutable {
                             if (!guard)
                                 return;
-                            QStringList selectedIds;
-                            for (const QString& key : {
-                                     QStringLiteral("holdingAId"),
-                                     QStringLiteral("holdingBId"),
-                                     QStringLiteral("lpHoldingId") }) {
-                                const QString id = accountIdHex(
-                                    requestObject.value(key).toString());
-                                if (!id.isEmpty() && !selectedIds.contains(id))
-                                    selectedIds.append(id);
-                            }
                             auto finish = [requestObject, network, walletOpen, config,
                                            fixedReads = std::move(fixedReads),
                                            walletReads = std::move(walletReads),

@@ -744,6 +744,36 @@ int main(int argc, char** argv)
                 "forced context should reread config and wallet holding"))
         return 1;
 
+    FakeWallet selectedWallet;
+    NewPositionRuntime selectedRuntime(
+        &selectedWallet, &refreshClient, &sequencer);
+    const QString selectedAccountHex = QStringLiteral(
+        "000102030405060708090a0b0c0d0e0f"
+        "101112131415161718191a1b1c1d1e1f");
+    WalletAccount selectedAccount;
+    selectedAccount.address = selectedAccountHex;
+    selectedAccount.isPublic = true;
+    selectedRuntime.setWalletAccounts({ selectedAccount });
+    QVariantMap selectedRequest = request;
+    selectedRequest.insert(
+        QStringLiteral("holdingAId"),
+        QStringLiteral("1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"));
+    const int requestsBeforeSelectedQuote = server.requestCount();
+    const int normalizationsBeforeSelectedQuote =
+        refreshClient.normalizedAccountIds.count(selectedAccountHex);
+    QVariantMap selectedQuote;
+    selectedRuntime.quoteAsync(
+        selectedRequest, readyNetwork(), true, false,
+        [&](QVariantMap result) { selectedQuote = std::move(result); });
+    if (!expect(waitForCondition([&]() { return !selectedQuote.isEmpty(); }),
+                "selected-holding quote should complete"))
+        return 1;
+    if (!expect(server.requestCount() == requestsBeforeSelectedQuote + 1
+                    && refreshClient.normalizedAccountIds.count(selectedAccountHex)
+                        == normalizationsBeforeSelectedQuote + 1,
+                "selected holding should be read once per cold quote"))
+        return 1;
+
     server.failNextRequest();
     QVector<WalletAccountRead> failedRefresh;
     if (!expect(waitForAccounts(sequencer, { holding.address }, true,
