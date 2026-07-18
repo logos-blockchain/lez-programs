@@ -235,9 +235,11 @@ void SequencerClient::startRead(const QString& accountId)
             WalletAccountRead read { accountId };
             const int status = reply->attribute(
                 QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            const QByteArray payload = reply->readAll();
-            if (reply->error() == QNetworkReply::NoError
-                && status >= 200 && status < 300) {
+            const bool successfulResponse = reply->error() == QNetworkReply::NoError
+                && status >= 200 && status < 300
+                && reply->isOpen();
+            if (successfulResponse) {
+                const QByteArray payload = reply->readAll();
                 const AmmClientResult normalized =
                     m_client->normalizeAccountRpc(QJsonObject {
                         { QStringLiteral("accountId"), accountId },
@@ -290,19 +292,24 @@ void SequencerClient::queryTransaction(const QString& nativeHash,
             }
             const int status = reply->attribute(
                 QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            const QByteArray payload = reply->readAll();
-            QJsonParseError error;
-            const QJsonDocument document = QJsonDocument::fromJson(payload, &error);
-            const QJsonObject envelope = document.object();
-            const bool ok = reply->error() == QNetworkReply::NoError
+            const bool successfulResponse = reply->error() == QNetworkReply::NoError
                 && status >= 200 && status < 300
-                && error.error == QJsonParseError::NoError
-                && document.isObject()
-                && (!envelope.contains(QStringLiteral("error"))
-                    || envelope.value(QStringLiteral("error")).isNull())
-                && envelope.contains(QStringLiteral("result"));
-            const bool included = ok
-                && !envelope.value(QStringLiteral("result")).isNull();
+                && reply->isOpen();
+            bool ok = false;
+            bool included = false;
+            if (successfulResponse) {
+                const QByteArray payload = reply->readAll();
+                QJsonParseError error;
+                const QJsonDocument document = QJsonDocument::fromJson(payload, &error);
+                const QJsonObject envelope = document.object();
+                ok = error.error == QJsonParseError::NoError
+                    && document.isObject()
+                    && (!envelope.contains(QStringLiteral("error"))
+                        || envelope.value(QStringLiteral("error")).isNull())
+                    && envelope.contains(QStringLiteral("result"));
+                included = ok
+                    && !envelope.value(QStringLiteral("result")).isNull();
+            }
             reply->deleteLater();
             callback(ok, included);
         });
