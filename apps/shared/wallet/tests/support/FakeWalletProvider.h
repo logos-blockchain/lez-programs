@@ -20,12 +20,21 @@ public:
     int clearCalls = 0;
     int createAccountCalls = 0;
     mutable int readCalls = 0;
+    int publicAccountReadCalls = 0;
     int submitCalls = 0;
     int disconnectCalls = 0;
     bool lastForceRefresh = false;
     bool lastAccountWasPublic = false;
     WalletPaths lastPaths;
     WalletTransaction lastTransaction;
+    QStringList lastPublicAccountIds;
+    bool deferPublicAccountReads = false;
+
+    struct PendingPublicAccountRead {
+        QStringList accountIds;
+        AccountReadsCallback callback;
+    };
+    QVector<PendingPublicAccountRead> pendingPublicAccountReads;
 
     WalletSession connect(const WalletPaths& paths) override
     {
@@ -83,16 +92,21 @@ public:
     void readPublicAccountsAsync(const QStringList& accountIds,
                                  AccountReadsCallback callback) override
     {
-        QVector<WalletAccountRead> results = readResults;
-        if (results.isEmpty()) {
-            results.reserve(accountIds.size());
-            for (const QString& accountId : accountIds) {
-                WalletAccountRead result = readResult;
-                result.accountId = accountId;
-                results.append(std::move(result));
-            }
+        ++publicAccountReadCalls;
+        lastPublicAccountIds = accountIds;
+        if (deferPublicAccountReads) {
+            pendingPublicAccountReads.append({ accountIds, std::move(callback) });
+            return;
         }
-        callback(std::move(results));
+        callback(accountReads(accountIds));
+    }
+
+    void completePendingPublicAccountReads()
+    {
+        QVector<PendingPublicAccountRead> pending;
+        pending.swap(pendingPublicAccountReads);
+        for (PendingPublicAccountRead& read : pending)
+            read.callback(accountReads(read.accountIds));
     }
 
     WalletSubmission submitPublicTransaction(
@@ -104,4 +118,19 @@ public:
     }
 
     void disconnect() override { ++disconnectCalls; }
+
+private:
+    QVector<WalletAccountRead> accountReads(const QStringList& accountIds) const
+    {
+        QVector<WalletAccountRead> results = readResults;
+        if (results.isEmpty()) {
+            results.reserve(accountIds.size());
+            for (const QString& accountId : accountIds) {
+                WalletAccountRead result = readResult;
+                result.accountId = accountId;
+                results.append(std::move(result));
+            }
+        }
+        return results;
+    }
 };

@@ -109,12 +109,33 @@ WalletAccountRead accountRead(const WalletAccount& account)
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     : AmmUiBackendSimpleSource(parent),
       m_logosAPI(logosAPI ? logosAPI : new LogosAPI("amm_ui", this)),
-      m_wallet(std::make_unique<LogosWalletProvider>(m_logosAPI)),
+      m_ownedWallet(std::make_unique<LogosWalletProvider>(m_logosAPI)),
+      m_wallet(m_ownedWallet.get()),
+      m_definitionCache(*m_wallet),
       m_walletController(std::make_unique<WalletController>(
           *m_wallet, QStringLiteral("AmmUI"))),
       m_networkManager(new QNetworkAccessManager(this)),
       m_tokenIdl(resource(QStringLiteral(":/amm/idl/token-idl.json"))),
       m_ammIdl(resource(QStringLiteral(":/amm/idl/amm-idl.json")))
+{
+    initialize();
+}
+
+AmmUiBackend::AmmUiBackend(WalletProvider& wallet, QObject* parent)
+    : AmmUiBackendSimpleSource(parent),
+      m_logosAPI(nullptr),
+      m_wallet(&wallet),
+      m_definitionCache(*m_wallet),
+      m_walletController(std::make_unique<WalletController>(
+          *m_wallet, QStringLiteral("AmmUI"))),
+      m_networkManager(new QNetworkAccessManager(this)),
+      m_tokenIdl(resource(QStringLiteral(":/amm/idl/token-idl.json"))),
+      m_ammIdl(resource(QStringLiteral(":/amm/idl/amm-idl.json")))
+{
+    initialize();
+}
+
+void AmmUiBackend::initialize()
 {
     setAssets({});
     setAssetStatus(QStringLiteral("idle"));
@@ -198,6 +219,10 @@ bool AmmUiBackend::setPrimaryAccount(QString accountId)
 void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
+    if (state.syncStatus == QStringLiteral("opening")
+        || state.syncStatus == QStringLiteral("syncing")) {
+        m_definitionCache.cancelPending();
+    }
     const QString previousAddress = sequencerAddr();
     const bool wasReachable = sequencerReachable();
     setIsWalletOpen(state.isWalletOpen);
@@ -274,41 +299,71 @@ void AmmUiBackend::refreshPortfolio()
 {
     const quint64 generation = ++m_portfolioGeneration;
     if (!m_walletController->state().isWalletOpen) {
+        m_definitionCache.cancelPending();
         setAssets({});
         setAssetStatus(QStringLiteral("idle"));
         setAssetError({});
         return;
     }
     if (m_network.status() != QStringLiteral("ready")) {
+        invalidateDefinitionCache();
         setAssets({});
         setAssetStatus(QStringLiteral("blocked"));
         setAssetError(m_network.status());
         return;
     }
     if (m_tokenIdl.isEmpty()) {
+        invalidateDefinitionCache();
         setAssetStatus(QStringLiteral("error"));
         setAssetError(QStringLiteral("token_idl_missing"));
         return;
     }
+    const TokenDefinitionCacheKey key = definitionCacheKey(m_network.snapshot());
     setAssetStatus(QStringLiteral("loading"));
     setAssetError({});
-    m_wallet->readPublicAccountsAsync(
-        m_network.snapshot().tokenIds,
-        [this, generation](QVector<WalletAccountRead> reads) {
-            applyDefinitions(generation, reads);
+    if (m_appliedDefinitionKey && *m_appliedDefinitionKey == key
+        && m_definitionCache.contains(key)) {
+        applyWalletPortfolio(generation);
+        return;
+    }
+    m_definitionCache.read(
+        key,
+        [this, generation, key](QVector<WalletAccountRead> reads) {
+            applyDefinitions(generation, key, reads);
         });
+}
+
+TokenDefinitionCacheKey AmmUiBackend::definitionCacheKey(
+    const ActiveNetworkSnapshot& network) const
+{
+    return {
+        network.id,
+        network.fingerprint,
+        sequencerAddr(),
+        network.tokenIds,
+    };
+}
+
+void AmmUiBackend::invalidateDefinitionCache()
+{
+    m_definitionCache.clear();
+    m_appliedDefinitionKey.reset();
 }
 
 void AmmUiBackend::applyDefinitions(
     quint64 generation,
+    const TokenDefinitionCacheKey& key,
     const QVector<WalletAccountRead>& reads)
 {
     if (generation != m_portfolioGeneration)
         return;
     const ActiveNetworkSnapshot network = m_network.snapshot();
+    if (!(key == definitionCacheKey(network)))
+        return;
     const WalletDecodeResult decoded = WalletIdlDecoder::decode(m_tokenIdl, reads);
     if (!decoded.ok() || reads.size() != network.tokenIds.size()
         || decoded.accounts.size() != reads.size()) {
+        invalidateDefinitionCache();
         setAssetStatus(QStringLiteral("error"));
         setAssetError(decoded.error.isEmpty()
                           ? QStringLiteral("definition_decode_failed")
@@ -338,6 +393,7 @@ void AmmUiBackend::applyDefinitions(
             if (m_tokenProgramId.isEmpty())
                 m_tokenProgramId = read.programOwner;
             else if (m_tokenProgramId != read.programOwner) {
+                invalidateDefinitionCache();
                 setAssets({});
                 setAssetStatus(QStringLiteral("error"));
                 setAssetError(QStringLiteral("token_program_mismatch"));
@@ -349,6 +405,7 @@ void AmmUiBackend::applyDefinitions(
         m_tokens.append(std::move(token));
     }
     if (m_tokenProgramId.isEmpty()) {
+        invalidateDefinitionCache();
         setAssets({});
         setAssetStatus(QStringLiteral("error"));
         setAssetError(QStringLiteral("definitions_unavailable"));
@@ -356,6 +413,10 @@ void AmmUiBackend::applyDefinitions(
     }
     m_idlRegistry.registerProgram(
         m_tokenProgramId, QStringLiteral("Token"), m_tokenIdl);
+    if (unavailable > 0)
+        invalidateDefinitionCache();
+    else
+        m_appliedDefinitionKey = key;
     setAssetError(unavailable > 0
                       ? QStringLiteral("some_definitions_unavailable")
                       : QString());

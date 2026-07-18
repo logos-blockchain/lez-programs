@@ -2,6 +2,7 @@
 #define AMM_UI_BACKEND_H
 
 #include <memory>
+#include <optional>
 
 #include <QHash>
 #include <QString>
@@ -10,6 +11,7 @@
 #include "rep_AmmUiBackend_source.h"
 
 #include "ActiveNetwork.h"
+#include "TokenDefinitionCache.h"
 #include "WalletAccountModel.h"
 #include "WalletIdlDecoder.h"
 
@@ -24,6 +26,8 @@ class AmmUiBackend : public AmmUiBackendSimpleSource {
 
 public:
     explicit AmmUiBackend(LogosAPI* logosAPI = nullptr, QObject* parent = nullptr);
+    // The injected provider must outlive the backend.
+    explicit AmmUiBackend(WalletProvider& wallet, QObject* parent = nullptr);
     ~AmmUiBackend() override;
 
     WalletAccountModel* accountModel() const;
@@ -51,14 +55,21 @@ private:
 
     void syncWalletState();
     void publishNetworkState();
+    void initialize();
     void probeNetworkIdentity();
     void refreshPortfolio();
+    TokenDefinitionCacheKey definitionCacheKey(
+        const ActiveNetworkSnapshot& network) const;
+    void invalidateDefinitionCache();
     void applyDefinitions(quint64 generation,
+                          const TokenDefinitionCacheKey& key,
                           const QVector<WalletAccountRead>& reads);
     void applyWalletPortfolio(quint64 generation);
 
     LogosAPI* m_logosAPI;
-    std::unique_ptr<LogosWalletProvider> m_wallet;
+    std::unique_ptr<LogosWalletProvider> m_ownedWallet;
+    WalletProvider* m_wallet;
+    TokenDefinitionCache m_definitionCache;
     std::unique_ptr<WalletController> m_walletController;
     QNetworkAccessManager* m_networkManager;
     ActiveNetwork m_network;
@@ -67,6 +78,7 @@ private:
     WalletIdlRegistry m_idlRegistry;
     QVector<TokenInfo> m_tokens;
     QString m_tokenProgramId;
+    std::optional<TokenDefinitionCacheKey> m_appliedDefinitionKey;
     bool m_identityProbeInFlight = false;
     quint64 m_portfolioGeneration = 0;
 };

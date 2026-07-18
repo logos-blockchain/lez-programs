@@ -33,6 +33,8 @@ logos_module(
         src/AmmUiBackend.cpp
         src/ActiveNetwork.h
         src/ActiveNetwork.cpp
+        src/TokenDefinitionCache.h
+        src/TokenDefinitionCache.cpp
         src/WalletIdlDecoder.h
         src/WalletIdlDecoder.cpp
     FIND_PACKAGES
@@ -74,4 +76,45 @@ if(BUILD_TESTING)
     target_include_directories(amm_active_network_test PRIVATE src)
     target_link_libraries(amm_active_network_test PRIVATE Qt6::Core Qt6::Test)
     add_test(NAME amm_active_network COMMAND amm_active_network_test)
+
+    add_executable(amm_token_definition_cache_test
+        tests/cpp/TokenDefinitionCacheTest.cpp
+        src/TokenDefinitionCache.h
+        src/TokenDefinitionCache.cpp
+    )
+    set_target_properties(amm_token_definition_cache_test PROPERTIES AUTOMOC ON)
+    target_compile_features(amm_token_definition_cache_test PRIVATE cxx_std_17)
+    target_include_directories(amm_token_definition_cache_test PRIVATE
+        src
+        "${LOGOS_WALLET_SOURCE_DIR}/src"
+        "${LOGOS_WALLET_SOURCE_DIR}/tests/support"
+    )
+    target_link_libraries(amm_token_definition_cache_test PRIVATE Qt6::Core Qt6::Test)
+    add_test(NAME amm_token_definition_cache COMMAND amm_token_definition_cache_test)
+
+    add_executable(amm_backend_definition_cache_test
+        tests/cpp/AmmUiBackendDefinitionCacheTest.cpp
+    )
+    add_dependencies(amm_backend_definition_cache_test amm_ui_module_plugin)
+    set_target_properties(amm_backend_definition_cache_test PROPERTIES AUTOMOC ON)
+    target_compile_features(amm_backend_definition_cache_test PRIVATE cxx_std_17)
+    target_include_directories(amm_backend_definition_cache_test PRIVATE
+        src
+        "${CMAKE_CURRENT_BINARY_DIR}"
+        "${LOGOS_WALLET_SOURCE_DIR}/src"
+        "${LOGOS_WALLET_SOURCE_DIR}/tests/support"
+    )
+    target_link_libraries(amm_backend_definition_cache_test PRIVATE
+        Qt6::Core
+        Qt6::Network
+        Qt6::RemoteObjects
+        Qt6::Test
+        amm_ui_module_plugin
+    )
+    if(UNIX AND NOT APPLE)
+        target_link_options(amm_backend_definition_cache_test PRIVATE
+            "-Wl,--allow-shlib-undefined"
+        )
+    endif()
+    add_test(NAME amm_backend_definition_cache COMMAND amm_backend_definition_cache_test)
 endif()
