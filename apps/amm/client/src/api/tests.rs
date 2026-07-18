@@ -717,22 +717,38 @@ fn active_pool_quote_uses_ratio_and_existing_lp_holding() {
         ),
     ];
     let lp_holding = AccountId::new([64; 32]);
+    let highest_lp_holding = AccountId::new([65; 32]);
     scenario.snapshot.wallet_accounts.push(account_read(
         lp_holding,
         &token_holding(pair.lp_definition, 500),
+    ));
+    scenario.snapshot.wallet_accounts.push(account_read(
+        highest_lp_holding,
+        &token_holding(pair.lp_definition, 750),
     ));
     scenario.request.initial_price_real_raw = None;
     scenario.request.max_amount_a_raw = Some(String::from("1000"));
     scenario.request.max_amount_b_raw = Some(String::from("3000"));
     scenario.request.slippage_bps = Some(50);
 
-    let awaiting_destination = scenario.quote();
-    assert_eq!(awaiting_destination["lpDestinationRequired"], true);
-    assert_eq!(awaiting_destination["canSubmit"], false);
+    let default_destination = scenario.quote();
+    assert_eq!(default_destination["lpDestinationRequired"], false);
     assert_eq!(
-        awaiting_destination["errors"][0]["code"],
+        default_destination["selectedLpHoldingId"],
+        highest_lp_holding.to_string()
+    );
+    assert_eq!(default_destination["canSubmit"], true);
+    assert_eq!(default_destination["errors"], json!([]));
+
+    scenario.request.lp_holding_id = Some(AccountId::new([66; 32]).to_string());
+    let invalid_destination = scenario.quote();
+    assert_eq!(invalid_destination["lpDestinationRequired"], true);
+    assert_eq!(invalid_destination["canSubmit"], false);
+    assert_eq!(
+        invalid_destination["errors"][0]["code"],
         "lp_destination_required"
     );
+
     scenario.request.lp_holding_id = Some(lp_holding.to_string());
 
     let quote_value = scenario.quote();
@@ -742,6 +758,7 @@ fn active_pool_quote_uses_ratio_and_existing_lp_holding() {
     assert_eq!(quote_value["expectedLpRaw"], "1000");
     assert_eq!(quote_value["minimumLpRaw"], "995");
     assert_eq!(quote_value["requiresFreshLp"], false);
+    assert_eq!(quote_value["selectedLpHoldingId"], lp_holding.to_string());
     assert_eq!(quote_value["canSubmit"], true);
     assert_eq!(quote_value["errors"], json!([]));
 

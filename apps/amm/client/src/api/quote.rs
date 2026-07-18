@@ -462,12 +462,21 @@ fn compute_active_quote(
     let lp_options = holding_options(&holdings, pair.lp_definition);
     let lp_holding = if input.request.create_fresh_lp {
         None
-    } else {
+    } else if input.request.lp_holding_id.is_some() {
         select_holding(
             &holdings,
             pair.lp_definition,
             input.request.lp_holding_id.as_deref(),
         )
+    } else {
+        lp_options
+            .iter()
+            .max_by(|left, right| {
+                left.balance
+                    .cmp(&right.balance)
+                    .then_with(|| right.id.cmp(&left.id))
+            })
+            .cloned()
     };
     let lp_destination_selected =
         input.request.create_fresh_lp || lp_holding.is_some() || lp_options.is_empty();
