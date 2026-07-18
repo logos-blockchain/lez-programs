@@ -154,6 +154,81 @@ TestCase {
         verify(!picker.popup.visible)
     }
 
+    function test_tokenDefinitionCopiesRawBase58WithoutSelectingRow() {
+        failOnWarning(/Detected recursive rearrange/)
+
+        var address = "3thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"
+        var input = createTemporaryObject(inputComponent, testCase, {
+            "visible": true,
+            "width": 320,
+            "tokens": [{
+                "definitionId": address,
+                "name": "Copyable token",
+                "selectable": true
+            }]
+        })
+        var sink = createTemporaryObject(clipboardSinkComponent, testCase)
+        verify(input)
+        verify(sink)
+        selectedSpy.target = input
+        enteredSpy.target = input
+        selectedSpy.clear()
+        enteredSpy.clear()
+
+        input.popup.open()
+        tryCompare(input.popup, "visible", true)
+        var tokenList = findChild(input, "tokenList")
+        verify(tokenList)
+        tryCompare(tokenList, "count", 1)
+        tryVerify(function() { return tokenList.itemAtIndex(0) !== null })
+        var option = tokenList.itemAtIndex(0)
+        var addressText = findChild(option, "tokenDefinitionAddress")
+        var copyButton = findChild(option, "copyTokenDefinitionButton")
+        verify(addressText)
+        verify(copyButton)
+        compare(addressText.text, address)
+        compare(addressText.elide, Text.ElideMiddle)
+        compare(addressText.wrapMode, Text.NoWrap)
+        tryCompare(addressText, "truncated", true)
+
+        mouseClick(copyButton, copyButton.width / 2, copyButton.height / 2)
+        sink.paste()
+        tryCompare(sink, "text", address)
+        compare(selectedSpy.count, 0)
+        compare(enteredSpy.count, 0)
+        tryCompare(input.popup, "visible", true)
+    }
+
+    function test_tokenRowClickStillSelectsAndClosesModal() {
+        var input = createTemporaryObject(inputComponent, testCase, {
+            "visible": true,
+            "width": 320,
+            "tokens": [{
+                "definitionId": enabledId,
+                "name": "Enabled",
+                "selectable": true
+            }]
+        })
+        verify(input)
+        selectedSpy.target = input
+        selectedSpy.clear()
+
+        input.popup.open()
+        tryCompare(input.popup, "visible", true)
+        var tokenList = findChild(input, "tokenList")
+        verify(tokenList)
+        tryVerify(function() { return tokenList.itemAtIndex(0) !== null })
+        var option = tokenList.itemAtIndex(0)
+
+        mouseMove(option, option.width / 2, option.height / 2)
+        tryCompare(option, "pointerHovered", true)
+        mouseClick(option, option.width / 2, option.height / 2)
+
+        tryCompare(selectedSpy, "count", 1)
+        compare(selectedSpy.signalArguments[0][0], enabledId)
+        tryCompare(input.popup, "visible", false)
+    }
+
     function test_balanceRefreshShowsLoadingIndicatorWithoutClearingBalance() {
         failOnWarning(/Detected recursive rearrange/)
         var input = createTemporaryObject(inputComponent, testCase, {

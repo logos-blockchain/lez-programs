@@ -211,6 +211,7 @@ Popup {
 
                     required property var modelData
                     readonly property bool selectable: root.isSelectable(modelData)
+                    readonly property string tokenDefinitionId: root.tokenAddress(modelData)
                     readonly property string disabledReason: root.disabledReasonForCode(
                                                                  modelData.code
                                                                  || modelData.status)
@@ -293,13 +294,22 @@ Popup {
                                     }
 
                                     Text {
+                                        id: tokenDefinitionText
+
+                                        objectName: "tokenDefinitionAddress"
                                         Layout.fillWidth: true
-                                        text: root.shortAddress(root.tokenAddress(tokenRow.modelData))
+                                        Layout.minimumWidth: 0
+                                        text: tokenRow.tokenDefinitionId
                                         color: root.theme.colors.textPlaceholder
                                         font.family: "monospace"
                                         font.pixelSize: 11
                                         elide: Text.ElideMiddle
+                                        wrapMode: Text.NoWrap
+                                        ToolTip.visible: tokenDefinitionText.truncated
+                                                         && tokenDefinitionHover.hovered
+                                        ToolTip.text: tokenRow.tokenDefinitionId
                                     }
+
                                 }
                             }
 
@@ -311,6 +321,17 @@ Popup {
                                 horizontalAlignment: Text.AlignRight
                                 elide: Text.ElideRight
                             }
+
+                            AmmCopyButton {
+                                id: copyTokenDefinitionButton
+
+                                objectName: "copyTokenDefinitionButton"
+                                Layout.preferredWidth: visible ? implicitWidth : 0
+                                Layout.preferredHeight: implicitHeight
+                                theme: root.theme
+                                value: tokenRow.tokenDefinitionId
+                                accessibleName: qsTr("Copy TokenDefinition address")
+                            }
                         }
                     }
 
@@ -318,10 +339,18 @@ Popup {
                         id: rowHover
 
                         anchors.fill: parent
+                        anchors.rightMargin: copyTokenDefinitionButton.visible
+                                            ? copyTokenDefinitionButton.width + 8 : 0
                         hoverEnabled: true
                         cursorShape: tokenRow.selectable
                                      ? Qt.PointingHandCursor : Qt.ForbiddenCursor
                         onClicked: tokenRow.activate()
+                    }
+
+                    HoverHandler {
+                        id: tokenDefinitionHover
+
+                        target: tokenDefinitionText
                     }
 
                     ToolTip.visible: tokenRow.disabledReasonVisible
@@ -482,8 +511,4 @@ Popup {
         return label.length > 0 ? label.charAt(0).toUpperCase() : ""
     }
 
-    function shortAddress(value) {
-        var text = String(value || "")
-        return text.length > 14 ? text.slice(0, 7) + "..." + text.slice(-5) : text
-    }
 }
