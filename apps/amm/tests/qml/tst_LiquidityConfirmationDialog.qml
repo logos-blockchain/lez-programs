@@ -150,7 +150,11 @@ TestCase {
         var expectedLp = findChild(summary, "confirmationExpectedLp")
         var lpGuard = findChild(summary, "confirmationLpGuard")
         var pool = findChild(summary, "poolAddressRow")
-        var accountPlan = findChild(summary, "confirmationAccountPlan")
+        var viewTabs = findChild(summary, "confirmationViewTabs")
+        var summaryTab = findChild(summary, "confirmationSummaryTab")
+        var detailsTab = findChild(summary, "confirmationDetailsTab")
+        var overviewContent = findChild(summary, "confirmationOverviewContent")
+        var detailsContent = findChild(summary, "confirmationDetailsContent")
 
         verify(deposit)
         verify(initialPrice)
@@ -160,7 +164,11 @@ TestCase {
         verify(expectedLp)
         verify(lpGuard)
         verify(pool)
-        verify(accountPlan)
+        verify(viewTabs)
+        verify(summaryTab)
+        verify(detailsTab)
+        verify(overviewContent)
+        verify(detailsContent)
         compare(deposit.label, "Opening deposit")
         compare(deposit.value, "2 Low + 3 High")
         compare(initialPrice.value, "1 Low = 1.5 High")
@@ -171,7 +179,11 @@ TestCase {
         compare(lpGuard.label, "Locked LP")
         compare(lpGuard.value, "2 raw LP")
         compare(pool.address, "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE")
-        compare(accountPlan.text, "Account plan (1)")
+        compare(summaryTab.text, "Summary")
+        compare(detailsTab.text, "Details")
+        compare(summary.selectedView, 0)
+        verify(summaryTab.checked)
+        verify(!detailsTab.checked)
     }
 
     function test_addressesStayOnOneLineAndCopyFullBase58Value() {
@@ -210,10 +222,10 @@ TestCase {
         sink.paste()
         tryCompare(sink, "text", address)
 
-        var accountPlan = findChild(summary, "confirmationAccountPlan")
-        verify(accountPlan)
-        accountPlan.clicked()
-        wait(0)
+        var detailsTab = findChild(summary, "confirmationDetailsTab")
+        verify(detailsTab)
+        detailsTab.click()
+        tryCompare(summary, "selectedView", 1)
         var accountRow = findChild(summary, "accountPlanAddressRow0")
         verify(accountRow)
         compare(accountRow.address, address)
@@ -224,5 +236,58 @@ TestCase {
         accountCopyButton.clicked()
         sink.paste()
         tryCompare(sink, "text", address)
+    }
+
+    function test_detailsTabSwitchesViewsWithoutRequoting() {
+        var firstAddress = "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"
+        var refreshedAddress = "2thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"
+        var summary = createTemporaryObject(summaryComponent, testCase, {
+            "snapshot": {
+                "poolId": firstAddress,
+                "accountPreview": [{
+                    "order": 0,
+                    "role": "LP holding",
+                    "action": "create",
+                    "accountId": firstAddress
+                }]
+            }
+        })
+        verify(summary)
+
+        var overviewContent = findChild(summary, "confirmationOverviewContent")
+        var detailsContent = findChild(summary, "confirmationDetailsContent")
+        var summaryTab = findChild(summary, "confirmationSummaryTab")
+        var detailsTab = findChild(summary, "confirmationDetailsTab")
+        verify(overviewContent)
+        verify(detailsContent)
+        verify(summaryTab)
+        verify(detailsTab)
+        compare(summary.selectedView, 0)
+        verify(summaryTab.checked)
+        verify(!detailsTab.checked)
+
+        editedSpy.target = summary
+        editedSpy.clear()
+        detailsTab.click()
+        tryCompare(summary, "selectedView", 1)
+        tryCompare(detailsTab, "checked", true)
+        verify(!summaryTab.checked)
+        compare(editedSpy.count, 0)
+
+        summary.snapshot = {
+            "poolId": refreshedAddress,
+            "accountPreview": [{
+                "order": 0,
+                "role": "LP holding",
+                "action": "reuse",
+                "accountId": refreshedAddress
+            }]
+        }
+        wait(0)
+        compare(summary.selectedView, 1)
+        var accountRow = findChild(summary, "accountPlanAddressRow0")
+        verify(accountRow)
+        compare(accountRow.address, refreshedAddress)
+        editedSpy.target = null
     }
 }

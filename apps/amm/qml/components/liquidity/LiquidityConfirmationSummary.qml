@@ -4,8 +4,6 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-import Logos.Controls
-
 ColumnLayout {
     id: root
 
@@ -20,6 +18,14 @@ ColumnLayout {
         id: fallbackTheme
     }
 
+    readonly property bool hasAccountPlan: root.accountPlan().length > 0
+    property int selectedView: 0
+
+    onHasAccountPlanChanged: {
+        if (!root.hasAccountPlan)
+            root.selectedView = 0
+    }
+
     function actionText(instruction) {
         if (instruction === "NewDefinition")
             return qsTr("Create pool")
@@ -28,153 +34,226 @@ ColumnLayout {
         return instruction || "-"
     }
 
-    SummaryRow {
-        Layout.fillWidth: true
-        label: qsTr("Pair")
-        value: root.snapshot.pairText || "-"
-    }
+    Item {
+        id: confirmationViewTabs
 
-    ColumnLayout {
+        objectName: "confirmationViewTabs"
         Layout.fillWidth: true
-        spacing: 5
-        visible: root.snapshot.instruction === "AddLiquidity"
+        Layout.preferredHeight: 36
+        visible: root.hasAccountPlan
 
-        Text {
-            text: qsTr("LP destination")
-            color: "#a1a1aa"
-            font.pixelSize: 12
+        Rectangle {
+            anchors.fill: parent
+            color: root.theme.colors.inputBg
+            radius: 6
         }
 
         RowLayout {
-            Layout.fillWidth: true
+            anchors.fill: parent
+            anchors.margins: 2
             spacing: 4
 
-            AmmSelectionComboBox {
-                id: lpDestinationPicker
+            TabButton {
+                id: summaryTab
 
-                objectName: "lpDestinationPicker"
+                objectName: "confirmationSummaryTab"
                 Layout.fillWidth: true
-                theme: root.theme
-                model: root.destinationRows()
-                enabled: model.length > 1
-                currentIndex: root.destinationIndex()
-                displayText: currentIndex >= 0
-                             ? model[currentIndex].label : qsTr("Select destination")
-                labelForOption: function(destination) { return destination.label }
-                tooltipText: String(root.snapshot.selectedLpHoldingId || "")
-                Accessible.name: qsTr("LP token destination")
-                onActivated: function(index) {
-                    root.selectDestination(model[index])
+                Layout.fillHeight: true
+                checked: root.selectedView === 0
+                text: qsTr("Summary")
+                Accessible.name: text
+                onClicked: root.selectedView = 0
+
+                background: Rectangle {
+                    color: summaryTab.checked ? root.theme.colors.selection : "transparent"
+                    radius: 4
+                }
+
+                contentItem: Text {
+                    color: summaryTab.checked ? root.theme.colors.textPrimary
+                                              : root.theme.colors.textSecondary
+                    font.pixelSize: 12
+                    font.weight: summaryTab.checked ? Font.Medium : Font.Normal
+                    horizontalAlignment: Text.AlignHCenter
+                    text: summaryTab.text
+                    verticalAlignment: Text.AlignVCenter
                 }
             }
 
-            AmmCopyButton {
-                objectName: "copyLpDestinationButton"
-                Layout.preferredWidth: visible ? implicitWidth : 0
-                Layout.preferredHeight: implicitHeight
-                theme: root.theme
-                value: String(root.snapshot.selectedLpHoldingId || "")
+            TabButton {
+                id: detailsTab
+
+                objectName: "confirmationDetailsTab"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                checked: root.selectedView === 1
+                text: qsTr("Details")
+                Accessible.name: text
+                onClicked: root.selectedView = 1
+
+                background: Rectangle {
+                    color: detailsTab.checked ? root.theme.colors.selection : "transparent"
+                    radius: 4
+                }
+
+                contentItem: Text {
+                    color: detailsTab.checked ? root.theme.colors.textPrimary
+                                              : root.theme.colors.textSecondary
+                    font.pixelSize: 12
+                    font.weight: detailsTab.checked ? Font.Medium : Font.Normal
+                    horizontalAlignment: Text.AlignHCenter
+                    text: detailsTab.text
+                    verticalAlignment: Text.AlignVCenter
+                }
             }
         }
     }
 
-    SummaryRow {
+    ColumnLayout {
+        id: overviewContent
+
+        objectName: "confirmationOverviewContent"
         Layout.fillWidth: true
-        label: qsTr("Action")
-        value: root.actionText(root.snapshot.instruction)
-    }
+        spacing: 8
+        visible: !root.hasAccountPlan || root.selectedView === 0
 
-    SummaryRow {
-        Layout.fillWidth: true
-        label: qsTr("Fee")
-        value: root.snapshot.feeText || "-"
-    }
+        SummaryRow {
+            Layout.fillWidth: true
+            label: qsTr("Pair")
+            value: root.snapshot.pairText || "-"
+        }
 
-    SummaryRow {
-        objectName: "confirmationDeposit"
-        Layout.fillWidth: true
-        label: root.snapshot.depositLabel || qsTr("Deposit")
-        value: qsTr("%1 + %2")
-            .arg(root.snapshot.depositAText || "-")
-            .arg(root.snapshot.depositBText || "-")
-        valueWrapAnywhere: true
-    }
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 5
+            visible: root.snapshot.instruction === "AddLiquidity"
 
-    SummaryRow {
-        objectName: "confirmationInitialPrice"
-        Layout.fillWidth: true
-        visible: root.isMissingPool() && String(root.snapshot.initialPriceText || "").length > 0
-        label: qsTr("Initial price")
-        value: root.snapshot.initialPriceText || "-"
-        valueWrapAnywhere: true
-    }
+            Text {
+                text: qsTr("LP destination")
+                color: "#a1a1aa"
+                font.pixelSize: 12
+            }
 
-    SummaryRow {
-        objectName: "confirmationInversePrice"
-        Layout.fillWidth: true
-        visible: root.isMissingPool() && String(root.snapshot.inverseInitialPriceText || "").length > 0
-        label: qsTr("Inverse price")
-        value: root.snapshot.inverseInitialPriceText || "-"
-        valueWrapAnywhere: true
-    }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
 
-    SummaryRow {
-        objectName: "confirmationDepositMultiplier"
-        Layout.fillWidth: true
-        visible: root.isMissingPool() && String(root.snapshot.depositMultiplierText || "").length > 0
-        label: qsTr("Deposit multiplier")
-        value: root.snapshot.depositMultiplierText || "-"
-    }
+                AmmSelectionComboBox {
+                    id: lpDestinationPicker
 
-    SummaryRow {
-        objectName: "confirmationDepositScale"
-        Layout.fillWidth: true
-        visible: root.isMissingPool() && String(root.snapshot.depositScaleText || "").length > 0
-        label: qsTr("Deposit scale")
-        value: root.snapshot.depositScaleText || "-"
-    }
+                    objectName: "lpDestinationPicker"
+                    Layout.fillWidth: true
+                    theme: root.theme
+                    model: root.destinationRows()
+                    enabled: model.length > 1
+                    currentIndex: root.destinationIndex()
+                    displayText: currentIndex >= 0
+                                 ? model[currentIndex].label : qsTr("Select destination")
+                    labelForOption: function(destination) { return destination.label }
+                    tooltipText: String(root.snapshot.selectedLpHoldingId || "")
+                    Accessible.name: qsTr("LP token destination")
+                    onActivated: function(index) {
+                        root.selectDestination(model[index])
+                    }
+                }
 
-    SummaryRow {
-        objectName: "confirmationExpectedLp"
-        Layout.fillWidth: true
-        label: qsTr("Expected LP")
-        value: root.snapshot.expectedLpText || "-"
-    }
+                AmmCopyButton {
+                    objectName: "copyLpDestinationButton"
+                    Layout.preferredWidth: visible ? implicitWidth : 0
+                    Layout.preferredHeight: implicitHeight
+                    theme: root.theme
+                    value: String(root.snapshot.selectedLpHoldingId || "")
+                }
+            }
+        }
 
-    SummaryRow {
-        objectName: "confirmationLpGuard"
-        Layout.fillWidth: true
-        label: root.snapshot.lpGuardLabel || qsTr("Minimum LP")
-        value: root.snapshot.lpGuardText || "-"
-    }
+        SummaryRow {
+            Layout.fillWidth: true
+            label: qsTr("Action")
+            value: root.actionText(root.snapshot.instruction)
+        }
 
-    CopyableAddressRow {
-        objectName: "poolAddressRow"
-        Layout.fillWidth: true
-        visible: String(root.snapshot.poolId || "").length > 0
-        theme: root.theme
-        label: qsTr("Pool")
-        address: String(root.snapshot.poolId || "")
-    }
+        SummaryRow {
+            Layout.fillWidth: true
+            label: qsTr("Fee")
+            value: root.snapshot.feeText || "-"
+        }
 
-    LogosButton {
-        id: accountPlanButton
+        SummaryRow {
+            objectName: "confirmationDeposit"
+            Layout.fillWidth: true
+            label: root.snapshot.depositLabel || qsTr("Deposit")
+            value: qsTr("%1 + %2")
+                .arg(root.snapshot.depositAText || "-")
+                .arg(root.snapshot.depositBText || "-")
+            valueWrapAnywhere: true
+        }
 
-        objectName: "confirmationAccountPlan"
-        Layout.alignment: Qt.AlignLeft
-        visible: root.accountPlan().length > 0
-        text: qsTr("Account plan (%1)").arg(root.accountPlan().length)
-        property bool expanded: false
-        implicitWidth: 150
-        implicitHeight: 36
-        radius: 6
-        onClicked: expanded = !expanded
+        SummaryRow {
+            objectName: "confirmationInitialPrice"
+            Layout.fillWidth: true
+            visible: root.isMissingPool() && String(root.snapshot.initialPriceText || "").length > 0
+            label: qsTr("Initial price")
+            value: root.snapshot.initialPriceText || "-"
+            valueWrapAnywhere: true
+        }
+
+        SummaryRow {
+            objectName: "confirmationInversePrice"
+            Layout.fillWidth: true
+            visible: root.isMissingPool() && String(root.snapshot.inverseInitialPriceText || "").length > 0
+            label: qsTr("Inverse price")
+            value: root.snapshot.inverseInitialPriceText || "-"
+            valueWrapAnywhere: true
+        }
+
+        SummaryRow {
+            objectName: "confirmationDepositMultiplier"
+            Layout.fillWidth: true
+            visible: root.isMissingPool() && String(root.snapshot.depositMultiplierText || "").length > 0
+            label: qsTr("Deposit multiplier")
+            value: root.snapshot.depositMultiplierText || "-"
+        }
+
+        SummaryRow {
+            objectName: "confirmationDepositScale"
+            Layout.fillWidth: true
+            visible: root.isMissingPool() && String(root.snapshot.depositScaleText || "").length > 0
+            label: qsTr("Deposit scale")
+            value: root.snapshot.depositScaleText || "-"
+        }
+
+        SummaryRow {
+            objectName: "confirmationExpectedLp"
+            Layout.fillWidth: true
+            label: qsTr("Expected LP")
+            value: root.snapshot.expectedLpText || "-"
+        }
+
+        SummaryRow {
+            objectName: "confirmationLpGuard"
+            Layout.fillWidth: true
+            label: root.snapshot.lpGuardLabel || qsTr("Minimum LP")
+            value: root.snapshot.lpGuardText || "-"
+        }
+
+        CopyableAddressRow {
+            objectName: "poolAddressRow"
+            Layout.fillWidth: true
+            visible: String(root.snapshot.poolId || "").length > 0
+            theme: root.theme
+            label: qsTr("Pool")
+            address: String(root.snapshot.poolId || "")
+        }
     }
 
     ColumnLayout {
+        id: detailsContent
+
+        objectName: "confirmationDetailsContent"
         Layout.fillWidth: true
         spacing: 5
-        visible: accountPlanButton.visible && accountPlanButton.expanded
+        visible: root.hasAccountPlan && root.selectedView === 1
 
         Repeater {
             model: root.accountPlan()
