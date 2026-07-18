@@ -166,16 +166,20 @@ TestCase {
         compare(form.amountB, "")
     }
 
-    function test_holdingSelectionAutoSelectsOneAndRequiresExplicitMultiple() {
+    function test_holdingSelectionAutoSelectsOneAndAllowsQuoteWithoutMultiple() {
         var form = createForm(holdingContext())
         wait(0)
         compare(form.selectedHoldingAId,
                 "44444444444444444444444444444444")
         compare(form.selectedHoldingBId, "")
-        verify(!form.buildQuoteRequest().ok)
+        var built = form.buildQuoteRequest()
+        verify(built.ok)
+        verify(built.request.holdingAId === undefined)
+        compare(built.request.holdingBId,
+                "44444444444444444444444444444444")
 
         form.selectHolding("B", "66666666666666666666666666666666")
-        var built = form.buildQuoteRequest()
+        built = form.buildQuoteRequest()
         verify(built.ok)
         compare(built.request.holdingAId,
                 "66666666666666666666666666666666")
@@ -190,7 +194,17 @@ TestCase {
         verify(amountAInput)
         verify(amountBInput)
 
-        verify(!form.buildQuoteRequest().ok)
+        form.flowState = flowState({
+            "schema": "new-position.v2",
+            "status": "error",
+            "tokenAId": tokenHigh,
+            "tokenBId": tokenLow,
+            "errors": [{
+                "code": "holding_selection_required",
+                "blockingFields": ["holdingAId"]
+            }]
+        })
+        wait(0)
 
         compare(amountAInput.errorText,
                 form.issueText("holding_selection_required"))

@@ -1091,10 +1091,6 @@ AmmActionCard {
         }
 
         var request = root.pairRequest()
-        if (root.holdingsA.length > 0 && root.selectedHoldingAId.length === 0)
-            errors.push(root.localIssue("holding_selection_required", ["holdingAId"]))
-        if (root.holdingsB.length > 0 && root.selectedHoldingBId.length === 0)
-            errors.push(root.localIssue("holding_selection_required", ["holdingBId"]))
 
         if (root.activePool) {
             var parsedA = AmountMath.parseHuman(root.amountA, root.decimalsA)
