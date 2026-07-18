@@ -393,6 +393,37 @@ TestCase {
         compare(amountBInput.tokenInvalid, true)
     }
 
+    function test_tokenResolutionBlocksStaleQuoteSubmission() {
+        var form = createForm()
+        form.flowState = flowState({
+            "schema": "new-position.v2",
+            "status": "ok",
+            "canSubmit": true,
+            "tokenAId": tokenLow,
+            "tokenBId": tokenHigh,
+            "poolStatus": "active_pool",
+            "quoteHash": "sha256:stale-quote",
+            "reserveARaw": "3",
+            "reserveBRaw": "2000000",
+            "actualAmountARaw": "3",
+            "actualAmountBRaw": "2000000"
+        })
+        form.amountA = "1"
+        form.amountB = "1"
+        wait(0)
+
+        verify(form.canConfirm)
+
+        form.resolveToken("A", tokenThird)
+        compare(form.resolvingTokenId, tokenThird)
+        verify(!form.canConfirm)
+
+        form.failTokenResolution("token_definition_unreadable")
+        compare(form.selectedTokenAId, tokenLow)
+        verify(form.tokenResolutionError.length > 0)
+        verify(!form.canConfirm)
+    }
+
     function test_staleMissingPoolQuoteDoesNotReplaceDraft() {
         var quote = {
             "status": "ok",

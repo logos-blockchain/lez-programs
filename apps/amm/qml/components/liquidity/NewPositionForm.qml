@@ -114,6 +114,8 @@ AmmActionCard {
                                        && !root.quoteStale
                                        && !root.submitting
                                        && !root.poolCreationPending
+                                       && !root.resolvingToken
+                                       && root.tokenResolutionError.length === 0
                                        && root.walletCanSubmit
                                        && (!root.activePool || root.hasActivePoolDepositInput)
 
