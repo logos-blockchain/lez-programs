@@ -473,6 +473,31 @@ TestCase {
         compare(form.localErrors.length, 0)
     }
 
+    function test_feeTierCorrectionKeepsEmptyDraftProbeNonSubmittable() {
+        var form = createForm()
+        quoteRequestedSpy.target = form
+        quoteRequestedSpy.clear()
+
+        form.flowState = flowState({
+            "schema": "new-position.v2",
+            "status": "error",
+            "code": "fee_tier_mismatch",
+            "tokenAId": tokenHigh,
+            "tokenBId": tokenLow,
+            "poolStatus": "active_pool",
+            "poolFeeBps": 5,
+            "errors": [{
+                "code": "fee_tier_mismatch",
+                "details": { "poolFeeBps": 5 }
+            }]
+        })
+
+        tryCompare(quoteRequestedSpy, "count", 1)
+        var retry = quoteRequestedSpy.signalArguments[0][1]
+        compare(retry.request.feeBps, 5)
+        compare(retry.poolDiscoveryProbe, true)
+    }
+
     function test_submissionSnapshotCarriesPoolAccountForProbe() {
         var form = createForm()
         form.flowState = flowState({

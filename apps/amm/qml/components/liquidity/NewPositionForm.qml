@@ -1432,11 +1432,15 @@ AmmActionCard {
         if (root.poolFeeBps > 0 && root.selectedFeeBps !== root.poolFeeBps) {
             root.selectedFeeBps = root.poolFeeBps
             root.localErrors = []
-            root.quoteRequested(true, {
+            var retry = {
                 "ok": true,
                 "errors": [],
                 "request": root.poolProbeRequest(root.pairRequest())
-            })
+            }
+            retry.poolDiscoveryProbe = root.activePool
+                                      && root.amountA.length === 0
+                                      && root.amountB.length === 0
+            root.quoteRequested(true, retry)
             return
         }
 
