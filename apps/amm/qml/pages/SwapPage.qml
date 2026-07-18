@@ -10,6 +10,8 @@ import "../components/swap"
 Item {
     id: root
 
+    readonly property bool darkTheme: pageTheme.isDark
+
     property var tokens: [
         { symbol: "TOK1", name: "Token 1", color: "#627eea", letter: "E", address: "0x0000000000000000000000000000000000000000",  usdPrice: 2392.70, balance: 4.25,    reserve: 850     },
         { symbol: "TOK2", name: "Token 2", color: "#2775ca", letter: "$", address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  usdPrice: 1.00,    balance: 12480,   reserve: 2400000 },
@@ -68,10 +70,12 @@ Item {
 
         // Theme toggle
         Rectangle {
+            objectName: "swapThemeToggle"
             anchors.top:    parent.top
             anchors.right:  parent.right
             anchors.margins: 16
             width: 44; height: 24; radius: 12
+            z: 1
             color: pageTheme.colors.panelBg
             border.color: pageTheme.colors.border
             border.width: 1

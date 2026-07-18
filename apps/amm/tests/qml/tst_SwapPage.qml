@@ -54,6 +54,20 @@ Item {
             compare(card.sellInput, "1")
         }
 
+        function test_themeToggleReceivesPointerInput() {
+            const page = createTemporaryObject(pageComponent, root)
+            verify(page)
+
+            const toggle = findChild(page, "swapThemeToggle")
+            verify(toggle)
+            compare(page.darkTheme, true)
+
+            const position = toggle.mapToItem(page, toggle.width / 2, toggle.height / 2)
+            mouseClick(page, position.x, position.y)
+
+            tryCompare(page, "darkTheme", false)
+        }
+
         function test_exactOutputUsesMaximumInputLimit() {
             const page = createTemporaryObject(pageComponent, root)
             verify(page)
