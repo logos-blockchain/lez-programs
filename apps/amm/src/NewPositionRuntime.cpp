@@ -588,21 +588,15 @@ void NewPositionRuntime::buildQuoteInputAsync(
         });
 }
 
-void NewPositionRuntime::quoteAsync(const QVariantMap& request,
-                                    const ActiveNetworkSnapshot& network,
-                                    bool walletOpen,
-                                    bool forceRefresh,
-                                    bool isPoolProbe,
-                                    ResultCallback callback)
+void NewPositionRuntime::quoteFromAccountsAsync(
+    const QVariantMap& request,
+    const ActiveNetworkSnapshot& network,
+    bool walletOpen,
+    bool forceRefresh,
+    std::function<bool()> shouldContinue,
+    ResultCallback callback)
 {
     QPointer<NewPositionRuntime> guard(this);
-    const quint64 quoteGeneration = isPoolProbe
-        ? 0 : ++m_userQuoteGeneration;
-    std::function<bool()> shouldContinue = [guard, quoteGeneration]() {
-        return guard
-            && (quoteGeneration == 0
-                || quoteGeneration == guard->m_userQuoteGeneration);
-    };
     buildQuoteInputAsync(request, network, walletOpen, forceRefresh,
         shouldContinue,
         [guard, shouldContinue,
@@ -618,6 +612,67 @@ void NewPositionRuntime::quoteAsync(const QVariantMap& request,
             callback((result.ok ? result.value
                                 : publicError(QStringLiteral("backend_error")))
                          .toVariantMap());
+        });
+}
+
+void NewPositionRuntime::quoteAsync(const QVariantMap& request,
+                                    const ActiveNetworkSnapshot& network,
+                                    bool walletOpen,
+                                    bool forceRefresh,
+                                    bool isPoolProbe,
+                                    ResultCallback callback)
+{
+    QPointer<NewPositionRuntime> guard(this);
+    const quint64 quoteGeneration = isPoolProbe
+        ? 0 : ++m_userQuoteGeneration;
+    std::function<bool()> shouldContinue = [guard, quoteGeneration]() {
+        return guard
+            && (quoteGeneration == 0
+                || quoteGeneration == guard->m_userQuoteGeneration);
+    };
+    const QString poolId = accountIdHex(
+        request.value(QStringLiteral("poolId")).toString());
+    if (!isPoolProbe || poolId.isEmpty()
+        || network.status != QStringLiteral("ready")
+        || !m_sequencer || !m_sequencer->isConfigured()) {
+        quoteFromAccountsAsync(
+            request, network, walletOpen, forceRefresh,
+            std::move(shouldContinue), std::move(callback));
+        return;
+    }
+
+    m_sequencer->readAccounts(
+        { poolId }, true,
+        [guard, request, network, walletOpen, forceRefresh, poolId,
+         shouldContinue = std::move(shouldContinue),
+         callback = std::move(callback)](
+            QVector<WalletAccountRead> reads) mutable {
+            if (!guard || !shouldContinue())
+                return;
+            const WalletAccountRead read = reads.value(0);
+            if (!read.ok()) {
+                callback(publicError(
+                    QStringLiteral("account_read_failed")).toVariantMap());
+                return;
+            }
+            if (isDefaultAccountRead(read, poolId)) {
+                callback(QJsonObject {
+                    { QStringLiteral("schema"), QString::fromLatin1(SCHEMA) },
+                    { QStringLiteral("status"), QStringLiteral("ok") },
+                    { QStringLiteral("canSubmit"), false },
+                    { QStringLiteral("poolStatus"), QStringLiteral("missing_pool") },
+                    { QStringLiteral("poolId"),
+                      request.value(QStringLiteral("poolId")).toString() },
+                    { QStringLiteral("tokenAId"),
+                      request.value(QStringLiteral("tokenAId")).toString() },
+                    { QStringLiteral("tokenBId"),
+                      request.value(QStringLiteral("tokenBId")).toString() },
+                }.toVariantMap());
+                return;
+            }
+            guard->quoteFromAccountsAsync(
+                request, network, walletOpen, forceRefresh,
+                std::move(shouldContinue), std::move(callback));
         });
 }
 

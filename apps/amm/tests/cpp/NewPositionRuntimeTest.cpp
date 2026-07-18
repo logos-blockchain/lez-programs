@@ -326,6 +326,7 @@ namespace {
                 { QStringLiteral("schema"), QStringLiteral("new-position.v2") },
                 { QStringLiteral("status"), QStringLiteral("ok") },
                 { QStringLiteral("canSubmit"), true },
+                { QStringLiteral("poolStatus"), quotePoolStatus },
                 { QStringLiteral("quoteHash"), quoteHash },
                 { QStringLiteral("requiresFreshLp"), requiresFreshLp },
             });
@@ -383,6 +384,7 @@ namespace {
         }
 
         QString quoteHash = QStringLiteral("sha256:expected");
+        QString quotePoolStatus = QStringLiteral("active_pool");
         bool requiresFreshLp = true;
         mutable bool sawFreshLp = false;
         mutable int tokenIdsCalls = 0;
@@ -834,6 +836,81 @@ int main(int argc, char** argv)
     if (!expect(staleQuoteClient.pairIdsCalls == 3
                     && staleQuoteClient.quoteCalls == 3,
                 "user quote cancellation must not cancel the pool probe"))
+        return 1;
+
+    LocalRpcServer poolProbeServer;
+    if (!expect(poolProbeServer.listen(),
+                "pool-probe sequencer should listen"))
+        return 1;
+    QTemporaryFile poolProbeConfig;
+    if (!expect(poolProbeConfig.open(),
+                "pool-probe config should open"))
+        return 1;
+    poolProbeConfig.write(QJsonDocument(QJsonObject {
+        { QStringLiteral("sequencer_addr"), poolProbeServer.endpoint() },
+    }).toJson(QJsonDocument::Compact));
+    poolProbeConfig.flush();
+    FakeWallet poolProbeWallet;
+    FakeAmmClient poolProbeClient;
+    SequencerClient poolProbeSequencer(&poolProbeClient);
+    if (!expect(poolProbeSequencer.configure(poolProbeConfig.fileName()),
+                "pool-probe sequencer should configure"))
+        return 1;
+    NewPositionRuntime poolProbeRuntime(
+        &poolProbeWallet, &poolProbeClient, &poolProbeSequencer);
+    const QString poolIdBase58 = QStringLiteral(
+        "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE");
+    const QString poolIdHex = QStringLiteral(
+        "000102030405060708090a0b0c0d0e0f"
+        "101112131415161718191a1b1c1d1e1f");
+    QVariantMap poolProbeRequest = request;
+    poolProbeRequest.insert(QStringLiteral("poolId"), poolIdBase58);
+    QVariantMap poolProbeResult;
+    poolProbeRuntime.quoteAsync(
+        poolProbeRequest, readyNetwork(), true, true, true,
+        [&](QVariantMap result) { poolProbeResult = std::move(result); });
+    if (!expect(waitForCondition([&]() { return !poolProbeResult.isEmpty(); }),
+                "default pool probe should complete"))
+        return 1;
+    if (!expect(poolProbeResult.value(QStringLiteral("poolStatus")).toString()
+                        == QStringLiteral("missing_pool")
+                    && poolProbeServer.requestCount() == 1
+                    && poolProbeClient.pairIdsCalls == 0
+                    && poolProbeClient.quoteCalls == 0
+                    && poolProbeClient.normalizedAccountIds.contains(poolIdHex),
+                "default pool probe should read only the pool account"))
+        return 1;
+
+    poolProbeClient.normalizedBalanceHex = QString(32, QLatin1Char('1'));
+    poolProbeResult.clear();
+    poolProbeRuntime.quoteAsync(
+        poolProbeRequest, readyNetwork(), true, true, true,
+        [&](QVariantMap result) { poolProbeResult = std::move(result); });
+    if (!expect(waitForCondition([&]() { return !poolProbeResult.isEmpty(); }),
+                "nondefault pool probe should complete"))
+        return 1;
+    if (!expect(poolProbeResult.value(QStringLiteral("poolStatus")).toString()
+                        == QStringLiteral("active_pool")
+                    && poolProbeServer.requestCount() == 3
+                    && poolProbeClient.pairIdsCalls == 1
+                    && poolProbeClient.quoteCalls == 1,
+                "nondefault pool should run one validating full quote"))
+        return 1;
+
+    poolProbeServer.failNextRequest();
+    poolProbeResult.clear();
+    poolProbeRuntime.quoteAsync(
+        poolProbeRequest, readyNetwork(), true, true, true,
+        [&](QVariantMap result) { poolProbeResult = std::move(result); });
+    if (!expect(waitForCondition([&]() { return !poolProbeResult.isEmpty(); }),
+                "failed pool probe should complete"))
+        return 1;
+    if (!expect(poolProbeResult.value(QStringLiteral("code")).toString()
+                        == QStringLiteral("account_read_failed")
+                    && poolProbeServer.requestCount() == 4
+                    && poolProbeClient.pairIdsCalls == 1
+                    && poolProbeClient.quoteCalls == 1,
+                "failed pool probe should wait for the next one-account retry"))
         return 1;
 
     LocalRpcServer server;

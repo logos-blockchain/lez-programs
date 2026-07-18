@@ -1548,9 +1548,11 @@ AmmActionCard {
 
     function submissionSnapshot() {
         var built = root.buildQuoteRequest()
+        var poolProbe = root.poolProbeRequest(built.request)
+        poolProbe.poolId = String(root.quotePayload.poolId || "")
         return {
             "request": built.request,
-            "poolProbeRequest": root.poolProbeRequest(built.request),
+            "poolProbeRequest": poolProbe,
             "quoteHash": String(root.quotePayload.quoteHash || ""),
             "pairText": qsTr("%1 / %2").arg(root.shortTokenName(root.tokenA)).arg(root.shortTokenName(root.tokenB)),
             "feeText": root.feeLabel(root.selectedFeeBps),

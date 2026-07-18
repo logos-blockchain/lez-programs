@@ -77,6 +77,12 @@ private:
                               bool forceRefresh,
                               std::function<bool()> shouldContinue,
                               std::function<void(QJsonObject, QJsonObject)> callback);
+    void quoteFromAccountsAsync(const QVariantMap& request,
+                                const ActiveNetworkSnapshot& network,
+                                bool walletOpen,
+                                bool forceRefresh,
+                                std::function<bool()> shouldContinue,
+                                ResultCallback callback);
     void submitPlanAsync(QJsonObject input,
                          const QString& quoteHash,
                          QJsonValue freshLp,

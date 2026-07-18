@@ -441,6 +441,29 @@ TestCase {
         compare(form.localErrors.length, 0)
     }
 
+    function test_submissionSnapshotCarriesPoolAccountForProbe() {
+        var form = createForm()
+        form.flowState = flowState({
+            "schema": "new-position.v2",
+            "status": "ok",
+            "canSubmit": true,
+            "tokenAId": tokenHigh,
+            "tokenBId": tokenLow,
+            "poolStatus": "missing_pool",
+            "poolId": submittedTransactionId,
+            "instruction": "NewDefinition",
+            "quoteHash": "sha256:expected",
+            "actualAmountARaw": "2000000",
+            "actualAmountBRaw": "3",
+            "expectedLpRaw": "10"
+        })
+        wait(0)
+
+        var snapshot = form.submissionSnapshot()
+        compare(snapshot.poolProbeRequest.poolId, submittedTransactionId)
+        verify(snapshot.request.poolId === undefined)
+    }
+
     function test_staleQuoteErrorsDoNotMarkCurrentDraft() {
         var quote = {
             "schema": "new-position.v2",
