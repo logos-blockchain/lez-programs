@@ -15,6 +15,7 @@ class AmmClient;
 class WalletProvider;
 class SequencerClient;
 struct WalletAccount;
+struct WalletAccountRead;
 
 class NewPositionRuntime : public QObject {
 public:
@@ -75,12 +76,14 @@ private:
                               const ActiveNetworkSnapshot& network,
                               bool walletOpen,
                               bool forceRefresh,
+                              WalletAccountRead preloadedPoolRead,
                               std::function<bool()> shouldContinue,
                               std::function<void(QJsonObject, QJsonObject)> callback);
     void quoteFromAccountsAsync(const QVariantMap& request,
                                 const ActiveNetworkSnapshot& network,
                                 bool walletOpen,
                                 bool forceRefresh,
+                                WalletAccountRead preloadedPoolRead,
                                 std::function<bool()> shouldContinue,
                                 ResultCallback callback);
     void submitPlanAsync(QJsonObject input,

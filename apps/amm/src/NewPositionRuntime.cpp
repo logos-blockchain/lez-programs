@@ -451,6 +451,7 @@ void NewPositionRuntime::buildQuoteInputAsync(
     const ActiveNetworkSnapshot& network,
     bool walletOpen,
     bool forceRefresh,
+    WalletAccountRead preloadedPoolRead,
     std::function<bool()> shouldContinue,
     std::function<void(QJsonObject, QJsonObject)> callback)
 {
@@ -475,6 +476,7 @@ void NewPositionRuntime::buildQuoteInputAsync(
     QPointer<NewPositionRuntime> guard(this);
     m_sequencer->readAccounts({ configId }, forceRefresh,
         [guard, request, network, walletOpen, forceRefresh,
+         preloadedPoolRead = std::move(preloadedPoolRead),
          shouldContinue,
          callback = std::move(callback)](QVector<WalletAccountRead> configReads) mutable {
             if (!guard || !shouldContinue())
@@ -511,13 +513,21 @@ void NewPositionRuntime::buildQuoteInputAsync(
                 pair.value(QStringLiteral("currentTickId")).toString(),
                 pair.value(QStringLiteral("clockId")).toString(),
             };
-            guard->m_sequencer->readAccounts(fixedIds, forceRefresh,
+            const bool reusePreloadedPool = preloadedPoolRead.ok()
+                && preloadedPoolRead.accountId == fixedIds.value(2);
+            QStringList readIds = fixedIds;
+            if (reusePreloadedPool)
+                readIds.removeAt(2);
+            guard->m_sequencer->readAccounts(readIds, forceRefresh,
                 [guard, requestObject, network, walletOpen, config, pair,
+                 preloadedPoolRead = std::move(preloadedPoolRead), reusePreloadedPool,
                  shouldContinue,
                  callback = std::move(callback)](
                     QVector<WalletAccountRead> fixedReads) mutable {
                     if (!guard || !shouldContinue())
                         return;
+                    if (reusePreloadedPool)
+                        fixedReads.insert(2, std::move(preloadedPoolRead));
                     QStringList selectedIds;
                     for (const QString& key : {
                              QStringLiteral("holdingAId"),
@@ -593,11 +603,13 @@ void NewPositionRuntime::quoteFromAccountsAsync(
     const ActiveNetworkSnapshot& network,
     bool walletOpen,
     bool forceRefresh,
+    WalletAccountRead preloadedPoolRead,
     std::function<bool()> shouldContinue,
     ResultCallback callback)
 {
     QPointer<NewPositionRuntime> guard(this);
     buildQuoteInputAsync(request, network, walletOpen, forceRefresh,
+        std::move(preloadedPoolRead),
         shouldContinue,
         [guard, shouldContinue,
          callback = std::move(callback)](
@@ -637,6 +649,7 @@ void NewPositionRuntime::quoteAsync(const QVariantMap& request,
         || !m_sequencer || !m_sequencer->isConfigured()) {
         quoteFromAccountsAsync(
             request, network, walletOpen, forceRefresh,
+            {},
             std::move(shouldContinue), std::move(callback));
         return;
     }
@@ -672,6 +685,7 @@ void NewPositionRuntime::quoteAsync(const QVariantMap& request,
             }
             guard->quoteFromAccountsAsync(
                 request, network, walletOpen, forceRefresh,
+                std::move(read),
                 std::move(shouldContinue), std::move(callback));
         });
 }
@@ -705,7 +719,7 @@ void NewPositionRuntime::submitAsync(const QVariantMap& request,
             return guard
                 && guard->submitIsCurrent(submitGeneration, walletGeneration);
         };
-    buildQuoteInputAsync(request, network, true, true,
+    buildQuoteInputAsync(request, network, true, true, {},
         shouldContinue,
         [guard, quoteHash, submitGeneration, walletGeneration,
          shouldContinue](

@@ -309,17 +309,35 @@ namespace {
         AmmClientResult pairIds(const QJsonObject&) const override
         {
             ++pairIdsCalls;
+            const QString tokenAId = useValidPairIds
+                ? QString(64, QLatin1Char('2')) : QStringLiteral("token-a");
+            const QString tokenBId = useValidPairIds
+                ? QString(64, QLatin1Char('3')) : QStringLiteral("token-b");
+            const QString poolId = useValidPairIds
+                ? pairPoolId : QStringLiteral("pool");
+            const QString vaultAId = useValidPairIds
+                ? QString(64, QLatin1Char('4')) : QStringLiteral("vault-a");
+            const QString vaultBId = useValidPairIds
+                ? QString(64, QLatin1Char('5')) : QStringLiteral("vault-b");
+            const QString lpDefinitionId = useValidPairIds
+                ? QString(64, QLatin1Char('6')) : QStringLiteral("lp");
+            const QString lpLockHoldingId = useValidPairIds
+                ? QString(64, QLatin1Char('7')) : QStringLiteral("lp-lock");
+            const QString currentTickId = useValidPairIds
+                ? QString(64, QLatin1Char('8')) : QStringLiteral("tick");
+            const QString clockId = useValidPairIds
+                ? QString(64, QLatin1Char('9')) : QStringLiteral("clock");
             return success({
                 { QStringLiteral("status"), QStringLiteral("ok") },
-                { QStringLiteral("tokenAId"), QStringLiteral("token-a") },
-                { QStringLiteral("tokenBId"), QStringLiteral("token-b") },
-                { QStringLiteral("poolId"), QStringLiteral("pool") },
-                { QStringLiteral("vaultAId"), QStringLiteral("vault-a") },
-                { QStringLiteral("vaultBId"), QStringLiteral("vault-b") },
-                { QStringLiteral("lpDefinitionId"), QStringLiteral("lp") },
-                { QStringLiteral("lpLockHoldingId"), QStringLiteral("lp-lock") },
-                { QStringLiteral("currentTickId"), QStringLiteral("tick") },
-                { QStringLiteral("clockId"), QStringLiteral("clock") },
+                { QStringLiteral("tokenAId"), tokenAId },
+                { QStringLiteral("tokenBId"), tokenBId },
+                { QStringLiteral("poolId"), poolId },
+                { QStringLiteral("vaultAId"), vaultAId },
+                { QStringLiteral("vaultBId"), vaultBId },
+                { QStringLiteral("lpDefinitionId"), lpDefinitionId },
+                { QStringLiteral("lpLockHoldingId"), lpLockHoldingId },
+                { QStringLiteral("currentTickId"), currentTickId },
+                { QStringLiteral("clockId"), clockId },
             });
         }
 
@@ -408,6 +426,8 @@ namespace {
         mutable QStringList freshLpAccountIds;
         mutable QStringList normalizedAccountIds;
         QString normalizedBalanceHex = QString(32, QLatin1Char('0'));
+        bool useValidPairIds = false;
+        QString pairPoolId;
     };
 
     ActiveNetworkSnapshot readyNetwork()
@@ -898,6 +918,11 @@ int main(int argc, char** argv)
         return 1;
 
     poolProbeClient.normalizedBalanceHex = QString(32, QLatin1Char('1'));
+    poolProbeClient.useValidPairIds = true;
+    poolProbeClient.pairPoolId = poolIdHex;
+    const int requestsBeforeActiveProbe = poolProbeServer.requestCount();
+    const int poolReadsBeforeActiveProbe =
+        poolProbeClient.normalizedAccountIds.count(poolIdHex);
     poolProbeResult.clear();
     poolProbeRuntime.quoteAsync(
         poolProbeRequest, readyNetwork(), true, true, true,
@@ -907,12 +932,41 @@ int main(int argc, char** argv)
         return 1;
     if (!expect(poolProbeResult.value(QStringLiteral("poolStatus")).toString()
                         == QStringLiteral("active_pool")
-                    && poolProbeServer.requestCount() == 3
+                    && poolProbeServer.requestCount() == requestsBeforeActiveProbe + 10
+                    && poolProbeClient.normalizedAccountIds.count(poolIdHex)
+                        == poolReadsBeforeActiveProbe + 1
                     && poolProbeClient.pairIdsCalls == 1
                     && poolProbeClient.quoteCalls == 1,
-                "nondefault pool should run one validating full quote"))
+                "active pool probe should reuse its fresh pool read"))
         return 1;
 
+    const QString mismatchedPoolId = QString(64, QLatin1Char('d'));
+    poolProbeClient.pairPoolId = mismatchedPoolId;
+    const int requestsBeforeMismatch = poolProbeServer.requestCount();
+    const int sourcePoolReadsBeforeMismatch =
+        poolProbeClient.normalizedAccountIds.count(poolIdHex);
+    const int pairPoolReadsBeforeMismatch =
+        poolProbeClient.normalizedAccountIds.count(mismatchedPoolId);
+    poolProbeResult.clear();
+    poolProbeRuntime.quoteAsync(
+        poolProbeRequest, readyNetwork(), true, true, true,
+        [&](QVariantMap result) { poolProbeResult = std::move(result); });
+    if (!expect(waitForCondition([&]() { return !poolProbeResult.isEmpty(); }),
+                "mismatched pool probe should complete"))
+        return 1;
+    if (!expect(poolProbeResult.value(QStringLiteral("poolStatus")).toString()
+                        == QStringLiteral("active_pool")
+                    && poolProbeServer.requestCount() == requestsBeforeMismatch + 11
+                    && poolProbeClient.normalizedAccountIds.count(poolIdHex)
+                        == sourcePoolReadsBeforeMismatch + 1
+                    && poolProbeClient.normalizedAccountIds.count(mismatchedPoolId)
+                        == pairPoolReadsBeforeMismatch + 1
+                    && poolProbeClient.pairIdsCalls == 2
+                    && poolProbeClient.quoteCalls == 2,
+                "pool mismatch should retain the full forced quote"))
+        return 1;
+
+    const int requestsBeforeFailedProbe = poolProbeServer.requestCount();
     poolProbeServer.failNextRequest();
     poolProbeResult.clear();
     poolProbeRuntime.quoteAsync(
@@ -923,9 +977,9 @@ int main(int argc, char** argv)
         return 1;
     if (!expect(poolProbeResult.value(QStringLiteral("code")).toString()
                         == QStringLiteral("account_read_failed")
-                    && poolProbeServer.requestCount() == 4
-                    && poolProbeClient.pairIdsCalls == 1
-                    && poolProbeClient.quoteCalls == 1,
+                    && poolProbeServer.requestCount() == requestsBeforeFailedProbe + 1
+                    && poolProbeClient.pairIdsCalls == 2
+                    && poolProbeClient.quoteCalls == 2,
                 "failed pool probe should wait for the next one-account retry"))
         return 1;
 
