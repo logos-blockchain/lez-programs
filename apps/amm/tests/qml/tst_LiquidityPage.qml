@@ -90,9 +90,12 @@ TestCase {
         var rail = findChild(page, "positionStepRail")
         var compactSteps = findChild(page, "compactPositionSteps")
         var form = findChild(page, "newPositionForm")
+        var refresh = findChild(page, "refreshPositionButton")
         verify(rail)
         verify(compactSteps)
         verify(form)
+        verify(refresh)
+        compare(refresh.text, "\u21bb")
         compare(page.wideLayout, true)
         verify(form.width > rail.width)
 
@@ -123,6 +126,16 @@ TestCase {
 
         compare(page.flow.contextHints(false).refreshWalletAccounts, false)
         compare(page.flow.contextHints(true).refreshWalletAccounts, true)
+    }
+
+    function test_refreshControlRequestsContext() {
+        var backend = createTemporaryObject(backendComponent, testCase)
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
+        var refresh = findChild(page, "refreshPositionButton")
+        verify(refresh)
+
+        refresh.clicked()
+        tryCompare(backend, "contextRefreshCalls", 1)
     }
 
     function test_repeatedIdenticalContextCompletesRefresh() {

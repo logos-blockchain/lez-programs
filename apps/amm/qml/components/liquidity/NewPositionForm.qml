@@ -206,17 +206,12 @@ AmmActionCard {
                 implicitHeight: 24
             }
 
-            LogosIconButton {
-                iconSource: LogosIcons.refresh
-                iconColor: root.theme.colors.textSecondary
-                iconSize: 18
+            AmmRefreshButton {
+                theme: root.theme
                 Layout.preferredWidth: 36
                 Layout.preferredHeight: 36
                 enabled: !root.contextLoading && !root.submitting
                 visible: root.showRefreshAction
-                Accessible.name: qsTr("Refresh position data")
-                ToolTip.visible: hovered
-                ToolTip.text: Accessible.name
                 onClicked: root.refreshRequested()
             }
         }

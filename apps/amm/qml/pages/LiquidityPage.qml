@@ -89,17 +89,12 @@ Item {
                     }
                 }
 
-                LogosIconButton {
+                AmmRefreshButton {
                     objectName: "refreshPositionButton"
-                    iconSource: LogosIcons.refresh
-                    iconColor: theme.colors.textSecondary
-                    iconSize: 18
+                    theme: theme
                     Layout.preferredWidth: 40
                     Layout.preferredHeight: 40
                     enabled: !newPositionFlow.contextLoading && !newPositionFlow.submitting
-                    Accessible.name: qsTr("Refresh position data")
-                    ToolTip.visible: hovered
-                    ToolTip.text: Accessible.name
                     onClicked: newPositionFlow.refreshContext(true)
                 }
             }
