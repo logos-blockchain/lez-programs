@@ -99,6 +99,8 @@ AmmActionCard {
     readonly property bool hasPair: root.selectedTokenAId.length > 0
                                     && root.selectedTokenBId.length > 0
                                     && root.selectedTokenAId !== root.selectedTokenBId
+    readonly property bool recalculating: root.hasPair && root.quoteLoading && root.quoteStale
+    readonly property string recalculationText: root.recalculating ? qsTr("Recalculating") : ""
     readonly property bool resolvingToken: root.resolvingTokenId.length > 0
     readonly property bool lpDestinationRequired: root.quotePayload.status === "ok"
                                                   && root.quotePayload.lpDestinationRequired === true
@@ -154,7 +156,7 @@ AmmActionCard {
 
         PriceRatioAdjustment {
             amount: root.priceAmountA
-            enabled: !root.submitting
+            enabled: !root.submitting && !root.recalculating
             fieldName: "priceAmountAField"
             invalid: root.fieldHasError("initialPrice")
             onEdited: function(value) { root.editPrice("A", value) }
@@ -166,7 +168,7 @@ AmmActionCard {
 
         PriceRatioAdjustment {
             amount: root.priceAmountB
-            enabled: !root.submitting
+            enabled: !root.submitting && !root.recalculating
             fieldName: "priceAmountBField"
             invalid: root.fieldHasError("initialPrice")
             onEdited: function(value) { root.editPrice("B", value) }
@@ -262,16 +264,19 @@ AmmActionCard {
                 errorText: root.formErrorText()
                 invalid: root.fieldHasError("amountA")
                          || root.fieldHasError("holdingAId")
-                readOnly: root.submitting || (!root.activePool && !root.missingPool)
+                statusText: root.recalculationText
+                readOnly: root.submitting || root.recalculating
+                          || (!root.activePool && !root.missingPool)
                 showMaxButton: root.activePool
                 tokenData: root.tokenA.definitionId ? root.tokenA : null
                 tokens: root.tokens
                 selectedTokenId: root.selectedTokenAId
                 holdings: root.holdingsA
                 selectedHoldingId: root.selectedHoldingAId
-                holdingSelectionEnabled: !root.submitting
+                holdingSelectionEnabled: !root.submitting && !root.recalculating
                 tokenInvalid: root.tokenHasError("A")
                 tokenSelectionEnabled: !root.contextLoading && !root.submitting
+                                       && !root.recalculating
                 adjustment: root.missingPool ? priceAmountAAdjustment : null
                 adjustmentWidth: root.missingPool ? (root.compact ? 100 : 142) : 0
                 adjustmentHeight: root.missingPool ? 24 : 0
@@ -300,7 +305,7 @@ AmmActionCard {
             AmmPairSeparator {
                 Layout.fillWidth: true
                 theme: root.theme
-                enabled: root.hasPair && !root.submitting
+                enabled: root.hasPair && !root.submitting && !root.recalculating
                 onClicked: root.swapTokens()
             }
 
@@ -318,16 +323,19 @@ AmmActionCard {
                             ? root.minimumAmountText("B") : ""
                 invalid: root.fieldHasError("amountB")
                          || root.fieldHasError("holdingBId")
-                readOnly: root.submitting || (!root.activePool && !root.missingPool)
+                statusText: root.recalculationText
+                readOnly: root.submitting || root.recalculating
+                          || (!root.activePool && !root.missingPool)
                 showMaxButton: root.activePool
                 tokenData: root.tokenB.definitionId ? root.tokenB : null
                 tokens: root.tokens
                 selectedTokenId: root.selectedTokenBId
                 holdings: root.holdingsB
                 selectedHoldingId: root.selectedHoldingBId
-                holdingSelectionEnabled: !root.submitting
+                holdingSelectionEnabled: !root.submitting && !root.recalculating
                 tokenInvalid: root.tokenHasError("B")
                 tokenSelectionEnabled: !root.contextLoading && !root.submitting
+                                       && !root.recalculating
                 adjustment: root.missingPool ? priceAmountBAdjustment : null
                 adjustmentWidth: root.missingPool ? (root.compact ? 100 : 142) : 0
                 adjustmentHeight: root.missingPool ? 24 : 0
@@ -424,6 +432,7 @@ AmmActionCard {
                             checkable: true
                             checked: root.selectedFeeBps === parent.modelData.feeBps
                             enabled: parent.disabledReason.length === 0 && !root.submitting
+                                     && !root.recalculating
                             onClicked: root.selectFee(parent.modelData.feeBps)
 
                             contentItem: Text {
@@ -515,7 +524,7 @@ AmmActionCard {
                     stepSize: 10
                     editable: true
                     value: root.slippageBps
-                    enabled: !root.submitting
+                    enabled: !root.submitting && !root.recalculating
                     textFromValue: function(value) { return root.formatBps(value) }
                     valueFromText: function(text) {
                         var parsed = AmountMath.parseHuman(String(text).replace("%", "").trim(), 2)

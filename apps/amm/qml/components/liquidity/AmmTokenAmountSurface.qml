@@ -12,6 +12,8 @@ Rectangle {
     property string amount: ""
     property string supportingText: ""
     property string errorText: ""
+    property string statusText: ""
+    property color statusColor: root.theme.colors.warning
     property string supportingActionText: ""
     property string availableBalance: ""
     property bool availableBalanceUpdating: false
@@ -70,9 +72,9 @@ Rectangle {
 
             Text {
                 Layout.fillWidth: true
-                visible: root.errorText.length > 0
-                text: root.errorText
-                color: root.theme.colors.error
+                visible: root.errorText.length > 0 || root.statusText.length > 0
+                text: root.errorText.length > 0 ? root.errorText : root.statusText
+                color: root.errorText.length > 0 ? root.theme.colors.error : root.statusColor
                 font.pixelSize: 11
                 wrapMode: Text.Wrap
             }

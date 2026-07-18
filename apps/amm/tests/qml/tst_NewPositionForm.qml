@@ -250,6 +250,53 @@ TestCase {
         compare(amountInput.balanceUpdating, true)
     }
 
+    function test_quoteRecalculationKeepsAmountsVisibleAndLocksInputs() {
+        var quote = {
+            "schema": "new-position.v2",
+            "status": "ok",
+            "tokenAId": tokenHigh,
+            "tokenBId": tokenLow,
+            "poolStatus": "active_pool",
+            "poolFeeBps": 30,
+            "reserveARaw": "2",
+            "reserveBRaw": "10"
+        }
+        var form = createForm()
+        form.flowState = flowState(quote)
+        form.amountA = "5"
+        form.amountB = "1"
+        wait(0)
+
+        var amountAInput = findChild(form, "tokenAAmountInput")
+        var amountBInput = findChild(form, "tokenBAmountInput")
+        verify(amountAInput)
+        verify(amountBInput)
+
+        var recalculatingState = flowState(quote)
+        recalculatingState.quoteLoading = true
+        recalculatingState.quoteStale = true
+        form.flowState = recalculatingState
+        wait(0)
+
+        compare(form.amountA, "5")
+        compare(form.amountB, "1")
+        compare(amountAInput.text, "5")
+        compare(amountBInput.text, "1")
+        compare(amountAInput.statusText, "Recalculating")
+        compare(amountBInput.statusText, "Recalculating")
+        compare(amountAInput.readOnly, true)
+        compare(amountBInput.readOnly, true)
+        compare(amountAInput.tokenSelectionEnabled, false)
+        compare(amountBInput.holdingSelectionEnabled, false)
+
+        form.flowState = flowState(quote)
+        wait(0)
+
+        compare(amountAInput.statusText, "")
+        compare(amountAInput.readOnly, false)
+        compare(amountBInput.tokenSelectionEnabled, true)
+    }
+
     function test_contextRefreshSelectsSingleHoldingsBeforeQuote() {
         var form = createForm()
         form.selectedHoldingAId = ""
