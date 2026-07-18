@@ -291,6 +291,7 @@ QtObject {
         var refreshed = {}
         for (var field in snapshot)
             refreshed[field] = snapshot[field]
+        refreshed.quote = quote
         refreshed.quoteHash = String(quote.quoteHash || "")
         refreshed.expectedLpText = String(quote.expectedLpRaw || "") + " raw LP"
         refreshed.instruction = String(quote.instruction || "")

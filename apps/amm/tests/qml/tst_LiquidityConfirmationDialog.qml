@@ -79,4 +79,62 @@ TestCase {
         verify(picker)
         compare(picker.background.color, summary.theme.colors.panelBg)
     }
+
+    function test_confirmationShowsQuoteDetails() {
+        var summary = createTemporaryObject(summaryComponent, testCase, {
+            "snapshot": {
+                "instruction": "NewDefinition",
+                "poolStatus": "missing_pool",
+                "depositLabel": "Opening deposit",
+                "depositAText": "2 Low",
+                "depositBText": "3 High",
+                "initialPriceText": "1 Low = 1.5 High",
+                "inverseInitialPriceText": "1 High = 0.66 Low",
+                "depositMultiplierText": "2x minimum",
+                "depositScaleText": "20000 basis points",
+                "expectedLpText": "10 raw LP",
+                "lpGuardLabel": "Locked LP",
+                "lpGuardText": "2 raw LP",
+                "poolId": "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE",
+                "accountPreview": [{
+                    "order": 0,
+                    "role": "LP holding",
+                    "action": "create",
+                    "accountId": "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"
+                }]
+            }
+        })
+        verify(summary)
+
+        var deposit = findChild(summary, "confirmationDeposit")
+        var initialPrice = findChild(summary, "confirmationInitialPrice")
+        var inversePrice = findChild(summary, "confirmationInversePrice")
+        var multiplier = findChild(summary, "confirmationDepositMultiplier")
+        var scale = findChild(summary, "confirmationDepositScale")
+        var expectedLp = findChild(summary, "confirmationExpectedLp")
+        var lpGuard = findChild(summary, "confirmationLpGuard")
+        var pool = findChild(summary, "confirmationPool")
+        var accountPlan = findChild(summary, "confirmationAccountPlan")
+
+        verify(deposit)
+        verify(initialPrice)
+        verify(inversePrice)
+        verify(multiplier)
+        verify(scale)
+        verify(expectedLp)
+        verify(lpGuard)
+        verify(pool)
+        verify(accountPlan)
+        compare(deposit.label, "Opening deposit")
+        compare(deposit.value, "2 Low + 3 High")
+        compare(initialPrice.value, "1 Low = 1.5 High")
+        compare(inversePrice.value, "1 High = 0.66 Low")
+        compare(multiplier.value, "2x minimum")
+        compare(scale.value, "20000 basis points")
+        compare(expectedLp.value, "10 raw LP")
+        compare(lpGuard.label, "Locked LP")
+        compare(lpGuard.value, "2 raw LP")
+        compare(pool.value, "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE")
+        compare(accountPlan.text, "Account plan (1)")
+    }
 }

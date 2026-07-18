@@ -253,7 +253,7 @@ Item {
         }
 
         function onConfirmationQuoteReady(snapshot) {
-            confirmationDialog.updateSnapshot(snapshot)
+            confirmationDialog.updateSnapshot(form.refreshConfirmationSnapshot(snapshot))
         }
 
         function onSubmitSucceeded() {

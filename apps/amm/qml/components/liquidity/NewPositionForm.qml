@@ -548,96 +548,6 @@ AmmActionCard {
             }
         }
 
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 9
-            visible: root.quotePayload.status === "ok"
-                     && root.quoteMatchesPair()
-                     && !root.quoteStale
-
-            Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: 1
-                color: root.theme.colors.divider
-            }
-
-            LabelValueRow {
-                label: root.activePool ? qsTr("Expected spend") : qsTr("Opening deposit")
-                value: root.depositSummary()
-            }
-
-            LabelValueRow {
-                visible: root.missingPool
-                label: qsTr("Initial price")
-                value: root.initialPriceText(false)
-            }
-
-            LabelValueRow {
-                visible: root.missingPool
-                label: qsTr("Inverse price")
-                value: root.initialPriceText(true)
-            }
-
-            LabelValueRow {
-                visible: root.missingPool
-                label: qsTr("Deposit multiplier")
-                value: root.depositMultiplierValue()
-            }
-
-            LabelValueRow {
-                visible: root.missingPool
-                label: qsTr("Deposit scale")
-                value: root.depositBasisPointsText()
-            }
-
-            LabelValueRow {
-                label: qsTr("Expected LP")
-                value: root.rawLpText(root.quotePayload.expectedLpRaw)
-            }
-
-            LabelValueRow {
-                label: root.activePool ? qsTr("Minimum LP") : qsTr("Locked LP")
-                value: root.rawLpText(root.activePool
-                                      ? root.quotePayload.minimumLpRaw
-                                      : root.quotePayload.lockedLpRaw)
-            }
-
-            LabelValueRow {
-                label: qsTr("Pool")
-                value: String(root.quotePayload.poolId || "")
-                valueWrapAnywhere: true
-            }
-
-            LogosButton {
-                id: accountPlanButton
-                text: qsTr("Account plan (%1)").arg(root.accountPreview().length)
-                enabled: root.accountPreview().length > 0
-                property bool checked: false
-                implicitWidth: 150
-                implicitHeight: 36
-                radius: 6
-                Layout.alignment: Qt.AlignLeft
-                onClicked: checked = !checked
-            }
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 5
-                visible: accountPlanButton.checked
-
-                Repeater {
-                    model: root.accountPreview()
-
-                    LabelValueRow {
-                        required property var modelData
-                        label: qsTr("%1. %2 · %3").arg(modelData.order + 1).arg(modelData.role).arg(modelData.action)
-                        value: modelData.accountId ? modelData.accountId : qsTr("Assigned by wallet")
-                        valueWrapAnywhere: true
-                    }
-                }
-            }
-        }
-
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: warningTextItem.implicitHeight + 20
@@ -680,32 +590,6 @@ AmmActionCard {
                   : root.missingPool ? qsTr("Create pool") : qsTr("Add liquidity")
             enabled: root.canConfirm
             onClicked: root.confirmationRequested(root.submissionSnapshot())
-        }
-    }
-
-    component LabelValueRow: RowLayout {
-        required property string label
-        required property string value
-        property bool valueWrapAnywhere: false
-        Layout.fillWidth: true
-        spacing: 12
-
-        Text {
-            text: parent.label
-            color: root.theme.colors.textSecondary
-            font.pixelSize: 12
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-        }
-
-        Text {
-            text: parent.value
-            color: root.theme.colors.textPrimary
-            font.pixelSize: 12
-            font.weight: Font.Medium
-            horizontalAlignment: Text.AlignRight
-            wrapMode: parent.valueWrapAnywhere ? Text.WrapAnywhere : Text.Wrap
-            Layout.maximumWidth: root.compact ? 190 : 280
         }
     }
 
@@ -1531,18 +1415,19 @@ AmmActionCard {
     }
 
     function quoteAmount(canonicalAField, canonicalBField, side) {
+        return root.quoteAmountFromQuote(root.quotePayload,
+                                         canonicalAField,
+                                         canonicalBField,
+                                         side)
+    }
+
+    function quoteAmountFromQuote(quote, canonicalAField, canonicalBField, side) {
         var token = side === "A" ? root.tokenA : root.tokenB
         var decimals = side === "A" ? root.decimalsA : root.decimalsB
-        var raw = root.displayRaw(canonicalAField, canonicalBField, side)
+        var raw = root.displayQuoteRaw(quote, canonicalAField, canonicalBField, side)
         return raw.length > 0
                 ? qsTr("%1 %2").arg(AmountMath.formatRaw(raw, decimals)).arg(root.shortTokenName(token))
                 : "—"
-    }
-
-    function depositSummary() {
-        var amountA = root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "A")
-        var amountB = root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "B")
-        return amountA + " + " + amountB
     }
 
     function initialPriceText(inverse) {
@@ -1603,19 +1488,59 @@ AmmActionCard {
         return warnings.length > 0 ? root.issueText(warnings[0].code) : ""
     }
 
+    function confirmationDetails(quote) {
+        var sourceQuote = quote || ({})
+        var status = String(sourceQuote.poolStatus || root.poolStatus || "")
+        var isActivePool = status === "active_pool"
+        var accountPlan = sourceQuote.accountPreview || []
+        return {
+            "poolStatus": status,
+            "depositLabel": isActivePool ? qsTr("Expected spend") : qsTr("Opening deposit"),
+            "depositAText": root.quoteAmountFromQuote(sourceQuote,
+                                                        "actualAmountARaw",
+                                                        "actualAmountBRaw",
+                                                        "A"),
+            "depositBText": root.quoteAmountFromQuote(sourceQuote,
+                                                        "actualAmountARaw",
+                                                        "actualAmountBRaw",
+                                                        "B"),
+            "initialPriceText": isActivePool ? "" : root.initialPriceText(false),
+            "inverseInitialPriceText": isActivePool ? "" : root.initialPriceText(true),
+            "depositMultiplierText": isActivePool ? "" : root.depositMultiplierValue(),
+            "depositScaleText": isActivePool ? "" : root.depositBasisPointsText(),
+            "expectedLpText": root.rawLpText(sourceQuote.expectedLpRaw),
+            "lpGuardLabel": isActivePool ? qsTr("Minimum LP") : qsTr("Locked LP"),
+            "lpGuardText": root.rawLpText(isActivePool
+                                            ? sourceQuote.minimumLpRaw
+                                            : sourceQuote.lockedLpRaw),
+            "poolId": String(sourceQuote.poolId || ""),
+            "accountPreview": accountPlan
+        }
+    }
+
+    function refreshConfirmationSnapshot(snapshot) {
+        var refreshed = {}
+        for (var field in snapshot)
+            refreshed[field] = snapshot[field]
+        var sourceQuote = refreshed.quote || root.quotePayload
+        refreshed.quote = sourceQuote
+        var details = root.confirmationDetails(sourceQuote)
+        for (var detail in details)
+            refreshed[detail] = details[detail]
+        return refreshed
+    }
+
     function submissionSnapshot() {
         var built = root.buildQuoteRequest()
         var poolProbe = root.poolProbeRequest(built.request)
         poolProbe.poolId = String(root.quotePayload.poolId || "")
-        return {
+        return root.refreshConfirmationSnapshot({
             "request": built.request,
             "poolProbeRequest": poolProbe,
+            "quote": root.quotePayload,
             "quoteHash": String(root.quotePayload.quoteHash || ""),
             "pairText": qsTr("%1 / %2").arg(root.shortTokenName(root.tokenA)).arg(root.shortTokenName(root.tokenB)),
             "feeText": root.feeLabel(root.selectedFeeBps),
-            "depositAText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "A"),
-            "depositBText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "B"),
-            "expectedLpText": root.rawLpText(root.quotePayload.expectedLpRaw),
             "instruction": String(root.quotePayload.instruction || ""),
             "lpHoldingOptions": root.quotePayload.lpHoldingOptions || [],
             "selectedLpHoldingId": String(root.quotePayload.selectedLpHoldingId || ""),
@@ -1623,7 +1548,7 @@ AmmActionCard {
                              && root.quotePayload.lpDestinationRequired !== true,
             "lpDestinationRequired": root.quotePayload.lpDestinationRequired === true,
             "quoteReady": root.quotePayload.canSubmit === true
-        }
+        })
     }
 
     function onlyLpDestinationBlocks() {

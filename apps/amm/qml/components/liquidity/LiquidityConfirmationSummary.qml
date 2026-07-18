@@ -4,6 +4,8 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
+import Logos.Controls
+
 ColumnLayout {
     id: root
 
@@ -75,8 +77,9 @@ ColumnLayout {
     }
 
     SummaryRow {
+        objectName: "confirmationDeposit"
         Layout.fillWidth: true
-        label: qsTr("Deposit")
+        label: root.snapshot.depositLabel || qsTr("Deposit")
         value: qsTr("%1 + %2")
             .arg(root.snapshot.depositAText || "-")
             .arg(root.snapshot.depositBText || "-")
@@ -84,9 +87,105 @@ ColumnLayout {
     }
 
     SummaryRow {
+        objectName: "confirmationInitialPrice"
+        Layout.fillWidth: true
+        visible: root.isMissingPool() && String(root.snapshot.initialPriceText || "").length > 0
+        label: qsTr("Initial price")
+        value: root.snapshot.initialPriceText || "-"
+        valueWrapAnywhere: true
+    }
+
+    SummaryRow {
+        objectName: "confirmationInversePrice"
+        Layout.fillWidth: true
+        visible: root.isMissingPool() && String(root.snapshot.inverseInitialPriceText || "").length > 0
+        label: qsTr("Inverse price")
+        value: root.snapshot.inverseInitialPriceText || "-"
+        valueWrapAnywhere: true
+    }
+
+    SummaryRow {
+        objectName: "confirmationDepositMultiplier"
+        Layout.fillWidth: true
+        visible: root.isMissingPool() && String(root.snapshot.depositMultiplierText || "").length > 0
+        label: qsTr("Deposit multiplier")
+        value: root.snapshot.depositMultiplierText || "-"
+    }
+
+    SummaryRow {
+        objectName: "confirmationDepositScale"
+        Layout.fillWidth: true
+        visible: root.isMissingPool() && String(root.snapshot.depositScaleText || "").length > 0
+        label: qsTr("Deposit scale")
+        value: root.snapshot.depositScaleText || "-"
+    }
+
+    SummaryRow {
+        objectName: "confirmationExpectedLp"
         Layout.fillWidth: true
         label: qsTr("Expected LP")
         value: root.snapshot.expectedLpText || "-"
+    }
+
+    SummaryRow {
+        objectName: "confirmationLpGuard"
+        Layout.fillWidth: true
+        label: root.snapshot.lpGuardLabel || qsTr("Minimum LP")
+        value: root.snapshot.lpGuardText || "-"
+    }
+
+    SummaryRow {
+        objectName: "confirmationPool"
+        Layout.fillWidth: true
+        visible: String(root.snapshot.poolId || "").length > 0
+        label: qsTr("Pool")
+        value: String(root.snapshot.poolId || "")
+        valueWrapAnywhere: true
+    }
+
+    LogosButton {
+        id: accountPlanButton
+
+        objectName: "confirmationAccountPlan"
+        Layout.alignment: Qt.AlignLeft
+        visible: root.accountPlan().length > 0
+        text: qsTr("Account plan (%1)").arg(root.accountPlan().length)
+        property bool expanded: false
+        implicitWidth: 150
+        implicitHeight: 36
+        radius: 6
+        onClicked: expanded = !expanded
+    }
+
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 5
+        visible: accountPlanButton.visible && accountPlanButton.expanded
+
+        Repeater {
+            model: root.accountPlan()
+
+            SummaryRow {
+                required property var modelData
+
+                Layout.fillWidth: true
+                label: qsTr("%1. %2 · %3")
+                    .arg(Number(modelData.order || 0) + 1)
+                    .arg(String(modelData.role || "-"))
+                    .arg(String(modelData.action || "-"))
+                value: modelData.accountId ? String(modelData.accountId)
+                                           : qsTr("Assigned by wallet")
+                valueWrapAnywhere: true
+            }
+        }
+    }
+
+    function isMissingPool() {
+        return root.snapshot.poolStatus === "missing_pool"
+    }
+
+    function accountPlan() {
+        return root.snapshot.accountPreview || []
     }
 
     function destinationRows() {

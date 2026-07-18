@@ -289,7 +289,14 @@ TestCase {
             "request": ({ "schema": "new-position.v2" }),
             "quoteHash": "sha256:stale",
             "expectedLpText": "10 raw LP",
-            "instruction": "AddLiquidity"
+            "instruction": "AddLiquidity",
+            "poolId": "11111111111111111111111111111111",
+            "accountPreview": [{
+                "order": 0,
+                "role": "LP holding",
+                "action": "create",
+                "accountId": "11111111111111111111111111111111"
+            }]
         })
         tryCompare(dialog, "opened", true)
 
@@ -307,6 +314,13 @@ TestCase {
                 "quoteHash": "sha256:fresh",
                 "expectedLpRaw": "20",
                 "instruction": "AddLiquidity",
+                "poolId": "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE",
+                "accountPreview": [{
+                    "order": 0,
+                    "role": "LP holding",
+                    "action": "reuse",
+                    "accountId": "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"
+                }],
                 "lpHoldingOptions": [],
                 "selectedLpHoldingId": "",
                 "requiresFreshLp": true,
@@ -319,6 +333,9 @@ TestCase {
         tryCompare(dialog, "opened", true)
         compare(dialog.snapshot.quoteHash, "sha256:fresh")
         compare(dialog.snapshot.expectedLpText, "20 raw LP")
+        compare(dialog.snapshot.poolId, "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE")
+        compare(dialog.snapshot.accountPreview.length, 1)
+        compare(dialog.snapshot.accountPreview[0].action, "reuse")
         compare(dialog.snapshot.quoteReady, true)
         compare(page.flow.flowErrorCode, "")
     }

@@ -657,13 +657,26 @@ TestCase {
             "quoteHash": "sha256:expected",
             "actualAmountARaw": "2000000",
             "actualAmountBRaw": "3",
-            "expectedLpRaw": "10"
+            "expectedLpRaw": "10",
+            "lockedLpRaw": "2",
+            "accountPreview": [{
+                "order": 0,
+                "role": "LP holding",
+                "action": "create",
+                "accountId": submittedTransactionId
+            }]
         })
         wait(0)
 
         var snapshot = form.submissionSnapshot()
         compare(snapshot.poolProbeRequest.poolId, submittedTransactionId)
         verify(snapshot.request.poolId === undefined)
+        compare(snapshot.depositLabel, "Opening deposit")
+        compare(snapshot.lpGuardLabel, "Locked LP")
+        compare(snapshot.lpGuardText, "2 raw LP")
+        compare(snapshot.poolId, submittedTransactionId)
+        compare(snapshot.accountPreview.length, 1)
+        compare(snapshot.accountPreview[0].accountId, submittedTransactionId)
     }
 
     function test_staleQuoteErrorsDoNotMarkCurrentDraft() {
