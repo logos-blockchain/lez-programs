@@ -95,6 +95,30 @@ TestCase {
         compare(input.accessoryWidth, 180)
     }
 
+    function test_holdingPickerUsesAmmTheme() {
+        var input = createTemporaryObject(inputComponent, testCase, {
+            "visible": true,
+            "holdings": [{
+                "holdingId": "11111111111111111111111111111111",
+                "balanceRaw": "1"
+            }, {
+                "holdingId": "22222222222222222222222222222222",
+                "balanceRaw": "2"
+            }],
+            "selectedHoldingId": "11111111111111111111111111111111"
+        })
+        verify(input)
+
+        var picker = findChild(input, "holdingPicker")
+        verify(picker)
+        compare(picker.background.color, input.theme.colors.panelBg)
+
+        picker.forceActiveFocus()
+        tryCompare(picker, "activeFocus", true)
+        compare(String(picker.background.border.color).toLowerCase(),
+                String(input.theme.colors.ctaBg).toLowerCase())
+    }
+
     function test_disabledTokenIsRejectedByTypedInput() {
         var input = createTemporaryObject(inputComponent, testCase)
         verify(input)

@@ -1,17 +1,22 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 ColumnLayout {
     id: root
 
     property var snapshot: ({})
+    property var theme: fallbackTheme
 
     signal snapshotEdited(var snapshot)
 
     spacing: 8
+
+    AmmTheme {
+        id: fallbackTheme
+    }
 
     function actionText(instruction) {
         if (instruction === "NewDefinition")
@@ -38,25 +43,21 @@ ColumnLayout {
             font.pixelSize: 12
         }
 
-        ComboBox {
+        AmmSelectionComboBox {
             id: lpDestinationPicker
 
             objectName: "lpDestinationPicker"
             Layout.fillWidth: true
+            theme: root.theme
             model: root.destinationRows()
             enabled: model.length > 1
             currentIndex: root.destinationIndex()
             displayText: currentIndex >= 0
                          ? model[currentIndex].label : qsTr("Select destination")
+            labelForOption: function(destination) { return destination.label }
             Accessible.name: qsTr("LP token destination")
             onActivated: function(index) {
                 root.selectDestination(model[index])
-            }
-
-            delegate: ItemDelegate {
-                required property var modelData
-                width: lpDestinationPicker.width
-                text: modelData.label
             }
         }
     }

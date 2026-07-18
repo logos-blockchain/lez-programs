@@ -1,7 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 import "../shared"
@@ -92,11 +92,12 @@ AmmTokenAmountSurface {
                 onClicked: tokenModal.open()
             }
 
-            ComboBox {
+            AmmSelectionComboBox {
                 id: holdingPicker
 
                 objectName: "holdingPicker"
                 Layout.fillWidth: true
+                theme: root.theme
                 visible: root.holdings.length > 1
                 enabled: root.holdingSelectionEnabled && root.holdings.length > 1
                 model: root.holdings
@@ -104,15 +105,10 @@ AmmTokenAmountSurface {
                 displayText: currentIndex >= 0
                              ? root.holdingLabel(root.holdings[currentIndex])
                              : qsTr("Select holding")
+                labelForOption: function(holding) { return root.holdingLabel(holding) }
                 Accessible.name: qsTr("Wallet holding for %1").arg(root.label)
                 onActivated: function(index) {
                     root.holdingSelected(String(root.holdings[index].holdingId || ""))
-                }
-
-                delegate: ItemDelegate {
-                    required property var modelData
-                    width: holdingPicker.width
-                    text: root.holdingLabel(modelData)
                 }
             }
         }

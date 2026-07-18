@@ -16,6 +16,7 @@ Item {
     property var backend: null
     property var runtime: null
     readonly property NewPositionFlow flow: newPositionFlow
+    readonly property var ammTheme: theme
 
     readonly property int pageMargin: width < 640 ? 16 : 24
     readonly property int contentMaxWidth: 1200
@@ -259,7 +260,9 @@ Item {
     Component {
         id: liquidityConfirmationSummary
 
-        LiquidityConfirmationSummary { }
+        LiquidityConfirmationSummary {
+            theme: root.ammTheme
+        }
     }
 
     TransactionConfirmationDialog {

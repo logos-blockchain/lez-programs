@@ -59,4 +59,24 @@ TestCase {
         compare(editedSpy.signalArguments[0][0].quoteReady, false)
         editedSpy.target = null
     }
+
+    function test_lpDestinationPickerUsesAmmTheme() {
+        var summary = createTemporaryObject(summaryComponent, testCase, {
+            "snapshot": {
+                "instruction": "AddLiquidity",
+                "request": ({ "schema": "new-position.v2" }),
+                "lpHoldingOptions": [{
+                    "holdingId": "44444444444444444444444444444444",
+                    "balanceRaw": "7"
+                }],
+                "lpDestinationRequired": true,
+                "quoteReady": false
+            }
+        })
+        verify(summary)
+
+        var picker = findChild(summary, "lpDestinationPicker")
+        verify(picker)
+        compare(picker.background.color, summary.theme.colors.panelBg)
+    }
 }
