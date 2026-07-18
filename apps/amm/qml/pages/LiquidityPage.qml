@@ -270,11 +270,11 @@ Item {
     TransactionConfirmationDialog {
         id: confirmationDialog
 
+        objectName: "liquidityConfirmationDialog"
         title: qsTr("Confirm new position")
         confirmText: qsTr("Submit")
         busy: newPositionFlow.submitting
-              || (opened && snapshot.quoteReady === false
-                  && newPositionFlow.quoteLoading)
+              || (snapshot.quoteReady === false && newPositionFlow.quoteLoading)
         confirmEnabled: snapshot.quoteReady === true
                         && newPositionFlow.walletCanSubmit
         summary: liquidityConfirmationSummary

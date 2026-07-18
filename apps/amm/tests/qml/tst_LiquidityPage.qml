@@ -181,6 +181,44 @@ TestCase {
         compare(backend.submitCalls, 1)
     }
 
+    function test_submissionCompletionClosesConfirmationWithoutBindingLoop() {
+        failOnWarning(/Binding loop detected for property "busy"/)
+
+        var backend = createTemporaryObject(backendComponent, testCase, {
+            "deferSubmitResult": true
+        })
+        var page = createTemporaryObject(pageComponent, testCase, {
+            "backend": backend,
+            "visible": true
+        })
+        verify(page)
+
+        var dialog = findChild(page, "liquidityConfirmationDialog")
+        verify(dialog)
+        dialog.openWithSnapshot({
+            "quoteReady": true,
+            "request": ({}),
+            "quoteHash": "sha256:expected"
+        })
+        tryCompare(dialog, "opened", true)
+
+        dialog.confirm()
+        tryCompare(page.flow, "submitting", true)
+        compare(dialog.busy, true)
+
+        backend.newPositionSubmitResult = {
+            "schema": "new-position.v2",
+            "status": "submitted",
+            "transactionId": submittedTransactionId,
+            "deadlineMs": String(Date.now() + 60000),
+            "affectedAccountIds": [],
+            "requestId": page.flow.submitRequestId
+        }
+
+        tryCompare(page.flow, "submitting", false)
+        tryCompare(dialog, "opened", false)
+    }
+
     function test_missingPoolSubmissionStartsPoolProbeWithoutWalletRefresh() {
         var backend = createTemporaryObject(backendComponent, testCase, {
             "submitResult": {
