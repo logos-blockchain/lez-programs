@@ -455,6 +455,17 @@ TestCase {
         compare(form.amountB, "")
         compare(form.minimumAmountARaw, "")
         compare(form.minimumAmountBRaw, "")
+        form.flowState = flowState({
+            "schema": "new-position.v2",
+            "status": "ok",
+            "canSubmit": true,
+            "tokenAId": tokenHigh,
+            "tokenBId": tokenLow,
+            "poolStatus": "active_pool",
+            "quoteHash": "sha256:probe"
+        })
+        wait(0)
+        compare(form.canConfirm, false)
         quoteRequestedSpy.target = form
         quoteRequestedSpy.clear()
         form.requestQuote(true)

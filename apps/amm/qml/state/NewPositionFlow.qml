@@ -194,8 +194,18 @@ QtObject {
         if (requestId !== root.activeQuoteRequestId)
             return
         root.quoteLoading = false
-        root.quoteStale = false
         root.quoteErrorCode = ""
+        const isActivePoolDiscovery = root.pendingQuoteRequest.poolDiscoveryProbe === true
+                                      && result.schema === "new-position.v2"
+                                      && result.status === "ok"
+                                      && result.poolStatus === "active_pool"
+        if (isActivePoolDiscovery) {
+            root.newPositionQuote = ({})
+            root.quoteStale = true
+            root.poolActivated(result)
+            return
+        }
+        root.quoteStale = false
         root.newPositionQuote = result.schema === "new-position.v2"
                                 ? result : root.quoteError("unsupported_schema")
         if (root.pendingConfirmationSnapshot) {

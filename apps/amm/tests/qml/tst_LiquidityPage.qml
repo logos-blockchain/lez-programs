@@ -416,4 +416,55 @@ TestCase {
         compare(page.flow.newPositionQuote.poolStatus, "missing_pool")
         verify(page.flow.quoteStale)
     }
+
+    function test_activePoolDiscoveryDoesNotExposeProbeAsSubmittableQuote() {
+        var tokenA = "22222222222222222222222222222222"
+        var tokenB = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        var page = createTemporaryObject(pageComponent, testCase)
+        verify(page)
+        var activated = null
+        function captureActivation(quote) {
+            activated = quote
+        }
+        page.flow.poolActivated.connect(captureActivation)
+        page.flow.pendingQuoteRequest = {
+            "ok": true,
+            "poolDiscoveryProbe": true,
+            "request": {
+                "tokenAId": tokenA,
+                "tokenBId": tokenB
+            }
+        }
+        page.flow.activeQuoteRequestId = 7
+        page.flow.quoteLoading = true
+        page.flow.quoteStale = false
+        page.flow.newPositionQuote = {
+            "schema": "new-position.v2",
+            "status": "ok",
+            "canSubmit": true,
+            "quoteHash": "sha256:old"
+        }
+
+        page.flow.acceptQuoteResult({
+            "schema": "new-position.v2",
+            "status": "ok",
+            "canSubmit": true,
+            "tokenAId": tokenA,
+            "tokenBId": tokenB,
+            "poolStatus": "active_pool",
+            "reserveARaw": "90000000000",
+            "reserveBRaw": "90000000000",
+            "actualAmountARaw": "90000000000",
+            "actualAmountBRaw": "90000000000",
+            "expectedLpRaw": "90000000000",
+            "quoteHash": "sha256:probe",
+            "requestId": 7
+        })
+
+        compare(activated.poolStatus, "active_pool")
+        compare(page.flow.quoteLoading, false)
+        verify(page.flow.quoteStale)
+        compare(Object.keys(page.flow.newPositionQuote).length, 0)
+        page.flow.poolActivated.disconnect(captureActivation)
+    }
 }

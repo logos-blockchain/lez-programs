@@ -101,6 +101,8 @@ AmmActionCard {
     readonly property bool lpDestinationRequired: root.quotePayload.status === "ok"
                                                   && root.quotePayload.lpDestinationRequired === true
                                                   && root.onlyLpDestinationBlocks()
+    readonly property bool hasActivePoolDepositInput: root.amountA.length > 0
+                                                      && root.amountB.length > 0
     readonly property bool canConfirm: root.quotePayload.schema === "new-position.v2"
                                        && root.quotePayload.status === "ok"
                                        && (root.quotePayload.canSubmit === true
@@ -113,6 +115,7 @@ AmmActionCard {
                                        && !root.submitting
                                        && !root.poolCreationPending
                                        && root.walletCanSubmit
+                                       && (!root.activePool || root.hasActivePoolDepositInput)
 
     signal quoteRequested(bool immediate, var quoteRequest)
     signal confirmationRequested(var snapshot)
@@ -1174,7 +1177,13 @@ AmmActionCard {
             root.localErrors = []
             return
         }
-        root.quoteRequested(immediate, root.buildQuoteRequest())
+        var built = root.buildQuoteRequest()
+        built.poolDiscoveryProbe = root.confirmedPoolStatus.length === 0
+                                   && !root.activePool
+                                   && !root.missingPool
+                                   && root.amountA.length === 0
+                                   && root.amountB.length === 0
+        root.quoteRequested(immediate, built)
     }
 
     function probeRaw(token, decimals) {
