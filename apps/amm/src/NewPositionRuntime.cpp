@@ -19,6 +19,7 @@
 namespace {
     const char SCHEMA[] = "new-position.v2";
     constexpr qsizetype HASH_BYTES = 32;
+    constexpr qsizetype ACCOUNT_ID_HEX_SIZE = HASH_BYTES * 2;
     constexpr std::size_t BASE58_BUFFER_SIZE = 45;
 
     QString base58TransactionId(const QString& transactionHash)
@@ -51,6 +52,32 @@ namespace {
         return QString::fromLatin1(
             QByteArray(reinterpret_cast<const char*>(bytes.data()),
                        static_cast<qsizetype>(bytes.size())).toHex());
+    }
+
+    bool isLowerHex(const QString& value, qsizetype size)
+    {
+        if (value.size() != size)
+            return false;
+        for (qsizetype index = 0; index < value.size(); ++index) {
+            const char16_t character = value.at(index).unicode();
+            if (!((character >= u'0' && character <= u'9')
+                  || (character >= u'a' && character <= u'f'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool isDefaultAccountRead(const WalletAccountRead& read,
+                              const QString& expectedAccountId)
+    {
+        return read.ok()
+            && read.accountId == expectedAccountId
+            && isLowerHex(read.accountId, ACCOUNT_ID_HEX_SIZE)
+            && read.programOwner == QString(ACCOUNT_ID_HEX_SIZE, QLatin1Char('0'))
+            && read.balanceHex == QString(32, QLatin1Char('0'))
+            && read.nonceHex == QString(32, QLatin1Char('0'))
+            && read.dataHex.isEmpty();
     }
 
     QJsonObject issue(const QString& code,
@@ -172,9 +199,10 @@ NewPositionRuntime::NewPositionRuntime(WalletProvider* wallet,
 void NewPositionRuntime::clearWalletAccounts()
 {
     ++m_walletGeneration;
-    cancelSubmit();
     m_walletPublicAccountIds.clear();
+    clearPendingFreshLp();
     m_wallet->clearSnapshot();
+    cancelSubmit();
 }
 
 void NewPositionRuntime::setWalletAccounts(const QVector<WalletAccount>& accounts)
@@ -184,11 +212,33 @@ void NewPositionRuntime::setWalletAccounts(const QVector<WalletAccount>& account
         if (account.isPublic)
             publicAccountIds.append(account.address);
     }
+    publicAccountIds.sort(Qt::CaseSensitive);
     if (publicAccountIds != m_walletPublicAccountIds) {
-        ++m_walletGeneration;
+        if (!m_pendingFreshLpAccountId.isEmpty()
+            && !publicAccountIds.contains(m_pendingFreshLpAccountId)
+            && m_freshLpState == FreshLpState::Ready) {
+            clearPendingFreshLp();
+        }
+        m_walletPublicAccountIds = std::move(publicAccountIds);
         cancelSubmit();
+        return;
     }
-    m_walletPublicAccountIds = std::move(publicAccountIds);
+}
+
+void NewPositionRuntime::rememberPendingFreshLp(const QString& accountId)
+{
+    m_pendingFreshLpAccountId = accountId;
+    m_freshLpState = FreshLpState::Ready;
+    if (!m_walletPublicAccountIds.contains(accountId)) {
+        m_walletPublicAccountIds.append(accountId);
+        m_walletPublicAccountIds.sort(Qt::CaseSensitive);
+    }
+}
+
+void NewPositionRuntime::clearPendingFreshLp()
+{
+    m_pendingFreshLpAccountId.clear();
+    m_freshLpState = FreshLpState::None;
 }
 
 void NewPositionRuntime::cancelSubmit()
@@ -558,6 +608,11 @@ void NewPositionRuntime::submitAsync(const QVariantMap& request,
         callback(publicError(QStringLiteral("wallet_syncing")).toVariantMap());
         return;
     }
+    if (m_freshLpState == FreshLpState::Creating
+        || m_freshLpState == FreshLpState::Submitting) {
+        callback(publicError(QStringLiteral("submit_in_progress")).toVariantMap());
+        return;
+    }
     m_submitInFlight = true;
     const quint64 submitGeneration = ++m_submitGeneration;
     const quint64 walletGeneration = m_walletGeneration;
@@ -595,35 +650,132 @@ void NewPositionRuntime::submitAsync(const QVariantMap& request,
             }
 
             if (quote.value(QStringLiteral("requiresFreshLp")).toBool(false)) {
-                guard->m_wallet->createAccountAsync(
-                    true,
-                    [guard, input = std::move(input), quoteHash,
-                     submitGeneration, walletGeneration](
-                        WalletAccountCreation creation) mutable {
-                        if (!guard
-                            || !guard->submitIsCurrent(
-                                submitGeneration, walletGeneration))
-                            return;
-                        if (!creation.ok() || !creation.publicAccount.ok()) {
-                            const QString code = creation.failure
-                                    == WalletFailure::WalletUnavailable
-                                ? QStringLiteral("wallet_unavailable")
-                                : QStringLiteral("wallet_submission_failed");
-                            guard->finishSubmit(
-                                submitGeneration, publicError(code).toVariantMap());
-                            return;
-                        }
-                        if (!guard->m_walletPublicAccountIds.contains(creation.accountId))
-                            guard->m_walletPublicAccountIds.append(creation.accountId);
-                        guard->submitPlanAsync(
-                            std::move(input), quoteHash,
-                            accountReadJson(creation.publicAccount),
-                            submitGeneration, walletGeneration);
-                    });
+                guard->prepareFreshLpAsync(
+                    std::move(input), quoteHash,
+                    submitGeneration, walletGeneration);
                 return;
             }
             guard->submitPlanAsync(
-                std::move(input), quoteHash, {},
+                std::move(input), quoteHash, {}, {},
+                submitGeneration, walletGeneration);
+        });
+}
+
+void NewPositionRuntime::prepareFreshLpAsync(QJsonObject input,
+                                             const QString& quoteHash,
+                                             quint64 submitGeneration,
+                                             quint64 walletGeneration)
+{
+    if (!submitIsCurrent(submitGeneration, walletGeneration))
+        return;
+    if (m_freshLpState == FreshLpState::Ready
+        && !m_pendingFreshLpAccountId.isEmpty()) {
+        validatePendingFreshLpAsync(
+            std::move(input), quoteHash,
+            submitGeneration, walletGeneration);
+        return;
+    }
+    if (m_freshLpState != FreshLpState::None) {
+        finishSubmit(
+            submitGeneration,
+            publicError(QStringLiteral("submit_in_progress")).toVariantMap());
+        return;
+    }
+
+    m_freshLpState = FreshLpState::Creating;
+    QPointer<NewPositionRuntime> guard(this);
+    m_wallet->createAccountAsync(
+        true,
+        [guard, input = std::move(input), quoteHash,
+         submitGeneration, walletGeneration](
+            WalletAccountCreation creation) mutable {
+            if (!guard || walletGeneration != guard->m_walletGeneration)
+                return;
+
+            const bool reusable = creation.ok()
+                && isLowerHex(creation.accountId, ACCOUNT_ID_HEX_SIZE);
+            if (reusable)
+                guard->rememberPendingFreshLp(creation.accountId);
+            else
+                guard->clearPendingFreshLp();
+            if (!guard->submitIsCurrent(submitGeneration, walletGeneration))
+                return;
+            if (!reusable) {
+                const QString code = creation.failure
+                        == WalletFailure::WalletUnavailable
+                    ? QStringLiteral("wallet_unavailable")
+                    : QStringLiteral("wallet_submission_failed");
+                guard->finishSubmit(
+                    submitGeneration, publicError(code).toVariantMap());
+                return;
+            }
+
+            WalletAccountRead read = std::move(creation.publicAccount);
+            read.accountId = creation.accountId;
+            if (isDefaultAccountRead(read, creation.accountId)) {
+                guard->submitPlanAsync(
+                    std::move(input), quoteHash, accountReadJson(read),
+                    creation.accountId, submitGeneration, walletGeneration);
+                return;
+            }
+            guard->validatePendingFreshLpAsync(
+                std::move(input), quoteHash,
+                submitGeneration, walletGeneration);
+        });
+}
+
+void NewPositionRuntime::validatePendingFreshLpAsync(
+    QJsonObject input,
+    const QString& quoteHash,
+    quint64 submitGeneration,
+    quint64 walletGeneration)
+{
+    if (!submitIsCurrent(submitGeneration, walletGeneration))
+        return;
+    const QString accountId = m_pendingFreshLpAccountId;
+    if (m_freshLpState != FreshLpState::Ready
+        || accountId.isEmpty()
+        || !m_sequencer
+        || !m_sequencer->isConfigured()) {
+        finishSubmit(
+            submitGeneration,
+            publicError(QStringLiteral("account_read_failed")).toVariantMap());
+        return;
+    }
+
+    QPointer<NewPositionRuntime> guard(this);
+    m_sequencer->readAccounts(
+        { accountId }, true,
+        [guard, input = std::move(input), quoteHash, accountId,
+         submitGeneration, walletGeneration](
+            QVector<WalletAccountRead> reads) mutable {
+            if (!guard
+                || !guard->submitIsCurrent(
+                    submitGeneration, walletGeneration)) {
+                return;
+            }
+            if (guard->m_pendingFreshLpAccountId != accountId) {
+                guard->finishSubmit(
+                    submitGeneration,
+                    publicError(QStringLiteral("wallet_unavailable")).toVariantMap());
+                return;
+            }
+            const WalletAccountRead read = reads.value(0);
+            if (!read.ok()) {
+                guard->finishSubmit(
+                    submitGeneration,
+                    publicError(QStringLiteral("account_read_failed")).toVariantMap());
+                return;
+            }
+            if (!isDefaultAccountRead(read, accountId)) {
+                guard->clearPendingFreshLp();
+                guard->finishSubmit(
+                    submitGeneration,
+                    publicError(QStringLiteral("submission_status_unknown")).toVariantMap());
+                return;
+            }
+            guard->submitPlanAsync(
+                std::move(input), quoteHash, accountReadJson(read), accountId,
                 submitGeneration, walletGeneration);
         });
 }
@@ -631,6 +783,7 @@ void NewPositionRuntime::submitAsync(const QVariantMap& request,
 void NewPositionRuntime::submitPlanAsync(QJsonObject input,
                                          const QString& quoteHash,
                                          QJsonValue freshLp,
+                                         QString freshLpAccountId,
                                          quint64 submitGeneration,
                                          quint64 walletGeneration)
 {
@@ -678,18 +831,32 @@ void NewPositionRuntime::submitPlanAsync(QJsonObject input,
         jsonBoolList(plan.value(QStringLiteral("signingRequirements")).toArray()),
         jsonUIntList(plan.value(QStringLiteral("instruction")).toArray()),
     };
+    if (!freshLpAccountId.isEmpty()
+        && freshLpAccountId == m_pendingFreshLpAccountId) {
+        m_freshLpState = FreshLpState::Submitting;
+    }
     QPointer<NewPositionRuntime> guard(this);
     m_wallet->submitPublicTransactionAsync(
         transaction,
-        [guard, submitGeneration, walletGeneration, deadlineMs =
+        [guard, submitGeneration, walletGeneration,
+         freshLpAccountId = std::move(freshLpAccountId), deadlineMs =
              plan.value(QStringLiteral("deadlineMs")), affectedAccountIds =
              plan.value(QStringLiteral("affectedAccountIds"))](
                 WalletSubmission submission) mutable {
-            if (!guard
-                || !guard->submitIsCurrent(submitGeneration, walletGeneration))
+            if (!guard)
                 return;
             const QString transactionId = submission.accepted()
                 ? base58TransactionId(submission.nativeHash) : QString();
+            if (walletGeneration == guard->m_walletGeneration
+                && !freshLpAccountId.isEmpty()
+                && freshLpAccountId == guard->m_pendingFreshLpAccountId) {
+                if (submission.accepted())
+                    guard->clearPendingFreshLp();
+                else
+                    guard->m_freshLpState = FreshLpState::Ready;
+            }
+            if (!guard->submitIsCurrent(submitGeneration, walletGeneration))
+                return;
             if (transactionId.isEmpty()) {
                 const QString code = submission.failure
                         == WalletFailure::WalletUnavailable
@@ -803,6 +970,10 @@ QVariantMap NewPositionRuntime::submit(const QVariantMap& request,
         return publicError(QStringLiteral("submit_in_progress")).toVariantMap();
     if (!walletOpen)
         return publicError(QStringLiteral("wallet_unavailable")).toVariantMap();
+    if (m_freshLpState == FreshLpState::Creating
+        || m_freshLpState == FreshLpState::Submitting) {
+        return publicError(QStringLiteral("submit_in_progress")).toVariantMap();
+    }
     QScopedValueRollback<bool> submitGuard(m_submitInFlight, true);
 
     QJsonObject error;
@@ -826,11 +997,34 @@ QVariantMap NewPositionRuntime::submit(const QVariantMap& request,
     }
 
     QJsonValue freshLp;
+    QString freshLpAccountId;
     if (quote.value(QStringLiteral("requiresFreshLp")).toBool(false)) {
-        const WalletAccountCreation creation = m_wallet->createAccount(true);
-        if (!creation.ok() || !creation.publicAccount.ok())
-            return publicError(QStringLiteral("wallet_submission_failed")).toVariantMap();
-        freshLp = accountReadJson(creation.publicAccount);
+        WalletAccountRead read;
+        if (m_freshLpState == FreshLpState::None) {
+            m_freshLpState = FreshLpState::Creating;
+            const WalletAccountCreation creation = m_wallet->createAccount(true);
+            if (!creation.ok()
+                || !isLowerHex(creation.accountId, ACCOUNT_ID_HEX_SIZE)) {
+                clearPendingFreshLp();
+                return publicError(QStringLiteral("wallet_submission_failed")).toVariantMap();
+            }
+            rememberPendingFreshLp(creation.accountId);
+            read = creation.publicAccount;
+            read.accountId = creation.accountId;
+        } else if (m_freshLpState == FreshLpState::Ready
+                   && !m_pendingFreshLpAccountId.isEmpty()) {
+            read = m_wallet->readPublicAccount(m_pendingFreshLpAccountId);
+        } else {
+            return publicError(QStringLiteral("submit_in_progress")).toVariantMap();
+        }
+        freshLpAccountId = m_pendingFreshLpAccountId;
+        if (!read.ok())
+            return publicError(QStringLiteral("account_read_failed")).toVariantMap();
+        if (!isDefaultAccountRead(read, freshLpAccountId)) {
+            clearPendingFreshLp();
+            return publicError(QStringLiteral("submission_status_unknown")).toVariantMap();
+        }
+        freshLp = accountReadJson(read);
     }
 
     QJsonObject planInput = input;
@@ -859,14 +1053,27 @@ QVariantMap NewPositionRuntime::submit(const QVariantMap& request,
         || static_cast<qulonglong>(QDateTime::currentMSecsSinceEpoch()) >= deadline) {
         return publicError(QStringLiteral("transaction_deadline_expired")).toVariantMap();
     }
+    if (!freshLpAccountId.isEmpty()
+        && freshLpAccountId == m_pendingFreshLpAccountId) {
+        m_freshLpState = FreshLpState::Submitting;
+    }
     const WalletSubmission submission = m_wallet->submitPublicTransaction({
         programId,
         accountIds,
         signingRequirements,
         instruction,
     });
-    if (!submission.accepted())
+    if (!submission.accepted()) {
+        if (!freshLpAccountId.isEmpty()
+            && freshLpAccountId == m_pendingFreshLpAccountId) {
+            m_freshLpState = FreshLpState::Ready;
+        }
         return publicError(QStringLiteral("wallet_submission_failed")).toVariantMap();
+    }
+    if (!freshLpAccountId.isEmpty()
+        && freshLpAccountId == m_pendingFreshLpAccountId) {
+        clearPendingFreshLp();
+    }
     const QString transactionId = base58TransactionId(submission.nativeHash);
     if (transactionId.isEmpty())
         return publicError(QStringLiteral("wallet_submission_failed")).toVariantMap();

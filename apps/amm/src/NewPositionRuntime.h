@@ -57,6 +57,13 @@ public:
                        bool walletOpen);
 
 private:
+    enum class FreshLpState {
+        None,
+        Creating,
+        Ready,
+        Submitting,
+    };
+
     QJsonArray walletAccountReads(bool walletOpen, bool refresh) const;
     QJsonObject buildQuoteInput(const QVariantMap& request,
                                 const ActiveNetworkSnapshot& network,
@@ -71,8 +78,19 @@ private:
     void submitPlanAsync(QJsonObject input,
                          const QString& quoteHash,
                          QJsonValue freshLp,
+                         QString freshLpAccountId,
                          quint64 submitGeneration,
                          quint64 walletGeneration);
+    void prepareFreshLpAsync(QJsonObject input,
+                             const QString& quoteHash,
+                             quint64 submitGeneration,
+                             quint64 walletGeneration);
+    void validatePendingFreshLpAsync(QJsonObject input,
+                                     const QString& quoteHash,
+                                     quint64 submitGeneration,
+                                     quint64 walletGeneration);
+    void rememberPendingFreshLp(const QString& accountId);
+    void clearPendingFreshLp();
     void finishSubmit(quint64 submitGeneration, QVariantMap result);
     bool submitIsCurrent(quint64 submitGeneration,
                          quint64 walletGeneration) const;
@@ -81,6 +99,8 @@ private:
     AmmClient* m_client;
     SequencerClient* m_sequencer;
     QStringList m_walletPublicAccountIds;
+    QString m_pendingFreshLpAccountId;
+    FreshLpState m_freshLpState = FreshLpState::None;
     bool m_submitInFlight = false;
     quint64 m_walletGeneration = 0;
     quint64 m_submitGeneration = 0;

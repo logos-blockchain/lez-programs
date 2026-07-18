@@ -193,9 +193,13 @@ namespace {
         {
             ++createdAccounts;
             WalletAccountCreation creation;
-            creation.accountId = QStringLiteral("fresh-lp");
-            if (isPublic)
+            const QLatin1Char accountDigit(
+                "abcdef"[(createdAccounts - 1) % 6]);
+            creation.accountId = QString(64, accountDigit);
+            if (isPublic && !failCreatedPublicRead)
                 creation.publicAccount = readPublicAccount(creation.accountId);
+            else
+                creation.publicAccount.accountId = creation.accountId;
             return creation;
         }
 
@@ -215,6 +219,9 @@ namespace {
             WalletAccountRead read;
             read.accountId = accountId;
             read.status = QStringLiteral("ok");
+            read.programOwner = QString(64, QLatin1Char('0'));
+            read.balanceHex = readBalanceHex;
+            read.nonceHex = QString(32, QLatin1Char('0'));
             return read;
         }
 
@@ -222,6 +229,10 @@ namespace {
         {
             ++submissions;
             submitted = transaction;
+            if (submissionFailuresRemaining > 0) {
+                --submissionFailuresRemaining;
+                return { WalletFailure::SubmissionFailed, {} };
+            }
             return { WalletFailure::None, transactionHash };
         }
 
@@ -261,6 +272,9 @@ namespace {
         WalletTransaction submitted;
         bool deferAccountCreation = false;
         bool deferSubmission = false;
+        bool failCreatedPublicRead = false;
+        int submissionFailuresRemaining = 0;
+        QString readBalanceHex = QString(32, QLatin1Char('0'));
         AccountCreationCallback pendingAccountCreation;
         SubmissionCallback pendingSubmissionCallback;
         WalletAccountCreation pendingCreation;
@@ -316,6 +330,16 @@ namespace {
         AmmClientResult plan(const QJsonObject& request) const override
         {
             sawFreshLp = request.contains(QStringLiteral("freshLp"));
+            if (sawFreshLp) {
+                freshLpAccountIds.append(
+                    request.value(QStringLiteral("freshLp")).toObject()
+                        .value(QStringLiteral("id")).toString());
+            }
+            ++planCalls;
+            if (planFailuresRemaining > 0) {
+                --planFailuresRemaining;
+                return { false, {} };
+            }
             return success({
                 { QStringLiteral("status"), QStringLiteral("ready") },
                 { QStringLiteral("accountIds"), QJsonArray { QStringLiteral("account") } },
@@ -331,11 +355,21 @@ namespace {
 
         AmmClientResult normalizeAccountRpc(const QJsonObject& request) const override
         {
+            normalizedAccountIds.append(
+                request.value(QStringLiteral("accountId")).toString());
             return success({
                 { QStringLiteral("id"),
                   request.value(QStringLiteral("accountId")).toString() },
                 { QStringLiteral("status"), QStringLiteral("ok") },
-                { QStringLiteral("account"), QJsonObject() },
+                { QStringLiteral("account"), QJsonObject {
+                    { QStringLiteral("program_owner"),
+                      QString(64, QLatin1Char('0')) },
+                    { QStringLiteral("balance"),
+                      normalizedBalanceHex },
+                    { QStringLiteral("nonce"),
+                      QString(32, QLatin1Char('0')) },
+                    { QStringLiteral("data"), QString() },
+                } },
             });
         }
 
@@ -347,6 +381,11 @@ namespace {
         QString quoteHash = QStringLiteral("sha256:expected");
         bool requiresFreshLp = true;
         mutable bool sawFreshLp = false;
+        mutable int planCalls = 0;
+        mutable int planFailuresRemaining = 0;
+        mutable QStringList freshLpAccountIds;
+        mutable QStringList normalizedAccountIds;
+        QString normalizedBalanceHex = QString(32, QLatin1Char('0'));
     };
 
     ActiveNetworkSnapshot readyNetwork()
@@ -440,6 +479,125 @@ int main(int argc, char** argv)
                     && wallet.submitted.instruction.constFirst() == 1
                     && wallet.submitted.programId == QStringLiteral("program"),
                 "runtime should dispatch the unchanged plan once"))
+        return 1;
+
+    FakeWallet planRetryWallet;
+    FakeAmmClient planRetryClient;
+    planRetryClient.planFailuresRemaining = 1;
+    NewPositionRuntime planRetryRuntime(&planRetryWallet, &planRetryClient);
+    const QVariantMap failedPlan = planRetryRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    const QVariantMap retriedPlan = planRetryRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    if (!expect(failedPlan.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("backend_error")
+                    && retriedPlan.value(QStringLiteral("status")).toString()
+                        == QStringLiteral("submitted"),
+                "plan failure should remain retryable"))
+        return 1;
+    if (!expect(planRetryWallet.createdAccounts == 1
+                    && planRetryClient.freshLpAccountIds.size() == 2
+                    && planRetryClient.freshLpAccountIds.constFirst()
+                        == planRetryClient.freshLpAccountIds.constLast(),
+                "plan retry should reuse the pending LP account"))
+        return 1;
+
+    FakeWallet submissionRetryWallet;
+    submissionRetryWallet.submissionFailuresRemaining = 1;
+    FakeAmmClient submissionRetryClient;
+    NewPositionRuntime submissionRetryRuntime(
+        &submissionRetryWallet, &submissionRetryClient);
+    const QVariantMap failedSubmission = submissionRetryRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    const QVariantMap retriedSubmission = submissionRetryRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    if (!expect(failedSubmission.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("wallet_submission_failed")
+                    && retriedSubmission.value(QStringLiteral("status")).toString()
+                        == QStringLiteral("submitted"),
+                "wallet rejection should remain retryable"))
+        return 1;
+    if (!expect(submissionRetryWallet.createdAccounts == 1
+                    && submissionRetryWallet.submissions == 2
+                    && submissionRetryClient.freshLpAccountIds.size() == 2
+                    && submissionRetryClient.freshLpAccountIds.constFirst()
+                        == submissionRetryClient.freshLpAccountIds.constLast(),
+                "wallet retry should reuse the pending LP account"))
+        return 1;
+
+    FakeWallet consumedWallet;
+    FakeAmmClient consumedClient;
+    NewPositionRuntime consumedRuntime(&consumedWallet, &consumedClient);
+    const QVariantMap firstConsumed = consumedRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    const QVariantMap secondConsumed = consumedRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    if (!expect(firstConsumed.value(QStringLiteral("status")).toString()
+                    == QStringLiteral("submitted")
+                    && secondConsumed.value(QStringLiteral("status")).toString()
+                        == QStringLiteral("submitted")
+                    && consumedWallet.createdAccounts == 2
+                    && consumedClient.freshLpAccountIds.size() == 2
+                    && consumedClient.freshLpAccountIds.constFirst()
+                        != consumedClient.freshLpAccountIds.constLast(),
+                "accepted submission should consume the LP account reservation"))
+        return 1;
+
+    FakeWallet changedWallet;
+    FakeAmmClient changedClient;
+    changedClient.planFailuresRemaining = 1;
+    NewPositionRuntime changedRuntime(&changedWallet, &changedClient);
+    const QVariantMap beforeWalletChange = changedRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    changedRuntime.clearWalletAccounts();
+    const QVariantMap afterWalletChange = changedRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    if (!expect(beforeWalletChange.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("backend_error")
+                    && afterWalletChange.value(QStringLiteral("status")).toString()
+                        == QStringLiteral("submitted")
+                    && changedWallet.createdAccounts == 2,
+                "wallet change should discard the previous LP reservation"))
+        return 1;
+
+    FakeWallet readRetryWallet;
+    readRetryWallet.failCreatedPublicRead = true;
+    FakeAmmClient readRetryClient;
+    NewPositionRuntime readRetryRuntime(&readRetryWallet, &readRetryClient);
+    const QVariantMap failedCreatedRead = readRetryRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    readRetryWallet.failCreatedPublicRead = false;
+    const QVariantMap retriedCreatedRead = readRetryRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    if (!expect(failedCreatedRead.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("account_read_failed")
+                    && retriedCreatedRead.value(QStringLiteral("status")).toString()
+                        == QStringLiteral("submitted")
+                    && readRetryWallet.createdAccounts == 1,
+                "created-account read failure should preserve the LP reservation"))
+        return 1;
+
+    FakeWallet nonDefaultWallet;
+    FakeAmmClient nonDefaultClient;
+    nonDefaultClient.planFailuresRemaining = 1;
+    NewPositionRuntime nonDefaultRuntime(&nonDefaultWallet, &nonDefaultClient);
+    const QVariantMap reservedAccount = nonDefaultRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    nonDefaultWallet.readBalanceHex = QString(31, QLatin1Char('0'))
+        + QLatin1Char('1');
+    const QVariantMap nonDefaultAccount = nonDefaultRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    nonDefaultWallet.readBalanceHex = QString(32, QLatin1Char('0'));
+    const QVariantMap replacementAccount = nonDefaultRuntime.submit(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true);
+    if (!expect(reservedAccount.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("backend_error")
+                    && nonDefaultAccount.value(QStringLiteral("code")).toString()
+                        == QStringLiteral("submission_status_unknown")
+                    && replacementAccount.value(QStringLiteral("status")).toString()
+                        == QStringLiteral("submitted")
+                    && nonDefaultWallet.createdAccounts == 2,
+                "non-default LP reservation should be replaced"))
         return 1;
 
     FakeWallet orderedBytesWallet;
@@ -798,6 +956,234 @@ int main(int argc, char** argv)
                     && asyncResult.value(QStringLiteral("status")).toString()
                         == QStringLiteral("submitted"),
                 "async wallet completion should finish exactly once"))
+        return 1;
+
+    FakeWallet cancelledCreationWallet;
+    cancelledCreationWallet.deferAccountCreation = true;
+    FakeAmmClient cancelledCreationClient;
+    NewPositionRuntime cancelledCreationRuntime(
+        &cancelledCreationWallet, &cancelledCreationClient, &sequencer);
+    QVariantMap cancelledCreationResult;
+    cancelledCreationRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            cancelledCreationResult = std::move(result);
+        });
+    if (!expect(waitForCondition(
+                    [&]() { return cancelledCreationWallet.createdAccounts == 1; }),
+                "cancelled creation should reach the wallet"))
+        return 1;
+    WalletAccount creationDiscoveredAccount;
+    creationDiscoveredAccount.address = QString(64, QLatin1Char('8'));
+    creationDiscoveredAccount.isPublic = true;
+    cancelledCreationRuntime.setWalletAccounts({ creationDiscoveredAccount });
+    QVariantMap blockedCreationRetry;
+    cancelledCreationRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            blockedCreationRetry = std::move(result);
+        });
+    if (!expect(cancelledCreationResult.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("wallet_unavailable")
+                    && blockedCreationRetry.value(QStringLiteral("code")).toString()
+                        == QStringLiteral("submit_in_progress"),
+                "account refresh should wait for active creation to settle"))
+        return 1;
+    cancelledCreationWallet.finishAccountCreation();
+    const int creationReadsBeforeRetry = refreshClient.normalizedAccountIds.count(
+        QString(64, QLatin1Char('a')));
+    QVariantMap creationRetryResult;
+    cancelledCreationRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            creationRetryResult = std::move(result);
+        });
+    if (!expect(waitForCondition([&]() {
+                    return !creationRetryResult.isEmpty();
+                }),
+                "creation retry should complete"))
+        return 1;
+    if (!expect(creationRetryResult.value(QStringLiteral("status")).toString()
+                    == QStringLiteral("submitted")
+                    && cancelledCreationWallet.createdAccounts == 1
+                    && cancelledCreationClient.freshLpAccountIds.size() == 1
+                    && refreshClient.normalizedAccountIds.count(
+                        QString(64, QLatin1Char('a')))
+                        > creationReadsBeforeRetry,
+                "late creation should be reserved for the retry"))
+        return 1;
+
+    FakeWallet failedReadWallet;
+    failedReadWallet.failCreatedPublicRead = true;
+    FakeAmmClient failedReadClient;
+    NewPositionRuntime failedReadRuntime(
+        &failedReadWallet, &failedReadClient, &sequencer);
+    const int failedReadNormalizations = refreshClient.normalizedAccountIds.count(
+        QString(64, QLatin1Char('a')));
+    QVariantMap failedReadResult;
+    failedReadRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            failedReadResult = std::move(result);
+        });
+    if (!expect(waitForCondition([&]() { return !failedReadResult.isEmpty(); }),
+                "sequencer fallback should complete the failed wallet read"))
+        return 1;
+    if (!expect(failedReadResult.value(QStringLiteral("status")).toString()
+                    == QStringLiteral("submitted")
+                    && failedReadWallet.createdAccounts == 1
+                    && failedReadWallet.submissions == 1
+                    && refreshClient.normalizedAccountIds.count(
+                        QString(64, QLatin1Char('a')))
+                        > failedReadNormalizations,
+                "sequencer should validate a newly created LP account"))
+        return 1;
+
+    FakeWallet cancelledSubmissionWallet;
+    cancelledSubmissionWallet.deferSubmission = true;
+    cancelledSubmissionWallet.submissionFailuresRemaining = 1;
+    FakeAmmClient cancelledSubmissionClient;
+    NewPositionRuntime cancelledSubmissionRuntime(
+        &cancelledSubmissionWallet, &cancelledSubmissionClient, &sequencer);
+    QVariantMap cancelledSubmissionResult;
+    cancelledSubmissionRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            cancelledSubmissionResult = std::move(result);
+        });
+    if (!expect(waitForCondition(
+                    [&]() { return cancelledSubmissionWallet.submissions == 1; }),
+                "cancelled submission should reach the wallet"))
+        return 1;
+    WalletAccount pendingFreshLp;
+    pendingFreshLp.address = QString(64, QLatin1Char('a'));
+    pendingFreshLp.isPublic = true;
+    WalletAccount discoveredAccount;
+    discoveredAccount.address = QString(64, QLatin1Char('9'));
+    discoveredAccount.isPublic = true;
+    cancelledSubmissionRuntime.setWalletAccounts(
+        { pendingFreshLp, discoveredAccount });
+    QVariantMap blockedSubmissionRetry;
+    cancelledSubmissionRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            blockedSubmissionRetry = std::move(result);
+        });
+    if (!expect(cancelledSubmissionResult.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("wallet_unavailable")
+                    && blockedSubmissionRetry.value(QStringLiteral("code")).toString()
+                        == QStringLiteral("submit_in_progress"),
+                "retry should wait for cancelled wallet submission to settle"))
+        return 1;
+    cancelledSubmissionWallet.finishSubmission();
+    cancelledSubmissionWallet.deferSubmission = false;
+    QVariantMap settledSubmissionRetry;
+    cancelledSubmissionRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            settledSubmissionRetry = std::move(result);
+        });
+    if (!expect(waitForCondition([&]() {
+                    return !settledSubmissionRetry.isEmpty();
+                }),
+                "settled submission retry should complete"))
+        return 1;
+    if (!expect(settledSubmissionRetry.value(QStringLiteral("status")).toString()
+                    == QStringLiteral("submitted")
+                    && cancelledSubmissionWallet.createdAccounts == 1
+                    && cancelledSubmissionWallet.submissions == 2
+                    && cancelledSubmissionClient.freshLpAccountIds.size() == 2
+                    && cancelledSubmissionClient.freshLpAccountIds.constFirst()
+                        == cancelledSubmissionClient.freshLpAccountIds.constLast(),
+                "rejected late submission should restore the LP reservation"))
+        return 1;
+
+    FakeWallet acceptedLateWallet;
+    acceptedLateWallet.deferSubmission = true;
+    FakeAmmClient acceptedLateClient;
+    NewPositionRuntime acceptedLateRuntime(
+        &acceptedLateWallet, &acceptedLateClient, &sequencer);
+    QVariantMap acceptedLateResult;
+    acceptedLateRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            acceptedLateResult = std::move(result);
+        });
+    if (!expect(waitForCondition(
+                    [&]() { return acceptedLateWallet.submissions == 1; }),
+                "late accepted submission should reach the wallet"))
+        return 1;
+    acceptedLateRuntime.cancelSubmit();
+    QVariantMap acceptedLateBlockedRetry;
+    acceptedLateRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            acceptedLateBlockedRetry = std::move(result);
+        });
+    if (!expect(acceptedLateResult.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("wallet_unavailable")
+                    && acceptedLateBlockedRetry.value(QStringLiteral("code")).toString()
+                        == QStringLiteral("submit_in_progress"),
+                "accepted late submission should block retry until settled"))
+        return 1;
+    acceptedLateWallet.finishSubmission();
+    acceptedLateWallet.deferSubmission = false;
+    QVariantMap acceptedLateRetry;
+    acceptedLateRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            acceptedLateRetry = std::move(result);
+        });
+    if (!expect(waitForCondition([&]() { return !acceptedLateRetry.isEmpty(); }),
+                "accepted late retry should complete"))
+        return 1;
+    if (!expect(acceptedLateRetry.value(QStringLiteral("status")).toString()
+                    == QStringLiteral("submitted")
+                    && acceptedLateWallet.createdAccounts == 2
+                    && acceptedLateWallet.submissions == 2
+                    && acceptedLateClient.freshLpAccountIds.size() == 2
+                    && acceptedLateClient.freshLpAccountIds.constFirst()
+                        != acceptedLateClient.freshLpAccountIds.constLast(),
+                "accepted late submission should consume its LP reservation"))
+        return 1;
+
+    FakeWallet changedDuringSubmissionWallet;
+    changedDuringSubmissionWallet.deferSubmission = true;
+    FakeAmmClient changedDuringSubmissionClient;
+    NewPositionRuntime changedDuringSubmissionRuntime(
+        &changedDuringSubmissionWallet, &changedDuringSubmissionClient, &sequencer);
+    QVariantMap changedDuringSubmissionResult;
+    changedDuringSubmissionRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            changedDuringSubmissionResult = std::move(result);
+        });
+    if (!expect(waitForCondition([&]() {
+                    return changedDuringSubmissionWallet.submissions == 1;
+                }),
+                "wallet-change submission should reach the wallet"))
+        return 1;
+    changedDuringSubmissionRuntime.clearWalletAccounts();
+    if (!expect(changedDuringSubmissionResult.value(
+                    QStringLiteral("code")).toString()
+                    == QStringLiteral("wallet_unavailable"),
+                "wallet change should cancel deferred submission"))
+        return 1;
+    changedDuringSubmissionWallet.finishSubmission();
+    changedDuringSubmissionWallet.deferSubmission = false;
+    QVariantMap changedWalletRetry;
+    changedDuringSubmissionRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            changedWalletRetry = std::move(result);
+        });
+    if (!expect(waitForCondition([&]() { return !changedWalletRetry.isEmpty(); }),
+                "new wallet submission should complete"))
+        return 1;
+    if (!expect(changedWalletRetry.value(QStringLiteral("status")).toString()
+                    == QStringLiteral("submitted")
+                    && changedDuringSubmissionWallet.createdAccounts == 2,
+                "old wallet callback should not mutate new reservation state"))
         return 1;
 
     FakeWallet cancelledMutationWallet;
