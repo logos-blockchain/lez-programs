@@ -348,6 +348,7 @@ void AmmUiBackend::publishWalletAssets(const QVariantMap& context)
 
     QVariantList assets;
     QVariantList available;
+    QVector<WalletAccountPresentation> presentations;
     bool hasUnavailableToken = false;
     for (const QVariant& value : context.value(QStringLiteral("tokens")).toList()) {
         const QVariantMap token = value.toMap();
@@ -375,6 +376,21 @@ void AmmUiBackend::publishWalletAssets(const QVariantMap& context)
             assets.append(std::move(asset));
         else
             available.append(std::move(asset));
+        for (const QVariant& holdingValue : token.value(QStringLiteral("holdings")).toList()) {
+            const QString holdingId = holdingValue.toMap().value(
+                QStringLiteral("holdingId")).toString();
+            if (holdingId.isEmpty())
+                continue;
+            presentations.append({
+                holdingId,
+                QStringLiteral("token_holding"),
+                name + QStringLiteral(" holding"),
+                QStringLiteral("Token"),
+                QStringLiteral("TokenHolding"),
+                definitionId,
+                true,
+            });
+        }
         hasUnavailableToken = hasUnavailableToken || !ready;
     }
     for (QVariant& asset : available)
@@ -385,6 +401,7 @@ void AmmUiBackend::publishWalletAssets(const QVariantMap& context)
     setAssetError(hasUnavailableToken
                       ? QStringLiteral("some_definitions_unavailable")
                       : QString());
+    m_walletController->applyAccountPresentations(presentations);
 }
 
 void AmmUiBackend::watchTransaction(const QVariantMap& result)
