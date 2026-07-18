@@ -18,6 +18,12 @@ TestCase {
         }
     }
 
+    Component {
+        id: clipboardSinkComponent
+
+        TextEdit {}
+    }
+
     SignalSpy {
         id: editedSpy
         signalName: "snapshotEdited"
@@ -113,7 +119,7 @@ TestCase {
         var scale = findChild(summary, "confirmationDepositScale")
         var expectedLp = findChild(summary, "confirmationExpectedLp")
         var lpGuard = findChild(summary, "confirmationLpGuard")
-        var pool = findChild(summary, "confirmationPool")
+        var pool = findChild(summary, "poolAddressRow")
         var accountPlan = findChild(summary, "confirmationAccountPlan")
 
         verify(deposit)
@@ -134,7 +140,59 @@ TestCase {
         compare(expectedLp.value, "10 raw LP")
         compare(lpGuard.label, "Locked LP")
         compare(lpGuard.value, "2 raw LP")
-        compare(pool.value, "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE")
+        compare(pool.address, "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE")
         compare(accountPlan.text, "Account plan (1)")
+    }
+
+    function test_addressesStayOnOneLineAndCopyFullBase58Value() {
+        failOnWarning(/Detected recursive rearrange/)
+
+        var address = "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"
+        var summary = createTemporaryObject(summaryComponent, testCase, {
+            "width": 250,
+            "snapshot": {
+                "poolId": address,
+                "accountPreview": [{
+                    "order": 0,
+                    "role": "LP holding",
+                    "action": "create",
+                    "accountId": address
+                }]
+            }
+        })
+        var sink = createTemporaryObject(clipboardSinkComponent, testCase)
+        verify(summary)
+        verify(sink)
+        wait(0)
+
+        var poolRow = findChild(summary, "poolAddressRow")
+        verify(poolRow)
+        var addressText = findChild(poolRow, "addressText")
+        var copyButton = findChild(poolRow, "copyAddressButton")
+        verify(addressText)
+        verify(copyButton)
+        compare(addressText.text, address)
+        compare(addressText.wrapMode, Text.NoWrap)
+        compare(addressText.elide, Text.ElideMiddle)
+        tryCompare(addressText, "truncated", true)
+
+        copyButton.clicked()
+        sink.paste()
+        tryCompare(sink, "text", address)
+
+        var accountPlan = findChild(summary, "confirmationAccountPlan")
+        verify(accountPlan)
+        accountPlan.clicked()
+        wait(0)
+        var accountRow = findChild(summary, "accountPlanAddressRow0")
+        verify(accountRow)
+        compare(accountRow.address, address)
+
+        sink.text = ""
+        var accountCopyButton = findChild(accountRow, "copyAddressButton")
+        verify(accountCopyButton)
+        accountCopyButton.clicked()
+        sink.paste()
+        tryCompare(sink, "text", address)
     }
 }

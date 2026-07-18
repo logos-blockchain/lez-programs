@@ -20,6 +20,12 @@ ColumnLayout {
         id: fallbackTheme
     }
 
+    TextEdit {
+        id: clipboardProxy
+
+        visible: false
+    }
+
     function actionText(instruction) {
         if (instruction === "NewDefinition")
             return qsTr("Create pool")
@@ -134,13 +140,14 @@ ColumnLayout {
         value: root.snapshot.lpGuardText || "-"
     }
 
-    SummaryRow {
-        objectName: "confirmationPool"
+    CopyableAddressRow {
+        objectName: "poolAddressRow"
         Layout.fillWidth: true
         visible: String(root.snapshot.poolId || "").length > 0
+        theme: root.theme
         label: qsTr("Pool")
-        value: String(root.snapshot.poolId || "")
-        valueWrapAnywhere: true
+        address: String(root.snapshot.poolId || "")
+        onCopyRequested: function(address) { root.copyToClipboard(address) }
     }
 
     LogosButton {
@@ -165,19 +172,31 @@ ColumnLayout {
         Repeater {
             model: root.accountPlan()
 
-            SummaryRow {
+            CopyableAddressRow {
                 required property var modelData
 
+                objectName: "accountPlanAddressRow" + String(modelData.order || 0)
                 Layout.fillWidth: true
+                theme: root.theme
                 label: qsTr("%1. %2 · %3")
                     .arg(Number(modelData.order || 0) + 1)
                     .arg(String(modelData.role || "-"))
                     .arg(String(modelData.action || "-"))
-                value: modelData.accountId ? String(modelData.accountId)
-                                           : qsTr("Assigned by wallet")
-                valueWrapAnywhere: true
+                address: String(modelData.accountId || "")
+                fallbackText: qsTr("Assigned by wallet")
+                onCopyRequested: function(address) { root.copyToClipboard(address) }
             }
         }
+    }
+
+    function copyToClipboard(value) {
+        if (!value)
+            return
+        clipboardProxy.text = value
+        clipboardProxy.selectAll()
+        clipboardProxy.copy()
+        clipboardProxy.deselect()
+        clipboardProxy.text = ""
     }
 
     function isMissingPool() {
