@@ -20,12 +20,6 @@ ColumnLayout {
         id: fallbackTheme
     }
 
-    TextEdit {
-        id: clipboardProxy
-
-        visible: false
-    }
-
     function actionText(instruction) {
         if (instruction === "NewDefinition")
             return qsTr("Create pool")
@@ -80,7 +74,6 @@ ColumnLayout {
                 Layout.preferredHeight: implicitHeight
                 theme: root.theme
                 value: String(root.snapshot.selectedLpHoldingId || "")
-                onCopyRequested: function(value) { root.copyToClipboard(value) }
             }
         }
     }
@@ -162,7 +155,6 @@ ColumnLayout {
         theme: root.theme
         label: qsTr("Pool")
         address: String(root.snapshot.poolId || "")
-        onCopyRequested: function(address) { root.copyToClipboard(address) }
     }
 
     LogosButton {
@@ -199,19 +191,8 @@ ColumnLayout {
                     .arg(String(modelData.action || "-"))
                 address: String(modelData.accountId || "")
                 fallbackText: qsTr("Assigned by wallet")
-                onCopyRequested: function(address) { root.copyToClipboard(address) }
             }
         }
-    }
-
-    function copyToClipboard(value) {
-        if (!value)
-            return
-        clipboardProxy.text = value
-        clipboardProxy.selectAll()
-        clipboardProxy.copy()
-        clipboardProxy.deselect()
-        clipboardProxy.text = ""
     }
 
     function isMissingPool() {

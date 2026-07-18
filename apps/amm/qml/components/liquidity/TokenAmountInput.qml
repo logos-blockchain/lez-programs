@@ -66,12 +66,6 @@ AmmTokenAmountSurface {
         }
     }
 
-    TextEdit {
-        id: clipboardProxy
-
-        visible: false
-    }
-
     Timer {
         id: commitTimer
 
@@ -131,7 +125,6 @@ AmmTokenAmountSurface {
                     Layout.preferredHeight: implicitHeight
                     theme: root.theme
                     value: root.selectedHoldingId
-                    onCopyRequested: function(value) { root.copyToClipboard(value) }
                 }
             }
         }
@@ -158,16 +151,6 @@ AmmTokenAmountSurface {
 
     function acceptInput(value) {
         tokenModal.acceptInput(value)
-    }
-
-    function copyToClipboard(value) {
-        if (!value)
-            return
-        clipboardProxy.text = value
-        clipboardProxy.selectAll()
-        clipboardProxy.copy()
-        clipboardProxy.deselect()
-        clipboardProxy.text = ""
     }
 
     function commitPendingEdit() {

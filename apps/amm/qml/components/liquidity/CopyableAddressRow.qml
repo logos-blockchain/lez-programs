@@ -11,10 +11,7 @@ RowLayout {
     property string label: ""
     property string address: ""
     property string fallbackText: qsTr("Assigned by wallet")
-    property bool copied: false
     readonly property bool canCopy: root.address.length > 0
-
-    signal copyRequested(string address)
 
     Layout.fillWidth: true
     spacing: 8
@@ -59,47 +56,16 @@ RowLayout {
     ToolTip.visible: root.canCopy && addressText.truncated && addressHover.hovered
     ToolTip.text: root.address
 
-    Button {
+    AmmCopyButton {
         id: copyAddressButton
 
         objectName: "copyAddressButton"
         Layout.preferredWidth: visible ? 48 : 0
         Layout.preferredHeight: 24
-        visible: root.canCopy
-        enabled: root.canCopy
-        hoverEnabled: true
-        text: root.copied ? qsTr("Copied") : qsTr("Copy")
-        Accessible.name: qsTr("Copy %1 address").arg(root.label)
-        ToolTip.visible: hovered
-        ToolTip.text: text
-        onClicked: {
-            root.copied = true
-            copiedReset.restart()
-            root.copyRequested(root.address)
-        }
-
-        contentItem: Text {
-            text: copyAddressButton.text
-            color: copyAddressButton.enabled
-                   ? root.theme.colors.ctaBg : root.theme.colors.textPlaceholder
-            font.pixelSize: 11
-            font.weight: Font.Medium
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-
-        background: Rectangle {
-            radius: 6
-            color: copyAddressButton.hovered || copyAddressButton.activeFocus
-                   ? root.theme.colors.selection : "transparent"
-        }
-    }
-
-    Timer {
-        id: copiedReset
-
-        interval: 1600
-        repeat: false
-        onTriggered: root.copied = false
+        theme: root.theme
+        value: root.address
+        accessibleName: qsTr("Copy %1 address").arg(root.label)
+        buttonWidth: 48
+        labelFontPixelSize: 11
     }
 }
