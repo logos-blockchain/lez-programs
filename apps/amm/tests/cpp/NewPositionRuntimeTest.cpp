@@ -748,6 +748,79 @@ int main(int argc, char** argv)
                 "matching endpoint should retain configured credentials"))
         return 1;
 
+    LocalRpcServer rootEndpointServer;
+    if (!expect(rootEndpointServer.listen(),
+                "root endpoint sequencer should listen"))
+        return 1;
+    QTemporaryFile rootEndpointConfig;
+    if (!expect(rootEndpointConfig.open(),
+                "root endpoint config should open"))
+        return 1;
+    rootEndpointConfig.write(QJsonDocument(QJsonObject {
+        { QStringLiteral("sequencer_addr"), rootEndpointServer.endpoint() + QLatin1Char('/') },
+        { QStringLiteral("basic_auth"), QJsonObject {
+            { QStringLiteral("username"), QStringLiteral("user") },
+            { QStringLiteral("password"), QStringLiteral("pass") },
+        } },
+    }).toJson(QJsonDocument::Compact));
+    rootEndpointConfig.flush();
+    FakeAmmClient rootEndpointClient;
+    SequencerClient rootEndpointSequencer(&rootEndpointClient);
+    if (!expect(rootEndpointSequencer.configure(rootEndpointConfig.fileName()),
+                "root endpoint config should configure"))
+        return 1;
+    const QString rootEndpointAccount(64, QLatin1Char('4'));
+    QVector<WalletAccountRead> rootEndpointReads;
+    if (!expect(waitForAccounts(rootEndpointSequencer, { rootEndpointAccount }, false,
+                                &rootEndpointReads),
+                "root endpoint initial read should complete"))
+        return 1;
+    if (!expect(rootEndpointServer.requestCount() == 1
+                    && rootEndpointServer.lastRequest().toLower().contains(
+                        "authorization: basic dxnlcjpwyxnz"),
+                "configured root endpoint should use configured credentials"))
+        return 1;
+
+    if (!expect(rootEndpointSequencer.configure(
+                    rootEndpointConfig.fileName(), rootEndpointServer.endpoint()),
+                "slash-equivalent endpoint should configure"))
+        return 1;
+    rootEndpointReads.clear();
+    if (!expect(waitForAccounts(rootEndpointSequencer, { rootEndpointAccount }, false,
+                                &rootEndpointReads),
+                "slash-equivalent cached read should complete"))
+        return 1;
+    if (!expect(rootEndpointServer.requestCount() == 1,
+                "slash-equivalent endpoint should preserve account cache"))
+        return 1;
+
+    const QString rootEndpointFreshAccount(64, QLatin1Char('5'));
+    if (!expect(waitForAccounts(rootEndpointSequencer, { rootEndpointFreshAccount }, true,
+                                &rootEndpointReads),
+                "slash-equivalent forced read should complete"))
+        return 1;
+    if (!expect(rootEndpointServer.requestCount() == 2
+                    && rootEndpointServer.lastRequest().toLower().contains(
+                        "authorization: basic dxnlcjpwyxnz"),
+                "slash-equivalent endpoint should retain configured credentials"))
+        return 1;
+
+    if (!expect(rootEndpointSequencer.configure(
+                    rootEndpointConfig.fileName(),
+                    rootEndpointServer.endpoint() + QStringLiteral("/rpc")),
+                "path-changing endpoint should configure"))
+        return 1;
+    rootEndpointReads.clear();
+    if (!expect(waitForAccounts(rootEndpointSequencer, { rootEndpointAccount }, false,
+                                &rootEndpointReads),
+                "path-changing endpoint read should complete"))
+        return 1;
+    if (!expect(rootEndpointServer.requestCount() == 3
+                    && !rootEndpointServer.lastRequest().toLower().contains(
+                        "authorization:"),
+                "path-changing endpoint should clear cache and credentials"))
+        return 1;
+
     LocalRpcServer staleContextServer;
     if (!expect(staleContextServer.listen(),
                 "stale-context sequencer should listen"))

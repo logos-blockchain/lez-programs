@@ -56,6 +56,15 @@ QByteArray rpcBody(const QString& method, const QJsonArray& params)
     }).toJson(QJsonDocument::Compact);
 }
 
+QUrl canonicalEndpoint(QUrl endpoint)
+{
+    // Both forms issue requests to the HTTP root, so they must share cache
+    // and credential identity.
+    if (endpoint.path() == QLatin1String("/"))
+        endpoint.setPath({});
+    return endpoint;
+}
+
 WalletAccountRead accountRead(const QJsonObject& value, const QString& fallbackId)
 {
     WalletAccountRead read;
@@ -90,8 +99,8 @@ bool SequencerClient::configure(const QString& configPath,
     if (configValid) {
         const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
         const QJsonObject config = document.object();
-        configuredEndpoint = QUrl(
-            config.value(QStringLiteral("sequencer_addr")).toString());
+        configuredEndpoint = canonicalEndpoint(QUrl(
+            config.value(QStringLiteral("sequencer_addr")).toString()));
         const QString scheme = configuredEndpoint.scheme().toLower();
         configValid = document.isObject()
             && configuredEndpoint.isValid()
@@ -108,8 +117,8 @@ bool SequencerClient::configure(const QString& configPath,
         }
     }
 
-    QUrl endpoint = effectiveEndpoint.isEmpty()
-        ? configuredEndpoint : QUrl(effectiveEndpoint);
+    QUrl endpoint = canonicalEndpoint(effectiveEndpoint.isEmpty()
+        ? configuredEndpoint : QUrl(effectiveEndpoint));
     const QString scheme = endpoint.scheme().toLower();
     const bool valid = endpoint.isValid()
         && !endpoint.host().isEmpty()
