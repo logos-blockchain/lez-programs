@@ -38,6 +38,7 @@ TestCase {
             property int contextRefreshCalls: 0
             property int contextRequestId: 0
             property int quoteCalls: 0
+            property var quotePoolProbeFlags: []
             property int submitCalls: 0
             property var lastContextRefreshRequest: ({})
 
@@ -49,8 +50,12 @@ TestCase {
                     newPositionSubmitResult = result
             }
 
-            function requestNewPositionQuote(request, requestId, forceRefresh) {
+            function requestNewPositionQuote(request, requestId, forceRefresh,
+                                             isPoolProbe) {
                 ++quoteCalls
+                quotePoolProbeFlags = quotePoolProbeFlags.concat([
+                    isPoolProbe === true
+                ])
                 var result = JSON.parse(JSON.stringify(quoteResult || ({})))
                 result.requestId = requestId
                 newPositionQuoteResult = result
@@ -218,6 +223,22 @@ TestCase {
         wait(0)
         page.flow.pollPendingPool()
         compare(backend.quoteCalls, 1)
+        compare(backend.quotePoolProbeFlags.length, 1)
+        compare(backend.quotePoolProbeFlags[0], true)
+    }
+
+    function test_userQuoteUsesInteractiveRequestLane() {
+        var backend = createTemporaryObject(backendComponent, testCase)
+        var page = createTemporaryObject(pageComponent, testCase, { "backend": backend })
+        page.flow.pendingQuoteRequest = {
+            "ok": true,
+            "request": ({})
+        }
+        page.flow.active = true
+        page.flow.requestQuoteNow(page.flow.quoteSerial)
+
+        verify(backend.quoteCalls > 0)
+        compare(backend.quotePoolProbeFlags[0], false)
     }
 
     function test_activePoolSubmissionDoesNotStartPoolCreationProbe() {

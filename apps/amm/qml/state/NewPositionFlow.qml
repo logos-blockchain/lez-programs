@@ -182,7 +182,7 @@ QtObject {
         }
         root.activeQuoteRequestId = ++root.operationSerial
         root.backend.requestNewPositionQuote(
-            built.request, root.activeQuoteRequestId, true)
+            built.request, root.activeQuoteRequestId, true, false)
     }
 
     function acceptQuoteResult(result) {
@@ -299,7 +299,8 @@ QtObject {
         const pending = root.pendingPoolProbes[0]
         root.poolProbeInFlight = true
         root.poolProbeRequestId = ++root.operationSerial
-        root.backend.requestNewPositionQuote(pending.request, root.poolProbeRequestId, true)
+        root.backend.requestNewPositionQuote(
+            pending.request, root.poolProbeRequestId, true, true)
     }
 
     function finishPoolProbe(pending, quote) {

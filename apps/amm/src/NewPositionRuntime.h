@@ -36,6 +36,7 @@ public:
                     const ActiveNetworkSnapshot& network,
                     bool walletOpen,
                     bool forceRefresh,
+                    bool isPoolProbe,
                     ResultCallback callback);
     void submitAsync(const QVariantMap& request,
                      const QString& quoteHash,
@@ -74,6 +75,7 @@ private:
                               const ActiveNetworkSnapshot& network,
                               bool walletOpen,
                               bool forceRefresh,
+                              std::function<bool()> shouldContinue,
                               std::function<void(QJsonObject, QJsonObject)> callback);
     void submitPlanAsync(QJsonObject input,
                          const QString& quoteHash,
@@ -104,6 +106,7 @@ private:
     bool m_submitInFlight = false;
     quint64 m_walletGeneration = 0;
     quint64 m_contextGeneration = 0;
+    quint64 m_userQuoteGeneration = 0;
     quint64 m_submitGeneration = 0;
     ResultCallback m_submitCallback;
 };

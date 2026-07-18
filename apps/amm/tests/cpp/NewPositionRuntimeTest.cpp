@@ -298,6 +298,7 @@ namespace {
 
         AmmClientResult pairIds(const QJsonObject&) const override
         {
+            ++pairIdsCalls;
             return success({
                 { QStringLiteral("status"), QStringLiteral("ok") },
                 { QStringLiteral("tokenAId"), QStringLiteral("token-a") },
@@ -320,6 +321,7 @@ namespace {
 
         AmmClientResult quote(const QJsonObject&) const override
         {
+            ++quoteCalls;
             return success({
                 { QStringLiteral("schema"), QStringLiteral("new-position.v2") },
                 { QStringLiteral("status"), QStringLiteral("ok") },
@@ -385,6 +387,8 @@ namespace {
         mutable bool sawFreshLp = false;
         mutable int tokenIdsCalls = 0;
         mutable int contextCalls = 0;
+        mutable int pairIdsCalls = 0;
+        mutable int quoteCalls = 0;
         mutable int planCalls = 0;
         mutable int planFailuresRemaining = 0;
         mutable QStringList freshLpAccountIds;
@@ -767,6 +771,71 @@ int main(int argc, char** argv)
                 "superseded context should stop before downstream work"))
         return 1;
 
+    LocalRpcServer staleQuoteServer;
+    if (!expect(staleQuoteServer.listen(),
+                "stale-quote sequencer should listen"))
+        return 1;
+    staleQuoteServer.holdResponses();
+    QTemporaryFile staleQuoteConfig;
+    if (!expect(staleQuoteConfig.open(),
+                "stale-quote config should open"))
+        return 1;
+    staleQuoteConfig.write(QJsonDocument(QJsonObject {
+        { QStringLiteral("sequencer_addr"), staleQuoteServer.endpoint() },
+    }).toJson(QJsonDocument::Compact));
+    staleQuoteConfig.flush();
+    FakeWallet staleQuoteWallet;
+    FakeAmmClient staleQuoteClient;
+    SequencerClient staleQuoteSequencer(&staleQuoteClient);
+    if (!expect(staleQuoteSequencer.configure(staleQuoteConfig.fileName()),
+                "stale-quote sequencer should configure"))
+        return 1;
+    NewPositionRuntime staleQuoteRuntime(
+        &staleQuoteWallet, &staleQuoteClient, &staleQuoteSequencer);
+    int staleQuoteCallbacks = 0;
+    int latestQuoteCallbacks = 0;
+    staleQuoteRuntime.quoteAsync(
+        request, readyNetwork(), true, false, false,
+        [&](QVariantMap) { ++staleQuoteCallbacks; });
+    if (!expect(waitForRequestCount(staleQuoteServer, 1),
+                "first quote should begin the config read"))
+        return 1;
+    staleQuoteRuntime.quoteAsync(
+        request, readyNetwork(), true, false, false,
+        [&](QVariantMap) { ++latestQuoteCallbacks; });
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    if (!expect(staleQuoteServer.requestCount() == 1,
+                "superseding quote should share the active config read"))
+        return 1;
+    staleQuoteServer.releaseNextResponse();
+    if (!expect(waitForCondition([&]() { return latestQuoteCallbacks == 1; }),
+                "latest quote should complete"))
+        return 1;
+    if (!expect(staleQuoteCallbacks == 0
+                    && staleQuoteClient.pairIdsCalls == 1
+                    && staleQuoteClient.quoteCalls == 1,
+                "superseded user quote should stop before pair work"))
+        return 1;
+
+    int poolProbeCallbacks = 0;
+    int concurrentUserCallbacks = 0;
+    staleQuoteRuntime.quoteAsync(
+        request, readyNetwork(), true, false, true,
+        [&](QVariantMap) { ++poolProbeCallbacks; });
+    staleQuoteRuntime.quoteAsync(
+        request, readyNetwork(), true, false, false,
+        [&](QVariantMap) { ++concurrentUserCallbacks; });
+    if (!expect(waitForCondition([&]() {
+                    return poolProbeCallbacks == 1
+                        && concurrentUserCallbacks == 1;
+                }),
+                "pool probe and user quote should complete independently"))
+        return 1;
+    if (!expect(staleQuoteClient.pairIdsCalls == 3
+                    && staleQuoteClient.quoteCalls == 3,
+                "user quote cancellation must not cancel the pool probe"))
+        return 1;
+
     LocalRpcServer server;
     if (!expect(server.listen(), "local sequencer should listen"))
         return 1;
@@ -828,7 +897,7 @@ int main(int argc, char** argv)
         refreshClient.normalizedAccountIds.count(selectedAccountHex);
     QVariantMap selectedQuote;
     selectedRuntime.quoteAsync(
-        selectedRequest, readyNetwork(), true, false,
+        selectedRequest, readyNetwork(), true, false, false,
         [&](QVariantMap result) { selectedQuote = std::move(result); });
     if (!expect(waitForCondition([&]() { return !selectedQuote.isEmpty(); }),
                 "selected-holding quote should complete"))

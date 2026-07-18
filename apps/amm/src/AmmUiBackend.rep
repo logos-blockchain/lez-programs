@@ -47,7 +47,7 @@ class AmmUiBackend
     PROP(QVariantMap newPositionQuoteResult READONLY)
     PROP(QVariantMap newPositionSubmitResult READONLY)
     SLOT(void refreshNewPositionContext(QVariantMap request))
-    SLOT(void requestNewPositionQuote(QVariantMap request, int requestId, bool forceRefresh))
+    SLOT(void requestNewPositionQuote(QVariantMap request, int requestId, bool forceRefresh, bool isPoolProbe))
     SLOT(void requestNewPositionSubmit(QVariantMap request, QString quoteHash, int requestId))
 
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a

@@ -252,10 +252,11 @@ void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
 
 void AmmUiBackend::requestNewPositionQuote(QVariantMap request,
                                            int requestId,
-                                           bool forceRefresh)
+                                           bool forceRefresh,
+                                           bool isPoolProbe)
 {
     m_newPosition->quoteAsync(
-        request, m_network.snapshot(), isWalletOpen(), forceRefresh,
+        request, m_network.snapshot(), isWalletOpen(), forceRefresh, isPoolProbe,
         [this, requestId](QVariantMap result) {
             result.insert(QStringLiteral("requestId"), requestId);
             setNewPositionQuoteResult(std::move(result));

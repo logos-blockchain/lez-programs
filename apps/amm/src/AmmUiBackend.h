@@ -49,7 +49,8 @@ public slots:
     void refreshNewPositionContext(QVariantMap request) override;
     void requestNewPositionQuote(QVariantMap request,
                                  int requestId,
-                                 bool forceRefresh) override;
+                                 bool forceRefresh,
+                                 bool isPoolProbe) override;
     void requestNewPositionSubmit(QVariantMap request,
                                   QString quoteHash,
                                   int requestId) override;

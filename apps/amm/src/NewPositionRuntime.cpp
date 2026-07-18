@@ -451,8 +451,11 @@ void NewPositionRuntime::buildQuoteInputAsync(
     const ActiveNetworkSnapshot& network,
     bool walletOpen,
     bool forceRefresh,
+    std::function<bool()> shouldContinue,
     std::function<void(QJsonObject, QJsonObject)> callback)
 {
+    if (!shouldContinue())
+        return;
     if (network.status != QStringLiteral("ready")) {
         callback({}, publicError(network.status));
         return;
@@ -472,8 +475,9 @@ void NewPositionRuntime::buildQuoteInputAsync(
     QPointer<NewPositionRuntime> guard(this);
     m_sequencer->readAccounts({ configId }, forceRefresh,
         [guard, request, network, walletOpen, forceRefresh,
+         shouldContinue,
          callback = std::move(callback)](QVector<WalletAccountRead> configReads) mutable {
-            if (!guard)
+            if (!guard || !shouldContinue())
                 return;
             const QJsonObject config = accountReadJson(configReads.value(0));
             const QJsonObject requestObject = QJsonObject::fromVariantMap(request);
@@ -509,9 +513,10 @@ void NewPositionRuntime::buildQuoteInputAsync(
             };
             guard->m_sequencer->readAccounts(fixedIds, forceRefresh,
                 [guard, requestObject, network, walletOpen, config, pair,
+                 shouldContinue,
                  callback = std::move(callback)](
                     QVector<WalletAccountRead> fixedReads) mutable {
-                    if (!guard)
+                    if (!guard || !shouldContinue())
                         return;
                     QStringList selectedIds;
                     for (const QString& key : {
@@ -531,15 +536,19 @@ void NewPositionRuntime::buildQuoteInputAsync(
                         [guard, requestObject, network, walletOpen, config, pair,
                          selectedIds = std::move(selectedIds),
                          fixedReads = std::move(fixedReads),
+                         shouldContinue,
                          callback = std::move(callback)](
                             QVector<WalletAccountRead> walletReads) mutable {
-                            if (!guard)
+                            if (!guard || !shouldContinue())
                                 return;
                             auto finish = [requestObject, network, walletOpen, config,
                                            fixedReads = std::move(fixedReads),
                                            walletReads = std::move(walletReads),
+                                           shouldContinue,
                                            callback = std::move(callback)](
                                               QVector<WalletAccountRead> selectedReads) mutable {
+                                if (!shouldContinue())
+                                    return;
                                 QHash<QString, WalletAccountRead> walletById;
                                 for (const WalletAccountRead& read : walletReads)
                                     walletById.insert(read.accountId, read);
@@ -583,13 +592,23 @@ void NewPositionRuntime::quoteAsync(const QVariantMap& request,
                                     const ActiveNetworkSnapshot& network,
                                     bool walletOpen,
                                     bool forceRefresh,
+                                    bool isPoolProbe,
                                     ResultCallback callback)
 {
     QPointer<NewPositionRuntime> guard(this);
+    const quint64 quoteGeneration = isPoolProbe
+        ? 0 : ++m_userQuoteGeneration;
+    std::function<bool()> shouldContinue = [guard, quoteGeneration]() {
+        return guard
+            && (quoteGeneration == 0
+                || quoteGeneration == guard->m_userQuoteGeneration);
+    };
     buildQuoteInputAsync(request, network, walletOpen, forceRefresh,
-        [guard, callback = std::move(callback)](
+        shouldContinue,
+        [guard, shouldContinue,
+         callback = std::move(callback)](
             QJsonObject input, QJsonObject error) mutable {
-            if (!guard)
+            if (!guard || !shouldContinue())
                 return;
             if (!error.isEmpty()) {
                 callback(error.toVariantMap());
@@ -626,11 +645,17 @@ void NewPositionRuntime::submitAsync(const QVariantMap& request,
     const quint64 walletGeneration = m_walletGeneration;
     m_submitCallback = std::move(callback);
     QPointer<NewPositionRuntime> guard(this);
+    std::function<bool()> shouldContinue =
+        [guard, submitGeneration, walletGeneration]() {
+            return guard
+                && guard->submitIsCurrent(submitGeneration, walletGeneration);
+        };
     buildQuoteInputAsync(request, network, true, true,
-        [guard, quoteHash, submitGeneration, walletGeneration](
+        shouldContinue,
+        [guard, quoteHash, submitGeneration, walletGeneration,
+         shouldContinue](
             QJsonObject input, QJsonObject error) mutable {
-            if (!guard
-                || !guard->submitIsCurrent(submitGeneration, walletGeneration))
+            if (!guard || !shouldContinue())
                 return;
             if (!error.isEmpty()) {
                 guard->finishSubmit(submitGeneration, error.toVariantMap());
