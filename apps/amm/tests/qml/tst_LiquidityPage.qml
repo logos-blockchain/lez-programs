@@ -272,6 +272,57 @@ TestCase {
         compare(dialog.confirmationPending, false)
     }
 
+    function test_quoteChangedRefreshesOpenConfirmation() {
+        var backend = createTemporaryObject(backendComponent, testCase, {
+            "deferSubmitResult": true
+        })
+        var page = createTemporaryObject(pageComponent, testCase, {
+            "backend": backend,
+            "visible": true
+        })
+        verify(page)
+
+        var dialog = findChild(page, "liquidityConfirmationDialog")
+        verify(dialog)
+        dialog.openWithSnapshot({
+            "quoteReady": true,
+            "request": ({ "schema": "new-position.v2" }),
+            "quoteHash": "sha256:stale",
+            "expectedLpText": "10 raw LP",
+            "instruction": "AddLiquidity"
+        })
+        tryCompare(dialog, "opened", true)
+
+        dialog.confirm()
+        tryCompare(page.flow, "submitting", true)
+
+        backend.newPositionSubmitResult = {
+            "schema": "new-position.v2",
+            "status": "error",
+            "code": "quote_changed",
+            "quote": {
+                "schema": "new-position.v2",
+                "status": "ok",
+                "canSubmit": true,
+                "quoteHash": "sha256:fresh",
+                "expectedLpRaw": "20",
+                "instruction": "AddLiquidity",
+                "lpHoldingOptions": [],
+                "selectedLpHoldingId": "",
+                "requiresFreshLp": true,
+                "lpDestinationRequired": false
+            },
+            "requestId": page.flow.submitRequestId
+        }
+
+        tryCompare(page.flow, "submitting", false)
+        tryCompare(dialog, "opened", true)
+        compare(dialog.snapshot.quoteHash, "sha256:fresh")
+        compare(dialog.snapshot.expectedLpText, "20 raw LP")
+        compare(dialog.snapshot.quoteReady, true)
+        compare(page.flow.flowErrorCode, "")
+    }
+
     function test_destinationRequoteUsesQuoteBusyText() {
         var backend = createTemporaryObject(backendComponent, testCase)
         var page = createTemporaryObject(pageComponent, testCase, {

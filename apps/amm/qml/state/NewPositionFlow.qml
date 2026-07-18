@@ -209,19 +209,9 @@ QtObject {
         root.newPositionQuote = result.schema === "new-position.v2"
                                 ? result : root.quoteError("unsupported_schema")
         if (root.pendingConfirmationSnapshot) {
-            var snapshot = root.pendingConfirmationSnapshot
+            var snapshot = root.refreshConfirmationSnapshot(
+                root.pendingConfirmationSnapshot, root.newPositionQuote)
             root.pendingConfirmationSnapshot = null
-            snapshot.quoteHash = String(root.newPositionQuote.quoteHash || "")
-            snapshot.expectedLpText = String(root.newPositionQuote.expectedLpRaw || "")
-                                  + " raw LP"
-            snapshot.instruction = String(root.newPositionQuote.instruction || "")
-            snapshot.lpHoldingOptions = root.newPositionQuote.lpHoldingOptions || []
-            snapshot.selectedLpHoldingId = String(
-                root.newPositionQuote.selectedLpHoldingId || "")
-            snapshot.createFreshLp = root.newPositionQuote.requiresFreshLp === true
-            snapshot.lpDestinationRequired =
-                root.newPositionQuote.lpDestinationRequired === true
-            snapshot.quoteReady = root.newPositionQuote.canSubmit === true
             root.confirmationQuoteReady(snapshot)
         }
     }
@@ -281,12 +271,35 @@ QtObject {
             root.newPositionQuote = result.quote
             root.quoteLoading = false
             root.quoteStale = false
+            if (Object.keys(root.pendingSubmitSnapshot || {}).length > 0) {
+                var snapshot = root.refreshConfirmationSnapshot(
+                    root.pendingSubmitSnapshot, result.quote)
+                root.pendingSubmitSnapshot = snapshot
+                root.confirmationQuoteReady(snapshot)
+            }
         }
-        root.flowErrorCode = result && result.code
+        root.flowErrorCode = hasFreshQuote && result.code === "quote_changed"
+                           ? ""
+                           : result && result.code
                              ? result.code : "wallet_submission_failed"
         root.submitFailed()
         if (!hasFreshQuote)
             root.scheduleQuote(true, root.pendingQuoteRequest)
+    }
+
+    function refreshConfirmationSnapshot(snapshot, quote) {
+        var refreshed = {}
+        for (var field in snapshot)
+            refreshed[field] = snapshot[field]
+        refreshed.quoteHash = String(quote.quoteHash || "")
+        refreshed.expectedLpText = String(quote.expectedLpRaw || "") + " raw LP"
+        refreshed.instruction = String(quote.instruction || "")
+        refreshed.lpHoldingOptions = quote.lpHoldingOptions || []
+        refreshed.selectedLpHoldingId = String(quote.selectedLpHoldingId || "")
+        refreshed.createFreshLp = quote.requiresFreshLp === true
+        refreshed.lpDestinationRequired = quote.lpDestinationRequired === true
+        refreshed.quoteReady = quote.canSubmit === true
+        return refreshed
     }
 
     function watchPoolCreation(request, deadlineMs) {
