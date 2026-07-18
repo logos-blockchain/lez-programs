@@ -1,5 +1,6 @@
 #include "AmmUiBackend.h"
 
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -17,13 +18,21 @@
 #include "LogosWalletProvider.h"
 #include "NewPositionRuntime.h"
 #include "SequencerClient.h"
+#include "WalletAccountId.h"
 #include "WalletController.h"
+#include "WalletIdlDecoder.h"
 #include "logos_api.h"
 
 namespace {
     const int CHECKPOINT_BLOCK_ID = 10;
     const int BLOCK_HASH_OFFSET = 40;
     const int BLOCK_HASH_SIZE = 32;
+
+    QByteArray resource(const QString& path)
+    {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    }
 
     QByteArray jsonRpcBody(const QString& method, const QJsonArray& params)
     {
@@ -58,6 +67,19 @@ namespace {
         return ActiveNetwork::isValidIdentity(channel) ? channel : QString();
     }
 
+    QString decodedDataText(const QJsonValue& value)
+    {
+        if (value.isObject()) {
+            return QString::fromUtf8(
+                QJsonDocument(value.toObject()).toJson(QJsonDocument::Indented)).trimmed();
+        }
+        if (value.isArray()) {
+            return QString::fromUtf8(
+                QJsonDocument(value.toArray()).toJson(QJsonDocument::Indented)).trimmed();
+        }
+        return {};
+    }
+
 }
 
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
@@ -72,7 +94,9 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
           m_wallet.get(), m_ammClient.get(), m_sequencer.get())),
       m_net(new QNetworkAccessManager(this)),
       m_transactionTimer(new QTimer(this)),
-      m_identityRetryTimer(new QTimer(this))
+      m_identityRetryTimer(new QTimer(this)),
+      m_tokenIdl(resource(QStringLiteral(":/amm/idl/token-idl.json"))),
+      m_ammIdl(resource(QStringLiteral(":/amm/idl/amm-idl.json")))
 {
     setNewPositionQuoteResult({});
     setNewPositionSubmitResult({});
@@ -86,6 +110,8 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     connect(m_identityRetryTimer, &QTimer::timeout,
             this, &AmmUiBackend::probeNetworkIdentity);
     m_network.load();
+    m_idlRegistry.registerProgram(
+        m_network.snapshot().ammProgramId, QStringLiteral("AMM"), m_ammIdl);
     m_walletController->setDefaultSequencerAddress(m_network.snapshot().sequencerAddress);
 
     connect(m_walletController.get(), &WalletController::stateChanged,
@@ -175,10 +201,10 @@ void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
     const quint64 generation = ++m_contextGeneration;
     m_newPosition->contextAsync(
         request, m_network.snapshot(), isWalletOpen(), refreshWalletAccounts,
-        [this, generation](QVariantMap result) {
+        [this, generation](QVariantMap result, QVector<WalletAccountRead> walletReads) {
             if (generation == m_contextGeneration) {
                 result.insert(QStringLiteral("requestId"), generation);
-                publishWalletAssets(result);
+                publishWalletAssets(result, walletReads);
                 setNewPositionContext(std::move(result));
             }
         });
@@ -344,7 +370,9 @@ void AmmUiBackend::publishNetworkContext(bool refreshContext)
         refreshNewPositionContext(m_newPositionHints);
 }
 
-void AmmUiBackend::publishWalletAssets(const QVariantMap& context)
+void AmmUiBackend::publishWalletAssets(
+    const QVariantMap& context,
+    const QVector<WalletAccountRead>& programReads)
 {
     const QString contextStatus = context.value(QStringLiteral("status")).toString();
     if (contextStatus == QStringLiteral("no_wallet")) {
@@ -366,6 +394,29 @@ void AmmUiBackend::publishWalletAssets(const QVariantMap& context)
     QVariantList assets;
     QVariantList available;
     QVector<WalletAccountPresentation> presentations;
+    const QVariantMap programIds = context.value(QStringLiteral("programIds")).toMap();
+    const QString tokenProgramId = walletAccountIdFromBase58(
+        programIds.value(QStringLiteral("token")).toString());
+    m_idlRegistry.registerProgram(
+        m_network.snapshot().ammProgramId, QStringLiteral("AMM"), m_ammIdl);
+    m_idlRegistry.registerProgram(tokenProgramId, QStringLiteral("Token"), m_tokenIdl);
+
+    QHash<QString, QString> decodedDataByAccount;
+    for (const WalletDecodedProgram& program : m_idlRegistry.decode(programReads)) {
+        for (const WalletDecodedAccount& account : program.result.accounts) {
+            if (account.status != QStringLiteral("decoded"))
+                continue;
+            WalletAccountPresentation presentation;
+            presentation.address = account.id;
+            presentation.kind = QStringLiteral("program");
+            presentation.semanticName = account.typeName;
+            presentation.programName = program.programName;
+            presentation.accountType = account.typeName;
+            presentation.decodedData = decodedDataText(account.value);
+            decodedDataByAccount.insert(presentation.address, presentation.decodedData);
+            presentations.append(std::move(presentation));
+        }
+    }
     bool hasUnavailableToken = false;
     for (const QVariant& value : context.value(QStringLiteral("tokens")).toList()) {
         const QVariantMap token = value.toMap();
@@ -398,6 +449,7 @@ void AmmUiBackend::publishWalletAssets(const QVariantMap& context)
                 QStringLiteral("holdingId")).toString();
             if (holdingId.isEmpty())
                 continue;
+            const QString decodedHoldingId = walletAccountIdFromBase58(holdingId);
             presentations.append({
                 holdingId,
                 QStringLiteral("token_holding"),
@@ -406,6 +458,8 @@ void AmmUiBackend::publishWalletAssets(const QVariantMap& context)
                 QStringLiteral("TokenHolding"),
                 definitionId,
                 true,
+                decodedDataByAccount.value(
+                    decodedHoldingId.isEmpty() ? holdingId : decodedHoldingId),
             });
         }
         hasUnavailableToken = hasUnavailableToken || !ready;

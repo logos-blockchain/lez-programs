@@ -344,16 +344,16 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
                                       const ActiveNetworkSnapshot& network,
                                       bool walletOpen,
                                       bool refreshPublicData,
-                                      ResultCallback callback)
+                                      ContextCallback callback)
 {
     const quint64 contextGeneration = ++m_contextGeneration;
     if (network.status != QStringLiteral("ready")) {
-        callback(contextState(network.status, network).toVariantMap());
+        callback(contextState(network.status, network).toVariantMap(), {});
         return;
     }
     if (!m_sequencer || !m_sequencer->isConfigured()) {
         callback(contextState(QStringLiteral("error"), network,
-                              QStringLiteral("sequencer_config_required")).toVariantMap());
+                              QStringLiteral("sequencer_config_required")).toVariantMap(), {});
         return;
     }
 
@@ -361,7 +361,7 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
         QJsonObject { { QStringLiteral("ammProgramId"), network.ammProgramId } });
     if (!configResult.ok) {
         callback(contextState(QStringLiteral("error"), network,
-                              QStringLiteral("backend_error")).toVariantMap());
+                              QStringLiteral("backend_error")).toVariantMap(), {});
         return;
     }
     const QString configId = configResult.value.value(
@@ -406,7 +406,7 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
                             : QStringLiteral("backend_error");
                         callback(contextState(QStringLiteral("error"), network,
                             code.isEmpty() ? QStringLiteral("backend_error") : code)
-                            .toVariantMap());
+                            .toVariantMap(), {});
                         return;
                     }
 
@@ -417,6 +417,7 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
                     }
                     guard->m_sequencer->readAccounts(definitionIds, refreshPublicData,
                         [guard, network, walletOpen, config, walletAccounts,
+                         walletReads = std::move(walletReads),
                          configured, recent, resolved, contextGeneration,
                          callback = std::move(callback)](
                             QVector<WalletAccountRead> definitions) mutable {
@@ -440,7 +441,8 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
                             callback((result.ok
                                 ? result.value
                                 : contextState(QStringLiteral("error"), network,
-                                      QStringLiteral("backend_error"))).toVariantMap());
+                                      QStringLiteral("backend_error"))).toVariantMap(),
+                                std::move(walletReads));
                         });
                 });
         });

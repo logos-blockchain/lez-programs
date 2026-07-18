@@ -44,6 +44,8 @@ logos_module(
         src/NewPositionRuntime.cpp
         src/SequencerClient.h
         src/SequencerClient.cpp
+        src/WalletIdlDecoder.h
+        src/WalletIdlDecoder.cpp
     FIND_PACKAGES
         Qt6Gui
         Qt6Network
@@ -55,12 +57,23 @@ logos_module(
         logos_wallet_access
     EXTERNAL_LIBS
         amm_client
+        wallet_idl_decoder
 )
 
+set_source_files_properties(
+    config/idl/token-idl.json
+    PROPERTIES QT_RESOURCE_ALIAS "idl/token-idl.json"
+)
+set_source_files_properties(
+    config/idl/amm-idl.json
+    PROPERTIES QT_RESOURCE_ALIAS "idl/amm-idl.json"
+)
 qt_add_resources(amm_ui_module_plugin amm_ui_config
     PREFIX "/amm"
     FILES
         config/networks.json
+        config/idl/token-idl.json
+        config/idl/amm-idl.json
 )
 
 if(BUILD_TESTING)

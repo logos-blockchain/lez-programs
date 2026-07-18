@@ -20,6 +20,7 @@ struct WalletAccountRead;
 class NewPositionRuntime : public QObject {
 public:
     using ResultCallback = std::function<void(QVariantMap)>;
+    using ContextCallback = std::function<void(QVariantMap, QVector<WalletAccountRead>)>;
 
     NewPositionRuntime(WalletProvider* wallet,
                        AmmClient* client,
@@ -32,7 +33,7 @@ public:
                       const ActiveNetworkSnapshot& network,
                       bool walletOpen,
                       bool refreshPublicData,
-                      ResultCallback callback);
+                      ContextCallback callback);
     void quoteAsync(const QVariantMap& request,
                     const ActiveNetworkSnapshot& network,
                     bool walletOpen,

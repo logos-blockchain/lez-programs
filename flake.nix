@@ -23,23 +23,39 @@
           src = craneLib.cleanCargoSource ./.;
           commonArgs = {
             inherit src;
-            pname = "amm_client";
             version = "0.1.0";
             strictDeps = true;
+          };
+          ammClientArgs = commonArgs // {
+            pname = "amm_client";
             cargoExtraArgs = "-p amm_client";
           };
-          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-          ammClient = craneLib.buildPackage (commonArgs // {
-            inherit cargoArtifacts;
+          ammClientArtifacts = craneLib.buildDepsOnly ammClientArgs;
+          ammClient = craneLib.buildPackage (ammClientArgs // {
+            cargoArtifacts = ammClientArtifacts;
             doCheck = false;
             postInstall = ''
               install -Dm644 ${./apps/amm/client/include/amm_client.h} \
                 $out/include/amm_client.h
             '';
           });
+          walletDecoderArgs = commonArgs // {
+            pname = "wallet-idl-decoder";
+            cargoExtraArgs = "-p wallet-idl-decoder";
+          };
+          walletDecoderArtifacts = craneLib.buildDepsOnly walletDecoderArgs;
+          walletDecoder = craneLib.buildPackage (walletDecoderArgs // {
+            cargoArtifacts = walletDecoderArtifacts;
+            doCheck = false;
+            postInstall = ''
+              install -Dm644 ${./tools/wallet-idl-decoder/include/wallet_idl_decoder.h} \
+                $out/include/wallet_idl_decoder.h
+            '';
+          });
         in {
           default = ammClient;
           amm_client = ammClient;
+          wallet_idl_decoder = walletDecoder;
         });
     };
 }

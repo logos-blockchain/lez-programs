@@ -72,7 +72,7 @@
         logos_execution_zone = logosExecutionZoneModule;
       };
 
-      ammClientInput = (import ../../flake.nix).outputs {
+      clientLibrariesInput = (import ../../flake.nix).outputs {
         inherit nixpkgs crane;
       };
       moduleBuild = logos-module-builder.lib.mkLogosQmlModule {
@@ -83,7 +83,11 @@
           cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${../shared/wallet}")
         '';
         externalLibInputs = {
-          amm_client = ammClientInput;
+          amm_client = clientLibrariesInput;
+          wallet_idl_decoder = {
+            input = clientLibrariesInput;
+            packages.default = "wallet_idl_decoder";
+          };
         };
         postInstall = ''
           # The builder installs the view under lib/qml after this hook. Its

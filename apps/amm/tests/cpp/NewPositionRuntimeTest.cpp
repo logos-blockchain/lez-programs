@@ -441,7 +441,9 @@ namespace {
         };
     }
 
-    bool waitForContext(NewPositionRuntime& runtime, bool forceRefresh)
+    bool waitForContext(NewPositionRuntime& runtime,
+                        bool forceRefresh,
+                        QVector<WalletAccountRead>* reads = nullptr)
     {
         bool completed = false;
         QEventLoop loop;
@@ -449,7 +451,9 @@ namespace {
         timeout.setSingleShot(true);
         QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
         runtime.contextAsync({}, readyNetwork(), true, forceRefresh,
-            [&](QVariantMap) {
+            [&](QVariantMap, QVector<WalletAccountRead> result) {
+                if (reads)
+                    *reads = std::move(result);
                 completed = true;
                 loop.quit();
             });
@@ -850,13 +854,13 @@ int main(int argc, char** argv)
     int latestContextCallbacks = 0;
     staleContextRuntime.contextAsync(
         {}, readyNetwork(), true, false,
-        [&](QVariantMap) { ++staleContextCallbacks; });
+        [&](QVariantMap, QVector<WalletAccountRead>) { ++staleContextCallbacks; });
     if (!expect(waitForRequestCount(staleContextServer, 1),
                 "first context should begin the config read"))
         return 1;
     staleContextRuntime.contextAsync(
         {}, readyNetwork(), true, false,
-        [&](QVariantMap) { ++latestContextCallbacks; });
+        [&](QVariantMap, QVector<WalletAccountRead>) { ++latestContextCallbacks; });
     QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
     if (!expect(staleContextServer.requestCount() == 1,
                 "superseding context should share the active config read"))
@@ -1091,12 +1095,23 @@ int main(int argc, char** argv)
     if (!expect(server.requestCount() == 2,
                 "cached context should not reread accounts"))
         return 1;
-    if (!expect(waitForContext(refreshRuntime, true),
+    refreshClient.normalizedBalanceHex = QString(31, QLatin1Char('0'))
+        + QLatin1Char('1');
+    QVector<WalletAccountRead> refreshedWalletReads;
+    if (!expect(waitForContext(refreshRuntime, true, &refreshedWalletReads),
                 "forced context should complete"))
         return 1;
     if (!expect(server.requestCount() == 4,
                 "forced context should reread config and wallet holding"))
         return 1;
+    if (!expect(refreshedWalletReads.size() == 1
+                    && refreshedWalletReads.first().accountId == holding.address
+                    && refreshedWalletReads.first().ok()
+                    && refreshedWalletReads.first().balanceHex
+                        == refreshClient.normalizedBalanceHex,
+                "forced context should return fresh wallet reads"))
+        return 1;
+    refreshClient.normalizedBalanceHex = QString(32, QLatin1Char('0'));
 
     FakeWallet selectedWallet;
     NewPositionRuntime selectedRuntime(
