@@ -92,6 +92,8 @@ AmmActionCard {
     readonly property string poolStatus: root.effectivePoolStatus()
     readonly property bool activePool: root.poolStatus === "active_pool"
     readonly property bool missingPool: root.poolStatus === "missing_pool"
+    readonly property bool feeSelectionRequired: !root.contextLoading && root.missingPool
+    readonly property bool fixedPoolFeeVisible: !root.contextLoading && root.activePool
     readonly property int poolFeeBps: root.knownPoolFeeBps()
     readonly property bool compact: root.width < 420
     readonly property bool hasPair: root.selectedTokenAId.length > 0
@@ -381,9 +383,12 @@ AmmActionCard {
         }
 
         ColumnLayout {
+            id: feeTierSelector
+
+            objectName: "feeTierSelector"
             Layout.fillWidth: true
             spacing: 8
-            visible: !root.contextLoading
+            visible: root.feeSelectionRequired
 
             Text {
                 text: qsTr("Fee tier")
@@ -458,6 +463,30 @@ AmmActionCard {
                         ToolTip.text: disabledReason
                     }
                 }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 10
+            visible: root.fixedPoolFeeVisible
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Fee tier")
+                color: root.theme.colors.textSecondary
+                font.pixelSize: 12
+            }
+
+            Text {
+                id: fixedPoolFee
+
+                objectName: "fixedPoolFee"
+                text: root.feeLabel(root.poolFeeBps > 0
+                                    ? root.poolFeeBps : root.selectedFeeBps)
+                color: root.theme.colors.textPrimary
+                font.pixelSize: 12
+                font.weight: Font.Medium
             }
         }
 

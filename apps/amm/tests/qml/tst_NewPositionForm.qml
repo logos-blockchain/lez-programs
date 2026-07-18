@@ -198,6 +198,29 @@ TestCase {
         verify(amountBInput.invalid)
     }
 
+    function test_activePoolShowsFixedFeeInsteadOfSelector() {
+        var form = createForm()
+        form.flowState = flowState({
+            "schema": "new-position.v2",
+            "status": "ok",
+            "tokenAId": tokenHigh,
+            "tokenBId": tokenLow,
+            "poolStatus": "active_pool",
+            "poolFeeBps": 5
+        })
+        form.visible = true
+        wait(0)
+        compare(form.poolStatus, "active_pool")
+
+        var selector = findChild(form, "feeTierSelector")
+        var fixedFee = findChild(form, "fixedPoolFee")
+        verify(selector)
+        verify(fixedFee)
+        compare(form.feeSelectionRequired, false)
+        compare(form.fixedPoolFeeVisible, true)
+        compare(fixedFee.text, "0.05%")
+    }
+
     function test_contextRefreshSelectsSingleHoldingsBeforeQuote() {
         var form = createForm()
         form.selectedHoldingAId = ""
