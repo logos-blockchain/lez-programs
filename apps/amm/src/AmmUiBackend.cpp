@@ -11,6 +11,8 @@
 #include <QTimer>
 #include <QUrl>
 
+#include <utility>
+
 #include "AmmClient.h"
 #include "LogosWalletProvider.h"
 #include "NewPositionRuntime.h"
@@ -88,6 +90,11 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
 
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);
+    connect(m_walletController.get(), &WalletController::snapshotChanged,
+            this, [this]() {
+                if (m_walletController->state().isWalletOpen)
+                    m_walletSnapshotPending = true;
+            });
     syncWalletState();
     m_walletController->start();
 }
@@ -206,6 +213,7 @@ void AmmUiBackend::requestNewPositionSubmit(QVariantMap request,
 void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
+    const bool walletSnapshotApplied = std::exchange(m_walletSnapshotPending, false);
     const bool walletWasOpen = isWalletOpen();
     const bool walletCouldSubmit = walletCanSubmit();
     const bool wasReachable = sequencerReachable();
@@ -240,23 +248,31 @@ void AmmUiBackend::syncWalletState()
         m_transactionTimer->stop();
         m_network.sequencerChanged(!state.sequencerAddress.isEmpty());
     }
-    if (addressChanged || wasReachable != state.sequencerReachable) {
+    const bool reachabilityChanged = wasReachable != state.sequencerReachable;
+    const bool walletClosed = walletWasOpen && !state.isWalletOpen;
+    if (addressChanged || reachabilityChanged) {
         m_identityRetryTimer->stop();
         m_network.reachabilityChanged(state.sequencerReachable, wasReachable);
     }
-    if (walletWasOpen && !state.isWalletOpen) {
+    if (walletClosed) {
         m_newPosition->clearWalletAccounts();
         setAssets({});
         setAssetStatus(QStringLiteral("idle"));
         setAssetError({});
     }
-    if (state.canSubmit()) {
+    if (state.canSubmit() && walletSnapshotApplied) {
         const WalletSnapshot snapshot = m_wallet->snapshot();
         if (snapshot.ok())
             m_newPosition->setWalletAccounts(snapshot.accounts);
     }
 
-    publishNetworkContext();
+    const bool refreshContext = !m_hasPublishedNetworkContext
+        || walletSnapshotApplied
+        || walletClosed
+        || addressChanged
+        || reachabilityChanged;
+    publishNetworkContext(refreshContext);
+    m_hasPublishedNetworkContext = true;
     if (state.sequencerReachable && m_network.needsIdentityProbe())
         probeNetworkIdentity();
 }
@@ -318,13 +334,14 @@ void AmmUiBackend::probeNetworkIdentity()
     });
 }
 
-void AmmUiBackend::publishNetworkContext()
+void AmmUiBackend::publishNetworkContext(bool refreshContext)
 {
     const ActiveNetworkSnapshot network = m_network.snapshot();
     setActiveNetwork(network.id);
     setNetworkStatus(network.status);
     setNetworkFingerprint(network.fingerprint);
-    refreshNewPositionContext(m_newPositionHints);
+    if (refreshContext)
+        refreshNewPositionContext(m_newPositionHints);
 }
 
 void AmmUiBackend::publishWalletAssets(const QVariantMap& context)

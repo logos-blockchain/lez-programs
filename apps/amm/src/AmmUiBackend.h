@@ -64,7 +64,7 @@ public slots:
 private:
     void syncWalletState();
     void probeNetworkIdentity();
-    void publishNetworkContext();
+    void publishNetworkContext(bool refreshContext = true);
     void publishWalletAssets(const QVariantMap& context);
     void watchTransaction(const QVariantMap& result);
     void pollTransactions();
@@ -84,6 +84,8 @@ private:
     ActiveNetwork m_network;
     QVariantMap m_newPositionHints;
     bool m_identityProbeInFlight = false;
+    bool m_walletSnapshotPending = false;
+    bool m_hasPublishedNetworkContext = false;
     quint64 m_contextGeneration = 0;
     struct PendingTransaction {
         QString nativeHash;
