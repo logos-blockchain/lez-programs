@@ -275,6 +275,8 @@ Item {
         confirmText: qsTr("Submit")
         busy: newPositionFlow.submitting
               || (snapshot.quoteReady === false && newPositionFlow.quoteLoading)
+        busyText: newPositionFlow.submitting
+                  ? qsTr("Submitting…") : qsTr("Updating quote…")
         confirmEnabled: snapshot.quoteReady === true
                         && newPositionFlow.walletCanSubmit
         summary: liquidityConfirmationSummary

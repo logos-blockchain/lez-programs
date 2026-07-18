@@ -219,6 +219,33 @@ TestCase {
         tryCompare(dialog, "opened", false)
     }
 
+    function test_destinationRequoteUsesQuoteBusyText() {
+        var backend = createTemporaryObject(backendComponent, testCase)
+        var page = createTemporaryObject(pageComponent, testCase, {
+            "backend": backend,
+            "visible": true
+        })
+        verify(page)
+
+        var dialog = findChild(page, "liquidityConfirmationDialog")
+        verify(dialog)
+        dialog.openWithSnapshot({
+            "quoteReady": false,
+            "request": ({})
+        })
+        tryCompare(dialog, "opened", true)
+
+        page.flow.quoteLoading = true
+        tryCompare(dialog, "busy", true)
+        compare(dialog.busyText, "Updating quote…")
+        compare(findChild(dialog, "transactionConfirmButton").text,
+                "Updating quote…")
+        compare(backend.submitCalls, 0)
+
+        page.flow.quoteLoading = false
+        dialog.cancel()
+    }
+
     function test_missingPoolSubmissionStartsPoolProbeWithoutWalletRefresh() {
         var backend = createTemporaryObject(backendComponent, testCase, {
             "submitResult": {
