@@ -277,6 +277,7 @@ Item {
                   ? qsTr("Submitting…") : qsTr("Updating quote…")
         confirmEnabled: snapshot.quoteReady === true
                         && newPositionFlow.walletCanSubmit
+        roundedCancelButton: true
         summary: liquidityConfirmationSummary
 
         onSummaryEdited: function(snapshot) {
