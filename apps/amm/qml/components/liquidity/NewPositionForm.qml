@@ -128,11 +128,11 @@ AmmActionCard {
     Component.onCompleted: Qt.callLater(root.reconcileSelection)
     onNewPositionContextChanged: Qt.callLater(root.applyContextChange)
     function applyContextChange() {
+        root.reconcileHoldings()
         if (root.resolvingToken)
             root.finishTokenResolution()
         else
             root.reconcileSelection()
-        root.reconcileHoldings()
     }
     onQuotePayloadChanged: {
         if (root.quoteStale)

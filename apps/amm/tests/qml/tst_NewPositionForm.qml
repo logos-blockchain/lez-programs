@@ -183,6 +183,27 @@ TestCase {
                 "44444444444444444444444444444444")
     }
 
+    function test_contextRefreshSelectsSingleHoldingsBeforeQuote() {
+        var form = createForm()
+        form.selectedHoldingAId = ""
+        form.selectedHoldingBId = ""
+        quoteRequestedSpy.target = form
+        quoteRequestedSpy.clear()
+
+        form.newPositionContext = readyContext()
+
+        tryCompare(quoteRequestedSpy, "count", 1)
+        compare(form.selectedHoldingAId,
+                "44444444444444444444444444444444")
+        compare(form.selectedHoldingBId,
+                "55555555555555555555555555555555")
+        verify(quoteRequestedSpy.signalArguments[0][1].ok)
+        compare(quoteRequestedSpy.signalArguments[0][1].request.holdingAId,
+                "55555555555555555555555555555555")
+        compare(quoteRequestedSpy.signalArguments[0][1].request.holdingBId,
+                "44444444444444444444444444444444")
+    }
+
     function test_displayOrderMapsToCanonicalRequestAfterSwap() {
         var form = createForm()
         var built = form.buildQuoteRequest()
