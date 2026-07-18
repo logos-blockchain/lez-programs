@@ -639,7 +639,7 @@ int main(int argc, char** argv)
     if (!expect(reservedAccount.value(QStringLiteral("code")).toString()
                     == QStringLiteral("backend_error")
                     && nonDefaultAccount.value(QStringLiteral("code")).toString()
-                        == QStringLiteral("submission_status_unknown")
+                        == QStringLiteral("fresh_lp_account_in_use")
                     && replacementAccount.value(QStringLiteral("status")).toString()
                         == QStringLiteral("submitted")
                     && nonDefaultWallet.createdAccounts == 2,
@@ -1423,6 +1423,45 @@ int main(int argc, char** argv)
                         QString(64, QLatin1Char('a')))
                         > failedReadNormalizations,
                 "sequencer should validate a newly created LP account"))
+        return 1;
+
+    FakeWallet occupiedFreshLpWallet;
+    occupiedFreshLpWallet.failCreatedPublicRead = true;
+    FakeAmmClient occupiedFreshLpClient;
+    occupiedFreshLpClient.normalizedBalanceHex = QString(31, QLatin1Char('0'))
+        + QLatin1Char('1');
+    SequencerClient occupiedFreshLpSequencer(&occupiedFreshLpClient);
+    if (!expect(occupiedFreshLpSequencer.configure(sequencerConfig.fileName()),
+                "occupied fresh-LP sequencer should configure"))
+        return 1;
+    NewPositionRuntime occupiedFreshLpRuntime(
+        &occupiedFreshLpWallet, &occupiedFreshLpClient, &occupiedFreshLpSequencer);
+    QVariantMap occupiedFreshLpResult;
+    occupiedFreshLpRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            occupiedFreshLpResult = std::move(result);
+        });
+    if (!expect(waitForCondition([&]() { return !occupiedFreshLpResult.isEmpty(); }),
+                "occupied fresh LP account should be rejected"))
+        return 1;
+    occupiedFreshLpWallet.failCreatedPublicRead = false;
+    QVariantMap occupiedFreshLpRetry;
+    occupiedFreshLpRuntime.submitAsync(
+        request, QStringLiteral("sha256:expected"), readyNetwork(), true,
+        [&](QVariantMap result) {
+            occupiedFreshLpRetry = std::move(result);
+        });
+    if (!expect(waitForCondition([&]() { return !occupiedFreshLpRetry.isEmpty(); }),
+                "fresh LP retry should complete"))
+        return 1;
+    if (!expect(occupiedFreshLpResult.value(QStringLiteral("code")).toString()
+                    == QStringLiteral("fresh_lp_account_in_use")
+                    && occupiedFreshLpWallet.submissions == 1
+                    && occupiedFreshLpRetry.value(QStringLiteral("status")).toString()
+                        == QStringLiteral("submitted")
+                    && occupiedFreshLpWallet.createdAccounts == 2,
+                "occupied fresh LP account should not submit and should be replaced"))
         return 1;
 
     FakeWallet cancelledSubmissionWallet;

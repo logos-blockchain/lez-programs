@@ -873,7 +873,7 @@ void NewPositionRuntime::validatePendingFreshLpAsync(
                 guard->clearPendingFreshLp();
                 guard->finishSubmit(
                     submitGeneration,
-                    publicError(QStringLiteral("submission_status_unknown")).toVariantMap());
+                    publicError(QStringLiteral("fresh_lp_account_in_use")).toVariantMap());
                 return;
             }
             guard->submitPlanAsync(
@@ -1128,7 +1128,7 @@ QVariantMap NewPositionRuntime::submit(const QVariantMap& request,
             return publicError(QStringLiteral("account_read_failed")).toVariantMap();
         if (!isDefaultAccountRead(read, freshLpAccountId)) {
             clearPendingFreshLp();
-            return publicError(QStringLiteral("submission_status_unknown")).toVariantMap();
+            return publicError(QStringLiteral("fresh_lp_account_in_use")).toVariantMap();
         }
         freshLp = accountReadJson(read);
     }

@@ -728,6 +728,13 @@ TestCase {
         verify(form.contextBlocksForm())
     }
 
+    function test_freshLpAccountInUseExplainsSafeRetry() {
+        var form = createForm()
+
+        compare(form.issueText("fresh_lp_account_in_use"),
+                "A new LP account is already in use. No transaction was submitted. Retry to use a different account.")
+    }
+
     function test_submittedBase58TransactionIdIsCopied() {
         var state = flowState(({}))
         state.transactionId = submittedTransactionId
