@@ -276,9 +276,10 @@ Item {
         title: qsTr("Confirm new position")
         confirmText: qsTr("Submit")
         busy: newPositionFlow.submitting
-              || (snapshot.quoteReady === false && newPositionFlow.quoteLoading)
-        busyText: newPositionFlow.submitting
-                  ? qsTr("Submitting…") : qsTr("Updating quote…")
+        busyText: qsTr("Submitting…")
+        activityBusy: snapshot.quoteReady === false && newPositionFlow.quoteLoading
+        activityText: qsTr("Updating quote…")
+        showInlineBusyIndicator: false
         confirmEnabled: snapshot.quoteReady === true
                         && newPositionFlow.walletCanSubmit
         roundedCancelButton: true
@@ -291,6 +292,56 @@ Item {
 
         onConfirmed: function(snapshot) {
             newPositionFlow.confirm(snapshot)
+        }
+    }
+
+    Item {
+        id: liquidityActivityNotice
+
+        objectName: "liquidityActivityNotice"
+        parent: Overlay.overlay
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.topMargin: 16
+        anchors.rightMargin: 16
+        z: confirmationDialog.z + 1
+        implicitWidth: activityContent.implicitWidth + 24
+        implicitHeight: Math.max(44, activityContent.implicitHeight + 16)
+        width: implicitWidth
+        height: implicitHeight
+        visible: confirmationDialog.opened && confirmationDialog.actionPending
+        Accessible.name: confirmationDialog.busy
+                         ? confirmationDialog.busyText : confirmationDialog.activityText
+
+        Rectangle {
+            anchors.fill: parent
+            color: "#27272a"
+            border.color: "#52525b"
+            border.width: 1
+            radius: 6
+        }
+
+        RowLayout {
+            id: activityContent
+
+            anchors.fill: parent
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
+            spacing: 8
+
+            BusyIndicator {
+                Layout.preferredWidth: 20
+                Layout.preferredHeight: 20
+                running: liquidityActivityNotice.visible
+                Accessible.ignored: true
+            }
+
+            Text {
+                color: "#f4f4f5"
+                font.pixelSize: 13
+                text: confirmationDialog.busy
+                      ? confirmationDialog.busyText : confirmationDialog.activityText
+            }
         }
     }
 

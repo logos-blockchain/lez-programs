@@ -340,7 +340,7 @@ TestCase {
         compare(page.flow.flowErrorCode, "")
     }
 
-    function test_destinationRequoteUsesQuoteBusyText() {
+    function test_destinationRequoteUsesNonBlockingActivity() {
         var backend = createTemporaryObject(backendComponent, testCase)
         var page = createTemporaryObject(pageComponent, testCase, {
             "backend": backend,
@@ -355,16 +355,24 @@ TestCase {
             "request": ({})
         })
         tryCompare(dialog, "opened", true)
+        var initialHeight = dialog.height
+        var initialY = dialog.y
 
         page.flow.quoteLoading = true
-        tryCompare(dialog, "busy", true)
-        compare(dialog.busyText, "Updating quote…")
-        compare(findChild(dialog, "transactionConfirmButton").text,
-                "Updating quote…")
+        tryCompare(dialog, "activityBusy", true)
+        compare(dialog.busy, false)
+        compare(dialog.activityText, "Updating quote…")
+        compare(dialog.height, initialHeight)
+        compare(dialog.y, initialY)
+        var activityNotice = findChild(page, "liquidityActivityNotice")
+        verify(activityNotice)
+        tryCompare(activityNotice, "visible", true)
+        var cancelButton = findChild(dialog, "transactionCancelButton")
+        verify(cancelButton.enabled)
         compare(backend.submitCalls, 0)
 
-        page.flow.quoteLoading = false
-        dialog.cancel()
+        mouseClick(cancelButton)
+        tryCompare(dialog, "opened", false)
     }
 
     function test_missingPoolSubmissionStartsPoolProbeWithoutWalletRefresh() {
