@@ -103,6 +103,7 @@ private:
     FreshLpState m_freshLpState = FreshLpState::None;
     bool m_submitInFlight = false;
     quint64 m_walletGeneration = 0;
+    quint64 m_contextGeneration = 0;
     quint64 m_submitGeneration = 0;
     ResultCallback m_submitCallback;
 };

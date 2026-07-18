@@ -346,6 +346,7 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
                                       bool refreshPublicData,
                                       ResultCallback callback)
 {
+    const quint64 contextGeneration = ++m_contextGeneration;
     if (network.status != QStringLiteral("ready")) {
         callback(contextState(network.status, network).toVariantMap());
         return;
@@ -367,17 +368,18 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
         QStringLiteral("configId")).toString();
     QPointer<NewPositionRuntime> guard(this);
     m_sequencer->readAccounts({ configId }, refreshPublicData,
-        [guard, request, network, walletOpen, refreshPublicData,
+        [guard, request, network, walletOpen, refreshPublicData, contextGeneration,
          callback = std::move(callback)](QVector<WalletAccountRead> configReads) mutable {
-            if (!guard)
+            if (!guard || contextGeneration != guard->m_contextGeneration)
                 return;
             const QJsonObject config = accountReadJson(configReads.value(0));
             guard->m_sequencer->readAccounts(
                 guard->m_walletPublicAccountIds, refreshPublicData,
                 [guard, request, network, walletOpen, refreshPublicData, config,
+                 contextGeneration,
                  callback = std::move(callback)](
                     QVector<WalletAccountRead> walletReads) mutable {
-                    if (!guard)
+                    if (!guard || contextGeneration != guard->m_contextGeneration)
                         return;
                     const QJsonObject hints = QJsonObject::fromVariantMap(request);
                     QJsonArray configured;
@@ -415,11 +417,13 @@ void NewPositionRuntime::contextAsync(const QVariantMap& request,
                     }
                     guard->m_sequencer->readAccounts(definitionIds, refreshPublicData,
                         [guard, network, walletOpen, config, walletAccounts,
-                         configured, recent, resolved,
+                         configured, recent, resolved, contextGeneration,
                          callback = std::move(callback)](
                             QVector<WalletAccountRead> definitions) mutable {
-                            if (!guard)
+                            if (!guard
+                                || contextGeneration != guard->m_contextGeneration) {
                                 return;
+                            }
                             const AmmClientResult result = guard->m_client->context(QJsonObject {
                                 { QStringLiteral("networkId"), network.id },
                                 { QStringLiteral("networkFingerprint"), network.fingerprint },

@@ -292,6 +292,7 @@ namespace {
 
         AmmClientResult tokenIds(const QJsonObject&) const override
         {
+            ++tokenIdsCalls;
             return success({ { QStringLiteral("status"), QStringLiteral("ok") } });
         }
 
@@ -313,6 +314,7 @@ namespace {
 
         AmmClientResult context(const QJsonObject&) const override
         {
+            ++contextCalls;
             return success({});
         }
 
@@ -381,6 +383,8 @@ namespace {
         QString quoteHash = QStringLiteral("sha256:expected");
         bool requiresFreshLp = true;
         mutable bool sawFreshLp = false;
+        mutable int tokenIdsCalls = 0;
+        mutable int contextCalls = 0;
         mutable int planCalls = 0;
         mutable int planFailuresRemaining = 0;
         mutable QStringList freshLpAccountIds;
@@ -700,6 +704,67 @@ int main(int argc, char** argv)
                     && configuredEndpointServer.lastRequest().toLower().contains(
                         "authorization: basic dxnlcjpwyxnz"),
                 "matching endpoint should retain configured credentials"))
+        return 1;
+
+    LocalRpcServer staleContextServer;
+    if (!expect(staleContextServer.listen(),
+                "stale-context sequencer should listen"))
+        return 1;
+    staleContextServer.holdResponses();
+    QTemporaryFile staleContextConfig;
+    if (!expect(staleContextConfig.open(),
+                "stale-context config should open"))
+        return 1;
+    staleContextConfig.write(QJsonDocument(QJsonObject {
+        { QStringLiteral("sequencer_addr"), staleContextServer.endpoint() },
+    }).toJson(QJsonDocument::Compact));
+    staleContextConfig.flush();
+    FakeWallet staleContextWallet;
+    FakeAmmClient staleContextClient;
+    SequencerClient staleContextSequencer(&staleContextClient);
+    if (!expect(staleContextSequencer.configure(staleContextConfig.fileName()),
+                "stale-context sequencer should configure"))
+        return 1;
+    NewPositionRuntime staleContextRuntime(
+        &staleContextWallet, &staleContextClient, &staleContextSequencer);
+    WalletAccount staleContextHolding;
+    staleContextHolding.address = QString(64, QLatin1Char('4'));
+    staleContextHolding.isPublic = true;
+    staleContextRuntime.setWalletAccounts({ staleContextHolding });
+    int staleContextCallbacks = 0;
+    int latestContextCallbacks = 0;
+    staleContextRuntime.contextAsync(
+        {}, readyNetwork(), true, false,
+        [&](QVariantMap) { ++staleContextCallbacks; });
+    if (!expect(waitForRequestCount(staleContextServer, 1),
+                "first context should begin the config read"))
+        return 1;
+    staleContextRuntime.contextAsync(
+        {}, readyNetwork(), true, false,
+        [&](QVariantMap) { ++latestContextCallbacks; });
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    if (!expect(staleContextServer.requestCount() == 1,
+                "superseding context should share the active config read"))
+        return 1;
+    staleContextServer.releaseNextResponse();
+    if (!expect(waitForRequestCount(staleContextServer, 2),
+                "latest context should continue with the wallet read"))
+        return 1;
+    if (!expect(staleContextCallbacks == 0
+                    && latestContextCallbacks == 0
+                    && staleContextClient.tokenIdsCalls == 0
+                    && staleContextClient.contextCalls == 0,
+                "context should wait for the latest wallet read"))
+        return 1;
+    staleContextServer.releaseNextResponse();
+    if (!expect(waitForCondition([&]() { return latestContextCallbacks == 1; }),
+                "latest context should complete"))
+        return 1;
+    if (!expect(staleContextCallbacks == 0
+                    && staleContextClient.tokenIdsCalls == 1
+                    && staleContextClient.contextCalls == 1
+                    && staleContextServer.requestCount() == 2,
+                "superseded context should stop before downstream work"))
         return 1;
 
     LocalRpcServer server;
