@@ -432,9 +432,12 @@ void AmmUiBackend::watchTransaction(const QVariantMap& result)
     bool deadlineValid = false;
     const qint64 deadline = result.value(QStringLiteral("deadlineMs"))
         .toString().toLongLong(&deadlineValid);
+    const QVariantList affectedValues = result.contains(
+        QStringLiteral("contextAffectedAccountIds"))
+        ? result.value(QStringLiteral("contextAffectedAccountIds")).toList()
+        : result.value(QStringLiteral("affectedAccountIds")).toList();
     QStringList affected;
-    for (const QVariant& value : result.value(
-             QStringLiteral("affectedAccountIds")).toList()) {
+    for (const QVariant& value : affectedValues) {
         affected.append(value.toString());
     }
     if (nativeHash.isEmpty() || !deadlineValid || affected.isEmpty())

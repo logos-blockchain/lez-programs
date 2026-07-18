@@ -210,6 +210,26 @@ impl AccountPlan {
             })
             .collect()
     }
+
+    pub(super) fn context_affected_account_ids(
+        &self,
+        fresh_lp: Option<AccountId>,
+    ) -> Result<Vec<AccountId>, String> {
+        self.rows
+            .iter()
+            .filter(|row| {
+                row.action != "read"
+                    && (row.role == "lp_definition" || row.role.starts_with("user_holding_"))
+            })
+            .map(|row| match row.account_id {
+                Some(account_id) => Ok(account_id),
+                None if row.role == "user_holding_lp" => {
+                    fresh_lp.ok_or_else(|| String::from("transaction plan has no LP holding"))
+                }
+                None => Err(String::from("transaction plan has an unresolved account")),
+            })
+            .collect()
+    }
 }
 
 impl AccountPlanRow {

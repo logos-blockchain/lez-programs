@@ -594,6 +594,15 @@ fn missing_pool_quote_and_plan_use_current_account_order() {
     assert_eq!(affected.len(), 9);
     assert!(!affected.contains(&json!(account_id_hex(config_id))));
     assert!(!affected.contains(&json!(account_id_hex(clock_id))));
+    assert_eq!(
+        plan_value["contextAffectedAccountIds"].as_array().unwrap(),
+        &vec![
+            plan_value["accountIds"][4].clone(),
+            plan_value["accountIds"][6].clone(),
+            plan_value["accountIds"][7].clone(),
+            plan_value["accountIds"][8].clone(),
+        ]
+    );
     assert_preview_matches_plan(&quote_value, &plan_value, Some(fresh_lp));
 }
 
@@ -741,6 +750,15 @@ fn active_pool_quote_uses_ratio_and_existing_lp_holding() {
     assert_eq!(plan_value["accountIds"].as_array().unwrap().len(), 10);
     assert_eq!(plan_value["accountIds"][7], account_id_hex(lp_holding));
     assert_eq!(plan_value["signingRequirements"][7], false);
+    assert_eq!(
+        plan_value["contextAffectedAccountIds"].as_array().unwrap(),
+        &vec![
+            plan_value["accountIds"][4].clone(),
+            plan_value["accountIds"][5].clone(),
+            plan_value["accountIds"][6].clone(),
+            plan_value["accountIds"][7].clone(),
+        ]
+    );
     assert_preview_matches_plan(&quote_value, &plan_value, None);
 }
 

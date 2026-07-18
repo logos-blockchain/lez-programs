@@ -360,6 +360,8 @@ namespace {
                 { QStringLiteral("accountIds"), QJsonArray { QStringLiteral("account") } },
                 { QStringLiteral("affectedAccountIds"),
                   QJsonArray { QStringLiteral("account") } },
+                { QStringLiteral("contextAffectedAccountIds"),
+                  QJsonArray { QStringLiteral("account") } },
                 { QStringLiteral("signingRequirements"), QJsonArray { true } },
                 { QStringLiteral("instruction"), QJsonArray { 1 } },
                 { QStringLiteral("programId"), QStringLiteral("program") },
@@ -486,6 +488,10 @@ int main(int argc, char** argv)
     if (!expect(result.value(QStringLiteral("nativeTransactionHash")).toString()
                     == wallet.transactionHash,
                 "submitted result should preserve the native hash for polling"))
+        return 1;
+    if (!expect(result.value(QStringLiteral("contextAffectedAccountIds")).toList()
+                    == QVariantList { QStringLiteral("account") },
+                "submitted result should preserve context refresh account IDs"))
         return 1;
     if (!expect(wallet.createdAccounts == 1 && client.sawFreshLp,
                 "fresh LP account should enter the plan"))
@@ -1205,7 +1211,9 @@ int main(int argc, char** argv)
     asyncWallet.finishSubmission();
     if (!expect(asyncCallbackCount == 1
                     && asyncResult.value(QStringLiteral("status")).toString()
-                        == QStringLiteral("submitted"),
+                        == QStringLiteral("submitted")
+                    && asyncResult.value(QStringLiteral("contextAffectedAccountIds"))
+                        .toList() == QVariantList { QStringLiteral("account") },
                 "async wallet completion should finish exactly once"))
         return 1;
 

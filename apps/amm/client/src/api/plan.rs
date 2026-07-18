@@ -78,6 +78,7 @@ pub(super) fn plan(input: PlanRequest) -> Result<Value, String> {
     }
     let NewPositionPlan { accounts, branch } = plan;
     let affected_account_ids = accounts.writable_account_ids(fresh_lp)?;
+    let context_affected_account_ids = accounts.context_affected_account_ids(fresh_lp)?;
     let (account_ids, signing_requirements) = accounts.wallet_args(fresh_lp)?;
     let instruction = match branch {
         QuoteBranch::Missing { amount_a, amount_b } => {
@@ -118,6 +119,10 @@ pub(super) fn plan(input: PlanRequest) -> Result<Value, String> {
         "programId": input.amm_program_id,
         "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
         "affectedAccountIds": affected_account_ids
+            .into_iter()
+            .map(account_id_hex)
+            .collect::<Vec<_>>(),
+        "contextAffectedAccountIds": context_affected_account_ids
             .into_iter()
             .map(account_id_hex)
             .collect::<Vec<_>>(),

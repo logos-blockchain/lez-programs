@@ -929,7 +929,9 @@ void NewPositionRuntime::submitPlanAsync(QJsonObject input,
         [guard, submitGeneration, walletGeneration,
          freshLpAccountId = std::move(freshLpAccountId), deadlineMs =
              plan.value(QStringLiteral("deadlineMs")), affectedAccountIds =
-             plan.value(QStringLiteral("affectedAccountIds"))](
+             plan.value(QStringLiteral("affectedAccountIds")),
+         contextAffectedAccountIds =
+             plan.value(QStringLiteral("contextAffectedAccountIds"))](
                 WalletSubmission submission) mutable {
             if (!guard)
                 return;
@@ -962,6 +964,8 @@ void NewPositionRuntime::submitPlanAsync(QJsonObject input,
                 { QStringLiteral("deadlineMs"), deadlineMs },
                 { QStringLiteral("affectedAccountIds"),
                   affectedAccountIds },
+                { QStringLiteral("contextAffectedAccountIds"),
+                  contextAffectedAccountIds },
             }.toVariantMap());
         });
 }
@@ -1172,5 +1176,7 @@ QVariantMap NewPositionRuntime::submit(const QVariantMap& request,
         { QStringLiteral("transactionId"), transactionId },
         { QStringLiteral("nativeTransactionHash"), submission.nativeHash },
         { QStringLiteral("deadlineMs"), plan.value(QStringLiteral("deadlineMs")) },
+        { QStringLiteral("contextAffectedAccountIds"),
+          plan.value(QStringLiteral("contextAffectedAccountIds")) },
     }.toVariantMap();
 }
