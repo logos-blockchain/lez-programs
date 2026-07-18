@@ -51,21 +51,36 @@ ColumnLayout {
             font.pixelSize: 12
         }
 
-        AmmSelectionComboBox {
-            id: lpDestinationPicker
-
-            objectName: "lpDestinationPicker"
+        RowLayout {
             Layout.fillWidth: true
-            theme: root.theme
-            model: root.destinationRows()
-            enabled: model.length > 1
-            currentIndex: root.destinationIndex()
-            displayText: currentIndex >= 0
-                         ? model[currentIndex].label : qsTr("Select destination")
-            labelForOption: function(destination) { return destination.label }
-            Accessible.name: qsTr("LP token destination")
-            onActivated: function(index) {
-                root.selectDestination(model[index])
+            spacing: 4
+
+            AmmSelectionComboBox {
+                id: lpDestinationPicker
+
+                objectName: "lpDestinationPicker"
+                Layout.fillWidth: true
+                theme: root.theme
+                model: root.destinationRows()
+                enabled: model.length > 1
+                currentIndex: root.destinationIndex()
+                displayText: currentIndex >= 0
+                             ? model[currentIndex].label : qsTr("Select destination")
+                labelForOption: function(destination) { return destination.label }
+                tooltipText: String(root.snapshot.selectedLpHoldingId || "")
+                Accessible.name: qsTr("LP token destination")
+                onActivated: function(index) {
+                    root.selectDestination(model[index])
+                }
+            }
+
+            AmmCopyButton {
+                objectName: "copyLpDestinationButton"
+                Layout.preferredWidth: visible ? implicitWidth : 0
+                Layout.preferredHeight: implicitHeight
+                theme: root.theme
+                value: String(root.snapshot.selectedLpHoldingId || "")
+                onCopyRequested: function(value) { root.copyToClipboard(value) }
             }
         }
     }

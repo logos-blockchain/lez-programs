@@ -66,6 +66,12 @@ AmmTokenAmountSurface {
         }
     }
 
+    TextEdit {
+        id: clipboardProxy
+
+        visible: false
+    }
+
     Timer {
         id: commitTimer
 
@@ -94,23 +100,38 @@ AmmTokenAmountSurface {
                 onClicked: tokenModal.open()
             }
 
-            AmmSelectionComboBox {
-                id: holdingPicker
-
-                objectName: "holdingPicker"
+            RowLayout {
                 Layout.fillWidth: true
-                theme: root.theme
+                spacing: 4
                 visible: root.holdings.length > 1
-                enabled: root.holdingSelectionEnabled && root.holdings.length > 1
-                model: root.holdings
-                currentIndex: root.holdingIndex()
-                displayText: currentIndex >= 0
-                             ? root.holdingLabel(root.holdings[currentIndex])
-                             : qsTr("Select holding")
-                labelForOption: function(holding) { return root.holdingLabel(holding) }
-                Accessible.name: qsTr("Wallet holding for %1").arg(root.label)
-                onActivated: function(index) {
-                    root.holdingSelected(String(root.holdings[index].holdingId || ""))
+
+                AmmSelectionComboBox {
+                    id: holdingPicker
+
+                    objectName: "holdingPicker"
+                    Layout.fillWidth: true
+                    theme: root.theme
+                    enabled: root.holdingSelectionEnabled && root.holdings.length > 1
+                    model: root.holdings
+                    currentIndex: root.holdingIndex()
+                    displayText: currentIndex >= 0
+                                 ? root.holdingLabel(root.holdings[currentIndex])
+                                 : qsTr("Select holding")
+                    labelForOption: function(holding) { return root.holdingLabel(holding) }
+                    tooltipText: root.selectedHoldingId
+                    Accessible.name: qsTr("Wallet holding for %1").arg(root.label)
+                    onActivated: function(index) {
+                        root.holdingSelected(String(root.holdings[index].holdingId || ""))
+                    }
+                }
+
+                AmmCopyButton {
+                    objectName: "copySelectedHoldingButton"
+                    Layout.preferredWidth: visible ? implicitWidth : 0
+                    Layout.preferredHeight: implicitHeight
+                    theme: root.theme
+                    value: root.selectedHoldingId
+                    onCopyRequested: function(value) { root.copyToClipboard(value) }
                 }
             }
         }
@@ -137,6 +158,16 @@ AmmTokenAmountSurface {
 
     function acceptInput(value) {
         tokenModal.acceptInput(value)
+    }
+
+    function copyToClipboard(value) {
+        if (!value)
+            return
+        clipboardProxy.text = value
+        clipboardProxy.selectAll()
+        clipboardProxy.copy()
+        clipboardProxy.deselect()
+        clipboardProxy.text = ""
     }
 
     function commitPendingEdit() {

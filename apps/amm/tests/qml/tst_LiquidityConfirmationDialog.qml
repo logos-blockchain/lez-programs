@@ -86,6 +86,36 @@ TestCase {
         compare(picker.background.color, summary.theme.colors.panelBg)
     }
 
+    function test_lpDestinationCopiesRawBase58HoldingId() {
+        var address = "2thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"
+        var summary = createTemporaryObject(summaryComponent, testCase, {
+            "snapshot": {
+                "instruction": "AddLiquidity",
+                "request": ({ "schema": "new-position.v2" }),
+                "lpHoldingOptions": [{
+                    "holdingId": address,
+                    "balanceRaw": "7"
+                }],
+                "selectedLpHoldingId": address,
+                "quoteReady": true
+            }
+        })
+        var sink = createTemporaryObject(clipboardSinkComponent, testCase)
+        verify(summary)
+        verify(sink)
+
+        var picker = findChild(summary, "lpDestinationPicker")
+        verify(picker)
+        compare(picker.tooltipText, address)
+        var copyButton = findChild(summary, "copyLpDestinationButton")
+        verify(copyButton)
+
+        copyButton.click()
+        sink.paste()
+        tryCompare(sink, "text", address)
+        verify(!picker.popup.visible)
+    }
+
     function test_confirmationShowsQuoteDetails() {
         var summary = createTemporaryObject(summaryComponent, testCase, {
             "snapshot": {

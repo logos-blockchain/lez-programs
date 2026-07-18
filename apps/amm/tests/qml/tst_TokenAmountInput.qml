@@ -39,6 +39,12 @@ TestCase {
         }
     }
 
+    Component {
+        id: clipboardSinkComponent
+
+        TextEdit {}
+    }
+
     SignalSpy {
         id: commitSpy
         signalName: "editingCommitted"
@@ -117,6 +123,35 @@ TestCase {
         tryCompare(picker, "activeFocus", true)
         compare(String(picker.background.border.color).toLowerCase(),
                 String(input.theme.colors.ctaBg).toLowerCase())
+    }
+
+    function test_selectedHoldingCopiesRawBase58Id() {
+        var address = "3thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"
+        var input = createTemporaryObject(inputComponent, testCase, {
+            "visible": true,
+            "holdings": [{
+                "holdingId": address,
+                "balanceRaw": "1"
+            }, {
+                "holdingId": "22222222222222222222222222222222",
+                "balanceRaw": "2"
+            }],
+            "selectedHoldingId": address
+        })
+        var sink = createTemporaryObject(clipboardSinkComponent, testCase)
+        verify(input)
+        verify(sink)
+
+        var picker = findChild(input, "holdingPicker")
+        verify(picker)
+        compare(picker.tooltipText, address)
+        var copyButton = findChild(input, "copySelectedHoldingButton")
+        verify(copyButton)
+
+        copyButton.click()
+        sink.paste()
+        tryCompare(sink, "text", address)
+        verify(!picker.popup.visible)
     }
 
     function test_balanceRefreshShowsLoadingIndicatorWithoutClearingBalance() {

@@ -8,6 +8,7 @@ ComboBox {
 
     required property var theme
     property var labelForOption: function(option) { return String(option || "") }
+    property string tooltipText: ""
 
     implicitHeight: 34
     leftPadding: 10
@@ -37,6 +38,9 @@ ComboBox {
                             : root.theme.colors.textPlaceholder
         font.pixelSize: 10
     }
+
+    ToolTip.visible: root.tooltipText.length > 0 && root.hovered
+    ToolTip.text: root.tooltipText
 
     background: Rectangle {
         radius: 7
