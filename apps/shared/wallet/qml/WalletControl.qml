@@ -757,6 +757,7 @@ Item {
                         required property string section
                         required property string programName
                         required property string accountType
+                        required property string decodedData
                         required property string visibility
                         required property bool canBePrimary
                         required property bool isPrimary
@@ -786,6 +787,7 @@ Item {
                             section: accountWrapper.section
                             programName: accountWrapper.programName
                             accountType: accountWrapper.accountType
+                            decodedData: accountWrapper.decodedData
                             visibility: accountWrapper.visibility
                             canBePrimary: accountWrapper.canBePrimary
                             isPrimary: accountWrapper.isPrimary

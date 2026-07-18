@@ -14,6 +14,7 @@ struct WalletAccountPresentation {
     QString accountType;
     QString definitionId;
     bool hiddenFromAccounts = false;
+    QString decodedData;
 };
 
 class WalletAccountModel final : public QAbstractListModel {
@@ -39,6 +40,7 @@ public:
         DefinitionIdRole,
         AliasRole,
         DisplayAddressRole,
+        DecodedDataRole,
     };
     Q_ENUM(Role)
 
@@ -79,6 +81,7 @@ private:
         QString programName;
         QString accountType;
         QString definitionId;
+        QString decodedData;
         bool canBePrimary = false;
         bool isPrimary = false;
     };

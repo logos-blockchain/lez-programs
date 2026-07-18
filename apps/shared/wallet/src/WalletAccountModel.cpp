@@ -59,6 +59,8 @@ QVariant WalletAccountModel::data(const QModelIndex& index, int role) const
         return account.definitionId;
     case AliasRole:
         return account.alias;
+    case DecodedDataRole:
+        return account.decodedData;
     default:
         return {};
     }
@@ -84,6 +86,7 @@ QHash<int, QByteArray> WalletAccountModel::roleNames() const
         { DefinitionIdRole, "definitionId" },
         { AliasRole, "alias" },
         { DisplayAddressRole, "displayAddress" },
+        { DecodedDataRole, "decodedData" },
     };
 }
 
@@ -154,6 +157,7 @@ bool WalletAccountModel::applyPresentations(
         entry.programName = presentation.programName;
         entry.accountType = presentation.accountType;
         entry.definitionId = presentation.definitionId;
+        entry.decodedData = presentation.decodedData;
         entry.semanticName = presentation.semanticName;
         entry.section = sectionFor(entry, presentation.hiddenFromAccounts);
         entry.canBePrimary = entry.kind == QStringLiteral("user")
@@ -175,6 +179,7 @@ bool WalletAccountModel::applyPresentations(
             && entry.programName == current.programName
             && entry.accountType == current.accountType
             && entry.definitionId == current.definitionId
+            && entry.decodedData == current.decodedData
             && entry.canBePrimary == current.canBePrimary
             && entry.isPrimary == current.isPrimary) {
             continue;
@@ -193,6 +198,7 @@ bool WalletAccountModel::applyPresentations(
         SectionRole,
         ProgramNameRole,
         AccountTypeRole,
+        DecodedDataRole,
         CanBePrimaryRole,
         IsPrimaryRole,
         DefinitionIdRole,

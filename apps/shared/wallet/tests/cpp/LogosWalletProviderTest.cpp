@@ -604,6 +604,8 @@ void LogosWalletProviderTest::exposesStableAccountModelRoles()
     QCOMPARE(model.data(model.index(1), WalletAccountModel::AddressRole).toString(), ACCOUNT_B);
     QCOMPARE(model.roleNames().value(WalletAccountModel::DisplayAddressRole),
              QByteArray("displayAddress"));
+    QCOMPARE(model.roleNames().value(WalletAccountModel::DecodedDataRole),
+             QByteArray("decodedData"));
     QCOMPARE(model.data(model.index(1), WalletAccountModel::DisplayAddressRole).toString(),
              walletAccountIdToBase58(ACCOUNT_B));
     QCOMPARE(model.data(model.index(1), WalletAccountModel::BalanceRole).toString(),
@@ -623,6 +625,7 @@ void LogosWalletProviderTest::exposesStableAccountModelRoles()
             QStringLiteral("UserAccount"),
             {},
             false,
+            QStringLiteral("{\"public_key\":\"Public/test\"}"),
         },
         {
             walletAccountIdToBase58(ACCOUNT_C),
@@ -640,6 +643,8 @@ void LogosWalletProviderTest::exposesStableAccountModelRoles()
              QStringLiteral("hidden"));
     QCOMPARE(model.data(model.index(2), WalletAccountModel::NameRole).toString(),
              QStringLiteral("TEST holding"));
+    QCOMPARE(model.data(model.index(0), WalletAccountModel::DecodedDataRole).toString(),
+             QStringLiteral("{\"public_key\":\"Public/test\"}"));
     model.setAlias(ACCOUNT_C, QStringLiteral("Reserve"));
     QCOMPARE(model.data(model.index(2), WalletAccountModel::NameRole).toString(),
              QStringLiteral("Reserve"));

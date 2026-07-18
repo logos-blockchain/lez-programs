@@ -180,6 +180,7 @@ Item {
                 section: account.section || "accounts",
                 programName: account.programName || "",
                 accountType: account.accountType || "",
+                decodedData: account.decodedData || "",
                 visibility: account.visibility || (account.isPublic === false ? "private" : "public"),
                 canBePrimary: account.canBePrimary === undefined ? true : account.canBePrimary,
                 isPrimary: account.isPrimary === true
@@ -620,6 +621,37 @@ Item {
             list.itemAtIndex(1).clicked()
             compare(fixture.backend.primaryAccountCalls, 0)
             compare(fixture.control.selectedAddress, userAddress)
+        }
+
+        function test_advancedShowsProgramAndDecodedData() {
+            const decodedData = "{\n  \"name\": \"Test token\"\n}"
+            const fixture = createControl({ isWalletOpen: true }, [
+                {
+                    name: "Token definition",
+                    address: "c".repeat(64),
+                    balance: "0",
+                    isPublic: true,
+                    kind: "token_definition",
+                    section: "advanced",
+                    programName: "Token",
+                    accountType: "TokenDefinition",
+                    decodedData: decodedData,
+                    canBePrimary: false
+                }
+            ])
+            mouseClick(findChild(fixture.control, "walletAccountButton"))
+            mouseClick(findChild(fixture.control, "walletAccountsButton"))
+            mouseClick(findChild(fixture.control, "walletAdvancedAccountsButton"))
+
+            const list = findChild(fixture.control, "walletAccountList")
+            tryVerify(function() { return list.itemAtIndex(0) !== null })
+            const program = findChild(list.itemAtIndex(0), "walletProgramName")
+            const decoded = findChild(list.itemAtIndex(0), "walletDecodedData")
+            verify(program && decoded, "Advanced details exist")
+            tryCompare(program, "visible", true)
+            compare(program.text, "Program: Token")
+            tryCompare(decoded, "visible", true)
+            compare(decoded.text, decodedData)
         }
 
         function test_onlyProgramRecordsLeavesPrimaryEmpty() {

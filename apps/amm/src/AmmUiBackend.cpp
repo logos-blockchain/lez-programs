@@ -95,6 +95,19 @@ QJsonObject enumFields(const QJsonValue& value, const QString& variant)
     return value.toObject().value(variant).toObject();
 }
 
+QString decodedDataText(const QJsonValue& value)
+{
+    if (value.isObject()) {
+        return QString::fromUtf8(
+            QJsonDocument(value.toObject()).toJson(QJsonDocument::Indented)).trimmed();
+    }
+    if (value.isArray()) {
+        return QString::fromUtf8(
+            QJsonDocument(value.toArray()).toJson(QJsonDocument::Indented)).trimmed();
+    }
+    return {};
+}
+
 WalletAccountRead accountRead(const WalletAccount& account)
 {
     WalletAccountRead read;
@@ -444,6 +457,8 @@ void AmmUiBackend::applyWalletPortfolio(quint64 generation)
             presentation.address = account.id;
             presentation.programName = program.programName;
             presentation.accountType = account.typeName;
+            if (account.status == QStringLiteral("decoded"))
+                presentation.decodedData = decodedDataText(account.value);
             if (program.programId == m_tokenProgramId
                 && account.typeName == QStringLiteral("TokenHolding")) {
                 const QJsonObject fungible = enumFields(

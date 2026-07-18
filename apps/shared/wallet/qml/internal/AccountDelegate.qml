@@ -16,6 +16,7 @@ ItemDelegate {
     required property string section
     required property string programName
     required property string accountType
+    required property string decodedData
     required property string visibility
     required property bool canBePrimary
     required property bool isPrimary
@@ -87,12 +88,49 @@ ItemDelegate {
         }
 
         Label {
-            visible: root.programName.length > 0
+            objectName: "walletProgramName"
+            visible: root.section === "advanced" && root.programName.length > 0
             Layout.fillWidth: true
-            text: qsTr("%1 program · wallet controlled").arg(root.programName)
+            text: qsTr("Program: %1").arg(root.programName)
             color: "#a1a1aa"
             font.pixelSize: 11
             elide: Text.ElideRight
+        }
+
+        ColumnLayout {
+            visible: root.section === "advanced" && root.decodedData.length > 0
+            Layout.fillWidth: true
+            spacing: 4
+
+            Label {
+                objectName: "walletDecodedDataLabel"
+                text: qsTr("Decoded data")
+                color: "#a1a1aa"
+                font.pixelSize: 11
+            }
+
+            Rectangle {
+                objectName: "walletDecodedDataBox"
+                Layout.fillWidth: true
+                implicitHeight: decodedDataText.implicitHeight + 16
+                color: "#18181b"
+                radius: 6
+                border.width: 1
+                border.color: "#3f3f46"
+
+                Text {
+                    id: decodedDataText
+                    objectName: "walletDecodedData"
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    text: root.decodedData
+                    color: "#d4d4d8"
+                    font.family: "monospace"
+                    font.pixelSize: 10
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WrapAnywhere
+                }
+            }
         }
 
         RowLayout {
