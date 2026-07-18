@@ -42,10 +42,11 @@ AmmTokenAmountSurface {
     amount: root.text
     supportingText: root.helperText
     supportingActionText: root.showMaxButton ? qsTr("MAX") : ""
+    availableBalance: root.balance
+    availableBalanceUpdating: root.balanceUpdating
     accessory: tokenActions
     accessoryWidth: width < 360 ? 132 : 180
-    accessoryHeight: root.holdings.length > 1 ? 88
-                     : root.balance.length > 0 ? 58 : 40
+    accessoryHeight: root.holdings.length > 1 ? 88 : 40
 
     onAmountEdited: function(value) {
         root.pendingValue = value
@@ -89,8 +90,6 @@ AmmTokenAmountSurface {
                 tokenColor: root.tokenColor(root.tokenData)
                 tokenLetter: root.tokenLetter(root.tokenData)
                 tokenText: root.tokenText(root.tokenData)
-                balance: root.balance
-                balanceUpdating: root.balanceUpdating
                 accessibleName: qsTr("Select %1").arg(root.label)
                 onClicked: tokenModal.open()
             }

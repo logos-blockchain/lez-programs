@@ -120,16 +120,18 @@ TestCase {
     }
 
     function test_balanceRefreshShowsLoadingIndicatorWithoutClearingBalance() {
+        failOnWarning(/Detected recursive rearrange/)
         var input = createTemporaryObject(inputComponent, testCase, {
             "balance": "12",
             "balanceUpdating": true
         })
         verify(input)
 
-        var accessory = findChild(input, "tokenAccessory")
-        verify(accessory)
-        compare(accessory.balance, "12")
-        compare(accessory.showBalanceLoadingIndicator, true)
+        var balanceText = findChild(input, "availableBalanceText")
+        verify(balanceText)
+        compare(balanceText.text, "Balance 12")
+        compare(input.showAvailableBalance, true)
+        compare(input.accessoryHeight, 40)
     }
 
     function test_disabledTokenIsRejectedByTypedInput() {

@@ -13,6 +13,8 @@ Rectangle {
     property string supportingText: ""
     property string errorText: ""
     property string supportingActionText: ""
+    property string availableBalance: ""
+    property bool availableBalanceUpdating: false
     property bool readOnly: false
     property bool muted: false
     property bool invalid: root.errorText.length > 0
@@ -22,6 +24,7 @@ Rectangle {
     property Component adjustment
     property real adjustmentWidth: 0
     property real adjustmentHeight: 0
+    readonly property bool showAvailableBalance: root.availableBalance.length > 0
 
     signal amountEdited(string value)
     signal amountEditingFinished(string value)
@@ -162,6 +165,34 @@ Rectangle {
                         radius: 6
                         color: supportingAction.hovered || supportingAction.activeFocus
                                ? root.theme.colors.selection : "transparent"
+                    }
+                }
+
+                RowLayout {
+                    Layout.maximumWidth: 150
+                    spacing: 4
+                    visible: root.showAvailableBalance
+
+                    Text {
+                        id: availableBalanceText
+
+                        objectName: "availableBalanceText"
+                        Layout.minimumWidth: 0
+                        Layout.preferredWidth: Math.min(implicitWidth, 150)
+                        Layout.maximumWidth: 150
+                        text: qsTr("Balance %1").arg(root.availableBalance)
+                        color: root.theme.colors.textSecondary
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                    }
+
+                    BusyIndicator {
+                        objectName: "availableBalanceLoadingIndicator"
+                        Layout.preferredWidth: 12
+                        Layout.preferredHeight: 12
+                        visible: root.availableBalanceUpdating
+                        running: visible
+                        Accessible.name: qsTr("Updating balance")
                     }
                 }
 
