@@ -37,6 +37,7 @@ TestCase {
             })
             property int contextRefreshCalls: 0
             property int contextRequestId: 0
+            property int quoteCalls: 0
             property int submitCalls: 0
             property var lastContextRefreshRequest: ({})
 
@@ -49,6 +50,7 @@ TestCase {
             }
 
             function requestNewPositionQuote(request, requestId, forceRefresh) {
+                ++quoteCalls
                 var result = JSON.parse(JSON.stringify(quoteResult || ({})))
                 result.requestId = requestId
                 newPositionQuoteResult = result
@@ -206,7 +208,16 @@ TestCase {
 
         compare(page.flow.pendingPoolProbes.length, 1)
         compare(backend.contextRefreshCalls, 0)
+        compare(backend.quoteCalls, 0)
         verify(page.flow.selectedPoolCreationPending())
+
+        page.flow.pollPendingPool()
+        compare(backend.quoteCalls, 0)
+
+        page.flow.active = true
+        wait(0)
+        page.flow.pollPendingPool()
+        compare(backend.quoteCalls, 1)
     }
 
     function test_activePoolSubmissionDoesNotStartPoolCreationProbe() {

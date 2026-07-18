@@ -72,7 +72,7 @@ QtObject {
     property Timer poolPoller: Timer {
         interval: 5000
         repeat: true
-        running: root.pendingPoolProbes.length > 0
+        running: root.active && root.pendingPoolProbes.length > 0
         onTriggered: root.pollPendingPool()
     }
 
@@ -294,7 +294,7 @@ QtObject {
 
     function pollPendingPool() {
         if (root.poolProbeInFlight || root.pendingPoolProbes.length === 0
-                || !root.backendReady)
+                || !root.backendReady || !root.active)
             return
         const pending = root.pendingPoolProbes[0]
         root.poolProbeInFlight = true
