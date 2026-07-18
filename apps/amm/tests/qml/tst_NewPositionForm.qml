@@ -183,6 +183,21 @@ TestCase {
                 "44444444444444444444444444444444")
     }
 
+    function test_holdingSelectionErrorMarksTheInputThatNeedsSelection() {
+        var form = createForm(holdingContext())
+        var amountAInput = findChild(form, "tokenAAmountInput")
+        var amountBInput = findChild(form, "tokenBAmountInput")
+        verify(amountAInput)
+        verify(amountBInput)
+
+        verify(!form.buildQuoteRequest().ok)
+
+        compare(amountAInput.errorText,
+                form.issueText("holding_selection_required"))
+        verify(!amountAInput.invalid)
+        verify(amountBInput.invalid)
+    }
+
     function test_contextRefreshSelectsSingleHoldingsBeforeQuote() {
         var form = createForm()
         form.selectedHoldingAId = ""

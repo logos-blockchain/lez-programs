@@ -259,6 +259,7 @@ AmmActionCard {
                             ? root.minimumAmountText("A") : ""
                 errorText: root.formErrorText()
                 invalid: root.fieldHasError("amountA")
+                         || root.fieldHasError("holdingAId")
                 readOnly: root.submitting || (!root.activePool && !root.missingPool)
                 showMaxButton: root.activePool
                 tokenData: root.tokenA.definitionId ? root.tokenA : null
@@ -314,6 +315,7 @@ AmmActionCard {
                 helperText: root.missingPool && !root.compact
                             ? root.minimumAmountText("B") : ""
                 invalid: root.fieldHasError("amountB")
+                         || root.fieldHasError("holdingBId")
                 readOnly: root.submitting || (!root.activePool && !root.missingPool)
                 showMaxButton: root.activePool
                 tokenData: root.tokenB.definitionId ? root.tokenB : null
@@ -1233,20 +1235,30 @@ AmmActionCard {
             return root.displayIsCanonical ? "amountA" : "amountB"
         if (field === "amountBRaw")
             return root.displayIsCanonical ? "amountB" : "amountA"
+        if (field === "holdingAId")
+            return root.displayIsCanonical ? "holdingAId" : "holdingBId"
+        if (field === "holdingBId")
+            return root.displayIsCanonical ? "holdingBId" : "holdingAId"
         if (field === "initialPriceRealRaw")
             return "initialPrice"
         return field
     }
 
     function fieldError(field) {
-        var collections = [root.localErrors, root.currentQuoteErrors()]
-        for (var c = 0; c < collections.length; ++c) {
-            for (var i = 0; i < collections[c].length; ++i) {
-                var fields = collections[c][i].blockingFields || []
-                for (var f = 0; f < fields.length; ++f) {
-                    if (root.canonicalFieldToDisplay(fields[f]) === field)
-                        return root.issueText(collections[c][i].code)
-                }
+        var localError = root.errorForField(root.localErrors, field, false)
+        return localError.length > 0
+                ? localError
+                : root.errorForField(root.currentQuoteErrors(), field, true)
+    }
+
+    function errorForField(errors, field, mapCanonicalField) {
+        for (var i = 0; i < errors.length; ++i) {
+            var fields = errors[i].blockingFields || []
+            for (var f = 0; f < fields.length; ++f) {
+                var candidate = mapCanonicalField
+                        ? root.canonicalFieldToDisplay(fields[f]) : fields[f]
+                if (candidate === field)
+                    return root.issueText(errors[i].code)
             }
         }
         return ""
