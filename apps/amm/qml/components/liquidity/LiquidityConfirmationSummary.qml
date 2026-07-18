@@ -4,6 +4,8 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
+import Logos.Wallet as Wallet
+
 ColumnLayout {
     id: root
 
@@ -157,12 +159,14 @@ ColumnLayout {
                     }
                 }
 
-                AmmCopyButton {
+                Wallet.CopyButton {
                     objectName: "copyLpDestinationButton"
                     Layout.preferredWidth: visible ? implicitWidth : 0
                     Layout.preferredHeight: implicitHeight
-                    theme: root.theme
-                    value: String(root.snapshot.selectedLpHoldingId || "")
+                    copyText: String(root.snapshot.selectedLpHoldingId || "")
+                    copyLabel: qsTr("Copy LP destination")
+                    visible: copyText.length > 0
+                    enabled: copyText.length > 0
                 }
             }
         }

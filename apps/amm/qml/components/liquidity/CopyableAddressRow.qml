@@ -4,6 +4,8 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
+import Logos.Wallet as Wallet
+
 RowLayout {
     id: root
 
@@ -56,16 +58,15 @@ RowLayout {
     ToolTip.visible: root.canCopy && addressText.truncated && addressHover.hovered
     ToolTip.text: root.address
 
-    AmmCopyButton {
+    Wallet.CopyButton {
         id: copyAddressButton
 
         objectName: "copyAddressButton"
-        Layout.preferredWidth: visible ? 48 : 0
-        Layout.preferredHeight: 24
-        theme: root.theme
-        value: root.address
-        accessibleName: qsTr("Copy %1 address").arg(root.label)
-        buttonWidth: 48
-        labelFontPixelSize: 11
+        Layout.preferredWidth: visible ? implicitWidth : 0
+        Layout.preferredHeight: implicitHeight
+        copyText: root.address
+        copyLabel: qsTr("Copy %1 address").arg(root.label)
+        visible: root.canCopy
+        enabled: root.canCopy
     }
 }

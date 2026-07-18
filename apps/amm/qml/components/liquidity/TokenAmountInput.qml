@@ -1,10 +1,9 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-import "../shared"
+import Logos.Wallet as Wallet
 
 AmmTokenAmountSurface {
     id: root
@@ -119,12 +118,14 @@ AmmTokenAmountSurface {
                     }
                 }
 
-                AmmCopyButton {
+                Wallet.CopyButton {
                     objectName: "copySelectedHoldingButton"
                     Layout.preferredWidth: visible ? implicitWidth : 0
                     Layout.preferredHeight: implicitHeight
-                    theme: root.theme
-                    value: root.selectedHoldingId
+                    copyText: root.selectedHoldingId
+                    copyLabel: qsTr("Copy selected holding")
+                    visible: copyText.length > 0
+                    enabled: copyText.length > 0
                 }
             }
         }

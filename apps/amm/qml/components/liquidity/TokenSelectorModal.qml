@@ -4,6 +4,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+import Logos.Wallet as Wallet
+
 Popup {
     id: root
 
@@ -322,15 +324,16 @@ Popup {
                                 elide: Text.ElideRight
                             }
 
-                            AmmCopyButton {
+                            Wallet.CopyButton {
                                 id: copyTokenDefinitionButton
 
                                 objectName: "copyTokenDefinitionButton"
                                 Layout.preferredWidth: visible ? implicitWidth : 0
                                 Layout.preferredHeight: implicitHeight
-                                theme: root.theme
-                                value: tokenRow.tokenDefinitionId
-                                accessibleName: qsTr("Copy TokenDefinition address")
+                                copyText: tokenRow.tokenDefinitionId
+                                copyLabel: qsTr("Copy TokenDefinition address")
+                                visible: copyText.length > 0
+                                enabled: copyText.length > 0
                             }
                         }
                     }
