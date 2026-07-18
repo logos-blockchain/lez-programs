@@ -58,94 +58,6 @@ namespace {
 
 }
 
-namespace {
-constexpr int CHECKPOINT_BLOCK_ID = 10;
-constexpr int BLOCK_HASH_OFFSET = 40;
-constexpr int BLOCK_HASH_SIZE = 32;
-const QString DEFAULT_PROGRAM_OWNER(64, QLatin1Char('0'));
-
-QByteArray resource(const QString& path)
-{
-    QFile file(path);
-    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
-}
-
-QByteArray jsonRpcBody(const QString& method, const QJsonArray& params)
-{
-    return QJsonDocument(QJsonObject {
-        { QStringLiteral("jsonrpc"), QStringLiteral("2.0") },
-        { QStringLiteral("id"), 1 },
-        { QStringLiteral("method"), method },
-        { QStringLiteral("params"), params },
-    }).toJson(QJsonDocument::Compact);
-}
-
-QString blockHashFromResponse(const QByteArray& payload)
-{
-    QJsonParseError error;
-    const QJsonDocument document = QJsonDocument::fromJson(payload, &error);
-    if (error.error != QJsonParseError::NoError || !document.isObject())
-        return {};
-    const QByteArray block = QByteArray::fromBase64(
-        document.object().value(QStringLiteral("result")).toString().toLatin1());
-    if (block.size() < BLOCK_HASH_OFFSET + BLOCK_HASH_SIZE)
-        return {};
-    return QString::fromLatin1(block.mid(BLOCK_HASH_OFFSET, BLOCK_HASH_SIZE).toHex());
-}
-
-QString channelIdFromResponse(const QByteArray& payload)
-{
-    QJsonParseError error;
-    const QJsonDocument document = QJsonDocument::fromJson(payload, &error);
-    if (error.error != QJsonParseError::NoError || !document.isObject())
-        return {};
-    const QString channel = document.object().value(QStringLiteral("result")).toString();
-    return ActiveNetwork::isValidIdentity(channel) ? channel : QString();
-}
-
-QString decimalAdd(const QString& left, const QString& right)
-{
-    if (left.isEmpty() || right.isEmpty())
-        return {};
-    if (!std::all_of(left.cbegin(), left.cend(), [](QChar value) { return value.isDigit(); })
-        || !std::all_of(right.cbegin(), right.cend(), [](QChar value) { return value.isDigit(); })) {
-        return {};
-    }
-    QString result;
-    result.reserve(std::max(left.size(), right.size()) + 1);
-    qsizetype leftIndex = left.size();
-    qsizetype rightIndex = right.size();
-    int carry = 0;
-    while (leftIndex > 0 || rightIndex > 0 || carry > 0) {
-        const int leftDigit = leftIndex > 0
-            ? left.at(--leftIndex).digitValue() : 0;
-        const int rightDigit = rightIndex > 0
-            ? right.at(--rightIndex).digitValue() : 0;
-        const int sum = leftDigit + rightDigit + carry;
-        result.prepend(QChar(QLatin1Char('0').unicode() + sum % 10));
-        carry = sum / 10;
-    }
-    while (result.size() > 1 && result.startsWith(QLatin1Char('0')))
-        result.remove(0, 1);
-    return result;
-}
-
-QJsonObject enumFields(const QJsonValue& value, const QString& variant)
-{
-    return value.toObject().value(variant).toObject();
-}
-
-WalletAccountRead accountRead(const WalletAccount& account)
-{
-    WalletAccountRead read;
-    read.accountId = account.address;
-    read.status = account.readStatus;
-    read.programOwner = account.programOwner;
-    read.dataHex = account.dataHex;
-    return read;
-}
-}
-
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     : AmmUiBackendSimpleSource(parent),
       m_logosAPI(logosAPI ? logosAPI : new LogosAPI("amm_ui", this)),
@@ -162,6 +74,9 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
 {
     setNewPositionQuoteResult({});
     setNewPositionSubmitResult({});
+    setAssets({});
+    setAssetStatus(QStringLiteral("idle"));
+    setAssetError({});
     m_transactionTimer->setInterval(5000);
     connect(m_transactionTimer, &QTimer::timeout,
             this, &AmmUiBackend::pollTransactions);
@@ -228,6 +143,16 @@ QString AmmUiBackend::getBalance(QString accountIdHex, bool isPublic)
     return m_walletController->balance(accountIdHex, isPublic);
 }
 
+bool AmmUiBackend::setAccountAlias(QString accountId, QString alias)
+{
+    return m_walletController->setAccountAlias(accountId, alias);
+}
+
+bool AmmUiBackend::setPrimaryAccount(QString accountId)
+{
+    return m_walletController->setPrimaryAccount(accountId);
+}
+
 void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
 {
     const bool refreshWalletAccounts =
@@ -245,6 +170,7 @@ void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
         [this, generation](QVariantMap result) {
             if (generation == m_contextGeneration) {
                 result.insert(QStringLiteral("requestId"), generation);
+                publishWalletAssets(result);
                 setNewPositionContext(std::move(result));
             }
         });
@@ -298,6 +224,8 @@ void AmmUiBackend::syncWalletState()
     setCurrentBlockHeight(state.currentBlockHeight);
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
+    setPrimaryAccountAddress(state.primaryAccountAddress);
+    setPrimaryAccountName(state.primaryAccountName);
 
     m_sequencer->configure(state.configPath, state.sequencerAddress);
 
@@ -315,8 +243,12 @@ void AmmUiBackend::syncWalletState()
         m_identityRetryTimer->stop();
         m_network.reachabilityChanged(state.sequencerReachable, wasReachable);
     }
-    if (walletWasOpen && !state.isWalletOpen)
+    if (walletWasOpen && !state.isWalletOpen) {
         m_newPosition->clearWalletAccounts();
+        setAssets({});
+        setAssetStatus(QStringLiteral("idle"));
+        setAssetError({});
+    }
     if (state.canSubmit()) {
         const WalletSnapshot snapshot = m_wallet->snapshot();
         if (snapshot.ok())
@@ -387,7 +319,71 @@ void AmmUiBackend::probeNetworkIdentity()
 
 void AmmUiBackend::publishNetworkContext()
 {
+    const ActiveNetworkSnapshot network = m_network.snapshot();
+    setActiveNetwork(network.id);
+    setNetworkStatus(network.status);
+    setNetworkFingerprint(network.fingerprint);
     refreshNewPositionContext(m_newPositionHints);
+}
+
+void AmmUiBackend::publishWalletAssets(const QVariantMap& context)
+{
+    const QString contextStatus = context.value(QStringLiteral("status")).toString();
+    if (contextStatus == QStringLiteral("no_wallet")) {
+        setAssets({});
+        setAssetStatus(QStringLiteral("idle"));
+        setAssetError({});
+        return;
+    }
+    if (contextStatus != QStringLiteral("ready")) {
+        const QString code = context.value(QStringLiteral("code")).toString();
+        setAssets({});
+        setAssetStatus(contextStatus == QStringLiteral("error")
+                           ? QStringLiteral("error")
+                           : QStringLiteral("blocked"));
+        setAssetError(code.isEmpty() ? contextStatus : code);
+        return;
+    }
+
+    QVariantList assets;
+    QVariantList available;
+    bool hasUnavailableToken = false;
+    for (const QVariant& value : context.value(QStringLiteral("tokens")).toList()) {
+        const QVariantMap token = value.toMap();
+        const QString tokenStatus = token.value(QStringLiteral("status")).toString();
+        const bool ready = tokenStatus == QStringLiteral("available");
+        const QString balance = token.value(QStringLiteral("balanceRaw")).toString();
+        const bool hasBalance = ready && !balance.isEmpty() && balance != QStringLiteral("0");
+        const QString definitionId = token.value(QStringLiteral("definitionId")).toString();
+        QString name = token.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty())
+            name = QStringLiteral("Unknown token");
+        QVariantMap asset {
+            { QStringLiteral("name"), name },
+            { QStringLiteral("symbol"), name },
+            { QStringLiteral("balance"), balance.isEmpty() ? QStringLiteral("0") : balance },
+            { QStringLiteral("definitionId"), definitionId },
+            { QStringLiteral("displayDefinitionId"), definitionId },
+            { QStringLiteral("programOwner"), token.value(QStringLiteral("ownerProgramId")) },
+            { QStringLiteral("status"), ready ? QStringLiteral("ready")
+                                                 : QStringLiteral("unavailable") },
+            { QStringLiteral("section"), hasBalance ? QStringLiteral("assets")
+                                                       : QStringLiteral("available") },
+        };
+        if (hasBalance)
+            assets.append(std::move(asset));
+        else
+            available.append(std::move(asset));
+        hasUnavailableToken = hasUnavailableToken || !ready;
+    }
+    for (QVariant& asset : available)
+        assets.append(std::move(asset));
+    setAssets(assets);
+    setAssetStatus(hasUnavailableToken ? QStringLiteral("partial")
+                                       : QStringLiteral("ready"));
+    setAssetError(hasUnavailableToken
+                      ? QStringLiteral("some_definitions_unavailable")
+                      : QString());
 }
 
 void AmmUiBackend::watchTransaction(const QVariantMap& result)

@@ -225,6 +225,16 @@ namespace {
             return read;
         }
 
+        void readPublicAccountsAsync(const QStringList& accountIds,
+                                     AccountReadsCallback callback) override
+        {
+            QVector<WalletAccountRead> reads;
+            reads.reserve(accountIds.size());
+            for (const QString& accountId : accountIds)
+                reads.append(readPublicAccount(accountId));
+            callback(std::move(reads));
+        }
+
         WalletSubmission submitPublicTransaction(const WalletTransaction& transaction) override
         {
             ++submissions;

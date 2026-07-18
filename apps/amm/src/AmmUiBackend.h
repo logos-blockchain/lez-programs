@@ -33,8 +33,6 @@ class AmmUiBackend : public AmmUiBackendSimpleSource {
 
 public:
     explicit AmmUiBackend(LogosAPI* logosAPI = nullptr, QObject* parent = nullptr);
-    // The injected provider must outlive the backend.
-    explicit AmmUiBackend(WalletProvider& wallet, QObject* parent = nullptr);
     ~AmmUiBackend() override;
 
     WalletAccountModel* accountModel() const;
@@ -46,6 +44,8 @@ public slots:
     void refreshAccounts() override;
     void refreshBalances() override;
     QString getBalance(QString accountIdHex, bool isPublic) override;
+    bool setAccountAlias(QString accountId, QString alias) override;
+    bool setPrimaryAccount(QString accountId) override;
     void refreshNewPositionContext(QVariantMap request) override;
     void requestNewPositionQuote(QVariantMap request,
                                  int requestId,
@@ -65,6 +65,7 @@ private:
     void syncWalletState();
     void probeNetworkIdentity();
     void publishNetworkContext();
+    void publishWalletAssets(const QVariantMap& context);
     void watchTransaction(const QVariantMap& result);
     void pollTransactions();
     void refreshAffectedAccounts(const QStringList& accountIds, int attempt = 0);
