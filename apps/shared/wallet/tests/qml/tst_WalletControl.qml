@@ -496,6 +496,61 @@ Item {
             }
         }
 
+        function test_tokenAssetsRenderInBoxes() {
+            const fixture = createControl({
+                isWalletOpen: true,
+                assets: [
+                    {
+                        name: "Held token",
+                        balance: "42",
+                        definitionId: "c".repeat(64),
+                        displayDefinitionId: "base58-held-token",
+                        status: "ready",
+                        section: "assets"
+                    },
+                    {
+                        name: "Available token",
+                        balance: "0",
+                        definitionId: "d".repeat(64),
+                        displayDefinitionId: "base58-available-token",
+                        status: "ready",
+                        section: "available"
+                    }
+                ]
+            }, [])
+            mouseClick(findChild(fixture.control, "walletAccountButton"))
+
+            const heldRepeater = findChild(fixture.control, "walletAssetRepeater")
+            verify(heldRepeater, "Held token repeater exists")
+            let held = null
+            tryVerify(function() {
+                held = heldRepeater.itemAt(0)
+                return held !== null
+            })
+            verify(held, "Held token box exists")
+            tryCompare(held, "visible", true)
+            compare(held.implicitHeight, 68)
+            compare(held.radius, 10)
+            compare(held.border.width, 1)
+            compare(held.border.color, "#3f3f46")
+
+            const availableRepeater = findChild(fixture.control, "walletAvailableAssetRepeater")
+            verify(availableRepeater, "Available token repeater exists")
+            let available = null
+            tryVerify(function() {
+                available = availableRepeater.itemAt(1)
+                return available !== null
+            })
+            verify(available, "Available token box exists")
+            compare(available.visible, false)
+            mouseClick(findChild(fixture.control, "walletAvailableAssetsButton"))
+            tryCompare(available, "visible", true)
+            compare(available.implicitHeight, 64)
+            compare(available.radius, 10)
+            compare(available.border.width, 1)
+            compare(available.border.color, "#3f3f46")
+        }
+
         function test_accountNavigationKeepsOverviewInsidePopup() {
             const assets = []
             for (let index = 0; index < 10; ++index) {

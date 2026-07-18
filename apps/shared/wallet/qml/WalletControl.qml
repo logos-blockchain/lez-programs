@@ -588,17 +588,23 @@ Item {
                         color: "#a1a1aa"
                     }
                     Repeater {
+                        objectName: "walletAssetRepeater"
                         model: root.walletAssets
                         delegate: Rectangle {
                             required property var modelData
+                            objectName: "walletAssetBox"
                             Layout.fillWidth: true
                             visible: modelData.section === "assets"
-                            implicitHeight: visible ? 62 : 0
+                            implicitHeight: visible ? 68 : 0
                             color: "#27272a"
-                            radius: 8
+                            radius: 10
+                            border.width: 1
+                            border.color: "#3f3f46"
+                            Accessible.name: qsTr("%1 token, balance %2")
+                                .arg(modelData.name).arg(modelData.balance)
                             RowLayout {
                                 anchors.fill: parent
-                                anchors.margins: 10
+                                anchors.margins: 12
                                 ColumnLayout {
                                     Layout.fillWidth: true
                                     spacing: 1
@@ -650,17 +656,23 @@ Item {
                         onClicked: root.availableExpanded = !root.availableExpanded
                     }
                     Repeater {
+                        objectName: "walletAvailableAssetRepeater"
                         model: root.walletAssets
                         delegate: Rectangle {
                             required property var modelData
+                            objectName: "walletAvailableAssetBox"
                             Layout.fillWidth: true
                             visible: root.availableExpanded && modelData.section === "available"
-                            implicitHeight: visible ? 58 : 0
+                            implicitHeight: visible ? 64 : 0
                             color: "#202023"
-                            radius: 8
+                            radius: 10
+                            border.width: 1
+                            border.color: "#3f3f46"
+                            Accessible.name: qsTr("%1 token, no balance")
+                                .arg(modelData.name)
                             RowLayout {
                                 anchors.fill: parent
-                                anchors.margins: 10
+                                anchors.margins: 12
                                 ColumnLayout {
                                     Layout.fillWidth: true
                                     spacing: 1
