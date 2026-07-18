@@ -11,6 +11,7 @@ AmmTokenAmountSurface {
 
     property string text: ""
     property string balance: ""
+    property bool balanceUpdating: false
     property string helperText: ""
     property bool showMaxButton: true
     property var tokenData: null
@@ -79,6 +80,7 @@ AmmTokenAmountSurface {
             spacing: 4
 
             AmmTokenAccessory {
+                objectName: "tokenAccessory"
                 Layout.fillWidth: true
                 theme: root.theme
                 enabled: root.tokenSelectionEnabled
@@ -88,6 +90,7 @@ AmmTokenAmountSurface {
                 tokenLetter: root.tokenLetter(root.tokenData)
                 tokenText: root.tokenText(root.tokenData)
                 balance: root.balance
+                balanceUpdating: root.balanceUpdating
                 accessibleName: qsTr("Select %1").arg(root.label)
                 onClicked: tokenModal.open()
             }

@@ -255,8 +255,8 @@ AmmActionCard {
                 theme: root.theme
                 text: root.amountA
                 label: qsTr("Token A amount")
-                balance: root.contextLoading ? "" : root.holdingBalanceText(root.holdingA,
-                                                                            root.decimalsA)
+                balance: root.holdingBalanceText(root.holdingA, root.decimalsA)
+                balanceUpdating: root.contextLoading
                 helperText: root.missingPool && !root.compact
                             ? root.minimumAmountText("A") : ""
                 errorText: root.formErrorText()
@@ -312,8 +312,8 @@ AmmActionCard {
                 theme: root.theme
                 text: root.amountB
                 label: qsTr("Token B amount")
-                balance: root.contextLoading ? "" : root.holdingBalanceText(root.holdingB,
-                                                                            root.decimalsB)
+                balance: root.holdingBalanceText(root.holdingB, root.decimalsB)
+                balanceUpdating: root.contextLoading
                 helperText: root.missingPool && !root.compact
                             ? root.minimumAmountText("B") : ""
                 invalid: root.fieldHasError("amountB")

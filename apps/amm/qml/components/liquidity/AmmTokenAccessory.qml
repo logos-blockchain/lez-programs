@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 
 ColumnLayout {
@@ -12,6 +13,9 @@ ColumnLayout {
     property string tokenLetter: ""
     property string tokenText: qsTr("Select token")
     property string balance: ""
+    property bool balanceUpdating: false
+    readonly property bool showBalanceLoadingIndicator: root.balance.length > 0
+                                                    && root.balanceUpdating
     property string accessibleName: qsTr("Select token")
     property bool invalid: false
 
@@ -19,14 +23,31 @@ ColumnLayout {
 
     spacing: 2
 
-    Text {
+    RowLayout {
         Layout.fillWidth: true
         visible: root.balance.length > 0
-        text: qsTr("Balance %1").arg(root.balance)
-        color: root.theme.colors.textSecondary
-        font.pixelSize: 10
-        horizontalAlignment: Text.AlignRight
-        elide: Text.ElideRight
+        spacing: 4
+
+        Text {
+            id: balanceText
+
+            objectName: "tokenBalanceText"
+            Layout.fillWidth: true
+            text: qsTr("Balance %1").arg(root.balance)
+            color: root.theme.colors.textSecondary
+            font.pixelSize: 10
+            horizontalAlignment: Text.AlignRight
+            elide: Text.ElideRight
+        }
+
+        BusyIndicator {
+            objectName: "tokenBalanceLoadingIndicator"
+            Layout.preferredWidth: 12
+            Layout.preferredHeight: 12
+            visible: root.showBalanceLoadingIndicator
+            running: visible
+            Accessible.name: qsTr("Updating balance")
+        }
     }
 
     AmmTokenSelectButton {

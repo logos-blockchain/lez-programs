@@ -221,6 +221,21 @@ TestCase {
         compare(fixedFee.text, "0.05%")
     }
 
+    function test_contextRefreshKeepsBalanceVisibleWhileUpdating() {
+        var form = createForm()
+        var amountInput = findChild(form, "tokenAAmountInput")
+        verify(amountInput)
+        compare(amountInput.balance, "1000")
+
+        var state = flowState()
+        state.contextLoading = true
+        form.flowState = state
+        wait(0)
+
+        compare(amountInput.balance, "1000")
+        compare(amountInput.balanceUpdating, true)
+    }
+
     function test_contextRefreshSelectsSingleHoldingsBeforeQuote() {
         var form = createForm()
         form.selectedHoldingAId = ""

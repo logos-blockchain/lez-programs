@@ -119,6 +119,19 @@ TestCase {
                 String(input.theme.colors.ctaBg).toLowerCase())
     }
 
+    function test_balanceRefreshShowsLoadingIndicatorWithoutClearingBalance() {
+        var input = createTemporaryObject(inputComponent, testCase, {
+            "balance": "12",
+            "balanceUpdating": true
+        })
+        verify(input)
+
+        var accessory = findChild(input, "tokenAccessory")
+        verify(accessory)
+        compare(accessory.balance, "12")
+        compare(accessory.showBalanceLoadingIndicator, true)
+    }
+
     function test_disabledTokenIsRejectedByTypedInput() {
         var input = createTemporaryObject(inputComponent, testCase)
         verify(input)
