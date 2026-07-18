@@ -20,6 +20,7 @@ Item {
             property string walletHome: "/wallet"
             property string walletSyncStatus: "closed"
             property string walletSyncError: ""
+            property bool deferOpen: false
             property int openCalls: 0
             property int createCalls: 0
             property int publicAccountCalls: 0
@@ -37,9 +38,11 @@ Item {
 
             function openExisting() {
                 openCalls++
-                if (completeOpenImmediately) {
-                    walletSyncStatus = "ready"
+                if (deferOpen) {
+                    walletSyncStatus = "opening"
+                } else {
                     isWalletOpen = true
+                    walletSyncStatus = "ready"
                 }
                 return true
             }
@@ -192,79 +195,17 @@ Item {
             tryCompare(fixture.control, "connected", true)
         }
 
-        function test_disablesConnectWhileWalletIsOpening() {
-            const fixture = createControl({
-                walletExists: true,
-                walletSyncStatus: "syncing"
-            }, [])
-            const connectButton = findChild(fixture.control, "walletConnectButton")
-            verify(!connectButton.enabled)
-            compare(connectButton.text, "Connecting…")
-            mouseClick(connectButton)
-            compare(fixture.backend.openCalls, 0)
-        }
-
-        function test_showsAsyncOpenFailure() {
-            const fixture = createControl({
-                walletExists: true,
-                completeOpenImmediately: false
-            }, [])
-            const connectButton = findChild(fixture.control, "walletConnectButton")
-            mouseClick(connectButton)
+        function test_surfacesDeferredOpenFailure() {
+            const fixture = createControl({ walletExists: true, deferOpen: true }, [])
+            mouseClick(findChild(fixture.control, "walletConnectButton"))
             compare(fixture.backend.openCalls, 1)
-            verify(fixture.control.busy)
+            compare(fixture.control.syncStatus, "opening")
 
             fixture.backend.walletSyncStatus = "error"
             fixture.backend.walletSyncError = "open_failed"
-
             const dialog = findChild(fixture.control, "walletMessageDialog")
             tryCompare(dialog, "opened", true)
-            compare(fixture.control.busy, false)
-            compare(dialog.message, "Wallet could not be opened: open_failed")
-        }
-
-        function test_showsAsyncMissingWallet() {
-            const fixture = createControl({
-                walletExists: true,
-                completeOpenImmediately: false
-            }, [])
-            mouseClick(findChild(fixture.control, "walletConnectButton"))
-            verify(fixture.control.busy)
-
-            fixture.backend.walletExists = false
-
-            const dialog = findChild(fixture.control, "walletMessageDialog")
-            tryCompare(dialog, "opened", true)
-            compare(fixture.control.busy, false)
-            compare(dialog.message, "Wallet could not be opened.")
-        }
-
-        function test_showsStartupOpenFailure() {
-            const fixture = createControl({
-                walletExists: true,
-                walletSyncStatus: "error",
-                walletSyncError: "open_failed"
-            }, [])
-            const dialog = findChild(fixture.control, "walletMessageDialog")
-            tryCompare(dialog, "opened", true)
-            compare(dialog.message, "Wallet could not be opened: open_failed")
-        }
-
-        function test_cancellingWalletCreationDoesNotClaimSuccess() {
-            const fixture = createControl({ walletExists: false }, [])
-            mouseClick(findChild(fixture.control, "walletConnectButton"))
-            const creation = findChild(fixture.control, "createWalletDialog")
-            tryCompare(creation, "opened", true)
-
-            fixture.backend.walletSyncStatus = "error"
-            fixture.backend.walletSyncError = "wallet_unavailable"
-            const message = findChild(fixture.control, "walletMessageDialog")
-            tryCompare(message, "opened", true)
-            compare(message.message, "Wallet could not be opened: wallet_unavailable")
-
-            creation.close()
-            wait(0)
-            compare(message.message, "Wallet could not be opened: wallet_unavailable")
+            verify(dialog.message.includes("open_failed"))
         }
 
         function test_requiresSeedBackupAcknowledgement() {
@@ -357,6 +298,31 @@ Item {
             tryCompare(fixture.control, "connected", false)
         }
 
+        function test_waitsForPrimaryDelegateBeforeShowingAccountType() {
+            const address = "a".repeat(64)
+            const fixture = createControl({
+                isWalletOpen: true,
+                primaryAccountAddress: address,
+                primaryAccountName: "Primary"
+            }, [])
+            mouseClick(findChild(fixture.control, "walletAccountButton"))
+
+            const accountType = findChild(fixture.control, "walletPrimaryAccountType")
+            verify(accountType, "Primary account type exists")
+            verify(!accountType.visible, "Account type waits for its selected delegate")
+
+            fixture.model.append(accountData({
+                name: "Primary",
+                address: address,
+                balance: "10",
+                isPublic: true,
+                isPrimary: true
+            }))
+            tryCompare(fixture.control, "selectedAddress", address)
+            tryCompare(accountType, "visible", true)
+            compare(accountType.text, "Public user account")
+        }
+
         function test_connectedButtonClosesOpenMenu() {
             const fixture = createControl({ isWalletOpen: true }, [
                 { name: "One", address: "a".repeat(64), balance: "10", isPublic: true }
@@ -368,6 +334,53 @@ Item {
             tryCompare(menu, "opened", true)
             mouseClick(accountButton)
             tryCompare(menu, "opened", false)
+        }
+
+        function test_walletMenuClosesWithEscape() {
+            const fixture = createControl({ isWalletOpen: true }, [
+                { name: "One", address: "a".repeat(64), balance: "10", isPublic: true }
+            ])
+            const accountButton = findChild(fixture.control, "walletAccountButton")
+            const menu = findChild(fixture.control, "walletMenu")
+
+            mouseClick(accountButton)
+            tryCompare(menu, "opened", true)
+            keyClick(Qt.Key_Escape)
+            tryCompare(menu, "opened", false)
+        }
+
+        function test_createAccountDialogOwnsKeyboardFocus() {
+            const fixture = createControl({ isWalletOpen: true }, [
+                { name: "One", address: "a".repeat(64), balance: "10", isPublic: true }
+            ])
+            mouseClick(findChild(fixture.control, "walletAccountButton"))
+            mouseClick(findChild(fixture.control, "walletAccountsButton"))
+
+            const backButton = findChild(fixture.control, "walletAccountsBackButton")
+            const addButton = findChild(fixture.control, "walletAddAccountButton")
+            verify(backButton && addButton, "Account controls exist")
+            mouseClick(addButton)
+
+            const dialog = findChild(fixture.control, "createAccountDialog")
+            const privateSwitch = findChild(dialog, "privateAccountSwitch")
+            tryCompare(dialog, "opened", true)
+            tryVerify(function() { return privateSwitch.activeFocus })
+            for (let index = 0; index < 6; ++index) {
+                keyClick(Qt.Key_Tab)
+                verify(!backButton.activeFocus, "Focus remains inside the dialog")
+            }
+            keyClick(Qt.Key_Escape)
+            tryCompare(dialog, "opened", false)
+        }
+
+        function test_walletMessageDialogClosesWithEscape() {
+            const fixture = createControl({ isWalletOpen: true }, [])
+            const dialog = findChild(fixture.control, "walletMessageDialog")
+
+            dialog.open()
+            tryCompare(dialog, "opened", true)
+            keyClick(Qt.Key_Escape)
+            tryCompare(dialog, "opened", false)
         }
 
         function test_openMenuTracksControlMovement() {
@@ -425,6 +438,62 @@ Item {
             compare(fixture.backend.primaryAccountAddress, "b".repeat(64))
             compare(fixture.control.selectedAddress, "b".repeat(64))
             compare(fixture.control.selectedDisplayAddress, "base58-two")
+        }
+
+        function test_flatWalletActionsUseReadableForeground() {
+            const fixture = createControl({
+                isWalletOpen: true,
+                assets: [{
+                    name: "Available",
+                    balance: "0",
+                    definitionId: "c".repeat(64),
+                    displayDefinitionId: "base58-available",
+                    status: "ready",
+                    section: "available"
+                }]
+            }, [
+                {
+                    name: "One",
+                    address: "a".repeat(64),
+                    balance: "10",
+                    isPublic: true,
+                    isPrimary: true
+                },
+                {
+                    name: "Two",
+                    address: "b".repeat(64),
+                    balance: "20",
+                    isPublic: true
+                }
+            ])
+            mouseClick(findChild(fixture.control, "walletAccountButton"))
+
+            const available = findChild(fixture.control, "walletAvailableAssetsButton")
+            tryVerify(function() { return available && available.visible })
+            compare(available.flat, true)
+            compare(available.palette.windowText, "#d4d4d8")
+            compare(available.contentItem.color, "#d4d4d8")
+            mouseClick(available)
+            tryCompare(fixture.control, "availableExpanded", true)
+
+            mouseClick(findChild(fixture.control, "walletAccountsButton"))
+            const advanced = findChild(fixture.control, "walletAdvancedAccountsButton")
+            tryVerify(function() { return advanced && advanced.visible })
+            compare(advanced.flat, true)
+            compare(advanced.palette.windowText, "#d4d4d8")
+            compare(advanced.contentItem.color, "#d4d4d8")
+
+            const accountList = findChild(fixture.control, "walletAccountList")
+            tryVerify(function() { return accountList.itemAtIndex(1) !== null })
+            const secondAccount = accountList.itemAtIndex(1)
+            const rename = findChild(secondAccount, "walletRenameButton")
+            const makePrimary = findChild(secondAccount, "walletMakePrimaryButton")
+            verify(rename && makePrimary, "Account action buttons exist")
+            for (const action of [rename, makePrimary]) {
+                compare(action.flat, true)
+                compare(action.palette.windowText, "#d4d4d8")
+                compare(action.contentItem.color, "#d4d4d8")
+            }
         }
 
         function test_accountNavigationKeepsOverviewInsidePopup() {

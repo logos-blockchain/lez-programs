@@ -51,7 +51,7 @@ public:
     void replaceAccounts(const QVector<WalletAccount>& accounts,
                          const QHash<QString, QString>& aliases = {},
                          const QString& primaryAddress = {});
-    void applyPresentations(const QVector<WalletAccountPresentation>& presentations);
+    bool applyPresentations(const QVector<WalletAccountPresentation>& presentations);
     void setAlias(const QString& address, const QString& alias);
     void setPrimaryAddress(const QString& address);
     bool contains(const QString& address) const;

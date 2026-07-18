@@ -35,6 +35,9 @@ public:
         AccountReadsCallback callback;
     };
     QVector<PendingPublicAccountRead> pendingPublicAccountReads;
+    bool deferAsync = false;
+    SessionCallback pendingConnectCallback;
+    SnapshotCallback pendingSnapshotCallback;
 
     WalletSession connect(const WalletPaths& paths) override
     {
@@ -47,7 +50,10 @@ public:
     {
         ++connectCalls;
         lastPaths = paths;
-        callback(connectResult);
+        if (deferAsync)
+            pendingConnectCallback = std::move(callback);
+        else
+            callback(connectResult);
     }
 
     WalletCreation createWallet(const WalletPaths& paths,
@@ -69,7 +75,10 @@ public:
     {
         ++snapshotCalls;
         lastForceRefresh = forceRefresh;
-        callback(snapshotResult);
+        if (deferAsync)
+            pendingSnapshotCallback = std::move(callback);
+        else
+            callback(snapshotResult);
     }
 
     void clearSnapshot() override { ++clearCalls; }
@@ -79,6 +88,11 @@ public:
         ++createAccountCalls;
         lastAccountWasPublic = isPublic;
         return createAccountResult;
+    }
+
+    void createAccountAsync(bool isPublic, AccountCreationCallback callback) override
+    {
+        callback(createAccount(isPublic));
     }
 
     WalletAccountRead readPublicAccount(const QString& accountId) const override
@@ -117,7 +131,27 @@ public:
         return submissionResult;
     }
 
+    void submitPublicTransactionAsync(
+        const WalletTransaction& transaction, SubmissionCallback callback) override
+    {
+        callback(submitPublicTransaction(transaction));
+    }
+
     void disconnect() override { ++disconnectCalls; }
+
+    void finishConnect()
+    {
+        SessionCallback callback = std::move(pendingConnectCallback);
+        if (callback)
+            callback(connectResult);
+    }
+
+    void finishSnapshot()
+    {
+        SnapshotCallback callback = std::move(pendingSnapshotCallback);
+        if (callback)
+            callback(snapshotResult);
+    }
 
 private:
     QVector<WalletAccountRead> accountReads(const QStringList& accountIds) const

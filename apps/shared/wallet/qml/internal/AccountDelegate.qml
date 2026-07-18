@@ -119,6 +119,7 @@ ItemDelegate {
             spacing: 6
 
             Button {
+                objectName: "walletRenameButton"
                 text: qsTr("Rename")
                 flat: true
                 onClicked: root.renameRequested(root.address, root.alias)
@@ -127,6 +128,7 @@ ItemDelegate {
             Item { Layout.fillWidth: true }
 
             Button {
+                objectName: "walletMakePrimaryButton"
                 visible: root.canBePrimary && !root.isPrimary
                 text: qsTr("Make primary")
                 flat: true

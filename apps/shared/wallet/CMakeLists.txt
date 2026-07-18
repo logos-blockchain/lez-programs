@@ -61,13 +61,13 @@ if(LOGOS_WALLET_BUILD_QML)
     set(wallet_qml_output_dir "${CMAKE_CURRENT_BINARY_DIR}/qml/Logos/Wallet")
     set(wallet_internal_qml
         qml/internal/WalletIconButton.qml
-        qml/internal/CopyButton.qml
         qml/internal/AccountDelegate.qml
         qml/internal/CreateAccountDialog.qml
         qml/internal/CreateWalletDialog.qml
         qml/internal/WalletMessageDialog.qml
     )
     set(wallet_public_qml
+        qml/internal/CopyButton.qml
         qml/WalletControl.qml
         qml/TransactionConfirmationDialog.qml
         qml/SubmittedTransaction.qml
@@ -172,8 +172,16 @@ if(BUILD_TESTING)
         target_link_libraries(logos_wallet_qml_test PRIVATE Qt6::QuickTest)
         add_dependencies(logos_wallet_qml_test logos_wallet_qmlplugin)
         add_test(NAME logos_wallet_qml COMMAND logos_wallet_qml_test)
+        get_target_property(wallet_qml_library Qt6::Qml IMPORTED_LOCATION)
+        get_filename_component(wallet_qml_library_dir "${wallet_qml_library}" DIRECTORY)
+        get_filename_component(wallet_qml_prefix "${wallet_qml_library_dir}" DIRECTORY)
+        set(wallet_qml_test_import_paths
+            "${CMAKE_CURRENT_BINARY_DIR}/qml"
+            "${wallet_qml_prefix}/${QT6_INSTALL_QML}"
+        )
+        string(JOIN ":" wallet_qml_test_import_path ${wallet_qml_test_import_paths})
         set_tests_properties(logos_wallet_qml PROPERTIES ENVIRONMENT
-            "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QML2_IMPORT_PATH=${CMAKE_CURRENT_BINARY_DIR}/qml;QML_IMPORT_PATH=${CMAKE_CURRENT_BINARY_DIR}/qml"
+            "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QML2_IMPORT_PATH=${wallet_qml_test_import_path};QML_IMPORT_PATH=${wallet_qml_test_import_path}"
         )
     endif()
 endif()

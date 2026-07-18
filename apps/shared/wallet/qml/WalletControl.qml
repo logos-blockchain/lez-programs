@@ -17,11 +17,15 @@ Item {
     property bool openPending: false
     property bool advancedExpanded: false
     property bool availableExpanded: false
+    property bool primarySelectionQueued: false
     property string postCreationWarning: ""
     property bool createdWalletAwaitingAcknowledgement: false
     property string reportedOpenErrorKey: ""
 
     readonly property bool connected: root.wallet !== null && root.wallet.isWalletOpen
+    readonly property string syncStatus: root.wallet
+                                         ? String(root.wallet.walletSyncStatus || "closed")
+                                         : "closed"
     readonly property bool compactLayout: root.compact || root.viewportWidth < 680
     readonly property bool walletOpening: root.wallet !== null
         && (root.wallet.walletSyncStatus === "opening"
@@ -52,7 +56,11 @@ Item {
             required property bool canBePrimary
             required property string kind
         }
-        onCountChanged: root.syncPrimarySelection()
+        onCountChanged: {
+            root.syncPrimarySelection()
+            root.schedulePrimarySelection()
+        }
+        onObjectAdded: root.schedulePrimarySelection()
     }
 
     function accountAt(index, field) {
@@ -78,6 +86,8 @@ Item {
             ? root.wallet.primaryAccountAddress : ""
         for (let index = 0; index < accounts.count; ++index) {
             const account = accounts.objectAt(index)
+            if (!account)
+                continue
             if ((requested.length > 0 && account.address === requested) || account.isPrimary) {
                 root.selectedIndex = index
                 return
@@ -85,12 +95,27 @@ Item {
         }
         for (let index = 0; index < accounts.count; ++index) {
             const account = accounts.objectAt(index)
+            if (!account)
+                continue
             if (account.kind === "user" && account.canBePrimary) {
                 root.selectedIndex = index
                 return
             }
         }
         root.selectedIndex = -1
+    }
+
+    function schedulePrimarySelection() {
+        if (root.primarySelectionQueued)
+            return
+        root.primarySelectionQueued = true
+        Qt.callLater(function() {
+            root.primarySelectionQueued = false
+            if (root.connected)
+                root.syncPrimarySelection()
+            else
+                root.selectedIndex = -1
+        })
     }
 
     function shortAddress(address) {
@@ -140,6 +165,7 @@ Item {
         if (key === root.reportedOpenErrorKey)
             return
         root.reportedOpenErrorKey = key
+        root.busy = false
         root.showError(root.openFailureMessage())
     }
 
@@ -234,16 +260,32 @@ Item {
     Connections {
         target: root.accountModel
         ignoreUnknownSignals: true
-        function onModelReset() { root.syncPrimarySelection() }
-        function onRowsInserted() { root.syncPrimarySelection() }
-        function onRowsRemoved() { root.syncPrimarySelection() }
-        function onDataChanged() { root.syncPrimarySelection() }
+        function onModelReset() {
+            root.syncPrimarySelection()
+            root.schedulePrimarySelection()
+        }
+        function onRowsInserted() {
+            root.syncPrimarySelection()
+            root.schedulePrimarySelection()
+        }
+        function onRowsRemoved() {
+            root.syncPrimarySelection()
+            root.schedulePrimarySelection()
+        }
+        function onDataChanged() {
+            root.syncPrimarySelection()
+            if (root.selectedIndex < 0)
+                root.schedulePrimarySelection()
+        }
     }
 
     Connections {
         target: root.wallet
         ignoreUnknownSignals: true
-        function onPrimaryAccountAddressChanged() { root.syncPrimarySelection() }
+        function onPrimaryAccountAddressChanged() {
+            root.syncPrimarySelection()
+            root.schedulePrimarySelection()
+        }
         function onWalletSyncStatusChanged() {
             if (!root.wallet || root.wallet.walletSyncStatus !== "error")
                 root.reportedOpenErrorKey = ""
@@ -266,6 +308,7 @@ Item {
             walletMenu.close()
         } else {
             root.syncPrimarySelection()
+            root.schedulePrimarySelection()
         }
     }
     onViewportWidthChanged: {
@@ -374,6 +417,7 @@ Item {
     Popup {
         id: walletMenu
         objectName: "walletMenu"
+        palette.windowText: "#d4d4d8"
         property real lastClosedMs: 0
         property point anchorPosition: Qt.point(0, 0)
         readonly property var viewport: Overlay.overlay
@@ -395,6 +439,7 @@ Item {
         height: Math.min(implicitHeight, availableMenuHeight)
         margins: 12
         padding: 12
+        focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
         function updateAnchor() {
@@ -506,6 +551,8 @@ Item {
                                 }
                             }
                             Label {
+                                objectName: "walletPrimaryAccountType"
+                                visible: root.selectedIndex >= 0
                                 text: root.selectedIsPublic ? qsTr("Public user account")
                                                             : qsTr("Private account")
                                 color: "#a1a1aa"

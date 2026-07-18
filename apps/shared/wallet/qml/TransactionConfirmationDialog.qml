@@ -9,12 +9,21 @@ Popup {
     property string cancelText: qsTr("Cancel")
     property string confirmText: qsTr("Confirm")
     property bool busy: false
+    property string busyText: qsTr("Submitting…")
+    property bool activityBusy: false
+    property string activityText: qsTr("Updating…")
+    property bool showInlineBusyIndicator: true
     property var snapshot: ({})
     property Component summary: null
     property bool confirmationPending: false
+    property bool confirmEnabled: true
+    property bool roundedCancelButton: false
+    property bool closeWhenSettled: true
+    readonly property bool actionPending: root.busy || root.activityBusy
 
     signal canceled
     signal confirmed(var snapshot)
+    signal summaryEdited(var snapshot)
 
     modal: true
     dim: true
@@ -40,7 +49,14 @@ Popup {
         root.snapshot = root.cloneSnapshot(nextSnapshot)
         root.confirmationPending = false
         root.open()
-        cancelButton.forceActiveFocus()
+        Qt.callLater(function() {
+            if (cancelButtonLoader.item)
+                cancelButtonLoader.item.forceActiveFocus()
+        })
+    }
+
+    function updateSnapshot(nextSnapshot) {
+        root.snapshot = root.cloneSnapshot(nextSnapshot)
     }
 
     function cancel() {
@@ -52,7 +68,7 @@ Popup {
     }
 
     function confirm() {
-        if (root.busy)
+        if (root.actionPending || !root.confirmEnabled)
             return
         root.confirmationPending = true
         root.confirmed(root.snapshot)
@@ -62,10 +78,21 @@ Popup {
         }
     }
 
+    Connections {
+        target: summaryLoader.item
+        ignoreUnknownSignals: true
+
+        function onSnapshotEdited(snapshot) {
+            root.updateSnapshot(snapshot)
+            root.summaryEdited(root.snapshot)
+        }
+    }
+
     onBusyChanged: {
         if (!root.busy && root.confirmationPending) {
             root.confirmationPending = false
-            root.close()
+            if (root.closeWhenSettled)
+                root.close()
         }
     }
 
@@ -117,26 +144,37 @@ Popup {
             }
         }
 
-        BusyIndicator {
+        Item {
+            id: inlineBusyIndicator
+
+            property bool active: root.showInlineBusyIndicator && root.actionPending
             Layout.alignment: Qt.AlignHCenter
-            visible: root.busy
-            running: root.busy
-            Accessible.name: qsTr("Submitting transaction")
+            Layout.preferredWidth: active ? busySpinner.implicitWidth : 0
+            Layout.preferredHeight: active ? busySpinner.implicitHeight : 0
+            implicitWidth: busySpinner.implicitWidth
+            implicitHeight: busySpinner.implicitHeight
+            visible: active
+
+            BusyIndicator {
+                id: busySpinner
+
+                anchors.centerIn: parent
+                running: inlineBusyIndicator.active
+                Accessible.name: root.busy ? root.busyText : root.activityText
+            }
         }
 
         RowLayout {
             Layout.fillWidth: true
             spacing: 10
 
-            Button {
-                id: cancelButton
-                objectName: "transactionCancelButton"
+            Loader {
+                id: cancelButtonLoader
+                objectName: "transactionCancelButtonLoader"
                 Layout.fillWidth: true
-                implicitHeight: 44
-                text: root.cancelText
-                enabled: !root.busy
-                Accessible.name: text
-                onClicked: root.cancel()
+                Layout.preferredHeight: 44
+                sourceComponent: root.roundedCancelButton
+                                 ? roundedCancelButtonComponent : defaultCancelButtonComponent
             }
 
             Button {
@@ -144,8 +182,8 @@ Popup {
                 objectName: "transactionConfirmButton"
                 Layout.fillWidth: true
                 implicitHeight: 44
-                text: root.busy ? qsTr("Submitting...") : root.confirmText
-                enabled: !root.busy
+                text: root.busy ? root.busyText : root.confirmText
+                enabled: !root.actionPending && root.confirmEnabled
                 Accessible.name: text
                 onClicked: root.confirm()
 
@@ -163,6 +201,50 @@ Popup {
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
+            }
+        }
+    }
+
+    Component {
+        id: defaultCancelButtonComponent
+
+        Button {
+            objectName: "transactionCancelButton"
+            anchors.fill: parent
+            text: root.cancelText
+            enabled: !root.busy
+            Accessible.name: text
+            onClicked: root.cancel()
+        }
+    }
+
+    Component {
+        id: roundedCancelButtonComponent
+
+        Button {
+            id: cancelButton
+
+            objectName: "transactionCancelButton"
+            anchors.fill: parent
+            text: root.cancelText
+            enabled: !root.busy
+            Accessible.name: text
+            onClicked: root.cancel()
+
+            background: Rectangle {
+                color: cancelButton.pressed ? "#3f3f46"
+                      : cancelButton.hovered ? "#27272a" : "#18181b"
+                border.color: "#52525b"
+                border.width: 1
+                radius: 6
+            }
+
+            contentItem: Label {
+                text: cancelButton.text
+                color: "#f4f4f5"
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
             }
         }
     }

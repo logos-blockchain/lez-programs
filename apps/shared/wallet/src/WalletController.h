@@ -8,6 +8,7 @@
 #include "WalletProvider.h"
 
 class QNetworkAccessManager;
+class QNetworkReply;
 class QTimer;
 class WalletAccountModel;
 struct WalletAccountPresentation;
@@ -48,6 +49,7 @@ public:
     const WalletSnapshot& snapshot() const { return m_snapshot; }
 
     void start();
+    void setDefaultSequencerAddress(const QString& address);
     QString createAccount(bool isPublic);
     void refresh();
     QString balance(const QString& accountId, bool isPublic);
@@ -70,11 +72,13 @@ private:
     static QString defaultWalletHome();
     QString defaultConfigPath() const;
     QString defaultStoragePath() const;
+    bool seedDefaultWalletConfig(const QString& configPath) const;
 
     void openOnStartup();
     bool beginOpen(const QString& config, const QString& storage);
     void applySnapshot(const WalletSnapshot& snapshot);
     void checkReachability();
+    void stopReachability();
     QString walletSettingsGroup() const;
     QHash<QString, QString> loadAliases() const;
     QString loadPrimaryAccount() const;
@@ -89,7 +93,11 @@ private:
     QHash<QString, QString> m_aliases;
     WalletAccountModel* m_accountModel;
     QNetworkAccessManager* m_network;
+    QNetworkReply* m_reachabilityReply = nullptr;
+    QString m_reachabilityEndpoint;
+    QString m_defaultSequencerAddress;
     QTimer* m_reachabilityTimer;
     bool m_started = false;
     quint64 m_operationGeneration = 0;
+    quint64 m_reachabilityGeneration = 0;
 };

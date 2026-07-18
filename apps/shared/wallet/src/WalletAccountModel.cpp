@@ -127,7 +127,7 @@ void WalletAccountModel::replaceAccounts(const QVector<WalletAccount>& accounts,
         emit countChanged();
 }
 
-void WalletAccountModel::applyPresentations(
+bool WalletAccountModel::applyPresentations(
     const QVector<WalletAccountPresentation>& presentations)
 {
     QHash<QString, int> rowsByAddress;
@@ -141,10 +141,14 @@ void WalletAccountModel::applyPresentations(
     int firstChanged = m_accounts.size();
     int lastChanged = -1;
     for (const WalletAccountPresentation& presentation : presentations) {
-        const auto row = rowsByAddress.constFind(presentation.address);
+        const QString decodedAddress = walletAccountIdFromBase58(presentation.address);
+        const QString& address = decodedAddress.isEmpty()
+            ? presentation.address : decodedAddress;
+        const auto row = rowsByAddress.constFind(address);
         if (row == rowsByAddress.cend())
             continue;
-        Entry& entry = m_accounts[row.value()];
+        const Entry current = m_accounts.at(row.value());
+        Entry entry = current;
         if (!presentation.kind.isEmpty())
             entry.kind = presentation.kind;
         entry.programName = presentation.programName;
@@ -157,13 +161,32 @@ void WalletAccountModel::applyPresentations(
         if (!entry.canBePrimary)
             entry.isPrimary = false;
         updateEntryName(entry);
+        if (entry.alias == current.alias
+            && entry.semanticName == current.semanticName
+            && entry.name == current.name
+            && entry.address == current.address
+            && entry.displayAddress == current.displayAddress
+            && entry.balance == current.balance
+            && entry.isPublic == current.isPublic
+            && entry.kind == current.kind
+            && entry.section == current.section
+            && entry.programOwner == current.programOwner
+            && entry.readStatus == current.readStatus
+            && entry.programName == current.programName
+            && entry.accountType == current.accountType
+            && entry.definitionId == current.definitionId
+            && entry.canBePrimary == current.canBePrimary
+            && entry.isPrimary == current.isPrimary) {
+            continue;
+        }
+        m_accounts[row.value()] = std::move(entry);
         if (row.value() < firstChanged)
             firstChanged = row.value();
         if (row.value() > lastChanged)
             lastChanged = row.value();
     }
     if (lastChanged < 0)
-        return;
+        return false;
     emit dataChanged(index(firstChanged), index(lastChanged), {
         NameRole,
         KindRole,
@@ -174,6 +197,7 @@ void WalletAccountModel::applyPresentations(
         IsPrimaryRole,
         DefinitionIdRole,
     });
+    return true;
 }
 
 void WalletAccountModel::setAlias(const QString& address, const QString& alias)

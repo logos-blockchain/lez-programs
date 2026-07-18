@@ -99,6 +99,8 @@ public:
     using SessionCallback = std::function<void(WalletSession)>;
     using SnapshotCallback = std::function<void(WalletSnapshot)>;
     using AccountReadsCallback = std::function<void(QVector<WalletAccountRead>)>;
+    using AccountCreationCallback = std::function<void(WalletAccountCreation)>;
+    using SubmissionCallback = std::function<void(WalletSubmission)>;
 
     virtual ~WalletProvider() = default;
 
@@ -110,10 +112,13 @@ public:
     virtual void snapshotAsync(bool forceRefresh, SnapshotCallback callback) = 0;
     virtual void clearSnapshot() = 0;
     virtual WalletAccountCreation createAccount(bool isPublic) = 0;
+    virtual void createAccountAsync(bool isPublic, AccountCreationCallback callback) = 0;
     virtual WalletAccountRead readPublicAccount(const QString& accountId) const = 0;
     virtual void readPublicAccountsAsync(const QStringList& accountIds,
                                          AccountReadsCallback callback) = 0;
     virtual WalletSubmission submitPublicTransaction(
         const WalletTransaction& transaction) = 0;
+    virtual void submitPublicTransactionAsync(
+        const WalletTransaction& transaction, SubmissionCallback callback) = 0;
     virtual void disconnect() = 0;
 };

@@ -7,6 +7,7 @@
 #include <QVariantList>
 
 #include <functional>
+#include <utility>
 
 class LogosAPI;
 
@@ -32,6 +33,10 @@ public:
     int listCalls = 0;
     int publicReadCalls = 0;
     int submitCalls = 0;
+    bool deferPublicAccountCreation = false;
+    bool deferSubmission = false;
+    std::function<void(QString)> pendingPublicAccountCreation;
+    std::function<void(QString)> pendingSubmission;
     QString openedConfig;
     QString openedStorage;
     QString createdConfig;
@@ -77,6 +82,17 @@ public:
 
     QString create_account_public() { return publicAccountId; }
     QString create_account_private() { return privateAccountId; }
+    void create_account_publicAsync(std::function<void(QString)> callback)
+    {
+        if (deferPublicAccountCreation)
+            pendingPublicAccountCreation = std::move(callback);
+        else
+            callback(create_account_public());
+    }
+    void create_account_privateAsync(std::function<void(QString)> callback)
+    {
+        callback(create_account_private());
+    }
 
     int get_last_synced_block() const { return lastSyncedBlock; }
     int get_current_block_height() const { return currentBlockHeight; }
@@ -149,6 +165,38 @@ public:
         submittedInstruction = instruction;
         submittedProgramId = programId;
         return transactionResponse;
+    }
+
+    void send_generic_public_transactionAsync(
+        const QStringList& accountIds,
+        const QVariantList& signingRequirements,
+        const QVariant& instruction,
+        const QString& programId,
+        std::function<void(QString)> callback)
+    {
+        ++submitCalls;
+        submittedAccountIds = accountIds;
+        submittedSigningRequirements = signingRequirements;
+        submittedInstruction = instruction;
+        submittedProgramId = programId;
+        if (deferSubmission)
+            pendingSubmission = std::move(callback);
+        else
+            callback(transactionResponse);
+    }
+
+    void finishPublicAccountCreation()
+    {
+        auto callback = std::move(pendingPublicAccountCreation);
+        if (callback)
+            callback(publicAccountId);
+    }
+
+    void finishSubmission()
+    {
+        auto callback = std::move(pendingSubmission);
+        if (callback)
+            callback(transactionResponse);
     }
 };
 
