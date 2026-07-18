@@ -255,6 +255,10 @@ Item {
         function onConfirmationQuoteReady(snapshot) {
             confirmationDialog.updateSnapshot(snapshot)
         }
+
+        function onSubmitSucceeded() {
+            confirmationDialog.close()
+        }
     }
 
     Component {
@@ -278,6 +282,7 @@ Item {
         confirmEnabled: snapshot.quoteReady === true
                         && newPositionFlow.walletCanSubmit
         roundedCancelButton: true
+        closeWhenSettled: false
         summary: liquidityConfirmationSummary
 
         onSummaryEdited: function(snapshot) {
