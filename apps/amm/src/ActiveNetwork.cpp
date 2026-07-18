@@ -63,6 +63,7 @@ bool ActiveNetwork::load()
         m_expectedIdentity = entry.value(QStringLiteral("checkpointHash")).toString();
     }
 
+    m_network.sequencerAddress = entry.value(QStringLiteral("sequencerAddress")).toString();
     m_network.ammProgramId = entry.value(QStringLiteral("ammProgramId")).toString();
     if (!isValidIdentity(m_expectedIdentity)
         || !isLowerHex(m_network.ammProgramId, 64)) {

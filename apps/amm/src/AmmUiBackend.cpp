@@ -84,6 +84,7 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     connect(m_identityRetryTimer, &QTimer::timeout,
             this, &AmmUiBackend::probeNetworkIdentity);
     m_network.load();
+    m_walletController->setDefaultSequencerAddress(m_network.snapshot().sequencerAddress);
 
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);

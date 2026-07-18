@@ -19,12 +19,14 @@ int main()
     const QString identity(64, QLatin1Char('a'));
     const QString programId(64, QLatin1Char('b'));
     const QString tokenId(64, QLatin1Char('c'));
+    const QString sequencerAddress = QStringLiteral("https://sequencer.example/");
 
     QTemporaryFile config;
     if (!config.open())
         return 1;
     config.write(QJsonDocument(QJsonObject {
         { QStringLiteral("channelId"), identity },
+        { QStringLiteral("sequencerAddress"), sequencerAddress },
         { QStringLiteral("ammProgramId"), programId },
         { QStringLiteral("tokenDefinitionIds"), QJsonArray { tokenId } },
     }).toJson(QJsonDocument::Compact));
@@ -74,7 +76,8 @@ int main()
                 "devnet fingerprint should use channel identity"))
         return 1;
     if (!expect(snapshot.ammProgramId == programId
-                    && snapshot.tokenIds == QStringList { tokenId },
+                    && snapshot.tokenIds == QStringList { tokenId }
+                    && snapshot.sequencerAddress == sequencerAddress,
                 "network snapshot should preserve configured program and tokens"))
         return 1;
 

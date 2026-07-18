@@ -7,6 +7,7 @@ struct ActiveNetworkSnapshot {
     QString id;
     QString status;
     QString fingerprint;
+    QString sequencerAddress;
     QString ammProgramId;
     QStringList tokenIds;
 };

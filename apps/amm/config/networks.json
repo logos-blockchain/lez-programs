@@ -1,6 +1,7 @@
 {
   "testnet": {
     "checkpointHash": "0d25d71fca70d7008a892f6b3f768a4c66badbcd64e67d79ca595b92f1db544a",
+    "sequencerAddress": "https://testnet.lez.logos.co/",
     "ammProgramId": "77eeaa23668ad2675fb768cd7ecb1893387be464b9a51f16756006c1d307db07",
     "tokenDefinitionIds": [
       "7b464ff9dd0d3bc07f7e2e0b0667ccd066d85ad12be4c79fc55687a863910aa6",
