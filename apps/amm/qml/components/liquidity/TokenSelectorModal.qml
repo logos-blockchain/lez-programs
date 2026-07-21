@@ -32,7 +32,6 @@ Popup {
     signal tokenSelected(var token)
     signal tokenEntered(string value)
 
-    parent: Overlay.overlay
     x: parent ? Math.round((parent.width - width) / 2) : 0
     y: parent ? Math.round((parent.height - height) / 2) : 0
     width: parent && parent.width > 32

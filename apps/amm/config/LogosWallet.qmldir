@@ -1,0 +1,10 @@
+module Logos.Wallet
+WalletControl 1.0 WalletControl.qml
+TransactionConfirmationDialog 1.0 TransactionConfirmationDialog.qml
+SubmittedTransaction 1.0 SubmittedTransaction.qml
+CopyButton 1.0 CopyButton.qml
+WalletIconButton 1.0 WalletIconButton.qml
+AccountDelegate 1.0 AccountDelegate.qml
+CreateAccountDialog 1.0 CreateAccountDialog.qml
+CreateWalletDialog 1.0 CreateWalletDialog.qml
+WalletMessageDialog 1.0 WalletMessageDialog.qml

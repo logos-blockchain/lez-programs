@@ -299,7 +299,7 @@ Item {
         id: liquidityActivityNotice
 
         objectName: "liquidityActivityNotice"
-        parent: Overlay.overlay
+        parent: root
         anchors.top: parent.top
         anchors.right: parent.right
         anchors.topMargin: 16

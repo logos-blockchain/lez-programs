@@ -90,9 +90,11 @@
           };
         };
         postInstall = ''
-          # The builder installs the view under lib/qml after this hook. Its
-          # import descriptor points back to this compiled shared QML module.
-          test -f ${./qml}/Logos/Wallet/qmldir
+          # Basecamp sandboxes a ui_qml view and deliberately blocks native QML
+          # plugins. The wallet controls are QML-only, so package their source
+          # files with a plain qmldir rather than the generated descriptor that
+          # points at logos_wallet_qmlplugin.
+          test -f ${./config/LogosWallet.qmldir}
 
           walletQmlDir="shared-wallet/qml/Logos/Wallet"
           if [ ! -d "$walletQmlDir" ]; then
@@ -101,8 +103,9 @@
           fi
           walletQmlInstallDir="$out/lib/Logos/Wallet"
           mkdir -p "$walletQmlInstallDir"
-          cp -r "$walletQmlDir/." "$walletQmlInstallDir/"
-          test -f "$walletQmlInstallDir/qmldir"
+          cp "$walletQmlDir"/*.qml "$walletQmlInstallDir/"
+          cp -r "$walletQmlDir/icons" "$walletQmlInstallDir/"
+          install -m 0644 ${./config/LogosWallet.qmldir} "$walletQmlInstallDir/qmldir"
         '';
       };
 
