@@ -1,9 +1,8 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda_seed,
-    compute_pool_pda_seed, compute_vault_pda_seed, mul_div_floor, spot_price_q64_64, AmmConfig,
-    PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_config_pda, compute_liquidity_token_pda_seed, compute_pool_pda_seed,
+    compute_vault_pda_seed, AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
@@ -11,6 +10,8 @@ use nssa_core::{
     program::{AccountPostState, ChainedCall, ProgramId},
 };
 use twap_oracle_core::compute_current_tick_account_pda;
+
+use crate::quote;
 
 #[expect(
     clippy::too_many_arguments,
@@ -49,12 +50,6 @@ pub fn remove_liquidity(
     // 1. Fetch Pool state
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("Remove liquidity: AMM Program expects a valid Pool Definition Account");
-    assert_supported_fee_tier(pool_def_data.fees);
-
-    assert!(
-        pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
-        "Pool liquidity supply is below minimum liquidity"
-    );
     assert_eq!(
         pool_def_data.liquidity_pool_id, pool_definition_lp.account_id,
         "LP definition mismatch"
@@ -104,15 +99,6 @@ pub fn remove_liquidity(
     running_vault_a.is_authorized = true;
     running_vault_b.is_authorized = true;
 
-    assert!(
-        min_amount_to_remove_token_a != 0,
-        "Minimum withdraw amount must be nonzero"
-    );
-    assert!(
-        min_amount_to_remove_token_b != 0,
-        "Minimum withdraw amount must be nonzero"
-    );
-
     // 2. Compute withdrawal amounts
     let user_holding_lp_data = token_core::TokenHolding::try_from(&user_holding_lp.account.data)
         .expect("Remove liquidity: AMM Program expects a valid Token Account for liquidity token");
@@ -126,79 +112,23 @@ pub fn remove_liquidity(
         );
     };
 
-    assert!(
-        user_lp_balance <= pool_def_data.liquidity_pool_supply,
-        "Invalid liquidity account provided"
-    );
     assert_eq!(
         user_holding_lp_data.definition_id(),
         pool_def_data.liquidity_pool_id,
         "Invalid liquidity account provided"
     );
-    // Honest flows should never reach the permanent lock through a valid remove instruction, but
-    // we still reject legacy or corrupted states that are already at the locked floor.
-    assert!(
-        pool_def_data.liquidity_pool_supply > MINIMUM_LIQUIDITY,
-        "Pool only contains locked liquidity"
-    );
-    assert!(
-        remove_liquidity_amount <= user_lp_balance,
-        "Remove amount exceeds user LP balance"
-    );
-    let unlocked_liquidity = pool_def_data
-        .liquidity_pool_supply
-        .checked_sub(MINIMUM_LIQUIDITY)
-        .expect("liquidity supply must be at least the locked minimum after validation");
-    // The remove instruction never sees the LP lock account directly, so we must still refuse any
-    // request that would burn through the permanent floor even if ownership is already corrupted.
-    assert!(
-        remove_liquidity_amount <= unlocked_liquidity,
-        "Cannot remove locked minimum liquidity"
-    );
-
-    // floor(reserve * remove_amount / supply), products widened to U256. Supply exceeds
-    // MINIMUM_LIQUIDITY (asserted above), so the divisor is nonzero.
-    let withdraw_amount_a = mul_div_floor(
-        pool_def_data.reserve_a,
+    let liquidity_quote = quote::remove_liquidity(
+        &pool_def_data,
+        user_lp_balance,
         remove_liquidity_amount,
-        pool_def_data.liquidity_pool_supply,
-    );
-    let withdraw_amount_b = mul_div_floor(
-        pool_def_data.reserve_b,
-        remove_liquidity_amount,
-        pool_def_data.liquidity_pool_supply,
-    );
-
-    // 3. Validate and slippage check
-    assert!(
-        withdraw_amount_a >= min_amount_to_remove_token_a,
-        "Insufficient minimal withdraw amount (Token A) provided for liquidity amount"
-    );
-    assert!(
-        withdraw_amount_b >= min_amount_to_remove_token_b,
-        "Insufficient minimal withdraw amount (Token B) provided for liquidity amount"
-    );
-
-    // 4. Calculate LP to reduce cap by
-    let delta_lp: u128 = remove_liquidity_amount;
+        min_amount_to_remove_token_a,
+        min_amount_to_remove_token_b,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 
     // 5. Update pool account
     let mut pool_post = pool.account.clone();
-    let pool_post_definition = PoolDefinition {
-        liquidity_pool_supply: pool_def_data
-            .liquidity_pool_supply
-            .checked_sub(delta_lp)
-            .expect("liquidity_pool_supply - delta_lp underflows"),
-        reserve_a: pool_def_data
-            .reserve_a
-            .checked_sub(withdraw_amount_a)
-            .expect("reserve_a - withdraw_amount_a underflows"),
-        reserve_b: pool_def_data
-            .reserve_b
-            .checked_sub(withdraw_amount_b)
-            .expect("reserve_b - withdraw_amount_b underflows"),
-        ..pool_def_data.clone()
-    };
+    let pool_post_definition = liquidity_quote.pool.apply_to(&pool_def_data);
 
     pool_post.data = Data::from(&pool_post_definition);
 
@@ -207,7 +137,7 @@ pub fn remove_liquidity(
         token_program_id,
         vec![running_vault_a, user_holding_a.clone()],
         &token_core::Instruction::Transfer {
-            amount_to_transfer: withdraw_amount_a,
+            amount_to_transfer: liquidity_quote.withdraw_amount_a,
         },
     )
     .with_pda_seeds(vec![compute_vault_pda_seed(
@@ -219,7 +149,7 @@ pub fn remove_liquidity(
         token_program_id,
         vec![running_vault_b, user_holding_b.clone()],
         &token_core::Instruction::Transfer {
-            amount_to_transfer: withdraw_amount_b,
+            amount_to_transfer: liquidity_quote.withdraw_amount_b,
         },
     )
     .with_pda_seeds(vec![compute_vault_pda_seed(
@@ -233,7 +163,7 @@ pub fn remove_liquidity(
         token_program_id,
         vec![pool_definition_lp_auth, user_holding_lp.clone()],
         &token_core::Instruction::Burn {
-            amount_to_burn: delta_lp,
+            amount_to_burn: liquidity_quote.liquidity_to_burn,
         },
     )
     .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
@@ -241,10 +171,6 @@ pub fn remove_liquidity(
     // Refresh the pool's TWAP current tick from the post-removal spot price. The pool is already
     // owned by this program, so it is passed (in its post-removal state) as the authorized price
     // source.
-    let new_price = spot_price_q64_64(
-        pool_post_definition.reserve_a,
-        pool_post_definition.reserve_b,
-    );
     let pool_price_source = AccountWithMetadata {
         account: pool_post.clone(),
         is_authorized: true,
@@ -257,7 +183,9 @@ pub fn remove_liquidity(
             pool_price_source,
             clock.clone(),
         ],
-        &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
+        &twap_oracle_core::Instruction::UpdateCurrentTick {
+            price: liquidity_quote.pool.spot_price_q64_64,
+        },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
         pool_def_data.definition_token_a_id,

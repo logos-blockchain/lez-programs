@@ -1,13 +1,14 @@
 use amm_core::{
-    compute_config_pda, compute_pool_pda, compute_pool_pda_seed, spot_price_q64_64, AmmConfig,
-    PoolDefinition,
+    compute_config_pda, compute_pool_pda, compute_pool_pda_seed, AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
     account::{Account, AccountWithMetadata},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
-use twap_oracle_core::{compute_oracle_price_account_pda, OBSERVATIONS_CAPACITY};
+use twap_oracle_core::compute_oracle_price_account_pda;
+
+use crate::quote;
 
 /// Creates a TWAP oracle price account for `pool` over a time window, on behalf of the AMM.
 ///
@@ -38,10 +39,10 @@ use twap_oracle_core::{compute_oracle_price_account_pda, OBSERVATIONS_CAPACITY};
 /// - `pool.account` has a zero token-A reserve (no spot price is defined).
 /// - the pool's spot price is zero (`reserve_b` is zero or negligible relative to `reserve_a`);
 ///   zero is the no-price sentinel, so the account must never be seeded with it.
-/// - `window_duration` is smaller than [`OBSERVATIONS_CAPACITY`]. Such a window can never have a
-///   matching `PriceObservations` account, so the price account could never be updated by
-///   `PublishPrice`. Checked here for an early AMM-level error, in addition to the oracle's own
-///   check.
+/// - `window_duration` is smaller than [`twap_oracle_core::OBSERVATIONS_CAPACITY`]. Such a window
+///   can never have a matching `PriceObservations` account, so the price account could never be
+///   updated by `PublishPrice`. Checked here for an early AMM-level error, in addition to the
+///   oracle's own check.
 pub fn create_oracle_price_account(
     config: AccountWithMetadata,
     pool: AccountWithMetadata,
@@ -67,15 +68,6 @@ pub fn create_oracle_price_account(
         "Create oracle price account: clock account must be the canonical 1-block LEZ clock account"
     );
 
-    // A window smaller than the observations capacity can never have a matching PriceObservations
-    // account, so PublishPrice could never update the price account. Reject early with an AMM-level
-    // error; the oracle enforces the same bound.
-    assert!(
-        window_duration >= u64::from(OBSERVATIONS_CAPACITY),
-        "Create oracle price account: window_duration must be >= OBSERVATIONS_CAPACITY so a matching \
-         PriceObservations account can exist and PublishPrice can update this price account"
-    );
-
     // The pool is the price source. Verify it is a genuine AMM pool PDA so we only ever authorize a
     // real pool as the source, and derive the asset pair and initial price from its validated
     // state.
@@ -91,16 +83,8 @@ pub fn create_oracle_price_account(
         "Create oracle price account: Pool Account ID does not match PDA"
     );
 
-    // Initial price is the pool's current spot price (quote per base), not caller-supplied.
-    let initial_price = spot_price_q64_64(pool_def.reserve_a, pool_def.reserve_b);
-    // A zero spot price is the sentinel consumers treat as "no valid price", so the account must
-    // never be seeded with it. This happens when `reserve_b` is zero or so small relative to
-    // `reserve_a` that the Q64.64 division floors to zero. The oracle enforces the same bound.
-    assert!(
-        initial_price != 0,
-        "Create oracle price account: pool spot price must be non-zero (zero is the no-price \
-         sentinel; pool reserve_b is zero or negligible relative to reserve_a)"
-    );
+    let oracle_quote = quote::create_oracle_price_account(&pool_def, window_duration)
+        .unwrap_or_else(|error| panic!("{error}"));
 
     // Verify the price account is the expected TWAP PDA for this (pool, window) pair and reject if
     // it already exists.
@@ -128,10 +112,10 @@ pub fn create_oracle_price_account(
             clock.clone(),
         ],
         &twap_oracle_core::Instruction::CreateOraclePriceAccount {
-            base_asset: pool_def.definition_token_a_id,
-            quote_asset: pool_def.definition_token_b_id,
-            initial_price,
-            window_duration,
+            base_asset: oracle_quote.base_asset,
+            quote_asset: oracle_quote.quote_asset,
+            initial_price: oracle_quote.initial_price_q64_64,
+            window_duration: oracle_quote.window_duration,
         },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
@@ -151,8 +135,9 @@ pub fn create_oracle_price_account(
 
 #[cfg(test)]
 mod tests {
-    use amm_core::compute_pool_pda_seed;
+    use amm_core::{compute_pool_pda_seed, spot_price_q64_64};
     use nssa_core::account::{Account, AccountId, Data, Nonce};
+    use twap_oracle_core::OBSERVATIONS_CAPACITY;
 
     use super::*;
 
@@ -418,8 +403,8 @@ mod tests {
     }
 
     /// A window smaller than `OBSERVATIONS_CAPACITY` can never have a matching `PriceObservations`
-    /// account, so the price account could never be updated by `PublishPrice`; it is rejected early
-    /// with an AMM-level error before the pool is even decoded.
+    /// account, so the price account could never be updated by `PublishPrice`; it is rejected with
+    /// an AMM-level error.
     #[test]
     #[should_panic(expected = "window_duration must be >= OBSERVATIONS_CAPACITY")]
     fn window_duration_below_capacity_panics() {

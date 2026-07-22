@@ -1,9 +1,8 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda_seed,
-    compute_pool_pda_seed, mul_div_floor, read_vault_fungible_balances, spot_price_q64_64,
-    AmmConfig, PoolDefinition,
+    compute_config_pda, compute_liquidity_token_pda_seed, compute_pool_pda_seed,
+    read_vault_fungible_balances, AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
@@ -11,6 +10,8 @@ use nssa_core::{
     program::{AccountPostState, ChainedCall, ProgramId},
 };
 use twap_oracle_core::compute_current_tick_account_pda;
+
+use crate::quote;
 
 #[expect(
     clippy::too_many_arguments,
@@ -47,7 +48,6 @@ pub fn add_liquidity(
     // 1. Fetch Pool state
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("Add liquidity: AMM Program expects valid Pool Definition Account");
-    assert_supported_fee_tier(pool_def_data.fees);
 
     assert_eq!(
         vault_a.account_id, pool_def_data.vault_a_id,
@@ -92,103 +92,21 @@ pub fn add_liquidity(
         "Add liquidity: current tick Account ID does not match PDA"
     );
 
-    assert!(
-        max_amount_to_add_token_a != 0 && max_amount_to_add_token_b != 0,
-        "Both max-balances must be nonzero"
-    );
-
     let (vault_a_balance, vault_b_balance) =
         read_vault_fungible_balances("Add liquidity", &vault_a, &vault_b);
-
-    assert!(
-        vault_a_balance >= pool_def_data.reserve_a,
-        "Vaults' balances must be at least the reserve amounts"
-    );
-    assert!(
-        vault_b_balance >= pool_def_data.reserve_b,
-        "Vaults' balances must be at least the reserve amounts"
-    );
-
-    // 2. Determine deposit amount
-    assert!(pool_def_data.reserve_a != 0, "Reserves must be nonzero");
-    assert!(pool_def_data.reserve_b != 0, "Reserves must be nonzero");
-
-    // floor(reserve * max_amount / reserve), products widened to U256. Reserves are nonzero
-    // (asserted above), so the divisors are valid.
-    let ideal_a: u128 = mul_div_floor(
-        pool_def_data.reserve_a,
-        max_amount_to_add_token_b,
-        pool_def_data.reserve_b,
-    );
-    let ideal_b: u128 = mul_div_floor(
-        pool_def_data.reserve_b,
+    let liquidity_quote = quote::add_liquidity(
+        &pool_def_data,
+        vault_a_balance,
+        vault_b_balance,
         max_amount_to_add_token_a,
-        pool_def_data.reserve_a,
-    );
-
-    let actual_amount_a = if ideal_a > max_amount_to_add_token_a {
-        max_amount_to_add_token_a
-    } else {
-        ideal_a
-    };
-    let actual_amount_b = if ideal_b > max_amount_to_add_token_b {
-        max_amount_to_add_token_b
-    } else {
-        ideal_b
-    };
-
-    // 3. Validate amounts
-    assert!(
-        max_amount_to_add_token_a >= actual_amount_a,
-        "Actual trade amounts cannot exceed max_amounts"
-    );
-    assert!(
-        max_amount_to_add_token_b >= actual_amount_b,
-        "Actual trade amounts cannot exceed max_amounts"
-    );
-
-    assert!(actual_amount_a != 0, "A trade amount is 0");
-    assert!(actual_amount_b != 0, "A trade amount is 0");
-
-    // 4. Calculate LP to mint
-    // floor(supply * actual / reserve), products widened to U256.
-    let delta_lp = std::cmp::min(
-        mul_div_floor(
-            pool_def_data.liquidity_pool_supply,
-            actual_amount_a,
-            pool_def_data.reserve_a,
-        ),
-        mul_div_floor(
-            pool_def_data.liquidity_pool_supply,
-            actual_amount_b,
-            pool_def_data.reserve_b,
-        ),
-    );
-
-    assert!(delta_lp != 0, "Payable LP must be nonzero");
-
-    assert!(
-        delta_lp >= min_amount_liquidity.get(),
-        "Payable LP is less than provided minimum LP amount"
-    );
+        max_amount_to_add_token_b,
+        min_amount_liquidity.get(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 
     // 5. Update pool account
     let mut pool_post = pool.account.clone();
-    let pool_post_definition = PoolDefinition {
-        liquidity_pool_supply: pool_def_data
-            .liquidity_pool_supply
-            .checked_add(delta_lp)
-            .expect("liquidity_pool_supply + delta_lp overflows u128"),
-        reserve_a: pool_def_data
-            .reserve_a
-            .checked_add(actual_amount_a)
-            .expect("reserve_a + actual_amount_a overflows u128"),
-        reserve_b: pool_def_data
-            .reserve_b
-            .checked_add(actual_amount_b)
-            .expect("reserve_b + actual_amount_b overflows u128"),
-        ..pool_def_data
-    };
+    let pool_post_definition = liquidity_quote.pool.apply_to(&pool_def_data);
 
     pool_post.data = Data::from(&pool_post_definition);
 
@@ -197,7 +115,7 @@ pub fn add_liquidity(
         token_program_id,
         vec![user_holding_a.clone(), vault_a.clone()],
         &token_core::Instruction::Transfer {
-            amount_to_transfer: actual_amount_a,
+            amount_to_transfer: liquidity_quote.actual_amount_a,
         },
     );
     // Chain call for Token B (UserHoldingB -> Vault_B)
@@ -205,7 +123,7 @@ pub fn add_liquidity(
         token_program_id,
         vec![user_holding_b.clone(), vault_b.clone()],
         &token_core::Instruction::Transfer {
-            amount_to_transfer: actual_amount_b,
+            amount_to_transfer: liquidity_quote.actual_amount_b,
         },
     );
     // Chain call for LP (mint new tokens for user_holding_lp)
@@ -215,17 +133,13 @@ pub fn add_liquidity(
         token_program_id,
         vec![pool_definition_lp_auth.clone(), user_holding_lp.clone()],
         &token_core::Instruction::Mint {
-            amount_to_mint: delta_lp,
+            amount_to_mint: liquidity_quote.liquidity_to_mint,
         },
     )
     .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
 
     // Refresh the pool's TWAP current tick from the post-add spot price. The pool is already owned
     // by this program, so it is passed (in its post-add state) as the authorized price source.
-    let new_price = spot_price_q64_64(
-        pool_post_definition.reserve_a,
-        pool_post_definition.reserve_b,
-    );
     let pool_price_source = AccountWithMetadata {
         account: pool_post.clone(),
         is_authorized: true,
@@ -238,7 +152,9 @@ pub fn add_liquidity(
             pool_price_source,
             clock.clone(),
         ],
-        &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
+        &twap_oracle_core::Instruction::UpdateCurrentTick {
+            price: liquidity_quote.pool.spot_price_q64_64,
+        },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
         pool_def_data.definition_token_a_id,

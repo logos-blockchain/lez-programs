@@ -1,11 +1,9 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda,
-    compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
-    compute_lp_lock_holding_pda_seed, compute_pool_pda, compute_pool_pda_seed, compute_vault_pda,
-    compute_vault_pda_seed, isqrt_product, spot_price_q64_64, AmmConfig, PoolDefinition,
-    MINIMUM_LIQUIDITY,
+    compute_config_pda, compute_liquidity_token_pda, compute_liquidity_token_pda_seed,
+    compute_lp_lock_holding_pda, compute_lp_lock_holding_pda_seed, compute_pool_pda,
+    compute_pool_pda_seed, compute_vault_pda, compute_vault_pda_seed, AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
@@ -14,6 +12,8 @@ use nssa_core::{
 };
 use token_core::TokenDefinition;
 use twap_oracle_core::compute_current_tick_account_pda;
+
+use crate::quote;
 
 #[expect(
     clippy::too_many_arguments,
@@ -93,8 +93,6 @@ pub fn new_definition(
         compute_lp_lock_holding_pda(amm_program_id, pool.account_id),
         "LP lock holding Account ID does not match PDA"
     );
-    assert_supported_fee_tier(fees);
-
     // Assert that pool is uninitialized (hard precondition)
     assert_eq!(
         pool.account,
@@ -118,16 +116,8 @@ pub fn new_definition(
         "New definition: clock account must be the canonical 1-block LEZ clock account"
     );
 
-    // LP Token minting calculation. The `token_a * token_b` product is computed in U256 (via
-    // `isqrt_product`) so realistic 18-decimal amounts can't overflow u128 before the sqrt.
-    let initial_lp = isqrt_product(token_a_amount.get(), token_b_amount.get());
-    assert!(
-        initial_lp > MINIMUM_LIQUIDITY,
-        "Initial liquidity must exceed minimum liquidity lock"
-    );
-    let user_lp = initial_lp
-        .checked_sub(MINIMUM_LIQUIDITY)
-        .expect("initial liquidity must exceed minimum liquidity after validation");
+    let pool_quote = quote::create_pool(token_a_amount.get(), token_b_amount.get(), fees)
+        .unwrap_or_else(|error| panic!("{error}"));
 
     // Update pool account
     let pool_post_definition = PoolDefinition {
@@ -136,9 +126,9 @@ pub fn new_definition(
         vault_a_id: vault_a.account_id,
         vault_b_id: vault_b.account_id,
         liquidity_pool_id: pool_definition_lp.account_id,
-        liquidity_pool_supply: initial_lp,
-        reserve_a: token_a_amount.into(),
-        reserve_b: token_b_amount.into(),
+        liquidity_pool_supply: pool_quote.pool.liquidity_pool_supply,
+        reserve_a: pool_quote.pool.reserve_a,
+        reserve_b: pool_quote.pool.reserve_b,
         fees,
     };
 
@@ -192,7 +182,7 @@ pub fn new_definition(
         vec![pool_lp_auth.clone(), lp_lock_holding_auth],
         &token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
-            total_supply: MINIMUM_LIQUIDITY,
+            total_supply: pool_quote.locked_liquidity,
             mint_authority: Some(pool_definition_lp.account_id),
         },
     )
@@ -205,7 +195,7 @@ pub fn new_definition(
     pool_lp_after_lock.account.program_owner = token_program_id;
     pool_lp_after_lock.account.data = Data::from(&TokenDefinition::Fungible {
         name: String::from("LP Token"),
-        total_supply: MINIMUM_LIQUIDITY,
+        total_supply: pool_quote.locked_liquidity,
         metadata_id: None,
         // Self-authority: the LP token is mintable only by the pool, which
         // presents this PDA as the authorized minter in the chained Mint call.
@@ -215,7 +205,7 @@ pub fn new_definition(
         token_program_id,
         vec![pool_lp_after_lock, user_holding_lp.clone()],
         &token_core::Instruction::Mint {
-            amount_to_mint: user_lp,
+            amount_to_mint: pool_quote.user_liquidity,
         },
     )
     .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
@@ -227,7 +217,6 @@ pub fn new_definition(
     // The pool is claimed (and thus owned by this program) by this same instruction, so the
     // chained call must present the pool in its post-claim state to match the accumulated state
     // diff: the runtime sets the claimed pool's owner to this program, so we predict that here.
-    let initial_price = spot_price_q64_64(token_a_amount.get(), token_b_amount.get());
     let mut pool_price_source_account = pool_initialized;
     pool_price_source_account.program_owner = amm_program_id;
     let pool_price_source = AccountWithMetadata {
@@ -242,7 +231,9 @@ pub fn new_definition(
             pool_price_source,
             clock.clone(),
         ],
-        &twap_oracle_core::Instruction::CreateCurrentTickAccount { initial_price },
+        &twap_oracle_core::Instruction::CreateCurrentTickAccount {
+            initial_price: pool_quote.pool.spot_price_q64_64,
+        },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
         definition_token_a_id,

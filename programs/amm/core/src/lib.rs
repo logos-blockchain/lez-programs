@@ -256,12 +256,16 @@ pub const FEE_TIER_BPS_1: u128 = 1;
 pub const FEE_TIER_BPS_5: u128 = 5;
 pub const FEE_TIER_BPS_30: u128 = 30;
 pub const FEE_TIER_BPS_100: u128 = 100;
+/// Fee tiers accepted by pool creation and all initialized-pool operations.
+pub const SUPPORTED_FEE_TIERS: [u128; 4] = [
+    FEE_TIER_BPS_1,
+    FEE_TIER_BPS_5,
+    FEE_TIER_BPS_30,
+    FEE_TIER_BPS_100,
+];
 
 pub fn is_supported_fee_tier(fees: u128) -> bool {
-    matches!(
-        fees,
-        FEE_TIER_BPS_1 | FEE_TIER_BPS_5 | FEE_TIER_BPS_30 | FEE_TIER_BPS_100
-    )
+    SUPPORTED_FEE_TIERS.contains(&fees)
 }
 
 pub fn assert_supported_fee_tier(fees: u128) {
@@ -303,19 +307,54 @@ pub fn spot_price_q64_64(reserve_base: u128, reserve_quote: u128) -> u128 {
 /// `floor(a * b / c)` computed in U256 so the `a * b` product can't overflow u128.
 /// (Storage stays u128; only the intermediate widens.)
 ///
-/// # Panics
-/// Panics if `c` is zero, or if the result exceeds u128.
+/// Returns `None` when `c` is zero or the quotient does not fit in `u128`.
 #[must_use]
-pub fn mul_div_floor(a: u128, b: u128, c: u128) -> u128 {
+pub fn checked_mul_div_floor(a: u128, b: u128, c: u128) -> Option<u128> {
     use alloy_primitives::U256;
-    assert!(c != 0, "mul_div_floor: divisor must be non-zero");
+
+    if c == 0 {
+        return None;
+    }
+
     let product = U256::from(a)
         .checked_mul(U256::from(b))
         .expect("u128 * u128 always fits in U256");
     let result = product
         .checked_div(U256::from(c))
-        .expect("mul_div_floor: divisor is non-zero after the assertion above");
-    u128::try_from(result).expect("mul_div_floor result exceeds u128")
+        .expect("c is non-zero after the guard above");
+
+    u128::try_from(result).ok()
+}
+
+/// `floor(a * b / c)` computed in U256 so the `a * b` product can't overflow u128.
+/// (Storage stays u128; only the intermediate widens.)
+///
+/// # Panics
+/// Panics if `c` is zero, or if the result exceeds u128.
+#[must_use]
+pub fn mul_div_floor(a: u128, b: u128, c: u128) -> u128 {
+    assert!(c != 0, "mul_div_floor: divisor must be non-zero");
+    checked_mul_div_floor(a, b, c).expect("mul_div_floor result exceeds u128")
+}
+
+/// `ceil(a * b / c)` computed in U256 so the `a * b` product can't overflow u128.
+/// (Storage stays u128; only the intermediate widens.)
+///
+/// Returns `None` when `c` is zero or the quotient does not fit in `u128`.
+#[must_use]
+pub fn checked_mul_div_ceil(a: u128, b: u128, c: u128) -> Option<u128> {
+    use alloy_primitives::U256;
+
+    if c == 0 {
+        return None;
+    }
+
+    let product = U256::from(a)
+        .checked_mul(U256::from(b))
+        .expect("u128 * u128 always fits in U256");
+    let result = product.div_ceil(U256::from(c));
+
+    u128::try_from(result).ok()
 }
 
 /// `ceil(a * b / c)` computed in U256 so the `a * b` product can't overflow u128.
@@ -325,13 +364,8 @@ pub fn mul_div_floor(a: u128, b: u128, c: u128) -> u128 {
 /// Panics if `c` is zero, or if the result exceeds u128.
 #[must_use]
 pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
-    use alloy_primitives::U256;
     assert!(c != 0, "mul_div_ceil: divisor must be non-zero");
-    let product = U256::from(a)
-        .checked_mul(U256::from(b))
-        .expect("u128 * u128 always fits in U256");
-    let result = product.div_ceil(U256::from(c));
-    u128::try_from(result).expect("mul_div_ceil result exceeds u128")
+    checked_mul_div_ceil(a, b, c).expect("mul_div_ceil result exceeds u128")
 }
 
 /// Adverse price impact of a swap in basis points: how far `amount_out` falls
@@ -721,6 +755,13 @@ mod tests {
     }
 
     #[test]
+    fn checked_mul_div_floor_reports_invalid_results() {
+        assert_eq!(checked_mul_div_floor(1, 1, 0), None);
+        assert_eq!(checked_mul_div_floor(u128::MAX, u128::MAX, 1), None);
+        assert_eq!(checked_mul_div_floor(7, 7, 3), Some(16));
+    }
+
+    #[test]
     fn mul_div_floor_product_exceeds_u128() {
         // 2e30 * 2e30 = 4e60, far beyond u128; / 1e20 = 4e40, still beyond u128 -- but the
         // intermediate must not overflow and the *quotient* here fits once divided down.
@@ -814,6 +855,13 @@ mod tests {
         // exact division: no rounding up
         assert_eq!(mul_div_ceil(6, 4, 3), 8);
         assert_eq!(mul_div_ceil(0, 12345, 7), 0);
+    }
+
+    #[test]
+    fn checked_mul_div_ceil_reports_invalid_results() {
+        assert_eq!(checked_mul_div_ceil(1, 1, 0), None);
+        assert_eq!(checked_mul_div_ceil(u128::MAX, u128::MAX, 1), None);
+        assert_eq!(checked_mul_div_ceil(7, 7, 3), Some(17));
     }
 
     #[test]

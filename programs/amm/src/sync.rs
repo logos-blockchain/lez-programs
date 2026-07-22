@@ -1,6 +1,6 @@
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed,
-    read_vault_fungible_balances, spot_price_q64_64, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_config_pda, compute_pool_pda_seed, read_vault_fungible_balances, AmmConfig,
+    PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
@@ -8,6 +8,8 @@ use nssa_core::{
     program::{AccountPostState, ChainedCall, ProgramId},
 };
 use twap_oracle_core::compute_current_tick_account_pda;
+
+use crate::quote;
 
 pub fn sync_reserves(
     config: AccountWithMetadata,
@@ -20,7 +22,6 @@ pub fn sync_reserves(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("Sync reserves: AMM Program expects a valid Pool Definition Account");
-    assert_supported_fee_tier(pool_def_data.fees);
 
     // The TWAP oracle program ID is taken from the config account. Validating the config PDA is
     // also the Program's initialization gate.
@@ -33,10 +34,6 @@ pub fn sync_reserves(
         .expect("Sync reserves: AMM Program must be initialized before use")
         .twap_oracle_program_id;
 
-    assert!(
-        pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
-        "Pool liquidity supply is below minimum liquidity"
-    );
     assert_eq!(
         vault_a.account_id, pool_def_data.vault_a_id,
         "Vault A was not provided"
@@ -59,26 +56,14 @@ pub fn sync_reserves(
 
     let (vault_a_balance, vault_b_balance) =
         read_vault_fungible_balances("Sync reserves", &vault_a, &vault_b);
-    assert!(
-        vault_a_balance >= pool_def_data.reserve_a,
-        "Sync reserves: vault A balance is less than its reserve"
-    );
-    assert!(
-        vault_b_balance >= pool_def_data.reserve_b,
-        "Sync reserves: vault B balance is less than its reserve"
-    );
-
-    let pool_post_definition = PoolDefinition {
-        reserve_a: vault_a_balance,
-        reserve_b: vault_b_balance,
-        ..pool_def_data
-    };
+    let sync_quote = quote::sync_reserves(&pool_def_data, vault_a_balance, vault_b_balance)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let pool_post_definition = sync_quote.pool.apply_to(&pool_def_data);
     let mut pool_post = pool.account.clone();
     pool_post.data = Data::from(&pool_post_definition);
 
     // Refresh the pool's TWAP current tick from the synced spot price. The pool is already owned by
     // this program, so it is passed (in its synced state) as the authorized price source.
-    let new_price = spot_price_q64_64(vault_a_balance, vault_b_balance);
     let pool_price_source = AccountWithMetadata {
         account: pool_post.clone(),
         is_authorized: true,
@@ -91,7 +76,9 @@ pub fn sync_reserves(
             pool_price_source,
             clock.clone(),
         ],
-        &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
+        &twap_oracle_core::Instruction::UpdateCurrentTick {
+            price: sync_quote.pool.spot_price_q64_64,
+        },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
         pool_def_data.definition_token_a_id,
