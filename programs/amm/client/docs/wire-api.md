@@ -14,9 +14,10 @@ Requests may include `"schema":"amm-client.v1"`. Schema-less requests remain acc
 compatibility. Every successful wire value and every C envelope identifies the response schema.
 
 All `u128` amounts, reserves, supplies, fees, nonces, and balances are unsigned decimal strings.
-All `u64` windows and deadlines are also decimal strings. Program IDs are arrays of eight `u32`
-words. Signed ticks are decimal strings. Account IDs are base58 strings. Account `data` is an
-even-length hexadecimal string.
+All `u64` windows and deadlines are also decimal strings. Program IDs are exactly 64 lowercase
+hexadecimal characters: the 32 bytes formed by concatenating the eight `u32` words in
+little-endian byte order. Signed ticks are decimal strings. Account IDs use canonical base58.
+Account `data` is an even-length hexadecimal string.
 
 ## Shared inputs
 
@@ -24,9 +25,9 @@ Plan context:
 
 ```json
 {
-  "ammProgramId": [0, 0, 0, 0, 0, 0, 0, 0],
-  "tokenProgramId": [0, 0, 0, 0, 0, 0, 0, 0],
-  "twapOracleProgramId": [0, 0, 0, 0, 0, 0, 0, 0],
+  "ammProgramId": "0000000000000000000000000000000000000000000000000000000000000000",
+  "tokenProgramId": "0000000000000000000000000000000000000000000000000000000000000000",
+  "twapOracleProgramId": "0000000000000000000000000000000000000000000000000000000000000000",
   "authority": "base58-account-id"
 }
 ```
@@ -53,7 +54,7 @@ Fetched account snapshot used by quotes:
 ```json
 {
   "id": "base58-account-id",
-  "programOwner": [0, 0, 0, 0, 0, 0, 0, 0],
+  "programOwner": "0000000000000000000000000000000000000000000000000000000000000000",
   "balance": "0",
   "nonce": "0",
   "data": "00ff"
@@ -64,7 +65,7 @@ Existing-pool quote operations include these top-level state fields:
 
 ```json
 {
-  "ammProgramId": [0, 0, 0, 0, 0, 0, 0, 0],
+  "ammProgramId": "0000000000000000000000000000000000000000000000000000000000000000",
   "config": { "...": "account snapshot" },
   "snapshot": {
     "pool": { "...": "account snapshot" },
@@ -128,7 +129,7 @@ A successful plan value contains the following fields (`instructionWords` is abb
     "maxAmountToAddTokenB": "100",
     "deadline": "1900000000000"
   },
-  "programId": [0, 0, 0, 0, 0, 0, 0, 0],
+  "programId": "0000000000000000000000000000000000000000000000000000000000000000",
   "accounts": [
     {
       "id": "base58-account-id",
@@ -152,8 +153,8 @@ strings. Account rows follow guest/IDL order.
 ## Quote operations
 
 Send requests to `amm_client_quote` or `wire::quote_json`. Pool economic operations use the
-existing-pool quote state described above. Discovery, opening intent, and task-transaction
-operations use the fields shown in this table and the sections below.
+existing-pool quote state described above. Discovery and opening-intent operations use the fields
+shown in this table and the sections below.
 
 | `operation` | Additional fields |
 |---|---|
@@ -185,11 +186,6 @@ operations use the fields shown in this table and the sections below.
 | `swap_exact_output` | `userInputHolding`, `userOutputHolding`, `inputTokenDefinitionId`, `exactAmountOut`, `maximumAmountIn` |
 | `sync_reserves` | no additional fields |
 | `create_oracle_price_account` | `windowDuration` |
-| `prepare_create_pool_transaction` | task-transaction fields below |
-| `prepare_add_liquidity_transaction` | task-transaction fields below |
-| `prepare_remove_liquidity_transaction` | task-transaction fields below |
-| `prepare_swap_exact_input_transaction` | task-transaction fields below |
-| `prepare_swap_exact_output_transaction` | task-transaction fields below |
 
 Quote values use these result shapes:
 
@@ -234,9 +230,10 @@ amounts.
 
 ## Task transactions
 
-The five snapshot-bound task operations are accepted by both `amm_client_plan`/`wire::plan_json`
-and `amm_client_quote`/`wire::quote_json`. Every request includes `ammProgramId`, raw `config`, the
-complete caller-ordered `snapshots`, and decimal-string `deadline`.
+The five snapshot-bound task operations are accepted only by
+`amm_client_plan`/`wire::plan_json`. Every request includes `ammProgramId`, raw `config`, the
+complete caller-ordered `snapshots`, and decimal-string `deadline`. The quote endpoint rejects
+these operation tags with `invalid_request`.
 
 | `operation` | Additional fields |
 |---|---|
@@ -313,6 +310,12 @@ therefore cover the caller caps while display amounts remain the canonical quote
 The client validates account decoding, configured owners, canonical PDAs, pool/vault/token/LP
 relationships, swap input/output pairing, and required input balances. Quote arithmetic failures
 retain the stable `amm_program::quote::QuoteError` code.
+
+Every failure uses `{ "code": "...", "message": "..." }`. `code` is the stable
+machine-readable contract; `message` is diagnostic text. JSON adapter failures return
+`invalid_request` or `unsupported_schema`. The C envelope additionally returns `null_request`,
+`invalid_utf8`, `invalid_json`, `response_serialization_failed`, or `response_contains_nul` for
+boundary failures.
 
 No request performs network I/O or checks an ImageID, release version, compatibility manifest, or
 program allowlist. Deployment configuration is expected to select the corresponding AMM build.

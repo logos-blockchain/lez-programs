@@ -3,6 +3,8 @@
     reason = "contract tests call the exported C ABI and release its owned pointers"
 )]
 
+mod common;
+
 use std::ffi::{c_char, CStr, CString};
 
 use amm_client::{amm_client_free, amm_client_plan, amm_client_quote, wire::WIRE_SCHEMA};
@@ -10,6 +12,7 @@ use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_pool_pda, compute_vault_pda,
     AmmConfig, Instruction, PoolDefinition, FEE_TIER_BPS_30, MINIMUM_LIQUIDITY,
 };
+use common::program_id_hex;
 use nssa_core::{
     account::{Account, AccountId, Data, Nonce},
     program::ProgramId,
@@ -45,7 +48,7 @@ fn call_json(operation: Operation, request: &Value) -> Value {
 fn snapshot(id: AccountId, account: &Account) -> Value {
     json!({
         "id": id.to_string(),
-        "programOwner": account.program_owner,
+        "programOwner": program_id_hex(account.program_owner),
         "balance": account.balance.to_string(),
         "nonce": account.nonce.0.to_string(),
         "data": hex(account.data.as_ref()),
@@ -148,6 +151,31 @@ fn protocol_constants_are_exposed_without_numeric_json_values() {
 }
 
 #[test]
+fn program_ids_require_canonical_lowercase_hex_strings() {
+    let canonical = program_id_hex([0xabcdef01; 8]);
+    let authority = AccountId::new([44; 32]).to_string();
+
+    for invalid in [
+        json!([1, 1, 1, 1, 1, 1, 1, 1]),
+        json!(canonical.to_uppercase()),
+    ] {
+        let response = call_json(
+            amm_client_plan,
+            &json!({
+                "operation": "initialize",
+                "ammProgramId": invalid,
+                "tokenProgramId": canonical,
+                "twapOracleProgramId": canonical,
+                "authority": authority,
+            }),
+        );
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "invalid_request");
+    }
+}
+
+#[test]
 fn successful_plan_preserves_u64_above_javascript_range_in_guest_words() {
     let amm_program_id: ProgramId = [11; 8];
     let token_program_id: ProgramId = [22; 8];
@@ -160,9 +188,9 @@ fn successful_plan_preserves_u64_above_javascript_range_in_guest_words() {
         &json!({
             "operation": "create_price_observations",
             "context": {
-                "ammProgramId": amm_program_id,
-                "tokenProgramId": token_program_id,
-                "twapOracleProgramId": twap_oracle_program_id,
+                "ammProgramId": program_id_hex(amm_program_id),
+                "tokenProgramId": program_id_hex(token_program_id),
+                "twapOracleProgramId": program_id_hex(twap_oracle_program_id),
                 "authority": authority.to_string(),
             },
             "poolId": pool_id.to_string(),
@@ -175,7 +203,10 @@ fn successful_plan_preserves_u64_above_javascript_range_in_guest_words() {
         response["value"]["instruction"],
         "create_price_observations"
     );
-    assert_eq!(response["value"]["programId"], json!(amm_program_id));
+    assert_eq!(
+        response["value"]["programId"],
+        program_id_hex(amm_program_id)
+    );
     assert!(response["value"]["accounts"].is_array());
     let words: Vec<u32> = serde_json::from_value(response["value"]["instructionWords"].clone())
         .expect("instruction words must be u32 JSON numbers");
@@ -232,7 +263,7 @@ fn successful_quote_preserves_u128_above_javascript_range_as_decimal() {
         amm_client_quote,
         &json!({
             "operation": "create_pool",
-            "ammProgramId": amm_program_id,
+            "ammProgramId": program_id_hex(amm_program_id),
             "config": snapshot(compute_config_pda(amm_program_id), &config_account),
             "tokenADefinition": snapshot(token_a_id, &definition("A")),
             "tokenBDefinition": snapshot(token_b_id, &definition("B")),
@@ -258,7 +289,7 @@ fn successful_quote_preserves_u128_above_javascript_range_as_decimal() {
         amm_client_quote,
         &json!({
             "operation": "prepare_create_pool",
-            "ammProgramId": amm_program_id,
+            "ammProgramId": program_id_hex(amm_program_id),
             "config": snapshot(compute_config_pda(amm_program_id), &config_account),
             "tokenADefinition": snapshot(token_a_id, &definition("A")),
             "tokenBDefinition": snapshot(token_b_id, &definition("B")),
@@ -311,7 +342,7 @@ fn swap_quote_rejects_unrelated_output_holding() {
         amm_client_quote,
         &json!({
             "operation": "preview_swap_exact_input",
-            "ammProgramId": amm_program_id,
+            "ammProgramId": program_id_hex(amm_program_id),
             "config": snapshot(
                 compute_config_pda(amm_program_id),
                 &account(amm_program_id, Data::from(&config)),

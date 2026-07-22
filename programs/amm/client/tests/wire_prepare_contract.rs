@@ -1,8 +1,11 @@
+mod common;
+
 use amm_client::{maximum_guard_amount, minimum_guard_amount, wire::quote_json, SlippageTolerance};
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_pool_pda, compute_vault_pda,
     AmmConfig, PoolDefinition, FEE_TIER_BPS_30,
 };
+use common::program_id_hex;
 use nssa_core::{
     account::{Account, AccountId, Data, Nonce},
     program::ProgramId,
@@ -26,7 +29,7 @@ fn account(program_owner: ProgramId, data: Data) -> Account {
 fn snapshot(id: AccountId, account: &Account) -> Value {
     json!({
         "id": id.to_string(),
-        "programOwner": account.program_owner,
+        "programOwner": program_id_hex(account.program_owner),
         "balance": account.balance.to_string(),
         "nonce": account.nonce.0.to_string(),
         "data": account
@@ -99,7 +102,7 @@ impl WireFixture {
             fees: FEE_TIER_BPS_30,
         };
         let state = json!({
-            "ammProgramId": AMM_PROGRAM_ID,
+            "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
             "config": config,
             "snapshot": {
                 "pool": snapshot(pool_id, &account(AMM_PROGRAM_ID, Data::from(&pool))),
@@ -161,7 +164,7 @@ fn prepare_wire_operations_return_lossless_instruction_args() {
 
     let create = quote_json(json!({
         "operation": "prepare_create_pool",
-        "ammProgramId": AMM_PROGRAM_ID,
+        "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
         "config": fixture.config.clone(),
         "tokenADefinition": snapshot(fixture.token_a_id, &definition(100_000, None)),
         "tokenBDefinition": snapshot(fixture.token_b_id, &definition(100_000, None)),

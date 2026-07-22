@@ -19,18 +19,18 @@ char *amm_client_plan(const char *request_json);
  * Accepts a tagged UTF-8 JSON request and returns an owned UTF-8 JSON envelope.
  * Supported operation tags include protocol constants; config and pair discovery;
  * pair inspection; caller-order opening preparation; economic quote/preparation
- * operations; and prepare_create_pool_transaction,
- * prepare_add_liquidity_transaction, prepare_remove_liquidity_transaction,
- * prepare_swap_exact_input_transaction, and
- * prepare_swap_exact_output_transaction. See docs/wire-api.md for fields.
+ * operations; reserve synchronization; and oracle-price initialization.
+ * Snapshot-bound prepare_*_transaction operations belong to amm_client_plan.
+ * See docs/wire-api.md for fields.
  * Release the result with amm_client_free.
  */
 char *amm_client_quote(const char *request_json);
 
 /*
  * Raw u128, u64, and signed tick values are decimal JSON strings. Program IDs
- * and instruction words are JSON u32 arrays. Account IDs are base58 strings and
- * account data is hexadecimal. Requests may carry schema "amm-client.v1";
+ * are 64-character lowercase hexadecimal strings. Instruction words are JSON
+ * u32 arrays. Account IDs use canonical base58 and account data is hexadecimal.
+ * Requests may carry schema "amm-client.v1";
  * schema-less legacy requests remain accepted. Responses use
  * {"schema":"amm-client.v1","ok":true,"value":...} or the same envelope
  * with ok=false and error={"code":...,"message":...}. Plan values contain

@@ -90,24 +90,42 @@ impl From<TransactionError> for WireError {
     }
 }
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(try_from = "String")]
+struct ProgramIdInput(ProgramId);
+
+impl From<ProgramIdInput> for ProgramId {
+    fn from(value: ProgramIdInput) -> Self {
+        value.0
+    }
+}
+
+impl TryFrom<String> for ProgramIdInput {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        parse_program_id(&value).map(Self)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 enum PlanRequest {
     Initialize {
         #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
+        amm_program_id: ProgramIdInput,
         #[serde(rename = "tokenProgramId")]
-        token_program_id: ProgramId,
+        token_program_id: ProgramIdInput,
         #[serde(rename = "twapOracleProgramId")]
-        twap_oracle_program_id: ProgramId,
+        twap_oracle_program_id: ProgramIdInput,
         authority: String,
     },
     UpdateConfig {
         context: ContextInput,
         #[serde(rename = "tokenProgramId")]
-        token_program_id: Option<ProgramId>,
+        token_program_id: Option<ProgramIdInput>,
         #[serde(rename = "twapOracleProgramId")]
-        twap_oracle_program_id: Option<ProgramId>,
+        twap_oracle_program_id: Option<ProgramIdInput>,
         #[serde(rename = "newAuthority")]
         new_authority: Option<String>,
     },
@@ -208,24 +226,137 @@ enum PlanRequest {
         context: ContextInput,
         pool: PoolInput,
     },
+    PrepareCreatePoolTransaction {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramIdInput,
+        config: AccountSnapshotInput,
+        snapshots: Box<PairReadSnapshotsInput>,
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+        #[serde(rename = "firstTokenHolding")]
+        first_token_holding: AccountSnapshotInput,
+        #[serde(rename = "secondTokenHolding")]
+        second_token_holding: AccountSnapshotInput,
+        #[serde(rename = "liquidityHolding")]
+        liquidity_holding: AccountSnapshotInput,
+        #[serde(rename = "firstAmount")]
+        first_amount: String,
+        #[serde(rename = "secondAmount")]
+        second_amount: String,
+        #[serde(rename = "feeBps")]
+        fee_bps: String,
+        deadline: String,
+    },
+    PrepareAddLiquidityTransaction {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramIdInput,
+        config: AccountSnapshotInput,
+        snapshots: Box<PairReadSnapshotsInput>,
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+        #[serde(rename = "firstTokenHolding")]
+        first_token_holding: AccountSnapshotInput,
+        #[serde(rename = "secondTokenHolding")]
+        second_token_holding: AccountSnapshotInput,
+        #[serde(rename = "liquidityHolding")]
+        liquidity_holding: AccountSnapshotInput,
+        #[serde(rename = "maxFirstAmount")]
+        max_first_amount: String,
+        #[serde(rename = "maxSecondAmount")]
+        max_second_amount: String,
+        #[serde(rename = "slippageBps")]
+        slippage_bps: String,
+        #[serde(rename = "expectedFeeBps")]
+        expected_fee_bps: Option<String>,
+        deadline: String,
+    },
+    PrepareRemoveLiquidityTransaction {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramIdInput,
+        config: AccountSnapshotInput,
+        snapshots: Box<PairReadSnapshotsInput>,
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+        #[serde(rename = "firstTokenHolding")]
+        first_token_holding: AccountSnapshotInput,
+        #[serde(rename = "secondTokenHolding")]
+        second_token_holding: AccountSnapshotInput,
+        #[serde(rename = "liquidityHolding")]
+        liquidity_holding: AccountSnapshotInput,
+        #[serde(rename = "removeLiquidityAmount")]
+        remove_liquidity_amount: String,
+        #[serde(rename = "slippageBps")]
+        slippage_bps: String,
+        #[serde(rename = "expectedFeeBps")]
+        expected_fee_bps: Option<String>,
+        deadline: String,
+    },
+    PrepareSwapExactInputTransaction {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramIdInput,
+        config: AccountSnapshotInput,
+        snapshots: Box<PairReadSnapshotsInput>,
+        #[serde(rename = "inputTokenDefinitionId")]
+        input_token_definition_id: String,
+        #[serde(rename = "outputTokenDefinitionId")]
+        output_token_definition_id: String,
+        #[serde(rename = "inputHolding")]
+        input_holding: AccountSnapshotInput,
+        #[serde(rename = "outputHolding")]
+        output_holding: AccountSnapshotInput,
+        #[serde(rename = "amountIn")]
+        amount_in: String,
+        #[serde(rename = "slippageBps")]
+        slippage_bps: String,
+        #[serde(rename = "expectedFeeBps")]
+        expected_fee_bps: Option<String>,
+        deadline: String,
+    },
+    PrepareSwapExactOutputTransaction {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramIdInput,
+        config: AccountSnapshotInput,
+        snapshots: Box<PairReadSnapshotsInput>,
+        #[serde(rename = "inputTokenDefinitionId")]
+        input_token_definition_id: String,
+        #[serde(rename = "outputTokenDefinitionId")]
+        output_token_definition_id: String,
+        #[serde(rename = "inputHolding")]
+        input_holding: AccountSnapshotInput,
+        #[serde(rename = "outputHolding")]
+        output_holding: AccountSnapshotInput,
+        #[serde(rename = "exactAmountOut")]
+        exact_amount_out: String,
+        #[serde(rename = "slippageBps")]
+        slippage_bps: String,
+        #[serde(rename = "expectedFeeBps")]
+        expected_fee_bps: Option<String>,
+        deadline: String,
+    },
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ContextInput {
-    amm_program_id: ProgramId,
-    token_program_id: ProgramId,
-    twap_oracle_program_id: ProgramId,
+    amm_program_id: ProgramIdInput,
+    token_program_id: ProgramIdInput,
+    twap_oracle_program_id: ProgramIdInput,
     authority: String,
 }
 
 impl ContextInput {
     fn into_context(self) -> Result<AmmContext, WireError> {
         Ok(AmmContext::new(
-            self.amm_program_id,
+            self.amm_program_id.into(),
             AmmConfig {
-                token_program_id: self.token_program_id,
-                twap_oracle_program_id: self.twap_oracle_program_id,
+                token_program_id: self.token_program_id.into(),
+                twap_oracle_program_id: self.twap_oracle_program_id.into(),
                 authority: account_id(&self.authority, "context.authority")?,
             },
         ))
@@ -281,11 +412,11 @@ enum QuoteRequest {
     ProtocolConstants,
     DeriveConfigId {
         #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
+        amm_program_id: ProgramIdInput,
     },
     InspectConfig {
         #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
+        amm_program_id: ProgramIdInput,
         config: AccountSnapshotInput,
     },
     CanonicalPair {
@@ -296,7 +427,7 @@ enum QuoteRequest {
     },
     DerivePairReadManifest {
         #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
+        amm_program_id: ProgramIdInput,
         config: AccountSnapshotInput,
         #[serde(rename = "firstTokenDefinitionId")]
         first_token_definition_id: String,
@@ -305,7 +436,7 @@ enum QuoteRequest {
     },
     InspectPair {
         #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
+        amm_program_id: ProgramIdInput,
         config: AccountSnapshotInput,
         #[serde(rename = "firstTokenDefinitionId")]
         first_token_definition_id: String,
@@ -323,119 +454,6 @@ enum QuoteRequest {
         #[serde(rename = "feeBps")]
         fee_bps: String,
         intent: OpeningLiquidityIntentInput,
-    },
-    PrepareCreatePoolTransaction {
-        #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
-        config: AccountSnapshotInput,
-        snapshots: Box<PairReadSnapshotsInput>,
-        #[serde(rename = "firstTokenDefinitionId")]
-        first_token_definition_id: String,
-        #[serde(rename = "secondTokenDefinitionId")]
-        second_token_definition_id: String,
-        #[serde(rename = "firstTokenHolding")]
-        first_token_holding: AccountSnapshotInput,
-        #[serde(rename = "secondTokenHolding")]
-        second_token_holding: AccountSnapshotInput,
-        #[serde(rename = "liquidityHolding")]
-        liquidity_holding: AccountSnapshotInput,
-        #[serde(rename = "firstAmount")]
-        first_amount: String,
-        #[serde(rename = "secondAmount")]
-        second_amount: String,
-        #[serde(rename = "feeBps")]
-        fee_bps: String,
-        deadline: String,
-    },
-    PrepareAddLiquidityTransaction {
-        #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
-        config: AccountSnapshotInput,
-        snapshots: Box<PairReadSnapshotsInput>,
-        #[serde(rename = "firstTokenDefinitionId")]
-        first_token_definition_id: String,
-        #[serde(rename = "secondTokenDefinitionId")]
-        second_token_definition_id: String,
-        #[serde(rename = "firstTokenHolding")]
-        first_token_holding: AccountSnapshotInput,
-        #[serde(rename = "secondTokenHolding")]
-        second_token_holding: AccountSnapshotInput,
-        #[serde(rename = "liquidityHolding")]
-        liquidity_holding: AccountSnapshotInput,
-        #[serde(rename = "maxFirstAmount")]
-        max_first_amount: String,
-        #[serde(rename = "maxSecondAmount")]
-        max_second_amount: String,
-        #[serde(rename = "slippageBps")]
-        slippage_bps: String,
-        #[serde(rename = "expectedFeeBps")]
-        expected_fee_bps: Option<String>,
-        deadline: String,
-    },
-    PrepareRemoveLiquidityTransaction {
-        #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
-        config: AccountSnapshotInput,
-        snapshots: Box<PairReadSnapshotsInput>,
-        #[serde(rename = "firstTokenDefinitionId")]
-        first_token_definition_id: String,
-        #[serde(rename = "secondTokenDefinitionId")]
-        second_token_definition_id: String,
-        #[serde(rename = "firstTokenHolding")]
-        first_token_holding: AccountSnapshotInput,
-        #[serde(rename = "secondTokenHolding")]
-        second_token_holding: AccountSnapshotInput,
-        #[serde(rename = "liquidityHolding")]
-        liquidity_holding: AccountSnapshotInput,
-        #[serde(rename = "removeLiquidityAmount")]
-        remove_liquidity_amount: String,
-        #[serde(rename = "slippageBps")]
-        slippage_bps: String,
-        #[serde(rename = "expectedFeeBps")]
-        expected_fee_bps: Option<String>,
-        deadline: String,
-    },
-    PrepareSwapExactInputTransaction {
-        #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
-        config: AccountSnapshotInput,
-        snapshots: Box<PairReadSnapshotsInput>,
-        #[serde(rename = "inputTokenDefinitionId")]
-        input_token_definition_id: String,
-        #[serde(rename = "outputTokenDefinitionId")]
-        output_token_definition_id: String,
-        #[serde(rename = "inputHolding")]
-        input_holding: AccountSnapshotInput,
-        #[serde(rename = "outputHolding")]
-        output_holding: AccountSnapshotInput,
-        #[serde(rename = "amountIn")]
-        amount_in: String,
-        #[serde(rename = "slippageBps")]
-        slippage_bps: String,
-        #[serde(rename = "expectedFeeBps")]
-        expected_fee_bps: Option<String>,
-        deadline: String,
-    },
-    PrepareSwapExactOutputTransaction {
-        #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
-        config: AccountSnapshotInput,
-        snapshots: Box<PairReadSnapshotsInput>,
-        #[serde(rename = "inputTokenDefinitionId")]
-        input_token_definition_id: String,
-        #[serde(rename = "outputTokenDefinitionId")]
-        output_token_definition_id: String,
-        #[serde(rename = "inputHolding")]
-        input_holding: AccountSnapshotInput,
-        #[serde(rename = "outputHolding")]
-        output_holding: AccountSnapshotInput,
-        #[serde(rename = "exactAmountOut")]
-        exact_amount_out: String,
-        #[serde(rename = "slippageBps")]
-        slippage_bps: String,
-        #[serde(rename = "expectedFeeBps")]
-        expected_fee_bps: Option<String>,
-        deadline: String,
     },
     PrepareMinimumOpeningPair {
         #[serde(rename = "desiredPriceQ64_64")]
@@ -479,7 +497,7 @@ enum QuoteRequest {
     },
     CreatePool {
         #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
+        amm_program_id: ProgramIdInput,
         config: AccountSnapshotInput,
         #[serde(rename = "tokenADefinition")]
         token_a_definition: AccountSnapshotInput,
@@ -494,7 +512,7 @@ enum QuoteRequest {
     },
     PrepareCreatePool {
         #[serde(rename = "ammProgramId")]
-        amm_program_id: ProgramId,
+        amm_program_id: ProgramIdInput,
         config: AccountSnapshotInput,
         #[serde(rename = "tokenADefinition")]
         token_a_definition: AccountSnapshotInput,
@@ -660,7 +678,7 @@ enum QuoteRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PoolStateInput {
-    amm_program_id: ProgramId,
+    amm_program_id: ProgramIdInput,
     config: AccountSnapshotInput,
     snapshot: PoolSnapshotInput,
 }
@@ -668,7 +686,7 @@ struct PoolStateInput {
 impl PoolStateInput {
     fn validate(self) -> Result<(AmmContext, ValidatedPoolSnapshot), WireError> {
         let config = self.config.into_snapshot()?;
-        let context = AmmContext::from_config_account(self.amm_program_id, &config)?;
+        let context = AmmContext::from_config_account(self.amm_program_id.into(), &config)?;
         let snapshot = self.snapshot.validate(&context)?;
         Ok((context, snapshot))
     }
@@ -807,7 +825,7 @@ impl PoolSnapshotInput {
 #[serde(rename_all = "camelCase")]
 struct AccountSnapshotInput {
     id: String,
-    program_owner: ProgramId,
+    program_owner: ProgramIdInput,
     balance: String,
     nonce: String,
     data: String,
@@ -821,7 +839,7 @@ impl AccountSnapshotInput {
         Ok(AccountSnapshot::new(
             account_id(&self.id, "account.id")?,
             Account {
-                program_owner: self.program_owner,
+                program_owner: self.program_owner.into(),
                 balance: decimal_u128(&self.balance, "account.balance")?,
                 data,
                 nonce: Nonce(decimal_u128(&self.nonce, "account.nonce")?),
@@ -833,27 +851,20 @@ impl AccountSnapshotInput {
 /// Builds a canonical low-level plan or prepares a snapshot-bound task transaction from JSON.
 pub fn plan_json(value: Value) -> Result<Value, WireError> {
     validate_wire_schema(&value)?;
-    if value
-        .get("operation")
-        .and_then(Value::as_str)
-        .is_some_and(is_prepared_transaction_operation)
-    {
-        return quote_json(value);
-    }
     let request: PlanRequest = serde_json::from_value(value)
         .map_err(|error| invalid_request(format!("invalid plan request: {error}")))?;
-    let plan = match request {
+    versioned(match request {
         PlanRequest::Initialize {
             amm_program_id,
             token_program_id,
             twap_oracle_program_id,
             authority,
-        } => plan_initialize(InitializePlanInput {
-            amm_program_id,
-            token_program_id,
-            twap_oracle_program_id,
+        } => transaction_plan_json(&plan_initialize(InitializePlanInput {
+            amm_program_id: amm_program_id.into(),
+            token_program_id: token_program_id.into(),
+            twap_oracle_program_id: twap_oracle_program_id.into(),
             authority: account_id(&authority, "authority")?,
-        }),
+        })),
         PlanRequest::UpdateConfig {
             context,
             token_program_id,
@@ -865,12 +876,12 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
                 .as_deref()
                 .map(|value| account_id(value, "newAuthority"))
                 .transpose()?;
-            plan_update_config(UpdateConfigPlanInput {
+            transaction_plan_json(&plan_update_config(UpdateConfigPlanInput {
                 context: &context,
-                token_program_id,
-                twap_oracle_program_id,
+                token_program_id: token_program_id.map(Into::into),
+                twap_oracle_program_id: twap_oracle_program_id.map(Into::into),
                 new_authority,
-            })
+            }))
         }
         PlanRequest::CreatePriceObservations {
             context,
@@ -878,11 +889,13 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
             window_duration,
         } => {
             let context = context.into_context()?;
-            plan_create_price_observations(CreatePriceObservationsPlanInput {
-                context: &context,
-                pool_id: account_id(&pool_id, "poolId")?,
-                window_duration: decimal_u64(&window_duration, "windowDuration")?,
-            })
+            transaction_plan_json(&plan_create_price_observations(
+                CreatePriceObservationsPlanInput {
+                    context: &context,
+                    pool_id: account_id(&pool_id, "poolId")?,
+                    window_duration: decimal_u64(&window_duration, "windowDuration")?,
+                },
+            ))
         }
         PlanRequest::CreateOraclePriceAccount {
             context,
@@ -890,11 +903,13 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
             window_duration,
         } => {
             let context = context.into_context()?;
-            plan_create_oracle_price_account(CreateOraclePriceAccountPlanInput {
-                context: &context,
-                pool_id: account_id(&pool_id, "poolId")?,
-                window_duration: decimal_u64(&window_duration, "windowDuration")?,
-            })
+            transaction_plan_json(&plan_create_oracle_price_account(
+                CreateOraclePriceAccountPlanInput {
+                    context: &context,
+                    pool_id: account_id(&pool_id, "poolId")?,
+                    window_duration: decimal_u64(&window_duration, "windowDuration")?,
+                },
+            ))
         }
         PlanRequest::CreatePool {
             context,
@@ -909,7 +924,7 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
             deadline,
         } => {
             let context = context.into_context()?;
-            plan_create_pool(CreatePoolPlanInput {
+            transaction_plan_json(&plan_create_pool(CreatePoolPlanInput {
                 context: &context,
                 token_a_definition_id: account_id(&token_a_definition_id, "tokenADefinitionId")?,
                 token_b_definition_id: account_id(&token_b_definition_id, "tokenBDefinitionId")?,
@@ -920,7 +935,7 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
                 token_b_amount: decimal_u128(&token_b_amount, "tokenBAmount")?,
                 fees: decimal_u128(&fees, "fees")?,
                 deadline: decimal_u64(&deadline, "deadline")?,
-            })?
+            })?)
         }
         PlanRequest::AddLiquidity {
             context,
@@ -935,7 +950,7 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
         } => {
             let context = context.into_context()?;
             let (pool_id, pool) = pool.into_pool()?;
-            plan_add_liquidity(AddLiquidityPlanInput {
+            transaction_plan_json(&plan_add_liquidity(AddLiquidityPlanInput {
                 context: &context,
                 pool: PoolContext::new(&context, pool_id, &pool)?,
                 user_holding_a: account_id(&user_holding_a, "userHoldingA")?,
@@ -951,7 +966,7 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
                     "maxAmountToAddTokenB",
                 )?,
                 deadline: decimal_u64(&deadline, "deadline")?,
-            })
+            }))
         }
         PlanRequest::RemoveLiquidity {
             context,
@@ -966,7 +981,7 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
         } => {
             let context = context.into_context()?;
             let (pool_id, pool) = pool.into_pool()?;
-            plan_remove_liquidity(RemoveLiquidityPlanInput {
+            transaction_plan_json(&plan_remove_liquidity(RemoveLiquidityPlanInput {
                 context: &context,
                 pool: PoolContext::new(&context, pool_id, &pool)?,
                 user_holding_a: account_id(&user_holding_a, "userHoldingA")?,
@@ -985,7 +1000,7 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
                     "minAmountToRemoveTokenB",
                 )?,
                 deadline: decimal_u64(&deadline, "deadline")?,
-            })
+            }))
         }
         PlanRequest::SwapExactInput {
             context,
@@ -998,7 +1013,7 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
         } => {
             let context = context.into_context()?;
             let (pool_id, pool) = pool.into_pool()?;
-            plan_swap_exact_input(SwapExactInputPlanInput {
+            transaction_plan_json(&plan_swap_exact_input(SwapExactInputPlanInput {
                 context: &context,
                 pool: PoolContext::new(&context, pool_id, &pool)?,
                 user_input_holding: account_id(&user_input_holding, "userInputHolding")?,
@@ -1006,7 +1021,7 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
                 swap_amount_in: decimal_u128(&swap_amount_in, "swapAmountIn")?,
                 min_amount_out: decimal_u128(&min_amount_out, "minAmountOut")?,
                 deadline: decimal_u64(&deadline, "deadline")?,
-            })
+            }))
         }
         PlanRequest::SwapExactOutput {
             context,
@@ -1019,7 +1034,7 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
         } => {
             let context = context.into_context()?;
             let (pool_id, pool) = pool.into_pool()?;
-            plan_swap_exact_output(SwapExactOutputPlanInput {
+            transaction_plan_json(&plan_swap_exact_output(SwapExactOutputPlanInput {
                 context: &context,
                 pool: PoolContext::new(&context, pool_id, &pool)?,
                 user_input_holding: account_id(&user_input_holding, "userInputHolding")?,
@@ -1027,117 +1042,17 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
                 exact_amount_out: decimal_u128(&exact_amount_out, "exactAmountOut")?,
                 max_amount_in: decimal_u128(&max_amount_in, "maxAmountIn")?,
                 deadline: decimal_u64(&deadline, "deadline")?,
-            })
+            }))
         }
         PlanRequest::SyncReserves { context, pool } => {
             let context = context.into_context()?;
             let (pool_id, pool) = pool.into_pool()?;
-            plan_sync_reserves(SyncReservesPlanInput {
+            transaction_plan_json(&plan_sync_reserves(SyncReservesPlanInput {
                 context: &context,
                 pool: PoolContext::new(&context, pool_id, &pool)?,
-            })
+            }))
         }
-    };
-
-    versioned(transaction_plan_json(&plan))
-}
-
-fn is_prepared_transaction_operation(operation: &str) -> bool {
-    matches!(
-        operation,
-        "prepare_create_pool_transaction"
-            | "prepare_add_liquidity_transaction"
-            | "prepare_remove_liquidity_transaction"
-            | "prepare_swap_exact_input_transaction"
-            | "prepare_swap_exact_output_transaction"
-    )
-}
-
-/// Evaluates one reusable AMM economic quote from tagged JSON.
-pub fn quote_json(value: Value) -> Result<Value, WireError> {
-    validate_wire_schema(&value)?;
-    let request: QuoteRequest = serde_json::from_value(value)
-        .map_err(|error| invalid_request(format!("invalid quote request: {error}")))?;
-    versioned(match request {
-        QuoteRequest::ProtocolConstants => Ok(json!({
-            "minimumLiquidity": MINIMUM_LIQUIDITY.to_string(),
-            "feeBpsDenominator": FEE_BPS_DENOMINATOR.to_string(),
-            "slippageBpsDenominator": SLIPPAGE_BPS_DENOMINATOR.to_string(),
-            "supportedFeeTiers": SUPPORTED_FEE_TIERS
-                .iter()
-                .map(u128::to_string)
-                .collect::<Vec<_>>(),
-        })),
-        QuoteRequest::DeriveConfigId { amm_program_id } => Ok(json!({
-            "configId": discovery::derive_config_id(amm_program_id).to_string(),
-        })),
-        QuoteRequest::InspectConfig {
-            amm_program_id,
-            config,
-        } => {
-            let config = config.into_snapshot()?;
-            let context = discovery::inspect_config(amm_program_id, &config)?;
-            Ok(amm_context_json(&context))
-        }
-        QuoteRequest::CanonicalPair {
-            first_token_definition_id,
-            second_token_definition_id,
-        } => {
-            let pair = discovery::canonical_pair(
-                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
-                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
-            )?;
-            Ok(canonical_pair_json(pair))
-        }
-        QuoteRequest::DerivePairReadManifest {
-            amm_program_id,
-            config,
-            first_token_definition_id,
-            second_token_definition_id,
-        } => {
-            let config = config.into_snapshot()?;
-            let context = discovery::inspect_config(amm_program_id, &config)?;
-            let manifest = discovery::derive_pair_read_manifest(
-                &context,
-                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
-                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
-            )?;
-            Ok(pair_read_manifest_json(manifest))
-        }
-        QuoteRequest::InspectPair {
-            amm_program_id,
-            config,
-            first_token_definition_id,
-            second_token_definition_id,
-            snapshots,
-        } => {
-            let config = config.into_snapshot()?;
-            let context = discovery::inspect_config(amm_program_id, &config)?;
-            let snapshots = snapshots.into_snapshots()?;
-            let inspected = discovery::inspect_pair(
-                &context,
-                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
-                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
-                snapshots.as_borrowed(),
-            )?;
-            Ok(pair_inspection_json(inspected))
-        }
-        QuoteRequest::PrepareCallerOpeningPair {
-            first_token_definition_id,
-            second_token_definition_id,
-            desired_price_q64_64,
-            fee_bps,
-            intent,
-        } => Ok(prepared_caller_opening_pair_json(
-            crate::prepare_caller_opening_pair(
-                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
-                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
-                decimal_u128(&desired_price_q64_64, "desiredPriceQ64_64")?,
-                decimal_u128(&fee_bps, "feeBps")?,
-                intent.into_intent()?,
-            )?,
-        )),
-        QuoteRequest::PrepareCreatePoolTransaction {
+        PlanRequest::PrepareCreatePoolTransaction {
             amm_program_id,
             config,
             snapshots,
@@ -1158,7 +1073,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
             let liquidity_holding = liquidity_holding.into_snapshot()?;
             let prepared =
                 crate::prepare_create_pool_transaction(crate::CreatePoolTransactionInput {
-                    amm_program_id,
+                    amm_program_id: amm_program_id.into(),
                     config: &config,
                     pair: snapshots.as_borrowed(),
                     first_token_definition_id: account_id(
@@ -1179,7 +1094,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 })?;
             prepared_transaction_json(&prepared, create_pool_quote_json(*prepared.quote()))
         }
-        QuoteRequest::PrepareAddLiquidityTransaction {
+        PlanRequest::PrepareAddLiquidityTransaction {
             amm_program_id,
             config,
             snapshots,
@@ -1201,7 +1116,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
             let liquidity_holding = liquidity_holding.into_snapshot()?;
             let prepared =
                 crate::prepare_add_liquidity_transaction(crate::AddLiquidityTransactionInput {
-                    amm_program_id,
+                    amm_program_id: amm_program_id.into(),
                     pool_accounts: crate::PoolAccountSnapshots {
                         config: &config,
                         pair: snapshots.as_borrowed(),
@@ -1225,7 +1140,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 })?;
             prepared_transaction_json(&prepared, add_liquidity_quote_json(*prepared.quote()))
         }
-        QuoteRequest::PrepareRemoveLiquidityTransaction {
+        PlanRequest::PrepareRemoveLiquidityTransaction {
             amm_program_id,
             config,
             snapshots,
@@ -1246,7 +1161,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
             let liquidity_holding = liquidity_holding.into_snapshot()?;
             let prepared = crate::prepare_remove_liquidity_transaction(
                 crate::RemoveLiquidityTransactionInput {
-                    amm_program_id,
+                    amm_program_id: amm_program_id.into(),
                     pool_accounts: crate::PoolAccountSnapshots {
                         config: &config,
                         pair: snapshots.as_borrowed(),
@@ -1273,7 +1188,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
             )?;
             prepared_transaction_json(&prepared, remove_liquidity_quote_json(*prepared.quote()))
         }
-        QuoteRequest::PrepareSwapExactInputTransaction {
+        PlanRequest::PrepareSwapExactInputTransaction {
             amm_program_id,
             config,
             snapshots,
@@ -1292,7 +1207,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
             let output_holding = output_holding.into_snapshot()?;
             let prepared = crate::prepare_swap_exact_input_transaction(
                 crate::SwapExactInputTransactionInput {
-                    amm_program_id,
+                    amm_program_id: amm_program_id.into(),
                     pool_accounts: crate::PoolAccountSnapshots {
                         config: &config,
                         pair: snapshots.as_borrowed(),
@@ -1315,7 +1230,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
             )?;
             prepared_transaction_json(&prepared, swap_quote_json(*prepared.quote()))
         }
-        QuoteRequest::PrepareSwapExactOutputTransaction {
+        PlanRequest::PrepareSwapExactOutputTransaction {
             amm_program_id,
             config,
             snapshots,
@@ -1334,7 +1249,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
             let output_holding = output_holding.into_snapshot()?;
             let prepared = crate::prepare_swap_exact_output_transaction(
                 crate::SwapExactOutputTransactionInput {
-                    amm_program_id,
+                    amm_program_id: amm_program_id.into(),
                     pool_accounts: crate::PoolAccountSnapshots {
                         config: &config,
                         pair: snapshots.as_borrowed(),
@@ -1357,6 +1272,93 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
             )?;
             prepared_transaction_json(&prepared, swap_quote_json(*prepared.quote()))
         }
+    })
+}
+
+/// Evaluates one reusable AMM economic quote from tagged JSON.
+pub fn quote_json(value: Value) -> Result<Value, WireError> {
+    validate_wire_schema(&value)?;
+    let request: QuoteRequest = serde_json::from_value(value)
+        .map_err(|error| invalid_request(format!("invalid quote request: {error}")))?;
+    versioned(match request {
+        QuoteRequest::ProtocolConstants => Ok(json!({
+            "minimumLiquidity": MINIMUM_LIQUIDITY.to_string(),
+            "feeBpsDenominator": FEE_BPS_DENOMINATOR.to_string(),
+            "slippageBpsDenominator": SLIPPAGE_BPS_DENOMINATOR.to_string(),
+            "supportedFeeTiers": SUPPORTED_FEE_TIERS
+                .iter()
+                .map(u128::to_string)
+                .collect::<Vec<_>>(),
+        })),
+        QuoteRequest::DeriveConfigId { amm_program_id } => Ok(json!({
+            "configId": discovery::derive_config_id(amm_program_id.into()).to_string(),
+        })),
+        QuoteRequest::InspectConfig {
+            amm_program_id,
+            config,
+        } => {
+            let config = config.into_snapshot()?;
+            let context = discovery::inspect_config(amm_program_id.into(), &config)?;
+            Ok(amm_context_json(&context))
+        }
+        QuoteRequest::CanonicalPair {
+            first_token_definition_id,
+            second_token_definition_id,
+        } => {
+            let pair = discovery::canonical_pair(
+                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
+                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
+            )?;
+            Ok(canonical_pair_json(pair))
+        }
+        QuoteRequest::DerivePairReadManifest {
+            amm_program_id,
+            config,
+            first_token_definition_id,
+            second_token_definition_id,
+        } => {
+            let config = config.into_snapshot()?;
+            let context = discovery::inspect_config(amm_program_id.into(), &config)?;
+            let manifest = discovery::derive_pair_read_manifest(
+                &context,
+                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
+                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
+            )?;
+            Ok(pair_read_manifest_json(manifest))
+        }
+        QuoteRequest::InspectPair {
+            amm_program_id,
+            config,
+            first_token_definition_id,
+            second_token_definition_id,
+            snapshots,
+        } => {
+            let config = config.into_snapshot()?;
+            let context = discovery::inspect_config(amm_program_id.into(), &config)?;
+            let snapshots = snapshots.into_snapshots()?;
+            let inspected = discovery::inspect_pair(
+                &context,
+                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
+                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
+                snapshots.as_borrowed(),
+            )?;
+            Ok(pair_inspection_json(inspected))
+        }
+        QuoteRequest::PrepareCallerOpeningPair {
+            first_token_definition_id,
+            second_token_definition_id,
+            desired_price_q64_64,
+            fee_bps,
+            intent,
+        } => Ok(prepared_caller_opening_pair_json(
+            crate::prepare_caller_opening_pair(
+                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
+                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
+                decimal_u128(&desired_price_q64_64, "desiredPriceQ64_64")?,
+                decimal_u128(&fee_bps, "feeBps")?,
+                intent.into_intent()?,
+            )?,
+        )),
         QuoteRequest::PrepareMinimumOpeningPair {
             desired_price_q64_64,
             fee_bps,
@@ -1429,7 +1431,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
             fee_bps,
         } => {
             let config = config.into_snapshot()?;
-            let context = AmmContext::from_config_account(amm_program_id, &config)?;
+            let context = AmmContext::from_config_account(amm_program_id.into(), &config)?;
             let token_a_definition = token_a_definition.into_snapshot()?;
             let token_b_definition = token_b_definition.into_snapshot()?;
             let token_a = ValidatedFungibleDefinition::new(&context, &token_a_definition)?;
@@ -1454,7 +1456,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
             fee_bps,
         } => {
             let config = config.into_snapshot()?;
-            let context = AmmContext::from_config_account(amm_program_id, &config)?;
+            let context = AmmContext::from_config_account(amm_program_id.into(), &config)?;
             let token_a_definition = token_a_definition.into_snapshot()?;
             let token_b_definition = token_b_definition.into_snapshot()?;
             let token_a = ValidatedFungibleDefinition::new(&context, &token_a_definition)?;
@@ -1763,7 +1765,7 @@ fn transaction_plan_json(plan: &TransactionPlan) -> Result<Value, WireError> {
     Ok(json!({
         "instruction": plan.instruction_name(),
         "instructionArgs": instruction_args_json(plan.instruction()),
-        "programId": plan.program_id(),
+        "programId": program_id_hex(plan.program_id()),
         "accounts": accounts,
         "affectedAccountIds": plan
             .affected_account_ids()
@@ -1781,8 +1783,8 @@ fn instruction_args_json(instruction: &Instruction) -> Value {
             twap_oracle_program_id,
             authority,
         } => json!({
-            "tokenProgramId": token_program_id,
-            "twapOracleProgramId": twap_oracle_program_id,
+            "tokenProgramId": program_id_hex(*token_program_id),
+            "twapOracleProgramId": program_id_hex(*twap_oracle_program_id),
             "authority": authority.to_string(),
         }),
         Instruction::UpdateConfig {
@@ -1790,8 +1792,8 @@ fn instruction_args_json(instruction: &Instruction) -> Value {
             twap_oracle_program_id,
             new_authority,
         } => json!({
-            "tokenProgramId": token_program_id,
-            "twapOracleProgramId": twap_oracle_program_id,
+            "tokenProgramId": token_program_id.map(program_id_hex),
+            "twapOracleProgramId": twap_oracle_program_id.map(program_id_hex),
             "newAuthority": new_authority.map(|authority| authority.to_string()),
         }),
         Instruction::CreatePriceObservations { window_duration }
@@ -1944,10 +1946,10 @@ fn pool_update_json(pool: PoolUpdate) -> Value {
 
 fn amm_context_json(context: &AmmContext) -> Value {
     json!({
-        "ammProgramId": context.amm_program_id,
+        "ammProgramId": program_id_hex(context.amm_program_id),
         "configId": context.config_id().to_string(),
-        "tokenProgramId": context.token_program_id(),
-        "twapOracleProgramId": context.twap_oracle_program_id(),
+        "tokenProgramId": program_id_hex(context.token_program_id()),
+        "twapOracleProgramId": program_id_hex(context.twap_oracle_program_id()),
         "authority": context.config.authority.to_string(),
     })
 }
@@ -2255,9 +2257,46 @@ fn oracle_price_quote_json(quote: OraclePriceAccountQuote) -> Value {
     })
 }
 
+fn parse_program_id(value: &str) -> Result<ProgramId, String> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(String::from(
+            "program ID must be exactly 64 lowercase hexadecimal characters",
+        ));
+    }
+
+    let bytes = hex_bytes(value, "program ID").map_err(|error| error.to_string())?;
+    let mut program_id = [0_u32; 8];
+    for (word, bytes) in program_id.iter_mut().zip(bytes.chunks_exact(4)) {
+        let mut word_bytes = [0_u8; 4];
+        word_bytes.copy_from_slice(bytes);
+        *word = u32::from_le_bytes(word_bytes);
+    }
+    Ok(program_id)
+}
+
+fn program_id_hex(program_id: ProgramId) -> String {
+    let mut output = String::with_capacity(64);
+    for word in program_id {
+        for byte in word.to_le_bytes() {
+            output.push_str(&format!("{byte:02x}"));
+        }
+    }
+    output
+}
+
 fn account_id(value: &str, field: &str) -> Result<AccountId, WireError> {
-    AccountId::from_str(value)
-        .map_err(|error| invalid_request(format!("{field} is not a valid account ID: {error}")))
+    let account_id = AccountId::from_str(value)
+        .map_err(|error| invalid_request(format!("{field} is not a valid account ID: {error}")))?;
+    if account_id.to_string() != value {
+        return Err(invalid_request(format!(
+            "{field} must use canonical base58 encoding"
+        )));
+    }
+    Ok(account_id)
 }
 
 fn decimal_u128(value: &str, field: &str) -> Result<u128, WireError> {

@@ -71,9 +71,9 @@ Every call returns an owned JSON envelope. Release it exactly once with `amm_cli
 `NULL` to the free function is allowed. See [`include/amm_client.h`](include/amm_client.h) and
 [`docs/wire-api.md`](docs/wire-api.md) for the complete transport contract.
 
-Raw `u128` and `u64` values cross JSON as decimal strings. Account IDs use their canonical base58
-display form, program IDs use eight JSON `u32` words, account data uses hexadecimal, and encoded
-instruction words remain JSON `u32` numbers. No JavaScript `Number` conversion is required for
-chain amounts or deadlines. Plan JSON also includes typed `instructionArgs`, derived directly from
-the same `amm_core::Instruction` encoded in `instructionWords`. Both C entrypoints accept the five
-snapshot-bound `prepare_*_transaction` operations.
+Raw `u128` and `u64` values cross JSON as decimal strings. Account IDs use canonical base58.
+Program IDs use 64-character lowercase hexadecimal strings. Account data uses hexadecimal, and
+encoded instruction words remain JSON `u32` numbers. No JavaScript `Number` conversion is required
+for chain amounts or deadlines. Plan JSON also includes typed `instructionArgs`, derived directly
+from the same `amm_core::Instruction` encoded in `instructionWords`. Only `amm_client_plan` accepts
+the five snapshot-bound `prepare_*_transaction` operations.

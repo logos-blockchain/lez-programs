@@ -1,9 +1,12 @@
+mod common;
+
 use amm_client::wire::{plan_json, quote_json};
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
     compute_vault_pda, AmmConfig, Instruction, PoolDefinition, FEE_TIER_BPS_30, MINIMUM_LIQUIDITY,
 };
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
+use common::program_id_hex;
 use nssa_core::{
     account::{Account, AccountId, Data, Nonce},
     program::ProgramId,
@@ -52,7 +55,7 @@ fn holding(definition_id: AccountId, balance: u128) -> Account {
 fn snapshot(id: AccountId, account: &Account) -> Value {
     json!({
         "id": id.to_string(),
-        "programOwner": account.program_owner,
+        "programOwner": program_id_hex(account.program_owner),
         "balance": account.balance.to_string(),
         "nonce": account.nonce.0.to_string(),
         "data": account
@@ -209,7 +212,7 @@ impl TransactionFixture {
     fn active_common(&self, operation: &str) -> Value {
         json!({
             "operation": operation,
-            "ammProgramId": AMM_PROGRAM_ID,
+            "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
             "config": self.config.clone(),
             "snapshots": self.active_snapshots.clone(),
             "firstTokenDefinitionId": self.first_token_id.to_string(),
@@ -226,7 +229,7 @@ impl TransactionFixture {
     fn swap_common(&self, operation: &str) -> Value {
         json!({
             "operation": operation,
-            "ammProgramId": AMM_PROGRAM_ID,
+            "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
             "config": self.config.clone(),
             "snapshots": self.active_snapshots.clone(),
             "inputTokenDefinitionId": self.first_token_id.to_string(),
@@ -321,9 +324,9 @@ fn five_transaction_operations_emit_exact_plans_and_task_artifacts() {
     let fixture = TransactionFixture::new();
 
     let second_amount = LARGE.checked_mul(2).expect("test amount fits");
-    let create = quote_json(json!({
+    let create = plan_json(json!({
         "operation": "prepare_create_pool_transaction",
-        "ammProgramId": AMM_PROGRAM_ID,
+        "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
         "config": fixture.config.clone(),
         "snapshots": fixture.missing_snapshots.clone(),
         "firstTokenDefinitionId": fixture.first_token_id.to_string(),
@@ -379,11 +382,10 @@ fn five_transaction_operations_emit_exact_plans_and_task_artifacts() {
     let mut add_request = fixture.active_common("prepare_add_liquidity_transaction");
     insert(&mut add_request, "maxFirstAmount", json!("100"));
     insert(&mut add_request, "maxSecondAmount", json!("400"));
-    let add = quote_json(add_request.clone()).expect("add transaction must prepare");
-    assert_eq!(
-        plan_json(add_request).expect("plan entrypoint must prepare task transactions"),
-        add
-    );
+    let quote_error = quote_json(add_request.clone())
+        .expect_err("quote endpoint must reject transaction preparation");
+    assert_eq!(quote_error.code(), "invalid_request");
+    let add = plan_json(add_request).expect("add transaction must prepare");
     assert_common_contract(&add, "add_liquidity", false);
     assert_eq!(add["callerAmounts"]["first"], "100");
     assert_eq!(add["callerAmounts"]["second"], "200");
@@ -428,7 +430,7 @@ fn five_transaction_operations_emit_exact_plans_and_task_artifacts() {
 
     let mut remove_request = fixture.active_common("prepare_remove_liquidity_transaction");
     insert(&mut remove_request, "removeLiquidityAmount", json!("500"));
-    let remove = quote_json(remove_request).expect("remove transaction must prepare");
+    let remove = plan_json(remove_request).expect("remove transaction must prepare");
     assert_common_contract(&remove, "remove_liquidity", false);
     assert_eq!(remove["callerAmounts"]["first"], "125");
     assert_eq!(remove["callerAmounts"]["second"], "250");
@@ -469,8 +471,7 @@ fn five_transaction_operations_emit_exact_plans_and_task_artifacts() {
 
     let mut exact_input_request = fixture.swap_common("prepare_swap_exact_input_transaction");
     insert(&mut exact_input_request, "amountIn", json!("100"));
-    let exact_input =
-        quote_json(exact_input_request).expect("exact-input transaction must prepare");
+    let exact_input = plan_json(exact_input_request).expect("exact-input transaction must prepare");
     assert_common_contract(&exact_input, "swap_exact_input", true);
     assert_eq!(exact_input["callerAmounts"]["first"], "100");
     assert_eq!(
@@ -503,7 +504,7 @@ fn five_transaction_operations_emit_exact_plans_and_task_artifacts() {
     let mut exact_output_request = fixture.swap_common("prepare_swap_exact_output_transaction");
     insert(&mut exact_output_request, "exactAmountOut", json!("100"));
     let exact_output =
-        quote_json(exact_output_request).expect("exact-output transaction must prepare");
+        plan_json(exact_output_request).expect("exact-output transaction must prepare");
     assert_common_contract(&exact_output, "swap_exact_output", true);
     assert_eq!(exact_output["callerAmounts"]["second"], "100");
     match decode_instruction(&exact_output) {
@@ -560,6 +561,6 @@ fn transaction_wire_rejects_expected_fee_mismatch() {
     insert(&mut request, "maxSecondAmount", json!("400"));
     insert(&mut request, "expectedFeeBps", json!("100"));
 
-    let error = quote_json(request).expect_err("wrong expected fee must fail");
+    let error = plan_json(request).expect_err("wrong expected fee must fail");
     assert_eq!(error.code(), "fee_mismatch");
 }

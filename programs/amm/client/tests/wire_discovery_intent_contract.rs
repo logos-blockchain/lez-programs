@@ -1,9 +1,12 @@
+mod common;
+
 use amm_client::wire::{quote_json, WIRE_SCHEMA};
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
     compute_vault_pda, AmmConfig, PoolDefinition, FEE_TIER_BPS_30, MINIMUM_LIQUIDITY,
 };
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
+use common::program_id_hex;
 use nssa_core::{
     account::{Account, AccountId, Data, Nonce},
     program::ProgramId,
@@ -108,7 +111,7 @@ impl PairIds {
     fn inspect_request(&self, snapshots: Value) -> Value {
         json!({
             "operation": "inspect_pair",
-            "ammProgramId": AMM_PROGRAM_ID,
+            "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
             "config": config_snapshot(),
             "firstTokenDefinitionId": self.first_token_id.to_string(),
             "secondTokenDefinitionId": self.second_token_id.to_string(),
@@ -202,7 +205,7 @@ impl PairIds {
 fn snapshot(id: AccountId, account: &Account) -> Value {
     json!({
         "id": id.to_string(),
-        "programOwner": account.program_owner,
+        "programOwner": program_id_hex(account.program_owner),
         "balance": account.balance.to_string(),
         "nonce": account.nonce.0.to_string(),
         "data": account
@@ -229,7 +232,7 @@ fn discovery_operations_return_exact_string_account_ids() {
 
     let config_id = quote_json(json!({
         "operation": "derive_config_id",
-        "ammProgramId": AMM_PROGRAM_ID,
+        "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
     }))
     .expect("legacy schema-less request remains accepted");
     assert_eq!(config_id["schema"], WIRE_SCHEMA);
@@ -242,16 +245,19 @@ fn discovery_operations_return_exact_string_account_ids() {
     let inspected = quote_json(json!({
         "schema": WIRE_SCHEMA,
         "operation": "inspect_config",
-        "ammProgramId": AMM_PROGRAM_ID,
+        "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
         "config": config.clone(),
     }))
     .expect("config must inspect");
     assert_eq!(inspected["schema"], WIRE_SCHEMA);
-    assert_eq!(inspected["ammProgramId"], json!(AMM_PROGRAM_ID));
-    assert_eq!(inspected["tokenProgramId"], json!(TOKEN_PROGRAM_ID));
+    assert_eq!(inspected["ammProgramId"], program_id_hex(AMM_PROGRAM_ID));
+    assert_eq!(
+        inspected["tokenProgramId"],
+        program_id_hex(TOKEN_PROGRAM_ID)
+    );
     assert_eq!(
         inspected["twapOracleProgramId"],
-        json!(TWAP_ORACLE_PROGRAM_ID)
+        program_id_hex(TWAP_ORACLE_PROGRAM_ID)
     );
     assert_eq!(inspected["authority"], AccountId::new([9; 32]).to_string());
 
@@ -266,7 +272,7 @@ fn discovery_operations_return_exact_string_account_ids() {
 
     let manifest = quote_json(json!({
         "operation": "derive_pair_read_manifest",
-        "ammProgramId": AMM_PROGRAM_ID,
+        "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
         "config": config,
         "firstTokenDefinitionId": first_token_id.to_string(),
         "secondTokenDefinitionId": second_token_id.to_string(),
