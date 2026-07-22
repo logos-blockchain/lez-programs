@@ -247,6 +247,27 @@ impl TransactionPlan {
             .collect()
     }
 
+    /// Writable account IDs in first-occurrence instruction order.
+    #[must_use]
+    pub fn writable_account_ids(&self) -> Vec<AccountId> {
+        self.accounts
+            .iter()
+            .filter(|account| account.writable())
+            .map(PlannedAccount::id)
+            .fold(Vec::new(), |mut ids, id| {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+                ids
+            })
+    }
+
+    /// Account IDs whose state may change if the instruction succeeds.
+    #[must_use]
+    pub fn affected_account_ids(&self) -> Vec<AccountId> {
+        self.writable_account_ids()
+    }
+
     /// Guest instruction name, kept exhaustive over the canonical enum.
     #[must_use]
     pub const fn instruction_name(&self) -> &'static str {

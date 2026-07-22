@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 workspace = true
 
 [dependencies]
+alloy-primitives = { version = "1", default-features = false }
 amm_core = { path = "../core" }
 amm_program = { path = ".." }
 clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }

@@ -184,7 +184,7 @@ fn prepare_wire_operations_return_lossless_instruction_args() {
         minimum_guard_amount(decimal(&add["quote"]["liquidityToMint"]), tolerance)
             .expect("minimum LP guard must fit")
     );
-    assert_eq!(add["instructionArgs"]["maxAmountToAddTokenA"], "200");
+    assert_eq!(add["instructionArgs"]["maxAmountToAddTokenA"], "400");
     assert_eq!(add["instructionArgs"]["maxAmountToAddTokenB"], "100");
 
     let mut remove_request = fixture.request("prepare_remove_liquidity");

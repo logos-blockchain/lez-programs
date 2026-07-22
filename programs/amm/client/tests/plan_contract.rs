@@ -302,6 +302,25 @@ fn account_ids_and_signer_flags_stay_positionally_aligned() {
 }
 
 #[test]
+fn affected_ids_are_unique_writable_accounts_in_instruction_order() {
+    for plan in all_plans() {
+        let expected = plan
+            .accounts()
+            .iter()
+            .filter(|account| account.writable())
+            .map(|account| account.id())
+            .fold(Vec::new(), |mut ids, id| {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+                ids
+            });
+        assert_eq!(plan.writable_account_ids(), expected);
+        assert_eq!(plan.affected_account_ids(), expected);
+    }
+}
+
+#[test]
 fn quote_results_feed_instruction_amounts_and_guards_without_recalculation() {
     let context = context();
     let (pool_id, pool_definition) = pool_fixture(&context);

@@ -19,6 +19,7 @@ type Operation = fn(Value) -> Result<Value, WireError>;
 
 #[derive(Serialize)]
 struct Envelope {
+    schema: &'static str,
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<Value>,
@@ -29,6 +30,7 @@ struct Envelope {
 impl Envelope {
     fn success(value: Value) -> Self {
         Self {
+            schema: wire::WIRE_SCHEMA,
             ok: true,
             value: Some(value),
             error: None,
@@ -37,6 +39,7 @@ impl Envelope {
 
     fn failure(error: ErrorPayload) -> Self {
         Self {
+            schema: wire::WIRE_SCHEMA,
             ok: false,
             value: None,
             error: Some(error),
@@ -116,14 +119,14 @@ fn encode_envelope(envelope: &Envelope) -> *mut c_char {
     let json = match serde_json::to_string(envelope) {
         Ok(json) => json,
         Err(_) => String::from(
-            r#"{"ok":false,"error":{"code":"response_serialization_failed","message":"response serialization failed"}}"#,
+            r#"{"schema":"amm-client.v1","ok":false,"error":{"code":"response_serialization_failed","message":"response serialization failed"}}"#,
         ),
     };
 
     match CString::new(json) {
         Ok(value) => value.into_raw(),
         Err(_) => CString::new(
-            r#"{"ok":false,"error":{"code":"response_contains_nul","message":"response contains NUL"}}"#,
+            r#"{"schema":"amm-client.v1","ok":false,"error":{"code":"response_contains_nul","message":"response contains NUL"}}"#,
         )
         .map_or(std::ptr::null_mut(), CString::into_raw),
     }

@@ -3,7 +3,8 @@
 use std::{error::Error, fmt, str::FromStr};
 
 use amm_core::{
-    AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR, MINIMUM_LIQUIDITY, SUPPORTED_FEE_TIERS,
+    AmmConfig, Instruction, PoolDefinition, FEE_BPS_DENOMINATOR, MINIMUM_LIQUIDITY,
+    SUPPORTED_FEE_TIERS,
 };
 use amm_program::quote::{
     AddLiquidityQuote, CreatePoolQuote, OraclePriceAccountQuote, PairOrder, PoolUpdate,
@@ -17,6 +18,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
+    discovery::{self, CanonicalPair, PairReadManifest},
     plan_add_liquidity, plan_create_oracle_price_account, plan_create_pool,
     plan_create_price_observations, plan_initialize, plan_remove_liquidity, plan_swap_exact_input,
     plan_swap_exact_output, plan_sync_reserves, plan_update_config,
@@ -25,12 +27,20 @@ use crate::{
         ValidatedFungibleHolding, ValidatedPoolSnapshot,
     },
     AddLiquidityPlanInput, AmmContext, ClientError, CreateOraclePriceAccountPlanInput,
-    CreatePoolPlanInput, CreatePriceObservationsPlanInput, InitializePlanInput, PoolContext,
-    PreparedAddLiquidity, PreparedCreatePool, PreparedRemoveLiquidity, PreparedSwapExactInput,
-    PreparedSwapExactOutput, RemoveLiquidityPlanInput, SlippageTolerance, SwapExactInputPlanInput,
-    SwapExactOutputPlanInput, SyncReservesPlanInput, TransactionPlan, UpdateConfigPlanInput,
+    CreatePoolPlanInput, CreatePriceObservationsPlanInput, InitializePlanInput, IntentError,
+    OpeningLiquidityIntent, PoolContext, PreparedAddLiquidity, PreparedCallerOpeningPair,
+    PreparedCreatePool, PreparedOpeningPair, PreparedRemoveLiquidity, PreparedSwapExactInput,
+    PreparedSwapExactOutput, PreparedTransaction, RemoveLiquidityPlanInput, SlippageTolerance,
+    SwapExactInputPlanInput, SwapExactOutputPlanInput, SyncReservesPlanInput, TransactionError,
+    TransactionOperation, TransactionPlan, UpdateConfigPlanInput, WalletPrerequisites,
     SLIPPAGE_BPS_DENOMINATOR,
 };
+
+/// Version of the reusable AMM client JSON contract.
+///
+/// This identifies client payload shape only. It is intentionally unrelated to a deployed AMM
+/// ProgramId, ImageID, or release version.
+pub const WIRE_SCHEMA: &str = "amm-client.v1";
 
 /// Stable transport failure returned by the JSON and C ABI adapters.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +74,18 @@ impl Error for WireError {}
 
 impl From<ClientError> for WireError {
     fn from(error: ClientError) -> Self {
+        Self::new(error.code(), error.to_string())
+    }
+}
+
+impl From<IntentError> for WireError {
+    fn from(error: IntentError) -> Self {
+        Self::new(error.code(), error.to_string())
+    }
+}
+
+impl From<TransactionError> for WireError {
+    fn from(error: TransactionError) -> Self {
         Self::new(error.code(), error.to_string())
     }
 }
@@ -257,6 +279,196 @@ impl PoolInput {
 #[serde(tag = "operation", rename_all = "snake_case")]
 enum QuoteRequest {
     ProtocolConstants,
+    DeriveConfigId {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramId,
+    },
+    InspectConfig {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramId,
+        config: AccountSnapshotInput,
+    },
+    CanonicalPair {
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+    },
+    DerivePairReadManifest {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramId,
+        config: AccountSnapshotInput,
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+    },
+    InspectPair {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramId,
+        config: AccountSnapshotInput,
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+        snapshots: PairReadSnapshotsInput,
+    },
+    PrepareCallerOpeningPair {
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+        #[serde(rename = "desiredPriceQ64_64")]
+        desired_price_q64_64: String,
+        #[serde(rename = "feeBps")]
+        fee_bps: String,
+        intent: OpeningLiquidityIntentInput,
+    },
+    PrepareCreatePoolTransaction {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramId,
+        config: AccountSnapshotInput,
+        snapshots: Box<PairReadSnapshotsInput>,
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+        #[serde(rename = "firstTokenHolding")]
+        first_token_holding: AccountSnapshotInput,
+        #[serde(rename = "secondTokenHolding")]
+        second_token_holding: AccountSnapshotInput,
+        #[serde(rename = "liquidityHolding")]
+        liquidity_holding: AccountSnapshotInput,
+        #[serde(rename = "firstAmount")]
+        first_amount: String,
+        #[serde(rename = "secondAmount")]
+        second_amount: String,
+        #[serde(rename = "feeBps")]
+        fee_bps: String,
+        deadline: String,
+    },
+    PrepareAddLiquidityTransaction {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramId,
+        config: AccountSnapshotInput,
+        snapshots: Box<PairReadSnapshotsInput>,
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+        #[serde(rename = "firstTokenHolding")]
+        first_token_holding: AccountSnapshotInput,
+        #[serde(rename = "secondTokenHolding")]
+        second_token_holding: AccountSnapshotInput,
+        #[serde(rename = "liquidityHolding")]
+        liquidity_holding: AccountSnapshotInput,
+        #[serde(rename = "maxFirstAmount")]
+        max_first_amount: String,
+        #[serde(rename = "maxSecondAmount")]
+        max_second_amount: String,
+        #[serde(rename = "slippageBps")]
+        slippage_bps: String,
+        #[serde(rename = "expectedFeeBps")]
+        expected_fee_bps: Option<String>,
+        deadline: String,
+    },
+    PrepareRemoveLiquidityTransaction {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramId,
+        config: AccountSnapshotInput,
+        snapshots: Box<PairReadSnapshotsInput>,
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+        #[serde(rename = "firstTokenHolding")]
+        first_token_holding: AccountSnapshotInput,
+        #[serde(rename = "secondTokenHolding")]
+        second_token_holding: AccountSnapshotInput,
+        #[serde(rename = "liquidityHolding")]
+        liquidity_holding: AccountSnapshotInput,
+        #[serde(rename = "removeLiquidityAmount")]
+        remove_liquidity_amount: String,
+        #[serde(rename = "slippageBps")]
+        slippage_bps: String,
+        #[serde(rename = "expectedFeeBps")]
+        expected_fee_bps: Option<String>,
+        deadline: String,
+    },
+    PrepareSwapExactInputTransaction {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramId,
+        config: AccountSnapshotInput,
+        snapshots: Box<PairReadSnapshotsInput>,
+        #[serde(rename = "inputTokenDefinitionId")]
+        input_token_definition_id: String,
+        #[serde(rename = "outputTokenDefinitionId")]
+        output_token_definition_id: String,
+        #[serde(rename = "inputHolding")]
+        input_holding: AccountSnapshotInput,
+        #[serde(rename = "outputHolding")]
+        output_holding: AccountSnapshotInput,
+        #[serde(rename = "amountIn")]
+        amount_in: String,
+        #[serde(rename = "slippageBps")]
+        slippage_bps: String,
+        #[serde(rename = "expectedFeeBps")]
+        expected_fee_bps: Option<String>,
+        deadline: String,
+    },
+    PrepareSwapExactOutputTransaction {
+        #[serde(rename = "ammProgramId")]
+        amm_program_id: ProgramId,
+        config: AccountSnapshotInput,
+        snapshots: Box<PairReadSnapshotsInput>,
+        #[serde(rename = "inputTokenDefinitionId")]
+        input_token_definition_id: String,
+        #[serde(rename = "outputTokenDefinitionId")]
+        output_token_definition_id: String,
+        #[serde(rename = "inputHolding")]
+        input_holding: AccountSnapshotInput,
+        #[serde(rename = "outputHolding")]
+        output_holding: AccountSnapshotInput,
+        #[serde(rename = "exactAmountOut")]
+        exact_amount_out: String,
+        #[serde(rename = "slippageBps")]
+        slippage_bps: String,
+        #[serde(rename = "expectedFeeBps")]
+        expected_fee_bps: Option<String>,
+        deadline: String,
+    },
+    PrepareMinimumOpeningPair {
+        #[serde(rename = "desiredPriceQ64_64")]
+        desired_price_q64_64: String,
+        #[serde(rename = "feeBps")]
+        fee_bps: String,
+    },
+    PrepareOpeningFromTokenA {
+        #[serde(rename = "tokenAAmount")]
+        token_a_amount: String,
+        #[serde(rename = "desiredPriceQ64_64")]
+        desired_price_q64_64: String,
+        #[serde(rename = "feeBps")]
+        fee_bps: String,
+    },
+    PrepareOpeningFromTokenB {
+        #[serde(rename = "tokenBAmount")]
+        token_b_amount: String,
+        #[serde(rename = "desiredPriceQ64_64")]
+        desired_price_q64_64: String,
+        #[serde(rename = "feeBps")]
+        fee_bps: String,
+    },
+    ValidateExplicitOpeningPair {
+        #[serde(rename = "tokenAAmount")]
+        token_a_amount: String,
+        #[serde(rename = "tokenBAmount")]
+        token_b_amount: String,
+        #[serde(rename = "desiredPriceQ64_64")]
+        desired_price_q64_64: String,
+        #[serde(rename = "feeBps")]
+        fee_bps: String,
+    },
     PairOrder {
         #[serde(flatten)]
         state: PoolStateInput,
@@ -473,6 +685,103 @@ struct PoolSnapshotInput {
     liquidity_definition: AccountSnapshotInput,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairReadSnapshotsInput {
+    pool: AccountSnapshotInput,
+    first_token_definition: AccountSnapshotInput,
+    second_token_definition: AccountSnapshotInput,
+    first_token_vault: AccountSnapshotInput,
+    second_token_vault: AccountSnapshotInput,
+    liquidity_definition: AccountSnapshotInput,
+    lp_lock_holding: AccountSnapshotInput,
+    current_tick: AccountSnapshotInput,
+    clock: AccountSnapshotInput,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum OpeningLiquidityIntentInput {
+    Minimum,
+    FirstAmount {
+        amount: String,
+    },
+    SecondAmount {
+        amount: String,
+    },
+    Explicit {
+        #[serde(rename = "firstAmount")]
+        first_amount: String,
+        #[serde(rename = "secondAmount")]
+        second_amount: String,
+    },
+}
+
+impl OpeningLiquidityIntentInput {
+    fn into_intent(self) -> Result<OpeningLiquidityIntent, WireError> {
+        Ok(match self {
+            Self::Minimum => OpeningLiquidityIntent::Minimum,
+            Self::FirstAmount { amount } => {
+                OpeningLiquidityIntent::FirstAmount(decimal_u128(&amount, "intent.amount")?)
+            }
+            Self::SecondAmount { amount } => {
+                OpeningLiquidityIntent::SecondAmount(decimal_u128(&amount, "intent.amount")?)
+            }
+            Self::Explicit {
+                first_amount,
+                second_amount,
+            } => OpeningLiquidityIntent::Explicit {
+                first_amount: decimal_u128(&first_amount, "intent.firstAmount")?,
+                second_amount: decimal_u128(&second_amount, "intent.secondAmount")?,
+            },
+        })
+    }
+}
+
+struct OwnedPairReadSnapshots {
+    pool: AccountSnapshot,
+    first_token_definition: AccountSnapshot,
+    second_token_definition: AccountSnapshot,
+    first_token_vault: AccountSnapshot,
+    second_token_vault: AccountSnapshot,
+    liquidity_definition: AccountSnapshot,
+    lp_lock_holding: AccountSnapshot,
+    current_tick: AccountSnapshot,
+    clock: AccountSnapshot,
+}
+
+impl PairReadSnapshotsInput {
+    fn into_snapshots(self) -> Result<OwnedPairReadSnapshots, WireError> {
+        Ok(OwnedPairReadSnapshots {
+            pool: self.pool.into_snapshot()?,
+            first_token_definition: self.first_token_definition.into_snapshot()?,
+            second_token_definition: self.second_token_definition.into_snapshot()?,
+            first_token_vault: self.first_token_vault.into_snapshot()?,
+            second_token_vault: self.second_token_vault.into_snapshot()?,
+            liquidity_definition: self.liquidity_definition.into_snapshot()?,
+            lp_lock_holding: self.lp_lock_holding.into_snapshot()?,
+            current_tick: self.current_tick.into_snapshot()?,
+            clock: self.clock.into_snapshot()?,
+        })
+    }
+}
+
+impl OwnedPairReadSnapshots {
+    const fn as_borrowed(&self) -> discovery::PairReadSnapshots<'_> {
+        discovery::PairReadSnapshots {
+            pool: &self.pool,
+            first_token_definition: &self.first_token_definition,
+            second_token_definition: &self.second_token_definition,
+            first_token_vault: &self.first_token_vault,
+            second_token_vault: &self.second_token_vault,
+            liquidity_definition: &self.liquidity_definition,
+            lp_lock_holding: &self.lp_lock_holding,
+            current_tick: &self.current_tick,
+            clock: &self.clock,
+        }
+    }
+}
+
 impl PoolSnapshotInput {
     fn validate(self, context: &AmmContext) -> Result<ValidatedPoolSnapshot, WireError> {
         let pool = self.pool.into_snapshot()?;
@@ -521,8 +830,16 @@ impl AccountSnapshotInput {
     }
 }
 
-/// Builds one of the ten canonical transaction plans from tagged JSON.
+/// Builds a canonical low-level plan or prepares a snapshot-bound task transaction from JSON.
 pub fn plan_json(value: Value) -> Result<Value, WireError> {
+    validate_wire_schema(&value)?;
+    if value
+        .get("operation")
+        .and_then(Value::as_str)
+        .is_some_and(is_prepared_transaction_operation)
+    {
+        return quote_json(value);
+    }
     let request: PlanRequest = serde_json::from_value(value)
         .map_err(|error| invalid_request(format!("invalid plan request: {error}")))?;
     let plan = match request {
@@ -722,14 +1039,26 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
         }
     };
 
-    transaction_plan_json(&plan)
+    versioned(transaction_plan_json(&plan))
+}
+
+fn is_prepared_transaction_operation(operation: &str) -> bool {
+    matches!(
+        operation,
+        "prepare_create_pool_transaction"
+            | "prepare_add_liquidity_transaction"
+            | "prepare_remove_liquidity_transaction"
+            | "prepare_swap_exact_input_transaction"
+            | "prepare_swap_exact_output_transaction"
+    )
 }
 
 /// Evaluates one reusable AMM economic quote from tagged JSON.
 pub fn quote_json(value: Value) -> Result<Value, WireError> {
+    validate_wire_schema(&value)?;
     let request: QuoteRequest = serde_json::from_value(value)
         .map_err(|error| invalid_request(format!("invalid quote request: {error}")))?;
-    match request {
+    versioned(match request {
         QuoteRequest::ProtocolConstants => Ok(json!({
             "minimumLiquidity": MINIMUM_LIQUIDITY.to_string(),
             "feeBpsDenominator": FEE_BPS_DENOMINATOR.to_string(),
@@ -739,6 +1068,339 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 .map(u128::to_string)
                 .collect::<Vec<_>>(),
         })),
+        QuoteRequest::DeriveConfigId { amm_program_id } => Ok(json!({
+            "configId": discovery::derive_config_id(amm_program_id).to_string(),
+        })),
+        QuoteRequest::InspectConfig {
+            amm_program_id,
+            config,
+        } => {
+            let config = config.into_snapshot()?;
+            let context = discovery::inspect_config(amm_program_id, &config)?;
+            Ok(amm_context_json(&context))
+        }
+        QuoteRequest::CanonicalPair {
+            first_token_definition_id,
+            second_token_definition_id,
+        } => {
+            let pair = discovery::canonical_pair(
+                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
+                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
+            )?;
+            Ok(canonical_pair_json(pair))
+        }
+        QuoteRequest::DerivePairReadManifest {
+            amm_program_id,
+            config,
+            first_token_definition_id,
+            second_token_definition_id,
+        } => {
+            let config = config.into_snapshot()?;
+            let context = discovery::inspect_config(amm_program_id, &config)?;
+            let manifest = discovery::derive_pair_read_manifest(
+                &context,
+                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
+                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
+            )?;
+            Ok(pair_read_manifest_json(manifest))
+        }
+        QuoteRequest::InspectPair {
+            amm_program_id,
+            config,
+            first_token_definition_id,
+            second_token_definition_id,
+            snapshots,
+        } => {
+            let config = config.into_snapshot()?;
+            let context = discovery::inspect_config(amm_program_id, &config)?;
+            let snapshots = snapshots.into_snapshots()?;
+            let inspected = discovery::inspect_pair(
+                &context,
+                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
+                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
+                snapshots.as_borrowed(),
+            )?;
+            Ok(pair_inspection_json(inspected))
+        }
+        QuoteRequest::PrepareCallerOpeningPair {
+            first_token_definition_id,
+            second_token_definition_id,
+            desired_price_q64_64,
+            fee_bps,
+            intent,
+        } => Ok(prepared_caller_opening_pair_json(
+            crate::prepare_caller_opening_pair(
+                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
+                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
+                decimal_u128(&desired_price_q64_64, "desiredPriceQ64_64")?,
+                decimal_u128(&fee_bps, "feeBps")?,
+                intent.into_intent()?,
+            )?,
+        )),
+        QuoteRequest::PrepareCreatePoolTransaction {
+            amm_program_id,
+            config,
+            snapshots,
+            first_token_definition_id,
+            second_token_definition_id,
+            first_token_holding,
+            second_token_holding,
+            liquidity_holding,
+            first_amount,
+            second_amount,
+            fee_bps,
+            deadline,
+        } => {
+            let config = config.into_snapshot()?;
+            let snapshots = (*snapshots).into_snapshots()?;
+            let first_token_holding = first_token_holding.into_snapshot()?;
+            let second_token_holding = second_token_holding.into_snapshot()?;
+            let liquidity_holding = liquidity_holding.into_snapshot()?;
+            let prepared =
+                crate::prepare_create_pool_transaction(crate::CreatePoolTransactionInput {
+                    amm_program_id,
+                    config: &config,
+                    pair: snapshots.as_borrowed(),
+                    first_token_definition_id: account_id(
+                        &first_token_definition_id,
+                        "firstTokenDefinitionId",
+                    )?,
+                    second_token_definition_id: account_id(
+                        &second_token_definition_id,
+                        "secondTokenDefinitionId",
+                    )?,
+                    first_token_holding: &first_token_holding,
+                    second_token_holding: &second_token_holding,
+                    liquidity_holding: &liquidity_holding,
+                    first_amount: decimal_u128(&first_amount, "firstAmount")?,
+                    second_amount: decimal_u128(&second_amount, "secondAmount")?,
+                    fee_bps: decimal_u128(&fee_bps, "feeBps")?,
+                    deadline: decimal_u64(&deadline, "deadline")?,
+                })?;
+            prepared_transaction_json(&prepared, create_pool_quote_json(*prepared.quote()))
+        }
+        QuoteRequest::PrepareAddLiquidityTransaction {
+            amm_program_id,
+            config,
+            snapshots,
+            first_token_definition_id,
+            second_token_definition_id,
+            first_token_holding,
+            second_token_holding,
+            liquidity_holding,
+            max_first_amount,
+            max_second_amount,
+            slippage_bps,
+            expected_fee_bps,
+            deadline,
+        } => {
+            let config = config.into_snapshot()?;
+            let snapshots = (*snapshots).into_snapshots()?;
+            let first_token_holding = first_token_holding.into_snapshot()?;
+            let second_token_holding = second_token_holding.into_snapshot()?;
+            let liquidity_holding = liquidity_holding.into_snapshot()?;
+            let prepared =
+                crate::prepare_add_liquidity_transaction(crate::AddLiquidityTransactionInput {
+                    amm_program_id,
+                    pool_accounts: crate::PoolAccountSnapshots {
+                        config: &config,
+                        pair: snapshots.as_borrowed(),
+                    },
+                    first_token_definition_id: account_id(
+                        &first_token_definition_id,
+                        "firstTokenDefinitionId",
+                    )?,
+                    second_token_definition_id: account_id(
+                        &second_token_definition_id,
+                        "secondTokenDefinitionId",
+                    )?,
+                    first_token_holding: &first_token_holding,
+                    second_token_holding: &second_token_holding,
+                    liquidity_holding: &liquidity_holding,
+                    max_first_amount: decimal_u128(&max_first_amount, "maxFirstAmount")?,
+                    max_second_amount: decimal_u128(&max_second_amount, "maxSecondAmount")?,
+                    slippage: slippage_tolerance(&slippage_bps)?,
+                    expected_fee_bps: optional_decimal_u128(expected_fee_bps, "expectedFeeBps")?,
+                    deadline: decimal_u64(&deadline, "deadline")?,
+                })?;
+            prepared_transaction_json(&prepared, add_liquidity_quote_json(*prepared.quote()))
+        }
+        QuoteRequest::PrepareRemoveLiquidityTransaction {
+            amm_program_id,
+            config,
+            snapshots,
+            first_token_definition_id,
+            second_token_definition_id,
+            first_token_holding,
+            second_token_holding,
+            liquidity_holding,
+            remove_liquidity_amount,
+            slippage_bps,
+            expected_fee_bps,
+            deadline,
+        } => {
+            let config = config.into_snapshot()?;
+            let snapshots = (*snapshots).into_snapshots()?;
+            let first_token_holding = first_token_holding.into_snapshot()?;
+            let second_token_holding = second_token_holding.into_snapshot()?;
+            let liquidity_holding = liquidity_holding.into_snapshot()?;
+            let prepared = crate::prepare_remove_liquidity_transaction(
+                crate::RemoveLiquidityTransactionInput {
+                    amm_program_id,
+                    pool_accounts: crate::PoolAccountSnapshots {
+                        config: &config,
+                        pair: snapshots.as_borrowed(),
+                    },
+                    first_token_definition_id: account_id(
+                        &first_token_definition_id,
+                        "firstTokenDefinitionId",
+                    )?,
+                    second_token_definition_id: account_id(
+                        &second_token_definition_id,
+                        "secondTokenDefinitionId",
+                    )?,
+                    first_token_holding: &first_token_holding,
+                    second_token_holding: &second_token_holding,
+                    liquidity_holding: &liquidity_holding,
+                    remove_liquidity_amount: decimal_u128(
+                        &remove_liquidity_amount,
+                        "removeLiquidityAmount",
+                    )?,
+                    slippage: slippage_tolerance(&slippage_bps)?,
+                    expected_fee_bps: optional_decimal_u128(expected_fee_bps, "expectedFeeBps")?,
+                    deadline: decimal_u64(&deadline, "deadline")?,
+                },
+            )?;
+            prepared_transaction_json(&prepared, remove_liquidity_quote_json(*prepared.quote()))
+        }
+        QuoteRequest::PrepareSwapExactInputTransaction {
+            amm_program_id,
+            config,
+            snapshots,
+            input_token_definition_id,
+            output_token_definition_id,
+            input_holding,
+            output_holding,
+            amount_in,
+            slippage_bps,
+            expected_fee_bps,
+            deadline,
+        } => {
+            let config = config.into_snapshot()?;
+            let snapshots = (*snapshots).into_snapshots()?;
+            let input_holding = input_holding.into_snapshot()?;
+            let output_holding = output_holding.into_snapshot()?;
+            let prepared = crate::prepare_swap_exact_input_transaction(
+                crate::SwapExactInputTransactionInput {
+                    amm_program_id,
+                    pool_accounts: crate::PoolAccountSnapshots {
+                        config: &config,
+                        pair: snapshots.as_borrowed(),
+                    },
+                    input_token_definition_id: account_id(
+                        &input_token_definition_id,
+                        "inputTokenDefinitionId",
+                    )?,
+                    output_token_definition_id: account_id(
+                        &output_token_definition_id,
+                        "outputTokenDefinitionId",
+                    )?,
+                    input_holding: &input_holding,
+                    output_holding: &output_holding,
+                    amount_in: decimal_u128(&amount_in, "amountIn")?,
+                    slippage: slippage_tolerance(&slippage_bps)?,
+                    expected_fee_bps: optional_decimal_u128(expected_fee_bps, "expectedFeeBps")?,
+                    deadline: decimal_u64(&deadline, "deadline")?,
+                },
+            )?;
+            prepared_transaction_json(&prepared, swap_quote_json(*prepared.quote()))
+        }
+        QuoteRequest::PrepareSwapExactOutputTransaction {
+            amm_program_id,
+            config,
+            snapshots,
+            input_token_definition_id,
+            output_token_definition_id,
+            input_holding,
+            output_holding,
+            exact_amount_out,
+            slippage_bps,
+            expected_fee_bps,
+            deadline,
+        } => {
+            let config = config.into_snapshot()?;
+            let snapshots = (*snapshots).into_snapshots()?;
+            let input_holding = input_holding.into_snapshot()?;
+            let output_holding = output_holding.into_snapshot()?;
+            let prepared = crate::prepare_swap_exact_output_transaction(
+                crate::SwapExactOutputTransactionInput {
+                    amm_program_id,
+                    pool_accounts: crate::PoolAccountSnapshots {
+                        config: &config,
+                        pair: snapshots.as_borrowed(),
+                    },
+                    input_token_definition_id: account_id(
+                        &input_token_definition_id,
+                        "inputTokenDefinitionId",
+                    )?,
+                    output_token_definition_id: account_id(
+                        &output_token_definition_id,
+                        "outputTokenDefinitionId",
+                    )?,
+                    input_holding: &input_holding,
+                    output_holding: &output_holding,
+                    exact_amount_out: decimal_u128(&exact_amount_out, "exactAmountOut")?,
+                    slippage: slippage_tolerance(&slippage_bps)?,
+                    expected_fee_bps: optional_decimal_u128(expected_fee_bps, "expectedFeeBps")?,
+                    deadline: decimal_u64(&deadline, "deadline")?,
+                },
+            )?;
+            prepared_transaction_json(&prepared, swap_quote_json(*prepared.quote()))
+        }
+        QuoteRequest::PrepareMinimumOpeningPair {
+            desired_price_q64_64,
+            fee_bps,
+        } => Ok(prepared_opening_pair_json(
+            crate::prepare_minimum_opening_pair(
+                decimal_u128(&desired_price_q64_64, "desiredPriceQ64_64")?,
+                decimal_u128(&fee_bps, "feeBps")?,
+            )?,
+        )),
+        QuoteRequest::PrepareOpeningFromTokenA {
+            token_a_amount,
+            desired_price_q64_64,
+            fee_bps,
+        } => Ok(prepared_opening_pair_json(
+            crate::prepare_opening_from_token_a(
+                decimal_u128(&token_a_amount, "tokenAAmount")?,
+                decimal_u128(&desired_price_q64_64, "desiredPriceQ64_64")?,
+                decimal_u128(&fee_bps, "feeBps")?,
+            )?,
+        )),
+        QuoteRequest::PrepareOpeningFromTokenB {
+            token_b_amount,
+            desired_price_q64_64,
+            fee_bps,
+        } => Ok(prepared_opening_pair_json(
+            crate::prepare_opening_from_token_b(
+                decimal_u128(&token_b_amount, "tokenBAmount")?,
+                decimal_u128(&desired_price_q64_64, "desiredPriceQ64_64")?,
+                decimal_u128(&fee_bps, "feeBps")?,
+            )?,
+        )),
+        QuoteRequest::ValidateExplicitOpeningPair {
+            token_a_amount,
+            token_b_amount,
+            desired_price_q64_64,
+            fee_bps,
+        } => Ok(prepared_opening_pair_json(
+            crate::validate_explicit_opening_pair(
+                decimal_u128(&token_a_amount, "tokenAAmount")?,
+                decimal_u128(&token_b_amount, "tokenBAmount")?,
+                decimal_u128(&desired_price_q64_64, "desiredPriceQ64_64")?,
+                decimal_u128(&fee_bps, "feeBps")?,
+            )?,
+        )),
         QuoteRequest::PairOrder {
             state,
             first_token_definition_id,
@@ -1074,7 +1736,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 )?,
             ))
         }
-    }
+    })
 }
 
 fn transaction_plan_json(plan: &TransactionPlan) -> Result<Value, WireError> {
@@ -1100,10 +1762,127 @@ fn transaction_plan_json(plan: &TransactionPlan) -> Result<Value, WireError> {
 
     Ok(json!({
         "instruction": plan.instruction_name(),
+        "instructionArgs": instruction_args_json(plan.instruction()),
         "programId": plan.program_id(),
         "accounts": accounts,
+        "affectedAccountIds": plan
+            .affected_account_ids()
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>(),
         "instructionWords": instruction_words,
     }))
+}
+
+fn instruction_args_json(instruction: &Instruction) -> Value {
+    match instruction {
+        Instruction::Initialize {
+            token_program_id,
+            twap_oracle_program_id,
+            authority,
+        } => json!({
+            "tokenProgramId": token_program_id,
+            "twapOracleProgramId": twap_oracle_program_id,
+            "authority": authority.to_string(),
+        }),
+        Instruction::UpdateConfig {
+            token_program_id,
+            twap_oracle_program_id,
+            new_authority,
+        } => json!({
+            "tokenProgramId": token_program_id,
+            "twapOracleProgramId": twap_oracle_program_id,
+            "newAuthority": new_authority.map(|authority| authority.to_string()),
+        }),
+        Instruction::CreatePriceObservations { window_duration }
+        | Instruction::CreateOraclePriceAccount { window_duration } => json!({
+            "windowDuration": window_duration.to_string(),
+        }),
+        Instruction::NewDefinition {
+            token_a_amount,
+            token_b_amount,
+            fees,
+            deadline,
+        } => json!({
+            "tokenAAmount": token_a_amount.to_string(),
+            "tokenBAmount": token_b_amount.to_string(),
+            "fees": fees.to_string(),
+            "deadline": deadline.to_string(),
+        }),
+        Instruction::AddLiquidity {
+            min_amount_liquidity,
+            max_amount_to_add_token_a,
+            max_amount_to_add_token_b,
+            deadline,
+        } => json!({
+            "minAmountLiquidity": min_amount_liquidity.to_string(),
+            "maxAmountToAddTokenA": max_amount_to_add_token_a.to_string(),
+            "maxAmountToAddTokenB": max_amount_to_add_token_b.to_string(),
+            "deadline": deadline.to_string(),
+        }),
+        Instruction::RemoveLiquidity {
+            remove_liquidity_amount,
+            min_amount_to_remove_token_a,
+            min_amount_to_remove_token_b,
+            deadline,
+        } => json!({
+            "removeLiquidityAmount": remove_liquidity_amount.to_string(),
+            "minAmountToRemoveTokenA": min_amount_to_remove_token_a.to_string(),
+            "minAmountToRemoveTokenB": min_amount_to_remove_token_b.to_string(),
+            "deadline": deadline.to_string(),
+        }),
+        Instruction::SwapExactInput {
+            swap_amount_in,
+            min_amount_out,
+            deadline,
+        } => json!({
+            "swapAmountIn": swap_amount_in.to_string(),
+            "minAmountOut": min_amount_out.to_string(),
+            "deadline": deadline.to_string(),
+        }),
+        Instruction::SwapExactOutput {
+            exact_amount_out,
+            max_amount_in,
+            deadline,
+        } => json!({
+            "exactAmountOut": exact_amount_out.to_string(),
+            "maxAmountIn": max_amount_in.to_string(),
+            "deadline": deadline.to_string(),
+        }),
+        Instruction::SyncReserves => json!({}),
+    }
+}
+
+fn validate_wire_schema(value: &Value) -> Result<(), WireError> {
+    let Some(schema) = value.get("schema") else {
+        return Ok(());
+    };
+    let Some(schema) = schema.as_str() else {
+        return Err(invalid_request("schema must be a string"));
+    };
+    if schema == WIRE_SCHEMA {
+        Ok(())
+    } else {
+        Err(WireError::new(
+            "unsupported_schema",
+            format!("unsupported AMM client schema {schema}"),
+        ))
+    }
+}
+
+fn versioned(result: Result<Value, WireError>) -> Result<Value, WireError> {
+    let mut value = result?;
+    let Some(object) = value.as_object_mut() else {
+        return Err(WireError::new(
+            "response_serialization_failed",
+            "AMM client response must be a JSON object",
+        ));
+    };
+    object.insert(
+        String::from("schema"),
+        Value::String(String::from(WIRE_SCHEMA)),
+    );
+    Ok(value)
 }
 
 fn pool_definition<'a>(
@@ -1160,6 +1939,209 @@ fn pool_update_json(pool: PoolUpdate) -> Value {
         "reserveA": pool.reserve_a.to_string(),
         "reserveB": pool.reserve_b.to_string(),
         "spotPriceQ64_64": pool.spot_price_q64_64.to_string(),
+    })
+}
+
+fn amm_context_json(context: &AmmContext) -> Value {
+    json!({
+        "ammProgramId": context.amm_program_id,
+        "configId": context.config_id().to_string(),
+        "tokenProgramId": context.token_program_id(),
+        "twapOracleProgramId": context.twap_oracle_program_id(),
+        "authority": context.config.authority.to_string(),
+    })
+}
+
+fn canonical_pair_json(pair: CanonicalPair) -> Value {
+    json!({
+        "tokenAId": pair.token_a_id().to_string(),
+        "tokenBId": pair.token_b_id().to_string(),
+    })
+}
+
+fn pair_read_manifest_json(manifest: PairReadManifest) -> Value {
+    let first_token = manifest.first_token();
+    let second_token = manifest.second_token();
+    json!({
+        "canonicalPair": canonical_pair_json(manifest.canonical_pair()),
+        "firstToken": {
+            "definitionId": first_token.definition_id().to_string(),
+            "vaultId": first_token.vault_id().to_string(),
+        },
+        "secondToken": {
+            "definitionId": second_token.definition_id().to_string(),
+            "vaultId": second_token.vault_id().to_string(),
+        },
+        "configId": manifest.config_id().to_string(),
+        "poolId": manifest.pool_id().to_string(),
+        "liquidityDefinitionId": manifest.liquidity_definition_id().to_string(),
+        "lpLockHoldingId": manifest.lp_lock_holding_id().to_string(),
+        "currentTickId": manifest.current_tick_id().to_string(),
+        "clockId": manifest.clock_id().to_string(),
+    })
+}
+
+fn pair_inspection_json(inspection: discovery::PairInspection) -> Value {
+    match inspection {
+        discovery::PairInspection::Missing(missing) => json!({
+            "status": "missing",
+            "manifest": pair_read_manifest_json(missing.manifest()),
+            "firstTokenDefinition": fungible_definition_json(missing.first_token_definition()),
+            "secondTokenDefinition": fungible_definition_json(missing.second_token_definition()),
+            "firstVault": missing_vault_json(missing.first_vault()),
+            "secondVault": missing_vault_json(missing.second_vault()),
+            "clock": clock_json(missing.clock()),
+        }),
+        discovery::PairInspection::Active(active) => {
+            let snapshot = active.pool();
+            let pool = snapshot.pool();
+            json!({
+                "status": "active",
+                "manifest": pair_read_manifest_json(active.manifest()),
+                "callerOrder": match active.caller_order() {
+                    PairOrder::Stored => "stored",
+                    PairOrder::Reversed => "reversed",
+                },
+                "stored": {
+                    "tokenADefinitionId": pool.definition_token_a_id.to_string(),
+                    "tokenBDefinitionId": pool.definition_token_b_id.to_string(),
+                    "vaultAId": pool.vault_a_id.to_string(),
+                    "vaultBId": pool.vault_b_id.to_string(),
+                    "liquidityDefinitionId": pool.liquidity_pool_id.to_string(),
+                    "lpLockHoldingId": active.lp_lock_holding().account_id().to_string(),
+                    "reserveA": pool.reserve_a.to_string(),
+                    "reserveB": pool.reserve_b.to_string(),
+                    "vaultABalance": snapshot.vault_a().balance().to_string(),
+                    "vaultBBalance": snapshot.vault_b().balance().to_string(),
+                    "liquidityPoolSupply": pool.liquidity_pool_supply.to_string(),
+                    "lpLockBalance": active.lp_lock_holding().balance().to_string(),
+                    "feeBps": pool.fees.to_string(),
+                },
+                "storedSpotPriceQ64_64": active.stored_spot_price_q64_64().to_string(),
+                "currentTick": {
+                    "tick": active.current_tick().tick.to_string(),
+                    "lastUpdated": active.current_tick().last_updated.to_string(),
+                },
+                "clock": clock_json(active.clock()),
+            })
+        }
+    }
+}
+
+fn fungible_definition_json(definition: &ValidatedFungibleDefinition) -> Value {
+    json!({
+        "id": definition.account_id().to_string(),
+        "totalSupply": definition.total_supply().to_string(),
+        "authority": definition.authority().map(|authority| authority.to_string()),
+    })
+}
+
+fn missing_vault_json(vault: discovery::MissingVaultState) -> Value {
+    match vault {
+        discovery::MissingVaultState::Uninitialized => json!({
+            "status": "uninitialized",
+        }),
+        discovery::MissingVaultState::ExistingFungible { balance } => json!({
+            "status": "existing_fungible",
+            "balance": balance.to_string(),
+        }),
+    }
+}
+
+fn clock_json(clock: discovery::ValidatedClockSnapshot) -> Value {
+    json!({
+        "blockId": clock.block_id().to_string(),
+        "timestamp": clock.timestamp().to_string(),
+    })
+}
+
+fn prepared_opening_pair_json(prepared: PreparedOpeningPair) -> Value {
+    json!({
+        "desiredPriceQ64_64": prepared.desired_price_q64_64.to_string(),
+        "actualPriceQ64_64": prepared.actual_price_q64_64.to_string(),
+        "tokenAAmount": prepared.token_a_amount.to_string(),
+        "tokenBAmount": prepared.token_b_amount.to_string(),
+        "feeBps": prepared.fee_bps.to_string(),
+        "quote": create_pool_quote_json(prepared.quote),
+    })
+}
+
+fn prepared_caller_opening_pair_json(prepared: PreparedCallerOpeningPair) -> Value {
+    json!({
+        "callerOrder": match prepared.caller_order() {
+            PairOrder::Stored => "stored",
+            PairOrder::Reversed => "reversed",
+        },
+        "firstAmount": prepared.first_amount().to_string(),
+        "secondAmount": prepared.second_amount().to_string(),
+        "stored": prepared_opening_pair_json(*prepared.stored()),
+    })
+}
+
+fn prepared_transaction_json<Q>(
+    prepared: &PreparedTransaction<Q>,
+    quote: Value,
+) -> Result<Value, WireError> {
+    Ok(json!({
+        "operation": transaction_operation_name(prepared.operation()),
+        "quote": quote,
+        "callerAmounts": {
+            "first": prepared.caller_amounts().first().to_string(),
+            "second": prepared.caller_amounts().second().to_string(),
+        },
+        "plan": transaction_plan_json(prepared.plan())?,
+        "quoteCommitment": quote_commitment_hex(prepared.quote_commitment()),
+        "affectedAccountIds": prepared
+            .affected_account_ids()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "walletPrerequisites": wallet_prerequisites_json(prepared.wallet_prerequisites()),
+        "deadline": prepared.deadline().to_string(),
+        "poolSpotChangeBps": prepared.pool_spot_change_bps().map(|bps| bps.to_string()),
+    }))
+}
+
+const fn transaction_operation_name(operation: TransactionOperation) -> &'static str {
+    match operation {
+        TransactionOperation::CreatePool => "create_pool",
+        TransactionOperation::AddLiquidity => "add_liquidity",
+        TransactionOperation::RemoveLiquidity => "remove_liquidity",
+        TransactionOperation::SwapExactInput => "swap_exact_input",
+        TransactionOperation::SwapExactOutput => "swap_exact_output",
+    }
+}
+
+fn quote_commitment_hex(commitment: crate::QuoteCommitment) -> String {
+    commitment
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn wallet_prerequisites_json(prerequisites: &WalletPrerequisites) -> Value {
+    json!({
+        "signerAccountIds": prerequisites
+            .signer_account_ids()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "freshAccountIds": prerequisites
+            .fresh_account_ids()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "funding": prerequisites
+            .funding()
+            .iter()
+            .map(|requirement| json!({
+                "holdingAccountId": requirement.holding_account_id().to_string(),
+                "tokenDefinitionId": requirement.token_definition_id().to_string(),
+                "available": requirement.available().to_string(),
+                "required": requirement.required().to_string(),
+            }))
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -1284,6 +2266,13 @@ fn decimal_u128(value: &str, field: &str) -> Result<u128, WireError> {
 
 fn decimal_u64(value: &str, field: &str) -> Result<u64, WireError> {
     decimal(value, field)
+}
+
+fn optional_decimal_u128(value: Option<String>, field: &str) -> Result<Option<u128>, WireError> {
+    value
+        .as_deref()
+        .map(|value| decimal_u128(value, field))
+        .transpose()
 }
 
 fn slippage_tolerance(value: &str) -> Result<SlippageTolerance, WireError> {

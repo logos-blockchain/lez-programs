@@ -158,6 +158,10 @@ pub fn prepare_create_pool(
 }
 
 /// Quotes add liquidity and derives its minimum-LP guard.
+///
+/// The instruction maxima remain the caller's original caps. Reusing the rounded actual deposits
+/// as new maxima is not behavior-preserving for non-divisible reserve ratios: the program rounds
+/// the proportional amounts again and can produce a different quote.
 pub fn prepare_add_liquidity(
     snapshot: &ValidatedPoolSnapshot,
     max_amount_a: u128,
@@ -166,20 +170,14 @@ pub fn prepare_add_liquidity(
 ) -> Result<PreparedAddLiquidity, ClientError> {
     let preview = client_quote::preview_add_liquidity(snapshot, max_amount_a, max_amount_b)?;
     let min_amount_liquidity = minimum_guard_amount(preview.liquidity_to_mint, tolerance)?;
-    let max_amount_to_add_token_a = preview.actual_amount_a;
-    let max_amount_to_add_token_b = preview.actual_amount_b;
-    let quote = client_quote::add_liquidity(
-        snapshot,
-        max_amount_to_add_token_a,
-        max_amount_to_add_token_b,
-        min_amount_liquidity,
-    )?;
+    let quote =
+        client_quote::add_liquidity(snapshot, max_amount_a, max_amount_b, min_amount_liquidity)?;
 
     Ok(PreparedAddLiquidity {
         quote,
         min_amount_liquidity,
-        max_amount_to_add_token_a,
-        max_amount_to_add_token_b,
+        max_amount_to_add_token_a: max_amount_a,
+        max_amount_to_add_token_b: max_amount_b,
     })
 }
 
@@ -251,6 +249,13 @@ pub fn prepare_swap_exact_output(
         exact_amount_out,
     )?;
     let max_amount_in = maximum_guard_amount(preview.amount_in, tolerance)?;
+    if user_input.balance() < max_amount_in {
+        return Err(ClientError::InsufficientBalance {
+            account: "user input holding",
+            available: user_input.balance(),
+            required: max_amount_in,
+        });
+    }
     let quote = client_quote::swap_exact_output(
         snapshot,
         user_input,

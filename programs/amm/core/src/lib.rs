@@ -583,19 +583,36 @@ pub fn compute_pool_pda(
     )
 }
 
+/// Returns the deterministic token order used by the pool PDA derivation.
+///
+/// The token with the lexicographically greater raw account-ID bytes is token A. This comparison
+/// is independent of any textual account representation. Returns `None` when both definitions are
+/// the same, because a token cannot be paired with itself.
+#[must_use]
+pub fn canonical_token_pair(
+    first_definition_id: AccountId,
+    second_definition_id: AccountId,
+) -> Option<(AccountId, AccountId)> {
+    match first_definition_id
+        .value()
+        .cmp(second_definition_id.value())
+    {
+        std::cmp::Ordering::Less => Some((second_definition_id, first_definition_id)),
+        std::cmp::Ordering::Greater => Some((first_definition_id, second_definition_id)),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
 pub fn compute_pool_pda_seed(
     definition_token_a_id: AccountId,
     definition_token_b_id: AccountId,
 ) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256};
 
-    let (token_1, token_2) = match definition_token_a_id
-        .value()
-        .cmp(definition_token_b_id.value())
-    {
-        std::cmp::Ordering::Less => (definition_token_b_id, definition_token_a_id),
-        std::cmp::Ordering::Greater => (definition_token_a_id, definition_token_b_id),
-        std::cmp::Ordering::Equal => panic!("Definitions match"),
+    let Some((token_1, token_2)) =
+        canonical_token_pair(definition_token_a_id, definition_token_b_id)
+    else {
+        panic!("Definitions match");
     };
 
     let mut bytes = [0; 64];
@@ -710,6 +727,43 @@ mod tests {
 
     /// `1.0` in Q64.64 is `2^64`.
     const ONE_Q64_64: u128 = 1u128 << 64;
+
+    fn account_id(byte: u8) -> AccountId {
+        AccountId::new([byte; 32])
+    }
+
+    #[test]
+    fn canonical_token_pair_uses_raw_descending_account_id_order() {
+        let lower = account_id(1);
+        let higher = account_id(2);
+
+        assert_eq!(canonical_token_pair(lower, higher), Some((higher, lower)));
+        assert_eq!(canonical_token_pair(higher, lower), Some((higher, lower)));
+        assert_eq!(canonical_token_pair(lower, lower), None);
+    }
+
+    #[test]
+    fn pool_pda_is_unchanged_by_caller_token_order() {
+        let amm_program_id = [42u32; 8];
+        let lower = account_id(1);
+        let higher = account_id(2);
+
+        assert_eq!(
+            compute_pool_pda(amm_program_id, lower, higher),
+            compute_pool_pda(amm_program_id, higher, lower)
+        );
+        assert_eq!(
+            compute_pool_pda_seed(lower, higher),
+            compute_pool_pda_seed(higher, lower)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Definitions match")]
+    fn pool_pda_seed_preserves_identical_definition_panic() {
+        let definition = account_id(1);
+        let _ = compute_pool_pda_seed(definition, definition);
+    }
 
     #[test]
     fn equal_reserves_map_to_unit_price() {

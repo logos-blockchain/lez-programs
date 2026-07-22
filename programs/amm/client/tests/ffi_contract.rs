@@ -5,7 +5,7 @@
 
 use std::ffi::{c_char, CStr, CString};
 
-use amm_client::{amm_client_free, amm_client_plan, amm_client_quote};
+use amm_client::{amm_client_free, amm_client_plan, amm_client_quote, wire::WIRE_SCHEMA};
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_pool_pda, compute_vault_pda,
     AmmConfig, Instruction, PoolDefinition, FEE_TIER_BPS_30, MINIMUM_LIQUIDITY,
@@ -95,6 +95,7 @@ fn fungible_holding(program_owner: ProgramId, definition_id: AccountId, balance:
 fn null_request_returns_structured_error() {
     let response = call(amm_client_plan, None);
 
+    assert_eq!(response["schema"], WIRE_SCHEMA);
     assert_eq!(response["ok"], false);
     assert_eq!(response["error"]["code"], "null_request");
 }
@@ -104,6 +105,7 @@ fn malformed_json_returns_structured_error() {
     let request = CString::new("{").expect("literal has no NUL");
     let response = call(amm_client_quote, Some(&request));
 
+    assert_eq!(response["schema"], WIRE_SCHEMA);
     assert_eq!(response["ok"], false);
     assert_eq!(response["error"]["code"], "invalid_json");
 }
@@ -130,7 +132,9 @@ fn protocol_constants_are_exposed_without_numeric_json_values() {
         &json!({"operation": "protocol_constants"}),
     );
 
+    assert_eq!(response["schema"], WIRE_SCHEMA);
     assert_eq!(response["ok"], true);
+    assert_eq!(response["value"]["schema"], WIRE_SCHEMA);
     assert_eq!(
         response["value"]["minimumLiquidity"],
         MINIMUM_LIQUIDITY.to_string()

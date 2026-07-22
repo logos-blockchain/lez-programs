@@ -3,16 +3,20 @@
 The C ABI accepts one tagged JSON object and returns one envelope:
 
 ```json
-{"ok":true,"value":{}}
+{"schema":"amm-client.v1","ok":true,"value":{"schema":"amm-client.v1"}}
 ```
 
 ```json
-{"ok":false,"error":{"code":"invalid_request","message":"..."}}
+{"schema":"amm-client.v1","ok":false,"error":{"code":"invalid_request","message":"..."}}
 ```
+
+Requests may include `"schema":"amm-client.v1"`. Schema-less requests remain accepted for
+compatibility. Every successful wire value and every C envelope identifies the response schema.
 
 All `u128` amounts, reserves, supplies, fees, nonces, and balances are unsigned decimal strings.
 All `u64` windows and deadlines are also decimal strings. Program IDs are arrays of eight `u32`
-words. Account IDs are base58 strings. Account `data` is an even-length hexadecimal string.
+words. Signed ticks are decimal strings. Account IDs are base58 strings. Account `data` is an
+even-length hexadecimal string.
 
 ## Shared inputs
 
@@ -73,6 +77,24 @@ Existing-pool quote operations include these top-level state fields:
 }
 ```
 
+Discovery and task-transaction operations use the complete caller-ordered pair read set:
+
+```json
+{
+  "snapshots": {
+    "pool": { "...": "account snapshot" },
+    "firstTokenDefinition": { "...": "account snapshot" },
+    "secondTokenDefinition": { "...": "account snapshot" },
+    "firstTokenVault": { "...": "account snapshot" },
+    "secondTokenVault": { "...": "account snapshot" },
+    "liquidityDefinition": { "...": "account snapshot" },
+    "lpLockHolding": { "...": "account snapshot" },
+    "currentTick": { "...": "account snapshot" },
+    "clock": { "...": "account snapshot" }
+  }
+}
+```
+
 ## Plan operations
 
 Send requests to `amm_client_plan` or `wire::plan_json`.
@@ -89,12 +111,23 @@ Send requests to `amm_client_plan` or `wire::plan_json`.
 | `swap_exact_input` | `context`, `pool`, `userInputHolding`, `userOutputHolding`, `swapAmountIn`, `minAmountOut`, `deadline` |
 | `swap_exact_output` | `context`, `pool`, `userInputHolding`, `userOutputHolding`, `exactAmountOut`, `maxAmountIn`, `deadline` |
 | `sync_reserves` | `context`, `pool` |
+| `prepare_create_pool_transaction` | same task request documented under Task transactions |
+| `prepare_add_liquidity_transaction` | same task request documented under Task transactions |
+| `prepare_remove_liquidity_transaction` | same task request documented under Task transactions |
+| `prepare_swap_exact_input_transaction` | same task request documented under Task transactions |
+| `prepare_swap_exact_output_transaction` | same task request documented under Task transactions |
 
 A successful plan value contains the following fields (`instructionWords` is abbreviated here):
 
 ```json
 {
   "instruction": "add_liquidity",
+  "instructionArgs": {
+    "minAmountLiquidity": "99",
+    "maxAmountToAddTokenA": "400",
+    "maxAmountToAddTokenB": "100",
+    "deadline": "1900000000000"
+  },
   "programId": [0, 0, 0, 0, 0, 0, 0, 0],
   "accounts": [
     {
@@ -105,22 +138,36 @@ A successful plan value contains the following fields (`instructionWords` is abb
       "init": false
     }
   ],
+  "affectedAccountIds": ["base58-account-id"],
   "instructionWords": [5]
 }
 ```
 
 The real `instructionWords` array contains the complete encoding produced directly from the
-canonical `amm_core::Instruction` with RISC Zero Serde. Account rows follow guest/IDL order.
+canonical `amm_core::Instruction` with RISC Zero Serde. `instructionArgs` is exhaustively derived
+from that same typed instruction, so C++/QML consumers do not decode RISC Zero Serde. Its `u128`
+and `u64` fields are decimal strings, optional fields are JSON `null`, and account IDs are base58
+strings. Account rows follow guest/IDL order.
 
 ## Quote operations
 
-Send requests to `amm_client_quote` or `wire::quote_json`. Except `protocol_constants`,
-`create_pool`, and `prepare_create_pool`, every operation below also includes the existing-pool
-quote state described above.
+Send requests to `amm_client_quote` or `wire::quote_json`. Pool economic operations use the
+existing-pool quote state described above. Discovery, opening intent, and task-transaction
+operations use the fields shown in this table and the sections below.
 
 | `operation` | Additional fields |
 |---|---|
 | `protocol_constants` | none; returns decimal-string `minimumLiquidity`, `feeBpsDenominator`, `slippageBpsDenominator`, and `supportedFeeTiers` |
+| `derive_config_id` | `ammProgramId` |
+| `inspect_config` | `ammProgramId`, raw `config` snapshot |
+| `canonical_pair` | `firstTokenDefinitionId`, `secondTokenDefinitionId` |
+| `derive_pair_read_manifest` | `ammProgramId`, raw `config`, `firstTokenDefinitionId`, `secondTokenDefinitionId` |
+| `inspect_pair` | fields from `derive_pair_read_manifest` plus complete `snapshots` |
+| `prepare_minimum_opening_pair` | `desiredPriceQ64_64`, `feeBps` |
+| `prepare_opening_from_token_a` | `tokenAAmount`, `desiredPriceQ64_64`, `feeBps` |
+| `prepare_opening_from_token_b` | `tokenBAmount`, `desiredPriceQ64_64`, `feeBps` |
+| `validate_explicit_opening_pair` | `tokenAAmount`, `tokenBAmount`, `desiredPriceQ64_64`, `feeBps` |
+| `prepare_caller_opening_pair` | caller token IDs, desired price, fee, and tagged `intent` described below |
 | `pair_order` | `firstTokenDefinitionId`, `secondTokenDefinitionId` |
 | `create_pool` | `ammProgramId`, `config`, `tokenADefinition`, `tokenBDefinition`, `tokenAAmount`, `tokenBAmount`, `feeBps` |
 | `prepare_create_pool` | same fields as `create_pool`; returns quote plus `NewDefinition` instruction arguments |
@@ -138,6 +185,11 @@ quote state described above.
 | `swap_exact_output` | `userInputHolding`, `userOutputHolding`, `inputTokenDefinitionId`, `exactAmountOut`, `maximumAmountIn` |
 | `sync_reserves` | no additional fields |
 | `create_oracle_price_account` | `windowDuration` |
+| `prepare_create_pool_transaction` | task-transaction fields below |
+| `prepare_add_liquidity_transaction` | task-transaction fields below |
+| `prepare_remove_liquidity_transaction` | task-transaction fields below |
+| `prepare_swap_exact_input_transaction` | task-transaction fields below |
+| `prepare_swap_exact_output_transaction` | task-transaction fields below |
 
 Quote values use these result shapes:
 
@@ -151,6 +203,86 @@ Quote values use these result shapes:
 
 A `pool` result contains decimal-string `liquidityPoolSupply`, `reserveA`, `reserveB`, and
 `spotPriceQ64_64` fields.
+
+## Discovery, inspection, and opening intents
+
+Discovery functions derive IDs only; adapters fetch the returned accounts and submit raw
+snapshots for inspection. `inspect_pair` returns `status` as `missing` or `active`. Missing output
+contains the read manifest, caller-ordered definitions, vault lifecycle states, and clock. Active
+output contains the manifest, `callerOrder`, stored token/vault/LP IDs, reserves, vault balances,
+LP supply, fee, stored Q64.64 spot price, current tick, and clock. Numeric protocol fields remain
+strings.
+
+`prepare_caller_opening_pair` accepts caller token order without reproducing canonical ordering:
+
+```json
+{
+  "operation": "prepare_caller_opening_pair",
+  "firstTokenDefinitionId": "base58-account-id",
+  "secondTokenDefinitionId": "base58-account-id",
+  "desiredPriceQ64_64": "18446744073709551616",
+  "feeBps": "30",
+  "intent": { "kind": "first_amount", "amount": "2000" }
+}
+```
+
+Other intent shapes are `{ "kind":"minimum" }`,
+`{ "kind":"second_amount", "amount":"..." }`, and
+`{ "kind":"explicit", "firstAmount":"...", "secondAmount":"..." }`. The result includes
+`callerOrder`, caller `firstAmount`/`secondAmount`, and the canonical stored opening quote and
+amounts.
+
+## Task transactions
+
+The five snapshot-bound task operations are accepted by both `amm_client_plan`/`wire::plan_json`
+and `amm_client_quote`/`wire::quote_json`. Every request includes `ammProgramId`, raw `config`, the
+complete caller-ordered `snapshots`, and decimal-string `deadline`.
+
+| `operation` | Additional fields |
+|---|---|
+| `prepare_create_pool_transaction` | caller token IDs, `firstTokenHolding`, `secondTokenHolding`, `liquidityHolding`, `firstAmount`, `secondAmount`, `feeBps` |
+| `prepare_add_liquidity_transaction` | caller token IDs and holdings, `maxFirstAmount`, `maxSecondAmount`, `slippageBps`, optional `expectedFeeBps` |
+| `prepare_remove_liquidity_transaction` | caller token IDs and holdings, `removeLiquidityAmount`, `slippageBps`, optional `expectedFeeBps` |
+| `prepare_swap_exact_input_transaction` | input/output token IDs and holdings, `amountIn`, `slippageBps`, optional `expectedFeeBps` |
+| `prepare_swap_exact_output_transaction` | input/output token IDs and holdings, `exactAmountOut`, `slippageBps`, optional `expectedFeeBps` |
+
+Successful task output contains:
+
+```json
+{
+  "operation": "swap_exact_output",
+  "quote": {},
+  "callerAmounts": { "first": "101", "second": "100" },
+  "plan": {
+    "instruction": "swap_exact_output",
+    "instructionArgs": {
+      "exactAmountOut": "100",
+      "maxAmountIn": "102",
+      "deadline": "1900000000000"
+    },
+    "instructionWords": []
+  },
+  "quoteCommitment": "64-lowercase-hex-characters",
+  "affectedAccountIds": ["base58-account-id"],
+  "walletPrerequisites": {
+    "signerAccountIds": ["base58-account-id"],
+    "freshAccountIds": [],
+    "funding": [{
+      "holdingAccountId": "base58-account-id",
+      "tokenDefinitionId": "base58-account-id",
+      "available": "1000",
+      "required": "102"
+    }]
+  },
+  "deadline": "1900000000000",
+  "poolSpotChangeBps": "42"
+}
+```
+
+`poolSpotChangeBps` is `null` for non-swap tasks. Add-liquidity funding requirements use the
+caller caps. Exact-output swap funding uses the plan's slippage-adjusted `maxAmountIn`. Hosts
+should refresh snapshots, prepare again, compare `quoteCommitment`, and submit only the refreshed
+plan.
 
 ## Prepared instruction arguments
 
@@ -171,9 +303,10 @@ quotes. Maximum guards use integer ceil rounding. A maximum above `u128` returns
 `slippage_bound_overflow`; an out-of-range tolerance returns `slippage_tolerance_out_of_range`.
 This calculation runs only in the Rust client, never in JavaScript or QML.
 
-Prepared add-liquidity maximums are the quote's `actualAmountA` and `actualAmountB`, not the original
-possibly lopsided caps. The exact quote is rerun with those fields before they are returned. This
-keeps the eventual plan from spending above the displayed/current quoted deposits.
+Prepared add-liquidity maximums preserve the original caller caps. Replacing them with rounded
+`actualAmountA` and `actualAmountB` can change the program quote when reserve ratios are not
+divisible, because execution performs proportional integer rounding again. Funding prerequisites
+therefore cover the caller caps while display amounts remain the canonical quote's actual deposit.
 
 ## Ownership and failures
 

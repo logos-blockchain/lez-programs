@@ -80,6 +80,7 @@ dependencies = [
 name = "amm_client"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "amm_core",
  "amm_program",
  "clock_core",

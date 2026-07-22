@@ -539,16 +539,10 @@ fn prepared_instruction_args_feed_canonical_planners_without_ui_math() {
 
     let prepared_add =
         prepare_add_liquidity(&snapshot, 400, 100, tolerance).expect("add liquidity must prepare");
-    assert_eq!(prepared_add.max_amount_to_add_token_a, 200);
+    assert_eq!(prepared_add.max_amount_to_add_token_a, 400);
     assert_eq!(prepared_add.max_amount_to_add_token_b, 100);
-    assert_eq!(
-        prepared_add.max_amount_to_add_token_a,
-        prepared_add.quote.actual_amount_a
-    );
-    assert_eq!(
-        prepared_add.max_amount_to_add_token_b,
-        prepared_add.quote.actual_amount_b
-    );
+    assert_eq!(prepared_add.quote.actual_amount_a, 200);
+    assert_eq!(prepared_add.quote.actual_amount_b, 100);
     let add_plan = plan_add_liquidity(AddLiquidityPlanInput {
         context: &fixture.context,
         pool,
@@ -644,4 +638,52 @@ fn prepared_instruction_args_feed_canonical_planners_without_ui_math() {
             && *max_amount_in == prepared_exact_output.max_amount_in
             && *planned_deadline == deadline
     ));
+}
+
+#[test]
+fn prepared_add_keeps_original_caps_across_non_idempotent_rounding() {
+    let mut fixture = Fixture::new();
+    let pool_definition = PoolDefinition {
+        definition_token_a_id: token_a_id(),
+        definition_token_b_id: token_b_id(),
+        vault_a_id: vault_a_id(),
+        vault_b_id: vault_b_id(),
+        liquidity_pool_id: liquidity_definition_id(),
+        liquidity_pool_supply: 2_000,
+        reserve_a: 3,
+        reserve_b: 2,
+        fees: FEE_TIER_BPS_30,
+    };
+    fixture.pool = AccountSnapshot::new(
+        pool_id(),
+        account(AMM_PROGRAM_ID, Data::from(&pool_definition)),
+    );
+    fixture.vault_a = fungible_holding(vault_a_id(), token_a_id(), 3);
+    fixture.vault_b = fungible_holding(vault_b_id(), token_b_id(), 2);
+    let snapshot = fixture
+        .validated_pool()
+        .expect("non-divisible pool must validate");
+
+    let prepared = prepare_add_liquidity(
+        &snapshot,
+        2,
+        2,
+        SlippageTolerance::new(100).expect("one percent is valid"),
+    )
+    .expect("original caps are executable");
+    let executed = quote::add_liquidity(
+        &snapshot,
+        prepared.max_amount_to_add_token_a,
+        prepared.max_amount_to_add_token_b,
+        prepared.min_amount_liquidity,
+    )
+    .expect("prepared instruction fields must execute");
+
+    assert_eq!(prepared.max_amount_to_add_token_a, 2);
+    assert_eq!(prepared.max_amount_to_add_token_b, 2);
+    assert_eq!(prepared.quote.actual_amount_a, 2);
+    assert_eq!(prepared.quote.actual_amount_b, 1);
+    assert_eq!(prepared.quote.liquidity_to_mint, 1_000);
+    assert_eq!(prepared.min_amount_liquidity, 990);
+    assert_eq!(executed, prepared.quote);
 }
