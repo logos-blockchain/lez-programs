@@ -486,11 +486,33 @@ pub fn swap_exact_out_amounts(
 #[must_use]
 pub fn isqrt_product(a: u128, b: u128) -> u128 {
     use alloy_primitives::U256;
+
     let product = U256::from(a)
         .checked_mul(U256::from(b))
         .expect("u128 * u128 always fits in U256");
-    let root = product.root(2); // ruint integer root; floor sqrt
-    u128::try_from(root).expect("isqrt_product result exceeds u128")
+    if product == U256::ZERO {
+        return 0;
+    }
+
+    // Start at a power of two above the exact root, then converge downward. Unlike
+    // `Uint::root`, this uses only `ruint`'s core arithmetic and remains available when its
+    // host-only `std` feature is disabled for guest-compatible crates.
+    let mut root = U256::ONE
+        .checked_shl(product.bit_len().div_ceil(2))
+        .expect("square-root estimate fits in U256");
+    loop {
+        let quotient = product
+            .checked_div(root)
+            .expect("nonzero square-root estimate");
+        let next = root
+            .checked_add(quotient)
+            .expect("square-root iteration fits in U256")
+            .wrapping_shr(1);
+        if next >= root {
+            return u128::try_from(root).expect("isqrt_product result exceeds u128");
+        }
+        root = next;
+    }
 }
 
 impl TryFrom<&Data> for PoolDefinition {
@@ -943,16 +965,27 @@ mod tests {
     #[test]
     fn isqrt_product_handles_the_1e20_times_2e20_overflow_case() {
         // 1e20 * 2e20 = 2e40 overflows u128 (max ~3.4e38); the U256 intermediate keeps it exact.
-        let a = 100_000_000_000_000_000_000u128; // 1e20
-        let b = 200_000_000_000_000_000_000u128; // 2e20
-                                                 // floor(sqrt(2e40)) computed independently in U256.
-        let expected = {
-            use alloy_primitives::U256;
-            let product = U256::from(a).checked_mul(U256::from(b)).unwrap();
-            u128::try_from(product.root(2)).unwrap()
-        };
-        assert_eq!(isqrt_product(a, b), expected);
+        let a = 100_000_000_000_000_000_000u128;
+        let b = 200_000_000_000_000_000_000u128;
         // Sanity: floor(sqrt(2e40)) = floor(1.4142...e20) = 141421356237309504880.
         assert_eq!(isqrt_product(a, b), 141_421_356_237_309_504_880);
+    }
+
+    #[test]
+    fn isqrt_product_preserves_floor_bounds_without_ruint_std() {
+        use alloy_primitives::U256;
+
+        for (a, b) in [
+            (1, 2),
+            (5, 10),
+            (u128::MAX, u128::MAX - 1),
+            (u128::MAX, u128::MAX),
+        ] {
+            let product = U256::from(a) * U256::from(b);
+            let root = U256::from(isqrt_product(a, b));
+            assert!(root * root <= product);
+            let next = root + U256::ONE;
+            assert!(next.checked_mul(next).is_none_or(|square| square > product));
+        }
     }
 }
