@@ -257,7 +257,7 @@ pub const FEE_TIER_BPS_5: u128 = 5;
 pub const FEE_TIER_BPS_30: u128 = 30;
 pub const FEE_TIER_BPS_100: u128 = 100;
 /// Fee tiers accepted by pool creation and all initialized-pool operations.
-pub const SUPPORTED_FEE_TIERS: [u128; 4] = [
+pub const SUPPORTED_FEE_TIERS: &[u128] = &[
     FEE_TIER_BPS_1,
     FEE_TIER_BPS_5,
     FEE_TIER_BPS_30,

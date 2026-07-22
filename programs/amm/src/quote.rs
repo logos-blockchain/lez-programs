@@ -14,25 +14,150 @@ use amm_core::{
 use nssa_core::account::AccountId;
 use twap_oracle_core::OBSERVATIONS_CAPACITY;
 
+/// Stable categories for quote failures.
+///
+/// Consumers matching this enum must retain a fallback because new categories may be added as the
+/// quote surface grows. [`QuoteErrorCode::as_str`] provides the stable API/FFI representation.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuoteErrorCode {
+    /// A checked amount calculation exceeded its representable range.
+    ArithmeticOverflow,
+    /// A proportional liquidity deposit rounded to zero.
+    DepositAmountZero,
+    /// A swap input rounded to zero after fees.
+    EffectiveSwapInputZero,
+    /// An exact-output request would consume the output reserve.
+    ExactOutputExceedsReserve,
+    /// An exact-output request was zero.
+    ExactOutputZero,
+    /// Initial liquidity did not exceed the permanent lock.
+    InitialLiquidityTooLow,
+    /// The selected swap input token is not in the pool.
+    InputTokenNotInPool,
+    /// The supplied LP balance is inconsistent with pool supply.
+    InvalidLiquidityAccount,
+    /// Pool LP supply is below the permanent lock.
+    LiquiditySupplyBelowMinimum,
+    /// At least one maximum liquidity deposit was zero.
+    MaximumDepositZero,
+    /// The minimum LP output guard was zero.
+    MinimumLiquidityZero,
+    /// At least one minimum withdrawal guard was zero.
+    MinimumWithdrawalZero,
+    /// Minted liquidity was below the caller's minimum.
+    MintedLiquidityBelowMinimum,
+    /// Minted liquidity rounded to zero.
+    MintedLiquidityZero,
+    /// The derived oracle price was the no-price sentinel.
+    OraclePriceZero,
+    /// The requested oracle window cannot hold the observation capacity.
+    OracleWindowTooShort,
+    /// A withdrawal was attempted from a pool containing only locked liquidity.
+    PoolContainsOnlyLockedLiquidity,
+    /// A withdrawal would consume permanently locked liquidity.
+    RemoveAmountExceedsUnlockedLiquidity,
+    /// A withdrawal exceeds the caller's LP balance.
+    RemoveAmountExceedsUserBalance,
+    /// The requested LP withdrawal was zero.
+    RemoveLiquidityAmountZero,
+    /// Exact-output input exceeded the caller's maximum.
+    RequiredInputExceedsMaximum,
+    /// Token-A reserve was zero where a spot price was required.
+    ReserveAZero,
+    /// At least one pool reserve was zero.
+    ReserveZero,
+    /// Exact-input output was below the caller's minimum.
+    SwapOutputBelowMinimum,
+    /// Swap output rounded to zero.
+    SwapOutputZero,
+    /// Initial token-A liquidity was zero.
+    TokenAAmountZero,
+    /// Initial token-B liquidity was zero.
+    TokenBAmountZero,
+    /// A token pair does not match the pool.
+    TokenPairNotInPool,
+    /// A pool fee is not one of the canonical tiers.
+    UnsupportedFeeTier,
+    /// Token-A vault balance is below the tracked reserve.
+    VaultABalanceBelowReserve,
+    /// Token-B vault balance is below the tracked reserve.
+    VaultBBalanceBelowReserve,
+    /// Token-A withdrawal was below the caller's minimum.
+    WithdrawalABelowMinimum,
+    /// Token-B withdrawal was below the caller's minimum.
+    WithdrawalBBelowMinimum,
+}
+
+impl QuoteErrorCode {
+    /// Returns the stable machine-readable representation.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ArithmeticOverflow => "arithmetic_overflow",
+            Self::DepositAmountZero => "deposit_amount_zero",
+            Self::EffectiveSwapInputZero => "effective_swap_input_zero",
+            Self::ExactOutputExceedsReserve => "exact_output_exceeds_reserve",
+            Self::ExactOutputZero => "exact_output_zero",
+            Self::InitialLiquidityTooLow => "initial_liquidity_too_low",
+            Self::InputTokenNotInPool => "input_token_not_in_pool",
+            Self::InvalidLiquidityAccount => "invalid_liquidity_account",
+            Self::LiquiditySupplyBelowMinimum => "liquidity_supply_below_minimum",
+            Self::MaximumDepositZero => "maximum_deposit_zero",
+            Self::MinimumLiquidityZero => "minimum_liquidity_zero",
+            Self::MinimumWithdrawalZero => "minimum_withdrawal_zero",
+            Self::MintedLiquidityBelowMinimum => "minted_liquidity_below_minimum",
+            Self::MintedLiquidityZero => "minted_liquidity_zero",
+            Self::OraclePriceZero => "oracle_price_zero",
+            Self::OracleWindowTooShort => "oracle_window_too_short",
+            Self::PoolContainsOnlyLockedLiquidity => "pool_contains_only_locked_liquidity",
+            Self::RemoveAmountExceedsUnlockedLiquidity => {
+                "remove_amount_exceeds_unlocked_liquidity"
+            }
+            Self::RemoveAmountExceedsUserBalance => "remove_amount_exceeds_user_balance",
+            Self::RemoveLiquidityAmountZero => "remove_liquidity_amount_zero",
+            Self::RequiredInputExceedsMaximum => "required_input_exceeds_maximum",
+            Self::ReserveAZero => "reserve_a_zero",
+            Self::ReserveZero => "reserve_zero",
+            Self::SwapOutputBelowMinimum => "swap_output_below_minimum",
+            Self::SwapOutputZero => "swap_output_zero",
+            Self::TokenAAmountZero => "token_a_amount_zero",
+            Self::TokenBAmountZero => "token_b_amount_zero",
+            Self::TokenPairNotInPool => "token_pair_not_in_pool",
+            Self::UnsupportedFeeTier => "unsupported_fee_tier",
+            Self::VaultABalanceBelowReserve => "vault_a_balance_below_reserve",
+            Self::VaultBBalanceBelowReserve => "vault_b_balance_below_reserve",
+            Self::WithdrawalABelowMinimum => "withdrawal_a_below_minimum",
+            Self::WithdrawalBBelowMinimum => "withdrawal_b_below_minimum",
+        }
+    }
+}
+
 /// A stable, machine-readable quote failure with its program-facing message.
 ///
-/// Consumers should branch on [`QuoteError::code`] and treat [`QuoteError::message`] as display or
-/// diagnostic text. New codes may be added without changing this type's layout.
+/// Consumers should branch on [`QuoteError::kind`] or [`QuoteError::code`] and treat
+/// [`QuoteError::message`] as display or diagnostic text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QuoteError {
-    code: &'static str,
+    kind: QuoteErrorCode,
     message: &'static str,
 }
 
 impl QuoteError {
-    const fn new(code: &'static str, message: &'static str) -> Self {
-        Self { code, message }
+    const fn new(kind: QuoteErrorCode, message: &'static str) -> Self {
+        Self { kind, message }
+    }
+
+    /// Returns the typed error category.
+    #[must_use]
+    pub const fn kind(&self) -> QuoteErrorCode {
+        self.kind
     }
 
     /// Returns the stable machine-readable error code.
     #[must_use]
     pub const fn code(&self) -> &'static str {
-        self.code
+        self.kind.as_str()
     }
 
     /// Returns the program-facing failure message.
@@ -94,7 +219,7 @@ pub fn pair_order(
         Ok(PairOrder::Reversed)
     } else {
         Err(QuoteError::new(
-            "token_pair_not_in_pool",
+            QuoteErrorCode::TokenPairNotInPool,
             "Token pair does not match the pool",
         ))
     }
@@ -120,13 +245,14 @@ pub fn swap_direction(
         Ok(SwapDirection::BToA)
     } else {
         Err(QuoteError::new(
-            "input_token_not_in_pool",
+            QuoteErrorCode::InputTokenNotInPool,
             "Input token is not part of the pool",
         ))
     }
 }
 
 /// Pool scalar values after a quoted operation.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PoolUpdate {
     /// Total LP supply after the operation.
@@ -153,6 +279,7 @@ impl PoolUpdate {
 }
 
 /// Result of creating a pool's initial liquidity position.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CreatePoolQuote {
     /// Initial pool scalar values.
@@ -171,13 +298,13 @@ pub fn create_pool(
 ) -> Result<CreatePoolQuote, QuoteError> {
     if token_a_amount == 0 {
         return Err(QuoteError::new(
-            "token_a_amount_zero",
+            QuoteErrorCode::TokenAAmountZero,
             "token_a_amount must be nonzero",
         ));
     }
     if token_b_amount == 0 {
         return Err(QuoteError::new(
-            "token_b_amount_zero",
+            QuoteErrorCode::TokenBAmountZero,
             "token_b_amount must be nonzero",
         ));
     }
@@ -186,7 +313,7 @@ pub fn create_pool(
     let initial_liquidity = isqrt_product(token_a_amount, token_b_amount);
     if initial_liquidity <= MINIMUM_LIQUIDITY {
         return Err(QuoteError::new(
-            "initial_liquidity_too_low",
+            QuoteErrorCode::InitialLiquidityTooLow,
             "Initial liquidity must exceed minimum liquidity lock",
         ));
     }
@@ -194,7 +321,7 @@ pub fn create_pool(
         .checked_sub(MINIMUM_LIQUIDITY)
         .ok_or_else(|| {
             QuoteError::new(
-                "arithmetic_overflow",
+                QuoteErrorCode::ArithmeticOverflow,
                 "initial liquidity must exceed minimum liquidity after validation",
             )
         })?;
@@ -208,6 +335,7 @@ pub fn create_pool(
 }
 
 /// Result of adding liquidity to an initialized pool.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AddLiquidityQuote {
     /// Token-A amount transferred into the pool.
@@ -253,13 +381,13 @@ pub fn add_liquidity(
     ensure_supported_fee_tier(pool.fees)?;
     if minimum_liquidity == 0 {
         return Err(QuoteError::new(
-            "minimum_liquidity_zero",
+            QuoteErrorCode::MinimumLiquidityZero,
             "min_amount_liquidity must be nonzero",
         ));
     }
     if max_amount_a == 0 || max_amount_b == 0 {
         return Err(QuoteError::new(
-            "maximum_deposit_zero",
+            QuoteErrorCode::MaximumDepositZero,
             "Both max-balances must be nonzero",
         ));
     }
@@ -271,7 +399,10 @@ pub fn add_liquidity(
         "Vaults' balances must be at least the reserve amounts",
     )?;
     if pool.reserve_a == 0 || pool.reserve_b == 0 {
-        return Err(QuoteError::new("reserve_zero", "Reserves must be nonzero"));
+        return Err(QuoteError::new(
+            QuoteErrorCode::ReserveZero,
+            "Reserves must be nonzero",
+        ));
     }
 
     let ideal_a = checked_floor(
@@ -290,7 +421,7 @@ pub fn add_liquidity(
     let actual_amount_b = max_amount_b.min(ideal_b);
     if actual_amount_a == 0 || actual_amount_b == 0 {
         return Err(QuoteError::new(
-            "deposit_amount_zero",
+            QuoteErrorCode::DepositAmountZero,
             "A trade amount is 0",
         ));
     }
@@ -310,13 +441,13 @@ pub fn add_liquidity(
     let liquidity_to_mint = liquidity_from_a.min(liquidity_from_b);
     if liquidity_to_mint == 0 {
         return Err(QuoteError::new(
-            "minted_liquidity_zero",
+            QuoteErrorCode::MintedLiquidityZero,
             "Payable LP must be nonzero",
         ));
     }
     if liquidity_to_mint < minimum_liquidity {
         return Err(QuoteError::new(
-            "minted_liquidity_below_minimum",
+            QuoteErrorCode::MintedLiquidityBelowMinimum,
             "Payable LP is less than provided minimum LP amount",
         ));
     }
@@ -326,19 +457,19 @@ pub fn add_liquidity(
         .checked_add(liquidity_to_mint)
         .ok_or_else(|| {
             QuoteError::new(
-                "arithmetic_overflow",
+                QuoteErrorCode::ArithmeticOverflow,
                 "liquidity_pool_supply + delta_lp overflows u128",
             )
         })?;
     let reserve_a = pool.reserve_a.checked_add(actual_amount_a).ok_or_else(|| {
         QuoteError::new(
-            "arithmetic_overflow",
+            QuoteErrorCode::ArithmeticOverflow,
             "reserve_a + actual_amount_a overflows u128",
         )
     })?;
     let reserve_b = pool.reserve_b.checked_add(actual_amount_b).ok_or_else(|| {
         QuoteError::new(
-            "arithmetic_overflow",
+            QuoteErrorCode::ArithmeticOverflow,
             "reserve_b + actual_amount_b overflows u128",
         )
     })?;
@@ -352,6 +483,7 @@ pub fn add_liquidity(
 }
 
 /// Result of removing liquidity from a pool.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RemoveLiquidityQuote {
     /// Token-A amount withdrawn from the pool.
@@ -387,37 +519,37 @@ pub fn remove_liquidity(
     ensure_supported_fee_tier(pool.fees)?;
     if pool.liquidity_pool_supply < MINIMUM_LIQUIDITY {
         return Err(QuoteError::new(
-            "liquidity_supply_below_minimum",
+            QuoteErrorCode::LiquiditySupplyBelowMinimum,
             "Pool liquidity supply is below minimum liquidity",
         ));
     }
     if minimum_amount_a == 0 || minimum_amount_b == 0 {
         return Err(QuoteError::new(
-            "minimum_withdrawal_zero",
+            QuoteErrorCode::MinimumWithdrawalZero,
             "Minimum withdraw amount must be nonzero",
         ));
     }
     if user_liquidity_balance > pool.liquidity_pool_supply {
         return Err(QuoteError::new(
-            "invalid_liquidity_account",
+            QuoteErrorCode::InvalidLiquidityAccount,
             "Invalid liquidity account provided",
         ));
     }
     if pool.liquidity_pool_supply == MINIMUM_LIQUIDITY {
         return Err(QuoteError::new(
-            "pool_contains_only_locked_liquidity",
+            QuoteErrorCode::PoolContainsOnlyLockedLiquidity,
             "Pool only contains locked liquidity",
         ));
     }
     if remove_liquidity_amount == 0 {
         return Err(QuoteError::new(
-            "remove_liquidity_amount_zero",
+            QuoteErrorCode::RemoveLiquidityAmountZero,
             "remove_liquidity_amount must be nonzero",
         ));
     }
     if remove_liquidity_amount > user_liquidity_balance {
         return Err(QuoteError::new(
-            "remove_amount_exceeds_user_balance",
+            QuoteErrorCode::RemoveAmountExceedsUserBalance,
             "Remove amount exceeds user LP balance",
         ));
     }
@@ -426,13 +558,13 @@ pub fn remove_liquidity(
         .checked_sub(MINIMUM_LIQUIDITY)
         .ok_or_else(|| {
             QuoteError::new(
-                "arithmetic_overflow",
+                QuoteErrorCode::ArithmeticOverflow,
                 "liquidity supply must be at least the locked minimum after validation",
             )
         })?;
     if remove_liquidity_amount > unlocked_liquidity {
         return Err(QuoteError::new(
-            "remove_amount_exceeds_unlocked_liquidity",
+            QuoteErrorCode::RemoveAmountExceedsUnlockedLiquidity,
             "Cannot remove locked minimum liquidity",
         ));
     }
@@ -451,13 +583,13 @@ pub fn remove_liquidity(
     )?;
     if withdraw_amount_a < minimum_amount_a {
         return Err(QuoteError::new(
-            "withdrawal_a_below_minimum",
+            QuoteErrorCode::WithdrawalABelowMinimum,
             "Insufficient minimal withdraw amount (Token A) provided for liquidity amount",
         ));
     }
     if withdraw_amount_b < minimum_amount_b {
         return Err(QuoteError::new(
-            "withdrawal_b_below_minimum",
+            QuoteErrorCode::WithdrawalBBelowMinimum,
             "Insufficient minimal withdraw amount (Token B) provided for liquidity amount",
         ));
     }
@@ -467,7 +599,7 @@ pub fn remove_liquidity(
         .checked_sub(remove_liquidity_amount)
         .ok_or_else(|| {
             QuoteError::new(
-                "arithmetic_overflow",
+                QuoteErrorCode::ArithmeticOverflow,
                 "liquidity_pool_supply - delta_lp underflows",
             )
         })?;
@@ -476,7 +608,7 @@ pub fn remove_liquidity(
         .checked_sub(withdraw_amount_a)
         .ok_or_else(|| {
             QuoteError::new(
-                "arithmetic_overflow",
+                QuoteErrorCode::ArithmeticOverflow,
                 "reserve_a - withdraw_amount_a underflows",
             )
         })?;
@@ -485,7 +617,7 @@ pub fn remove_liquidity(
         .checked_sub(withdraw_amount_b)
         .ok_or_else(|| {
             QuoteError::new(
-                "arithmetic_overflow",
+                QuoteErrorCode::ArithmeticOverflow,
                 "reserve_b - withdraw_amount_b underflows",
             )
         })?;
@@ -499,6 +631,7 @@ pub fn remove_liquidity(
 }
 
 /// Result of either exact-input or exact-output swap quoting.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SwapQuote {
     /// Direction relative to stored pool order.
@@ -556,13 +689,13 @@ pub fn swap_exact_input(
     )?;
     if effective_amount_in == 0 {
         return Err(QuoteError::new(
-            "effective_swap_input_zero",
+            QuoteErrorCode::EffectiveSwapInputZero,
             "Effective swap amount should be nonzero",
         ));
     }
     let reserve_plus_effective = reserve_in.checked_add(effective_amount_in).ok_or_else(|| {
         QuoteError::new(
-            "arithmetic_overflow",
+            QuoteErrorCode::ArithmeticOverflow,
             "reserve + effective_amount_in overflows u128",
         )
     })?;
@@ -574,13 +707,13 @@ pub fn swap_exact_input(
     )?;
     if amount_out < minimum_amount_out {
         return Err(QuoteError::new(
-            "swap_output_below_minimum",
+            QuoteErrorCode::SwapOutputBelowMinimum,
             "Withdraw amount is less than minimal amount out",
         ));
     }
     if amount_out == 0 {
         return Err(QuoteError::new(
-            "swap_output_zero",
+            QuoteErrorCode::SwapOutputZero,
             "Withdraw amount should be nonzero",
         ));
     }
@@ -621,7 +754,7 @@ pub fn swap_exact_output(
     validate_swap_pool(pool, vault_a_balance, vault_b_balance)?;
     if exact_amount_out == 0 {
         return Err(QuoteError::new(
-            "exact_output_zero",
+            QuoteErrorCode::ExactOutputZero,
             "Exact amount out must be nonzero",
         ));
     }
@@ -629,13 +762,16 @@ pub fn swap_exact_output(
     let (reserve_in, reserve_out) = directional_reserves(pool, direction);
     if exact_amount_out >= reserve_out {
         return Err(QuoteError::new(
-            "exact_output_exceeds_reserve",
+            QuoteErrorCode::ExactOutputExceedsReserve,
             "Exact amount out exceeds reserve",
         ));
     }
     let effective_input_denominator =
         reserve_out.checked_sub(exact_amount_out).ok_or_else(|| {
-            QuoteError::new("arithmetic_overflow", "reserve_out - amount_out underflows")
+            QuoteError::new(
+                QuoteErrorCode::ArithmeticOverflow,
+                "reserve_out - amount_out underflows",
+            )
         })?;
     let minimum_effective_input = checked_ceil(
         reserve_in,
@@ -652,7 +788,7 @@ pub fn swap_exact_output(
     )?;
     if amount_in > maximum_amount_in {
         return Err(QuoteError::new(
-            "required_input_exceeds_maximum",
+            QuoteErrorCode::RequiredInputExceedsMaximum,
             "Required input exceeds maximum amount in",
         ));
     }
@@ -673,6 +809,7 @@ pub fn swap_exact_output(
 }
 
 /// Result of synchronizing stored reserves to vault balances.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyncReservesQuote {
     /// Untracked token-A balance incorporated into the reserve.
@@ -692,7 +829,7 @@ pub fn sync_reserves(
     ensure_supported_fee_tier(pool.fees)?;
     if pool.liquidity_pool_supply < MINIMUM_LIQUIDITY {
         return Err(QuoteError::new(
-            "liquidity_supply_below_minimum",
+            QuoteErrorCode::LiquiditySupplyBelowMinimum,
             "Pool liquidity supply is below minimum liquidity",
         ));
     }
@@ -705,13 +842,13 @@ pub fn sync_reserves(
     )?;
     let donated_amount_a = vault_a_balance.checked_sub(pool.reserve_a).ok_or_else(|| {
         QuoteError::new(
-            "arithmetic_overflow",
+            QuoteErrorCode::ArithmeticOverflow,
             "vault A balance - reserve A underflows",
         )
     })?;
     let donated_amount_b = vault_b_balance.checked_sub(pool.reserve_b).ok_or_else(|| {
         QuoteError::new(
-            "arithmetic_overflow",
+            QuoteErrorCode::ArithmeticOverflow,
             "vault B balance - reserve B underflows",
         )
     })?;
@@ -724,6 +861,7 @@ pub fn sync_reserves(
 }
 
 /// Values used to initialize a pool-backed TWAP oracle price account.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OraclePriceAccountQuote {
     /// Pool token A, used as the oracle base asset.
@@ -743,20 +881,20 @@ pub fn create_oracle_price_account(
 ) -> Result<OraclePriceAccountQuote, QuoteError> {
     if window_duration < u64::from(OBSERVATIONS_CAPACITY) {
         return Err(QuoteError::new(
-            "oracle_window_too_short",
+            QuoteErrorCode::OracleWindowTooShort,
             "Create oracle price account: window_duration must be >= OBSERVATIONS_CAPACITY so a matching PriceObservations account can exist and PublishPrice can update this price account",
         ));
     }
     if pool.reserve_a == 0 {
         return Err(QuoteError::new(
-            "reserve_a_zero",
+            QuoteErrorCode::ReserveAZero,
             "spot_price_q64_64: reserve_base must be non-zero",
         ));
     }
     let initial_price_q64_64 = spot_price_q64_64(pool.reserve_a, pool.reserve_b);
     if initial_price_q64_64 == 0 {
         return Err(QuoteError::new(
-            "oracle_price_zero",
+            QuoteErrorCode::OraclePriceZero,
             "Create oracle price account: pool spot price must be non-zero (zero is the no-price sentinel; pool reserve_b is zero or negligible relative to reserve_a)",
         ));
     }
@@ -774,7 +912,7 @@ fn ensure_supported_fee_tier(fee_bps: u128) -> Result<(), QuoteError> {
         Ok(())
     } else {
         Err(QuoteError::new(
-            "unsupported_fee_tier",
+            QuoteErrorCode::UnsupportedFeeTier,
             "Fee tier must be one of 1, 5, 30, or 100 basis points",
         ))
     }
@@ -789,13 +927,13 @@ fn ensure_vault_balances(
 ) -> Result<(), QuoteError> {
     if vault_a_balance < pool.reserve_a {
         return Err(QuoteError::new(
-            "vault_a_balance_below_reserve",
+            QuoteErrorCode::VaultABalanceBelowReserve,
             vault_a_message,
         ));
     }
     if vault_b_balance < pool.reserve_b {
         return Err(QuoteError::new(
-            "vault_b_balance_below_reserve",
+            QuoteErrorCode::VaultBBalanceBelowReserve,
             vault_b_message,
         ));
     }
@@ -811,7 +949,7 @@ fn validate_swap_pool(
     ensure_supported_fee_tier(pool.fees)?;
     if pool.liquidity_pool_supply < MINIMUM_LIQUIDITY {
         return Err(QuoteError::new(
-            "liquidity_supply_below_minimum",
+            QuoteErrorCode::LiquiditySupplyBelowMinimum,
             "Pool liquidity supply is below minimum liquidity",
         ));
     }
@@ -840,7 +978,7 @@ fn finish_swap_quote(
 ) -> Result<SwapQuote, QuoteError> {
     let fee_amount = amount_in.checked_sub(effective_amount_in).ok_or_else(|| {
         QuoteError::new(
-            "arithmetic_overflow",
+            QuoteErrorCode::ArithmeticOverflow,
             "gross input - effective input underflows",
         )
     })?;
@@ -848,13 +986,13 @@ fn finish_swap_quote(
         SwapDirection::AToB => (
             pool.reserve_a.checked_add(amount_in).ok_or_else(|| {
                 QuoteError::new(
-                    "arithmetic_overflow",
+                    QuoteErrorCode::ArithmeticOverflow,
                     "reserve_a + deposit_a overflows u128",
                 )
             })?,
             pool.reserve_b.checked_sub(amount_out).ok_or_else(|| {
                 QuoteError::new(
-                    "arithmetic_overflow",
+                    QuoteErrorCode::ArithmeticOverflow,
                     "reserve_b + deposit_b - withdraw_b underflows",
                 )
             })?,
@@ -862,13 +1000,13 @@ fn finish_swap_quote(
         SwapDirection::BToA => (
             pool.reserve_a.checked_sub(amount_out).ok_or_else(|| {
                 QuoteError::new(
-                    "arithmetic_overflow",
+                    QuoteErrorCode::ArithmeticOverflow,
                     "reserve_a + deposit_a - withdraw_a underflows",
                 )
             })?,
             pool.reserve_b.checked_add(amount_in).ok_or_else(|| {
                 QuoteError::new(
-                    "arithmetic_overflow",
+                    QuoteErrorCode::ArithmeticOverflow,
                     "reserve_b + deposit_b overflows u128",
                 )
             })?,
@@ -886,9 +1024,12 @@ fn finish_swap_quote(
 }
 
 fn fee_multiplier(fee_bps: u128) -> Result<u128, QuoteError> {
-    FEE_BPS_DENOMINATOR
-        .checked_sub(fee_bps)
-        .ok_or_else(|| QuoteError::new("unsupported_fee_tier", "fee_bps exceeds fee denominator"))
+    FEE_BPS_DENOMINATOR.checked_sub(fee_bps).ok_or_else(|| {
+        QuoteError::new(
+            QuoteErrorCode::UnsupportedFeeTier,
+            "fee_bps exceeds fee denominator",
+        )
+    })
 }
 
 fn pool_update(
@@ -898,7 +1039,7 @@ fn pool_update(
 ) -> Result<PoolUpdate, QuoteError> {
     if reserve_a == 0 {
         return Err(QuoteError::new(
-            "reserve_a_zero",
+            QuoteErrorCode::ReserveAZero,
             "spot_price_q64_64: reserve_base must be non-zero",
         ));
     }
@@ -918,7 +1059,7 @@ fn checked_floor(
     overflow_message: &'static str,
 ) -> Result<u128, QuoteError> {
     checked_mul_div_floor(left, right, denominator)
-        .ok_or_else(|| QuoteError::new("arithmetic_overflow", overflow_message))
+        .ok_or_else(|| QuoteError::new(QuoteErrorCode::ArithmeticOverflow, overflow_message))
 }
 
 fn checked_ceil(
@@ -928,5 +1069,5 @@ fn checked_ceil(
     overflow_message: &'static str,
 ) -> Result<u128, QuoteError> {
     checked_mul_div_ceil(left, right, denominator)
-        .ok_or_else(|| QuoteError::new("arithmetic_overflow", overflow_message))
+        .ok_or_else(|| QuoteError::new(QuoteErrorCode::ArithmeticOverflow, overflow_message))
 }

@@ -6,6 +6,7 @@ members = [
     "programs/token/methods",
     "programs/amm/core",
     "programs/amm",
+    "programs/amm/client",
     "programs/amm/methods",
     "programs/ata/core",
     "programs/ata",
@@ -39,6 +40,7 @@ token_core = { path = "programs/token/core" }
 token_program = { path = "programs/token" }
 amm_core = { path = "programs/amm/core" }
 amm_program = { path = "programs/amm" }
+amm_client = { path = "programs/amm/client" }
 ata_core = { path = "programs/ata/core" }
 ata_program = { path = "programs/ata" }
 twap_oracle_core = { path = "programs/twap_oracle/core" }
