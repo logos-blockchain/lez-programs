@@ -15,7 +15,10 @@ adapter responsibilities.
 - `discovery` derives config and complete pair read manifests, then classifies raw pair snapshots
   as missing or active without performing network I/O.
 - `intent` prepares canonical opening amounts and caller/stored order mappings with integer-only
-  protocol math.
+  protocol math. It also converts exact human price ratios and token decimals into stored-order
+  Q64.64 prices without floating point.
+- `sequencer` decodes original `getAccount` response text directly into lossless
+  `AccountSnapshot` values, preserving integer fields above `2^53`.
 - `slippage` converts validated quotes into integer-only instruction guards. Minimum guards round
   down, maximum guards round up, and checked overflow returns a typed error.
 - `plan` covers all ten guest instructions and returns the canonical instruction plus ordered
@@ -76,4 +79,5 @@ Program IDs use 64-character lowercase hexadecimal strings. Account data uses he
 encoded instruction words remain JSON `u32` numbers. No JavaScript `Number` conversion is required
 for chain amounts or deadlines. Plan JSON also includes typed `instructionArgs`, derived directly
 from the same `amm_core::Instruction` encoded in `instructionWords`. Only `amm_client_plan` accepts
-the five snapshot-bound `prepare_*_transaction` operations.
+the five snapshot-bound `prepare_*_transaction` operations. The quote entrypoint also exposes
+`account_snapshot_from_sequencer_response` and `human_price_ratio_to_q64_64` host adapters.

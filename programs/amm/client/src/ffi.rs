@@ -145,7 +145,7 @@ pub unsafe extern "C" fn amm_client_plan(request_json: *const c_char) -> *mut c_
     unsafe { call(request_json, wire::plan_json) }
 }
 
-/// Evaluates a canonical AMM economic quote from a tagged JSON request.
+/// Evaluates a canonical AMM quote, discovery operation, or host adapter from tagged JSON.
 ///
 /// Returned JSON owns its memory and must be released with [`amm_client_free`].
 ///

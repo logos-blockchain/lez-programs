@@ -18,10 +18,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
+    account_snapshot_from_sequencer_response,
     discovery::{self, CanonicalPair, PairReadManifest},
-    plan_add_liquidity, plan_create_oracle_price_account, plan_create_pool,
-    plan_create_price_observations, plan_initialize, plan_remove_liquidity, plan_swap_exact_input,
-    plan_swap_exact_output, plan_sync_reserves, plan_update_config,
+    human_price_ratio_to_q64_64, plan_add_liquidity, plan_create_oracle_price_account,
+    plan_create_pool, plan_create_price_observations, plan_initialize, plan_remove_liquidity,
+    plan_swap_exact_input, plan_swap_exact_output, plan_sync_reserves, plan_update_config,
     quote::{
         self as client_quote, AccountSnapshot, ValidatedFungibleDefinition,
         ValidatedFungibleHolding, ValidatedPoolSnapshot,
@@ -30,10 +31,10 @@ use crate::{
     CreatePoolPlanInput, CreatePriceObservationsPlanInput, InitializePlanInput, IntentError,
     OpeningLiquidityIntent, PoolContext, PreparedAddLiquidity, PreparedCallerOpeningPair,
     PreparedCreatePool, PreparedOpeningPair, PreparedRemoveLiquidity, PreparedSwapExactInput,
-    PreparedSwapExactOutput, PreparedTransaction, RemoveLiquidityPlanInput, SlippageTolerance,
-    SwapExactInputPlanInput, SwapExactOutputPlanInput, SyncReservesPlanInput, TransactionError,
-    TransactionOperation, TransactionPlan, UpdateConfigPlanInput, WalletPrerequisites,
-    SLIPPAGE_BPS_DENOMINATOR,
+    PreparedSwapExactOutput, PreparedTransaction, RemoveLiquidityPlanInput, SequencerAccountError,
+    SlippageTolerance, SwapExactInputPlanInput, SwapExactOutputPlanInput, SyncReservesPlanInput,
+    TransactionError, TransactionOperation, TransactionPlan, UpdateConfigPlanInput,
+    WalletPrerequisites, SLIPPAGE_BPS_DENOMINATOR,
 };
 
 /// Version of the reusable AMM client JSON contract.
@@ -86,6 +87,12 @@ impl From<IntentError> for WireError {
 
 impl From<TransactionError> for WireError {
     fn from(error: TransactionError) -> Self {
+        Self::new(error.code(), error.to_string())
+    }
+}
+
+impl From<SequencerAccountError> for WireError {
+    fn from(error: SequencerAccountError) -> Self {
         Self::new(error.code(), error.to_string())
     }
 }
@@ -410,6 +417,25 @@ impl PoolInput {
 #[serde(tag = "operation", rename_all = "snake_case")]
 enum QuoteRequest {
     ProtocolConstants,
+    AccountSnapshotFromSequencerResponse {
+        #[serde(rename = "accountId")]
+        account_id: String,
+        response: String,
+    },
+    HumanPriceRatioToQ64_64 {
+        #[serde(rename = "firstTokenDefinitionId")]
+        first_token_definition_id: String,
+        #[serde(rename = "secondTokenDefinitionId")]
+        second_token_definition_id: String,
+        #[serde(rename = "firstAmount")]
+        first_amount: String,
+        #[serde(rename = "secondAmount")]
+        second_amount: String,
+        #[serde(rename = "firstTokenDecimals")]
+        first_token_decimals: String,
+        #[serde(rename = "secondTokenDecimals")]
+        second_token_decimals: String,
+    },
     DeriveConfigId {
         #[serde(rename = "ammProgramId")]
         amm_program_id: ProgramIdInput,
@@ -1275,7 +1301,7 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
     })
 }
 
-/// Evaluates one reusable AMM economic quote from tagged JSON.
+/// Evaluates one reusable AMM quote, discovery operation, or lossless host adapter from JSON.
 pub fn quote_json(value: Value) -> Result<Value, WireError> {
     validate_wire_schema(&value)?;
     let request: QuoteRequest = serde_json::from_value(value)
@@ -1289,6 +1315,33 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 .iter()
                 .map(u128::to_string)
                 .collect::<Vec<_>>(),
+        })),
+        QuoteRequest::AccountSnapshotFromSequencerResponse {
+            account_id: requested_account_id,
+            response,
+        } => {
+            let snapshot = account_snapshot_from_sequencer_response(
+                account_id(&requested_account_id, "accountId")?,
+                &response,
+            )?;
+            Ok(account_snapshot_json(&snapshot))
+        }
+        QuoteRequest::HumanPriceRatioToQ64_64 {
+            first_token_definition_id,
+            second_token_definition_id,
+            first_amount,
+            second_amount,
+            first_token_decimals,
+            second_token_decimals,
+        } => Ok(json!({
+            "priceQ64_64": human_price_ratio_to_q64_64(
+                account_id(&first_token_definition_id, "firstTokenDefinitionId")?,
+                account_id(&second_token_definition_id, "secondTokenDefinitionId")?,
+                &first_amount,
+                &second_amount,
+                decimal_u8(&first_token_decimals, "firstTokenDecimals")?,
+                decimal_u8(&second_token_decimals, "secondTokenDecimals")?,
+            )?.to_string(),
         })),
         QuoteRequest::DeriveConfigId { amm_program_id } => Ok(json!({
             "configId": discovery::derive_config_id(amm_program_id.into()).to_string(),
@@ -1944,6 +1997,22 @@ fn pool_update_json(pool: PoolUpdate) -> Value {
     })
 }
 
+fn account_snapshot_json(snapshot: &AccountSnapshot) -> Value {
+    let account = snapshot.account();
+    json!({
+        "id": snapshot.account_id().to_string(),
+        "programOwner": program_id_hex(account.program_owner),
+        "balance": account.balance.to_string(),
+        "nonce": account.nonce.0.to_string(),
+        "data": account
+            .data
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>(),
+    })
+}
+
 fn amm_context_json(context: &AmmContext) -> Value {
     json!({
         "ammProgramId": program_id_hex(context.amm_program_id),
@@ -2304,6 +2373,10 @@ fn decimal_u128(value: &str, field: &str) -> Result<u128, WireError> {
 }
 
 fn decimal_u64(value: &str, field: &str) -> Result<u64, WireError> {
+    decimal(value, field)
+}
+
+fn decimal_u8(value: &str, field: &str) -> Result<u8, WireError> {
     decimal(value, field)
 }
 

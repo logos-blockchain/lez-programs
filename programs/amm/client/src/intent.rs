@@ -15,6 +15,14 @@ use nssa_core::account::AccountId;
 /// One whole unit in the Q64.64 price representation used by the AMM.
 pub const Q64_64_ONE: u128 = 1_u128 << 64;
 
+/// Largest token decimal count accepted by human-price conversion.
+///
+/// One whole token at a larger decimal count cannot fit in the protocol's `u128` raw amount.
+pub const MAX_TOKEN_DECIMALS: u8 = 38;
+
+/// Largest fractional precision accepted for either side of a human price ratio.
+pub const MAX_HUMAN_PRICE_FRACTIONAL_DIGITS: u8 = 38;
+
 /// Failure while turning a caller intent into executable AMM amounts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -23,6 +31,19 @@ pub enum IntentError {
     IdenticalTokenDefinitions,
     /// A Q64.64 desired price must be nonzero.
     ZeroDesiredPrice,
+    /// One side of a human price ratio is not an unsigned decimal amount.
+    InvalidHumanPriceAmount { field: &'static str },
+    /// One side of a human price ratio is zero.
+    ZeroHumanPriceAmount { field: &'static str },
+    /// One side of a human price ratio has unsupported fractional precision.
+    HumanPricePrecisionOutOfRange {
+        field: &'static str,
+        precision: usize,
+    },
+    /// Token metadata reports a decimal count outside the protocol amount range.
+    TokenDecimalsOutOfRange { field: &'static str, decimals: u8 },
+    /// A positive human price is smaller than the least positive Q64.64 value.
+    HumanPriceUnderflow,
     /// An edited token amount must be nonzero.
     ZeroEditedAmount,
     /// A widened calculation produced a result outside the chain's `u128` amount range.
@@ -47,6 +68,11 @@ impl IntentError {
         match self {
             Self::IdenticalTokenDefinitions => "identical_token_definitions",
             Self::ZeroDesiredPrice => "zero_desired_price",
+            Self::InvalidHumanPriceAmount { .. } => "invalid_human_price_amount",
+            Self::ZeroHumanPriceAmount { .. } => "zero_human_price_amount",
+            Self::HumanPricePrecisionOutOfRange { .. } => "human_price_precision_out_of_range",
+            Self::TokenDecimalsOutOfRange { .. } => "token_decimals_out_of_range",
+            Self::HumanPriceUnderflow => "human_price_underflow",
             Self::ZeroEditedAmount => "zero_edited_amount",
             Self::ArithmeticOverflow { .. } => "intent_arithmetic_overflow",
             Self::SpotPriceMismatch { .. } => "spot_price_mismatch",
@@ -64,6 +90,23 @@ impl fmt::Display for IntentError {
                 formatter.write_str("pool token definitions must be distinct")
             }
             Self::ZeroDesiredPrice => formatter.write_str("desired Q64.64 price must be nonzero"),
+            Self::InvalidHumanPriceAmount { field } => {
+                write!(formatter, "{field} must be an unsigned decimal amount")
+            }
+            Self::ZeroHumanPriceAmount { field } => {
+                write!(formatter, "{field} must be greater than zero")
+            }
+            Self::HumanPricePrecisionOutOfRange { field, precision } => write!(
+                formatter,
+                "{field} has {precision} fractional digits; maximum is {MAX_HUMAN_PRICE_FRACTIONAL_DIGITS}"
+            ),
+            Self::TokenDecimalsOutOfRange { field, decimals } => write!(
+                formatter,
+                "{field} is {decimals}; maximum is {MAX_TOKEN_DECIMALS}"
+            ),
+            Self::HumanPriceUnderflow => {
+                formatter.write_str("human price is below the Q64.64 precision range")
+            }
             Self::ZeroEditedAmount => formatter.write_str("edited token amount must be nonzero"),
             Self::ArithmeticOverflow { operation } => {
                 write!(formatter, "{operation} exceeds the u128 amount range")
@@ -160,6 +203,149 @@ impl PreparedCallerOpeningPair {
     pub const fn stored(&self) -> &PreparedOpeningPair {
         &self.stored
     }
+}
+
+#[derive(Clone, Copy)]
+struct ParsedHumanAmount {
+    mantissa: u128,
+    fractional_digits: u8,
+}
+
+/// Converts an exact human token ratio into the pool's canonical raw Q64.64 price.
+///
+/// `first_amount` units of the caller's first token are declared equal in value to
+/// `second_amount` units of the second token. The token IDs select canonical stored A/B order;
+/// callers do not invert the ratio when their display order is reversed. Token decimal counts
+/// convert the human ratio into raw-unit reserve B per raw-unit reserve A. Calculation uses integer
+/// arithmetic and floors once at Q64.64 conversion.
+pub fn human_price_ratio_to_q64_64(
+    first_token_definition_id: AccountId,
+    second_token_definition_id: AccountId,
+    first_amount: &str,
+    second_amount: &str,
+    first_token_decimals: u8,
+    second_token_decimals: u8,
+) -> Result<u128, IntentError> {
+    let Some((stored_a_id, _)) =
+        canonical_token_pair(first_token_definition_id, second_token_definition_id)
+    else {
+        return Err(IntentError::IdenticalTokenDefinitions);
+    };
+    validate_token_decimals("firstTokenDecimals", first_token_decimals)?;
+    validate_token_decimals("secondTokenDecimals", second_token_decimals)?;
+    let first = parse_human_price_amount(first_amount, "firstAmount")?;
+    let second = parse_human_price_amount(second_amount, "secondAmount")?;
+
+    let (base, quote, base_decimals, quote_decimals) = if first_token_definition_id == stored_a_id {
+        (first, second, first_token_decimals, second_token_decimals)
+    } else {
+        (second, first, second_token_decimals, first_token_decimals)
+    };
+    let numerator_exponent = u16::from(quote_decimals)
+        .checked_add(u16::from(base.fractional_digits))
+        .ok_or(IntentError::ArithmeticOverflow {
+            operation: "human price numerator exponent",
+        })?;
+    let denominator_exponent = u16::from(base_decimals)
+        .checked_add(u16::from(quote.fractional_digits))
+        .ok_or(IntentError::ArithmeticOverflow {
+            operation: "human price denominator exponent",
+        })?;
+    let (numerator_exponent, denominator_exponent) = if numerator_exponent >= denominator_exponent {
+        (
+            numerator_exponent.checked_sub(denominator_exponent).ok_or(
+                IntentError::ArithmeticOverflow {
+                    operation: "human price exponent reduction",
+                },
+            )?,
+            0,
+        )
+    } else {
+        (
+            0,
+            denominator_exponent.checked_sub(numerator_exponent).ok_or(
+                IntentError::ArithmeticOverflow {
+                    operation: "human price exponent reduction",
+                },
+            )?,
+        )
+    };
+
+    let numerator = U512::from(quote.mantissa)
+        .checked_mul(U512::from(Q64_64_ONE))
+        .and_then(|value| value.checked_mul(pow10(numerator_exponent)?))
+        .ok_or(IntentError::ArithmeticOverflow {
+            operation: "human price numerator",
+        })?;
+    let denominator = U512::from(base.mantissa)
+        .checked_mul(
+            pow10(denominator_exponent).ok_or(IntentError::ArithmeticOverflow {
+                operation: "human price denominator power",
+            })?,
+        )
+        .ok_or(IntentError::ArithmeticOverflow {
+            operation: "human price denominator",
+        })?;
+    let converted = numerator
+        .checked_div(denominator)
+        .ok_or(IntentError::ArithmeticOverflow {
+            operation: "human price division",
+        })?;
+    if converted == U512::ZERO {
+        return Err(IntentError::HumanPriceUnderflow);
+    }
+    u128::try_from(converted).map_err(|_| IntentError::ArithmeticOverflow {
+        operation: "human Q64.64 price",
+    })
+}
+
+fn validate_token_decimals(field: &'static str, decimals: u8) -> Result<(), IntentError> {
+    if decimals > MAX_TOKEN_DECIMALS {
+        Err(IntentError::TokenDecimalsOutOfRange { field, decimals })
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_human_price_amount(
+    value: &str,
+    field: &'static str,
+) -> Result<ParsedHumanAmount, IntentError> {
+    let (whole, fraction) = value.split_once('.').map_or((value, ""), |parts| parts);
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(IntentError::InvalidHumanPriceAmount { field });
+    }
+    if fraction.len() > usize::from(MAX_HUMAN_PRICE_FRACTIONAL_DIGITS) {
+        return Err(IntentError::HumanPricePrecisionOutOfRange {
+            field,
+            precision: fraction.len(),
+        });
+    }
+
+    let mut digits = String::from(whole);
+    digits.push_str(fraction);
+    let mantissa = digits
+        .parse::<u128>()
+        .map_err(|_| IntentError::InvalidHumanPriceAmount { field })?;
+    if mantissa == 0 {
+        return Err(IntentError::ZeroHumanPriceAmount { field });
+    }
+    let fractional_digits =
+        u8::try_from(fraction.len()).map_err(|_| IntentError::HumanPricePrecisionOutOfRange {
+            field,
+            precision: fraction.len(),
+        })?;
+    Ok(ParsedHumanAmount {
+        mantissa,
+        fractional_digits,
+    })
+}
+
+fn pow10(exponent: u16) -> Option<U512> {
+    (0..exponent).try_fold(U512::ONE, |value, _| value.checked_mul(U512::from(10_u8)))
 }
 
 /// Prepares an opening pair without requiring a caller to reproduce canonical token ordering.
