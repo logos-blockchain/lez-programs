@@ -7,20 +7,18 @@
   "main": "amm_ui_plugin",
   "view": "qml/Main.qml",
   "icon": "icons/amm.png",
-  "dependencies": ["logos_execution_zone"],
+  "dependencies": ["logos_execution_zone", "amm_module"],
 
   "nix": {
     "packages": {
       "build": ["pkg-config"],
       "runtime": ["qt6.qtdeclarative", "zstd", "krb5", "abseil-cpp", "libbase58"]
     },
-    "external_libraries": [
-      { "name": "amm_client" }
-    ],
+    "external_libraries": [],
     "cmake": {
       "find_packages": [],
       "extra_sources": [],
-      "extra_include_dirs": ["lib"],
+      "extra_include_dirs": [],
       "extra_link_libraries": []
     }
   }

@@ -52,9 +52,9 @@ This makes `lgpm` available as a global command.
 
 ## Running the UI standalone
 
-The app is built from the **repository-root** flake (which also provides the
-`amm_client_ffi` library it links). From the repo root, launch it with its named
-attribute:
+The app is built from the **repository-root** flake (which also builds the
+`amm_module` core module the UI delegates its AMM logic to). From the repo root,
+launch it with its named attribute:
 
 ```bash
 nix run .#amm-ui
@@ -62,9 +62,10 @@ nix run .#amm-ui
 
 This builds and runs the application in development mode. The Logos bridge is unavailable in standalone mode, but the UI layout and mock data are fully functional.
 
-Build just the FFI crate with `nix build .#amm_client_ffi`. (Each UI is exposed
-under its own name, so future apps are `nix run .#<name>` — there is no bare
-`nix run .` default.)
+Build just the AMM core module with `nix build .#amm-module`, or its underlying
+client crate with `nix build .#amm_client`. (Each UI is exposed under its own
+name, so future apps are `nix run .#<name>` — there is no bare `nix run .`
+default.)
 
 ## Running inside Logos Basecamp
 

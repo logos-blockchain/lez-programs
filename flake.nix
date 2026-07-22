@@ -108,19 +108,24 @@
       }
     );
 
-      # The AMM QML UI module (apps/amm). Its external_libraries entry
-      # (amm_client) is resolved to `self.packages.${system}.amm_client`
-      # above — the module builder's resolveExtInput reads
-      # `flakeInput.packages.${system}.${pkgName}`, and passing `self` here
-      # works because `self` is this very flake, which already exposes that
-      # package per crateOutputs above.
+      # The AMM QML UI module (apps/amm). It links no amm_client library of its
+      # own — the AMM logic lives in the amm_module core module, which the UI
+      # depends on (declared in apps/amm/metadata.json, reached via
+      # modules().amm_module in the backend) alongside the logos_execution_zone
+      # wallet module.
       appOutputs = logos-module-builder.lib.mkLogosQmlModule {
         src = ./apps/amm;
         configFile = ./apps/amm/metadata.json;
-        flakeInputs = inputs;
-        externalLibInputs = {
-          amm_client = { input = self; packages.default = "amm_client"; };
-        };
+        # amm_module isn't a flake input — it's built from this same flake below
+        # (ammModuleOutputs) — so inject it into flakeInputs under its dependency
+        # name so the builder's dependency resolver finds it (reads its .lidl to
+        # generate the modules().amm_module wrapper). The wallet module stays a
+        # direct dep too, so both the UI and amm_module resolve the one shared
+        # wallet instance.
+        flakeInputs = inputs // { amm_module = ammModuleOutputs; };
+        # The UI links no external lib of its own — the AMM brain (amm_client) is
+        # linked by amm_module, which the UI reaches via modules().amm_module.
+        externalLibInputs = { };
         # The AMM UI links the shared C++ wallet access lib and bundles the
         # Logos.Wallet QML module (apps/shared/wallet). apps/amm/flake.nix wires
         # these via its `shared_wallet` input; when built from this root flake
@@ -153,6 +158,22 @@
       appApps = appOutputs.apps or { };
       appPkgs = appOutputs.packages or { };
 
+      # AMM core module (modules/amm): the AMM business logic as a headless
+      # `core` Logos module. It links the amm_client crate (the transport-
+      # independent AMM brain, resolved via `self`) and depends on the
+      # logos_execution_zone wallet module (declared in modules/amm/metadata.json,
+      # reached via modules().logos_execution_zone in the impl). Exposed as the
+      # `amm-module` package; no UI/app output.
+      ammModuleOutputs = logos-module-builder.lib.mkLogosModule {
+        src = ./modules/amm;
+        configFile = ./modules/amm/metadata.json;
+        flakeInputs = inputs;
+        externalLibInputs = {
+          amm_client = { input = self; packages.default = "amm_client"; };
+        };
+      };
+      ammModulePkgs = ammModuleOutputs.packages or { };
+
       # Wrap the app launcher to export DYLD_FALLBACK_LIBRARY_PATH pointing at the
       # amm_client lib. The logos module builder links the plugin against
       # @rpath/libamm_client.dylib but does NOT stage that dylib into the
@@ -180,10 +201,13 @@
         system: cratePkgs:
         let
           appSysPkgs = appPkgs.${system} or { };
+          ammModSysPkgs = ammModulePkgs.${system} or { };
         in
         (builtins.removeAttrs cratePkgs [ "default" ])
         // (builtins.removeAttrs appSysPkgs [ "default" ])
         // (if appSysPkgs ? default then { amm-ui = appSysPkgs.default; } else { })
+        // (builtins.removeAttrs ammModSysPkgs [ "default" ])
+        // (if ammModSysPkgs ? default then { amm-module = ammModSysPkgs.default; } else { })
       ) crateOutputs.packages;
     in
     (builtins.removeAttrs appOutputs [ "apps" "packages" ])

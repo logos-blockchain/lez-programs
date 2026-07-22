@@ -12,20 +12,23 @@
 
 #include "rep_AmmUiBackend_source.h"
 
-#include "ActiveNetwork.h"
 #include "WalletAccountModel.h"
 
 class LogosAPI;
 struct LogosModules;
-class AmmClient;
 class LogosWalletProvider;
-class NewPositionRuntime;
-class SwapRuntime;
 class WalletController;
 
 // Source-side implementation of the AmmUiBackend .rep interface.
 // Inheriting from AmmUiBackendSimpleSource gives us the generated PROPs and
 // SLOTs from AmmUiBackend.rep — all the simple ones flow over QtRO.
+//
+// The AMM business logic (pool resolution, swaps, add-liquidity) lives in the
+// amm_module core Logos module; this backend owns only wallet-session lifecycle
+// and forwards every AMM slot to modules().amm_module. The one exception is
+// creating a fresh LP holding for add-liquidity: that mutates the wallet keyset,
+// so it stays here (via the wallet provider, which keeps the account model and
+// on-disk storage coherent) and its id is handed to the module's submit.
 class AmmUiBackend : public AmmUiBackendSimpleSource {
     Q_OBJECT
     Q_PROPERTY(WalletAccountModel* accountModel READ accountModel CONSTANT)
@@ -53,61 +56,35 @@ public slots:
     bool openExisting() override;
     void disconnectWallet() override;
 
-    // AMM
+    // AMM — all forwarded to the amm_module core module.
     QVariantMap resolvePool(QString defAHex, QString defBHex) override;
     QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                             QString userOutputHoldingHex, QString amountInDecimal,
                             QString minOutDecimal, QString deadlineDecimal) override;
-    // Reads the token list from TOKENS_CONFIG (see AmmUiBackend.cpp) so the
-    // Swap UI's token picker is config-driven instead of hardcoded.
+    // Reads the token list from TOKENS_CONFIG (via the module) so the Swap UI's
+    // token picker is config-driven instead of hardcoded.
     QVariantList tokenList() override;
 
 private:
     void syncWalletState();
+    // Publishes the new-position context PROP: a local "loading" placeholder
+    // until wallet state (and thus the module connection) is ready, then the
+    // module's newPositionContext for the current hints.
     void publishNetworkContext();
 
-    // Builds the new-position network context from the same sources the Swap
-    // view uses: ammProgramId from $AMM_PROGRAM_BIN, tokenIds from
-    // $TOKENS_CONFIG. status is "ready" once AMM_PROGRAM_BIN resolves, else
-    // "config_missing". There is no separate network config or channel probe.
-    ActiveNetworkSnapshot networkSnapshot();
-
-    // 64-char lowercase-hex AMM program id derived from $AMM_PROGRAM_BIN (empty
-    // if unset/unreadable); matches swapExactInput's program-id encoding.
-    QString ammProgramIdHex();
-
-    // Normalizes an account id given as either 64-char lowercase/uppercase hex
-    // or base58 to lowercase hex. Returns an empty QString if `id` is neither
-    // (or the base58 decode fails), so callers can detect and skip it.
-    QString normalizeAccountId(const QString& id);
-
-    // Returns the deployed AMM program-binary bytes (a RISC Zero ProgramBinary
-    // .bin, not a raw ELF) from $AMM_PROGRAM_BIN, or an empty QByteArray (with a
-    // qWarning) if the env var is unset/unreadable/empty.
-    QByteArray loadAmmElf();
-
     LogosAPI* m_logosAPI;
-    // Direct module handle for the AMM/swap path (resolvePool/swapExactInput/
-    // tokenList). The shared wallet provider exposes only wallet-level ops, not
-    // the raw account-id / get_account_public / send_generic_public_transaction
-    // calls the AMM path needs, so keep a thin LogosModules over the same
-    // LogosAPI as the wallet provider.
+    // Handle for the amm_module core module (resolvePool / swapExactInput /
+    // tokenList / new-position). The module wraps the amm_client brain and
+    // reaches the shared wallet through its own logos_execution_zone dependency;
+    // this backend keeps a thin LogosModules over the same LogosAPI as the
+    // wallet provider so both resolve that one shared wallet instance.
     std::unique_ptr<LogosModules> m_logos;
     std::unique_ptr<LogosWalletProvider> m_wallet;
     std::unique_ptr<WalletController> m_walletController;
-    std::unique_ptr<AmmClient> m_ammClient;
-    std::unique_ptr<NewPositionRuntime> m_newPosition;
-    std::unique_ptr<SwapRuntime> m_swap;
 
+    // Sticky new-position hints (recent/resolved token ids) so a bare
+    // republish (wallet-state change) keeps the user's last selection.
     QVariantMap m_newPositionHints;
-
-    // Network context is derived from $AMM_PROGRAM_BIN + $TOKENS_CONFIG, which are
-    // fixed for the process lifetime — resolve them once and cache. networkSnapshot()
-    // runs on the hot path (every quote) and from inside runtime callbacks, and
-    // tokenList() makes remote base58 conversions, so it must not recompute each call.
-    bool m_networkResolved = false;
-    QString m_ammProgramIdCache;
-    QStringList m_tokenIdsCache;
 };
 
 #endif // AMM_UI_BACKEND_H

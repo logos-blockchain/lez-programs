@@ -1,0 +1,26 @@
+{
+  "name": "amm_module",
+  "version": "0.1.0",
+  "type": "core",
+  "interface": "universal",
+  "category": "amm",
+  "description": "AMM business logic — on-chain pool resolution and swaps",
+  "main": "amm_module_plugin",
+  "dependencies": ["logos_execution_zone"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [
+      { "name": "amm_client" }
+    ],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

@@ -167,6 +167,11 @@ Rectangle {
     readonly property bool hasAmount: editingSide === "sell" ? parsedSellInput > 0 : parsedBuyInput > 0
     readonly property bool tokensSelected: sellToken !== null && buyToken !== null
     readonly property bool insufficientLiquidity: hasAmount && root.poolExists && parsedBuyAmount > buyReserveNum
+    // True only when THIS app's wallet is connected. The backend also enforces
+    // this before submitting (AmmUiBackend::swapExactInput), but gate the UI too
+    // so a disconnected app never even initiates a swap against the shared wallet.
+    readonly property bool walletOpen: root.backend !== null && root.backend.isWalletOpen
+
     // The backend only exposes swapExactInput, so only the "I know exactly
     // how much I'm selling" direction can actually be submitted. Editing the
     // buy field still previews an estimate (via amountInFor above) but can't
@@ -175,6 +180,7 @@ Rectangle {
                                        && parsedSellAmount > 0 && parsedBuyAmount > 0
                                        && root.poolResolved && root.poolExists
                                        && !insufficientLiquidity && !root.swapInProgress
+                                       && root.walletOpen
 
     readonly property string submitButtonText: {
         if (!tokensSelected) return qsTr("Select tokens")
@@ -185,6 +191,7 @@ Rectangle {
         if (!root.poolExists) return qsTr("No pool / no liquidity")
         if (insufficientLiquidity) return qsTr("Insufficient liquidity")
         if (parsedBuyAmount <= 0) return qsTr("Amount too small")
+        if (!root.walletOpen) return qsTr("Connect wallet to swap")
         return qsTr("Swap")
     }
 
