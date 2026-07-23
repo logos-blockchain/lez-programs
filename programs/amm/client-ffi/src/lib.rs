@@ -73,7 +73,10 @@ pub unsafe extern "C" fn amm_client_swap_words(
     min_out: *const [u8; 16],
     deadline: u64,
 ) -> AmmWords {
-    let (a, m) = (u128::from_le_bytes(*amount_in), u128::from_le_bytes(*min_out));
+    let (a, m) = (
+        u128::from_le_bytes(*amount_in),
+        u128::from_le_bytes(*min_out),
+    );
     match swap::swap_exact_input_words(a, m, deadline) {
         Ok(w) => {
             let boxed = w.into_boxed_slice();

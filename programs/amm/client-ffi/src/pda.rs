@@ -33,8 +33,7 @@ pub fn current_tick_pda(twap: ProgramId, pool: AccountId) -> AccountId {
 #[cfg(test)]
 mod tests {
     use amm_core::compute_pool_pda;
-    use nssa_core::account::AccountId;
-    use nssa_core::program::ProgramId;
+    use nssa_core::{account::AccountId, program::ProgramId};
 
     use super::*;
 
