@@ -62,11 +62,14 @@ namespace {
     // canonical wallet (~/.lee/wallet) used by the wallet UI and other apps.
     const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
 
-    // Absolute path to the deployed AMM program's compiled ELF (amm.bin). The
-    // app can't safely embed/derive this itself: the wallet module's bundled
-    // AMM program may differ from whatever is actually deployed on the target
-    // sequencer, and the program's ELF bytes are what determine its program id
-    // (and therefore every PDA derived from it). See apps/amm/README.md.
+    // Absolute path to the deployed AMM program's RISC Zero program binary
+    // (amm.bin — the `ProgramBinary` `.bin` from the docker guest build, decoded
+    // on the Rust side via `ProgramBinary::decode`; NOT a raw ELF — pointing at
+    // the raw guest ELF yields a different/failed program id). The app can't
+    // safely embed/derive this itself: the wallet module's bundled AMM program
+    // may differ from whatever is actually deployed on the target sequencer, and
+    // the binary's bytes are what determine its program id (and therefore every
+    // PDA derived from it). See apps/amm/README.md.
     const char AMM_PROGRAM_BIN_ENV[] = "AMM_PROGRAM_BIN";
 
     // Absolute path to the JSON token-list config consumed by tokenList()

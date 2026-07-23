@@ -53,8 +53,10 @@ class AmmUiBackend
     SLOT(QVariantMap resolvePool(QString defAHex, QString defBHex))
     // Submits a real on-chain SwapExactInput transaction against the pool for
     // (defAHex, defBHex). amountInDecimal/minOutDecimal are decimal-string
-    // u128 amounts in base units; deadlineDecimal is a decimal-string u64
-    // unix timestamp. Returns the tx hash, or an empty string on failure
+    // u128 amounts in base units; deadlineDecimal is a decimal-string u64 unix
+    // timestamp in MILLISECONDS (matches amm_core's SwapExactInput deadline —
+    // passing seconds would expire the swap immediately once deadline handling
+    // is enforced). Returns the tx hash, or an empty string on failure
     // (no pool, unreadable AMM_PROGRAM_BIN, bad inputs, or a failed tx).
     SLOT(QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountInDecimal, QString minOutDecimal, QString deadlineDecimal))
     // Reads the token list config at TOKENS_CONFIG (absolute path, JSON array

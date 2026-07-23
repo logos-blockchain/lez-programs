@@ -88,9 +88,25 @@ Rectangle {
         if (!root.backend || !root.sellToken || !root.buyToken)
             return
 
+        // Capture the pair this request is for. resolvePool callbacks can arrive
+        // out of order: if the user switches tokens while an earlier resolve is
+        // still in flight, its (stale) callback must NOT overwrite the current
+        // pair's pool state — that would corrupt the preview and the submitted
+        // min_out. A stale callback also leaves poolLoading alone, since the
+        // newer in-flight request owns it.
+        var reqSell = root.sellToken.definitionId
+        var reqBuy = root.buyToken.definitionId
+        function isStale() {
+            return !root.sellToken || !root.buyToken
+                || root.sellToken.definitionId !== reqSell
+                || root.buyToken.definitionId !== reqBuy
+        }
+
         root.poolLoading = true
-        logos.watch(root.backend.resolvePool(root.sellToken.definitionId, root.buyToken.definitionId),
+        logos.watch(root.backend.resolvePool(reqSell, reqBuy),
             function (pool) {
+                if (isStale())
+                    return
                 root.poolLoading = false
                 root.poolResolved = true
                 root.poolExists = !!(pool && pool.exists)
@@ -103,6 +119,8 @@ Rectangle {
                 root.poolError = (pool && pool.error && pool.error !== "no_pool") ? pool.error : ""
             },
             function (error) {
+                if (isStale())
+                    return
                 console.warn("resolvePool error:", error)
                 root.poolLoading = false
                 root.poolResolved = true
