@@ -6,7 +6,9 @@ use nssa_core::{account::AccountId, program::ProgramId};
 use risc0_binfmt::ProgramBinary;
 use twap_oracle_core::compute_current_tick_account_pda;
 
-/// Computes the `ProgramId` (Image ID) of a compiled guest ELF, the same way
+/// Computes the `ProgramId` (Image ID) of a deployed program binary — the RISC
+/// Zero `ProgramBinary` (`.bin`) format produced by the guest build, NOT a raw
+/// ELF (the `elf` bytes are decoded via `ProgramBinary::decode`) — the same way
 /// the sequencer/wallet does when deploying a program.
 pub fn program_id_from_elf(elf: &[u8]) -> Result<ProgramId, String> {
     let binary = ProgramBinary::decode(elf).map_err(|e| format!("{e:?}"))?;

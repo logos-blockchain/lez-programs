@@ -106,8 +106,10 @@ pub unsafe extern "C" fn amm_client_free_words(w: AmmWords) {
     }
 }
 
-/// Computes the `ProgramId` (Image ID) of a compiled guest ELF. Returns
-/// `false` on an invalid ELF, leaving `out` unwritten.
+/// Computes the `ProgramId` (Image ID) of a deployed program binary — the RISC
+/// Zero `ProgramBinary` (`.bin`) format, NOT a raw ELF (the `elf` bytes are
+/// decoded via `ProgramBinary::decode`). Returns `false` on invalid input,
+/// leaving `out` unwritten.
 ///
 /// # Safety
 /// `elf` must be valid for reads of `elf_len` bytes, and `out` must be a

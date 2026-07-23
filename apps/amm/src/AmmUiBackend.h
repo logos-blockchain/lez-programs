@@ -81,8 +81,9 @@ private:
     void refreshSequencerAddr();
     void saveWallet();
 
-    // Returns the deployed AMM program ELF bytes from $AMM_PROGRAM_BIN, or an empty
-    // QByteArray (with a qWarning) if the env var is unset/unreadable/empty.
+    // Returns the deployed AMM program-binary bytes (a RISC Zero ProgramBinary
+    // .bin, not a raw ELF) from $AMM_PROGRAM_BIN, or an empty QByteArray (with a
+    // qWarning) if the env var is unset/unreadable/empty.
     QByteArray loadAmmElf();
 
     // Probe the configured sequencer over HTTP and update sequencerReachable.

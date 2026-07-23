@@ -285,6 +285,9 @@ bool AmmUiBackend::sharedWalletIsOpen()
     // the real on-disk wallet, so the user saw no accounts. Keying off accounts
     // alone means a genuinely-open shared wallet (Basecamp) is still adopted,
     // while a closed standalone core correctly falls through to open-from-disk.
+    // Tradeoff: a shared wallet that is open but holds ZERO accounts is treated
+    // as closed here, so it won't be adopted — an accepted edge, preferable to
+    // the default-sequencer false-positive that keying off the address caused.
     return !QJsonArray::fromVariantList(m_logos->logos_execution_zone.list_accounts()).isEmpty();
 }
 
@@ -783,8 +786,18 @@ QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString u
     // this file) plus the program's id as hex, not the raw ELF: the program is
     // already deployed and referenced by id. There is no program_dependencies
     // arg — the sequencer resolves the AMM's chained token/twap calls on-chain.
-    const QByteArray instructionBytes(reinterpret_cast<const char*>(instruction.data()),
-                                      static_cast<int>(instruction.size() * sizeof(uint32_t)));
+    // Serialize the u32 instruction words to bytes explicitly as little-endian,
+    // matching the protocol's LE-u32 wire format. A reinterpret_cast of the
+    // in-memory vector would be host-endian-dependent and byte-swap on a
+    // big-endian host, making the guest decode a different instruction.
+    QByteArray instructionBytes;
+    instructionBytes.reserve(static_cast<int>(instruction.size() * sizeof(uint32_t)));
+    for (const uint32_t w : instruction) {
+        instructionBytes.append(static_cast<char>(w & 0xFF));
+        instructionBytes.append(static_cast<char>((w >> 8) & 0xFF));
+        instructionBytes.append(static_cast<char>((w >> 16) & 0xFF));
+        instructionBytes.append(static_cast<char>((w >> 24) & 0xFF));
+    }
 
     // Derive the deployed AMM program id from the ELF and hex-encode it as the
     // canonical 32-byte hex (little-endian per u32 word — matches `spel

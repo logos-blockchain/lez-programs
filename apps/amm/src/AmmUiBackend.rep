@@ -46,7 +46,8 @@ class AmmUiBackend
 
     // AMM
     // Derives the AMM pool's PDAs (config/pool/vaults/current-tick) from the
-    // deployed AMM program's ELF (see AMM_PROGRAM_BIN) and reads the pool's
+    // deployed AMM program binary (see AMM_PROGRAM_BIN — a RISC Zero
+    // ProgramBinary .bin, not a raw ELF) and reads the pool's
     // on-chain reserves. Returns `{ exists: false }` if the AMM program bin
     // isn't configured, the AMM isn't initialized, or the pool has no
     // liquidity yet.
