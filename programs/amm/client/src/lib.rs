@@ -6,7 +6,6 @@ mod ffi;
 pub mod intent;
 pub mod plan;
 pub mod quote;
-pub mod sequencer;
 pub mod slippage;
 pub mod transaction;
 pub mod wire;
@@ -36,7 +35,6 @@ pub use plan::{
     SyncReservesPlanInput, TransactionPlan, UpdateConfigPlanInput,
 };
 pub use quote::AccountSnapshot;
-pub use sequencer::{account_snapshot_from_sequencer_response, SequencerAccountError};
 pub use slippage::{
     maximum_guard_amount, minimum_guard_amount, prepare_add_liquidity, prepare_create_pool,
     prepare_remove_liquidity, prepare_swap_exact_input, prepare_swap_exact_output,

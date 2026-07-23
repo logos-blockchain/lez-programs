@@ -1,52 +1,7 @@
-mod common;
-
-use amm_client::{
-    account_snapshot_from_sequencer_response, human_price_ratio_to_q64_64, wire::quote_json,
-    Q64_64_ONE,
-};
+use amm_client::{human_price_ratio_to_q64_64, wire::quote_json, Q64_64_ONE};
 use amm_core::canonical_token_pair;
-use common::program_id_words;
 use nssa_core::account::AccountId;
 use serde_json::json;
-
-const RAW_SEQUENCER_RESPONSE: &str = r#"{
-    "jsonrpc":"2.0",
-    "id":1,
-    "result":{
-        "program_owner":[1,2,3,4,5,6,7,8],
-        "balance":340282366920938463463374607431768211455,
-        "data":[0,255],
-        "nonce":9007199254740993
-    }
-}"#;
-
-#[test]
-fn raw_sequencer_response_becomes_lossless_snapshot() {
-    let account_id = AccountId::new([7; 32]);
-    let snapshot = account_snapshot_from_sequencer_response(account_id, RAW_SEQUENCER_RESPONSE)
-        .expect("raw sequencer account must decode");
-
-    assert_eq!(snapshot.account_id(), account_id);
-    assert_eq!(snapshot.account().program_owner, [1, 2, 3, 4, 5, 6, 7, 8]);
-    assert_eq!(snapshot.account().balance, u128::MAX);
-    assert_eq!(snapshot.account().nonce.0, 9_007_199_254_740_993);
-    assert_eq!(snapshot.account().data.as_ref(), &[0, 255]);
-
-    let wire = quote_json(json!({
-        "operation": "account_snapshot_from_sequencer_response",
-        "accountId": account_id.to_string(),
-        "response": RAW_SEQUENCER_RESPONSE,
-    }))
-    .expect("wire adapter must decode raw response text");
-    assert_eq!(wire["id"], account_id.to_string());
-    assert_eq!(
-        wire["programOwner"],
-        json!(program_id_words([1, 2, 3, 4, 5, 6, 7, 8]))
-    );
-    assert_eq!(wire["balance"], u128::MAX.to_string());
-    assert_eq!(wire["nonce"], "9007199254740993");
-    assert_eq!(wire["data"], "00ff");
-}
 
 #[test]
 fn human_price_conversion_handles_large_values_order_and_decimals() {

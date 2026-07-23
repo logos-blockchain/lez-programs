@@ -464,21 +464,9 @@ pub fn prepare_create_pool_transaction(
     } else {
         PairOrder::Reversed
     };
-    let (stored_a_definition, stored_b_definition, stored_a_holding, stored_b_holding) = match order
-    {
-        PairOrder::Stored => (
-            &first_definition,
-            &second_definition,
-            &first_holding,
-            &second_holding,
-        ),
-        PairOrder::Reversed => (
-            &second_definition,
-            &first_definition,
-            &second_holding,
-            &first_holding,
-        ),
-    };
+    let (stored_a_definition, stored_b_definition) =
+        order_pair(order, first_definition, second_definition);
+    let (stored_a_holding, stored_b_holding) = order_pair(order, &first_holding, &second_holding);
     let (stored_a_amount, stored_b_amount) =
         order.amounts_to_stored(input.first_amount, input.second_amount);
     let prepared = prepare_create_pool(
@@ -558,7 +546,11 @@ pub fn prepare_add_liquidity_transaction(
     let snapshot = active.pool();
     let order = active.caller_order();
     validate_expected_fee(snapshot, input.expected_fee_bps)?;
-    let (first_definition, second_definition) = caller_definitions(snapshot, order);
+    let (first_definition, second_definition) = order_pair(
+        order,
+        snapshot.token_a_definition(),
+        snapshot.token_b_definition(),
+    );
     let first_holding =
         ValidatedFungibleHolding::new(&context, input.first_token_holding, first_definition)?;
     let second_holding =
@@ -586,8 +578,7 @@ pub fn prepare_add_liquidity_transaction(
         snapshot.liquidity_definition().account_id(),
         "liquidity holding",
     )?;
-    let (stored_holding_a, stored_holding_b) =
-        stored_holdings(order, &first_holding, &second_holding);
+    let (stored_holding_a, stored_holding_b) = order_pair(order, &first_holding, &second_holding);
     let pool = PoolContext::new(&context, snapshot.pool_id(), snapshot.pool())?;
     let plan = plan_add_liquidity(AddLiquidityPlanInput {
         context: &context,
@@ -648,7 +639,11 @@ pub fn prepare_remove_liquidity_transaction(
     let snapshot = active.pool();
     let order = active.caller_order();
     validate_expected_fee(snapshot, input.expected_fee_bps)?;
-    let (first_definition, second_definition) = caller_definitions(snapshot, order);
+    let (first_definition, second_definition) = order_pair(
+        order,
+        snapshot.token_a_definition(),
+        snapshot.token_b_definition(),
+    );
     let first_fresh = validate_holding_destination(
         &context,
         input.first_token_holding,
@@ -1206,16 +1201,6 @@ fn pair_sources(
     sources
 }
 
-fn caller_definitions(
-    snapshot: &ValidatedPoolSnapshot,
-    order: PairOrder,
-) -> (&ValidatedFungibleDefinition, &ValidatedFungibleDefinition) {
-    match order {
-        PairOrder::Stored => (snapshot.token_a_definition(), snapshot.token_b_definition()),
-        PairOrder::Reversed => (snapshot.token_b_definition(), snapshot.token_a_definition()),
-    }
-}
-
 fn validate_expected_fee(
     snapshot: &ValidatedPoolSnapshot,
     expected_fee_bps: Option<u128>,
@@ -1227,17 +1212,6 @@ fn validate_expected_fee(
         }
     }
     Ok(())
-}
-
-fn stored_holdings<'a>(
-    order: PairOrder,
-    first: &'a ValidatedFungibleHolding,
-    second: &'a ValidatedFungibleHolding,
-) -> (&'a ValidatedFungibleHolding, &'a ValidatedFungibleHolding) {
-    match order {
-        PairOrder::Stored => (first, second),
-        PairOrder::Reversed => (second, first),
-    }
 }
 
 fn order_pair<T>(order: PairOrder, first: T, second: T) -> (T, T) {
@@ -1252,14 +1226,13 @@ fn swap_definitions(
     input_definition_id: AccountId,
     output_definition_id: AccountId,
 ) -> Result<(&ValidatedFungibleDefinition, &ValidatedFungibleDefinition), ClientError> {
-    match amm_program::quote::pair_order(
-        snapshot.pool(),
-        input_definition_id,
-        output_definition_id,
-    )? {
-        PairOrder::Stored => Ok((snapshot.token_a_definition(), snapshot.token_b_definition())),
-        PairOrder::Reversed => Ok((snapshot.token_b_definition(), snapshot.token_a_definition())),
-    }
+    let order =
+        amm_program::quote::pair_order(snapshot.pool(), input_definition_id, output_definition_id)?;
+    Ok(order_pair(
+        order,
+        snapshot.token_a_definition(),
+        snapshot.token_b_definition(),
+    ))
 }
 
 fn validate_holding_destination(

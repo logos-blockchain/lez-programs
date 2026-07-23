@@ -160,7 +160,6 @@ shown in this table and the sections below.
 | `operation` | Additional fields |
 |---|---|
 | `protocol_constants` | none; returns decimal-string `minimumLiquidity`, `feeBpsDenominator`, `slippageBpsDenominator`, and `supportedFeeTiers` |
-| `account_snapshot_from_sequencer_response` | canonical base58 `accountId`, original `getAccount` response text in `response` |
 | `human_price_ratio_to_q64_64` | caller-ordered token IDs, `firstAmount`, `secondAmount`, and decimal-string `firstTokenDecimals`/`secondTokenDecimals` |
 | `derive_config_id` | `ammProgramId` |
 | `inspect_config` | `ammProgramId`, raw `config` snapshot |
@@ -209,11 +208,9 @@ snapshot to the returned quote. It is not execution-price impact.
 
 ## Host adapters
 
-`account_snapshot_from_sequencer_response` accepts the original JSON-RPC response as a JSON string,
-not a host-parsed object. It decodes sequencer numeric literals directly as Rust `u128` values and
-returns the standard snapshot fields: `id`, `programOwner`, `balance`, `nonce`, and `data`. This
-preserves balances and nonces above `2^53`. Do not route the response through a JavaScript or QML
-numeric value first.
+Hosts normalize sequencer or wallet responses into the canonical snapshot fields before calling the
+client: base58 `id`, eight-word `programOwner`, decimal-string `balance` and `nonce`, and
+hexadecimal `data`. Keep raw RPC parsing and wallet-specific representations outside AMM.
 
 `human_price_ratio_to_q64_64` declares that `firstAmount` human units of the first token equal
 `secondAmount` human units of the second token. Amounts are unsigned decimal text and may contain
@@ -337,9 +334,8 @@ Every failure uses `{ "code": "...", "message": "..." }`. `code` is the stable
 machine-readable contract; `message` is diagnostic text. JSON adapter failures return
 `invalid_request` or `unsupported_schema`. The C envelope additionally returns `null_request`,
 `invalid_utf8`, `invalid_json`, `response_serialization_failed`, or `response_contains_nul` for
-boundary failures. Sequencer adapters return `invalid_sequencer_response`,
-`sequencer_account_error`, `sequencer_account_missing`, or `account_data_too_large`. Human-price
-conversion uses the stable `IntentError` codes documented by the Rust API.
+boundary failures. Human-price conversion uses the stable `IntentError` codes documented by the
+Rust API.
 
 No request performs network I/O or checks an ImageID, release version, compatibility manifest, or
 program allowlist. Deployment configuration is expected to select the corresponding AMM build.

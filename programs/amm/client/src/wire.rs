@@ -18,7 +18,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    account_snapshot_from_sequencer_response,
     discovery::{self, CanonicalPair, PairReadManifest},
     human_price_ratio_to_q64_64, plan_add_liquidity, plan_create_oracle_price_account,
     plan_create_pool, plan_create_price_observations, plan_initialize, plan_remove_liquidity,
@@ -31,10 +30,10 @@ use crate::{
     CreatePoolPlanInput, CreatePriceObservationsPlanInput, InitializePlanInput, IntentError,
     OpeningLiquidityIntent, PoolContext, PreparedAddLiquidity, PreparedCallerOpeningPair,
     PreparedCreatePool, PreparedOpeningPair, PreparedRemoveLiquidity, PreparedSwapExactInput,
-    PreparedSwapExactOutput, PreparedTransaction, RemoveLiquidityPlanInput, SequencerAccountError,
-    SlippageTolerance, SwapExactInputPlanInput, SwapExactOutputPlanInput, SyncReservesPlanInput,
-    TransactionError, TransactionOperation, TransactionPlan, UpdateConfigPlanInput,
-    WalletPrerequisites, SLIPPAGE_BPS_DENOMINATOR,
+    PreparedSwapExactOutput, PreparedTransaction, RemoveLiquidityPlanInput, SlippageTolerance,
+    SwapExactInputPlanInput, SwapExactOutputPlanInput, SyncReservesPlanInput, TransactionError,
+    TransactionOperation, TransactionPlan, UpdateConfigPlanInput, WalletPrerequisites,
+    SLIPPAGE_BPS_DENOMINATOR,
 };
 
 /// Version of the reusable AMM client JSON contract.
@@ -87,12 +86,6 @@ impl From<IntentError> for WireError {
 
 impl From<TransactionError> for WireError {
     fn from(error: TransactionError) -> Self {
-        Self::new(error.code(), error.to_string())
-    }
-}
-
-impl From<SequencerAccountError> for WireError {
-    fn from(error: SequencerAccountError) -> Self {
         Self::new(error.code(), error.to_string())
     }
 }
@@ -409,11 +402,6 @@ impl PoolInput {
 #[serde(tag = "operation", rename_all = "snake_case")]
 enum QuoteRequest {
     ProtocolConstants,
-    AccountSnapshotFromSequencerResponse {
-        #[serde(rename = "accountId")]
-        account_id: String,
-        response: String,
-    },
     HumanPriceRatioToQ64_64 {
         #[serde(rename = "firstTokenDefinitionId")]
         first_token_definition_id: String,
@@ -1308,16 +1296,6 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 .map(u128::to_string)
                 .collect::<Vec<_>>(),
         })),
-        QuoteRequest::AccountSnapshotFromSequencerResponse {
-            account_id: requested_account_id,
-            response,
-        } => {
-            let snapshot = account_snapshot_from_sequencer_response(
-                account_id(&requested_account_id, "accountId")?,
-                &response,
-            )?;
-            Ok(account_snapshot_json(&snapshot))
-        }
         QuoteRequest::HumanPriceRatioToQ64_64 {
             first_token_definition_id,
             second_token_definition_id,
@@ -1986,22 +1964,6 @@ fn pool_update_json(pool: PoolUpdate) -> Value {
         "reserveA": pool.reserve_a.to_string(),
         "reserveB": pool.reserve_b.to_string(),
         "spotPriceQ64_64": pool.spot_price_q64_64.to_string(),
-    })
-}
-
-fn account_snapshot_json(snapshot: &AccountSnapshot) -> Value {
-    let account = snapshot.account();
-    json!({
-        "id": snapshot.account_id().to_string(),
-        "programOwner": program_id_words(account.program_owner),
-        "balance": account.balance.to_string(),
-        "nonce": account.nonce.0.to_string(),
-        "data": account
-            .data
-            .as_ref()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>(),
     })
 }
 
