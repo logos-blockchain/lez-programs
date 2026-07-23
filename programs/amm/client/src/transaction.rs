@@ -140,7 +140,10 @@ impl WalletPrerequisites {
     }
 }
 
-/// SHA-256 commitment to the typed request, exact plan, and role-tagged account snapshots.
+/// SHA-256 commitment to quote-relevant intent, guards, account selection, and snapshots.
+///
+/// The transaction deadline remains part of the returned plan, but is deliberately not committed:
+/// hosts may refresh their deadline window without invalidating an otherwise unchanged quote.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct QuoteCommitment([u8; 32]);
 
@@ -443,7 +446,7 @@ pub fn prepare_create_pool_transaction(
                 account: "AMM pool",
                 expected: "uninitialized pool lifecycle",
             }
-            .into())
+            .into());
         }
     };
     let first_definition = missing.first_token_definition();
@@ -885,8 +888,7 @@ impl<Q> PreparedTransaction<Q> {
             unique_account_ids.push(account_id);
         }
 
-        let instruction_words = plan
-            .instruction_data()
+        plan.instruction_data()
             .map_err(|_| TransactionError::InstructionEncoding)?;
         let plan_accounts = plan
             .accounts()
@@ -904,11 +906,10 @@ impl<Q> PreparedTransaction<Q> {
             operation,
             intent,
             program_id: plan.program_id(),
-            instruction_words,
+            guards: CommitmentGuards::from(plan.instruction()),
             plan_accounts,
             sources,
             caller_amounts,
-            deadline,
         };
         let words = risc0_zkvm::serde::to_vec(&payload)
             .map_err(|_| TransactionError::CommitmentEncoding)?;
@@ -946,11 +947,138 @@ struct PreparedCommitmentPayload {
     operation: TransactionOperation,
     intent: TransactionIntent,
     program_id: ProgramId,
-    instruction_words: Vec<u32>,
+    guards: CommitmentGuards,
     plan_accounts: Vec<PlanAccountCommitment>,
     sources: Vec<SnapshotCommitment>,
     caller_amounts: CallerAmounts,
-    deadline: u64,
+}
+
+/// Instruction fields generated from a quote that affect its economic or account-selection
+/// meaning. Deadlines are intentionally excluded because they are host transaction policy.
+#[derive(Serialize)]
+enum CommitmentGuards {
+    Initialize {
+        token_program_id: ProgramId,
+        twap_oracle_program_id: ProgramId,
+        authority: AccountId,
+    },
+    UpdateConfig {
+        token_program_id: Option<ProgramId>,
+        twap_oracle_program_id: Option<ProgramId>,
+        new_authority: Option<AccountId>,
+    },
+    CreatePriceObservations {
+        window_duration: u64,
+    },
+    CreateOraclePriceAccount {
+        window_duration: u64,
+    },
+    CreatePool {
+        token_a_amount: u128,
+        token_b_amount: u128,
+        fees: u128,
+    },
+    AddLiquidity {
+        min_amount_liquidity: u128,
+        max_amount_to_add_token_a: u128,
+        max_amount_to_add_token_b: u128,
+    },
+    RemoveLiquidity {
+        remove_liquidity_amount: u128,
+        min_amount_to_remove_token_a: u128,
+        min_amount_to_remove_token_b: u128,
+    },
+    SwapExactInput {
+        swap_amount_in: u128,
+        min_amount_out: u128,
+    },
+    SwapExactOutput {
+        exact_amount_out: u128,
+        max_amount_in: u128,
+    },
+    SyncReserves,
+}
+
+impl From<&amm_core::Instruction> for CommitmentGuards {
+    fn from(instruction: &amm_core::Instruction) -> Self {
+        match instruction {
+            amm_core::Instruction::Initialize {
+                token_program_id,
+                twap_oracle_program_id,
+                authority,
+            } => Self::Initialize {
+                token_program_id: *token_program_id,
+                twap_oracle_program_id: *twap_oracle_program_id,
+                authority: *authority,
+            },
+            amm_core::Instruction::UpdateConfig {
+                token_program_id,
+                twap_oracle_program_id,
+                new_authority,
+            } => Self::UpdateConfig {
+                token_program_id: *token_program_id,
+                twap_oracle_program_id: *twap_oracle_program_id,
+                new_authority: *new_authority,
+            },
+            amm_core::Instruction::CreatePriceObservations { window_duration } => {
+                Self::CreatePriceObservations {
+                    window_duration: *window_duration,
+                }
+            }
+            amm_core::Instruction::CreateOraclePriceAccount { window_duration } => {
+                Self::CreateOraclePriceAccount {
+                    window_duration: *window_duration,
+                }
+            }
+            amm_core::Instruction::NewDefinition {
+                token_a_amount,
+                token_b_amount,
+                fees,
+                ..
+            } => Self::CreatePool {
+                token_a_amount: *token_a_amount,
+                token_b_amount: *token_b_amount,
+                fees: *fees,
+            },
+            amm_core::Instruction::AddLiquidity {
+                min_amount_liquidity,
+                max_amount_to_add_token_a,
+                max_amount_to_add_token_b,
+                ..
+            } => Self::AddLiquidity {
+                min_amount_liquidity: *min_amount_liquidity,
+                max_amount_to_add_token_a: *max_amount_to_add_token_a,
+                max_amount_to_add_token_b: *max_amount_to_add_token_b,
+            },
+            amm_core::Instruction::RemoveLiquidity {
+                remove_liquidity_amount,
+                min_amount_to_remove_token_a,
+                min_amount_to_remove_token_b,
+                ..
+            } => Self::RemoveLiquidity {
+                remove_liquidity_amount: *remove_liquidity_amount,
+                min_amount_to_remove_token_a: *min_amount_to_remove_token_a,
+                min_amount_to_remove_token_b: *min_amount_to_remove_token_b,
+            },
+            amm_core::Instruction::SwapExactInput {
+                swap_amount_in,
+                min_amount_out,
+                ..
+            } => Self::SwapExactInput {
+                swap_amount_in: *swap_amount_in,
+                min_amount_out: *min_amount_out,
+            },
+            amm_core::Instruction::SwapExactOutput {
+                exact_amount_out,
+                max_amount_in,
+                ..
+            } => Self::SwapExactOutput {
+                exact_amount_out: *exact_amount_out,
+                max_amount_in: *max_amount_in,
+            },
+            amm_core::Instruction::SyncReserves => Self::SyncReserves,
+        }
+    }
 }
 
 #[derive(Serialize)]

@@ -481,7 +481,7 @@ fn exact_output_requires_funding_through_its_maximum_input_guard() {
 }
 
 #[test]
-fn commitment_is_stable_and_changes_with_bound_snapshot_or_deadline() {
+fn commitment_is_stable_across_deadline_refresh_and_changes_with_bound_snapshot() {
     let fixture = Fixture::new();
     let missing = MissingPairFixture::new(&fixture);
     let fresh_lp = AccountSnapshot::new(AccountId::new([30; 32]), Account::default());
@@ -522,9 +522,13 @@ fn commitment_is_stable_and_changes_with_bound_snapshot_or_deadline() {
     ));
 
     let changed_deadline = prepare(&fixture.caller_first_holding, DEADLINE + 1);
-    assert_ne!(
+    assert_eq!(
         first.quote_commitment(),
         changed_deadline.quote_commitment()
+    );
+    assert_ne!(
+        first.plan().instruction_data(),
+        changed_deadline.plan().instruction_data()
     );
 }
 

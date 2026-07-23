@@ -5,7 +5,7 @@ use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_pool_pda, compute_vault_pda,
     AmmConfig, PoolDefinition, FEE_TIER_BPS_30,
 };
-use common::program_id_hex;
+use common::program_id_words;
 use nssa_core::{
     account::{Account, AccountId, Data, Nonce},
     program::ProgramId,
@@ -29,7 +29,7 @@ fn account(program_owner: ProgramId, data: Data) -> Account {
 fn snapshot(id: AccountId, account: &Account) -> Value {
     json!({
         "id": id.to_string(),
-        "programOwner": program_id_hex(account.program_owner),
+        "programOwner": program_id_words(account.program_owner),
         "balance": account.balance.to_string(),
         "nonce": account.nonce.0.to_string(),
         "data": account
@@ -102,7 +102,7 @@ impl WireFixture {
             fees: FEE_TIER_BPS_30,
         };
         let state = json!({
-            "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
+            "ammProgramId": program_id_words(AMM_PROGRAM_ID),
             "config": config,
             "snapshot": {
                 "pool": snapshot(pool_id, &account(AMM_PROGRAM_ID, Data::from(&pool))),
@@ -164,7 +164,7 @@ fn prepare_wire_operations_return_lossless_instruction_args() {
 
     let create = quote_json(json!({
         "operation": "prepare_create_pool",
-        "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
+        "ammProgramId": program_id_words(AMM_PROGRAM_ID),
         "config": fixture.config.clone(),
         "tokenADefinition": snapshot(fixture.token_a_id, &definition(100_000, None)),
         "tokenBDefinition": snapshot(fixture.token_b_id, &definition(100_000, None)),
@@ -262,6 +262,159 @@ fn prepare_wire_operations_return_lossless_instruction_args() {
         maximum_guard_amount(decimal(&exact_output["quote"]["amountIn"]), tolerance)
             .expect("maximum input guard must fit")
     );
+}
+
+#[test]
+fn standalone_swap_quotes_include_exact_pool_spot_change() {
+    let fixture = WireFixture::new();
+    let input_holding = fixture.user_a.clone();
+    let output_holding = fixture.user_b.clone();
+    let input_token_definition_id = fixture.token_a_id.to_string();
+
+    let mut preview_exact_input = fixture.request("preview_swap_exact_input");
+    insert(
+        &mut preview_exact_input,
+        "userInputHolding",
+        input_holding.clone(),
+    );
+    insert(
+        &mut preview_exact_input,
+        "userOutputHolding",
+        output_holding.clone(),
+    );
+    insert(
+        &mut preview_exact_input,
+        "inputTokenDefinitionId",
+        json!(input_token_definition_id.clone()),
+    );
+    insert(&mut preview_exact_input, "amountIn", json!("100"));
+    let preview_exact_input = quote_json(preview_exact_input).expect("preview must quote");
+
+    let mut prepare_exact_input = fixture.request("prepare_swap_exact_input");
+    insert(
+        &mut prepare_exact_input,
+        "userInputHolding",
+        input_holding.clone(),
+    );
+    insert(
+        &mut prepare_exact_input,
+        "userOutputHolding",
+        output_holding.clone(),
+    );
+    insert(
+        &mut prepare_exact_input,
+        "inputTokenDefinitionId",
+        json!(input_token_definition_id.clone()),
+    );
+    insert(&mut prepare_exact_input, "amountIn", json!("100"));
+    insert(&mut prepare_exact_input, "slippageBps", json!("100"));
+    let prepare_exact_input = quote_json(prepare_exact_input).expect("preparation must quote");
+
+    let mut exact_input = fixture.request("swap_exact_input");
+    insert(&mut exact_input, "userInputHolding", input_holding.clone());
+    insert(
+        &mut exact_input,
+        "userOutputHolding",
+        output_holding.clone(),
+    );
+    insert(
+        &mut exact_input,
+        "inputTokenDefinitionId",
+        json!(input_token_definition_id.clone()),
+    );
+    insert(&mut exact_input, "amountIn", json!("100"));
+    insert(&mut exact_input, "minimumAmountOut", json!("1"));
+    let exact_input = quote_json(exact_input).expect("exact-input quote must succeed");
+
+    let mut preview_exact_output = fixture.request("preview_swap_exact_output");
+    insert(
+        &mut preview_exact_output,
+        "userInputHolding",
+        input_holding.clone(),
+    );
+    insert(
+        &mut preview_exact_output,
+        "userOutputHolding",
+        output_holding.clone(),
+    );
+    insert(
+        &mut preview_exact_output,
+        "inputTokenDefinitionId",
+        json!(input_token_definition_id.clone()),
+    );
+    insert(&mut preview_exact_output, "exactAmountOut", json!("45"));
+    let preview_exact_output = quote_json(preview_exact_output).expect("preview must quote");
+
+    let mut prepare_exact_output = fixture.request("prepare_swap_exact_output");
+    insert(
+        &mut prepare_exact_output,
+        "userInputHolding",
+        input_holding.clone(),
+    );
+    insert(
+        &mut prepare_exact_output,
+        "userOutputHolding",
+        output_holding.clone(),
+    );
+    insert(
+        &mut prepare_exact_output,
+        "inputTokenDefinitionId",
+        json!(input_token_definition_id.clone()),
+    );
+    insert(&mut prepare_exact_output, "exactAmountOut", json!("45"));
+    insert(&mut prepare_exact_output, "slippageBps", json!("100"));
+    let prepare_exact_output =
+        quote_json(prepare_exact_output).expect("preparation must quote exact output");
+
+    let mut exact_output = fixture.request("swap_exact_output");
+    insert(&mut exact_output, "userInputHolding", input_holding);
+    insert(&mut exact_output, "userOutputHolding", output_holding);
+    insert(
+        &mut exact_output,
+        "inputTokenDefinitionId",
+        json!(input_token_definition_id),
+    );
+    insert(&mut exact_output, "exactAmountOut", json!("45"));
+    insert(&mut exact_output, "maximumAmountIn", json!("100"));
+    let exact_output = quote_json(exact_output).expect("exact-output quote must succeed");
+
+    let top_level_results = [
+        &preview_exact_input,
+        &exact_input,
+        &preview_exact_output,
+        &exact_output,
+    ];
+    for result in top_level_results {
+        assert_eq!(result["poolSpotChangeBps"], "2087");
+    }
+    for result in [&prepare_exact_input, &prepare_exact_output] {
+        assert_eq!(result["quote"]["poolSpotChangeBps"], "2087");
+    }
+
+    let large_amount = 1_u128 << 80;
+    let mut large_input = fixture.request("preview_swap_exact_input");
+    insert(
+        &mut large_input,
+        "userInputHolding",
+        snapshot(
+            AccountId::new([20; 32]),
+            &holding(fixture.token_a_id, large_amount),
+        ),
+    );
+    insert(&mut large_input, "userOutputHolding", fixture.user_b);
+    insert(
+        &mut large_input,
+        "inputTokenDefinitionId",
+        json!(fixture.token_a_id.to_string()),
+    );
+    insert(
+        &mut large_input,
+        "amountIn",
+        json!(large_amount.to_string()),
+    );
+    let large_input = quote_json(large_input).expect("large preview must quote");
+    let large_movement = decimal(&large_input["poolSpotChangeBps"]);
+    assert!(large_movement > (1_u128 << 53));
 }
 
 #[test]

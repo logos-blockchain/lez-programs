@@ -6,7 +6,7 @@ use amm_core::{
     compute_vault_pda, AmmConfig, Instruction, PoolDefinition, FEE_TIER_BPS_30, MINIMUM_LIQUIDITY,
 };
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use common::program_id_hex;
+use common::program_id_words;
 use nssa_core::{
     account::{Account, AccountId, Data, Nonce},
     program::ProgramId,
@@ -55,7 +55,7 @@ fn holding(definition_id: AccountId, balance: u128) -> Account {
 fn snapshot(id: AccountId, account: &Account) -> Value {
     json!({
         "id": id.to_string(),
-        "programOwner": program_id_hex(account.program_owner),
+        "programOwner": program_id_words(account.program_owner),
         "balance": account.balance.to_string(),
         "nonce": account.nonce.0.to_string(),
         "data": account
@@ -212,7 +212,7 @@ impl TransactionFixture {
     fn active_common(&self, operation: &str) -> Value {
         json!({
             "operation": operation,
-            "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
+            "ammProgramId": program_id_words(AMM_PROGRAM_ID),
             "config": self.config.clone(),
             "snapshots": self.active_snapshots.clone(),
             "firstTokenDefinitionId": self.first_token_id.to_string(),
@@ -229,7 +229,7 @@ impl TransactionFixture {
     fn swap_common(&self, operation: &str) -> Value {
         json!({
             "operation": operation,
-            "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
+            "ammProgramId": program_id_words(AMM_PROGRAM_ID),
             "config": self.config.clone(),
             "snapshots": self.active_snapshots.clone(),
             "inputTokenDefinitionId": self.first_token_id.to_string(),
@@ -326,7 +326,7 @@ fn five_transaction_operations_emit_exact_plans_and_task_artifacts() {
     let second_amount = LARGE.checked_mul(2).expect("test amount fits");
     let create = plan_json(json!({
         "operation": "prepare_create_pool_transaction",
-        "ammProgramId": program_id_hex(AMM_PROGRAM_ID),
+        "ammProgramId": program_id_words(AMM_PROGRAM_ID),
         "config": fixture.config.clone(),
         "snapshots": fixture.missing_snapshots.clone(),
         "firstTokenDefinitionId": fixture.first_token_id.to_string(),

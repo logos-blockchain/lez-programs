@@ -98,20 +98,12 @@ impl From<SequencerAccountError> for WireError {
 }
 
 #[derive(Clone, Copy, Deserialize)]
-#[serde(try_from = "String")]
+#[serde(transparent)]
 struct ProgramIdInput(ProgramId);
 
 impl From<ProgramIdInput> for ProgramId {
     fn from(value: ProgramIdInput) -> Self {
         value.0
-    }
-}
-
-impl TryFrom<String> for ProgramIdInput {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        parse_program_id(&value).map(Self)
     }
 }
 
@@ -1648,7 +1640,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 &user_output,
                 decimal_u128(&amount_in, "amountIn")?,
             )?;
-            Ok(swap_quote_json(quote))
+            swap_quote_with_pool_spot_change_json(snapshot.pool(), quote)
         }
         QuoteRequest::PrepareSwapExactInput {
             state,
@@ -1673,7 +1665,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 decimal_u128(&amount_in, "amountIn")?,
                 slippage_tolerance(&slippage_bps)?,
             )?;
-            Ok(prepared_swap_exact_input_json(prepared))
+            prepared_swap_exact_input_json(snapshot.pool(), prepared)
         }
         QuoteRequest::SwapExactInput {
             state,
@@ -1698,7 +1690,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 decimal_u128(&amount_in, "amountIn")?,
                 decimal_u128(&minimum_amount_out, "minimumAmountOut")?,
             )?;
-            Ok(swap_quote_json(quote))
+            swap_quote_with_pool_spot_change_json(snapshot.pool(), quote)
         }
         QuoteRequest::PreviewSwapExactOutput {
             state,
@@ -1721,7 +1713,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 &user_output,
                 decimal_u128(&exact_amount_out, "exactAmountOut")?,
             )?;
-            Ok(swap_quote_json(quote))
+            swap_quote_with_pool_spot_change_json(snapshot.pool(), quote)
         }
         QuoteRequest::PrepareSwapExactOutput {
             state,
@@ -1746,7 +1738,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 decimal_u128(&exact_amount_out, "exactAmountOut")?,
                 slippage_tolerance(&slippage_bps)?,
             )?;
-            Ok(prepared_swap_exact_output_json(prepared))
+            prepared_swap_exact_output_json(snapshot.pool(), prepared)
         }
         QuoteRequest::SwapExactOutput {
             state,
@@ -1771,7 +1763,7 @@ pub fn quote_json(value: Value) -> Result<Value, WireError> {
                 decimal_u128(&exact_amount_out, "exactAmountOut")?,
                 decimal_u128(&maximum_amount_in, "maximumAmountIn")?,
             )?;
-            Ok(swap_quote_json(quote))
+            swap_quote_with_pool_spot_change_json(snapshot.pool(), quote)
         }
         QuoteRequest::SyncReserves { state } => {
             let (_, snapshot) = state.validate()?;
@@ -1818,7 +1810,7 @@ fn transaction_plan_json(plan: &TransactionPlan) -> Result<Value, WireError> {
     Ok(json!({
         "instruction": plan.instruction_name(),
         "instructionArgs": instruction_args_json(plan.instruction()),
-        "programId": program_id_hex(plan.program_id()),
+        "programId": program_id_words(plan.program_id()),
         "accounts": accounts,
         "affectedAccountIds": plan
             .affected_account_ids()
@@ -1836,8 +1828,8 @@ fn instruction_args_json(instruction: &Instruction) -> Value {
             twap_oracle_program_id,
             authority,
         } => json!({
-            "tokenProgramId": program_id_hex(*token_program_id),
-            "twapOracleProgramId": program_id_hex(*twap_oracle_program_id),
+            "tokenProgramId": program_id_words(*token_program_id),
+            "twapOracleProgramId": program_id_words(*twap_oracle_program_id),
             "authority": authority.to_string(),
         }),
         Instruction::UpdateConfig {
@@ -1845,8 +1837,8 @@ fn instruction_args_json(instruction: &Instruction) -> Value {
             twap_oracle_program_id,
             new_authority,
         } => json!({
-            "tokenProgramId": token_program_id.map(program_id_hex),
-            "twapOracleProgramId": twap_oracle_program_id.map(program_id_hex),
+            "tokenProgramId": token_program_id.map(program_id_words),
+            "twapOracleProgramId": twap_oracle_program_id.map(program_id_words),
             "newAuthority": new_authority.map(|authority| authority.to_string()),
         }),
         Instruction::CreatePriceObservations { window_duration }
@@ -2001,7 +1993,7 @@ fn account_snapshot_json(snapshot: &AccountSnapshot) -> Value {
     let account = snapshot.account();
     json!({
         "id": snapshot.account_id().to_string(),
-        "programOwner": program_id_hex(account.program_owner),
+        "programOwner": program_id_words(account.program_owner),
         "balance": account.balance.to_string(),
         "nonce": account.nonce.0.to_string(),
         "data": account
@@ -2015,10 +2007,10 @@ fn account_snapshot_json(snapshot: &AccountSnapshot) -> Value {
 
 fn amm_context_json(context: &AmmContext) -> Value {
     json!({
-        "ammProgramId": program_id_hex(context.amm_program_id),
+        "ammProgramId": program_id_words(context.amm_program_id),
         "configId": context.config_id().to_string(),
-        "tokenProgramId": program_id_hex(context.token_program_id()),
-        "twapOracleProgramId": program_id_hex(context.twap_oracle_program_id()),
+        "tokenProgramId": program_id_words(context.token_program_id()),
+        "twapOracleProgramId": program_id_words(context.twap_oracle_program_id()),
         "authority": context.config.authority.to_string(),
     })
 }
@@ -2289,24 +2281,49 @@ fn swap_quote_json(quote: SwapQuote) -> Value {
     })
 }
 
-fn prepared_swap_exact_input_json(prepared: PreparedSwapExactInput) -> Value {
-    json!({
-        "quote": swap_quote_json(prepared.quote),
+fn swap_quote_with_pool_spot_change_json(
+    before: &PoolDefinition,
+    quote: SwapQuote,
+) -> Result<Value, WireError> {
+    let pool_spot_change_bps = crate::pool_spot_change_bps(before, &quote)?;
+    let mut value = swap_quote_json(quote);
+    let Some(object) = value.as_object_mut() else {
+        return Err(WireError::new(
+            "response_serialization_failed",
+            "swap quote response must be a JSON object",
+        ));
+    };
+    object.insert(
+        String::from("poolSpotChangeBps"),
+        Value::String(pool_spot_change_bps.to_string()),
+    );
+    Ok(value)
+}
+
+fn prepared_swap_exact_input_json(
+    before: &PoolDefinition,
+    prepared: PreparedSwapExactInput,
+) -> Result<Value, WireError> {
+    Ok(json!({
+        "quote": swap_quote_with_pool_spot_change_json(before, prepared.quote)?,
         "instructionArgs": {
             "swapAmountIn": prepared.swap_amount_in.to_string(),
             "minAmountOut": prepared.min_amount_out.to_string(),
         },
-    })
+    }))
 }
 
-fn prepared_swap_exact_output_json(prepared: PreparedSwapExactOutput) -> Value {
-    json!({
-        "quote": swap_quote_json(prepared.quote),
+fn prepared_swap_exact_output_json(
+    before: &PoolDefinition,
+    prepared: PreparedSwapExactOutput,
+) -> Result<Value, WireError> {
+    Ok(json!({
+        "quote": swap_quote_with_pool_spot_change_json(before, prepared.quote)?,
         "instructionArgs": {
             "exactAmountOut": prepared.exact_amount_out.to_string(),
             "maxAmountIn": prepared.max_amount_in.to_string(),
         },
-    })
+    }))
 }
 
 fn sync_reserves_quote_json(quote: SyncReservesQuote) -> Value {
@@ -2326,35 +2343,8 @@ fn oracle_price_quote_json(quote: OraclePriceAccountQuote) -> Value {
     })
 }
 
-fn parse_program_id(value: &str) -> Result<ProgramId, String> {
-    if value.len() != 64
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    {
-        return Err(String::from(
-            "program ID must be exactly 64 lowercase hexadecimal characters",
-        ));
-    }
-
-    let bytes = hex_bytes(value, "program ID").map_err(|error| error.to_string())?;
-    let mut program_id = [0_u32; 8];
-    for (word, bytes) in program_id.iter_mut().zip(bytes.chunks_exact(4)) {
-        let mut word_bytes = [0_u8; 4];
-        word_bytes.copy_from_slice(bytes);
-        *word = u32::from_le_bytes(word_bytes);
-    }
-    Ok(program_id)
-}
-
-fn program_id_hex(program_id: ProgramId) -> String {
-    let mut output = String::with_capacity(64);
-    for word in program_id {
-        for byte in word.to_le_bytes() {
-            output.push_str(&format!("{byte:02x}"));
-        }
-    }
-    output
+const fn program_id_words(program_id: ProgramId) -> ProgramId {
+    program_id
 }
 
 fn account_id(value: &str, field: &str) -> Result<AccountId, WireError> {

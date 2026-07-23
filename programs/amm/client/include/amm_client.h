@@ -29,8 +29,9 @@ char *amm_client_quote(const char *request_json);
 
 /*
  * Raw u128, u64, and signed tick values are decimal JSON strings. Program IDs
- * are 64-character lowercase hexadecimal strings. Instruction words are JSON
- * u32 arrays. Account IDs use canonical base58 and account data is hexadecimal.
+ * are JSON arrays of eight u32 words. Hexadecimal and byte layouts are host-adapter-only.
+ * Instruction words are JSON u32 arrays. Account IDs use canonical base58 and account data is
+ * hexadecimal.
  * Requests may carry schema "amm-client.v1";
  * schema-less legacy requests remain accepted. Responses use
  * {"schema":"amm-client.v1","ok":true,"value":...} or the same envelope

@@ -14,9 +14,10 @@ Requests may include `"schema":"amm-client.v1"`. Schema-less requests remain acc
 compatibility. Every successful wire value and every C envelope identifies the response schema.
 
 All `u128` amounts, reserves, supplies, fees, nonces, and balances are unsigned decimal strings.
-All `u64` windows and deadlines are also decimal strings. Program IDs are exactly 64 lowercase
-hexadecimal characters: the 32 bytes formed by concatenating the eight `u32` words in
-little-endian byte order. Signed ticks are decimal strings. Account IDs use canonical base58.
+All `u64` windows and deadlines are also decimal strings. Program IDs are JSON arrays containing
+exactly eight `u32` words in their canonical order. Hexadecimal and byte layouts are host-adapter
+concerns and are neither accepted nor emitted by this shared wire API. Signed ticks are decimal
+strings. Account IDs use canonical base58.
 Account `data` is an even-length hexadecimal string.
 
 ## Shared inputs
@@ -25,9 +26,9 @@ Plan context:
 
 ```json
 {
-  "ammProgramId": "0000000000000000000000000000000000000000000000000000000000000000",
-  "tokenProgramId": "0000000000000000000000000000000000000000000000000000000000000000",
-  "twapOracleProgramId": "0000000000000000000000000000000000000000000000000000000000000000",
+  "ammProgramId": [0, 0, 0, 0, 0, 0, 0, 0],
+  "tokenProgramId": [0, 0, 0, 0, 0, 0, 0, 0],
+  "twapOracleProgramId": [0, 0, 0, 0, 0, 0, 0, 0],
   "authority": "base58-account-id"
 }
 ```
@@ -54,7 +55,7 @@ Fetched account snapshot used by quotes:
 ```json
 {
   "id": "base58-account-id",
-  "programOwner": "0000000000000000000000000000000000000000000000000000000000000000",
+  "programOwner": [0, 0, 0, 0, 0, 0, 0, 0],
   "balance": "0",
   "nonce": "0",
   "data": "00ff"
@@ -65,7 +66,7 @@ Existing-pool quote operations include these top-level state fields:
 
 ```json
 {
-  "ammProgramId": "0000000000000000000000000000000000000000000000000000000000000000",
+  "ammProgramId": [0, 0, 0, 0, 0, 0, 0, 0],
   "config": { "...": "account snapshot" },
   "snapshot": {
     "pool": { "...": "account snapshot" },
@@ -129,7 +130,7 @@ A successful plan value contains the following fields (`instructionWords` is abb
     "maxAmountToAddTokenB": "100",
     "deadline": "1900000000000"
   },
-  "programId": "0000000000000000000000000000000000000000000000000000000000000000",
+  "programId": [0, 0, 0, 0, 0, 0, 0, 0],
   "accounts": [
     {
       "id": "base58-account-id",
@@ -194,13 +195,17 @@ Quote values use these result shapes:
 - pool creation: `pool`, `lockedLiquidity`, `userLiquidity`;
 - add liquidity: `actualAmountA`, `actualAmountB`, `liquidityToMint`, `pool`;
 - remove liquidity: `withdrawAmountA`, `withdrawAmountB`, `liquidityToBurn`, `pool`;
-- swaps: `direction`, `amountIn`, `effectiveAmountIn`, `feeAmount`, `amountOut`, `pool`;
+- swaps: `direction`, `amountIn`, `effectiveAmountIn`, `feeAmount`, `amountOut`, `pool`, and
+  decimal-string `poolSpotChangeBps`;
 - reserve sync: `donatedAmountA`, `donatedAmountB`, `pool`;
 - oracle price: `baseAsset`, `quoteAsset`, `initialPriceQ64_64`, `windowDuration`; and
 - pair order: `order` (`stored` or `reversed`).
 
 A `pool` result contains decimal-string `liquidityPoolSupply`, `reserveA`, `reserveB`, and
 `spotPriceQ64_64` fields.
+
+`poolSpotChangeBps` is the exact directional movement of the pool's spot price from the pre-swap
+snapshot to the returned quote. It is not execution-price impact.
 
 ## Host adapters
 
@@ -295,7 +300,8 @@ Successful task output contains:
 `poolSpotChangeBps` is `null` for non-swap tasks. Add-liquidity funding requirements use the
 caller caps. Exact-output swap funding uses the plan's slippage-adjusted `maxAmountIn`. Hosts
 should refresh snapshots, prepare again, compare `quoteCommitment`, and submit only the refreshed
-plan.
+plan. A deadline-only refresh keeps the same `quoteCommitment`; the refreshed plan still carries
+the deadline to submit.
 
 ## Prepared instruction arguments
 

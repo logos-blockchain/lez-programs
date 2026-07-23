@@ -75,9 +75,10 @@ Every call returns an owned JSON envelope. Release it exactly once with `amm_cli
 [`docs/wire-api.md`](docs/wire-api.md) for the complete transport contract.
 
 Raw `u128` and `u64` values cross JSON as decimal strings. Account IDs use canonical base58.
-Program IDs use 64-character lowercase hexadecimal strings. Account data uses hexadecimal, and
-encoded instruction words remain JSON `u32` numbers. No JavaScript `Number` conversion is required
-for chain amounts or deadlines. Plan JSON also includes typed `instructionArgs`, derived directly
-from the same `amm_core::Instruction` encoded in `instructionWords`. Only `amm_client_plan` accepts
-the five snapshot-bound `prepare_*_transaction` operations. The quote entrypoint also exposes
+Program IDs use exactly eight JSON `u32` words; hexadecimal and byte layouts are host-adapter-only.
+Account data uses hexadecimal, and encoded instruction words remain JSON `u32` numbers. No
+JavaScript `Number` conversion is required for chain amounts or deadlines. Plan JSON also includes
+typed `instructionArgs`, derived directly from the same
+`amm_core::Instruction` encoded in `instructionWords`. Only `amm_client_plan` accepts the five
+snapshot-bound `prepare_*_transaction` operations. The quote entrypoint also exposes
 `account_snapshot_from_sequencer_response` and `human_price_ratio_to_q64_64` host adapters.

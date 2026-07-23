@@ -5,7 +5,7 @@ use amm_client::{
     Q64_64_ONE,
 };
 use amm_core::canonical_token_pair;
-use common::program_id_hex;
+use common::program_id_words;
 use nssa_core::account::AccountId;
 use serde_json::json;
 
@@ -41,7 +41,7 @@ fn raw_sequencer_response_becomes_lossless_snapshot() {
     assert_eq!(wire["id"], account_id.to_string());
     assert_eq!(
         wire["programOwner"],
-        program_id_hex([1, 2, 3, 4, 5, 6, 7, 8])
+        json!(program_id_words([1, 2, 3, 4, 5, 6, 7, 8]))
     );
     assert_eq!(wire["balance"], u128::MAX.to_string());
     assert_eq!(wire["nonce"], "9007199254740993");
