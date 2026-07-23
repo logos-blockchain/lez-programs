@@ -73,6 +73,44 @@ QtObject {
         return safeAmount * (1 - safeSlippage / 100);
     }
 
+    // Exact-integer minimum-received (base units) for a SwapExactInput, used as
+    // the on-chain slippage floor that is actually submitted. Computed in BigInt
+    // (arbitrary precision, mirroring the on-chain u256 math): base units for
+    // 18-decimal tokens exceed 2^53 and even overflow u128 intermediates, so JS
+    // doubles silently lose precision and would understate min_out — weakening
+    // the user's price protection. amountIn/reserveIn/reserveOut are base-unit
+    // integer strings; returns a decimal string. Falls back to the double
+    // estimate only if BigInt is unavailable in this Qt build.
+    function minOutBaseUnits(amountIn, reserveIn, reserveOut, slippagePercent) {
+        if (typeof BigInt !== "undefined") {
+            var toBig = function (x) {
+                var s = String(x).trim();
+                return /^[0-9]+$/.test(s) ? BigInt(s) : BigInt(0);
+            };
+            var zero = BigInt(0);
+            var denom = BigInt(10000);
+            var amtIn = toBig(amountIn);
+            var resIn = toBig(reserveIn);
+            var resOut = toBig(reserveOut);
+            if (amtIn <= zero || resIn <= zero || resOut <= zero)
+                return "0";
+
+            var feeBps = BigInt(Math.round(Math.min(10000, Math.max(0, Number(root.feeBps) || 0))));
+            var amtInAfterFee = amtIn * (denom - feeBps) / denom;      // floor
+            if (amtInAfterFee <= zero)
+                return "0";
+            var out = resOut * amtInAfterFee / (resIn + amtInAfterFee); // floor
+            var slipBps = BigInt(Math.round(clampSlippagePercent(slippagePercent) * 100));
+            if (slipBps < zero) slipBps = zero;
+            if (slipBps > denom) slipBps = denom;
+            var minOut = out * (denom - slipBps) / denom;              // floor
+            return minOut.toString();
+        }
+        // Legacy double fallback (no worse than before if BigInt is missing).
+        var estOut = amountOutFor(amountIn, reserveIn, reserveOut);
+        return String(Math.floor(Math.max(0, minReceived(estOut, slippagePercent))));
+    }
+
     function maxSent(amountIn, slippagePercent) {
         const safeAmount = parseAmount(amountIn);
         const safeSlippage = clampSlippagePercent(slippagePercent);

@@ -18,8 +18,10 @@
   # fails flake evaluation because the app directory is copied into the Nix
   # store as its own flake root, so `../..` can't escape it there. Instead,
   # the repo-root flake.nix builds this module directly (src = ./apps/amm)
-  # and resolves amm_client_ffi via `self`. Build/run the app from the repo
-  # root, e.g. `nix build .#packages.<system>.default` or `nix run .`.
+  # and resolves amm_client_ffi via `self`. The repo-root flake exposes the UI
+  # as a named attribute (there is no bare `default`): run it from the repo root
+  # with `nix run .#amm-ui`, and build just the FFI crate with
+  # `nix build .#amm_client_ffi`.
   outputs = inputs@{ logos-module-builder, ... }:
     logos-module-builder.lib.mkLogosQmlModule {
       src = ./.;

@@ -27,7 +27,8 @@ pub fn decode_pool(bytes: &[u8]) -> Result<PoolView, String> {
         reserve_a: p.reserve_a,
         reserve_b: p.reserve_b,
         liquidity_supply: p.liquidity_pool_supply,
-        fees: u32::try_from(p.fees).unwrap_or(u32::MAX),
+        fees: u32::try_from(p.fees)
+            .map_err(|_| format!("pool fee {} exceeds u32::MAX", p.fees))?,
     })
 }
 

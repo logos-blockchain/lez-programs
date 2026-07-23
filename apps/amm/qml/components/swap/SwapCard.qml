@@ -239,7 +239,15 @@ Rectangle {
         root.swapInProgress = true
         root.swapError = ""
 
-        var minOutStr = root.formatBaseUnits(root.minReceivedAmount)
+        // Compute the submitted slippage floor with exact integer (BigInt) math
+        // rather than the double-based preview: base-unit values for 18-decimal
+        // tokens exceed 2^53, where doubles would understate min_out and weaken
+        // price protection. Sell/buy reserves follow the pool's canonical order.
+        var minOutStr = swapState.minOutBaseUnits(
+                root.sellInput,
+                root.sellIsPoolA ? root.poolReserveA : root.poolReserveB,
+                root.sellIsPoolA ? root.poolReserveB : root.poolReserveA,
+                root.slippageTolerancePercent)
         // Max u64 sentinel: "ignore deadline", per AmmUiBackend.rep.
         var deadline = "18446744073709551615"
 
