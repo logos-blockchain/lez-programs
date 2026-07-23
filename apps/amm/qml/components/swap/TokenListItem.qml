@@ -9,15 +9,20 @@ Item {
     property string tokenName: ""
     property string tokenSymbol: ""
     property string tokenDefinitionId: ""
+    // When true, the token is already selected on the other side of the swap,
+    // so it's shown dimmed and can't be picked (a pool needs two distinct
+    // tokens — picking the same one both sides panics amm_core's pool PDA).
+    property bool disabled: false
 
     signal clicked()
 
     implicitHeight: 56
+    opacity: root.disabled ? 0.35 : 1.0
 
     Rectangle {
         anchors.fill: parent
         radius: 12
-        color: hoverArea.containsMouse ? theme.colors.panelBg : "transparent"
+        color: (!root.disabled && hoverArea.containsMouse) ? theme.colors.panelBg : "transparent"
         Behavior on color { ColorAnimation { duration: 120 } }
 
         RowLayout {
@@ -62,13 +67,21 @@ Item {
                     }
                 }
             }
+
+            Text {
+                visible: root.disabled
+                text: qsTr("Selected")
+                color: theme.colors.textSecondary
+                font.pixelSize: 12
+            }
         }
 
         MouseArea {
             id: hoverArea
             anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
+            enabled: !root.disabled
+            hoverEnabled: !root.disabled
+            cursorShape: root.disabled ? Qt.ArrowCursor : Qt.PointingHandCursor
             onClicked: root.clicked()
         }
     }

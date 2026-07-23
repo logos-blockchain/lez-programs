@@ -144,6 +144,10 @@ Item {
 
                 onRequestTokenSelect: function(side) {
                     tokenModal.targetSide = side
+                    // Disable the token already picked on the opposite side so the
+                    // two sides can't match (a same-token pool panics amm_core).
+                    var other = side === "sell" ? swapCard.buyToken : swapCard.sellToken
+                    tokenModal.disabledDefinitionId = other ? other.definitionId : ""
                     tokenModal.open()
                 }
 

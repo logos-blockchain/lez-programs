@@ -12,6 +12,10 @@ Item {
     property var theme
     property var tokens: []
     property string searchText: ""
+    // definitionId of the token already chosen on the other side of the swap.
+    // That token is shown disabled here so the two sides can never match (a
+    // same-token pool has no PDA — it panics amm_core).
+    property string disabledDefinitionId: ""
 
     signal tokenSelected(var token)
 
@@ -118,12 +122,17 @@ Item {
                 Repeater {
                     model: root.tokens.slice(0, 5)
                     delegate: Rectangle {
+                        id: pill
+                        readonly property bool isDisabled:
+                            root.disabledDefinitionId !== "" &&
+                            modelData.definitionId === root.disabledDefinitionId
                         height: 40
                         radius: 20
-                        color: pillHover.containsMouse ? theme.colors.panelHoverBg : theme.colors.panelBg
+                        color: (!pill.isDisabled && pillHover.containsMouse) ? theme.colors.panelHoverBg : theme.colors.panelBg
                         border.color: theme.colors.border
                         border.width: 1
                         width: pillRow.implicitWidth + 24
+                        opacity: pill.isDisabled ? 0.35 : 1.0
                         Behavior on color { ColorAnimation { duration: 120 } }
                         RowLayout {
                             id: pillRow
@@ -139,8 +148,9 @@ Item {
                         MouseArea {
                             id: pillHover
                             anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
+                            enabled: !pill.isDisabled
+                            hoverEnabled: !pill.isDisabled
+                            cursorShape: pill.isDisabled ? Qt.ArrowCursor : Qt.PointingHandCursor
                             onClicked: root.tokenSelected(modelData)
                         }
                     }
@@ -170,6 +180,8 @@ Item {
                     tokenName: modelData.name
                     tokenSymbol: modelData.symbol
                     tokenDefinitionId: modelData.definitionId
+                    disabled: root.disabledDefinitionId !== "" &&
+                              modelData.definitionId === root.disabledDefinitionId
                     onClicked: root.tokenSelected(modelData)
                 }
             }
