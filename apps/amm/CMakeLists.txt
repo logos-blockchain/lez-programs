@@ -37,17 +37,14 @@ logos_module(
         src/AmmUiBackend.h
         src/AmmUiBackend.cpp
         src/ActiveNetwork.h
-        src/ActiveNetwork.cpp
         src/AmmClient.h
         src/AmmClient.cpp
         src/NewPositionRuntime.h
         src/NewPositionRuntime.cpp
     FIND_PACKAGES
         Qt6Gui
-        Qt6Network
     LINK_LIBRARIES
         Qt6::Gui
-        Qt6::Network
         PkgConfig::BASE58
     LINK_TARGETS
         logos_wallet_access
@@ -56,21 +53,7 @@ logos_module(
         amm_client
 )
 
-qt_add_resources(amm_ui_module_plugin amm_ui_config
-    PREFIX "/amm"
-    FILES
-        config/networks.json
-)
-
 if(BUILD_TESTING)
-    add_executable(amm_active_network_test
-        tests/cpp/ActiveNetworkTest.cpp
-        src/ActiveNetwork.cpp
-    )
-    target_include_directories(amm_active_network_test PRIVATE src)
-    target_link_libraries(amm_active_network_test PRIVATE Qt6::Core)
-    add_test(NAME amm_active_network COMMAND amm_active_network_test)
-
     add_executable(amm_new_position_runtime_test
         tests/cpp/NewPositionRuntimeTest.cpp
         src/NewPositionRuntime.cpp

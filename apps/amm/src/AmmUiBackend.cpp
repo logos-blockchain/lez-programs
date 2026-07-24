@@ -14,9 +14,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QNetworkRequest>
 #include <QSettings>
 #include <QTimer>
 #include <QUrl>
@@ -144,46 +141,6 @@ namespace {
     }
 }
 
-namespace {
-    const int CHECKPOINT_BLOCK_ID = 10;
-    const int BLOCK_HASH_OFFSET = 40;
-    const int BLOCK_HASH_SIZE = 32;
-
-    QByteArray jsonRpcBody(const QString& method, const QJsonArray& params)
-    {
-        return QJsonDocument(QJsonObject {
-            { QStringLiteral("jsonrpc"), QStringLiteral("2.0") },
-            { QStringLiteral("id"), 1 },
-            { QStringLiteral("method"), method },
-            { QStringLiteral("params"), params },
-        }).toJson(QJsonDocument::Compact);
-    }
-
-    QString blockHashFromResponse(const QByteArray& payload)
-    {
-        QJsonParseError parseError;
-        const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
-        if (parseError.error != QJsonParseError::NoError || !document.isObject())
-            return {};
-        const QByteArray block =
-            QByteArray::fromBase64(document.object().value(QStringLiteral("result")).toString().toLatin1());
-        if (block.size() < BLOCK_HASH_OFFSET + BLOCK_HASH_SIZE)
-            return {};
-        return QString::fromLatin1(block.mid(BLOCK_HASH_OFFSET, BLOCK_HASH_SIZE).toHex());
-    }
-
-    QString channelIdFromResponse(const QByteArray& payload)
-    {
-        QJsonParseError parseError;
-        const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
-        if (parseError.error != QJsonParseError::NoError || !document.isObject())
-            return {};
-        const QString channel = document.object().value(QStringLiteral("result")).toString();
-        return ActiveNetwork::isValidIdentity(channel) ? channel : QString();
-    }
-
-}
-
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     : AmmUiBackendSimpleSource(parent),
       m_logosAPI(logosAPI ? logosAPI : new LogosAPI("amm_ui", this)),
@@ -192,13 +149,11 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
       m_walletController(std::make_unique<WalletController>(
           *m_wallet, QStringLiteral("AmmUI"))),
       m_ammClient(std::make_unique<BundledAmmClient>()),
-      m_newPosition(std::make_unique<NewPositionRuntime>(m_wallet.get(), m_ammClient.get())),
-      m_net(new QNetworkAccessManager(this))
+      m_newPosition(std::make_unique<NewPositionRuntime>(m_wallet.get(), m_ammClient.get()))
 {
     setWalletStateReady(false);
-    m_network.load();
     setNewPositionContext(m_newPosition->context(
-        QVariantMap(), m_network.snapshot(), false, false));
+        QVariantMap(), networkSnapshot(), false, false));
 
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);
@@ -289,29 +244,25 @@ void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
     else {
         request = m_newPositionHints;
     }
-    if (m_network.status() == QStringLiteral("network_unknown"))
-        probeNetworkIdentity();
     setNewPositionContext(m_newPosition->context(
-        request, m_network.snapshot(), isWalletOpen(), refreshWalletAccounts));
+        request, networkSnapshot(), isWalletOpen(), refreshWalletAccounts));
 }
 
 QVariantMap AmmUiBackend::quoteNewPosition(QVariantMap request)
 {
-    return m_newPosition->quote(request, m_network.snapshot(), isWalletOpen());
+    return m_newPosition->quote(request, networkSnapshot(), isWalletOpen());
 }
 
 QVariantMap AmmUiBackend::submitNewPosition(QVariantMap request, QString quoteHash)
 {
     return m_newPosition->submit(
-        request, quoteHash, m_network.snapshot(), isWalletOpen());
+        request, quoteHash, networkSnapshot(), isWalletOpen());
 }
 
 void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
     const bool walletWasOpen = isWalletOpen();
-    const bool wasReachable = sequencerReachable();
-    const QString previousAddress = sequencerAddr();
 
     setIsWalletOpen(state.isWalletOpen);
     setWalletExists(state.walletExists);
@@ -323,69 +274,71 @@ void AmmUiBackend::syncWalletState()
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
 
-    const bool addressChanged = previousAddress != state.sequencerAddress;
-    if (addressChanged)
-        m_network.sequencerChanged(!state.sequencerAddress.isEmpty());
-    if (addressChanged || wasReachable != state.sequencerReachable) {
-        m_network.reachabilityChanged(state.sequencerReachable, wasReachable);
-    }
     if (walletWasOpen && !state.isWalletOpen)
         m_newPosition->clearWalletAccounts();
 
     publishNetworkContext();
-    if (state.sequencerReachable && m_network.needsIdentityProbe())
-        probeNetworkIdentity();
-}
-
-void AmmUiBackend::probeNetworkIdentity()
-{
-    if (m_identityProbeInFlight
-        || !m_network.isConfigured()
-        || sequencerAddr().isEmpty()) {
-        return;
-    }
-    m_identityProbeInFlight = true;
-    m_network.beginIdentityProbe();
-    publishNetworkContext();
-    const QString address = sequencerAddr();
-    const bool devnet = m_network.isDevnet();
-    const QString method = devnet
-        ? QStringLiteral("getChannelId")
-        : QStringLiteral("getBlock");
-    const QJsonArray params = devnet
-        ? QJsonArray()
-        : QJsonArray { CHECKPOINT_BLOCK_ID };
-
-    QNetworkRequest request{QUrl(address)};
-    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    request.setTransferTimeout(4000);
-    QNetworkReply* reply = m_net->post(request, jsonRpcBody(method, params));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, address, devnet]() {
-        m_identityProbeInFlight = false;
-        if (address != sequencerAddr()) {
-            reply->deleteLater();
-            probeNetworkIdentity();
-            return;
-        }
-        if (!sequencerReachable()) {
-            reply->deleteLater();
-            return;
-        }
-
-        const QByteArray payload = reply->readAll();
-        const QString actual = devnet
-            ? channelIdFromResponse(payload)
-            : blockHashFromResponse(payload);
-        m_network.finishIdentityProbe(actual);
-        reply->deleteLater();
-        publishNetworkContext();
-    });
 }
 
 void AmmUiBackend::publishNetworkContext()
 {
     setNewPositionContext(m_newPosition->context(
-        m_newPositionHints, m_network.snapshot(), isWalletOpen(), false));
+        m_newPositionHints, networkSnapshot(), isWalletOpen(), false));
+}
+
+QString AmmUiBackend::ammProgramIdHex()
+{
+    const QByteArray elf = loadAmmElf();
+    if (elf.isEmpty())
+        return QString();
+    ProgramId ammId{};
+    if (!amm_client_program_id_from_elf(reinterpret_cast<const uint8_t*>(elf.constData()),
+                                        static_cast<uintptr_t>(elf.size()), &ammId)) {
+        qWarning() << "AmmUiBackend::ammProgramIdHex: amm_client_program_id_from_elf failed";
+        return QString();
+    }
+    // 32 bytes, little-endian per u32 word, lowercase hex — same encoding as
+    // swapExactInput's program-id and `spel program-id`.
+    QByteArray bytes;
+    bytes.reserve(32);
+    for (int i = 0; i < 8; ++i) {
+        const uint32_t word = ammId[i];
+        bytes.append(static_cast<char>(word & 0xff));
+        bytes.append(static_cast<char>((word >> 8) & 0xff));
+        bytes.append(static_cast<char>((word >> 16) & 0xff));
+        bytes.append(static_cast<char>((word >> 24) & 0xff));
+    }
+    return QString::fromLatin1(bytes.toHex());
+}
+
+ActiveNetworkSnapshot AmmUiBackend::networkSnapshot()
+{
+    ActiveNetworkSnapshot snapshot;
+    snapshot.id = QStringLiteral("lez");
+    // Defer program/token resolution (which reaches the module) until wallet
+    // state is resolved; the constructor publishes an initial context before
+    // the module is up, and syncWalletState() republishes once it is.
+    if (!walletStateReady()) {
+        snapshot.status = QStringLiteral("loading");
+        return snapshot;
+    }
+    snapshot.ammProgramId = ammProgramIdHex();
+    // Bind a quote to this AMM deployment: the program id changes per deployment,
+    // so it doubles as the network fingerprint (a quote can't be replayed against
+    // a different program). Empty when AMM_PROGRAM_BIN is unset — status gates it.
+    snapshot.fingerprint = snapshot.ammProgramId;
+    // Configured token set = the TOKENS_CONFIG definition ids, the same source
+    // the Swap view's token picker uses (tokenList normalizes them to hex).
+    const QVariantList tokens = tokenList();
+    for (const QVariant& entry : tokens) {
+        const QString id = entry.toMap().value(QStringLiteral("definitionId")).toString();
+        if (!id.isEmpty())
+            snapshot.tokenIds.append(id);
+    }
+    snapshot.status = snapshot.ammProgramId.isEmpty()
+        ? QStringLiteral("config_missing")
+        : QStringLiteral("ready");
+    return snapshot;
 }
 
 QString AmmUiBackend::normalizeAccountId(const QString& id)

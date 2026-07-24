@@ -135,10 +135,12 @@ core module from `result-core/` and the UI plugin from `result-lgx/`:
 4. Choose the core module `.lgx` from `result-core/`, then the UI plugin `.lgx`
    from `result-lgx/`
 
-To actually use the Swap view you must also set `AMM_PROGRAM_BIN` and
-`TOKENS_CONFIG` (both explained below). Run this **from the repo root** — use
-absolute paths (`$(pwd)/…`), because `nix run` may not preserve the working
-directory, so relative paths won't resolve:
+To actually use the on-chain views (**Swap** and **Liquidity**) you must also
+set `AMM_PROGRAM_BIN` and `TOKENS_CONFIG` (both explained below). Both views read
+the same two — the AMM program id is derived from `AMM_PROGRAM_BIN`, the token
+set from `TOKENS_CONFIG`, and the sequencer from the wallet config. Run this
+**from the repo root** — use absolute paths (`$(pwd)/…`), because `nix run` may
+not preserve the working directory, so relative paths won't resolve:
 
 ```bash
 AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
@@ -146,10 +148,10 @@ TOKENS_CONFIG=$(pwd)/amm-tokens.json \
 nix run .#amm-ui
 ```
 
-Without `AMM_PROGRAM_BIN` the Swap view stays disabled; without `TOKENS_CONFIG`
-the token picker is empty. Each is detailed below.
+Without `AMM_PROGRAM_BIN` the Swap and Liquidity views stay disabled; without
+`TOKENS_CONFIG` the token picker is empty. Each is detailed below.
 
-### AMM program binary (required for swaps)
+### AMM program binary (required for swaps and liquidity)
 
 To execute a swap, the app must submit a transaction against the **exact AMM
 program you deployed** (its ELF determines the program id, and therefore every

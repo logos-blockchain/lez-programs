@@ -23,7 +23,6 @@ struct LogosModules;
 class AmmClient;
 class LogosWalletProvider;
 class NewPositionRuntime;
-class QNetworkAccessManager;
 class WalletController;
 
 // Source-side implementation of the AmmUiBackend .rep interface.
@@ -67,8 +66,17 @@ public slots:
 
 private:
     void syncWalletState();
-    void probeNetworkIdentity();
     void publishNetworkContext();
+
+    // Builds the new-position network context from the same sources the Swap
+    // view uses: ammProgramId from $AMM_PROGRAM_BIN, tokenIds from
+    // $TOKENS_CONFIG. status is "ready" once AMM_PROGRAM_BIN resolves, else
+    // "config_missing". There is no separate network config or channel probe.
+    ActiveNetworkSnapshot networkSnapshot();
+
+    // 64-char lowercase-hex AMM program id derived from $AMM_PROGRAM_BIN (empty
+    // if unset/unreadable); matches swapExactInput's program-id encoding.
+    QString ammProgramIdHex();
 
     // Normalizes an account id given as either 64-char lowercase/uppercase hex
     // or base58 to lowercase hex. Returns an empty QString if `id` is neither
@@ -92,11 +100,7 @@ private:
     std::unique_ptr<AmmClient> m_ammClient;
     std::unique_ptr<NewPositionRuntime> m_newPosition;
 
-    QNetworkAccessManager* m_net;
-
-    ActiveNetwork m_network;
     QVariantMap m_newPositionHints;
-    bool m_identityProbeInFlight = false;
 };
 
 #endif // AMM_UI_BACKEND_H
