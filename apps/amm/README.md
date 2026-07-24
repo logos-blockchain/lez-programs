@@ -50,9 +50,6 @@ nix profile install 'github:logos-co/logos-package-manager#cli'
 
 This makes `lgpm` available as a global command.
 
-For macOS prerequisites, the Metal toolchain requirement, and common Nix
-recovery steps, see [macOS setup](MACOS.md).
-
 ## Running the UI standalone
 
 The app is built from the **repository-root** flake (which also provides the
