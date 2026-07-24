@@ -322,20 +322,31 @@ ActiveNetworkSnapshot AmmUiBackend::networkSnapshot()
         snapshot.status = QStringLiteral("loading");
         return snapshot;
     }
-    snapshot.ammProgramId = ammProgramIdHex();
+    // Resolve the AMM deployment id ($AMM_PROGRAM_BIN) and configured token set
+    // ($TOKENS_CONFIG) ONCE and cache — they're fixed for the process lifetime.
+    // networkSnapshot() runs on the quote hot path and from inside runtime reply
+    // callbacks, and tokenList() makes remote base58 conversions; recomputing each
+    // call reenters the module connection and hangs the reply.
+    if (!m_networkResolved) {
+        m_ammProgramIdCache = ammProgramIdHex();
+        m_tokenIdsCache.clear();
+        // Configured token set = the TOKENS_CONFIG definition ids, the same source
+        // the Swap view's token picker uses (tokenList normalizes them to hex).
+        const QVariantList tokens = tokenList();
+        for (const QVariant& entry : tokens) {
+            const QString id = entry.toMap().value(QStringLiteral("definitionId")).toString();
+            if (!id.isEmpty())
+                m_tokenIdsCache.append(id);
+        }
+        m_networkResolved = true;
+    }
+    snapshot.ammProgramId = m_ammProgramIdCache;
     // Bind a quote to this AMM deployment: the program id changes per deployment,
     // so it doubles as the network fingerprint (a quote can't be replayed against
     // a different program). Empty when AMM_PROGRAM_BIN is unset — status gates it.
-    snapshot.fingerprint = snapshot.ammProgramId;
-    // Configured token set = the TOKENS_CONFIG definition ids, the same source
-    // the Swap view's token picker uses (tokenList normalizes them to hex).
-    const QVariantList tokens = tokenList();
-    for (const QVariant& entry : tokens) {
-        const QString id = entry.toMap().value(QStringLiteral("definitionId")).toString();
-        if (!id.isEmpty())
-            snapshot.tokenIds.append(id);
-    }
-    snapshot.status = snapshot.ammProgramId.isEmpty()
+    snapshot.fingerprint = m_ammProgramIdCache;
+    snapshot.tokenIds = m_tokenIdsCache;
+    snapshot.status = m_ammProgramIdCache.isEmpty()
         ? QStringLiteral("config_missing")
         : QStringLiteral("ready");
     return snapshot;

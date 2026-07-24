@@ -5,6 +5,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -101,6 +102,14 @@ private:
     std::unique_ptr<NewPositionRuntime> m_newPosition;
 
     QVariantMap m_newPositionHints;
+
+    // Network context is derived from $AMM_PROGRAM_BIN + $TOKENS_CONFIG, which are
+    // fixed for the process lifetime — resolve them once and cache. networkSnapshot()
+    // runs on the hot path (every quote) and from inside runtime callbacks, and
+    // tokenList() makes remote base58 conversions, so it must not recompute each call.
+    bool m_networkResolved = false;
+    QString m_ammProgramIdCache;
+    QStringList m_tokenIdsCache;
 };
 
 #endif // AMM_UI_BACKEND_H
