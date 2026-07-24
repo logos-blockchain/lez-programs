@@ -1,7 +1,7 @@
 
 # Privacy coverage in LEZ programs
 
-LEZ programs, ideally, are privacy agnostic. E.g., a program should work the same for public and private accounts. Currently, LEZ program integration tests only cover public accounts. This task, we expand the tests for LEZ programs to determine how adaptable (TODO-probably wrong word) LEZ programs are to selective privacy.
+LEZ programs, ideally, are privacy agnostic. E.g., a program should work the same for public and private accounts. Currently, LEZ program integration tests only cover public accounts. This task, we expand the tests for LEZ programs to determine how compatible LEZ programs are with selective privacy.
 
 
 # Private account variants in LEE
@@ -15,7 +15,7 @@ Regular private accounts can be initialized with or without knowledge of the acc
 
 - `PrivateUnauthorized`
 
-    A special case for private accounts initialization that uses only public keys `npk` and `vpk`. Example: Alice can use Bob's keys (`npk`, `vpk`) and an `identifier` to send Bob a private transaction. Since Alice does not know the corresponding `nsk`, she is spend the resulting private account. E.g., Alice cannot authorize the transaction.
+    A special case for private accounts initialization that uses only public keys `npk` and `vpk`. Example: Alice can use Bob's keys (`npk`, `vpk`) and an `identifier` to send Bob a private transaction. Since Alice does not know the corresponding `nsk`, she is unable to spend the resulting private account. E.g., Alice cannot authorize the transaction.
 
 - `PrivateAuthorizedInit`
     Private account initialized using the account's `nsk` (and some `identifier`). This operation cannot be done by the a third-party (an entity that does not possess spending authority of the account).
@@ -34,7 +34,7 @@ Private account updates require knowledge of the account's `nsk`. E.g., Alice ca
 Only the account owner can (1) update their initialized account, and (2) use functions that require authorization with their account.
 
 ### Remark
-- `PrivateUnauthorized` initialization is used for account initialization. `is_authorized = false` is a protection that does not seem crucial. Artifically, blocks some functions.
+- `is_authorized = false` is crucial for public accounts, since a public account id can be freely referenced and used by anyone in a transaction — `is_authorized` is what stops that. Private accounts don't have this exposure: only the account owner (via `nsk`) can ever update a private account, regardless of `is_authorized`. So for `PrivateUnauthorized` specifically — a third party initializing a *new* account on the owner's behalf, which nobody but the owner can subsequently update — `is_authorized = false` doesn't protect anything; it only blocks legitimate program functions that require a signer. This issue has been resolved by [PR 621](https://github.com/logos-blockchain/logos-execution-zone/pull/621); for more information see the Action items section.
 
 ## Private PDA
 
@@ -58,7 +58,7 @@ distributed via a real seal/unseal handshake (ML-KEM-768), not key reuse:
 3. Bob **unseals** it with his own sealing secret key, then
    independently re-derives the account's keys from the same seed.
 
-This ensures that any member of the group can execute programs on shared accounts using either `PrivateAuthorizedInit` or `PrivateAuthorizedUpdate`. From a program's perspective, shared accounts should behave the same as regular public accounts.
+This ensures that any member of the group can execute programs on shared accounts using either `PrivateAuthorizedInit` or `PrivateAuthorizedUpdate`. From a program's perspective, shared accounts should behave the same as regular private accounts.
 
 # Privacy coverage for LEZ programs objectives
 
@@ -72,6 +72,9 @@ In this task, we extend testing for LEZ programs to cover privacy features:
 | GROUP   | Shared group account |
 | CHAIN   | private account used in a chain call |
 
+A test function whose name ends in `_is_not_expressible` is a negative test: it demonstrates that
+a desirable privacy pattern currently fails.
+
 # LEZ programs
 
 ## AMM program
@@ -83,15 +86,16 @@ In this task, we extend testing for LEZ programs to cover privacy features:
 | AddLiquidity | `amm_add_liquidity_private_lp_holding` | REGULAR, CHAIN | Private LP-output holding (`user_holding_lp`) receives newly-minted LP on top of an existing private balance | ✅ |
 | AddLiquidity | `amm_add_liquidity_private_user_holdings` | REGULAR, CHAIN | Private deposit legs (`user_holding_a` + `user_holding_b`), public LP recipient | ✅ |
 | RemoveLiquidity | `amm_remove_liquidity_private_lp_holding` | REGULAR, CHAIN | Private LP holding (the account that signs/burns to remove liquidity) | ✅ |
-| RemoveLiquidity | `amm_remove_liquidity_private_new_user_holdings_is_not_expressible` | EXIST, CHAIN | Brand-new `PrivateUnauthorized` token A/B destinations — rejected by a separate, unrelated program-level precondition (destination must already exist) | ❌ (confirmed not-expressible — different reason) |
-| SwapExactInput | `amm_swap_a_to_b_private_unauthorized_destination_is_not_expressible` | EXIST, CHAIN | Swap paying out to a brand-new `PrivateUnauthorized` destination (`npk` only, no `nsk`) | ❌ (confirmed not-expressible — guest ABI requires both swap legs to be signers, which `PrivateUnauthorized` can never satisfy by construction) |
-| SwapExactInput | `amm_swap_a_to_b_private_authorized_init_destination_is_not_expressible` | REGULAR, CHAIN | Swap paying out to a brand-new `PrivateAuthorizedInit` destination (owner self-initializes with its own `nsk`) | ❌ (confirmed not-expressible — same "destination must already exist" precondition as `RemoveLiquidity`) |
+| RemoveLiquidity | `amm_remove_liquidity_private_new_user_holdings_is_not_expressible` | EXIST, CHAIN | Brand-new `PrivateUnauthorized` token A/B destinations — rejected by a separate, unrelated program-level precondition (destination must already exist) | ❌ Not-expressible — AMM's own precondition requires the destination to already be owned by the Token Program. **[Open — Programs]** |
+| SwapExactInput | `amm_swap_a_to_b_private_unauthorized_destination_is_not_expressible` | EXIST, CHAIN | Swap paying out to a brand-new `PrivateUnauthorized` destination (`npk` only, no `nsk`) | ❌ Not-expressible — the guest's signer check requires `is_authorized == true` on both swap legs, and `PrivateUnauthorized` always initializes with `is_authorized == false`. **[Resolved — PR #621]** |
+| SwapExactInput | `amm_swap_a_to_b_private_authorized_init_destination_is_not_expressible` | REGULAR, CHAIN | Swap paying out to a brand-new `PrivateAuthorizedInit` destination (owner self-initializes with its own `nsk`) | ❌ Not-expressible — same "destination must already exist" precondition as `RemoveLiquidity`. **[Open — Programs]** |
 | NewDefinition | `amm_new_definition_private_initial_lp_holder` | REGULAR | Pool creation with a private `PrivateAuthorizedInit` initial LP holder | ✅ |
-| NewDefinition | `amm_new_definition_private_unauthorized_lp_holder_is_not_expressible` | EXIST, REGULAR | Pool creation with a `PrivateUnauthorized` initial LP holder (`npk` only, no `nsk`) | ❌ (confirmed not-expressible — guest ABI requires `user_holding_lp` to be a signer, which `PrivateUnauthorized` can never satisfy; same shape as the `Swap` `PrivateUnauthorized` finding above) |
+| NewDefinition | `amm_new_definition_private_unauthorized_lp_holder_is_not_expressible` | EXIST, REGULAR | Pool creation with a `PrivateUnauthorized` initial LP holder (`npk` only, no `nsk`) | ❌ Not-expressible — same `is_authorized == true` signer check as the `Swap` row above, on `user_holding_lp`. **[Resolved — PR #621]** |
 
 ### Remarks
 - `Swap` and `Remove` rejects any uninitialized destination account; this is a AMM design choice, and not Token program requirement.
-- AMM tests were initially blocked by a bug.
+- AMM's chained-call privacy tests were initially blocked by a "bug" in `logos-execution-zone`. An account was silently dropped from the programs output (pre and post states) before the transaction was validated. This behavior was acceptable in public transactions, but not for privacy transactions. This issue has been resolved by [PR 625](https://github.com/logos-blockchain/logos-execution-zone/pull/625); for more information see the Action items section.
+    - The `clock` account was the offending account in the tests. For `integration_tests` the default account id was used which resulted in the account being dropped by LEZ. This behavior does not occur in practice as the `clock` account id is used for real. The AMM tests have been updated to avoid this issue for public and privacy tests.
 
 ## ATA program
 
@@ -100,7 +104,7 @@ ATA program offers limited usage with private accounts. Private accounts can be 
 | Function tested | Test name | Category | Description of objective | Result |
 |---|---|---|---|---|
 | Create | `ata_create_from_private_owner` | REGULAR, EXIST | Any third party can bootstrap another owner's ATA using only that owner's public key material (`PrivateUnauthorized` — `npk`/`vpk` only, no `nsk`) — `Create` never asserts `owner.is_authorized` | ✅ |
-| Create | `ata_create_private_ata_holding_is_not_expressible` | PDA | Attempts to make the ATA holding itself a private account via `PrivatePdaInit`/`PrivatePdaUpdate` — confirms the public-form PDA match ATA authorizes with and the private-form binding those variants require are mutually exclusive for the same account id | ❌ (confirmed not-expressible) |
+| Create | `ata_create_private_ata_holding_is_not_expressible` | PDA | Attempts to make the ATA holding itself a private account via `PrivatePdaInit`/`PrivatePdaUpdate` — confirms the public-form PDA match ATA authorizes with and the private-form binding those variants require are mutually exclusive for the same account id | ❌ Not-expressible — `ata_core` derives the ATA holding's `AccountId` via the public-only formula, and the public/private formulas are mutually exclusive for the same account id. **[Open — Zones]**, a unified `AccountId` formula needs to be devised before programs can support private PDAs |
 | Create | `ata_create_from_group_owned_owner` | GROUP | Group-derived owner identity used to create an ATA — **weaker than the other `GROUP` rows**: `Create` never requires `owner` to prove control. | ✅ (defensive/symmetry coverage only) |
 | Transfer | `ata_transfer_to_existing_private_recipient` | REGULAR | Sends more into an already-shielded private recipient through ATA's *nested* chained call into Token — the first test in the whole exercise proving a private identity survives a chained call at all | ✅ |
 | Transfer | `ata_transfer_with_private_owner_signing` | REGULAR | Key discovery: unlike `Create` (merely `mut`), `Transfer` requires `owner` to be a *signer* (`#[account(signer)]`) — a private owner self-initializes and signs in the same transaction via `PrivateAuthorizedInit` | ✅ |
@@ -123,9 +127,9 @@ ATA program offers limited usage with private accounts. Private accounts can be 
 | RepayDebt | `stablecoin_repay_debt_group_owned_stablecoin_holding` | GROUP | Same, group-owned holding | ✅ |
 
 ### Remarks
-- `OpenPosition` is blocked for use in privacy transactions due to the chained calls usage. `OpenPosition` calls `Token::InitializeAccount` and `Token::Transfer` for the same vault account which is disallowed behavior in privacy preserving circuit. Demonstrated with test `stablecoin_open_position_via_privacy_transaction_is_not_expressible`.
-- `WithdrawCollateral` does not support withdrawals to `PrivateUnauthorized` and `PrivateAuthorizedInit`; explicitly checks that the destination account is not default. Demonstrated with the test `stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`.
-- Vault is explicitly public PDA by formula requirement.
+- `OpenPosition` is blocked for use in privacy transactions due to the chained calls usage. `OpenPosition` calls `Token::InitializeAccount` and `Token::Transfer` for the same vault account which is disallowed behavior in privacy preserving circuit. Demonstrated with test `stablecoin_open_position_via_privacy_transaction_is_not_expressible`. **[Open — Zones]**, see Conclusions.
+- `WithdrawCollateral` does not support withdrawals to `PrivateUnauthorized` and `PrivateAuthorizedInit`; explicitly checks that the destination account is not default. Demonstrated with the test `stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible`. **[Open — Programs]**
+- Vault is explicitly public PDA by formula requirement. **[Open — Zones]**, same `AccountId` formula issue as ATA's — see the Action items section.
 
 ## Token program
 
@@ -144,22 +148,38 @@ ATA program offers limited usage with private accounts. Private accounts can be 
 | Burn | `token_private_burn` | REGULAR | Burn from an existing private holding via a single `PrivateAuthorizedUpdate` | ✅ |
 | Burn | `token_group_owned_holding_shared_control_burn` | GROUP | Shield tokens into a GMS-derived shared holding, then burn from it using an independently re-derived key | ✅ |
 | InitializeAccount | `token_initialize_private_account_succeeds_for_canonical_definition` | REGULAR | Self-init of a private holding via `PrivateAuthorizedInit` | ✅ |
-| InitializeAccount | `token_initialize_private_account_without_nsk_is_not_expressible` | EXIST | `InitializeAccount`'s target is `#[account(init, signer)]` — a third party cannot initialize a private holding via `PrivateUnauthorized` (no `nsk`); rejected by the SPEL macro ("must be a signer") before the program's own logic runs | ❌ (confirmed not-expressible by design) |
+| InitializeAccount | `token_initialize_private_account_without_nsk_is_not_expressible` | EXIST | `InitializeAccount`'s target is `#[account(init, signer)]` — the guest's signer check requires `is_authorized == true`, and a third party initializing via `PrivateUnauthorized` (no `nsk`) always gets `is_authorized == false`, rejected before the program's own logic runs | ❌ Not-expressible. **[Resolved — PR #621]** |
 | InitializeAccount | `token_group_owned_holding_shared_control_initialize` | GROUP | A group member — not the party who created the group — self-initializes the shared holding directly via `PrivateAuthorizedInit` | ✅ |
 | MintWithAuthority | `token_mint_with_authority_to_private_holding` | EXIST | External-authority mint (distinct signer from the definition) directly to a fresh private recipient | ✅ |
 | NewFungibleDefinition | `token_new_fungible_definition_private_initial_holder` | REGULAR | Public token definition, private initial holder that self-initializes via `PrivateAuthorizedInit` (own `nsk` supplied) — same self-service shape as `InitializeAccount`'s target | ✅ |
-| NewFungibleDefinition | `token_new_fungible_definition_private_holder_without_nsk_is_not_expressible` | EXIST | The initial holder cannot be created via `PrivateUnauthorized` — rejected by the SPEL macro before the program's own logic runs | ❌ (confirmed not-expressible by design) |
+| NewFungibleDefinition | `token_new_fungible_definition_private_holder_without_nsk_is_not_expressible` | EXIST | The initial holder cannot be created via `PrivateUnauthorized` — same `is_authorized == true` signer check as `InitializeAccount` above, rejected before the program's own logic runs | ❌ Not-expressible. **[Resolved — PR #621]** |
 
 
 ### Remarks
-- `Initialization` is not possible for `PrivateUnauthorized` accounts due to `is_authorized = false`.
-- New token definition is not permitted for `PrivateUnauthorized` as Token holding due to `is_authorized = false`.E.g., both Token Definition and Token Holding for a new Token must be from an authorized account.
+- `Initialization` is not possible for `PrivateUnauthorized` accounts due to `is_authorized = false`. **[Resolved — PR #621]**
+- New token definition is not permitted for `PrivateUnauthorized` as Token holding due to `is_authorized = false`. E.g., both Token Definition and Token Holding for a new Token must be from an authorized account. **[Resolved — PR #621]**
 
 # Conclusions
 
 Privacy coverage for LEZ program tests is greatly improved from the added tests. Though, there are a few noticable gaps:
-- `PrivateUnauthorized` accounts can be blocked by programs with a check `is_authorized = true`. However, this issue can be avoided by defining `is_authorized = true` for account initialization with `PrivateUnauthorized` (e.g., no knowledge of `npk`). Account initialization cannot be used to maliciously alter a pre-existing account, and thus `is_authorized = true` would not offer any malicious path forward for the third-party initializing the account.
-- Privacy transactions have issues with chain calls in which multiple calls affect the same private account. This issue can be mitigated by adopting account diff paradigm instead of the current "account state replacement" that we currently use.
+- `PrivateUnauthorized` accounts can be blocked by programs with a check requiring `is_authorized = true`, since a fresh `PrivateUnauthorized` account is always initialized with `is_authorized = false`. This is a `logos-execution-zone` protocol-level issue, not something programs can work around — see the `PrivateUnauthorized` remark above for the full reasoning. This has been resolved by [PR 621](https://github.com/logos-blockchain/logos-execution-zone/pull/621); see the Action items section.
+- Privacy transactions have issues with chain calls in which multiple calls affect the same private account. The privacy preserving circuit's `authorized_accounts` bookkeeping is monotonic (once an account is authorized, every later occurrence within the same transaction must also declare it authorized), which rejects some call patterns that are valid on the public-transaction path (E.g. `Stablecoin::OpenPosition`). This is a `logos-execution-zone` protocol level issue. A proposed revision to account updates would mitigate this issue: accounts updated iteratively based on their state diff rather than "full replacement".
 
-Additional observation:
-AMM's chained-call privacy tests were blocked by the clock account being `DEFAULT_PROGRAM_ID`-owned in the test fixture, which trips a `spel-framework` dispatcher filter (upstream in `logos-co/spel`) that silently drops any default-owned, non-default, unclaimed account from a program's output. Fixed by giving the fixture's clock account a non-default owner; see the AMM section. But the deeper bug is in `logos-execution-zone` itself: `ValidatedStateDiff::from_public_transaction` never checks that the accounts touched in a program's output match the caller-declared `message.account_ids` — no count, no membership check, nothing like the privacy circuit's own `account_identities.len() == states_iter.len()` assertion. That's why the `spel-framework` drop went unnoticed by every pre-existing public AMM test: the public path has no validation capable of catching a silently-dropped account at all. Both remain open upstream.
+Additionally, testing undercovered a "bug" in LEZ:
+AMM's chained-call privacy tests were initially blocked because the `clock` account — seeded in the test fixture with a default (unclaimed) account id, `DEFAULT_PROGRAM_ID`, rather than owned by a dedicated clock program as in production — was silently dropped from a program's output, undetected by `logos-execution-zone`'s public-transaction validation: `ValidatedStateDiff::from_public_transaction` never checked that the accounts touched in a program's output matched the caller-declared `message.account_ids` — no count check, no membership check, nothing like the privacy circuit's own `account_identities.len() == states_iter.len()` assertion. That gap is why no pre-existing public AMM test ever caught the clock account being dropped: the public path had no validation capable of catching a silently-dropped account at all; only the privacy circuit's stricter bookkeeping turned it into a hard failure. Worked around at the test-fixture level in the meantime (giving the fixture's clock account a non-default owner; see the AMM section). This also had a soundness implication beyond blocking AMM tests: because `clock` never reached `public_pre_states` on the privacy-preserving path, the host validator never checked the clock data a proof was generated against real chain state — a malicious prover could in principle have supplied an arbitrary timestamp as a private witness with nothing to catch it. This has been resolved by [PR 625](https://github.com/logos-blockchain/logos-execution-zone/pull/625), which closes both the test-blocking symptom and the soundness gap; see the Action items section.
+
+## Action items
+
+Every open or resolved issue raised in this report, grouped by which repo the fix lives in —
+**Zones** owns `logos-execution-zone`, **Programs** owns `lez-programs`:
+
+| Owner | Item | Status |
+|---|---|---|
+| Zones | `is_authorized = false` blocks `PrivateUnauthorized` on signer-gated instructions | ✅ Resolved — [PR #621](https://github.com/logos-blockchain/logos-execution-zone/pull/621) |
+| Zones | Public transactions don't detect a silently-dropped declared account | ✅ Resolved — [PR #625](https://github.com/logos-blockchain/logos-execution-zone/pull/625) |
+| Zones | `OpenPosition`-shaped chain calls (re-authorizing the same account across chained calls) fail under the privacy circuit | 🔲 Open — proposed circuit revision, no PR yet |
+| Zones | ATA/AMM/Stablecoin PDAs derive via `for_public_pda` only, blocking private PDA use — the public and private `AccountId` formulas are mutually exclusive for the same account, so a unified formula needs to be devised before programs can adopt it | 🔲 Open |
+| Programs | AMM/Stablecoin reject any destination account that isn't already initialized, blocking fresh private destinations (3 tests) | 🔲 Open |
+| Programs | ATA's `Transfer` rejects a non-default (fresh) recipient, blocking shield-style transfers into a brand-new private destination | 🔲 Open |
+
+Resolved items from Zones land in `dev` branch of `logos-execution-zone`.
