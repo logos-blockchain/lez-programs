@@ -1,5 +1,6 @@
 #include "LogosWalletProvider.h"
 
+#include <QByteArray>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -274,16 +275,26 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
     for (bool required : transaction.signingRequirements)
         signingRequirements.append(required);
 
-    QVariantList instruction;
-    instruction.reserve(transaction.instruction.size());
-    for (quint32 word : transaction.instruction)
-        instruction.append(word);
+    // `send_generic_public_transaction`'s `instruction` param is a byte string
+    // (bstr). Passing a QVariantList<u32> makes the module's QtRO glue mangle it,
+    // so the guest reads a garbage Instruction variant. Send the little-endian
+    // bytes of the u32 words instead — same encoding the AMM swap path uses.
+    // See docs/amm-swap-qtro-serialization-bug.md.
+    QByteArray instructionBytes;
+    instructionBytes.reserve(
+        static_cast<int>(transaction.instruction.size() * sizeof(quint32)));
+    for (const quint32 word : transaction.instruction) {
+        instructionBytes.append(static_cast<char>(word & 0xff));
+        instructionBytes.append(static_cast<char>((word >> 8) & 0xff));
+        instructionBytes.append(static_cast<char>((word >> 16) & 0xff));
+        instructionBytes.append(static_cast<char>((word >> 24) & 0xff));
+    }
 
     const QString response =
         m_impl->logos->logos_execution_zone.send_generic_public_transaction(
             transaction.accountIds,
             signingRequirements,
-            QVariant::fromValue(instruction),
+            QVariant::fromValue(instructionBytes),
             transaction.programId);
 
     QJsonParseError parseError;
