@@ -6,7 +6,9 @@ mod ffi;
 pub mod api;
 
 pub use api::{
-    config_id, context, pair_ids, plan, quote, token_ids, AccountRead, AmmApiError, AmmResponse,
-    AmmResult, ConfigIdRequest, ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest,
-    PositionRequest, QuoteRequest, TokenIdsRequest, WalletAccount, NEW_POSITION_SCHEMA,
+    config_id, context, pair_ids, plan, program_id, quote, resolve_pool, swap_pair, swap_plan,
+    token_ids, AccountRead, AmmApiError, AmmResponse, AmmResult, ConfigIdRequest, ContextRequest,
+    PairIdsRequest, PairSnapshot, PlanRequest, PositionRequest, ProgramIdRequest, QuoteRequest,
+    ResolvePoolRequest, SwapPairRequest, SwapPlanRequest, TokenIdsRequest, WalletAccount,
+    NEW_POSITION_SCHEMA,
 };

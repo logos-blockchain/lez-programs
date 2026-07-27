@@ -15,15 +15,12 @@
 #include "ActiveNetwork.h"
 #include "WalletAccountModel.h"
 
-extern "C" {
-#include "amm_client_ffi.h"
-}
-
 class LogosAPI;
 struct LogosModules;
 class AmmClient;
 class LogosWalletProvider;
 class NewPositionRuntime;
+class SwapRuntime;
 class WalletController;
 
 // Source-side implementation of the AmmUiBackend .rep interface.
@@ -100,6 +97,7 @@ private:
     std::unique_ptr<WalletController> m_walletController;
     std::unique_ptr<AmmClient> m_ammClient;
     std::unique_ptr<NewPositionRuntime> m_newPosition;
+    std::unique_ptr<SwapRuntime> m_swap;
 
     QVariantMap m_newPositionHints;
 

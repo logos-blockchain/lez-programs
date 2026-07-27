@@ -69,3 +69,23 @@ AmmClientResult BundledAmmClient::plan(const QJsonObject& request) const
 {
     return call(amm_plan, request);
 }
+
+AmmClientResult BundledAmmClient::swapPair(const QJsonObject& request) const
+{
+    return call(amm_swap_pair, request);
+}
+
+AmmClientResult BundledAmmClient::resolvePool(const QJsonObject& request) const
+{
+    return call(amm_resolve_pool, request);
+}
+
+AmmClientResult BundledAmmClient::swapPlan(const QJsonObject& request) const
+{
+    return call(amm_swap_plan, request);
+}
+
+AmmClientResult BundledAmmClient::programId(const QJsonObject& request) const
+{
+    return call(amm_program_id, request);
+}

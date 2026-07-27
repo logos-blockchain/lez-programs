@@ -7,7 +7,8 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
     self, AmmApiError, AmmResult, ConfigIdRequest, ContextRequest, PairIdsRequest, PlanRequest,
-    QuoteRequest, TokenIdsRequest,
+    ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapPairRequest, SwapPlanRequest,
+    TokenIdsRequest,
 };
 
 #[derive(Serialize)]
@@ -104,6 +105,26 @@ pub extern "C" fn amm_quote(request_json: *const c_char) -> *mut c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_plan(request_json: *const c_char) -> *mut c_char {
     call::<PlanRequest>(request_json, api::plan)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_swap_pair(request_json: *const c_char) -> *mut c_char {
+    call::<SwapPairRequest>(request_json, api::swap_pair)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_resolve_pool(request_json: *const c_char) -> *mut c_char {
+    call::<ResolvePoolRequest>(request_json, api::resolve_pool)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_swap_plan(request_json: *const c_char) -> *mut c_char {
+    call::<SwapPlanRequest>(request_json, api::swap_plan)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_program_id(request_json: *const c_char) -> *mut c_char {
+    call::<ProgramIdRequest>(request_json, api::program_id)
 }
 
 /// Releases a string returned by an `amm_*` operation.

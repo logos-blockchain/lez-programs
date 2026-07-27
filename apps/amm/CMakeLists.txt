@@ -41,6 +41,8 @@ logos_module(
         src/AmmClient.cpp
         src/NewPositionRuntime.h
         src/NewPositionRuntime.cpp
+        src/SwapRuntime.h
+        src/SwapRuntime.cpp
     FIND_PACKAGES
         Qt6Gui
     LINK_LIBRARIES
@@ -49,7 +51,6 @@ logos_module(
     LINK_TARGETS
         logos_wallet_access
     EXTERNAL_LIBS
-        amm_client_ffi
         amm_client
 )
 

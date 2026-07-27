@@ -13,6 +13,7 @@ mod position;
 mod quote;
 mod quote_error;
 mod request;
+mod swap;
 
 #[cfg(test)]
 mod tests;
@@ -21,7 +22,8 @@ use std::{error::Error, fmt};
 
 pub use request::{
     ConfigIdRequest, ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PositionRequest,
-    QuoteRequest, TokenIdsRequest,
+    ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapPairRequest, SwapPlanRequest,
+    TokenIdsRequest,
 };
 use serde_json::Value;
 
@@ -94,4 +96,24 @@ pub fn quote(request: QuoteRequest) -> AmmResult {
 /// Materializes a previously quoted request into wallet submission arguments.
 pub fn plan(request: PlanRequest) -> AmmResult {
     plan::plan(request).map_err(Into::into)
+}
+
+/// Derives the canonical account ids for a swap pair (tokens in either order).
+pub fn swap_pair(request: SwapPairRequest) -> AmmResult {
+    swap::swap_pair(request).map_err(Into::into)
+}
+
+/// Decodes a pool account: existence, reserves (canonical order), fee tier.
+pub fn resolve_pool(request: ResolvePoolRequest) -> AmmResult {
+    swap::resolve_pool(request).map_err(Into::into)
+}
+
+/// Builds the `SwapExactInput` wallet submission for a token pair.
+pub fn swap_plan(request: SwapPlanRequest) -> AmmResult {
+    swap::swap_plan(request).map_err(Into::into)
+}
+
+/// Derives the AMM `ProgramId` (Image ID) from a deployed program binary.
+pub fn program_id(request: ProgramIdRequest) -> AmmResult {
+    swap::program_id(request).map_err(Into::into)
 }

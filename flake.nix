@@ -11,7 +11,7 @@
     };
 
     # The AMM QML UI module (apps/amm) is built from this same flake so it can
-    # reference the amm_client_ffi crate package via `self` — no filesystem
+    # reference the amm_client crate package via `self` — no filesystem
     # path or git-remote reference to this repo is needed (see apps/amm/flake.nix
     # history: a `git+file://` URL pointing at a local checkout is
     # machine-specific and not portable).
@@ -54,19 +54,19 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         # Whole workspace: crane needs Cargo.lock + all path deps (amm_core,
-        # twap_oracle_core, token_core, ...) to resolve `-p amm_client_ffi`.
+        # twap_oracle_core, token_core, ...) to resolve `-p amm_client`.
         src = ./.;
 
         commonArgs = {
           inherit src;
           strictDeps = true;
-          pname = "amm_client_ffi";
+          pname = "amm_client";
           version = "0.1.0";
           # CRITICAL: scope to ONLY this crate. The workspace also contains
           # `amm/methods` etc. whose build.rs compiles the risc0 guest (which
-          # WOULD invoke Metal on darwin). `-p amm_client_ffi` never builds
+          # WOULD invoke Metal on darwin). `-p amm_client` never builds
           # those crates or their build scripts.
-          cargoExtraArgs = "-p amm_client_ffi";
+          cargoExtraArgs = "-p amm_client";
           doCheck = false;
           # NOTE: cbindgen is used here as a Cargo *build-dependency*
           # (invoked from build.rs via its Rust library API), not as the
@@ -76,14 +76,17 @@
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-        ammClientFfi = craneLib.buildPackage (
+        # The single AMM host FFI crate (apps/amm/client): swap + new-position
+        # operations behind one JSON C ABI. Its header is cbindgen-generated
+        # into include/amm_client.h at build time.
+        ammClient = craneLib.buildPackage (
           commonArgs
           // {
             inherit cargoArtifacts;
             postInstall =
               ''
                 mkdir -p $out/include
-                cp programs/amm/client-ffi/amm_client_ffi.h $out/include/
+                cp apps/amm/client/include/amm_client.h $out/include/
               ''
               + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
                 # Set the dylib's install-name to its ABSOLUTE store path (NOT
@@ -92,31 +95,6 @@
                 # @rpath id fails to dlopen at launch. An absolute /nix/store id
                 # is recorded in the plugin's LC_LOAD_DYLIB, kept in the closure
                 # by Nix, and resolved directly at runtime — no rpath needed.
-                if [ -f $out/lib/libamm_client_ffi.dylib ]; then
-                  install_name_tool -id "$out/lib/libamm_client_ffi.dylib" $out/lib/libamm_client_ffi.dylib
-                fi
-              '';
-          }
-        );
-
-        # Second AMM client crate (apps/amm/client) — the new-position/pool
-        # flow's protocol lib. Built alongside amm_client_ffi (they coexist:
-        # symbols are prefixed amm_* vs amm_client_*). TODO: consolidate the two
-        # into a single AMM client FFI.
-        ammClientArgs = commonArgs // {
-          pname = "amm_client";
-          cargoExtraArgs = "-p amm_client";
-        };
-        ammClient = craneLib.buildPackage (
-          ammClientArgs
-          // {
-            cargoArtifacts = craneLib.buildDepsOnly ammClientArgs;
-            postInstall =
-              ''
-                mkdir -p $out/include
-                cp apps/amm/client/include/amm_client.h $out/include/
-              ''
-              + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
                 if [ -f $out/lib/libamm_client.dylib ]; then
                   install_name_tool -id "$out/lib/libamm_client.dylib" $out/lib/libamm_client.dylib
                 fi
@@ -125,14 +103,13 @@
         );
       in
       {
-        packages.default = ammClientFfi;
-        packages.amm_client_ffi = ammClientFfi;
+        packages.default = ammClient;
         packages.amm_client = ammClient;
       }
     );
 
       # The AMM QML UI module (apps/amm). Its external_libraries entry
-      # (amm_client_ffi) is resolved to `self.packages.${system}.amm_client_ffi`
+      # (amm_client) is resolved to `self.packages.${system}.amm_client`
       # above — the module builder's resolveExtInput reads
       # `flakeInput.packages.${system}.${pkgName}`, and passing `self` here
       # works because `self` is this very flake, which already exposes that
@@ -142,7 +119,6 @@
         configFile = ./apps/amm/metadata.json;
         flakeInputs = inputs;
         externalLibInputs = {
-          amm_client_ffi = { input = self; packages.default = "amm_client_ffi"; };
           amm_client = { input = self; packages.default = "amm_client"; };
         };
         # The AMM UI links the shared C++ wallet access lib and bundles the
@@ -178,20 +154,19 @@
       appPkgs = appOutputs.packages or { };
 
       # Wrap the app launcher to export DYLD_FALLBACK_LIBRARY_PATH pointing at the
-      # amm_client_ffi lib. The logos module builder links the plugin against
-      # @rpath/libamm_client_ffi.dylib but does NOT stage that dylib into the
+      # amm_client lib. The logos module builder links the plugin against
+      # @rpath/libamm_client.dylib but does NOT stage that dylib into the
       # plugin-dir it loads at runtime, so dlopen fails with "Failed to load UI
       # plugin". Adding the crate's store lib dir to DYLD's fallback search path
       # lets the loader find it (the store path stays in the closure).
       wrapWithDyld = system: app:
         let
           pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
-          ammFfi = crateOutputs.packages.${system}.amm_client_ffi;
           ammClient = crateOutputs.packages.${system}.amm_client;
         in
         app // {
           program = "${pkgs.writeShellScript "run-amm-ui" ''
-            export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib:${ammClient}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+            export DYLD_FALLBACK_LIBRARY_PATH="${ammClient}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
             exec ${app.program} "$@"
           ''}";
         };

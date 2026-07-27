@@ -15,7 +15,6 @@
       "runtime": ["qt6.qtdeclarative", "zstd", "krb5", "abseil-cpp", "libbase58"]
     },
     "external_libraries": [
-      { "name": "amm_client_ffi" },
       { "name": "amm_client" }
     ],
     "cmake": {

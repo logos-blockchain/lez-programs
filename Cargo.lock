@@ -83,29 +83,17 @@ dependencies = [
  "alloy-primitives",
  "amm_core",
  "borsh",
+ "cbindgen",
  "clock_core",
  "hex",
  "lee_core",
  "pretty_assertions",
+ "risc0-binfmt",
  "risc0-zkvm",
  "serde",
  "serde_json",
  "sha2",
  "token_core",
- "twap_oracle_core",
-]
-
-[[package]]
-name = "amm_client_ffi"
-version = "0.1.0"
-dependencies = [
- "amm_core",
- "borsh",
- "cbindgen",
- "lee_core",
- "risc0-binfmt",
- "risc0-zkvm",
- "ruint",
  "twap_oracle_core",
 ]
 
@@ -887,9 +875,9 @@ dependencies = [
 
 [[package]]
 name = "cbindgen"
-version = "0.27.0"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fce8dd7fcfcbf3a0a87d8f515194b49d6135acab73e18bd380d1d93bb1a15eb"
+checksum = "eadd868a2ce9ca38de7eeafdcec9c7065ef89b42b32f0839278d55f35c54d1ff"
 dependencies = [
  "clap",
  "heck 0.4.1",
