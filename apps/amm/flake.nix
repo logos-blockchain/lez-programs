@@ -26,21 +26,15 @@
       inputs.logos-execution-zone.url =
         "github:logos-blockchain/logos-execution-zone?rev=a7e06a660940a00093b1760560d37ff84aff5a05";
     };
-
-    amm_client.url = "path:../..";
   };
 
-  # NOTE: this flake is no longer built standalone. The amm_client crate
-  # (the Rust C FFI library the AmmUiBackend C++ code links against) lives in
-  # the repo-root flake, and referencing it from here would require either a
-  # hardcoded absolute `git+file://` path or a `path:../..` input — the latter
-  # fails flake evaluation because the app directory is copied into the Nix
-  # store as its own flake root, so `../..` can't escape it there. Instead,
-  # the repo-root flake.nix builds this module directly (src = ./apps/amm)
-  # and resolves amm_client via `self`. The repo-root flake exposes the UI
-  # as a named attribute (there is no bare `default`): run it from the repo root
-  # with `nix run .#amm-ui`, and build just the FFI crate with
-  # `nix build .#amm_client`.
+  # NOTE: this flake is no longer built standalone; the repo-root flake.nix
+  # builds the UI directly (src = ./apps/amm). The UI links no external lib of
+  # its own — the AMM logic lives in the amm_ffi crate, which the amm_module
+  # core module links; the UI reaches it via modules().amm_module (declared in
+  # metadata.json `dependencies`). The repo-root flake exposes the UI as a named
+  # attribute (there is no bare `default`): run it with `nix run .#amm-ui`, and
+  # build the AMM logic crate with `nix build .#amm_ffi`.
   outputs = inputs@{ logos-module-builder, shared_wallet, ... }:
     logos-module-builder.lib.mkLogosQmlModule {
       src = ./.;
@@ -49,12 +43,7 @@
       preConfigure = ''
         cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${shared_wallet}")
       '';
-      externalLibInputs = {
-        amm_client = {
-          input = inputs.amm_client;
-          packages.default = "amm_client";
-        };
-      };
+      externalLibInputs = { };
       postInstall = ''
         # The builder installs the view under lib/qml after this hook. Its
         # import descriptor points back to this compiled shared QML module.

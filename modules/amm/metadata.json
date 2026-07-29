@@ -14,7 +14,7 @@
       "runtime": []
     },
     "external_libraries": [
-      { "name": "amm_client" }
+      { "name": "amm_ffi" }
     ],
     "cmake": {
       "find_packages": [],

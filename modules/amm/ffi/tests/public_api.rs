@@ -1,4 +1,4 @@
-use amm_client::{config_id, ConfigIdRequest};
+use amm_ffi::{config_id, ConfigIdRequest};
 
 #[test]
 fn direct_rust_api_does_not_require_ffi() {

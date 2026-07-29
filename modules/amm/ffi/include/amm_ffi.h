@@ -1,5 +1,5 @@
-#ifndef AMM_CLIENT_H
-#define AMM_CLIENT_H
+#ifndef AMM_FFI_H
+#define AMM_FFI_H
 
 #pragma once
 
@@ -46,4 +46,4 @@ void amm_free(char *value);
 }  // extern "C"
 #endif  // __cplusplus
 
-#endif  /* AMM_CLIENT_H */
+#endif  /* AMM_FFI_H */

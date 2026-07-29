@@ -74,7 +74,7 @@ private:
 
     LogosAPI* m_logosAPI;
     // Handle for the amm_module core module (resolvePool / swapExactInput /
-    // tokenList / new-position). The module wraps the amm_client brain and
+    // tokenList / new-position). The module wraps the amm_ffi brain and
     // reaches the shared wallet through its own logos_execution_zone dependency;
     // this backend keeps a thin LogosModules over the same LogosAPI as the
     // wallet provider so both resolve that one shared wallet instance.

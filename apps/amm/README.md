@@ -63,7 +63,7 @@ nix run .#amm-ui
 This builds and runs the application in development mode. The Logos bridge is unavailable in standalone mode, but the UI layout and mock data are fully functional.
 
 Build just the AMM core module with `nix build .#amm-module`, or its underlying
-client crate with `nix build .#amm_client`. (Each UI is exposed under its own
+logic crate with `nix build .#amm_ffi`. (Each UI is exposed under its own
 name, so future apps are `nix run .#<name>` — there is no bare `nix run .`
 default.)
 

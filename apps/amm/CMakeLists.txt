@@ -26,7 +26,7 @@ add_subdirectory("${LOGOS_WALLET_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/share
 # generated *SimpleSource/*ViewPluginBase). Mirrors the LEZ wallet UI module.
 # The AMM business logic lives in the amm_module core module (declared as a
 # dependency in metadata.json, reached via modules().amm_module in the backend),
-# so the UI links no amm_client library of its own.
+# so the UI links no amm_ffi library of its own.
 logos_module(
     NAME amm_ui
     REP_FILE src/AmmUiBackend.rep

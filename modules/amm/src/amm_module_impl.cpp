@@ -20,7 +20,7 @@
 #include "logos_sdk.h"
 
 extern "C" {
-#include "amm_client.h"
+#include "amm_ffi.h"
 }
 
 namespace {
@@ -193,20 +193,20 @@ std::vector<uint8_t> jsonWordsToLeBytes(const json& arr) {
     return out;
 }
 
-// Result of an amm_client JSON op: the `{ ok, value }` envelope decoded.
+// Result of an amm_ffi JSON op: the `{ ok, value }` envelope decoded.
 struct FfiResult {
     bool ok = false;
     json value;
 };
 
-// Serialize `request`, hand it to an amm_client op, and decode its
+// Serialize `request`, hand it to an amm_ffi op, and decode its
 // `{ ok, value, error }` envelope. Mirrors apps/amm/src/AmmClient.cpp. `value`
 // is only populated (and `ok` true) when the op reports success with an object.
 FfiResult call(char* (*op)(const char*), const json& request) {
     const std::string payload = request.dump();
     char* raw = op(payload.c_str());
     if (raw == nullptr) {
-        AMM_TRACE("amm_client op returned null");
+        AMM_TRACE("amm_ffi op returned null");
         return {};
     }
     const std::string response(raw);
@@ -214,16 +214,16 @@ FfiResult call(char* (*op)(const char*), const json& request) {
 
     const auto doc = json::parse(response, nullptr, /*allow_exceptions=*/false);
     if (!doc.is_object()) {
-        AMM_TRACE("amm_client op returned invalid JSON");
+        AMM_TRACE("amm_ffi op returned invalid JSON");
         return {};
     }
     if (!doc.value("ok", false)) {
-        AMM_TRACE("amm_client op failure: " << doc.value("error", std::string()));
+        AMM_TRACE("amm_ffi op failure: " << doc.value("error", std::string()));
         return {};
     }
     const auto it = doc.find("value");
     if (it == doc.end() || !it->is_object()) {
-        AMM_TRACE("amm_client op value is not an object");
+        AMM_TRACE("amm_ffi op value is not an object");
         return {};
     }
     return {true, *it};
@@ -294,7 +294,7 @@ std::vector<uint8_t> AmmModuleImpl::loadAmmElf() {
 std::string AmmModuleImpl::ammProgramId() {
     const std::vector<uint8_t> elf = loadAmmElf();
     if (elf.empty()) return {};
-    // Hand the deployed binary to the amm_client program_id op, which decodes it
+    // Hand the deployed binary to the amm_ffi program_id op, which decodes it
     // and computes the Image ID — 64-char lowercase hex, little-endian per u32
     // word (matches `spel program-id` and the on-chain *_program_id fields).
     const FfiResult r = call(amm_program_id, json{{"elf", toHex(elf.data(), elf.size())}});

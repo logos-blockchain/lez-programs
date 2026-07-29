@@ -16,9 +16,9 @@ string(JSON MODULE_NAME GET ${METADATA_JSON} name)
 
 # Universal core module: we write only the impl class; the Qt plugin glue is
 # generated from src/amm_module_impl.h (because metadata.json sets
-# "interface": "universal"). EXTERNAL_LIBS links amm_client — the pure-Rust,
+# "interface": "universal"). EXTERNAL_LIBS links amm_ffi — the pure-Rust,
 # transport-independent AMM brain (PDA/decode/quote/plan/encode) exposed as a
-# JSON FFI (amm_client.h), the same library the UI links. The chain I/O
+# JSON FFI (amm_ffi.h), the same library the UI links. The chain I/O
 # dependency (logos_execution_zone) is declared in metadata.json and reached via
 # modules().logos_execution_zone in the impl, so it is NOT listed here.
 logos_module(
@@ -27,5 +27,5 @@ logos_module(
         src/amm_module_impl.h
         src/amm_module_impl.cpp
     EXTERNAL_LIBS
-        amm_client
+        amm_ffi
 )

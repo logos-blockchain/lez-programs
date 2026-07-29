@@ -77,7 +77,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "amm_client"
+name = "amm_core"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "borsh",
+ "lee_core",
+ "risc0-zkvm",
+ "ruint",
+ "serde",
+ "spel-framework-macros",
+ "token_core",
+]
+
+[[package]]
+name = "amm_ffi"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
@@ -95,20 +109,6 @@ dependencies = [
  "sha2",
  "token_core",
  "twap_oracle_core",
-]
-
-[[package]]
-name = "amm_core"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "borsh",
- "lee_core",
- "risc0-zkvm",
- "ruint",
- "serde",
- "spel-framework-macros",
- "token_core",
 ]
 
 [[package]]

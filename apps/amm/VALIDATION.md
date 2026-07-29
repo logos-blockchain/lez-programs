@@ -8,8 +8,8 @@ syntax, and the complete module build.
 Run from the repository root:
 
 ```bash
-cargo +1.94.0 test -p amm_client
-cargo +1.94.0 clippy -p amm_client --all-targets -- -D warnings
+cargo +1.94.0 test -p amm_ffi
+cargo +1.94.0 clippy -p amm_ffi --all-targets -- -D warnings
 logos_qml=$(nix build github:logos-co/logos-design-system/6176f0d7a5dfeb64a7f0f98e7ca2bf71a4804772 --no-link --print-out-paths)
 amm_qml=$(nix build ./apps/amm#packages.x86_64-linux.default --no-link --print-out-paths)
 qt_qml=$(nix-store --query --requisites "$amm_qml" | rg -m1 -- '-qtdeclarative-[0-9]')

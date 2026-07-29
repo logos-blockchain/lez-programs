@@ -11,7 +11,7 @@
 //
 // Orchestration only: the AMM domain math (PDA derivation, on-chain account
 // decoding, quote/plan computation, and instruction encoding) lives in the Rust
-// `amm_client` crate and is reached through its JSON FFI (amm_client.h — one
+// `amm_ffi` crate and is reached through its JSON FFI (amm_ffi.h — one
 // `char* op(const char*)` per operation, request and response both JSON). This
 // module sequences those ops with chain I/O delegated to the
 // `logos_execution_zone` wallet module (reached via modules().logos_execution_zone).
@@ -108,7 +108,7 @@ private:
     // success, so a startup miss (bin not readable yet) retries.
     Network network();
 
-    // 64-char lowercase-hex AMM program id via the amm_client `program_id` op
+    // 64-char lowercase-hex AMM program id via the amm_ffi `program_id` op
     // over the AMM_PROGRAM_BIN bytes (empty if unset/unreadable/bad).
     std::string ammProgramId();
 
@@ -120,13 +120,13 @@ private:
     std::string normalizeAccountId(const std::string& id);
 
     // Derives the config account id (amm_config_id) and reads it, returning the
-    // account-read shape the amm_client ops embed. Null json when the config_id
+    // account-read shape the amm_ffi ops embed. Null json when the config_id
     // op itself fails (readPublicAccount always yields at least {id,status}).
     nlohmann::json readConfig(const Network& net);
 
     // Reads a public account through the wallet module and returns the
     // { id, status, account:{ program_owner, balance, nonce, data } } shape the
-    // amm_client ops expect (see the app-side accountReadJson). `account` is
+    // amm_ffi ops expect (see the app-side accountReadJson). `account` is
     // omitted when the read has no data (uninitialized/nonexistent).
     nlohmann::json readPublicAccount(const std::string& account_id);
 

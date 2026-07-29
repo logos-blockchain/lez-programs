@@ -11,13 +11,13 @@
     logos_execution_zone.url = "github:gravityblast/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr";
   };
 
-  # NOTE: like apps/amm, this flake is NOT built standalone. The amm_client
+  # NOTE: like apps/amm, this flake is NOT built standalone. The amm_ffi
   # crate this module links (the Rust JSON-FFI brain) lives in the repo-root
   # flake, and referencing it from here would require a hardcoded `git+file://`
   # path or a `path:../..` input — the latter fails flake evaluation because this
   # dir is copied into the Nix store as its own flake root, so `../..` can't
   # escape it. Instead, the repo-root flake.nix builds this module directly
-  # (src = ./modules/amm) and resolves amm_client via `self`. Build it from
+  # (src = ./modules/amm) and resolves amm_ffi via `self`. Build it from
   # the repo root:
   #   nix build .#amm-module
   outputs = inputs@{ logos-module-builder, ... }:

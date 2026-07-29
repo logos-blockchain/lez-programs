@@ -11,7 +11,7 @@ for the module framework.
 ## What it does
 
 The impl class `AmmModuleImpl` (`src/amm_module_impl.{h,cpp}`) is a **transport
-adapter**: the AMM domain math lives in the Rust `amm_client` crate (a
+adapter**: the AMM domain math lives in the Rust `amm_ffi` crate (a
 transport-independent JSON FFI), and this module sequences those pure ops with
 chain I/O delegated to the `logos_execution_zone` wallet module. Its public
 methods (the module API is generated from the header) are:
@@ -41,7 +41,7 @@ methods (the module API is generated from the header) are:
 ## How it fits together
 
 ```
-QML  ──modules().amm_module──┐        ┌── amm_client (Rust cdylib, JSON FFI):
+QML  ──modules().amm_module──┐        ┌── amm_ffi (Rust cdylib, JSON FFI):
 CLI  ──logoscore call────────┤        │   PDA derivation, account decode,
                              ▼        │   quote/plan math, instruction encoding
                         amm_module ───┤   — transport-independent (external_libraries)
@@ -51,7 +51,7 @@ CLI  ──logoscore call────────┤        │   PDA derivation
                                           via modules().logos_execution_zone.*
 ```
 
-The `amm_client` crate is deliberately I/O-free — each op takes the account data
+The `amm_ffi` crate is deliberately I/O-free — each op takes the account data
 it needs as JSON input and returns a JSON result. This module is the transport
 adapter the crate is designed to require: it fetches accounts through the wallet
 module (`get_account_public`, `list_accounts`), hands them to the pure Rust op,
@@ -86,12 +86,12 @@ The UI passes `QString` (→ `QVariant` → string branch) and is unaffected.
 
 ## Build
 
-Built from the **repo-root** flake (which provides the `amm_client` library it
+Built from the **repo-root** flake (which provides the `amm_ffi` library it
 links):
 
 ```bash
 nix build .#amm-module
-# output: result/lib/amm_module_plugin.dylib (+ libamm_client.dylib)
+# output: result/lib/amm_module_plugin.dylib (+ libamm_ffi.dylib)
 ```
 
 ## Runtime configuration
@@ -123,7 +123,7 @@ Have all of the following in place before staging the modules dir:
    `lm` introspects a built plugin without running it — handy to confirm the API
    (`lm result/lib/amm_module_plugin.dylib` shows methods, signatures, deps).
 
-3. **This module, built** (produces `amm_module_plugin.dylib` + `libamm_client.dylib`):
+3. **This module, built** (produces `amm_module_plugin.dylib` + `libamm_ffi.dylib`):
 
    ```bash
    nix build .#amm-module        # from the repo root; output under result/lib/
@@ -168,7 +168,7 @@ verify the manifest hashes at load time.
 modules/
   amm_module/
     amm_module_plugin.dylib
-    libamm_client.dylib
+    libamm_ffi.dylib
     variant                     # one line: darwin-arm64-dev
     manifest.json
   logos_execution_zone/
@@ -268,6 +268,6 @@ the fork pinned as the `logos_execution_zone` input. See
 - **`swapExactOutput` is not exposed yet.** The on-chain program supports it
   (`amm_core::Instruction::SwapExactOutput`, identical account layout to
   `SwapExactInput`), but the client path was only ever built for exact-input:
-  `amm_client` has no exact-output op and neither the UI nor this module has a
+  `amm_ffi` has no exact-output op and neither the UI nor this module has a
   `swapExactOutput` method. Adding it is a near-copy of the exact-input path — an
   `amm_swap_exact_output_*` op in the crate plus a `swapExactOutput` method here.
