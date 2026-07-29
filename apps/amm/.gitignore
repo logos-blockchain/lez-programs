@@ -1,3 +1,10 @@
 result
 result-*
 modules/
+
+# Personal token/account config — copy amm-tokens.json.example and fill in
+# your own definitionId/holding accounts. Never commit your real accounts.
+amm-tokens.json
+
+# Screenshot artifacts written by tests/swap.mjs
+tests/*.png

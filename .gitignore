@@ -1,4 +1,6 @@
 target/
 *.bin
-**/*/result
+# Nix build symlinks (result, result-mcp, result-core, result-lgx, …) at any depth
+result
+result-*
 **/*/.DS_Store

@@ -1,0 +1,16 @@
+[
+  {
+    "symbol": "TKA",
+    "name": "Token A",
+    "definitionId": "REPLACE_WITH_TOKEN_A_DEFINITION_ID",
+    "holding": "REPLACE_WITH_YOUR_TOKEN_A_HOLDING_ACCOUNT",
+    "decimals": 18
+  },
+  {
+    "symbol": "TKB",
+    "name": "Token B",
+    "definitionId": "REPLACE_WITH_TOKEN_B_DEFINITION_ID",
+    "holding": "REPLACE_WITH_YOUR_TOKEN_B_HOLDING_ACCOUNT",
+    "decimals": 18
+  }
+]

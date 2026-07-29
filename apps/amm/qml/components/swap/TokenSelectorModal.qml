@@ -6,6 +6,9 @@ import "TokenVisuals.js" as TokenVisuals
 Item {
     id: root
 
+    // Stable hook so UI tests can read `visible` to know the picker is open.
+    objectName: "tokenSelectorModal"
+
     property var theme
     property var tokens: []
     property string searchText: ""
@@ -160,6 +163,9 @@ Item {
                 })
                 delegate: TokenListItem {
                     width: tokenList.width
+                    // Stable hook for UI tests to enumerate the list (QML
+                    // file-defined types aren't matchable via findByType).
+                    objectName: "tokenListItem"
                     theme: root.theme
                     tokenName: modelData.name
                     tokenSymbol: modelData.symbol

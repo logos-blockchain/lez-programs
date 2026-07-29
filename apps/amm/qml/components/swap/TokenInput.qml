@@ -16,6 +16,12 @@ Rectangle {
     // string (see decimalToU128Le in AmmUiBackend.cpp); fractional/decimal
     // input there fails opaquely rather than being scaled.
     property bool digitsOnly: false
+    // objectName forwarded to the inner TextInput so UI tests can target the
+    // sell/buy amount fields deterministically (see apps/amm/tests/).
+    property alias inputObjectName: tiInput.objectName
+    // objectName forwarded to the token-select button, so tests can open the
+    // right picker by objectId rather than fuzzy text.
+    property alias buttonObjectName: tokenButton.objectName
 
     signal tokenClicked()
     signal inputEdited(string newValue)
@@ -99,6 +105,7 @@ Rectangle {
         }
 
         Rectangle {
+            id: tokenButton
             height: 40
             radius: 20
             color: tokenBtnHover.containsMouse ? theme.colors.panelHoverBg : theme.colors.panelBg

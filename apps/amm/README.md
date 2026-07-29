@@ -145,7 +145,7 @@ not preserve the working directory, so relative paths won't resolve:
 
 ```bash
 AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
-TOKENS_CONFIG=$(pwd)/amm-tokens.json \
+TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
 nix run .#amm-ui
 ```
 
@@ -198,6 +198,14 @@ account the wallet will sign transfers from/to for that token):
 ]
 ```
 
+The quickest start is to copy the checked-in template and edit it:
+
+```bash
+cp apps/amm/amm-tokens.json.example apps/amm/amm-tokens.json   # then replace the REPLACE_… placeholders
+```
+
+`amm-tokens.json` is git-ignored so your own accounts never get committed.
+
 If `TOKENS_CONFIG` is unset, unreadable, or not a valid JSON array, the token
 picker stays empty (a `qWarning` naming the exact cause is logged to stderr; no
 swap can be started). `definitionId`/`holding` may be given as base58 (as the
@@ -207,7 +215,7 @@ Full command with both variables set (absolute paths, from the repo root):
 
 ```bash
 AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
-TOKENS_CONFIG=$(pwd)/amm-tokens.json \
+TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
 nix run .#amm-ui
 ```
 
@@ -215,6 +223,62 @@ nix run .#amm-ui
 
 New Position validation commands and acceptance criteria live in
 [VALIDATION.md](VALIDATION.md).
+
+## Running the UI tests
+
+The UI tests live in `apps/amm/tests/` (e.g. `swap.mjs`). They drive the running
+app through a QML inspector: each test connects to the inspector's TCP server,
+finds elements, clicks them, and asserts on the resulting state. `swap.mjs`
+selects two tokens, enters a sell amount, submits a swap end-to-end, and then
+verifies the pool reserves actually changed on-chain (read back from the
+sequencer via the app's `resolvePool`).
+
+The test framework itself — the `test()` / `run()` / `app.*` API that the tests
+import from `test-framework/framework.mjs` — comes from the
+[**`logos-co/logos-qt-mcp`**](https://github.com/logos-co/logos-qt-mcp) repo.
+It isn't vendored here; the `nix build .#test-framework` step below materializes
+it (Nix resolves it via this app's flake inputs, pinned in `flake.lock`).
+
+Run everything **from the repository root** (the `apps/amm` flake can't resolve
+`amm_client_ffi` on its own).
+
+**Prerequisites** for the swap test to complete:
+
+- a token list with ≥2 tokens — copy `apps/amm/amm-tokens.json.example` to
+  `apps/amm/amm-tokens.json` and fill it in (see [Token list config](#token-list-config-required-for-the-swap-token-picker)),
+- the AMM program binary (see [AMM program binary](#amm-program-binary-required-for-swaps)),
+- a running sequencer with a pool + liquidity for that token pair, and an open
+  wallet — otherwise the swap resolves to "No pool / no liquidity" and can't submit.
+
+**From scratch:**
+
+```bash
+# 1. Build the JS test framework once. The -o path is where the tests expect it
+#    (apps/amm/tests/swap.mjs imports ../result-mcp); or set LOGOS_QT_MCP instead.
+nix build .#test-framework -o apps/amm/result-mcp
+
+# 2. Terminal 1 — launch the AMM UI with a real, visible window. The inspector
+#    listens on localhost:3768. Absolute paths ($(pwd)/…) because nix run may
+#    not preserve the working directory.
+AMM_DEBUG=1 \
+  AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+  TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
+  nix run .#amm-ui
+
+# 3. Terminal 2 — run a test against the running app; watch it drive the UI.
+node apps/amm/tests/swap.mjs
+```
+
+On failure the test prints the relevant `SwapCard` state and saves screenshot
+PNGs next to the test (`apps/amm/tests/swap-*.png`, git-ignored) for inspection.
+
+**Headless CI variant** (no window, launches the app itself, pass/fail only):
+
+```bash
+nix build .#integration-test -L
+```
+
+It runs every `*.mjs` under `apps/amm/tests/` with `QT_QPA_PLATFORM=offscreen`.
 
 ## Updating Dependencies
 

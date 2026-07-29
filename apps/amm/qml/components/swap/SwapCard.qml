@@ -326,6 +326,8 @@ Rectangle {
             Layout.fillWidth: true
             theme: root.theme
             label: "Sell"
+            inputObjectName: "swapSellInput"
+            buttonObjectName: "swapSellTokenButton"
             amount: root.sellDisplay
             token: root.sellToken
             active: root.editingSide === "sell"
@@ -384,6 +386,8 @@ Rectangle {
             Layout.fillWidth: true
             theme: root.theme
             label: "Buy"
+            inputObjectName: "swapBuyInput"
+            buttonObjectName: "swapBuyTokenButton"
             amount: root.buyDisplay
             token: root.buyToken
             active: root.editingSide === "buy"
@@ -447,6 +451,7 @@ Rectangle {
 
         Rectangle {
             id: ctaBox
+            objectName: "swapSubmitButton"
             Layout.fillWidth: true
             Layout.topMargin: 8
             Layout.bottomMargin: 8

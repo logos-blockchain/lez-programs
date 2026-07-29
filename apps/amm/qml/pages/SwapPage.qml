@@ -100,6 +100,7 @@ Item {
 
             SwapCard {
                 id: swapCard
+                objectName: "swapCard"
                 Layout.alignment: Qt.AlignHCenter
                 theme: pageTheme
                 tokens: root.tokens
@@ -172,6 +173,7 @@ Item {
 
         TransactionConfirmationDialog {
             id: swapConfirmationDialog
+            objectName: "swapConfirmDialog"
             title: qsTr("Confirm swap")
             confirmText: qsTr("Confirm swap")
             summary: swapConfirmationSummary

@@ -48,7 +48,7 @@ To use the Swap view, also set `AMM_PROGRAM_BIN` (your deployed `amm.bin`) and
 
 ```bash
 AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
-TOKENS_CONFIG=$(pwd)/amm-tokens.json \
+TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
 nix run .#amm-ui
 ```
 
