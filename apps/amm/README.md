@@ -233,6 +233,11 @@ selects two tokens, enters a sell amount, submits a swap end-to-end, and then
 verifies the pool reserves actually changed on-chain (read back from the
 sequencer via the app's `resolvePool`).
 
+> **For the fully isolated, script-driven test flow** (a dedicated wallet from a
+> fixed mnemonic + auto-created pool + isolated token config, touching nothing in
+> your local setup), see **[`apps/amm/tests/README.md`](tests/README.md)**. The
+> steps below run the test against *your own* local wallet/config instead.
+
 The test framework itself — the `test()` / `run()` / `app.*` API that the tests
 import from `test-framework/framework.mjs` — comes from the
 [**`logos-co/logos-qt-mcp`**](https://github.com/logos-co/logos-qt-mcp) repo.
