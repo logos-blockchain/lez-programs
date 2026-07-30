@@ -182,13 +182,13 @@ bootstrap_test_wallet() {
 
   if [ -n "$TEST_SEQUENCER_ADDR" ]; then
     log "${DIM}\$ wallet config set sequencer_addr $TEST_SEQUENCER_ADDR${RST}"
-    # NOTE: on a fresh home this triggers first-time wallet setup, which
-    # generates a THROWAWAY random-seed wallet and prompts once for a password
-    # (read from the terminal, so it can't be piped — just type anything, even
-    # empty). That wallet is immediately discarded: restore-keys below rebuilds
-    # the wallet from the test mnemonic and sets the REAL password to
-    # $TEST_WALLET_PASSWORD, which is what unlocks the wallet afterward.
-    wallet config set sequencer_addr "$TEST_SEQUENCER_ADDR" \
+    # On a fresh home the first wallet command triggers one-time setup, which
+    # reads a password from STDIN ("Input password:") and generates a THROWAWAY
+    # random-seed wallet. Feed the password so it never blocks; restore-keys
+    # below immediately rewrites storage from the test mnemonic and sets the real
+    # password to $TEST_WALLET_PASSWORD.
+    printf '%s\n' "$TEST_WALLET_PASSWORD" \
+      | wallet config set sequencer_addr "$TEST_SEQUENCER_ADDR" \
       || log "${YEL}⚠ 'wallet config set sequencer_addr' failed — configure the wallet manually.${RST}"
   fi
 

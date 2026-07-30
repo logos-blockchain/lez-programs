@@ -52,15 +52,14 @@ nix build .#integration-test -L
 
 ## Notes
 
-- **Wallet password.** The wallet's key storage is encrypted with a password,
-  which you enter to **unlock** the wallet so the app can sign transactions (the
-  UI's **Connect** modal). During first-time setup you're prompted once for a
-  password (read from the terminal — it can't be scripted), but **that wallet is
-  a throwaway**: `restore-keys` then rebuilds it from the test mnemonic and sets
-  the **real** password to `TEST_WALLET_PASSWORD` (default `test`). So type
-  anything at the setup prompt; **unlock the UI with `test`** — not whatever you
-  typed there. Prefer no password? Run with `TEST_WALLET_PASSWORD=""` and unlock
-  with an empty password everywhere.
+- **Wallet password.** The wallet's key storage is encrypted with a password —
+  the one you enter to **unlock** it (the UI's **Connect** modal) so the app can
+  sign transactions. First-time setup reads a throwaway password (the script
+  feeds it via stdin, so it doesn't block), then `restore-keys` rebuilds the
+  wallet from the test mnemonic and sets the **real** password to
+  `TEST_WALLET_PASSWORD` (default `test`). So **unlock the UI with `test`**.
+  Prefer no password? Run with `TEST_WALLET_PASSWORD=""` and unlock with an empty
+  password.
 - **Re-bootstrap.** `FORCE_BOOTSTRAP=1 apps/amm/tests/testnet/setup-amm-testnet.sh`
   re-restores the isolated `.wallet` (rewrites only that directory).
 - **Overrides.** `TEST_WALLET_HOME`, `TEST_MNEMONIC`, `TEST_WALLET_PASSWORD`,
