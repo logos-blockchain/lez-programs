@@ -637,30 +637,20 @@ fn select_lp_destination(
             error,
         };
     }
-    match options.as_slice() {
-        [] => LpDestination {
+    if options.is_empty() {
+        LpDestination {
             options,
             selected: None,
             requires_fresh: true,
             error: None,
-        },
-        [only] => LpDestination {
-            selected: Some(only.clone()),
+        }
+    } else {
+        LpDestination {
+            selected: options.first().cloned(),
             options,
             requires_fresh: false,
             error: None,
-        },
-        _ => LpDestination {
-            error: Some(issue(
-                "lp_destination_required",
-                "Select an LP TokenHolding destination.",
-                &["lpHoldingId", "createFreshLp"],
-                json!({ "available": options.len() }),
-            )),
-            options,
-            selected: None,
-            requires_fresh: false,
-        },
+        }
     }
 }
 

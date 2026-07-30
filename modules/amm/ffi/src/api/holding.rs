@@ -55,7 +55,7 @@ pub(super) fn select_holding(
 ) -> Option<SelectedHolding> {
     let options = holding_options(holdings, definition_id);
     let Some(requested_id) = requested_id else {
-        return (options.len() == 1).then(|| options[0].clone());
+        return options.first().cloned();
     };
     let requested_id = account_id_from_hex(requested_id, "holding id")
         .or_else(|_| parse_base58_id(requested_id, "holding id"))
@@ -75,6 +75,11 @@ pub(super) fn holding_options(
         .filter(|holding| holding.definition_id == definition_id)
         .cloned()
         .collect::<Vec<_>>();
-    options.sort_by_key(|holding| holding.id);
+    options.sort_by(|left, right| {
+        right
+            .balance
+            .cmp(&left.balance)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     options
 }

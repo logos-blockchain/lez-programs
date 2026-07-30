@@ -404,7 +404,7 @@ fn minimum_pair_is_minimal_on_price_base_side() {
 }
 
 #[test]
-fn holding_selection_requires_a_choice_when_multiple_exist() {
+fn holding_selection_defaults_to_highest_balance_then_lowest_id() {
     let definition = AccountId::new([9; 32]);
     let holding = |id: u8, balance| SelectedHolding {
         id: AccountId::new([id; 32]),
@@ -419,7 +419,10 @@ fn holding_selection_requires_a_choice_when_multiple_exist() {
         ),
     };
     let holdings = [holding(4, 10), holding(2, 20), holding(1, 20)];
-    assert!(select_holding(&holdings, definition, None).is_none());
+    assert_eq!(
+        select_holding(&holdings, definition, None).unwrap().id,
+        AccountId::new([1; 32])
+    );
     let selected = select_holding(
         &holdings,
         definition,
@@ -687,27 +690,28 @@ fn missing_pool_quote_accepts_large_direct_raw_amounts() {
 }
 
 #[test]
-fn quote_requires_explicit_input_holding_when_multiple_match() {
+fn quote_defaults_to_highest_balance_input_holding_when_multiple_match() {
     let mut scenario = Scenario::devnet();
     let extra_holding = AccountId::new([63; 32]);
     scenario.snapshot.wallet_accounts.push(account_read(
         extra_holding,
-        &token_holding(scenario.pair.token_a, 1_000_000),
+        &token_holding(scenario.pair.token_a, 2_000_000),
     ));
 
-    let ambiguous = scenario.quote();
-    assert_eq!(ambiguous["canSubmit"], false);
-    assert!(ambiguous["errors"].as_array().unwrap().iter().any(|error| {
-        error["code"] == "holding_selection_required"
-            && error["blockingFields"] == json!(["holdingAId"])
-    }));
+    let defaulted = scenario.quote();
+    assert_eq!(defaulted["canSubmit"], true);
+    assert_eq!(
+        defaulted["accountPreview"][6]["accountId"],
+        extra_holding.to_string()
+    );
 
-    scenario.request.holding_a_id = Some(extra_holding.to_string());
+    let original_holding = AccountId::new([61; 32]);
+    scenario.request.holding_a_id = Some(original_holding.to_string());
     let selected = scenario.quote();
     assert_eq!(selected["canSubmit"], true);
     assert_eq!(
         selected["accountPreview"][6]["accountId"],
-        extra_holding.to_string()
+        original_holding.to_string()
     );
 }
 
@@ -762,20 +766,16 @@ fn active_pool_quote_uses_ratio_and_existing_lp_holding() {
 }
 
 #[test]
-fn active_pool_quote_requires_lp_destination_when_multiple_match() {
+fn active_pool_quote_defaults_to_highest_balance_lp_destination() {
     let lp_a = AccountId::new([64; 32]);
     let lp_b = AccountId::new([65; 32]);
     let mut scenario = active_scenario(&[(lp_a, 500), (lp_b, 200)]);
 
-    let ambiguous = scenario.quote();
-    assert_eq!(ambiguous["canSubmit"], false);
-    assert_eq!(ambiguous["lpDestinationRequired"], true);
-    assert_eq!(ambiguous["lpHoldingOptions"].as_array().unwrap().len(), 2);
-    assert!(ambiguous["errors"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|error| error["code"] == "lp_destination_required"));
+    let defaulted = scenario.quote();
+    assert_eq!(defaulted["canSubmit"], true);
+    assert_eq!(defaulted["lpDestinationRequired"], false);
+    assert_eq!(defaulted["lpHoldingOptions"].as_array().unwrap().len(), 2);
+    assert_eq!(defaulted["selectedLpHoldingId"], lp_a.to_string());
 
     scenario.request.lp_holding_id = Some(lp_b.to_string());
     let selected = scenario.quote();

@@ -117,7 +117,7 @@ TestCase {
         compare(input.selectedHolding.balanceRaw, "42")
     }
 
-    function test_multipleMatchingHoldingsRequireSelection() {
+    function test_multipleMatchingHoldingsSelectHighestBalance() {
         var input = createTemporaryObject(inputComponent, testCase, {
             "tokenData": {
                 "definitionId": enabledId,
@@ -142,8 +142,8 @@ TestCase {
         verify(input)
 
         tryCompare(input, "hasHoldingFunds", true)
-        compare(input.holdingReady, false)
-        compare(input.selectedHoldingId, "")
+        tryCompare(input, "selectedHoldingId", "holding-a")
+        compare(input.holdingReady, true)
 
         input.setHoldingSelection("holding-b")
         compare(input.selectedHoldingId, "holding-b")

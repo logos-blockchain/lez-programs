@@ -75,7 +75,7 @@ Item {
             compare(selector.selectedBalanceRaw, "120")
         }
 
-        function test_inputMultipleHoldingsRequiresSelection() {
+        function test_inputMultipleHoldingsSelectsHighestBalance() {
             const selector = createTemporaryObject(selectorComponent, root, {
                 "sourceModel": [root.holdingA, root.holdingB],
                 "selectionMode": Wallet.ProgramAccountSelector.Input
@@ -83,12 +83,16 @@ Item {
             verify(!!selector, "Component exists")
             tryCompare(selector, "showCombo", true)
             compare(selector.matchingAccounts.length, 2)
-            compare(selector.ready, false)
+            tryCompare(selector, "selectedAccountId", "holding-a")
+            compare(selector.selectedBalanceRaw, "120")
+            compare(selector.ready, true)
 
             selector.setSelection("holding-b", false)
             compare(selector.selectedAccountId, "holding-b")
             compare(selector.selectedBalanceRaw, "80")
             compare(selector.ready, true)
+            selector.reconcileSelection()
+            compare(selector.selectedAccountId, "holding-b")
         }
 
         function test_outputNoHoldingSelectsCreateNew() {
@@ -120,7 +124,7 @@ Item {
             compare(selector.ready, true)
         }
 
-        function test_outputMultipleHoldingsRequiresDestination() {
+        function test_outputMultipleHoldingsSelectsHighestAndOffersCreateNew() {
             const selector = createTemporaryObject(selectorComponent, root, {
                 "sourceModel": [root.holdingA, root.holdingB],
                 "selectionMode": Wallet.ProgramAccountSelector.Output
@@ -128,9 +132,50 @@ Item {
             verify(!!selector, "Component exists")
             tryCompare(selector, "showCombo", true)
             compare(selector.choices.length, 3)
-            compare(selector.selectedAccountId, "")
+            tryCompare(selector, "selectedAccountId", "holding-a")
             compare(selector.createNewSelected, false)
-            compare(selector.ready, false)
+            compare(selector.ready, true)
+
+            selector.setSelection("", true)
+            compare(selector.selectedAccountId, "")
+            compare(selector.createNewSelected, true)
+            compare(selector.ready, true)
+        }
+
+        function test_highestBalanceComparisonPreservesU128Precision() {
+            const selector = createTemporaryObject(selectorComponent, root, {
+                "sourceModel": [
+                    {
+                        "accountId": "holding-lower",
+                        "accountType": "TokenHolding",
+                        "definitionId": "token-a",
+                        "balanceRaw": "900719925474099299999"
+                    },
+                    {
+                        "accountId": "holding-higher",
+                        "accountType": "TokenHolding",
+                        "definitionId": "token-a",
+                        "balanceRaw": "900719925474099300000"
+                    }
+                ],
+                "selectionMode": Wallet.ProgramAccountSelector.Input
+            })
+            verify(!!selector, "Component exists")
+            tryCompare(selector, "selectedAccountId", "holding-higher")
+            compare(selector.matchingAccounts[0].accountId, "holding-higher")
+        }
+
+        function test_automaticCreateNewChangesToHoldingAfterWalletLoads() {
+            const selector = createTemporaryObject(selectorComponent, root, {
+                "sourceModel": [],
+                "selectionMode": Wallet.ProgramAccountSelector.Output
+            })
+            verify(!!selector, "Component exists")
+            tryCompare(selector, "createNewSelected", true)
+
+            selector.sourceModel = [root.holdingB, root.holdingA]
+            tryCompare(selector, "selectedAccountId", "holding-a")
+            compare(selector.createNewSelected, false)
         }
 
         function test_matchesNumericZeroState() {

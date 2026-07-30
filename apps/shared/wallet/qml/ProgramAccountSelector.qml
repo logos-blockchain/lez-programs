@@ -30,6 +30,8 @@ Item {
     property color borderColor: "#52525b"
     property color focusColor: "#f26a21"
     property int modelRevision: 0
+    property bool selectionWasAutomatic: false
+    property string reconciledCriteriaKey: ""
 
     readonly property bool criteriaReady: root.accountType.length > 0
                                                   && (root.stateField.length === 0
@@ -247,6 +249,16 @@ Item {
             if (root.accountIdFor(row).length > 0)
                 result.push(row)
         }
+        result.sort(function(left, right) {
+            const balanceOrder = root.compareUnsignedDecimals(
+                root.valueFor(left, "balanceRaw"),
+                root.valueFor(right, "balanceRaw"))
+            if (balanceOrder !== 0)
+                return -balanceOrder
+            const leftId = root.accountIdFor(left)
+            const rightId = root.accountIdFor(right)
+            return leftId < rightId ? -1 : leftId > rightId ? 1 : 0
+        })
         return result
     }
 
@@ -264,6 +276,22 @@ Item {
 
     function scalarText(value) {
         return value === undefined || value === null ? "" : String(value)
+    }
+
+    function normalizedUnsignedDecimal(value) {
+        const text = root.scalarText(value).trim()
+        if (!/^[0-9]+$/.test(text))
+            return "0"
+        const normalized = text.replace(/^0+/, "")
+        return normalized.length > 0 ? normalized : "0"
+    }
+
+    function compareUnsignedDecimals(left, right) {
+        const leftText = root.normalizedUnsignedDecimal(left)
+        const rightText = root.normalizedUnsignedDecimal(right)
+        if (leftText.length !== rightText.length)
+            return leftText.length < rightText.length ? -1 : 1
+        return leftText < rightText ? -1 : leftText > rightText ? 1 : 0
     }
 
     function accountIdFor(row) {
@@ -325,37 +353,54 @@ Item {
         return text.length > 14 ? text.slice(0, 7) + "..." + text.slice(-5) : text
     }
 
-    function setSelection(accountId, createNew) {
+    function setSelection(accountId, createNew, automatic) {
         const nextId = String(accountId || "")
         const nextCreate = createNew === true
-        if (root.selectedAccountId === nextId && root.createNewSelected === nextCreate)
+        const nextAutomatic = automatic === true
+        if (root.selectedAccountId === nextId && root.createNewSelected === nextCreate) {
+            root.selectionWasAutomatic = nextAutomatic
             return
+        }
+        root.selectionWasAutomatic = nextAutomatic
         root.selectedAccountId = nextId
         root.createNewSelected = nextCreate
         root.selectionChanged(nextId, nextCreate)
     }
 
+    function criteriaKey() {
+        return root.accountType + "\u0000"
+                + root.stateField + "\u0000"
+                + root.scalarText(root.stateValue) + "\u0000"
+                + String(root.selectionMode)
+    }
+
     function reconcileSelection() {
+        const nextCriteriaKey = root.criteriaKey()
+        const criteriaChanged = root.reconciledCriteriaKey !== nextCriteriaKey
+        root.reconciledCriteriaKey = nextCriteriaKey
         if (!root.criteriaReady) {
-            root.setSelection("", false)
+            root.setSelection("", false, true)
             return
         }
-        if (root.selectionValid)
-            return
+        if (!criteriaChanged && !root.selectionWasAutomatic) {
+            if (root.selectionValid)
+                return
+            if (root.selectionMode === ProgramAccountSelector.Output
+                    && root.createNewSelected) {
+                return
+            }
+        }
         if (root.selectionMode === ProgramAccountSelector.Input) {
-            root.setSelection(root.matchingAccounts.length === 1
+            root.setSelection(root.matchingAccounts.length > 0
                               ? root.accountIdFor(root.matchingAccounts[0]) : "",
-                              false)
+                              false,
+                              true)
             return
         }
-        if (root.createNewSelected)
-            return
         if (root.matchingAccounts.length === 0) {
-            root.setSelection("", true)
-        } else if (root.matchingAccounts.length === 1) {
-            root.setSelection(root.accountIdFor(root.matchingAccounts[0]), false)
+            root.setSelection("", true, true)
         } else {
-            root.setSelection("", false)
+            root.setSelection(root.accountIdFor(root.matchingAccounts[0]), false, true)
         }
     }
 }
