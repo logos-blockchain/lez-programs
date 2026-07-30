@@ -1,6 +1,9 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Layouts
+
+import Logos.Wallet
 
 import "../shared"
 
@@ -13,6 +16,7 @@ AmmTokenAmountSurface {
     property bool showMaxButton: true
     property var tokenData: null
     property var tokens: []
+    property var programAccounts: []
     property string selectedTokenId: ""
     property bool tokenInvalid: false
     property bool tokenSelectionEnabled: true
@@ -25,19 +29,26 @@ AmmTokenAmountSurface {
     property alias popup: tokenModal
     property alias query: tokenModal.searchText
     readonly property var rows: tokenModal.rows
+    property string selectedHoldingId: ""
+    property bool holdingReady: false
+    property bool hasHoldingFunds: false
+    property var selectedHolding: null
+    property real accessoryContentHeight: 40
 
     signal editingChanged(string value)
     signal editingCommitted(string value)
     signal maxClicked
     signal tokenSelected(string tokenId)
     signal tokenEntered(string value)
+    signal holdingSelectionChanged(string holdingId)
+    signal holdingSelectionRequested(string holdingId)
 
     amount: root.text
     supportingText: root.helperText
     supportingActionText: root.showMaxButton ? qsTr("MAX") : ""
     accessory: tokenActions
     accessoryWidth: width < 360 ? 132 : 180
-    accessoryHeight: root.balance.length > 0 ? 58 : 40
+    accessoryHeight: root.accessoryContentHeight
 
     onAmountEdited: function(value) {
         root.pendingValue = value
@@ -68,17 +79,87 @@ AmmTokenAmountSurface {
     Component {
         id: tokenActions
 
-        AmmTokenAccessory {
-            theme: root.theme
-            enabled: root.tokenSelectionEnabled
-            invalid: root.tokenInvalid
-            hasToken: root.tokenData !== null
-            tokenColor: root.tokenColor(root.tokenData)
-            tokenLetter: root.tokenLetter(root.tokenData)
-            tokenText: root.tokenText(root.tokenData)
-            balance: root.balance
-            accessibleName: qsTr("Select %1").arg(root.label)
-            onClicked: tokenModal.open()
+        ColumnLayout {
+            id: tokenActionLayout
+
+            spacing: 4
+
+            Binding {
+                target: root
+                property: "accessoryContentHeight"
+                value: tokenActionLayout.implicitHeight
+            }
+
+            Binding {
+                target: root
+                property: "selectedHoldingId"
+                value: holdingPicker.selectedAccountId
+            }
+
+            Binding {
+                target: root
+                property: "holdingReady"
+                value: holdingPicker.ready
+            }
+
+            Binding {
+                target: root
+                property: "hasHoldingFunds"
+                value: holdingPicker.hasFunds
+            }
+
+            Binding {
+                target: root
+                property: "selectedHolding"
+                value: holdingPicker.selectedAccount
+            }
+
+            Connections {
+                target: root
+
+                function onHoldingSelectionRequested(accountId) {
+                    holdingPicker.setSelection(accountId, false)
+                    holdingPicker.reconcileSelection()
+                }
+            }
+
+            AmmTokenAccessory {
+                Layout.fillWidth: true
+                theme: root.theme
+                enabled: root.tokenSelectionEnabled
+                invalid: root.tokenInvalid
+                hasToken: root.tokenData !== null
+                tokenColor: root.tokenColor(root.tokenData)
+                tokenLetter: root.tokenLetter(root.tokenData)
+                tokenText: root.tokenText(root.tokenData)
+                balance: root.balance
+                accessibleName: qsTr("Select %1").arg(root.label)
+                onClicked: tokenModal.open()
+            }
+
+            ProgramAccountSelector {
+                id: holdingPicker
+
+                Layout.fillWidth: true
+                sourceModel: root.programAccounts
+                accountType: "TokenHolding"
+                stateField: "definitionId"
+                stateValue: root.tokenData
+                            ? String(root.tokenData.definitionIdHex
+                                     || root.tokenData.definitionId || "") : ""
+                selectionMode: ProgramAccountSelector.Input
+                placeholderText: qsTr("Select source")
+                accessibleName: qsTr("Source TokenHolding for %1").arg(root.label)
+                backgroundColor: root.theme.colors.panelBg
+                hoverColor: root.theme.colors.panelHoverBg
+                textColor: root.theme.colors.textPrimary
+                secondaryTextColor: root.theme.colors.textSecondary
+                borderColor: root.theme.colors.borderStrong
+                focusColor: root.theme.colors.ctaBg
+                onSelectionChanged: function(accountId, createNew) {
+                    root.holdingSelectionChanged(accountId)
+                }
+            }
         }
     }
 
@@ -103,6 +184,10 @@ AmmTokenAmountSurface {
 
     function acceptInput(value) {
         tokenModal.acceptInput(value)
+    }
+
+    function setHoldingSelection(accountId) {
+        root.holdingSelectionRequested(accountId)
     }
 
     function commitPendingEdit() {

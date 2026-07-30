@@ -4,7 +4,7 @@ use nssa_core::{
 };
 use token_core::TokenHolding;
 
-use crate::account::{decode_account, AccountRead};
+use crate::account::{account_id_from_hex, decode_account, parse_base58_id, AccountRead};
 
 #[derive(Clone)]
 pub(super) struct SelectedHolding {
@@ -51,14 +51,30 @@ pub(super) fn decode_fungible_holding(
 pub(super) fn select_holding(
     holdings: &[SelectedHolding],
     definition_id: AccountId,
+    requested_id: Option<&str>,
 ) -> Option<SelectedHolding> {
-    holdings
+    let options = holding_options(holdings, definition_id);
+    let Some(requested_id) = requested_id else {
+        return (options.len() == 1).then(|| options[0].clone());
+    };
+    let requested_id = account_id_from_hex(requested_id, "holding id")
+        .or_else(|_| parse_base58_id(requested_id, "holding id"))
+        .ok()?;
+    options
+        .iter()
+        .find(|holding| holding.id == requested_id)
+        .cloned()
+}
+
+pub(super) fn holding_options(
+    holdings: &[SelectedHolding],
+    definition_id: AccountId,
+) -> Vec<SelectedHolding> {
+    let mut options = holdings
         .iter()
         .filter(|holding| holding.definition_id == definition_id)
-        .max_by(|left, right| {
-            left.balance
-                .cmp(&right.balance)
-                .then_with(|| right.id.cmp(&left.id))
-        })
         .cloned()
+        .collect::<Vec<_>>();
+    options.sort_by_key(|holding| holding.id);
+    options
 }

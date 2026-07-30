@@ -67,6 +67,7 @@ if(LOGOS_WALLET_BUILD_QML)
     )
     set(wallet_public_qml
         qml/WalletControl.qml
+        qml/ProgramAccountSelector.qml
         qml/TransactionConfirmationDialog.qml
         qml/SubmittedTransaction.qml
     )

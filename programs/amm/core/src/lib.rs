@@ -176,14 +176,16 @@ pub enum Instruction {
     ///
     /// Swap direction is determined by the input holding: `user_input_holding`'s token definition
     /// selects which pool token is sold. That holding must be signed so the downstream token
-    /// transfer can debit it; `user_output_holding` only receives and needs no signature.
+    /// transfer can debit it. `user_output_holding` may be initialized, or fresh and signed so the
+    /// downstream token transfer can claim and initialize it.
     ///
     /// Required accounts:
     /// - AMM Pool (initialized)
     /// - Vault Holding Account for Token A (initialized)
     /// - Vault Holding Account for Token B (initialized)
     /// - User Input Holding Account (initialized, signed) — the token being sold
-    /// - User Output Holding Account (initialized) — receives the token being bought
+    /// - User Output Holding Account (initialized, or uninitialized and signed) — receives the
+    ///   token being bought
     /// - Current Tick Account, the pool's TWAP PDA derived as
     ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
     ///   with the new spot price

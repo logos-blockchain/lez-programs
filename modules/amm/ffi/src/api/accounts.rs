@@ -27,6 +27,7 @@ pub(super) fn missing_account_plan(
     ])?;
     append_holding_source(&mut sources, "holding_a", holdings.token_a);
     append_holding_source(&mut sources, "holding_b", holdings.token_b);
+    append_holding_source(&mut sources, "holding_lp", holdings.lp);
     Ok(AccountPlan {
         rows: vec![
             AccountPlanRow::new(
@@ -95,11 +96,15 @@ pub(super) fn missing_account_plan(
             ),
             AccountPlanRow::new(
                 "user_holding_lp",
-                None,
+                holdings.lp.map(|value| value.id),
                 Some(pair.token_program),
-                "create",
-                true,
-                true,
+                if holdings.lp.is_some() {
+                    "update"
+                } else {
+                    "create"
+                },
+                holdings.lp.is_none(),
+                holdings.lp.is_none(),
             ),
             AccountPlanRow::new(
                 "current_tick",

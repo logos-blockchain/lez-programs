@@ -180,11 +180,11 @@ Swap view stays disabled (no pool can be resolved).
 
 ### Token list config (required for the Swap token picker)
 
-The Swap view's token picker is config-driven: it doesn't derive tokens from
-chain state, it reads a flat JSON list from the `TOKENS_CONFIG` environment
-variable (absolute path). Each entry needs, at minimum, the token's
-`definitionId` and **your own** `holding` account address for that token (the
-account the wallet will sign transfers from/to for that token):
+The Swap view's token picker is config-driven: it doesn't derive token
+definitions from chain state, it reads a flat JSON list from the
+`TOKENS_CONFIG` environment variable (absolute path). Each entry needs, at
+minimum, a `definitionId`. Source and destination TokenHoldings come from the
+connected wallet:
 
 ```json
 [
@@ -192,7 +192,6 @@ account the wallet will sign transfers from/to for that token):
     "symbol": "TKA",
     "name": "Token A",
     "definitionId": "9qbX…",
-    "holding": "4T69…",
     "decimals": 18
   }
 ]
@@ -208,8 +207,9 @@ cp apps/amm/amm-tokens.json.example apps/amm/amm-tokens.json   # then replace th
 
 If `TOKENS_CONFIG` is unset, unreadable, or not a valid JSON array, the token
 picker stays empty (a `qWarning` naming the exact cause is logged to stderr; no
-swap can be started). `definitionId`/`holding` may be given as base58 (as the
-wallet/runbook display them) or hex — the app normalizes both to hex.
+swap can be started). `definitionId` may be given as base58 (as the
+wallet/runbook displays it) or hex. A legacy `holding` value is accepted but is
+not used for transaction account selection.
 
 Full command with both variables set (absolute paths, from the repo root):
 

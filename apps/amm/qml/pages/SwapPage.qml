@@ -16,6 +16,10 @@ Item {
     // reads the TOKENS_CONFIG JSON file — see apps/amm/README.md). Empty
     // until the backend is ready and the call resolves.
     property var tokens: []
+    readonly property var programAccounts: root.backend
+                                                   && root.backend.newPositionContext
+                                                   && root.backend.newPositionContext.programAccounts
+                                               ? root.backend.newPositionContext.programAccounts : []
 
     onBackendChanged: {
         if (root.backend) {
@@ -104,6 +108,7 @@ Item {
                 Layout.alignment: Qt.AlignHCenter
                 theme: pageTheme
                 tokens: root.tokens
+                programAccounts: root.programAccounts
                 backend: root.backend
                 width: Math.min(480, root.width - 32)
 

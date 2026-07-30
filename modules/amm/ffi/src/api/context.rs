@@ -9,7 +9,7 @@ use token_core::TokenDefinition;
 
 use super::{
     config::load_config,
-    holding::{select_holding, wallet_holdings, SelectedHolding},
+    holding::{holding_options, wallet_holdings, SelectedHolding},
     quote_error::issue,
     ContextRequest, TokenIdsRequest,
 };
@@ -59,6 +59,26 @@ pub(super) fn context(request: ContextRequest) -> Result<Value, String> {
     };
 
     let holdings = wallet_holdings(&request.wallet_accounts, config.token_program_id);
+    let mut program_accounts = holdings.clone();
+    program_accounts.sort_by_key(|holding| holding.id);
+    let program_accounts = program_accounts
+        .into_iter()
+        .map(|holding| {
+            json!({
+                "accountId": holding.id.to_string(),
+                "address": account_id_hex(holding.id),
+                "displayAddress": holding.id.to_string(),
+                "accountType": "TokenHolding",
+                "definitionId": account_id_hex(holding.definition_id),
+                "definitionDisplayId": holding.definition_id.to_string(),
+                "balanceRaw": holding.balance.to_string(),
+                "state": {
+                    "definitionId": account_id_hex(holding.definition_id),
+                    "balanceRaw": holding.balance.to_string(),
+                },
+            })
+        })
+        .collect::<Vec<_>>();
     let source_map = token_sources(&request, &holdings);
     let mut rows = Vec::new();
     let mut warnings = Vec::new();
@@ -85,9 +105,13 @@ pub(super) fn context(request: ContextRequest) -> Result<Value, String> {
                 }
             };
 
-        let selected = select_holding(&holdings, token_id);
-        let mut row = json!({
+        let options = holding_options(&holdings, token_id);
+        let total_balance = options.iter().fold(0_u128, |total, holding| {
+            total.saturating_add(holding.balance)
+        });
+        let row = json!({
             "definitionId": token_id.to_string(),
+            "definitionIdHex": account_id_hex(token_id),
             "name": name,
             "metadataId": metadata_id.map(|id| id.to_string()),
             "totalSupplyRaw": total_supply.to_string(),
@@ -98,17 +122,23 @@ pub(super) fn context(request: ContextRequest) -> Result<Value, String> {
             "status": "available",
             "code": "available",
             "sources": sources,
+            "balanceRaw": total_balance.to_string(),
+            "holdings": options.into_iter().map(|holding| json!({
+                "holdingId": holding.id.to_string(),
+                "address": account_id_hex(holding.id),
+                "balanceRaw": holding.balance.to_string(),
+            })).collect::<Vec<_>>(),
         });
-        if let Some(selected) = selected {
-            row["holdingId"] = json!(selected.id.to_string());
-            row["balanceRaw"] = json!(selected.balance.to_string());
-        }
         rows.push(row);
     }
 
     rows.sort_by(|left, right| {
-        let left_holding = left.get("holdingId").is_some();
-        let right_holding = right.get("holdingId").is_some();
+        let left_holding = left["holdings"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty());
+        let right_holding = right["holdings"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty());
         right_holding.cmp(&left_holding).then_with(|| {
             left["definitionId"]
                 .as_str()
@@ -128,6 +158,7 @@ pub(super) fn context(request: ContextRequest) -> Result<Value, String> {
             "twapOracle": program_id_base58(config.twap_oracle_program_id),
         },
         "tokens": rows,
+        "programAccounts": program_accounts,
         "feeTiers": fee_tiers(),
         "warnings": warnings,
     }))
@@ -141,6 +172,7 @@ fn context_error(request: &ContextRequest, code: &str) -> Value {
         "networkFingerprint": request.network_fingerprint,
         "walletAvailable": request.wallet_available,
         "tokens": [],
+        "programAccounts": [],
         "feeTiers": fee_tiers(),
         "warnings": [],
     })
@@ -193,6 +225,7 @@ fn token_sources(
 fn unavailable_token_row(token_id: AccountId, sources: Vec<String>, code: &str) -> Value {
     json!({
         "definitionId": token_id.to_string(),
+        "definitionIdHex": account_id_hex(token_id),
         "name": "",
         "metadataId": Value::Null,
         "totalSupplyRaw": "0",

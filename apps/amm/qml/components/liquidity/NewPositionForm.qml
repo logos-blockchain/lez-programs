@@ -61,10 +61,17 @@ AmmActionCard {
     })
     readonly property var tokens: root.newPositionContext && root.newPositionContext.tokens
                                          ? root.newPositionContext.tokens : []
+    readonly property var programAccounts: root.newPositionContext
+                                                   && root.newPositionContext.programAccounts
+                                               ? root.newPositionContext.programAccounts : []
     readonly property var feeTiers: root.newPositionContext && root.newPositionContext.feeTiers
                                            ? root.newPositionContext.feeTiers : []
     readonly property var tokenA: root.tokenById(root.selectedTokenAId)
     readonly property var tokenB: root.tokenById(root.selectedTokenBId)
+    readonly property string selectedHoldingAId: tokenAInput.selectedHoldingId
+    readonly property string selectedHoldingBId: tokenBInput.selectedHoldingId
+    readonly property var holdingA: tokenAInput.selectedHolding
+    readonly property var holdingB: tokenBInput.selectedHolding
     readonly property int decimalsA: 0
     readonly property int decimalsB: 0
     readonly property bool displayIsCanonical: root.selectedTokenAId.length > 0
@@ -96,6 +103,9 @@ AmmActionCard {
                                        && !root.quoteStale
                                        && !root.submitting
                                        && !root.poolCreationPending
+                                       && tokenAInput.holdingReady
+                                       && tokenBInput.holdingReady
+                                       && lpDestinationSelector.ready
 
     signal quoteRequested(bool immediate, var quoteRequest)
     signal confirmationRequested(var snapshot)
@@ -235,15 +245,18 @@ AmmActionCard {
                 theme: root.theme
                 text: root.amountA
                 label: qsTr("Token A amount")
-                balance: root.contextLoading ? "" : root.balanceText(root.tokenA, root.decimalsA)
+                balance: root.contextLoading ? "" : root.holdingBalanceText(
+                                                       root.holdingA, root.decimalsA)
                 helperText: root.missingPool && !root.compact
                             ? root.minimumAmountText("A") : ""
                 errorText: root.formErrorText()
                 invalid: root.fieldHasError("amountA")
+                         || root.fieldHasError("holdingAId")
                 readOnly: root.submitting || (!root.activePool && !root.missingPool)
                 showMaxButton: root.activePool
                 tokenData: root.tokenA.definitionId ? root.tokenA : null
                 tokens: root.tokens
+                programAccounts: root.programAccounts
                 selectedTokenId: root.selectedTokenAId
                 tokenInvalid: root.tokenHasError("A")
                 tokenSelectionEnabled: !root.contextLoading && !root.submitting
@@ -267,6 +280,10 @@ AmmActionCard {
                 onMaxClicked: root.useMaximum()
                 onTokenSelected: function(tokenId) { root.resolveToken("A", tokenId) }
                 onTokenEntered: function(value) { root.resolveToken("A", value) }
+                onHoldingSelectionChanged: function(holdingId) {
+                    root.noteDraftChanged()
+                    root.requestQuote(true)
+                }
             }
 
             AmmPairSeparator {
@@ -284,14 +301,17 @@ AmmActionCard {
                 theme: root.theme
                 text: root.amountB
                 label: qsTr("Token B amount")
-                balance: root.contextLoading ? "" : root.balanceText(root.tokenB, root.decimalsB)
+                balance: root.contextLoading ? "" : root.holdingBalanceText(
+                                                       root.holdingB, root.decimalsB)
                 helperText: root.missingPool && !root.compact
                             ? root.minimumAmountText("B") : ""
                 invalid: root.fieldHasError("amountB")
+                         || root.fieldHasError("holdingBId")
                 readOnly: root.submitting || (!root.activePool && !root.missingPool)
                 showMaxButton: root.activePool
                 tokenData: root.tokenB.definitionId ? root.tokenB : null
                 tokens: root.tokens
+                programAccounts: root.programAccounts
                 selectedTokenId: root.selectedTokenBId
                 tokenInvalid: root.tokenHasError("B")
                 tokenSelectionEnabled: !root.contextLoading && !root.submitting
@@ -315,6 +335,10 @@ AmmActionCard {
                 onMaxClicked: root.useMaximum()
                 onTokenSelected: function(tokenId) { root.resolveToken("B", tokenId) }
                 onTokenEntered: function(value) { root.resolveToken("B", value) }
+                onHoldingSelectionChanged: function(holdingId) {
+                    root.noteDraftChanged()
+                    root.requestQuote(true)
+                }
             }
         }
 
@@ -472,6 +496,44 @@ AmmActionCard {
                     radius: 6
                     border.color: root.theme.colors.error
                     border.width: 1
+                }
+            }
+        }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 6
+            visible: root.hasPair
+
+            Text {
+                text: qsTr("LP TokenHolding output")
+                color: root.theme.colors.textSecondary
+                font.pixelSize: 12
+            }
+
+            ProgramAccountSelector {
+                id: lpDestinationSelector
+
+                objectName: "lpTokenHoldingSelector"
+                Layout.fillWidth: true
+                sourceModel: root.programAccounts
+                accountType: "TokenHolding"
+                stateField: "definitionId"
+                stateValue: root.lpDefinitionIdHex()
+                selectionMode: ProgramAccountSelector.Output
+                createNewText: qsTr("Create new TokenHolding")
+                placeholderText: qsTr("Select LP destination")
+                criteriaPendingText: qsTr("Resolving LP token")
+                accessibleName: qsTr("LP TokenHolding destination")
+                backgroundColor: root.theme.colors.panelBg
+                hoverColor: root.theme.colors.panelHoverBg
+                textColor: root.theme.colors.textPrimary
+                secondaryTextColor: root.theme.colors.textSecondary
+                borderColor: root.theme.colors.borderStrong
+                focusColor: root.theme.colors.ctaBg
+                onSelectionChanged: function(accountId, createNew) {
+                    root.noteDraftChanged()
+                    root.requestQuote(true)
                 }
             }
         }
@@ -826,6 +888,8 @@ AmmActionCard {
     }
 
     function swapTokens() {
+        var holdingAId = root.selectedHoldingAId
+        var holdingBId = root.selectedHoldingBId
         var tokenId = root.selectedTokenAId
         root.selectedTokenAId = root.selectedTokenBId
         root.selectedTokenBId = tokenId
@@ -838,8 +902,12 @@ AmmActionCard {
         var priceAmount = root.priceAmountA
         root.priceAmountA = root.priceAmountB
         root.priceAmountB = priceAmount
-        root.noteDraftChanged()
-        root.requestQuote(true)
+        Qt.callLater(function() {
+            tokenAInput.setHoldingSelection(holdingBId)
+            tokenBInput.setHoldingSelection(holdingAId)
+            root.noteDraftChanged()
+            root.requestQuote(true)
+        })
     }
 
     function resetPairDraft() {
@@ -1074,13 +1142,27 @@ AmmActionCard {
     }
 
     function pairRequest() {
-        return {
+        var request = {
             "tokenAId": root.displayIsCanonical
                         ? root.selectedTokenAId : root.selectedTokenBId,
             "tokenBId": root.displayIsCanonical
                         ? root.selectedTokenBId : root.selectedTokenAId,
             "feeBps": root.selectedFeeBps
         }
+        var holdingAId = root.displayIsCanonical
+                ? root.selectedHoldingAId : root.selectedHoldingBId
+        var holdingBId = root.displayIsCanonical
+                ? root.selectedHoldingBId : root.selectedHoldingAId
+        if (holdingAId.length > 0)
+            request.holdingAId = holdingAId
+        if (holdingBId.length > 0)
+            request.holdingBId = holdingBId
+        if (lpDestinationSelector.createNewSelected) {
+            request.createFreshLp = true
+        } else if (lpDestinationSelector.selectedAccountId.length > 0) {
+            request.lpHoldingId = lpDestinationSelector.selectedAccountId
+        }
+        return request
     }
 
     function requestQuote(immediate) {
@@ -1092,7 +1174,10 @@ AmmActionCard {
     }
 
     function probeRaw(token, decimals) {
-        var balance = String(token.balanceRaw || "0")
+        var holding = token.definitionId === root.tokenA.definitionId
+                ? root.holdingA : root.holdingB
+        var balance = String(holding && holding.balanceRaw
+                             ? holding.balanceRaw : "0")
         var simulated = AmountMath.multiply(AmountMath.pow10(decimals), "1000")
         if (AmountMath.isUnsigned(balance) && AmountMath.compare(balance, simulated) > 0)
             return balance
@@ -1132,6 +1217,12 @@ AmmActionCard {
             return root.displayIsCanonical ? "amountA" : "amountB"
         if (field === "amountBRaw")
             return root.displayIsCanonical ? "amountB" : "amountA"
+        if (field === "holdingAId")
+            return root.displayIsCanonical ? "holdingAId" : "holdingBId"
+        if (field === "holdingBId")
+            return root.displayIsCanonical ? "holdingBId" : "holdingAId"
+        if (field === "lpHoldingId" || field === "createFreshLp")
+            return "lpHoldingId"
         if (field === "initialPriceRealRaw")
             return "initialPrice"
         return field
@@ -1192,6 +1283,10 @@ AmmActionCard {
             "invalid_amount_precision": qsTr("Token amounts must use whole raw units."),
             "invalid_raw_amount": qsTr("Value is outside the supported range."),
             "amount_exceeds_balance": qsTr("Amount exceeds the selected holding balance."),
+            "holding_selection_required": qsTr("Select a wallet TokenHolding for this token."),
+            "invalid_holding_selection": qsTr("Selected TokenHolding is unavailable."),
+            "lp_destination_required": qsTr("Select where LP tokens should be deposited."),
+            "invalid_lp_destination": qsTr("Selected LP TokenHolding is unavailable."),
             "amount_too_low": qsTr("Value is too low for this pool."),
             "invalid_token_id": qsTr("Enter a valid base58 TokenDefinition ID."),
             "deposit_ratio_mismatch": qsTr("Deposit amounts must match the initial price."),
@@ -1261,8 +1356,10 @@ AmmActionCard {
         var reserveB = root.poolReserve("B")
         if (!reserveA || !reserveB || reserveA === "0" || reserveB === "0")
             return
-        var balanceA = String(root.tokenA.balanceRaw || "0")
-        var balanceB = String(root.tokenB.balanceRaw || "0")
+        var balanceA = String(root.holdingA && root.holdingA.balanceRaw
+                              ? root.holdingA.balanceRaw : "0")
+        var balanceB = String(root.holdingB && root.holdingB.balanceRaw
+                              ? root.holdingB.balanceRaw : "0")
         var fitA = AmountMath.mulDivFloor(balanceB, reserveA, reserveB)
         var rawA = AmountMath.compare(balanceA, fitA) < 0 ? balanceA : fitA
         var rawB = AmountMath.mulDivFloor(rawA, reserveB, reserveA)
@@ -1470,8 +1567,21 @@ AmmActionCard {
         return AmountMath.formatRaw(String(token.balanceRaw || "0"), decimals)
     }
 
+    function holdingBalanceText(holding, decimals) {
+        return holding ? AmountMath.formatRaw(
+                             String(holding.balanceRaw || "0"), decimals) : ""
+    }
+
     function tokenBalanceDetail(token) {
         return qsTr("Available %1").arg(root.balanceText(token, 0))
+    }
+
+    function lpDefinitionIdHex() {
+        if (root.quoteMatchesPair())
+            return String(root.quotePayload.lpDefinitionIdHex || "")
+        if (root.quoteMatchesSelectedPair(root.activePoolQuote))
+            return String(root.activePoolQuote.lpDefinitionIdHex || "")
+        return ""
     }
 
     function shortId(value) {

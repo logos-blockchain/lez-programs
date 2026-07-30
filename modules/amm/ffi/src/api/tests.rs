@@ -144,6 +144,10 @@ fn request(pair: PairIds) -> PositionRequest {
         token_a_id: pair.token_a.to_string(),
         token_b_id: pair.token_b.to_string(),
         fee_bps: 30,
+        holding_a_id: None,
+        holding_b_id: None,
+        lp_holding_id: None,
+        create_fresh_lp: false,
         amount_a_raw: None,
         amount_b_raw: None,
         max_amount_a_raw: None,
@@ -214,6 +218,69 @@ impl Scenario {
     }
 }
 
+fn active_scenario(lp_holdings: &[(AccountId, u128)]) -> Scenario {
+    let mut scenario = Scenario::testnet();
+    let pair = scenario.pair;
+    let pool = PoolDefinition {
+        definition_token_a_id: pair.token_a,
+        definition_token_b_id: pair.token_b,
+        vault_a_id: pair.vault_a,
+        vault_b_id: pair.vault_b,
+        liquidity_pool_id: pair.lp_definition,
+        liquidity_pool_supply: 10_000,
+        reserve_a: 10_000,
+        reserve_b: 20_000,
+        fees: 30,
+    };
+    scenario.snapshot.pool = account_read(pair.pool, &account(AMM_PROGRAM, Data::from(&pool)));
+    scenario.snapshot.vault_a =
+        account_read(pair.vault_a, &token_holding(pair.token_a, pool.reserve_a));
+    scenario.snapshot.vault_b =
+        account_read(pair.vault_b, &token_holding(pair.token_b, pool.reserve_b));
+    scenario.snapshot.lp_definition = account_read(
+        pair.lp_definition,
+        &account(
+            TOKEN_PROGRAM,
+            Data::from(&TokenDefinition::Fungible {
+                name: String::from("LP"),
+                total_supply: pool.liquidity_pool_supply,
+                metadata_id: None,
+                authority: Some(pair.lp_definition),
+            }),
+        ),
+    );
+    scenario.snapshot.current_tick = account_read(
+        pair.current_tick,
+        &account(
+            TWAP_PROGRAM,
+            Data::from(&CurrentTickAccount {
+                tick: 0,
+                last_updated: 1_000,
+            }),
+        ),
+    );
+    scenario.snapshot.wallet_accounts = vec![
+        account_read(
+            AccountId::new([61; 32]),
+            &token_holding(pair.token_a, 1_000),
+        ),
+        account_read(
+            AccountId::new([62; 32]),
+            &token_holding(pair.token_b, 2_000),
+        ),
+    ];
+    scenario.snapshot.wallet_accounts.extend(
+        lp_holdings
+            .iter()
+            .map(|(id, balance)| account_read(*id, &token_holding(pair.lp_definition, *balance))),
+    );
+    scenario.request.initial_price_real_raw = None;
+    scenario.request.max_amount_a_raw = Some(String::from("1000"));
+    scenario.request.max_amount_b_raw = Some(String::from("3000"));
+    scenario.request.slippage_bps = Some(50);
+    scenario
+}
+
 fn assert_preview_matches_plan(
     quote_value: &Value,
     plan_value: &Value,
@@ -244,8 +311,8 @@ fn account_plan_sources_follow_pool_branch() {
     let pair = scenario.pair;
     let input = scenario.quote_request();
     let holdings = wallet_holdings(&input.snapshot.wallet_accounts, pair.token_program);
-    let holding_a = select_holding(&holdings, pair.token_a);
-    let holding_b = select_holding(&holdings, pair.token_b);
+    let holding_a = select_holding(&holdings, pair.token_a, None);
+    let holding_b = select_holding(&holdings, pair.token_b, None);
 
     let missing = missing_account_plan(
         &input,
@@ -337,7 +404,7 @@ fn minimum_pair_is_minimal_on_price_base_side() {
 }
 
 #[test]
-fn highest_balance_holding_wins_then_lowest_id() {
+fn holding_selection_requires_a_choice_when_multiple_exist() {
     let definition = AccountId::new([9; 32]);
     let holding = |id: u8, balance| SelectedHolding {
         id: AccountId::new([id; 32]),
@@ -351,12 +418,15 @@ fn highest_balance_holding_wins_then_lowest_id() {
             }),
         ),
     };
+    let holdings = [holding(4, 10), holding(2, 20), holding(1, 20)];
+    assert!(select_holding(&holdings, definition, None).is_none());
     let selected = select_holding(
-        &[holding(4, 10), holding(2, 20), holding(1, 20)],
+        &holdings,
         definition,
+        Some(&AccountId::new([4; 32]).to_string()),
     )
     .unwrap();
-    assert_eq!(selected.id, AccountId::new([1; 32]));
+    assert_eq!(selected.id, AccountId::new([4; 32]));
 }
 
 #[test]
@@ -508,7 +578,51 @@ fn context_selects_tokens_without_holdings() {
     .unwrap();
     assert_eq!(value["tokens"][0]["selectable"], true);
     assert_eq!(value["tokens"][0]["sources"], json!(["config"]));
-    assert!(value["tokens"][0].get("holdingId").is_none());
+    assert_eq!(value["tokens"][0]["holdings"], json!([]));
+    assert_eq!(value["programAccounts"], json!([]));
+}
+
+#[test]
+fn context_exposes_all_compatible_holdings_as_program_accounts() {
+    let token_id = AccountId::new([3; 32]);
+    let holding_a = AccountId::new([4; 32]);
+    let holding_b = AccountId::new([5; 32]);
+    let config_id = compute_config_pda(AMM_PROGRAM);
+    let value = context(ContextRequest {
+        network_id: String::from("testnet"),
+        network_fingerprint: String::from("block10:abc"),
+        amm_program_id: amm_program_id(),
+        wallet_available: true,
+        config: account_read(config_id, &config_account()),
+        wallet_accounts: vec![
+            account_read(holding_b, &token_holding(token_id, 80)),
+            account_read(holding_a, &token_holding(token_id, 120)),
+        ],
+        token_definitions: vec![account_read(
+            token_id,
+            &token_definition("Token", 1_000_000),
+        )],
+        configured_token_ids: vec![account_id_hex(token_id)],
+        recent_token_ids: Vec::new(),
+        resolved_token_ids: Vec::new(),
+    })
+    .unwrap();
+
+    assert_eq!(value["tokens"][0]["balanceRaw"], "200");
+    assert_eq!(value["tokens"][0]["holdings"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        value["programAccounts"][0]["accountId"],
+        holding_a.to_string()
+    );
+    assert_eq!(value["programAccounts"][0]["accountType"], "TokenHolding");
+    assert_eq!(
+        value["programAccounts"][0]["state"]["definitionId"],
+        account_id_hex(token_id)
+    );
+    assert_eq!(
+        value["programAccounts"][1]["accountId"],
+        holding_b.to_string()
+    );
 }
 
 #[test]
@@ -573,6 +687,31 @@ fn missing_pool_quote_accepts_large_direct_raw_amounts() {
 }
 
 #[test]
+fn quote_requires_explicit_input_holding_when_multiple_match() {
+    let mut scenario = Scenario::devnet();
+    let extra_holding = AccountId::new([63; 32]);
+    scenario.snapshot.wallet_accounts.push(account_read(
+        extra_holding,
+        &token_holding(scenario.pair.token_a, 1_000_000),
+    ));
+
+    let ambiguous = scenario.quote();
+    assert_eq!(ambiguous["canSubmit"], false);
+    assert!(ambiguous["errors"].as_array().unwrap().iter().any(|error| {
+        error["code"] == "holding_selection_required"
+            && error["blockingFields"] == json!(["holdingAId"])
+    }));
+
+    scenario.request.holding_a_id = Some(extra_holding.to_string());
+    let selected = scenario.quote();
+    assert_eq!(selected["canSubmit"], true);
+    assert_eq!(
+        selected["accountPreview"][6]["accountId"],
+        extra_holding.to_string()
+    );
+}
+
+#[test]
 fn advancing_clock_does_not_stale_quote() {
     let mut scenario = Scenario::testnet();
     let quote_value = scenario.quote();
@@ -601,65 +740,8 @@ fn advancing_clock_does_not_stale_quote() {
 
 #[test]
 fn active_pool_quote_uses_ratio_and_existing_lp_holding() {
-    let mut scenario = Scenario::testnet();
-    let pair = scenario.pair;
-    let pool = PoolDefinition {
-        definition_token_a_id: pair.token_a,
-        definition_token_b_id: pair.token_b,
-        vault_a_id: pair.vault_a,
-        vault_b_id: pair.vault_b,
-        liquidity_pool_id: pair.lp_definition,
-        liquidity_pool_supply: 10_000,
-        reserve_a: 10_000,
-        reserve_b: 20_000,
-        fees: 30,
-    };
-    scenario.snapshot.pool = account_read(pair.pool, &account(AMM_PROGRAM, Data::from(&pool)));
-    scenario.snapshot.vault_a =
-        account_read(pair.vault_a, &token_holding(pair.token_a, pool.reserve_a));
-    scenario.snapshot.vault_b =
-        account_read(pair.vault_b, &token_holding(pair.token_b, pool.reserve_b));
-    scenario.snapshot.lp_definition = account_read(
-        pair.lp_definition,
-        &account(
-            TOKEN_PROGRAM,
-            Data::from(&TokenDefinition::Fungible {
-                name: String::from("LP"),
-                total_supply: pool.liquidity_pool_supply,
-                metadata_id: None,
-                authority: Some(pair.lp_definition),
-            }),
-        ),
-    );
-    scenario.snapshot.current_tick = account_read(
-        pair.current_tick,
-        &account(
-            TWAP_PROGRAM,
-            Data::from(&CurrentTickAccount {
-                tick: 0,
-                last_updated: 1_000,
-            }),
-        ),
-    );
-    scenario.snapshot.wallet_accounts = vec![
-        account_read(
-            AccountId::new([61; 32]),
-            &token_holding(pair.token_a, 1_000),
-        ),
-        account_read(
-            AccountId::new([62; 32]),
-            &token_holding(pair.token_b, 2_000),
-        ),
-    ];
     let lp_holding = AccountId::new([64; 32]);
-    scenario.snapshot.wallet_accounts.push(account_read(
-        lp_holding,
-        &token_holding(pair.lp_definition, 500),
-    ));
-    scenario.request.initial_price_real_raw = None;
-    scenario.request.max_amount_a_raw = Some(String::from("1000"));
-    scenario.request.max_amount_b_raw = Some(String::from("3000"));
-    scenario.request.slippage_bps = Some(50);
+    let scenario = active_scenario(&[(lp_holding, 500)]);
 
     let quote_value = scenario.quote();
     assert_eq!(quote_value["poolStatus"], "active_pool");
@@ -677,6 +759,50 @@ fn active_pool_quote_uses_ratio_and_existing_lp_holding() {
     assert_eq!(plan_value["accountIds"][7], account_id_hex(lp_holding));
     assert_eq!(plan_value["signingRequirements"][7], false);
     assert_preview_matches_plan(&quote_value, &plan_value, None);
+}
+
+#[test]
+fn active_pool_quote_requires_lp_destination_when_multiple_match() {
+    let lp_a = AccountId::new([64; 32]);
+    let lp_b = AccountId::new([65; 32]);
+    let mut scenario = active_scenario(&[(lp_a, 500), (lp_b, 200)]);
+
+    let ambiguous = scenario.quote();
+    assert_eq!(ambiguous["canSubmit"], false);
+    assert_eq!(ambiguous["lpDestinationRequired"], true);
+    assert_eq!(ambiguous["lpHoldingOptions"].as_array().unwrap().len(), 2);
+    assert!(ambiguous["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|error| error["code"] == "lp_destination_required"));
+
+    scenario.request.lp_holding_id = Some(lp_b.to_string());
+    let selected = scenario.quote();
+    assert_eq!(selected["canSubmit"], true);
+    assert_eq!(selected["selectedLpHoldingId"], lp_b.to_string());
+    assert_eq!(selected["requiresFreshLp"], false);
+}
+
+#[test]
+fn active_pool_quote_can_force_fresh_lp_destination() {
+    let lp_holding = AccountId::new([64; 32]);
+    let mut scenario = active_scenario(&[(lp_holding, 500)]);
+    scenario.request.create_fresh_lp = true;
+
+    let quote_value = scenario.quote();
+    assert_eq!(quote_value["canSubmit"], true);
+    assert_eq!(quote_value["selectedLpHoldingId"], Value::Null);
+    assert_eq!(quote_value["requiresFreshLp"], true);
+
+    let fresh_lp = AccountId::new([66; 32]);
+    let plan_value = scenario.plan(
+        quote_value["quoteHash"].as_str().unwrap(),
+        Some(default_read(fresh_lp)),
+    );
+    assert_eq!(plan_value["status"], "ready");
+    assert_eq!(plan_value["accountIds"][7], account_id_hex(fresh_lp));
+    assert_eq!(plan_value["signingRequirements"][7], true);
 }
 
 #[test]

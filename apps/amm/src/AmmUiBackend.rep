@@ -88,8 +88,8 @@ class AmmUiBackend
     // Same return contract as swapExactInput (tx hash, empty string on failure).
     SLOT(QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountOutDecimal, QString maxInDecimal, QString deadlineDecimal))
     // Reads the token list config at TOKENS_CONFIG (absolute path, JSON array
-    // of { symbol, name, definitionId, holding, decimals }) and returns it as
-    // a QVariantList of QVariantMap entries. Returns an empty list if
-    // TOKENS_CONFIG is unset/unreadable/invalid.
+    // of { symbol, name, definitionId, decimals }). A legacy holding field is
+    // accepted but transaction inputs come from wallet-owned TokenHoldings.
+    // Returns an empty list if TOKENS_CONFIG is unset/unreadable/invalid.
     SLOT(QVariantList tokenList())
 }

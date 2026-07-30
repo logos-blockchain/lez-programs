@@ -17,7 +17,9 @@ use super::{
     commitment::{QuoteCommitment, RequestCommitment},
     context::fungible_definition,
     funding::{funding_commitments, funding_issues, hash_quote},
-    holding::{decode_fungible_holding, select_holding, wallet_holdings},
+    holding::{
+        decode_fungible_holding, holding_options, select_holding, wallet_holdings, SelectedHolding,
+    },
     pair::{derive_pair, is_canonical_pair, PairIds},
     position::{
         AccountPlan, AccountPlanHoldings, EvaluatedQuote, NewPositionPlan, QuoteBranch,
@@ -27,7 +29,8 @@ use super::{
     QuoteRequest,
 };
 use crate::account::{
-    decode_account, parse_base58_id, parse_program_id, program_id_bytes, AccountRead,
+    account_id_hex, decode_account, parse_base58_id, parse_program_id, program_id_bytes,
+    AccountRead,
 };
 
 const DEFAULT_SLIPPAGE_BPS: u32 = 50;
@@ -206,9 +209,19 @@ fn compute_missing_quote(
     let expected_lp = initial_lp - MINIMUM_LIQUIDITY;
 
     let holdings = wallet_holdings(&input.snapshot.wallet_accounts, pair.token_program);
-    let holding_a = select_holding(&holdings, pair.token_a);
-    let holding_b = select_holding(&holdings, pair.token_b);
-    let funding = funding_issues(
+    let holding_a = select_holding(
+        &holdings,
+        pair.token_a,
+        input.request.holding_a_id.as_deref(),
+    );
+    let holding_b = select_holding(
+        &holdings,
+        pair.token_b,
+        input.request.holding_b_id.as_deref(),
+    );
+    let lp_destination = select_lp_destination(input, &holdings, pair.lp_definition);
+    let mut funding = holding_selection_issues(input, pair, &holdings, &holding_a, &holding_b);
+    funding.extend(funding_issues(
         input.snapshot.wallet_available,
         pair,
         &holding_a,
@@ -216,7 +229,10 @@ fn compute_missing_quote(
         &holding_b,
         amount_b,
         ["amountARaw", "amountBRaw"],
-    );
+    ));
+    if let Some(error) = lp_destination.error.clone() {
+        funding.push(error);
+    }
     let can_submit = funding.is_empty();
     let mut account_plan = missing_account_plan(
         input,
@@ -225,7 +241,7 @@ fn compute_missing_quote(
         AccountPlanHoldings {
             token_a: holding_a.as_ref(),
             token_b: holding_b.as_ref(),
-            lp: None,
+            lp: lp_destination.selected.as_ref(),
         },
     )?;
     let sources = account_plan.take_sources();
@@ -245,7 +261,7 @@ fn compute_missing_quote(
         actual_b: amount_b,
         expected_lp,
         lp_guard: MINIMUM_LIQUIDITY,
-        requires_fresh_lp: true,
+        requires_fresh_lp: lp_destination.requires_fresh,
         sources,
         funding: funding_commitment,
         warnings: Vec::new(),
@@ -272,7 +288,12 @@ fn compute_missing_quote(
         "initialPriceRealRaw": spot_price_q64_64(amount_a, amount_b).to_string(),
         "minimumAmountARaw": minimum_a.to_string(),
         "minimumAmountBRaw": minimum_b.to_string(),
-        "requiresFreshLp": true,
+        "requiresFreshLp": lp_destination.requires_fresh,
+        "lpDefinitionId": pair.lp_definition.to_string(),
+        "lpDefinitionIdHex": account_id_hex(pair.lp_definition),
+        "lpDestinationRequired": lp_destination.error.is_some(),
+        "lpHoldingOptions": holding_rows(&lp_destination.options),
+        "selectedLpHoldingId": lp_destination.selected.as_ref().map(|holding| holding.id.to_string()),
         "accountPreview": preview,
         "errors": funding,
         "warnings": [],
@@ -431,11 +452,19 @@ fn compute_active_quote(
         return Ok(error);
     }
     let holdings = wallet_holdings(&input.snapshot.wallet_accounts, pair.token_program);
-    let holding_a = select_holding(&holdings, pair.token_a);
-    let holding_b = select_holding(&holdings, pair.token_b);
-    let lp_holding = select_holding(&holdings, pair.lp_definition);
-    let requires_fresh_lp = lp_holding.is_none();
-    let funding = funding_issues(
+    let holding_a = select_holding(
+        &holdings,
+        pair.token_a,
+        input.request.holding_a_id.as_deref(),
+    );
+    let holding_b = select_holding(
+        &holdings,
+        pair.token_b,
+        input.request.holding_b_id.as_deref(),
+    );
+    let lp_destination = select_lp_destination(input, &holdings, pair.lp_definition);
+    let mut funding = holding_selection_issues(input, pair, &holdings, &holding_a, &holding_b);
+    funding.extend(funding_issues(
         input.snapshot.wallet_available,
         pair,
         &holding_a,
@@ -443,7 +472,10 @@ fn compute_active_quote(
         &holding_b,
         actual_b,
         ["maxAmountARaw", "maxAmountBRaw"],
-    );
+    ));
+    if let Some(error) = lp_destination.error.clone() {
+        funding.push(error);
+    }
     let can_submit = funding.is_empty();
     let warnings = if slippage_bps >= HIGH_SLIPPAGE_BPS {
         vec![issue(
@@ -468,7 +500,7 @@ fn compute_active_quote(
         AccountPlanHoldings {
             token_a: holding_a.as_ref(),
             token_b: holding_b.as_ref(),
-            lp: lp_holding.as_ref(),
+            lp: lp_destination.selected.as_ref(),
         },
     )?;
     let sources = account_plan.take_sources();
@@ -491,7 +523,7 @@ fn compute_active_quote(
         actual_b,
         expected_lp,
         lp_guard: minimum_lp,
-        requires_fresh_lp,
+        requires_fresh_lp: lp_destination.requires_fresh,
         sources,
         funding: funding_commitments(pair, &holding_a, actual_a, &holding_b, actual_b),
         warnings: warning_codes,
@@ -520,7 +552,12 @@ fn compute_active_quote(
         "expectedLpRaw": expected_lp.to_string(),
         "minimumLpRaw": minimum_lp.to_string(),
         "initialPriceRealRaw": spot_price_q64_64(reserve_a, reserve_b).to_string(),
-        "requiresFreshLp": requires_fresh_lp,
+        "requiresFreshLp": lp_destination.requires_fresh,
+        "lpDefinitionId": pair.lp_definition.to_string(),
+        "lpDefinitionIdHex": account_id_hex(pair.lp_definition),
+        "lpDestinationRequired": lp_destination.error.is_some(),
+        "lpHoldingOptions": holding_rows(&lp_destination.options),
+        "selectedLpHoldingId": lp_destination.selected.as_ref().map(|holding| holding.id.to_string()),
         "accountPreview": preview,
         "errors": funding,
         "warnings": warnings,
@@ -543,6 +580,148 @@ fn compute_active_quote(
         quote_hash,
         plan,
     }))
+}
+
+struct LpDestination {
+    options: Vec<SelectedHolding>,
+    selected: Option<SelectedHolding>,
+    requires_fresh: bool,
+    error: Option<Value>,
+}
+
+fn select_lp_destination(
+    input: &QuoteRequest,
+    holdings: &[SelectedHolding],
+    definition_id: AccountId,
+) -> LpDestination {
+    let options = holding_options(holdings, definition_id);
+    if input.request.create_fresh_lp && input.request.lp_holding_id.is_some() {
+        return LpDestination {
+            options,
+            selected: None,
+            requires_fresh: false,
+            error: Some(issue(
+                "invalid_lp_destination",
+                "Choose either a wallet holding or a new TokenHolding.",
+                &["lpHoldingId", "createFreshLp"],
+                json!({}),
+            )),
+        };
+    }
+    if input.request.create_fresh_lp {
+        return LpDestination {
+            options,
+            selected: None,
+            requires_fresh: true,
+            error: None,
+        };
+    }
+    if input.request.lp_holding_id.is_some() {
+        let selected = select_holding(
+            holdings,
+            definition_id,
+            input.request.lp_holding_id.as_deref(),
+        );
+        let error = selected.is_none().then(|| {
+            issue(
+                "invalid_lp_destination",
+                "Selected LP TokenHolding is unavailable.",
+                &["lpHoldingId"],
+                json!({ "available": options.len() }),
+            )
+        });
+        return LpDestination {
+            options,
+            selected,
+            requires_fresh: false,
+            error,
+        };
+    }
+    match options.as_slice() {
+        [] => LpDestination {
+            options,
+            selected: None,
+            requires_fresh: true,
+            error: None,
+        },
+        [only] => LpDestination {
+            selected: Some(only.clone()),
+            options,
+            requires_fresh: false,
+            error: None,
+        },
+        _ => LpDestination {
+            error: Some(issue(
+                "lp_destination_required",
+                "Select an LP TokenHolding destination.",
+                &["lpHoldingId", "createFreshLp"],
+                json!({ "available": options.len() }),
+            )),
+            options,
+            selected: None,
+            requires_fresh: false,
+        },
+    }
+}
+
+fn holding_selection_issues(
+    input: &QuoteRequest,
+    pair: PairIds,
+    holdings: &[SelectedHolding],
+    holding_a: &Option<SelectedHolding>,
+    holding_b: &Option<SelectedHolding>,
+) -> Vec<Value> {
+    if !input.snapshot.wallet_available {
+        return Vec::new();
+    }
+
+    let mut errors = Vec::new();
+    for (definition_id, requested, selected, field) in [
+        (
+            pair.token_a,
+            input.request.holding_a_id.as_deref(),
+            holding_a,
+            "holdingAId",
+        ),
+        (
+            pair.token_b,
+            input.request.holding_b_id.as_deref(),
+            holding_b,
+            "holdingBId",
+        ),
+    ] {
+        let options = holding_options(holdings, definition_id);
+        if selected.is_some() || (requested.is_none() && options.len() <= 1) {
+            continue;
+        }
+        errors.push(issue(
+            if requested.is_some() {
+                "invalid_holding_selection"
+            } else {
+                "holding_selection_required"
+            },
+            "Select a wallet holding for this token.",
+            &[field],
+            json!({
+                "tokenId": definition_id.to_string(),
+                "available": options.len(),
+            }),
+        ));
+    }
+    errors
+}
+
+fn holding_rows(holdings: &[SelectedHolding]) -> Vec<Value> {
+    holdings
+        .iter()
+        .map(|holding| {
+            json!({
+                "holdingId": holding.id.to_string(),
+                "address": account_id_hex(holding.id),
+                "balanceRaw": holding.balance.to_string(),
+            })
+        })
+        .collect()
 }
 
 fn validate_active_accounts(

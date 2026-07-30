@@ -13,6 +13,8 @@ TestCase {
     readonly property string tokenLow: "22222222222222222222222222222222"
     readonly property string tokenHigh: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
     readonly property string tokenThird: "33333333333333333333333333333333"
+    readonly property string holdingLow: "holding-low"
+    readonly property string holdingHigh: "holding-high"
     readonly property string submittedTransactionId:
         "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"
 
@@ -43,6 +45,7 @@ TestCase {
             "tokens": [
                 {
                     "definitionId": tokenLow,
+                    "definitionIdHex": tokenLow,
                     "name": "Low",
                     "totalSupplyRaw": "1000000",
                     "balanceRaw": "1000",
@@ -50,11 +53,16 @@ TestCase {
                 },
                 {
                     "definitionId": tokenHigh,
+                    "definitionIdHex": tokenHigh,
                     "name": "High",
                     "totalSupplyRaw": "1000000000000",
                     "balanceRaw": "5000000000",
                     "selectable": true
                 }
+            ],
+            "programAccounts": [
+                programAccount(holdingLow, tokenLow, "1000"),
+                programAccount(holdingHigh, tokenHigh, "5000000000")
             ]
         }
     }
@@ -65,6 +73,7 @@ TestCase {
             "tokens": [
                 {
                     "definitionId": tokenLow,
+                    "definitionIdHex": tokenLow,
                     "name": "Sir Mints-a-Lot",
                     "totalSupplyRaw": "1000000000000",
                     "balanceRaw": "1000000000",
@@ -72,12 +81,26 @@ TestCase {
                 },
                 {
                     "definitionId": tokenHigh,
+                    "definitionIdHex": tokenHigh,
                     "name": "Aurora",
                     "totalSupplyRaw": "1000000000000",
                     "balanceRaw": "1000000000",
                     "selectable": true
                 }
+            ],
+            "programAccounts": [
+                programAccount(holdingLow, tokenLow, "1000000000"),
+                programAccount(holdingHigh, tokenHigh, "1000000000")
             ]
+        }
+    }
+
+    function programAccount(accountId, definitionId, balanceRaw) {
+        return {
+            "accountId": accountId,
+            "accountType": "TokenHolding",
+            "definitionId": definitionId,
+            "balanceRaw": balanceRaw
         }
     }
 
@@ -107,6 +130,8 @@ TestCase {
         form.selectToken("B", tokenHigh)
         compare(form.selectedTokenAId, tokenLow)
         compare(form.selectedTokenBId, tokenHigh)
+        tryCompare(form, "selectedHoldingAId", holdingLow)
+        tryCompare(form, "selectedHoldingBId", holdingHigh)
         return form
     }
 
@@ -124,14 +149,20 @@ TestCase {
         verify(built.ok)
         compare(built.request.tokenAId, tokenHigh)
         compare(built.request.tokenBId, tokenLow)
+        compare(built.request.holdingAId, holdingHigh)
+        compare(built.request.holdingBId, holdingLow)
 
         form.swapTokens()
+        tryCompare(form, "selectedHoldingAId", holdingHigh)
+        tryCompare(form, "selectedHoldingBId", holdingLow)
         compare(form.selectedTokenAId, tokenHigh)
         compare(form.selectedTokenBId, tokenLow)
         built = form.buildQuoteRequest()
         verify(built.ok)
         compare(built.request.tokenAId, tokenHigh)
         compare(built.request.tokenBId, tokenLow)
+        compare(built.request.holdingAId, holdingHigh)
+        compare(built.request.holdingBId, holdingLow)
     }
 
     function test_tokenAmountsUseRawUnits() {

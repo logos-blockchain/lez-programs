@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
+import Logos.Wallet
 import "TokenVisuals.js" as TokenVisuals
 
 Rectangle {
@@ -10,6 +11,8 @@ Rectangle {
     property string amount: ""
     property string usdValue: ""
     property var token: null
+    property var programAccounts: []
+    property int holdingSelectionMode: ProgramAccountSelector.Input
     property bool active: true
     // When true, restrict input to digits only — used for the sell-amount
     // field, whose value is sent to the backend as a raw base-units integer
@@ -25,6 +28,13 @@ Rectangle {
 
     signal tokenClicked()
     signal inputEdited(string newValue)
+    signal holdingSelectionChanged(string accountId, bool createNew)
+
+    property alias selectedHoldingId: holdingSelector.selectedAccountId
+    property alias createNewHolding: holdingSelector.createNewSelected
+    readonly property bool holdingReady: holdingSelector.ready
+    readonly property bool hasHoldingFunds: holdingSelector.hasFunds
+    readonly property var selectedHolding: holdingSelector.selectedAccount
 
     Binding {
         target: tiInput
@@ -104,13 +114,17 @@ Rectangle {
             }
         }
 
-        Rectangle {
-            id: tokenButton
-            height: 40
-            radius: 20
-            color: tokenBtnHover.containsMouse ? theme.colors.panelHoverBg : theme.colors.panelBg
-            implicitWidth: tokenBtnRow.implicitWidth + 24
-            Behavior on color { ColorAnimation { duration: 120 } }
+        ColumnLayout {
+            spacing: 6
+
+            Rectangle {
+                id: tokenButton
+                Layout.alignment: Qt.AlignRight
+                Layout.preferredHeight: 40
+                radius: 20
+                color: tokenBtnHover.containsMouse ? theme.colors.panelHoverBg : theme.colors.panelBg
+                implicitWidth: tokenBtnRow.implicitWidth + 24
+                Behavior on color { ColorAnimation { duration: 120 } }
 
             RowLayout {
                 id: tokenBtnRow
@@ -144,12 +158,42 @@ Rectangle {
                 }
             }
 
-            MouseArea {
-                id: tokenBtnHover
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.tokenClicked()
+                MouseArea {
+                    id: tokenBtnHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.tokenClicked()
+                }
+            }
+
+            ProgramAccountSelector {
+                id: holdingSelector
+
+                Layout.alignment: Qt.AlignRight
+                Layout.preferredWidth: 190
+                sourceModel: root.programAccounts
+                accountType: "TokenHolding"
+                stateField: "definitionId"
+                stateValue: root.token
+                            ? String(root.token.definitionIdHex
+                                     || root.token.definitionId || "") : ""
+                selectionMode: root.holdingSelectionMode
+                createNewText: qsTr("Create new TokenHolding")
+                placeholderText: root.holdingSelectionMode === ProgramAccountSelector.Input
+                                 ? qsTr("Select source") : qsTr("Select destination")
+                accessibleName: root.holdingSelectionMode === ProgramAccountSelector.Input
+                                ? qsTr("Source TokenHolding for %1").arg(root.label)
+                                : qsTr("Destination TokenHolding for %1").arg(root.label)
+                backgroundColor: theme.colors.panelBg
+                hoverColor: theme.colors.panelHoverBg
+                textColor: theme.colors.textPrimary
+                secondaryTextColor: theme.colors.textSecondary
+                borderColor: theme.colors.borderStrong
+                focusColor: theme.colors.ctaBg
+                onSelectionChanged: function(accountId, createNew) {
+                    root.holdingSelectionChanged(accountId, createNew)
+                }
             }
         }
     }

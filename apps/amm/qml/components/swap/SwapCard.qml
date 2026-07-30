@@ -1,6 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+import Logos.Wallet
 import "../shared"
 import "../../state"
 
@@ -14,6 +15,7 @@ Rectangle {
 
     property var theme
     property var tokens: []
+    property var programAccounts: []
     // Real backend replica (logos.module("amm_ui")), wired from SwapPage.
     property var backend: null
 
@@ -389,10 +391,16 @@ Rectangle {
                                        && root.poolResolved && root.poolExists
                                        && !outputExceedsLiquidity && !root.swapInProgress
                                        && !root.quoteLoading && root.walletOpen
+                                       && sellAmountInput.holdingReady
+                                       && buyAmountInput.holdingReady
 
     readonly property string submitButtonText: {
         if (!tokensSelected) return qsTr("Select tokens")
         if (root.swapInProgress) return qsTr("Submitting…")
+        if (root.sellToken && !sellAmountInput.hasHoldingFunds) return qsTr("No funds")
+        if (root.sellToken && !sellAmountInput.holdingReady) return qsTr("Select source holding")
+        if (root.buyToken && !buyAmountInput.holdingReady) return qsTr("Select destination")
+        if (root.backend && !root.backend.isWalletOpen) return qsTr("Connect wallet")
         if (!hasAmount) return qsTr("Enter an amount")
         if (root.poolLoading || !root.poolResolved) return qsTr("Resolving pool…")
         if (!root.poolExists) return qsTr("No pool / no liquidity")
@@ -442,7 +450,10 @@ Rectangle {
             "priceImpactPercentValue": priceImpactPercent,
             "slippageTolerance": swapState.formatSlippagePercent(slippageTolerancePercent),
             "swapMode": isExactIn ? "swap-exact-input" : "swap-exact-output",
-            "swapModeText": swapModeText
+            "swapModeText": swapModeText,
+            "inputHoldingId": sellAmountInput.selectedHoldingId,
+            "outputHoldingId": buyAmountInput.selectedHoldingId,
+            "createOutputHolding": buyAmountInput.createNewHolding
         }
     }
 
@@ -453,15 +464,36 @@ Rectangle {
         if (!root.backend || !root.canSubmit)
             return
 
-        root.swapInProgress = true
-        root.swapError = ""
-
         // Max u64 sentinel: "ignore deadline", per AmmUiBackend.rep.
         var deadline = "18446744073709551615"
         var inDef = root.sellToken.definitionId
         var outDef = root.buyToken.definitionId
-        var inHolding = root.sellToken.holding
-        var outHolding = root.buyToken.holding
+        var inHolding = sellAmountInput.selectedHoldingId
+        var outHolding = buyAmountInput.selectedHoldingId
+
+        if (buyAmountInput.createNewHolding) {
+            root.swapInProgress = true
+            root.swapError = ""
+            logos.watch(root.backend.createAccountPublic(),
+                function(accountId) {
+                    if (!accountId) {
+                        root.failSwap(qsTr("Could not create a destination TokenHolding."))
+                        return
+                    }
+                    root.submitSwap(inDef, outDef, inHolding, String(accountId), deadline)
+                },
+                function(error) {
+                    root.failSwap(qsTr("Could not create a destination TokenHolding: %1").arg(error))
+                })
+            return
+        }
+
+        root.submitSwap(inDef, outDef, inHolding, outHolding, deadline)
+    }
+
+    function submitSwap(inDef, outDef, inHolding, outHolding, deadline) {
+        root.swapInProgress = true
+        root.swapError = ""
 
         // The on-chain guard is the quote's exact-integer bound: the exact-input
         // floor (minReceivedRaw) or the exact-output ceiling (maxInRaw). The typed
@@ -483,17 +515,25 @@ Rectangle {
                     })
                     root.resetAmounts()
                     resolveDebounce.restart()
+                    logos.watch(root.backend.refreshNewPositionContext({
+                                    "refreshWalletAccounts": true
+                                }), function() {}, function(error) {
+                                    console.warn("wallet holding refresh error:", error)
+                                })
                 } else {
-                    root.swapError = qsTr("Swap failed (empty response from sequencer).")
-                    root.swapFailed(root.swapError)
+                    root.failSwap(qsTr("Swap failed (empty response from sequencer)."))
                 }
             },
             function (error) {
                 console.warn("swap error:", error)
-                root.swapInProgress = false
-                root.swapError = qsTr("Swap error: %1").arg(error)
-                root.swapFailed(root.swapError)
+                root.failSwap(qsTr("Swap error: %1").arg(error))
             })
+    }
+
+    function failSwap(message) {
+        root.swapInProgress = false
+        root.swapError = message
+        root.swapFailed(message)
     }
 
     radius: 24
@@ -514,6 +554,8 @@ Rectangle {
         spacing: 0
 
         TokenInput {
+            id: sellAmountInput
+
             Layout.fillWidth: true
             theme: root.theme
             label: "Sell"
@@ -521,6 +563,8 @@ Rectangle {
             buttonObjectName: "swapSellTokenButton"
             amount: root.sellDisplay
             token: root.sellToken
+            programAccounts: root.programAccounts
+            holdingSelectionMode: ProgramAccountSelector.Input
             active: root.editingSide === "sell"
             // Sell amount is sent to the backend as a raw base-units integer
             // string; reject fractional entry rather than fail opaquely.
@@ -574,6 +618,8 @@ Rectangle {
         }
 
         TokenInput {
+            id: buyAmountInput
+
             Layout.fillWidth: true
             theme: root.theme
             label: "Buy"
@@ -581,6 +627,8 @@ Rectangle {
             buttonObjectName: "swapBuyTokenButton"
             amount: root.buyDisplay
             token: root.buyToken
+            programAccounts: root.programAccounts
+            holdingSelectionMode: ProgramAccountSelector.Output
             active: root.editingSide === "buy"
             // Exact-output amount is sent to the backend as a raw base-units
             // integer string; reject fractional entry rather than fail opaquely.

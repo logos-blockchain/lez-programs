@@ -34,6 +34,10 @@ impl Keys {
         PrivateKey::try_new([33; 32]).expect("valid private key")
     }
 
+    fn fresh_output() -> PrivateKey {
+        PrivateKey::try_new([35; 32]).expect("valid private key")
+    }
+
     fn admin() -> PrivateKey {
         PrivateKey::try_new([34; 32]).expect("valid private key")
     }
@@ -129,6 +133,10 @@ impl Ids {
 
     fn user_lp() -> AccountId {
         AccountId::from(&PublicKey::new_from_private_key(&Keys::user_lp()))
+    }
+
+    fn fresh_output() -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(&Keys::fresh_output()))
     }
 
     fn admin() -> AccountId {
@@ -2823,6 +2831,53 @@ fn amm_swap_a_to_b() {
         Balances::reserve_b_swap_2(),
     ));
     assert_eq!(tick_account.tick, expected_tick);
+}
+
+#[test]
+fn amm_swap_exact_input_creates_fresh_output_holding() {
+    let mut state = state_for_amm_tests();
+    let instruction = amm_core::Instruction::SwapExactInput {
+        swap_amount_in: Balances::swap_amount_in(),
+        min_amount_out: Balances::swap_min_out(),
+        deadline: u64::MAX,
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            Ids::config(),
+            Ids::pool_definition(),
+            Ids::vault_a(),
+            Ids::vault_b(),
+            Ids::user_a(),
+            Ids::fresh_output(),
+            Ids::current_tick_account(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![current_nonce(&state, Ids::user_a()), Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::user_a(), &Keys::fresh_output()],
+    );
+
+    state
+        .transition_from_public_transaction(&PublicTransaction::new(message, witness_set), 0, 0)
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::fresh_output()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_b_definition(),
+                balance: Balances::user_b_swap_2() - Balances::user_b_init(),
+            }),
+            nonce: Nonce(1),
+        }
+    );
 }
 
 #[test]

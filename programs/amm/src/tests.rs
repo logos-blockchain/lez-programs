@@ -736,6 +736,14 @@ impl AccountWithMetadataForTests {
         }
     }
 
+    fn fresh_user_output_holding() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: true,
+            account_id: AccountId::new([48; 32]),
+        }
+    }
+
     fn vault_a_init() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
@@ -2732,6 +2740,60 @@ fn test_call_swap_chained_call_successful_1() {
 
     assert_eq!(chained_calls.len(), 3);
     assert_update_tick_call(&chained_calls, pool_post.account());
+}
+
+#[test]
+fn test_call_swap_exact_input_accepts_fresh_authorized_output() {
+    let fresh_output = AccountWithMetadataForTests::fresh_user_output_holding();
+    let (_, chained_calls) = swap_exact_input(
+        AccountWithMetadataForTests::config_init(),
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        fresh_output.clone(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::add_max_amount_a_low(),
+        AMM_PROGRAM_ID,
+    );
+
+    let mut vault_b = AccountWithMetadataForTests::vault_b_init();
+    vault_b.is_authorized = true;
+    let expected = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![vault_b, fresh_output],
+        &token_core::Instruction::Transfer {
+            amount_to_transfer: BalanceForTests::swap_amount_out_b(),
+        },
+    )
+    .with_pda_seeds(vec![compute_vault_pda_seed(
+        IdForTests::pool_definition_id(),
+        IdForTests::token_b_definition_id(),
+    )]);
+
+    assert_eq!(chained_calls[1], expected);
+}
+
+#[test]
+#[should_panic(expected = "User Token B holding must be owned by the configured Token Program")]
+fn test_call_swap_exact_input_rejects_fresh_unauthorized_output() {
+    let mut fresh_output = AccountWithMetadataForTests::fresh_user_output_holding();
+    fresh_output.is_authorized = false;
+    let _ = swap_exact_input(
+        AccountWithMetadataForTests::config_init(),
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        fresh_output,
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::add_max_amount_a_low(),
+        AMM_PROGRAM_ID,
+    );
 }
 
 #[test]

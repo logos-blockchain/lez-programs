@@ -298,7 +298,8 @@ mod amm {
     /// Swap some quantity of tokens while maintaining the pool constant product.
     ///
     /// The swap direction is the input holding's own token; `user_input_holding` must be signed so
-    /// the downstream token transfer can debit it. `user_output_holding` only receives.
+    /// the downstream token transfer can debit it. `user_output_holding` may be initialized, or
+    /// fresh and authorized so the downstream transfer can claim and initialize it.
     #[expect(
         clippy::too_many_arguments,
         reason = "instruction interface requires explicit pool, vault, user accounts, and bounds"

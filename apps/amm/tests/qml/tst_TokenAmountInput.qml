@@ -95,6 +95,61 @@ TestCase {
         compare(input.accessoryWidth, 180)
     }
 
+    function test_singleMatchingHoldingAutoSelects() {
+        var input = createTemporaryObject(inputComponent, testCase, {
+            "tokenData": {
+                "definitionId": enabledId,
+                "definitionIdHex": enabledId,
+                "name": "Enabled"
+            },
+            "programAccounts": [{
+                "accountId": "holding-enabled",
+                "accountType": "TokenHolding",
+                "definitionId": enabledId,
+                "balanceRaw": "42"
+            }]
+        })
+        verify(input)
+
+        tryCompare(input, "selectedHoldingId", "holding-enabled")
+        compare(input.holdingReady, true)
+        compare(input.hasHoldingFunds, true)
+        compare(input.selectedHolding.balanceRaw, "42")
+    }
+
+    function test_multipleMatchingHoldingsRequireSelection() {
+        var input = createTemporaryObject(inputComponent, testCase, {
+            "tokenData": {
+                "definitionId": enabledId,
+                "definitionIdHex": enabledId,
+                "name": "Enabled"
+            },
+            "programAccounts": [
+                {
+                    "accountId": "holding-a",
+                    "accountType": "TokenHolding",
+                    "definitionId": enabledId,
+                    "balanceRaw": "42"
+                },
+                {
+                    "accountId": "holding-b",
+                    "accountType": "TokenHolding",
+                    "definitionId": enabledId,
+                    "balanceRaw": "21"
+                }
+            ]
+        })
+        verify(input)
+
+        tryCompare(input, "hasHoldingFunds", true)
+        compare(input.holdingReady, false)
+        compare(input.selectedHoldingId, "")
+
+        input.setHoldingSelection("holding-b")
+        compare(input.selectedHoldingId, "holding-b")
+        compare(input.holdingReady, true)
+    }
+
     function test_disabledTokenIsRejectedByTypedInput() {
         var input = createTemporaryObject(inputComponent, testCase)
         verify(input)

@@ -6,7 +6,7 @@ use amm_core::{
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
-    account::{AccountId, AccountWithMetadata, Data},
+    account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
 use twap_oracle_core::compute_current_tick_account_pda;
@@ -47,6 +47,18 @@ fn validate_swap_setup(
     );
 
     pool_def_data
+}
+
+fn assert_user_holding_owner_or_fresh(
+    holding: &AccountWithMetadata,
+    token_program_id: ProgramId,
+    message: &str,
+) {
+    assert!(
+        holding.account.program_owner == token_program_id
+            || (holding.account == Account::default() && holding.is_authorized),
+        "{message}"
+    );
 }
 
 /// Assembles the swap post-states (including the echoed current-tick and clock accounts) and the
@@ -188,13 +200,15 @@ pub fn swap_exact_input(
     } else {
         panic!("Swap exact input: input holding token is not part of the pool");
     };
-    assert_eq!(
-        user_holding_a.account.program_owner, token_program_id,
-        "User Token A holding must be owned by the configured Token Program"
+    assert_user_holding_owner_or_fresh(
+        &user_holding_a,
+        token_program_id,
+        "User Token A holding must be owned by the configured Token Program",
     );
-    assert_eq!(
-        user_holding_b.account.program_owner, token_program_id,
-        "User Token B holding must be owned by the configured Token Program"
+    assert_user_holding_owner_or_fresh(
+        &user_holding_b,
+        token_program_id,
+        "User Token B holding must be owned by the configured Token Program",
     );
     // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
     // clock here so the swap is rejected early with an AMM-level error.

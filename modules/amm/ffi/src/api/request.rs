@@ -148,6 +148,14 @@ pub struct PositionRequest {
     pub token_b_id: String,
     pub fee_bps: u32,
     #[serde(default)]
+    pub holding_a_id: Option<String>,
+    #[serde(default)]
+    pub holding_b_id: Option<String>,
+    #[serde(default)]
+    pub lp_holding_id: Option<String>,
+    #[serde(default)]
+    pub create_fresh_lp: bool,
+    #[serde(default)]
     pub amount_a_raw: Option<String>,
     #[serde(default)]
     pub amount_b_raw: Option<String>,
