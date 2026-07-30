@@ -11,3 +11,6 @@ tests/*.png
 
 # Isolated wallet home used by tests/testnet/setup-amm-testnet.sh
 tests/testnet/.wallet/
+
+# Isolated token config written by tests/testnet/setup-amm-testnet.sh
+tests/testnet/amm-tokens.json

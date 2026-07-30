@@ -38,7 +38,7 @@ set -euo pipefail
 # Resolve the repo root robustly regardless of where the script lives / is called
 # from. Prefer git; fall back to walking up from this script's directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="${REPO_ROOT:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || cd "$SCRIPT_DIR/../../../.." && pwd)}"
+REPO_ROOT="${REPO_ROOT:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || (cd "$SCRIPT_DIR/../../../.." && pwd))}"
 cd "$REPO_ROOT"
 
 ###############################################################################
@@ -89,8 +89,11 @@ POOL_TOKEN_B_AMOUNT="10000"
 POOL_FEES="1"
 POOL_DEADLINE="18446744073709551615"
 
-# Where the UI token config is written (git-ignored; consumed via TOKENS_CONFIG).
-TOKENS_CONFIG_OUT="apps/amm/amm-tokens.json"
+# Where the UI token config is written for TESTS ONLY (git-ignored). This is
+# deliberately NOT apps/amm/amm-tokens.json — that file is your personal local
+# config with your own accounts. Tests stay fully isolated: pass this path as
+# TOKENS_CONFIG when launching the UI for a test run.
+TOKENS_CONFIG_OUT="apps/amm/tests/testnet/amm-tokens.json"
 
 ###############################################################################
 # Helpers
@@ -379,6 +382,9 @@ kv "AMM program id"  "$AMM_PID"
 kv "TWAP program id" "$TWAP_PID"
 kv "pool"            "$POOL"
 log ""
-log "Launch the UI / run the swap test with:"
-log "  ${DIM}export LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME${RST}"
-log "  ${DIM}AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN TOKENS_CONFIG=$REPO_ROOT/$TOKENS_CONFIG_OUT nix run .#amm-ui${RST}"
+log "Launch the UI against the ISOLATED test wallet + test token config:"
+log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
+log "  ${DIM}  AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
+log "  ${DIM}  TOKENS_CONFIG=$REPO_ROOT/$TOKENS_CONFIG_OUT \\${RST}"
+log "  ${DIM}  nix run .#amm-ui${RST}"
+log "Then in another terminal: ${DIM}node apps/amm/tests/swap.mjs${RST}"
