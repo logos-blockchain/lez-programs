@@ -182,7 +182,12 @@ bootstrap_test_wallet() {
 
   if [ -n "$TEST_SEQUENCER_ADDR" ]; then
     log "${DIM}\$ wallet config set sequencer_addr $TEST_SEQUENCER_ADDR${RST}"
-    wallet config set sequencer_addr "$TEST_SEQUENCER_ADDR" \
+    # On a fresh home this triggers first-time wallet setup, which prompts for a
+    # password (and generates a throwaway random seed). Feed the password via
+    # stdin so the bootstrap stays non-interactive; restore-keys below then
+    # replaces those keys with the deterministic test mnemonic.
+    printf '%s\n' "$TEST_WALLET_PASSWORD" \
+      | wallet config set sequencer_addr "$TEST_SEQUENCER_ADDR" \
       || log "${YEL}⚠ 'wallet config set sequencer_addr' failed — configure the wallet manually.${RST}"
   fi
 
