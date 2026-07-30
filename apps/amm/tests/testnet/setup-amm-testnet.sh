@@ -182,16 +182,18 @@ bootstrap_test_wallet() {
 
   if [ -n "$TEST_SEQUENCER_ADDR" ]; then
     log "${DIM}\$ wallet config set sequencer_addr $TEST_SEQUENCER_ADDR${RST}"
-    # On a fresh home this triggers first-time wallet setup, which prompts for a
-    # password (and generates a throwaway random seed). Feed the password via
-    # stdin so the bootstrap stays non-interactive; restore-keys below then
-    # replaces those keys with the deterministic test mnemonic.
-    printf '%s\n' "$TEST_WALLET_PASSWORD" \
-      | wallet config set sequencer_addr "$TEST_SEQUENCER_ADDR" \
+    # NOTE: on a fresh home this triggers first-time wallet setup, which
+    # generates a THROWAWAY random-seed wallet and prompts once for a password
+    # (read from the terminal, so it can't be piped — just type anything, even
+    # empty). That wallet is immediately discarded: restore-keys below rebuilds
+    # the wallet from the test mnemonic and sets the REAL password to
+    # $TEST_WALLET_PASSWORD, which is what unlocks the wallet afterward.
+    wallet config set sequencer_addr "$TEST_SEQUENCER_ADDR" \
       || log "${YEL}⚠ 'wallet config set sequencer_addr' failed — configure the wallet manually.${RST}"
   fi
 
-  # restore-keys reads the mnemonic then the password from stdin.
+  # restore-keys reads the mnemonic then the password from stdin (non-interactive)
+  # and REWRITES storage — so the wallet's password becomes $TEST_WALLET_PASSWORD.
   log "${DIM}\$ printf '<mnemonic>\\n<password>\\n' | wallet restore-keys --depth $TEST_WALLET_DEPTH${RST}"
   printf '%s\n%s\n' "$TEST_MNEMONIC" "$TEST_WALLET_PASSWORD" \
     | wallet restore-keys --depth "$TEST_WALLET_DEPTH" \
