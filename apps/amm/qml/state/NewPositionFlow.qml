@@ -182,8 +182,8 @@ QtObject {
                 root.quoteLoading = false
                 root.quoteStale = false
                 root.quoteErrorCode = ""
-                if (!quote || quote.schema !== "new-position.v1")
-                    root.newPositionQuote = root.quoteError("unsupported_schema")
+                if (!quote || !quote.status)
+                    root.newPositionQuote = root.quoteError("backend_error")
                 else
                     root.newPositionQuote = quote
             },
@@ -209,8 +209,7 @@ QtObject {
 
         root.runtime.watch(root.backend.submitNewPosition(snapshot.request, snapshot.quoteHash),
             function(result) {
-                if (result && result.schema === "new-position.v1"
-                        && result.status === "submitted"
+                if (result && result.status === "submitted"
                         && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(
                             String(result.transactionId || ""))) {
                     if (snapshot.request.initialPriceRealRaw !== undefined)
@@ -234,7 +233,7 @@ QtObject {
     function finishSubmitFailure(result) {
         root.submitting = false
         const hasFreshQuote = result && result.quote
-                              && result.quote.schema === "new-position.v1"
+                              && result.quote.status
         if (hasFreshQuote) {
             root.newPositionQuote = result.quote
             root.quoteLoading = false
@@ -283,8 +282,7 @@ QtObject {
 
     function finishPoolProbe(pending, quote) {
         root.poolProbeInFlight = false
-        if (quote && quote.schema === "new-position.v1"
-                && quote.poolStatus === "active_pool") {
+        if (quote && quote.poolStatus === "active_pool") {
             root.removePendingPool(pending.key)
             if (root.matchesSelectedPair(pending.request)) {
                 root.poolActivated(quote)
@@ -349,7 +347,6 @@ QtObject {
 
     function loadingContext() {
         return {
-            "schema": "new-position.v1",
             "status": "loading",
             "tokens": [],
             "feeTiers": []
@@ -358,7 +355,6 @@ QtObject {
 
     function quoteError(code) {
         return {
-            "schema": "new-position.v1",
             "status": "error",
             "canSubmit": false,
             "code": code,

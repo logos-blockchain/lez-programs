@@ -17,10 +17,10 @@
 // `logos_execution_zone` wallet module (reached via modules().logos_execution_zone).
 //
 // The same surface is consumed by the QML UI (via modules().amm_module) and
-// headlessly (logoscore call amm_module ...). Ported from the app-side
-// SwapRuntime / NewPositionRuntime orchestration (apps/amm/src) plus the
-// backend's network-context derivation, made Qt-free (std::string / LogosMap /
-// LogosList / nlohmann::json) as the universal authoring model requires.
+// headlessly (logoscore call amm_module ...). The swap / add-liquidity
+// orchestration and the backend's network-context derivation are made Qt-free
+// (std::string / LogosMap / LogosList / nlohmann::json) as the universal
+// authoring model requires.
 //
 // Public methods ARE the module's API; the Qt plugin glue is generated from
 // this header because metadata.json sets "interface": "universal". Keep the
@@ -65,7 +65,7 @@ public:
     LogosList tokenList();
 
     /// New-position (add-liquidity) view state: reads the AMM config + the
-    /// user's wallet accounts and returns the `new-position.v1` context map the
+    /// user's wallet accounts and returns the new-position context map the
     /// UI renders (available tokens, fee tiers, warnings). `wallet_open` gates
     /// whether wallet accounts are included; `refresh_wallet_accounts` forces a
     /// fresh read rather than a cached one.
@@ -74,7 +74,7 @@ public:
                                 bool refresh_wallet_accounts);
 
     /// Prices an add-liquidity request against current on-chain state and
-    /// returns the `new-position.v1` quote map (quoteHash, canSubmit,
+    /// returns the new-position quote map (quoteHash, canSubmit,
     /// requiresFreshLp, amounts, warnings). Read-only — no submission.
     LogosMap quoteNewPosition(const LogosMap& request, bool wallet_open);
 
@@ -84,7 +84,7 @@ public:
     /// WITHOUT submitting — the caller (the app backend, which owns the wallet
     /// keyset) creates the account and calls again with its id. Otherwise builds
     /// the plan (injecting the fresh LP account when given) and submits, then
-    /// returns the `new-position.v1` submitted/error map.
+    /// returns the new-position submitted/error map.
     LogosMap submitNewPosition(const LogosMap& request,
                                const std::string& quote_hash,
                                bool wallet_open,
@@ -138,7 +138,7 @@ private:
 
     // Builds the { networkId, networkFingerprint, ammProgramId, request,
     // snapshot } input shared by quoteNewPosition / submitNewPosition. On a
-    // recoverable precondition failure, sets *error to a new-position.v1 error
+    // recoverable precondition failure, sets *error to a new-position error
     // map and returns a null json.
     nlohmann::json buildQuoteInput(const LogosMap& request,
                                    const Network& net,

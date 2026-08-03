@@ -354,7 +354,6 @@ TestCase {
         form.minimumAmountBRaw = "2000000"
 
         verify(form.acceptPoolActivation({
-            "schema": "new-position.v1",
             "status": "ok",
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
@@ -378,7 +377,6 @@ TestCase {
 
     function test_staleQuoteErrorsDoNotMarkCurrentDraft() {
         var quote = {
-            "schema": "new-position.v1",
             "status": "ok",
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,

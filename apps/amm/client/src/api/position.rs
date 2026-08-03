@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 use super::{
     commitment::SourceCommitment, holding::SelectedHolding, pair::PairIds, quote_error::issue,
-    PairSnapshot, PositionRequest, SCHEMA,
+    PairSnapshot, PositionRequest,
 };
 use crate::account::{account_id_from_hex, program_id_base58};
 
@@ -82,7 +82,6 @@ impl QuoteComputation {
 impl QuoteFailure {
     pub(super) fn into_value(self, request: &PositionRequest) -> Value {
         json!({
-            "schema": SCHEMA,
             "status": "error",
             "canSubmit": false,
             "code": self.code,

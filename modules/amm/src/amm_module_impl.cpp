@@ -47,10 +47,6 @@ constexpr char AMM_PROGRAM_BIN_ENV[] = "AMM_PROGRAM_BIN";
 // Absolute path to the JSON token-list config consumed by tokenList().
 constexpr char TOKENS_CONFIG_ENV[] = "TOKENS_CONFIG";
 
-// new-position.v1 response schema tag (matches the app-side NewPositionRuntime
-// and the Rust client's NEW_POSITION_SCHEMA).
-constexpr char SCHEMA[] = "new-position.v1";
-
 int hexVal(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -233,7 +229,7 @@ FfiResult call(char* (*op)(const char*), const json& request) {
     return {true, *it};
 }
 
-// new-position.v1 envelope builders (ported from NewPositionRuntime).
+// new-position response envelope builders.
 json issue(const std::string& code, const json& blockingFields = json::array()) {
     return {
         {"code", code},
@@ -249,7 +245,6 @@ json publicError(const std::string& code,
     json error = issue(code, blockingFields);
     error["details"] = details;
     return {
-        {"schema", SCHEMA},
         {"status", "error"},
         {"canSubmit", false},
         {"code", code},
@@ -264,7 +259,6 @@ json contextState(const std::string& status,
                   const std::string& network_fingerprint,
                   const std::string& code = {}) {
     json state = {
-        {"schema", SCHEMA},
         {"status", status},
         {"networkId", network_id},
         {"networkFingerprint", network_fingerprint},
@@ -750,7 +744,6 @@ LogosMap AmmModuleImpl::submitNewPosition(const LogosMap& request,
     if (quote.value("requiresFreshLp", false)) {
         if (fresh_lp_id.empty()) {
             return json{
-                {"schema", SCHEMA},
                 {"status", "requires_fresh_lp"},
                 {"quote", quote},
             };
@@ -794,7 +787,6 @@ LogosMap AmmModuleImpl::submitNewPosition(const LogosMap& request,
     if (transaction_id.empty()) return publicError("wallet_submission_failed");
 
     return {
-        {"schema", SCHEMA},
         {"status", "submitted"},
         {"transactionId", transaction_id},
         {"deadlineMs", plan.value("deadlineMs", json())},

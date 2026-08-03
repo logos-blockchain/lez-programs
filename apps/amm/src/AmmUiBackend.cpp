@@ -9,14 +9,11 @@
 #include "logos_sdk.h"
 
 namespace {
-    const char NEW_POSITION_SCHEMA[] = "new-position.v1";
-
     // The new-position context placeholder published before the module
     // connection is up (matches the module's "loading" contextState).
     QVariantMap loadingContext()
     {
         return QVariantMap {
-            { QStringLiteral("schema"), QString::fromLatin1(NEW_POSITION_SCHEMA) },
             { QStringLiteral("status"), QStringLiteral("loading") },
             { QStringLiteral("networkId"), QStringLiteral("lez") },
             { QStringLiteral("networkFingerprint"), QString() },
@@ -26,12 +23,11 @@ namespace {
         };
     }
 
-    // A new-position.v1 error envelope (matches the module's publicError), for
+    // A new-position error envelope (matches the module's publicError), for
     // the backend-side failure paths (e.g. LP-account creation failing).
     QVariantMap newPositionError(const QString& code)
     {
         return QVariantMap {
-            { QStringLiteral("schema"), QString::fromLatin1(NEW_POSITION_SCHEMA) },
             { QStringLiteral("status"), QStringLiteral("error") },
             { QStringLiteral("canSubmit"), false },
             { QStringLiteral("code"), code },
@@ -223,7 +219,7 @@ QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString u
     // only locks this UI and leaves the shared logos_execution_zone wallet open (another
     // app may keep it open, or this app opened-then-disconnected), and the QML submit path
     // doesn't check isWalletOpen — so without this a swap could sign/submit while the UI
-    // shows "Connect". Mirrors the guard the old SwapRuntime::swap() enforced.
+    // shows "Connect".
     if (!isWalletOpen())
         return {};
 

@@ -90,7 +90,6 @@ pub struct ProgramIdRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PositionRequest {
-    pub schema: String,
     pub token_a_id: String,
     pub token_b_id: String,
     pub fee_bps: u32,

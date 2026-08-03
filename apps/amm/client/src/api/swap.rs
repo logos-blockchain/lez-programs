@@ -104,8 +104,8 @@ pub(super) fn swap_plan(request: SwapPlanRequest) -> Result<Value, String> {
     let token_out = account_id_from_hex(&request.token_out_id, "token out id")?;
     // Domain errors (a bad pair, an unavailable config) mirror `swap_pair`'s
     // `{ status: "error", code }` shape rather than `Err`, which is reserved for
-    // malformed inputs. `SwapRuntime::swap` treats any non-"ready" status as a
-    // failed plan, so both map to the same UI outcome.
+    // malformed inputs. Callers treat any non-"ready" status as a failed plan,
+    // so both map to the same outcome.
     if token_in == token_out {
         return Ok(json!({ "status": "error", "code": "same_token_pair" }));
     }

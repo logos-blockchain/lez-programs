@@ -24,7 +24,7 @@ use super::{
         QuoteComputation,
     },
     quote_error::{fatal_quote, issue},
-    QuoteRequest, SCHEMA,
+    QuoteRequest,
 };
 use crate::account::{
     decode_account, parse_base58_id, parse_program_id, program_id_bytes, AccountRead,
@@ -40,13 +40,6 @@ pub(super) fn quote(request: QuoteRequest) -> Result<Value, String> {
 }
 
 pub(super) fn compute_quote(input: &QuoteRequest) -> Result<QuoteComputation, String> {
-    if input.request.schema != SCHEMA {
-        return Ok(fatal_quote(
-            "unsupported_schema",
-            &["schema"],
-            json!({ "received": input.request.schema }),
-        ));
-    }
     let amm_program = parse_program_id(&input.amm_program_id)?;
     let token_a = match parse_base58_id(&input.request.token_a_id, "token A id") {
         Ok(id) => id,
@@ -238,7 +231,6 @@ fn compute_missing_quote(
     let sources = account_plan.take_sources();
     let funding_commitment = funding_commitments(pair, &holding_a, amount_a, &holding_b, amount_b);
     let commitment = QuoteCommitment {
-        schema: String::from(SCHEMA),
         network_id: input.network_id.clone(),
         network_fingerprint: input.network_fingerprint.clone(),
         amm_program_id: program_id_bytes(amm_program),
@@ -261,7 +253,6 @@ fn compute_missing_quote(
     let quote_hash = hash_quote(&commitment)?;
     let preview = account_plan.preview();
     let value = json!({
-        "schema": SCHEMA,
         "status": "ok",
         "canSubmit": can_submit,
         "code": if can_submit { "ready" } else { "funding_required" },
@@ -482,7 +473,6 @@ fn compute_active_quote(
     )?;
     let sources = account_plan.take_sources();
     let commitment = QuoteCommitment {
-        schema: String::from(SCHEMA),
         network_id: input.network_id.clone(),
         network_fingerprint: input.network_fingerprint.clone(),
         amm_program_id: program_id_bytes(amm_program),
@@ -509,7 +499,6 @@ fn compute_active_quote(
     let quote_hash = hash_quote(&commitment)?;
     let preview = account_plan.preview();
     let value = json!({
-        "schema": SCHEMA,
         "status": "ok",
         "canSubmit": can_submit,
         "code": if can_submit { "ready" } else { "funding_required" },

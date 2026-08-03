@@ -29,11 +29,6 @@ use serde_json::Value;
 
 pub use crate::account::{AccountRead, WalletAccount};
 
-/// Schema identifier expected by position quote and plan requests.
-pub const NEW_POSITION_SCHEMA: &str = "new-position.v1";
-
-pub(crate) const SCHEMA: &str = NEW_POSITION_SCHEMA;
-
 /// JSON response shared by direct Rust callers and transport adapters.
 pub type AmmResponse = Value;
 

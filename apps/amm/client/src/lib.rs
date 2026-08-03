@@ -10,5 +10,4 @@ pub use api::{
     token_ids, AccountRead, AmmApiError, AmmResponse, AmmResult, ConfigIdRequest, ContextRequest,
     PairIdsRequest, PairSnapshot, PlanRequest, PositionRequest, ProgramIdRequest, QuoteRequest,
     ResolvePoolRequest, SwapPairRequest, SwapPlanRequest, TokenIdsRequest, WalletAccount,
-    NEW_POSITION_SCHEMA,
 };

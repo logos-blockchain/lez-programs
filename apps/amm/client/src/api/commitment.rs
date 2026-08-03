@@ -29,7 +29,6 @@ pub(super) struct FundingCommitment {
 
 #[derive(BorshSerialize)]
 pub(super) struct QuoteCommitment {
-    pub(super) schema: String,
     pub(super) network_id: String,
     pub(super) network_fingerprint: String,
     pub(super) amm_program_id: [u8; 32],

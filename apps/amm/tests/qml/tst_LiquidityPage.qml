@@ -19,12 +19,10 @@ TestCase {
             property bool walletStateReady: false
             property var submitResult: ({})
             property var quoteResult: ({
-                "schema": "new-position.v1",
                 "status": "ok",
                 "poolStatus": "missing_pool"
             })
             property var newPositionContext: ({
-                "schema": "new-position.v1",
                 "status": "ready",
                 "tokens": [],
                 "feeTiers": []
@@ -151,11 +149,9 @@ TestCase {
 
         page.flow.quoteSerial = 7
         page.flow.finishSubmitFailure({
-            "schema": "new-position.v1",
             "status": "error",
             "code": "quote_not_submittable",
             "quote": {
-                "schema": "new-position.v1",
                 "status": "ok",
                 "canSubmit": false,
                 "quoteHash": "sha256:fresh"
@@ -171,7 +167,6 @@ TestCase {
         var backend = createTemporaryObject(backendComponent, testCase, {
             "walletStateReady": true,
             "submitResult": {
-                "schema": "new-position.v1",
                 "status": "submitted",
                 "transactionId": submittedTransactionId,
                 "deadlineMs": String(Date.now() + 60000)
@@ -200,7 +195,6 @@ TestCase {
         var backend = createTemporaryObject(backendComponent, testCase, {
             "walletStateReady": true,
             "submitResult": {
-                "schema": "new-position.v1",
                 "status": "submitted",
                 "transactionId": submittedTransactionId,
                 "deadlineMs": String(Date.now() + 60000)
@@ -239,7 +233,6 @@ TestCase {
         var backend = createTemporaryObject(backendComponent, testCase, {
             "walletStateReady": true,
             "submitResult": {
-                "schema": "new-position.v1",
                 "status": "submitted",
                 "transactionId": "000102030405060708090a0b0c0d0e0f"
                                  + "101112131415161718191a1b1c1d1e1f"
@@ -282,7 +275,6 @@ TestCase {
         page.flow.pendingQuoteRequest = { "ok": true, "request": request }
         page.flow.pendingPoolProbes = [pending]
         page.flow.newPositionQuote = {
-            "schema": "new-position.v1",
             "status": "ok",
             "poolStatus": "missing_pool",
             "tokenAId": request.tokenAId,
@@ -291,7 +283,6 @@ TestCase {
         page.flow.quoteStale = false
 
         page.flow.finishPoolProbe(pending, {
-            "schema": "new-position.v1",
             "status": "ok",
             "poolStatus": "active_pool",
             "tokenAId": request.tokenAId,

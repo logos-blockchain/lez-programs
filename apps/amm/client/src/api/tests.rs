@@ -23,7 +23,7 @@ use super::{
     position::AccountPlanHoldings,
     quote::{div_ceil_u256, minimum_opening_pair, quote, Q64},
     ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PositionRequest, QuoteRequest,
-    TokenIdsRequest, SCHEMA,
+    TokenIdsRequest,
 };
 use crate::{
     account::{account_id_hex, account_read, decode_account, parse_base58_id, program_id_bytes},
@@ -140,7 +140,6 @@ fn base_snapshot(pair: PairIds) -> PairSnapshot {
 fn request(pair: PairIds) -> PositionRequest {
     assert!(is_canonical_pair(pair.token_a, pair.token_b));
     PositionRequest {
-        schema: String::from(SCHEMA),
         token_a_id: pair.token_a.to_string(),
         token_b_id: pair.token_b.to_string(),
         fee_bps: 30,

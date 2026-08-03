@@ -28,7 +28,7 @@ methods (the module API is generated from the header) are:
   `definitionId`/`holding` normalized to hex.
 - `newPositionContext(request, walletOpen, refreshWalletAccounts)` — the
   add-liquidity view state (available tokens, fee tiers, warnings) as a
-  `new-position.v1` map.
+  context map.
 - `quoteNewPosition(request, walletOpen)` — prices an add-liquidity request
   against current on-chain state (read-only).
 - `submitNewPosition(request, quoteHash, walletOpen, freshLpId)` — submits an

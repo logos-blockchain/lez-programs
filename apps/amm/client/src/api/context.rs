@@ -11,7 +11,7 @@ use super::{
     config::load_config,
     holding::{select_holding, wallet_holdings, SelectedHolding},
     quote_error::issue,
-    ContextRequest, TokenIdsRequest, SCHEMA,
+    ContextRequest, TokenIdsRequest,
 };
 use crate::account::{
     account_id_from_hex, account_id_hex, decode_account, parse_base58_id, parse_program_id,
@@ -117,7 +117,6 @@ pub(super) fn context(request: ContextRequest) -> Result<Value, String> {
     });
 
     Ok(json!({
-        "schema": SCHEMA,
         "status": if request.wallet_available { "ready" } else { "no_wallet" },
         "networkId": request.network_id,
         "networkFingerprint": request.network_fingerprint,
@@ -136,7 +135,6 @@ pub(super) fn context(request: ContextRequest) -> Result<Value, String> {
 
 fn context_error(request: &ContextRequest, code: &str) -> Value {
     json!({
-        "schema": SCHEMA,
         "status": "error",
         "code": code,
         "networkId": request.network_id,

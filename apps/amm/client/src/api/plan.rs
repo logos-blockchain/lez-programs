@@ -5,7 +5,7 @@ use super::{
     clock::decode_clock,
     position::{NewPositionPlan, QuoteBranch, QuoteComputation},
     quote::compute_quote,
-    PlanRequest, QuoteRequest, SCHEMA,
+    PlanRequest, QuoteRequest,
 };
 use crate::account::{account_id_hex, decode_account, AccountRead};
 
@@ -22,7 +22,6 @@ pub(super) fn plan(input: PlanRequest) -> Result<Value, String> {
     let quote = compute_quote(&quote_input)?;
     if quote.quote_hash() != Some(input.quote_hash.as_str()) {
         return Ok(json!({
-            "schema": SCHEMA,
             "status": "error",
             "code": "quote_changed",
             "recoverable": true,
@@ -33,7 +32,6 @@ pub(super) fn plan(input: PlanRequest) -> Result<Value, String> {
         QuoteComputation::Evaluated(evaluated) => evaluated,
         QuoteComputation::Failed(failure) => {
             return Ok(json!({
-                "schema": SCHEMA,
                 "status": "error",
                 "code": "quote_not_submittable",
                 "recoverable": true,
@@ -43,7 +41,6 @@ pub(super) fn plan(input: PlanRequest) -> Result<Value, String> {
     };
     let Some(plan) = evaluated.plan else {
         return Ok(json!({
-            "schema": SCHEMA,
             "status": "error",
             "code": "quote_not_submittable",
             "recoverable": true,
@@ -53,7 +50,6 @@ pub(super) fn plan(input: PlanRequest) -> Result<Value, String> {
     let fresh_lp = if plan.requires_fresh_lp() {
         let Some(read) = input.fresh_lp.as_ref() else {
             return Ok(json!({
-                "schema": SCHEMA,
                 "status": "needs_fresh_lp",
                 "code": "fresh_lp_required",
             }));
@@ -112,7 +108,6 @@ pub(super) fn plan(input: PlanRequest) -> Result<Value, String> {
     };
 
     Ok(json!({
-        "schema": SCHEMA,
         "status": "ready",
         "programId": input.amm_program_id,
         "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
@@ -124,7 +119,6 @@ pub(super) fn plan(input: PlanRequest) -> Result<Value, String> {
 
 fn plan_error(code: &str) -> Value {
     json!({
-        "schema": SCHEMA,
         "status": "error",
         "code": code,
         "recoverable": true,

@@ -87,8 +87,7 @@ AmmActionCard {
                                     && root.selectedTokenBId.length > 0
                                     && root.selectedTokenAId !== root.selectedTokenBId
     readonly property bool resolvingToken: root.resolvingTokenId.length > 0
-    readonly property bool canConfirm: root.quotePayload.schema === "new-position.v1"
-                                       && root.quotePayload.status === "ok"
+    readonly property bool canConfirm: root.quotePayload.status === "ok"
                                        && root.quotePayload.canSubmit === true
                                        && root.quoteMatchesPair()
                                        && String(root.quotePayload.quoteHash || "").length > 0
@@ -858,8 +857,7 @@ AmmActionCard {
     }
 
     function acceptPoolActivation(quote) {
-        if (!quote || quote.schema !== "new-position.v1"
-                || quote.status !== "ok"
+        if (!quote || quote.status !== "ok"
                 || quote.poolStatus !== "active_pool"
                 || !root.quoteMatchesSelectedPair(quote)) {
             return false
@@ -1077,7 +1075,6 @@ AmmActionCard {
 
     function pairRequest() {
         return {
-            "schema": "new-position.v1",
             "tokenAId": root.displayIsCanonical
                         ? root.selectedTokenAId : root.selectedTokenBId,
             "tokenBId": root.displayIsCanonical

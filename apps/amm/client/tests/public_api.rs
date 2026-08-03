@@ -1,4 +1,4 @@
-use amm_client::{config_id, ConfigIdRequest, NEW_POSITION_SCHEMA};
+use amm_client::{config_id, ConfigIdRequest};
 
 #[test]
 fn direct_rust_api_does_not_require_ffi() {
@@ -9,5 +9,4 @@ fn direct_rust_api_does_not_require_ffi() {
 
     assert_eq!(response["status"], "ok");
     assert!(response["configId"].is_string());
-    assert_eq!(NEW_POSITION_SCHEMA, "new-position.v1");
 }
