@@ -21,7 +21,7 @@ pub enum Instruction {
     /// The configuration account is a PDA derived from the constant `"CONFIG"` seed
     /// (`compute_config_pda(self_program_id)`). It stores the program IDs the AMM issues chained
     /// calls to (the Token Program and the TWAP oracle program), plus the admin `authority`
-    /// allowed to change configuration later via `UpdateConfig`. The Program must be initialized
+    /// allowed to transfer admin control later via `UpdateConfig`. The Program must be initialized
     /// via this instruction before any pool can be created or interacted with — the other
     /// instructions read these program IDs from this account and reject calls when it does not
     /// yet exist.
@@ -33,26 +33,26 @@ pub enum Instruction {
         token_program_id: ProgramId,
         /// Program ID of the TWAP oracle program the AMM will issue chained calls to.
         twap_oracle_program_id: ProgramId,
-        /// Admin authority allowed to change configuration via `UpdateConfig`.
+        /// Admin authority allowed to transfer admin control via `UpdateConfig`.
         authority: AccountId,
     },
 
-    /// Updates the AMM Program's configuration. Only the configured admin `authority` may call
-    /// this; the authority account must be passed authorized (signed).
+    /// Transfers the AMM Program's admin authority to a new account. Only the configured admin
+    /// `authority` may call this; the authority account must be passed authorized (signed).
     ///
-    /// Each field is optional — `None` leaves the corresponding value unchanged. Setting
-    /// `new_authority` transfers admin control to a different account.
+    /// The Token Program and TWAP oracle program IDs are **immutable deployment parameters** set
+    /// once at `Initialize`: they are baked into every derived PDA (vaults, current-tick,
+    /// price-observation / price accounts) and into the AMM's chained calls, so changing them
+    /// after any pool exists would orphan every derived account and vault. They therefore cannot
+    /// be reconfigured in place — a genuine change requires redeploying the AMM. This instruction
+    /// only moves the admin authority.
     ///
     /// Required accounts:
     /// - AMM Config Account (initialized)
     /// - Authority Account — must equal the config's current `authority`, passed authorized.
     UpdateConfig {
-        /// New Token Program ID for chained calls, or `None` to keep the current one.
-        token_program_id: Option<ProgramId>,
-        /// New TWAP oracle program ID for chained calls, or `None` to keep the current one.
-        twap_oracle_program_id: Option<ProgramId>,
-        /// New admin authority (transfers control), or `None` to keep the current admin.
-        new_authority: Option<AccountId>,
+        /// New admin authority (transfers admin control to this account).
+        new_authority: AccountId,
     },
 
     /// Creates a TWAP price-observations account for a pool over a time window, on behalf of the
@@ -382,7 +382,7 @@ pub struct AmmConfig {
     pub token_program_id: ProgramId,
     /// Program ID of the TWAP oracle program the AMM issues chained calls to.
     pub twap_oracle_program_id: ProgramId,
-    /// Admin authority allowed to change this configuration via `UpdateConfig`.
+    /// Admin authority allowed to transfer admin control via `UpdateConfig`.
     pub authority: AccountId,
 }
 

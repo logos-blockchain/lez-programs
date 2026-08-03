@@ -1639,16 +1639,10 @@ fn amm_initialize_creates_config_account() {
 fn execute_update_config(
     state: &mut V03State,
     signer: &PrivateKey,
-    token_program_id: Option<nssa_core::program::ProgramId>,
-    twap_oracle_program_id: Option<nssa_core::program::ProgramId>,
-    new_authority: Option<AccountId>,
+    new_authority: AccountId,
 ) -> Result<(), LeeError> {
     let signer_id = AccountId::from(&PublicKey::new_from_private_key(signer));
-    let instruction = amm_core::Instruction::UpdateConfig {
-        token_program_id,
-        twap_oracle_program_id,
-        new_authority,
-    };
+    let instruction = amm_core::Instruction::UpdateConfig { new_authority };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
@@ -1676,38 +1670,31 @@ fn initialized_amm_state() -> V03State {
 }
 
 #[test]
-fn amm_update_config_changes_token_program_id_and_authority() {
+fn amm_update_config_transfers_authority_and_keeps_program_ids() {
     let mut state = initialized_amm_state();
-
-    let new_token_program = [123u32; 8];
     let new_admin = Ids::user_a();
 
-    execute_update_config(
-        &mut state,
-        &Keys::admin(),
-        Some(new_token_program),
-        None,
-        Some(new_admin),
-    )
-    .unwrap();
+    let before = config_data(&state);
+    execute_update_config(&mut state, &Keys::admin(), new_admin).unwrap();
+    let after = config_data(&state);
 
-    let config = config_data(&state);
-    assert_eq!(config.token_program_id, new_token_program);
-    assert_eq!(config.authority, new_admin);
+    assert_eq!(after.authority, new_admin);
+    // The Token and TWAP oracle program IDs are immutable deployment parameters — the instruction
+    // has no field to change them, so they are unaffected by an authority transfer.
+    assert_eq!(after.token_program_id, before.token_program_id);
+    assert_eq!(after.twap_oracle_program_id, before.twap_oracle_program_id);
 }
 
 #[test]
 fn amm_update_config_rejects_non_admin() {
     let mut state = initialized_amm_state();
 
-    // user_a is not the admin; even though they sign, the update is rejected and the config is
+    // user_a is not the admin; even though they sign, the transfer is rejected and the config is
     // left unchanged.
-    let result = execute_update_config(&mut state, &Keys::user_a(), Some([123u32; 8]), None, None);
+    let result = execute_update_config(&mut state, &Keys::user_a(), Ids::user_a());
     assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
 
-    let config = config_data(&state);
-    assert_eq!(config.token_program_id, Ids::token_program());
-    assert_eq!(config.authority, Ids::admin());
+    assert_eq!(config_data(&state).authority, Ids::admin());
 }
 
 #[test]
@@ -1716,16 +1703,17 @@ fn amm_update_config_authority_handoff_revokes_old_admin() {
     let new_admin = Ids::user_a();
 
     // Admin hands off control to user_a.
-    execute_update_config(&mut state, &Keys::admin(), None, None, Some(new_admin)).unwrap();
+    execute_update_config(&mut state, &Keys::admin(), new_admin).unwrap();
     assert_eq!(config_data(&state).authority, new_admin);
 
-    // The original admin can no longer update.
-    let result = execute_update_config(&mut state, &Keys::admin(), Some([123u32; 8]), None, None);
+    // The original admin can no longer transfer authority.
+    let result = execute_update_config(&mut state, &Keys::admin(), Ids::admin());
     assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
+    assert_eq!(config_data(&state).authority, new_admin);
 
     // The new admin can.
-    execute_update_config(&mut state, &Keys::user_a(), Some([124u32; 8]), None, None).unwrap();
-    assert_eq!(config_data(&state).token_program_id, [124u32; 8]);
+    execute_update_config(&mut state, &Keys::user_a(), Ids::admin()).unwrap();
+    assert_eq!(config_data(&state).authority, Ids::admin());
 }
 
 #[test]

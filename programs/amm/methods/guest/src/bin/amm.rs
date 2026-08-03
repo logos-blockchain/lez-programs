@@ -47,7 +47,9 @@ mod amm {
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
 
-    /// Updates the AMM Program's configuration. Only the configured admin authority may call this.
+    /// Transfers the AMM Program's admin authority. Only the configured admin authority may call
+    /// this. The Token Program and TWAP oracle program IDs are immutable deployment parameters and
+    /// cannot be changed here.
     ///
     /// Expected accounts:
     /// 1. `config` — initialized AMM config account.
@@ -59,15 +61,11 @@ mod amm {
         config: AccountWithMetadata,
         #[account(signer)]
         authority: AccountWithMetadata,
-        token_program_id: Option<ProgramId>,
-        twap_oracle_program_id: Option<ProgramId>,
-        new_authority: Option<AccountId>,
+        new_authority: AccountId,
     ) -> SpelResult {
         let post_states = amm_program::update_config::update_config(
             config,
             authority,
-            token_program_id,
-            twap_oracle_program_id,
             new_authority,
             ctx.self_program_id,
         );

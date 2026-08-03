@@ -4,14 +4,15 @@ use nssa_core::{
     program::{AccountPostState, ProgramId},
 };
 
-/// Updates the AMM Program's singleton configuration account.
+/// Transfers the AMM Program's admin authority to a new account.
 ///
 /// Only the config's current admin `authority` may call this: the `authority` account must equal
-/// the stored authority and be passed authorized (signed). Each field is optional — `None` leaves
-/// the current value unchanged. Passing `new_authority` transfers admin control to a new account.
+/// the stored authority and be passed authorized (signed). The new admin is `new_authority`.
 ///
-/// The config account is already owned by this Program (created at `initialize`), so its data is
-/// updated in place — no claim is required.
+/// The Token Program and TWAP oracle program IDs are immutable deployment parameters (set once at
+/// `initialize`) — baked into every derived PDA and the AMM's chained calls — so this instruction
+/// cannot change them; it only moves the admin authority. The config account is already owned by
+/// this Program (created at `initialize`), so its data is updated in place — no claim is required.
 ///
 /// # Panics
 /// Panics if:
@@ -22,9 +23,7 @@ use nssa_core::{
 pub fn update_config(
     config: AccountWithMetadata,
     authority: AccountWithMetadata,
-    token_program_id: Option<ProgramId>,
-    twap_oracle_program_id: Option<ProgramId>,
-    new_authority: Option<AccountId>,
+    new_authority: AccountId,
     amm_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     assert_eq!(
@@ -45,15 +44,7 @@ pub fn update_config(
         "Update config: admin authority must authorize the update"
     );
 
-    if let Some(token_program_id) = token_program_id {
-        config_data.token_program_id = token_program_id;
-    }
-    if let Some(twap_oracle_program_id) = twap_oracle_program_id {
-        config_data.twap_oracle_program_id = twap_oracle_program_id;
-    }
-    if let Some(new_authority) = new_authority {
-        config_data.authority = new_authority;
-    }
+    config_data.authority = new_authority;
 
     let mut config_post = config.account.clone();
     config_post.data = Data::from(&config_data);
@@ -72,12 +63,14 @@ mod tests {
 
     const AMM_PROGRAM_ID: ProgramId = [42; 8];
     const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
-    const NEW_TOKEN_PROGRAM_ID: ProgramId = [16; 8];
     const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
-    const NEW_TWAP_ORACLE_PROGRAM_ID: ProgramId = [78; 8];
 
     fn admin_id() -> AccountId {
         AccountId::new([9; 32])
+    }
+
+    fn new_admin_id() -> AccountId {
+        AccountId::new([7; 32])
     }
 
     fn config_init() -> AccountWithMetadata {
@@ -113,86 +106,18 @@ mod tests {
     // ── happy path ────────────────────────────────────────────────────────────
 
     #[test]
-    fn updates_token_program_id() {
-        let post_states = update_config(
-            config_init(),
-            admin_authorized(),
-            Some(NEW_TOKEN_PROGRAM_ID),
-            None,
-            None,
-            AMM_PROGRAM_ID,
-        );
-        let config = updated_config(&post_states);
-        assert_eq!(config.token_program_id, NEW_TOKEN_PROGRAM_ID);
-        // TWAP oracle program and authority are unchanged.
-        assert_eq!(config.twap_oracle_program_id, TWAP_ORACLE_PROGRAM_ID);
-        assert_eq!(config.authority, admin_id());
-    }
-
-    #[test]
-    fn updates_twap_oracle_program_id() {
-        let post_states = update_config(
-            config_init(),
-            admin_authorized(),
-            None,
-            Some(NEW_TWAP_ORACLE_PROGRAM_ID),
-            None,
-            AMM_PROGRAM_ID,
-        );
-        let config = updated_config(&post_states);
-        assert_eq!(config.twap_oracle_program_id, NEW_TWAP_ORACLE_PROGRAM_ID);
-        // Token program and authority are unchanged.
-        assert_eq!(config.token_program_id, TOKEN_PROGRAM_ID);
-        assert_eq!(config.authority, admin_id());
-    }
-
-    #[test]
     fn transfers_authority() {
-        let new_admin = AccountId::new([7; 32]);
         let post_states = update_config(
             config_init(),
             admin_authorized(),
-            None,
-            None,
-            Some(new_admin),
+            new_admin_id(),
             AMM_PROGRAM_ID,
         );
         let config = updated_config(&post_states);
-        assert_eq!(config.authority, new_admin);
-        // Token program is unchanged.
-        assert_eq!(config.token_program_id, TOKEN_PROGRAM_ID);
-    }
-
-    #[test]
-    fn updates_both_fields() {
-        let new_admin = AccountId::new([7; 32]);
-        let post_states = update_config(
-            config_init(),
-            admin_authorized(),
-            Some(NEW_TOKEN_PROGRAM_ID),
-            None,
-            Some(new_admin),
-            AMM_PROGRAM_ID,
-        );
-        let config = updated_config(&post_states);
-        assert_eq!(config.token_program_id, NEW_TOKEN_PROGRAM_ID);
-        assert_eq!(config.authority, new_admin);
-    }
-
-    #[test]
-    fn no_op_update_leaves_config_unchanged() {
-        let post_states = update_config(
-            config_init(),
-            admin_authorized(),
-            None,
-            None,
-            None,
-            AMM_PROGRAM_ID,
-        );
-        let config = updated_config(&post_states);
+        assert_eq!(config.authority, new_admin_id());
+        // The immutable program IDs are untouched — they cannot be changed here.
         assert_eq!(config.token_program_id, TOKEN_PROGRAM_ID);
         assert_eq!(config.twap_oracle_program_id, TWAP_ORACLE_PROGRAM_ID);
-        assert_eq!(config.authority, admin_id());
     }
 
     #[test]
@@ -201,9 +126,7 @@ mod tests {
         let post_states = update_config(
             config_init(),
             authority.clone(),
-            Some(NEW_TOKEN_PROGRAM_ID),
-            None,
-            None,
+            new_admin_id(),
             AMM_PROGRAM_ID,
         );
         assert_eq!(post_states.len(), 2);
@@ -219,14 +142,7 @@ mod tests {
     fn wrong_config_pda_panics() {
         let mut config = config_init();
         config.account_id = AccountId::new([0; 32]);
-        update_config(
-            config,
-            admin_authorized(),
-            Some(NEW_TOKEN_PROGRAM_ID),
-            None,
-            None,
-            AMM_PROGRAM_ID,
-        );
+        update_config(config, admin_authorized(), new_admin_id(), AMM_PROGRAM_ID);
     }
 
     #[test]
@@ -237,14 +153,7 @@ mod tests {
             is_authorized: false,
             account_id: compute_config_pda(AMM_PROGRAM_ID),
         };
-        update_config(
-            config,
-            admin_authorized(),
-            Some(NEW_TOKEN_PROGRAM_ID),
-            None,
-            None,
-            AMM_PROGRAM_ID,
-        );
+        update_config(config, admin_authorized(), new_admin_id(), AMM_PROGRAM_ID);
     }
 
     /// A caller who is not the configured admin cannot change the config, even if they sign.
@@ -253,14 +162,7 @@ mod tests {
     fn non_admin_authority_panics() {
         let mut not_admin = admin_authorized();
         not_admin.account_id = AccountId::new([123; 32]);
-        update_config(
-            config_init(),
-            not_admin,
-            Some(NEW_TOKEN_PROGRAM_ID),
-            None,
-            None,
-            AMM_PROGRAM_ID,
-        );
+        update_config(config_init(), not_admin, new_admin_id(), AMM_PROGRAM_ID);
     }
 
     /// The admin account must actually sign; passing it unauthorized is rejected.
@@ -269,13 +171,6 @@ mod tests {
     fn unauthorized_admin_panics() {
         let mut unsigned = admin_authorized();
         unsigned.is_authorized = false;
-        update_config(
-            config_init(),
-            unsigned,
-            Some(NEW_TOKEN_PROGRAM_ID),
-            None,
-            None,
-            AMM_PROGRAM_ID,
-        );
+        update_config(config_init(), unsigned, new_admin_id(), AMM_PROGRAM_ID);
     }
 }

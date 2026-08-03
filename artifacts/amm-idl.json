@@ -45,22 +45,8 @@
       ],
       "args": [
         {
-          "name": "token_program_id",
-          "type": {
-            "option": "program_id"
-          }
-        },
-        {
-          "name": "twap_oracle_program_id",
-          "type": {
-            "option": "program_id"
-          }
-        },
-        {
           "name": "new_authority",
-          "type": {
-            "option": "account_id"
-          }
+          "type": "account_id"
         }
       ]
     },
