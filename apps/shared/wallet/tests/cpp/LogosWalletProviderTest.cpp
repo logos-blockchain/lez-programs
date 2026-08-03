@@ -298,8 +298,8 @@ void LogosWalletProviderTest::dispatchesExactGenericTransaction()
     QCOMPARE(modules.logos_execution_zone.submittedAccountIds, transaction.accountIds);
     QCOMPARE(modules.logos_execution_zone.submittedSigningRequirements,
              QVariantList({ true, false }));
-    QCOMPARE(modules.logos_execution_zone.submittedInstruction.toList(),
-             QVariantList({ 7U, 0U, 4294967295U }));
+    QCOMPARE(modules.logos_execution_zone.submittedInstruction.toByteArray(),
+             QByteArray::fromHex("0700000000000000ffffffff"));
 }
 
 void LogosWalletProviderTest::rejectsInvalidSubmissionResponses()
