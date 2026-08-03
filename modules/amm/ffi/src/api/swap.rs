@@ -318,7 +318,8 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
-    // Fixed IDL account order for SwapExactInput; only user_input_holding signs.
+    // Fixed IDL account order for SwapExactInput. A fresh output holding must
+    // sign so the downstream token transfer can claim and initialize it.
     let account_ids = [
         pair.config,
         pair.pool,
@@ -329,7 +330,7 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
         pair.current_tick,
         pair.clock,
     ];
-    let signing_requirements = [false, false, false, false, true, false, false, false];
+    let signing_requirements = [false, false, false, false, true, true, false, false];
 
     Ok(json!({
         "programId": request.amm_program_id,
@@ -396,7 +397,7 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
         pair.current_tick,
         pair.clock,
     ];
-    let signing_requirements = [false, false, false, false, true, false, false, false];
+    let signing_requirements = [false, false, false, false, true, true, false, false];
 
     Ok(json!({
         "programId": request.amm_program_id,
