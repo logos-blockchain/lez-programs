@@ -119,6 +119,24 @@ pub struct SwapExactInPlanRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct SwapExactOutPlanRequest {
+    pub amm_program_id: String,
+    pub token_in_id: String,
+    pub token_out_id: String,
+    pub config: AccountRead,
+    pub user_input_holding_id: String,
+    pub user_output_holding_id: String,
+    pub amount_out: String,
+    pub max_in: String,
+    pub deadline_ms: String,
+    /// Pool account data (hex Borsh `PoolDefinition`) — its stored `vault_a_id` /
+    /// `vault_b_id` are used verbatim (the guest asserts the vaults in the pool's
+    /// creation order, which needn't match the canonical token order).
+    pub pool_data: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ProgramIdRequest {
     pub elf: String,
 }

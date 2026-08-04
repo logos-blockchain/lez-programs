@@ -8,7 +8,8 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::api::{
     self, AmmApiError, AmmResult, ConfigIdRequest, ContextRequest, PairIdsRequest, PlanRequest,
     PoolIdRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapExactInPlanRequest,
-    SwapExactInQuoteRequest, SwapExactOutQuoteRequest, SwapPairRequest, TokenIdsRequest,
+    SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
+    TokenIdsRequest,
 };
 
 #[derive(Serialize)]
@@ -135,6 +136,11 @@ pub extern "C" fn amm_swap_exact_out_quote(request_json: *const c_char) -> *mut 
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_swap_exact_in_plan(request_json: *const c_char) -> *mut c_char {
     call::<SwapExactInPlanRequest>(request_json, api::swap_exact_in_plan)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_swap_exact_out_plan(request_json: *const c_char) -> *mut c_char {
+    call::<SwapExactOutPlanRequest>(request_json, api::swap_exact_out_plan)
 }
 
 #[unsafe(no_mangle)]

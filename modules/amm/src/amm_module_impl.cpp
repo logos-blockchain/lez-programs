@@ -663,6 +663,89 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
     return jStr(obj, "tx_hash");
 }
 
+std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
+                                           const std::string& def_b_hex,
+                                           const std::string& user_input_holding_hex,
+                                           const std::string& user_output_holding_hex,
+                                           const nlohmann::json& amount_out,
+                                           const nlohmann::json& max_in,
+                                           const nlohmann::json& deadline) {
+    std::string amount_out_decimal;
+    std::string max_in_decimal;
+    std::string deadline_decimal;
+    if (!jsonAmountToDecimal(amount_out, amount_out_decimal)
+        || !jsonAmountToDecimal(max_in, max_in_decimal)
+        || !jsonAmountToDecimal(deadline, deadline_decimal)) {
+        AMM_TRACE("swapExactOutput: FAIL amount/deadline not a number or decimal string");
+        return {};
+    }
+
+    const Network net = network();
+    if (net.status != "ready") {
+        AMM_TRACE("swapExactOutput: FAIL network not ready (" << net.status << ")");
+        return {};
+    }
+
+    const json config = readConfig(net);
+    if (config.is_null()) {
+        AMM_TRACE("swapExactOutput: FAIL config_id op failed");
+        return {};
+    }
+
+    // Read the pool so the plan can use its stored vault ids (the guest asserts
+    // the vaults in the pool's creation order — see amm_swap_exact_out_plan).
+    const FfiResult poolId = call(amm_pool_id, json{
+        {"ammProgramId", net.amm_program_id},
+        {"tokenInId", def_a_hex},
+        {"tokenOutId", def_b_hex},
+    });
+    if (!poolId.ok) {
+        AMM_TRACE("swapExactOutput: FAIL amm_pool_id");
+        return {};
+    }
+    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+
+    // amm_swap_exact_out_plan resolves the pool accounts, encodes SwapExactOutput,
+    // and returns a ready-to-submit plan.
+    const FfiResult planResult = call(amm_swap_exact_out_plan, json{
+        {"ammProgramId", net.amm_program_id},
+        {"tokenInId", def_a_hex},
+        {"tokenOutId", def_b_hex},
+        {"config", config},
+        {"poolData", pool_data},
+        {"userInputHoldingId", user_input_holding_hex},
+        {"userOutputHoldingId", user_output_holding_hex},
+        {"amountOut", amount_out_decimal},
+        {"maxIn", max_in_decimal},
+        {"deadlineMs", deadline_decimal},
+    });
+    if (!planResult.ok) {
+        AMM_TRACE("swapExactOutput: FAIL amm_swap_exact_out_plan: " << planResult.error);
+        return {};
+    }
+    const json plan = planResult.value;
+
+    const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
+    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::string program_id = jStr(plan, "programId");
+
+    AMM_TRACE("swapExactOutput: SUBMIT programId=" << program_id
+              << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
+
+    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+        accounts, signers, instruction, program_id);
+    AMM_TRACE("swapExactOutput: tx reply=" << reply);
+
+    const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
+    if (!obj.is_object() || !obj.value("success", false)) {
+        AMM_TRACE("swapExactOutput: FAIL tx not successful");
+        return {};
+    }
+    return jStr(obj, "tx_hash");
+}
+
 LogosList AmmModuleImpl::tokenList() {
     LogosList out = LogosList::array();
 

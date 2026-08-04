@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use super::{
     pair::{derive_pair, is_canonical_pair},
     PoolIdRequest, ProgramIdRequest, ResolvePoolRequest, SwapExactInPlanRequest,
-    SwapExactInQuoteRequest, SwapExactOutQuoteRequest, SwapPairRequest,
+    SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
 };
 use crate::account::{
     account_id_from_hex, account_id_hex, decode_account, parse_program_id, program_id_bytes,
@@ -268,13 +268,16 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
 }
 
 /// Builds the `SwapExactInput` submission for a pair: the fixed 8-account IDL
-/// order (vaults canonical, only the user's input holding signs) and the
-/// instruction words (`risc0_zkvm::serde` — the same encoding the guest
-/// decodes). Returns exactly the tx-submission fields (`programId`,
-/// `accountIds`, `signingRequirements`, `instruction`; the deadline is already
-/// baked into the instruction bytes). Recoverable domain failures
-/// (`same_token_pair`, `config_unavailable`) surface through the FFI envelope
-/// as `{ ok: false, error }`.
+/// order (vaults from the pool's stored ids, only the user's input holding
+/// signs) and the instruction words (`risc0_zkvm::serde` — the same encoding
+/// the guest decodes). On success returns exactly the tx-submission fields
+/// (`programId`, `accountIds`, `signingRequirements`, `instruction`; the
+/// deadline is already baked into the instruction bytes). Every recoverable
+/// domain failure fails CLOSED as `Err` (surfaced through the FFI envelope as
+/// `{ ok: false, error }`): `same_token_pair`, `config_unavailable`, and a
+/// missing/undecodable pool as `Err("no_pool")` — so the caller stops on
+/// `planResult.ok` rather than submit a tx with empty account/instruction
+/// vectors.
 pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
@@ -296,7 +299,7 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
         .ok()
         .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
     else {
-        return Ok(json!({ "status": "error", "code": "no_pool" }));
+        return Err(String::from("no_pool"));
     };
 
     let user_input_holding =
@@ -316,6 +319,73 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
     // Fixed IDL account order for SwapExactInput; only user_input_holding signs.
+    let account_ids = [
+        pair.config,
+        pair.pool,
+        pool.vault_a_id,
+        pool.vault_b_id,
+        user_input_holding,
+        user_output_holding,
+        pair.current_tick,
+        pair.clock,
+    ];
+    let signing_requirements = [false, false, false, false, true, false, false, false];
+
+    Ok(json!({
+        "programId": request.amm_program_id,
+        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
+        "signingRequirements": signing_requirements,
+        "instruction": instruction,
+    }))
+}
+
+/// Builds the `SwapExactOutput` submission for a pair: the same fixed 8-account
+/// IDL order and error contract as `swap_exact_in_plan` — every recoverable
+/// failure fails closed as `Err` (`same_token_pair`, `config_unavailable`, and
+/// `Err("no_pool")` for a missing/undecodable pool). Only the encoded
+/// instruction differs, carrying `exact_amount_out` / `max_amount_in` in place
+/// of the exact-in bounds.
+pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Value, String> {
+    let amm_program = parse_program_id(&request.amm_program_id)?;
+    let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
+    let token_out = account_id_from_hex(&request.token_out_id, "token out id")?;
+    if token_in == token_out {
+        return Err(String::from("same_token_pair"));
+    }
+    let (token_a, token_b) = canonical_pair(token_in, token_out);
+    let Ok(pair) = derive_pair(amm_program, token_a, token_b, &request.config) else {
+        return Err(String::from("config_unavailable"));
+    };
+
+    // Take the vaults from the pool's STORED ids, in its `def_a`/`def_b` (creation)
+    // order — the guest asserts the provided vaults against `pool.vault_a_id` /
+    // `vault_b_id`, which needn't match `derive_pair`'s canonical order for a
+    // non-canonically created pool. (`pair.pool`/`current_tick`/`clock` are
+    // order-independent, so they still come from `derive_pair`.)
+    let Some(pool) = hex::decode(&request.pool_data)
+        .ok()
+        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+    else {
+        return Err(String::from("no_pool"));
+    };
+
+    let user_input_holding =
+        account_id_from_hex(&request.user_input_holding_id, "user input holding id")?;
+    let user_output_holding =
+        account_id_from_hex(&request.user_output_holding_id, "user output holding id")?;
+
+    let exact_amount_out = parse_u128(&request.amount_out, "amountOut")?;
+    let max_amount_in = parse_u128(&request.max_in, "maxIn")?;
+    let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
+
+    let instruction = risc0_zkvm::serde::to_vec(&amm_core::Instruction::SwapExactOutput {
+        exact_amount_out,
+        max_amount_in,
+        deadline,
+    })
+    .map_err(|error| format!("instruction serialization failed: {error}"))?;
+
+    // Fixed IDL account order for SwapExactOutput; only user_input_holding signs.
     let account_ids = [
         pair.config,
         pair.pool,
@@ -476,6 +546,32 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(plan_error, "config_unavailable");
+    }
+
+    #[test]
+    fn swap_exact_out_plan_routes_same_token_through_the_envelope() {
+        let program = "00".repeat(32);
+        let same = "aa".repeat(32);
+        let dummy_config = AccountRead {
+            id: String::new(),
+            status: String::from("read_failed"),
+            account: None,
+        };
+
+        let plan_error = swap_exact_out_plan(SwapExactOutPlanRequest {
+            amm_program_id: program,
+            token_in_id: same.clone(),
+            token_out_id: same,
+            config: dummy_config,
+            user_input_holding_id: String::new(),
+            user_output_holding_id: String::new(),
+            amount_out: String::new(),
+            max_in: String::new(),
+            deadline_ms: String::new(),
+            pool_data: String::new(),
+        })
+        .unwrap_err();
+        assert_eq!(plan_error, "same_token_pair");
     }
 
     fn pool_data_hex(pool: &PoolDefinition) -> String {

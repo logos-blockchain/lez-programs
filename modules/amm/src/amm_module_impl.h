@@ -85,6 +85,20 @@ public:
                                const nlohmann::json& min_out,
                                const nlohmann::json& deadline);
 
+    /// Submits an on-chain SwapExactOutput transaction against the pool for
+    /// (def_a_hex = token in, def_b_hex = token out). amount_out / max_in are
+    /// u128 base-unit amounts; deadline is a u64 unix-ms timestamp. Same argument
+    /// conventions as swapExactInput (JSON integer or decimal string; floats
+    /// rejected). Returns the tx hash, or an empty string on failure (no pool,
+    /// unreadable AMM_PROGRAM_BIN, bad inputs, failed tx).
+    std::string swapExactOutput(const std::string& def_a_hex,
+                                const std::string& def_b_hex,
+                                const std::string& user_input_holding_hex,
+                                const std::string& user_output_holding_hex,
+                                const nlohmann::json& amount_out,
+                                const nlohmann::json& max_in,
+                                const nlohmann::json& deadline);
+
     /// Reads the token list config at TOKENS_CONFIG (a JSON array of
     /// { symbol, name, definitionId, holding, decimals }) and returns it,
     /// normalizing definitionId/holding to lowercase hex. Empty list if

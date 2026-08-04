@@ -22,9 +22,9 @@ use super::{
     plan::plan,
     position::AccountPlanHoldings,
     quote::{div_ceil_u256, minimum_opening_pair, quote, Q64},
-    swap::swap_exact_in_plan,
+    swap::{swap_exact_in_plan, swap_exact_out_plan},
     ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PositionRequest, QuoteRequest,
-    SwapExactInPlanRequest, TokenIdsRequest,
+    SwapExactInPlanRequest, SwapExactOutPlanRequest, TokenIdsRequest,
 };
 use crate::{
     account::{account_id_hex, account_read, decode_account, parse_base58_id, program_id_bytes},
@@ -747,6 +747,76 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
     assert_eq!(plan["accountIds"][3], account_id_hex(pool.vault_b_id));
     // Guard: the stored vault_a genuinely differs from the canonical derivation
     // (the pre-fix bug would have emitted this one in slot 2).
+    assert_ne!(
+        pool.vault_a_id,
+        compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
+    );
+}
+
+#[test]
+fn swap_exact_in_plan_missing_pool_fails_closed_with_err() {
+    // A valid config (so derive_pair succeeds) but undecodable pool_data must
+    // surface as Err("no_pool") — NOT an Ok envelope. The FFI wraps Ok as
+    // { ok: true, .. }, so an Ok envelope would leave AmmModuleImpl's
+    // `planResult.ok` true and let it submit a tx with empty account/instruction
+    // vectors. Failing closed matches swap_exact_out_plan.
+    let token_a = AccountId::new([1; 32]);
+    let token_b = AccountId::new([2; 32]);
+    let holding = AccountId::new([9; 32]);
+    let err = swap_exact_in_plan(SwapExactInPlanRequest {
+        amm_program_id: amm_program_id(),
+        token_in_id: account_id_hex(token_a),
+        token_out_id: account_id_hex(token_b),
+        config: account_read(compute_config_pda(AMM_PROGRAM), &config_account()),
+        user_input_holding_id: account_id_hex(holding),
+        user_output_holding_id: account_id_hex(holding),
+        amount_in: String::from("100"),
+        min_out: String::from("0"),
+        deadline_ms: String::from("0"),
+        pool_data: String::new(), // absent/undecodable
+    })
+    .unwrap_err();
+    assert_eq!(err, "no_pool");
+}
+
+#[test]
+fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
+    // Same non-canonical pool as the exact-input case: the exact-output plan must
+    // likewise emit the pool's stored vaults, not the canonical derivation.
+    let token_small = AccountId::new([1; 32]);
+    let token_large = AccountId::new([2; 32]);
+    assert!(is_canonical_pair(token_large, token_small)); // large is canonical token_a
+
+    let pool_id = compute_pool_pda(AMM_PROGRAM, token_small, token_large);
+    let pool = PoolDefinition {
+        definition_token_a_id: token_small, // stored non-canonically (small first)
+        definition_token_b_id: token_large,
+        vault_a_id: compute_vault_pda(AMM_PROGRAM, pool_id, token_small),
+        vault_b_id: compute_vault_pda(AMM_PROGRAM, pool_id, token_large),
+        liquidity_pool_id: compute_liquidity_token_pda(AMM_PROGRAM, pool_id),
+        liquidity_pool_supply: 1_000,
+        reserve_a: 1_000,
+        reserve_b: 1_000,
+        fees: 30,
+    };
+
+    let holding = AccountId::new([9; 32]);
+    let plan = swap_exact_out_plan(SwapExactOutPlanRequest {
+        amm_program_id: amm_program_id(),
+        token_in_id: account_id_hex(token_small),
+        token_out_id: account_id_hex(token_large),
+        config: account_read(compute_config_pda(AMM_PROGRAM), &config_account()),
+        user_input_holding_id: account_id_hex(holding),
+        user_output_holding_id: account_id_hex(holding),
+        amount_out: String::from("100"),
+        max_in: String::from("1000"),
+        deadline_ms: String::from("0"),
+        pool_data: hex::encode(borsh::to_vec(&pool).unwrap()),
+    })
+    .unwrap();
+
+    assert_eq!(plan["accountIds"][2], account_id_hex(pool.vault_a_id));
+    assert_eq!(plan["accountIds"][3], account_id_hex(pool.vault_b_id));
     assert_ne!(
         pool.vault_a_id,
         compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
