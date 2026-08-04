@@ -139,6 +139,11 @@ bool jsonAmountToDecimal(const json& j, std::string& out) {
             s = s.substr(1, s.size() - 2);
             trim(s);
         }
+        // A valid base-unit amount is a non-empty run of decimal digits. Reject
+        // anything else (empty, signs, decimal points, exponents, letters) here
+        // rather than passing it downstream to surface as an opaque backend error.
+        if (s.empty() || s.find_first_not_of("0123456789") != std::string::npos)
+            return false;
         out = s;
         return true;
     }
@@ -193,10 +198,13 @@ std::vector<uint8_t> jsonWordsToLeBytes(const json& arr) {
     return out;
 }
 
-// Result of an amm_ffi JSON op: the `{ ok, value }` envelope decoded.
+// Result of an amm_ffi JSON op: the `{ ok, value, error }` envelope decoded.
+// `error` carries the op's failure code (e.g. "no_pool") when `ok` is false, so
+// callers can surface it in their own response envelope.
 struct FfiResult {
     bool ok = false;
     json value;
+    std::string error;
 };
 
 // Serialize `request`, hand it to an amm_ffi op, and decode its
@@ -218,15 +226,16 @@ FfiResult call(char* (*op)(const char*), const json& request) {
         return {};
     }
     if (!doc.value("ok", false)) {
-        AMM_TRACE("amm_ffi op failure: " << doc.value("error", std::string()));
-        return {};
+        std::string error = doc.value("error", std::string());
+        AMM_TRACE("amm_ffi op failure: " << error);
+        return {false, json(), std::move(error)};
     }
     const auto it = doc.find("value");
     if (it == doc.end() || !it->is_object()) {
         AMM_TRACE("amm_ffi op value is not an object");
         return {};
     }
-    return {true, *it};
+    return {true, *it, {}};
 }
 
 // new-position response envelope builders.
@@ -469,6 +478,61 @@ LogosMap AmmModuleImpl::resolvePool(const std::string& def_a_hex,
     if (!resolved.value("exists", false))
         return failed("no_pool");
     return resolved;  // { exists:true, reserveA, reserveB, feeBps }
+}
+
+LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
+                                  const std::string& token_out_hex,
+                                  const nlohmann::json& amount_in,
+                                  int64_t slippage_bps) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    // amountIn arrives as a JSON number (CLI) or decimal string (UI); coerce to a
+    // canonical decimal string (rejects floats — see jsonAmountToDecimal).
+    std::string amount_in_decimal;
+    if (!jsonAmountToDecimal(amount_in, amount_in_decimal))
+        return error("bad_amount");
+
+    // slippageBps is a fraction of 100% in basis points. The FFI request field is
+    // a u32, so a negative value would fail deserialization with an opaque serde
+    // message; gate the full range here for a stable code (100% = 10000 bps, the
+    // FFI's FEE_BPS_DENOMINATOR, which also rejects the upper bound as a backstop).
+    if (slippage_bps < 0 || slippage_bps >= 10000)
+        return error("invalid_slippage");
+
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return error("config_missing");
+
+    // Derive the pool id (config-free) and read the pool account; its raw data is
+    // handed to the pricing op. An absent account has no data → `no_pool`.
+    const FfiResult poolId = call(amm_pool_id, json{
+        {"ammProgramId", amm_program_id},
+        {"tokenInId", token_in_hex},
+        {"tokenOutId", token_out_hex},
+    });
+    if (!poolId.ok)
+        return error(poolId.error.empty() ? "backend_error" : poolId.error);
+    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+
+    const FfiResult quoteResult = call(amm_swap_exact_in_quote, json{
+        {"tokenInId", token_in_hex},
+        {"tokenOutId", token_out_hex},
+        {"amountInRaw", amount_in_decimal},
+        {"slippageBps", slippage_bps},
+        {"poolData", pool_data},
+    });
+    if (!quoteResult.ok)
+        return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
+
+    // Success: wrap the priced payload { expectedOutRaw, minReceivedRaw,
+    // priceImpactBps } in the standard envelope.
+    LogosMap out = quoteResult.value;
+    out["status"] = "ok";
+    out["error"] = "";
+    return out;
 }
 
 std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,

@@ -334,6 +334,50 @@ pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
     u128::try_from(result).expect("mul_div_ceil result exceeds u128")
 }
 
+/// Adverse price impact of a swap in basis points: how far `amount_out` falls
+/// below the naive spot-price valuation of `amount_in`
+/// (`reserve_out * amount_in / reserve_in`). Display-only — it never panics.
+///
+/// The naive valuation can exceed u128 for extreme reserve ratios (e.g.
+/// `reserve_out` near `u128::MAX` with a tiny `reserve_in`), which is why it is
+/// not materialized as u128: this multiplies the *bounded*
+/// `FEE_BPS_DENOMINATOR * amount_out` (≤ ~2^142) first and divides by the wide
+/// naive value, so every intermediate stays inside U256 and the result is
+/// clamped to `[0, FEE_BPS_DENOMINATOR]`. Returns `0` when the naive valuation
+/// rounds to zero (or `reserve_in` is zero).
+#[must_use]
+pub fn price_impact_bps(
+    amount_in: u128,
+    amount_out: u128,
+    reserve_in: u128,
+    reserve_out: u128,
+) -> u32 {
+    use alloy_primitives::U256;
+    if reserve_in == 0 {
+        return 0;
+    }
+    let spot = U256::from(reserve_out)
+        .checked_mul(U256::from(amount_in))
+        .expect("u128 * u128 always fits in U256")
+        .checked_div(U256::from(reserve_in))
+        .expect("reserve_in is non-zero after the guard above");
+    if spot.is_zero() {
+        return 0;
+    }
+    // Fraction of the spot value the trader keeps, in bps (≤ FEE_BPS_DENOMINATOR
+    // since amount_out ≤ spot). The numerator is bounded, so no overflow even when
+    // `spot` is enormous.
+    let kept = U256::from(FEE_BPS_DENOMINATOR)
+        .checked_mul(U256::from(amount_out))
+        .expect("FEE_BPS_DENOMINATOR * u128 always fits in U256")
+        .checked_div(spot)
+        .expect("spot is non-zero after the is_zero check above");
+    let kept = u128::try_from(kept)
+        .unwrap_or(FEE_BPS_DENOMINATOR)
+        .min(FEE_BPS_DENOMINATOR);
+    u32::try_from(FEE_BPS_DENOMINATOR.saturating_sub(kept)).unwrap_or(u32::MAX)
+}
+
 /// The constant-product output for a `SwapExactInput`, matching the AMM's on-chain
 /// pricing exactly — used by both `amm_program::swap` and the off-chain swap quote,
 /// so the preview and the executed trade agree. Fee-adjusts the input, then applies
@@ -677,6 +721,26 @@ mod tests {
 
         // Degenerate reserves saturate rather than dividing by zero.
         assert_eq!(swap_exact_in_amounts(1, 0, 0, 30), (0, 0));
+    }
+
+    #[test]
+    fn price_impact_bps_is_bounded_and_never_panics() {
+        let max_bps = u32::try_from(FEE_BPS_DENOMINATOR).unwrap();
+
+        // Normal pool: a small trade has a bounded impact.
+        let (_, out) = swap_exact_in_amounts(10_000, 1_000_000, 2_000_000, 30);
+        assert!(price_impact_bps(10_000, out, 1_000_000, 2_000_000) <= max_bps);
+
+        // Extreme reserve ratio: the naive spot valuation
+        // (reserve_out * amount_in / reserve_in) exceeds u128 — a u128 mul_div here
+        // would panic. This must stay bounded and not panic.
+        let reserve_out = u128::MAX;
+        let (_, out) = swap_exact_in_amounts(2, 1, reserve_out, 30);
+        assert!(price_impact_bps(2, out, 1, reserve_out) <= max_bps);
+
+        // Zero naive value / zero reserve → zero impact, no division by zero.
+        assert_eq!(price_impact_bps(1, 0, 0, 0), 0);
+        assert_eq!(price_impact_bps(1, 0, 1_000_000, 0), 0);
     }
 
     #[test]

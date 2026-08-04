@@ -22,8 +22,8 @@ use std::{error::Error, fmt};
 
 pub use request::{
     ConfigIdRequest, ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PoolIdRequest,
-    PositionRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapPairRequest,
-    SwapPlanRequest, TokenIdsRequest,
+    PositionRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapExactInQuoteRequest,
+    SwapPairRequest, SwapPlanRequest, TokenIdsRequest,
 };
 use serde_json::Value;
 
@@ -106,6 +106,11 @@ pub fn resolve_pool(request: ResolvePoolRequest) -> AmmResult {
 /// Derives the pool PDA for a pair — config-free, so a reader needn't load config.
 pub fn pool_id(request: PoolIdRequest) -> AmmResult {
     swap::pool_id(request).map_err(Into::into)
+}
+
+/// Prices a `SwapExactInput`: expected output, slippage floor, and price impact.
+pub fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> AmmResult {
+    swap::swap_exact_in_quote(request).map_err(Into::into)
 }
 
 /// Builds the `SwapExactInput` wallet submission for a token pair.
