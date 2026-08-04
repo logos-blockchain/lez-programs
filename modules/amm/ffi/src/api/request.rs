@@ -101,7 +101,7 @@ pub struct PoolIdRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct SwapPlanRequest {
+pub struct SwapExactInPlanRequest {
     pub amm_program_id: String,
     pub token_in_id: String,
     pub token_out_id: String,

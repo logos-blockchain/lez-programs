@@ -13,8 +13,8 @@ use serde_json::{json, Value};
 
 use super::{
     pair::{derive_pair, is_canonical_pair},
-    PoolIdRequest, ProgramIdRequest, ResolvePoolRequest, SwapExactInQuoteRequest,
-    SwapExactOutQuoteRequest, SwapPairRequest, SwapPlanRequest,
+    PoolIdRequest, ProgramIdRequest, ResolvePoolRequest, SwapExactInPlanRequest,
+    SwapExactInQuoteRequest, SwapExactOutQuoteRequest, SwapPairRequest,
 };
 use crate::account::{
     account_id_from_hex, account_id_hex, decode_account, parse_program_id, program_id_bytes,
@@ -271,7 +271,7 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
 /// order (vaults canonical, only the user's input holding signs) and the
 /// instruction words (`risc0_zkvm::serde` — the same encoding the guest
 /// decodes). Mirrors `plan.rs`'s `ready` output shape.
-pub(super) fn swap_plan(request: SwapPlanRequest) -> Result<Value, String> {
+pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
     let token_out = account_id_from_hex(&request.token_out_id, "token out id")?;
@@ -424,7 +424,7 @@ mod tests {
         .unwrap();
         assert_eq!(pair, expected);
 
-        let plan = swap_plan(SwapPlanRequest {
+        let plan = swap_exact_in_plan(SwapExactInPlanRequest {
             amm_program_id: program,
             token_in_id: same.clone(),
             token_out_id: same,

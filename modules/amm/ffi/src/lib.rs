@@ -7,9 +7,9 @@ pub mod api;
 
 pub use api::{
     config_id, context, pair_ids, plan, pool_id, program_id, quote, resolve_pool,
-    swap_exact_in_quote, swap_exact_out_quote, swap_pair, swap_plan, token_ids, AccountRead,
-    AmmApiError, AmmResponse, AmmResult, ConfigIdRequest, ContextRequest, PairIdsRequest,
-    PairSnapshot, PlanRequest, PoolIdRequest, PositionRequest, ProgramIdRequest, QuoteRequest,
-    ResolvePoolRequest, SwapExactInQuoteRequest, SwapExactOutQuoteRequest, SwapPairRequest,
-    SwapPlanRequest, TokenIdsRequest, WalletAccount,
+    swap_exact_in_plan, swap_exact_in_quote, swap_exact_out_quote, swap_pair, token_ids,
+    AccountRead, AmmApiError, AmmResponse, AmmResult, ConfigIdRequest, ContextRequest,
+    PairIdsRequest, PairSnapshot, PlanRequest, PoolIdRequest, PositionRequest, ProgramIdRequest,
+    QuoteRequest, ResolvePoolRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest,
+    SwapExactOutQuoteRequest, SwapPairRequest, TokenIdsRequest, WalletAccount,
 };

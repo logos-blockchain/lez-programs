@@ -609,9 +609,9 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         return {};
     }
 
-    // amm_swap_plan resolves the pool, reorders holdings to the pool's canonical
-    // def order, encodes SwapExactInput, and returns a ready-to-submit plan.
-    const FfiResult planResult = call(amm_swap_plan, json{
+    // amm_swap_exact_in_plan resolves the pool, reorders holdings to the pool's
+    // canonical def order, encodes SwapExactInput, and returns a ready-to-submit plan.
+    const FfiResult planResult = call(amm_swap_exact_in_plan, json{
         {"ammProgramId", net.amm_program_id},
         {"tokenInId", def_a_hex},
         {"tokenOutId", def_b_hex},
@@ -623,7 +623,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         {"deadlineMs", deadline_decimal},
     });
     if (!planResult.ok || jStr(planResult.value, "status") != "ready") {
-        AMM_TRACE("swapExactInput: FAIL amm_swap_plan not ready");
+        AMM_TRACE("swapExactInput: FAIL amm_swap_exact_in_plan not ready");
         return {};
     }
     const json plan = planResult.value;

@@ -22,8 +22,8 @@ use std::{error::Error, fmt};
 
 pub use request::{
     ConfigIdRequest, ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PoolIdRequest,
-    PositionRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapExactInQuoteRequest,
-    SwapExactOutQuoteRequest, SwapPairRequest, SwapPlanRequest, TokenIdsRequest,
+    PositionRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapExactInPlanRequest,
+    SwapExactInQuoteRequest, SwapExactOutQuoteRequest, SwapPairRequest, TokenIdsRequest,
 };
 use serde_json::Value;
 
@@ -119,8 +119,8 @@ pub fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> AmmResult {
 }
 
 /// Builds the `SwapExactInput` wallet submission for a token pair.
-pub fn swap_plan(request: SwapPlanRequest) -> AmmResult {
-    swap::swap_plan(request).map_err(Into::into)
+pub fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> AmmResult {
+    swap::swap_exact_in_plan(request).map_err(Into::into)
 }
 
 /// Derives the AMM `ProgramId` (Image ID) from a deployed program binary.
