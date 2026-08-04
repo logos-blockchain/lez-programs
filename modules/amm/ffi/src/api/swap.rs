@@ -270,21 +270,21 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
 /// Builds the `SwapExactInput` submission for a pair: the fixed 8-account IDL
 /// order (vaults canonical, only the user's input holding signs) and the
 /// instruction words (`risc0_zkvm::serde` — the same encoding the guest
-/// decodes). Mirrors `plan.rs`'s `ready` output shape.
+/// decodes). Returns exactly the tx-submission fields (`programId`,
+/// `accountIds`, `signingRequirements`, `instruction`; the deadline is already
+/// baked into the instruction bytes). Recoverable domain failures
+/// (`same_token_pair`, `config_unavailable`) surface through the FFI envelope
+/// as `{ ok: false, error }`.
 pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
     let token_out = account_id_from_hex(&request.token_out_id, "token out id")?;
-    // Domain errors (a bad pair, an unavailable config) mirror `swap_pair`'s
-    // `{ status: "error", code }` shape rather than `Err`, which is reserved for
-    // malformed inputs. Callers treat any non-"ready" status as a failed plan,
-    // so both map to the same outcome.
     if token_in == token_out {
-        return Ok(json!({ "status": "error", "code": "same_token_pair" }));
+        return Err(String::from("same_token_pair"));
     }
     let (token_a, token_b) = canonical_pair(token_in, token_out);
     let Ok(pair) = derive_pair(amm_program, token_a, token_b, &request.config) else {
-        return Ok(json!({ "status": "error", "code": "config_unavailable" }));
+        return Err(String::from("config_unavailable"));
     };
 
     // Take the vaults from the pool's STORED ids, in its `def_a`/`def_b` (creation)
@@ -329,12 +329,10 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
     let signing_requirements = [false, false, false, false, true, false, false, false];
 
     Ok(json!({
-        "status": "ready",
         "programId": request.amm_program_id,
         "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
         "signingRequirements": signing_requirements,
         "instruction": instruction,
-        "deadlineMs": deadline.to_string(),
     }))
 }
 
@@ -416,10 +414,9 @@ mod tests {
     }
 
     #[test]
-    fn same_token_is_a_recoverable_domain_error_in_both_ops() {
+    fn same_token_pair_is_rejected_by_swap_pair_and_exact_in_plan() {
         let program = "00".repeat(32);
         let same = "aa".repeat(32);
-        let expected = json!({ "status": "error", "code": "same_token_pair" });
         // Not reached before the same-token check, so its contents don't matter.
         let dummy_config = AccountRead {
             id: String::new(),
@@ -434,9 +431,13 @@ mod tests {
             config: dummy_config.clone(),
         })
         .unwrap();
-        assert_eq!(pair, expected);
+        assert_eq!(
+            pair,
+            json!({ "status": "error", "code": "same_token_pair" })
+        );
 
-        let plan = swap_exact_in_plan(SwapExactInPlanRequest {
+        // The plan op routes the same domain failure through the FFI envelope (Err).
+        let plan_error = swap_exact_in_plan(SwapExactInPlanRequest {
             amm_program_id: program,
             token_in_id: same.clone(),
             token_out_id: same,
@@ -448,8 +449,33 @@ mod tests {
             deadline_ms: String::new(),
             pool_data: String::new(),
         })
-        .unwrap();
-        assert_eq!(plan, expected);
+        .unwrap_err();
+        assert_eq!(plan_error, "same_token_pair");
+    }
+
+    #[test]
+    fn exact_in_plan_routes_config_unavailable_via_err() {
+        // Distinct tokens (past the same-token check) with an unavailable config:
+        // derive_pair fails, and the plan must surface it as Err("config_unavailable")
+        // — not a legacy Ok({ status, code }) shape.
+        let plan_error = swap_exact_in_plan(SwapExactInPlanRequest {
+            amm_program_id: "00".repeat(32),
+            token_in_id: "aa".repeat(32),
+            token_out_id: "bb".repeat(32),
+            config: AccountRead {
+                id: String::new(),
+                status: String::from("read_failed"),
+                account: None,
+            },
+            user_input_holding_id: String::new(),
+            user_output_holding_id: String::new(),
+            amount_in: String::new(),
+            min_out: String::new(),
+            deadline_ms: String::new(),
+            pool_data: String::new(),
+        })
+        .unwrap_err();
+        assert_eq!(plan_error, "config_unavailable");
     }
 
     fn pool_data_hex(pool: &PoolDefinition) -> String {

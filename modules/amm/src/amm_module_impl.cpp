@@ -637,8 +637,8 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         {"minOut", min_out_decimal},
         {"deadlineMs", deadline_decimal},
     });
-    if (!planResult.ok || jStr(planResult.value, "status") != "ready") {
-        AMM_TRACE("swapExactInput: FAIL amm_swap_exact_in_plan not ready");
+    if (!planResult.ok) {
+        AMM_TRACE("swapExactInput: FAIL amm_swap_exact_in_plan: " << planResult.error);
         return {};
     }
     const json plan = planResult.value;
