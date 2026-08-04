@@ -1,7 +1,7 @@
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed, mul_div_ceil,
-    read_vault_fungible_balances, spot_price_q64_64, swap_exact_in_amounts, AmmConfig,
-    FEE_BPS_DENOMINATOR, MINIMUM_LIQUIDITY,
+    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed,
+    read_vault_fungible_balances, spot_price_q64_64, swap_exact_in_amounts, swap_exact_out_amounts,
+    AmmConfig, MINIMUM_LIQUIDITY,
 };
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
@@ -514,29 +514,16 @@ fn exact_output_swap_logic(
         "Exact amount out exceeds reserve"
     );
 
-    // Compute the minimum effective input required to achieve exact_amount_out
-    // using the same floor-rounded fee application as swap_exact_input.
-    //
-    // Solve constant product for effective_in (fee already removed):
-    //   effective_in >= ceil(reserve_in * amount_out / (reserve_out - amount_out))
-    // ceil(reserve_in * amount_out / (reserve_out - amount_out)). The `reserve_in * amount_out`
-    // product is widened to U256; the denominator is a subtraction that stays u128.
-    let effective_in_denominator = reserve_withdraw_vault_amount
-        .checked_sub(exact_amount_out)
-        .expect("reserve_out - amount_out underflows");
-    let effective_in_min = mul_div_ceil(
-        reserve_deposit_vault_amount,
+    // Required gross input via the shared amm_core::swap_exact_out_amounts (same
+    // pricing as the off-chain exact-output quote). The `amount_out < reserve`
+    // guard above means it always resolves.
+    let (_, deposit_amount) = swap_exact_out_amounts(
         exact_amount_out,
-        effective_in_denominator,
-    );
-
-    // Lift back to gross input so that
-    //   floor(gross_in * (FEE_DENOM - fee) / FEE_DENOM) >= effective_in_min
-    // ceil(effective_in_min * FEE_BPS_DENOMINATOR / fee_multiplier), product widened to U256.
-    let fee_multiplier = FEE_BPS_DENOMINATOR
-        .checked_sub(fee_bps)
-        .expect("fee_bps exceeds fee denominator");
-    let deposit_amount = mul_div_ceil(effective_in_min, FEE_BPS_DENOMINATOR, fee_multiplier);
+        reserve_deposit_vault_amount,
+        reserve_withdraw_vault_amount,
+        fee_bps,
+    )
+    .expect("swap exact output: reserves and fee must yield a valid input");
 
     // Slippage check
     assert!(

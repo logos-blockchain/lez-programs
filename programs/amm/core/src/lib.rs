@@ -409,6 +409,42 @@ pub fn swap_exact_in_amounts(
     (effective_amount_in, amount_out)
 }
 
+/// The input amounts for a `SwapExactOutput`: the fee-adjusted (effective) input
+/// and the gross input required to receive exactly `amount_out`, matching the AMM's
+/// on-chain pricing — used by both `amm_program::swap` and the off-chain
+/// exact-output quote. Solves the constant product for the input, then lifts it
+/// back through the fee (both steps round up, so the pool never comes up short):
+/// `required_in = ceil(ceil(reserve_in * amount_out / (reserve_out - amount_out))
+/// * FEE_DENOM / (FEE_DENOM - fee_bps))`.
+///
+/// Returns `None` when the trade is unfulfillable: `amount_out >= reserve_out` (you
+/// can't withdraw the whole pool), `reserve_in == 0` (an empty input reserve has no
+/// solution for a positive output — without this it would round to a free
+/// `(0, 0)`), or a degenerate `fee_bps >= FEE_DENOM`. Callers enforce their own
+/// nonzero / max-in checks.
+#[must_use]
+pub fn swap_exact_out_amounts(
+    amount_out: u128,
+    reserve_in: u128,
+    reserve_out: u128,
+    fee_bps: u128,
+) -> Option<(u128, u128)> {
+    let denominator = reserve_out.checked_sub(amount_out)?;
+    if denominator == 0 {
+        return None; // amount_out == reserve_out: draining the pool is impossible
+    }
+    if reserve_in == 0 {
+        return None; // no input reserve: the inverse curve has no solution for a positive output
+    }
+    let effective_in_min = mul_div_ceil(reserve_in, amount_out, denominator);
+    let fee_multiplier = FEE_BPS_DENOMINATOR.checked_sub(fee_bps)?;
+    if fee_multiplier == 0 {
+        return None; // fee_bps == FEE_DENOM (impossible for a supported tier)
+    }
+    let required_in = mul_div_ceil(effective_in_min, FEE_BPS_DENOMINATOR, fee_multiplier);
+    Some((effective_in_min, required_in))
+}
+
 /// `floor(sqrt(a * b))` computed in U256 so the `a * b` product can't overflow u128.
 ///
 /// # Panics
@@ -741,6 +777,33 @@ mod tests {
         // Zero naive value / zero reserve → zero impact, no division by zero.
         assert_eq!(price_impact_bps(1, 0, 0, 0), 0);
         assert_eq!(price_impact_bps(1, 0, 1_000_000, 0), 0);
+    }
+
+    #[test]
+    fn swap_exact_out_amounts_inverts_the_constant_product() {
+        // 0.30% fee, reserves 1_000_000 in / 2_000_000 out, want 10_000 out.
+        let (eff_min, required_in) =
+            swap_exact_out_amounts(10_000, 1_000_000, 2_000_000, 30).unwrap();
+        // effective_in >= ceil(reserve_in * out / (reserve_out - out)); then lift through fee.
+        let expected_eff = (1_000_000u128 * 10_000).div_ceil(2_000_000 - 10_000);
+        let expected_in = (expected_eff * 10_000).div_ceil(10_000 - 30);
+        assert_eq!((eff_min, required_in), (expected_eff, expected_in));
+
+        // Round-trips with the forward quote: paying required_in yields at least the ask.
+        let (_, out) = swap_exact_in_amounts(required_in, 1_000_000, 2_000_000, 30);
+        assert!(out >= 10_000);
+
+        // Unfulfillable: can't withdraw the whole pool (or more).
+        assert_eq!(
+            swap_exact_out_amounts(2_000_000, 1_000_000, 2_000_000, 30),
+            None
+        );
+        assert_eq!(
+            swap_exact_out_amounts(2_000_001, 1_000_000, 2_000_000, 30),
+            None
+        );
+        // No input reserve → no valid input for a positive output (not a free (0, 0)).
+        assert_eq!(swap_exact_out_amounts(10_000, 0, 2_000_000, 30), None);
     }
 
     #[test]
