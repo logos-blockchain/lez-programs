@@ -535,6 +535,51 @@ LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
     return out;
 }
 
+LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
+                                          const std::string& token_out_hex,
+                                          const nlohmann::json& amount_out,
+                                          int64_t slippage_bps) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    std::string amount_out_decimal;
+    if (!jsonAmountToDecimal(amount_out, amount_out_decimal))
+        return error("bad_amount");
+
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return error("config_missing");
+
+    // Derive the pool id (config-free) and read the pool account; its raw data is
+    // handed to the pricing op. An absent account has no data → `no_pool`.
+    const FfiResult poolId = call(amm_pool_id, json{
+        {"ammProgramId", amm_program_id},
+        {"tokenInId", token_in_hex},
+        {"tokenOutId", token_out_hex},
+    });
+    if (!poolId.ok)
+        return error(poolId.error.empty() ? "backend_error" : poolId.error);
+    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+
+    const FfiResult quoteResult = call(amm_swap_exact_out_quote, json{
+        {"tokenInId", token_in_hex},
+        {"tokenOutId", token_out_hex},
+        {"amountOutRaw", amount_out_decimal},
+        {"slippageBps", slippage_bps},
+        {"poolData", pool_data},
+    });
+    if (!quoteResult.ok)
+        return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
+
+    // Success: wrap { requiredInRaw, maxInRaw, priceImpactBps } in the envelope.
+    LogosMap out = quoteResult.value;
+    out["status"] = "ok";
+    out["error"] = "";
+    return out;
+}
+
 std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
                                           const std::string& def_b_hex,
                                           const std::string& user_input_holding_hex,

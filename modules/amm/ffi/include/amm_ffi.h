@@ -34,6 +34,8 @@ char *amm_pool_id(const char *request_json);
 
 char *amm_swap_exact_in_quote(const char *request_json);
 
+char *amm_swap_exact_out_quote(const char *request_json);
+
 char *amm_swap_plan(const char *request_json);
 
 char *amm_program_id(const char *request_json);

@@ -4,8 +4,8 @@
 //! `pair::derive_pair` so the swap path never re-derives seeds.
 
 use amm_core::{
-    compute_pool_pda, mul_div_floor, price_impact_bps, swap_exact_in_amounts, PoolDefinition,
-    FEE_BPS_DENOMINATOR,
+    compute_pool_pda, mul_div_ceil, mul_div_floor, price_impact_bps, swap_exact_in_amounts,
+    swap_exact_out_amounts, PoolDefinition, FEE_BPS_DENOMINATOR,
 };
 use nssa_core::account::AccountId;
 use risc0_binfmt::ProgramBinary;
@@ -13,8 +13,8 @@ use serde_json::{json, Value};
 
 use super::{
     pair::{derive_pair, is_canonical_pair},
-    PoolIdRequest, ProgramIdRequest, ResolvePoolRequest, SwapExactInQuoteRequest, SwapPairRequest,
-    SwapPlanRequest,
+    PoolIdRequest, ProgramIdRequest, ResolvePoolRequest, SwapExactInQuoteRequest,
+    SwapExactOutQuoteRequest, SwapPairRequest, SwapPlanRequest,
 };
 use crate::account::{
     account_id_from_hex, account_id_hex, decode_account, parse_program_id, program_id_bytes,
@@ -177,6 +177,92 @@ pub(super) fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> Result<Va
     Ok(json!({
         "expectedOutRaw": expected_out.to_string(),
         "minReceivedRaw": min_received.to_string(),
+        "priceImpactBps": price_impact_bps,
+    }))
+}
+
+/// Prices a `SwapExactOutput`: for a desired output amount, computes the input
+/// required via the shared `amm_core::swap_exact_out_amounts` (matching what the
+/// guest charges) and the slippage ceiling `maxIn`. Read-only preview — no
+/// `quoteHash`; the on-chain `max_amount_in` is the real guard. Errors are stable
+/// short codes callers can branch on: `no_pool` (pool absent / undecodable / no
+/// liquidity, incl. a zero reserve), `same_token_pair`, `invalid_slippage`
+/// (slippage ≥ 100%), `pair_mismatch` (the decoded pool isn't for this pair),
+/// `amount_too_small` (zero requested output — the guest would reject it),
+/// `output_exceeds_liquidity` (asking for at least the whole reserve). Pool
+/// metadata (reserves/fee) comes from `resolve_pool`.
+pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<Value, String> {
+    let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
+    let token_out = account_id_from_hex(&request.token_out_id, "token out id")?;
+    if token_in == token_out {
+        return Err(String::from("same_token_pair"));
+    }
+    let amount_out = parse_u128(&request.amount_out_raw, "amountOutRaw")?;
+    if amount_out == 0 {
+        // The guest's exact_output_swap_logic rejects a zero output before any
+        // transfer, so a zero-output preview would claim an unexecutable quote
+        // (swap_exact_out_amounts would otherwise return a free (0, 0)).
+        return Err(String::from("amount_too_small"));
+    }
+    if u128::from(request.slippage_bps) >= FEE_BPS_DENOMINATOR {
+        return Err(String::from("invalid_slippage"));
+    }
+
+    // Decode the pool; absent / undecodable / empty ⇒ nothing to swap against.
+    let pool = hex::decode(&request.pool_data)
+        .ok()
+        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .filter(|pool| pool.liquidity_pool_supply != 0)
+        .ok_or_else(|| String::from("no_pool"))?;
+
+    // Orient reserves: the sold token is the deposit (input) side, the bought
+    // token the withdraw (output) side.
+    let (reserve_in, reserve_out) = if token_in == pool.definition_token_a_id
+        && token_out == pool.definition_token_b_id
+    {
+        (pool.reserve_a, pool.reserve_b)
+    } else if token_in == pool.definition_token_b_id && token_out == pool.definition_token_a_id {
+        (pool.reserve_b, pool.reserve_a)
+    } else {
+        return Err(String::from("pair_mismatch"));
+    };
+    // A pool with a zero reserve on either side has no liquidity to price against;
+    // swap_exact_out_amounts would otherwise round required_in to 0 for a positive
+    // output. Mirror swap_exact_in_quote and treat it as no_pool.
+    if reserve_in == 0 || reserve_out == 0 {
+        return Err(String::from("no_pool"));
+    }
+
+    // Required input for the desired output (shared with amm_program::swap). None
+    // when the pool can't deliver that much (amount_out >= reserve_out).
+    let Some((_, required_in)) =
+        swap_exact_out_amounts(amount_out, reserve_in, reserve_out, pool.fees)
+    else {
+        return Err(String::from("output_exceeds_liquidity"));
+    };
+
+    // Slippage ceiling: the most the user will pay, rounded up so rounding never
+    // trips the on-chain max-in check.
+    let slippage_ceiling = FEE_BPS_DENOMINATOR + u128::from(request.slippage_bps);
+    let max_in = mul_div_ceil(required_in, slippage_ceiling, FEE_BPS_DENOMINATOR);
+
+    // Price impact (display): how far the required input rises above the naive spot
+    // cost (reserve_in * amount_out / reserve_out), in bps (fee + curve combined).
+    let spot_in = mul_div_floor(reserve_in, amount_out, reserve_out);
+    let price_impact_bps = if spot_in == 0 {
+        0
+    } else {
+        u32::try_from(mul_div_floor(
+            required_in.saturating_sub(spot_in),
+            FEE_BPS_DENOMINATOR,
+            spot_in,
+        ))
+        .unwrap_or(u32::MAX)
+    };
+
+    Ok(json!({
+        "requiredInRaw": required_in.to_string(),
+        "maxInRaw": max_in.to_string(),
         "priceImpactBps": price_impact_bps,
     }))
 }
@@ -358,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_quote_prices_via_shared_formula_and_orients() {
+    fn swap_exact_in_quote_prices_via_shared_formula_and_orients() {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let pool = PoolDefinition {
@@ -407,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_quote_no_pool_is_an_error() {
+    fn swap_exact_in_quote_no_pool_is_an_error() {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let req = |pool_data: String| SwapExactInQuoteRequest {
@@ -498,6 +584,77 @@ mod tests {
         assert!(
             quote["priceImpactBps"].as_u64().unwrap()
                 <= u64::try_from(FEE_BPS_DENOMINATOR).unwrap()
+        );
+    }
+
+    #[test]
+    fn swap_exact_out_quote_requires_input_and_bounds_it() {
+        let def_a = AccountId::new([0xAA; 32]);
+        let def_b = AccountId::new([0xBB; 32]);
+        let pool = PoolDefinition {
+            definition_token_a_id: def_a,
+            definition_token_b_id: def_b,
+            liquidity_pool_supply: 1_000_000,
+            reserve_a: 1_000_000,
+            reserve_b: 2_000_000,
+            fees: 30,
+            ..Default::default()
+        };
+        let req = |amount_out_raw: &str| SwapExactOutQuoteRequest {
+            token_in_id: account_id_hex(def_a),
+            token_out_id: account_id_hex(def_b),
+            amount_out_raw: amount_out_raw.into(),
+            slippage_bps: 50,
+            pool_data: pool_data_hex(&pool),
+        };
+
+        // Sell A to receive exactly 10_000 B.
+        let q = swap_exact_out_quote(req("10000")).unwrap();
+        let (_, required_in) = swap_exact_out_amounts(10_000, 1_000_000, 2_000_000, 30).unwrap();
+        assert_eq!(q["requiredInRaw"], required_in.to_string());
+        // maxIn = required_in * (10000 + 50) / 10000, rounded up.
+        assert_eq!(
+            q["maxInRaw"],
+            (required_in * 10_050).div_ceil(10_000).to_string()
+        );
+        assert!(q["priceImpactBps"].is_number());
+        // Only the input-side results are echoed — no output/reserves.
+        assert!(q.get("expectedOutRaw").is_none());
+        assert!(q.get("reserveInRaw").is_none());
+
+        // Zero requested output is rejected — the guest rejects exact_amount_out
+        // == 0, so a zero-output preview would claim an unexecutable quote.
+        assert_eq!(
+            swap_exact_out_quote(req("0")),
+            Err(String::from("amount_too_small"))
+        );
+
+        // Asking for the whole reserve (or more) is unfulfillable.
+        assert_eq!(
+            swap_exact_out_quote(req("2000000")),
+            Err(String::from("output_exceeds_liquidity"))
+        );
+
+        // A zero reserve on either side is no liquidity, not a free quote — it
+        // passes the non-zero-supply decode filter but must still surface no_pool.
+        let empty_side = PoolDefinition {
+            definition_token_a_id: def_a,
+            definition_token_b_id: def_b,
+            liquidity_pool_supply: 1,
+            reserve_a: 0,
+            reserve_b: 2_000_000,
+            fees: 30,
+            ..Default::default()
+        };
+        assert_eq!(
+            swap_exact_out_quote(SwapExactOutQuoteRequest {
+                token_in_id: account_id_hex(def_a),
+                token_out_id: account_id_hex(def_b),
+                amount_out_raw: "10000".into(),
+                slippage_bps: 50,
+                pool_data: pool_data_hex(&empty_side),
+            }),
+            Err(String::from("no_pool"))
         );
     }
 

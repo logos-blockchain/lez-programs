@@ -81,6 +81,18 @@ pub struct SwapExactInQuoteRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct SwapExactOutQuoteRequest {
+    pub token_in_id: String,
+    pub token_out_id: String,
+    pub amount_out_raw: String,
+    pub slippage_bps: u32,
+    /// Pool account data (hex Borsh `PoolDefinition`). Empty / undecodable ⇒ the
+    /// op returns the `no_pool` error.
+    pub pool_data: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct PoolIdRequest {
     pub amm_program_id: String,
     pub token_in_id: String,

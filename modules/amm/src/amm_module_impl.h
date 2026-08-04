@@ -54,6 +54,19 @@ public:
                        const nlohmann::json& amount_in,
                        int64_t slippage_bps);
 
+    /// Prices a `SwapExactOutput` for the (token_in_hex, token_out_hex) pair:
+    /// reads the pool and returns `{ status:"ok", error:"", requiredInRaw,
+    /// maxInRaw, priceImpactBps }`, oriented and computed server-side via the
+    /// shared on-chain formula. `amount_out` accepts a JSON integer or a decimal
+    /// string (JSON floats rejected); `slippage_bps` is basis points. On failure:
+    /// `{ status:"error", error:<code> }` — `no_pool` (no pool / liquidity),
+    /// `output_exceeds_liquidity` (amount_out ≥ reserve), `config_missing`
+    /// (AMM_PROGRAM_BIN unset/unreadable), `bad_amount`, or `backend_error`.
+    LogosMap swapExactOutQuote(const std::string& token_in_hex,
+                       const std::string& token_out_hex,
+                       const nlohmann::json& amount_out,
+                       int64_t slippage_bps);
+
     /// Submits an on-chain SwapExactInput transaction against the pool for
     /// (def_a_hex = token in, def_b_hex = token out). amount_in / min_out are
     /// u128 base-unit amounts; deadline is a u64 unix-ms timestamp. Each accepts
