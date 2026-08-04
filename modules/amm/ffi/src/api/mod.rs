@@ -21,9 +21,9 @@ mod tests;
 use std::{error::Error, fmt};
 
 pub use request::{
-    ConfigIdRequest, ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PositionRequest,
-    ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapPairRequest, SwapPlanRequest,
-    TokenIdsRequest,
+    ConfigIdRequest, ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PoolIdRequest,
+    PositionRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapPairRequest,
+    SwapPlanRequest, TokenIdsRequest,
 };
 use serde_json::Value;
 
@@ -101,6 +101,11 @@ pub fn swap_pair(request: SwapPairRequest) -> AmmResult {
 /// Decodes a pool account: existence, reserves (canonical order), fee tier.
 pub fn resolve_pool(request: ResolvePoolRequest) -> AmmResult {
     swap::resolve_pool(request).map_err(Into::into)
+}
+
+/// Derives the pool PDA for a pair — config-free, so a reader needn't load config.
+pub fn pool_id(request: PoolIdRequest) -> AmmResult {
+    swap::pool_id(request).map_err(Into::into)
 }
 
 /// Builds the `SwapExactInput` wallet submission for a token pair.

@@ -3,14 +3,14 @@
 //! new-position ops: pure functions returning JSON `Value`, PDAs reused from
 //! `pair::derive_pair` so the swap path never re-derives seeds.
 
-use amm_core::PoolDefinition;
+use amm_core::{compute_pool_pda, PoolDefinition};
 use nssa_core::account::AccountId;
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
 
 use super::{
     pair::{derive_pair, is_canonical_pair},
-    ProgramIdRequest, ResolvePoolRequest, SwapPairRequest, SwapPlanRequest,
+    PoolIdRequest, ProgramIdRequest, ResolvePoolRequest, SwapPairRequest, SwapPlanRequest,
 };
 use crate::account::{
     account_id_from_hex, account_id_hex, decode_account, parse_program_id, program_id_bytes,
@@ -92,6 +92,21 @@ pub(super) fn resolve_pool(request: ResolvePoolRequest) -> Result<Value, String>
         "reserveB": pool.reserve_b.to_string(),
         "feeBps": fee_bps,
     }))
+}
+
+/// Derives the pool PDA for a swap pair (tokens in either order). Config-free —
+/// the pool address depends only on the AMM program id and the two token ids, so
+/// a caller that just needs to read the pool doesn't have to load the config
+/// first (unlike `swap_pair`, which also derives the config-dependent tick PDA).
+pub(super) fn pool_id(request: PoolIdRequest) -> Result<Value, String> {
+    let amm_program = parse_program_id(&request.amm_program_id)?;
+    let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
+    let token_out = account_id_from_hex(&request.token_out_id, "token out id")?;
+    if token_in == token_out {
+        return Err(String::from("pool_id requires two distinct tokens"));
+    }
+    let (token_a, token_b) = canonical_pair(token_in, token_out);
+    Ok(json!({ "poolId": account_id_hex(compute_pool_pda(amm_program, token_a, token_b)) }))
 }
 
 /// Builds the `SwapExactInput` submission for a pair: the fixed 8-account IDL
@@ -264,5 +279,44 @@ mod tests {
         })
         .unwrap();
         assert_eq!(plan, expected);
+    }
+
+    #[test]
+    fn pool_id_is_order_independent_and_matches_core() {
+        let program = "00".repeat(32);
+        let a = AccountId::new([0xCC; 32]);
+        let b = AccountId::new([0xDD; 32]);
+
+        let ab = pool_id(PoolIdRequest {
+            amm_program_id: program.clone(),
+            token_in_id: account_id_hex(a),
+            token_out_id: account_id_hex(b),
+        })
+        .unwrap();
+        let ba = pool_id(PoolIdRequest {
+            amm_program_id: program.clone(),
+            token_in_id: account_id_hex(b),
+            token_out_id: account_id_hex(a),
+        })
+        .unwrap();
+        // Canonical ordering makes the pool id independent of swap direction.
+        assert_eq!(ab, ba);
+
+        // And it matches amm_core's PDA for the canonical pair.
+        let amm = parse_program_id(&program).unwrap();
+        let (ca, cb) = if is_canonical_pair(a, b) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        assert_eq!(ab["poolId"], account_id_hex(compute_pool_pda(amm, ca, cb)));
+
+        // Same token in/out is rejected.
+        assert!(pool_id(PoolIdRequest {
+            amm_program_id: program,
+            token_in_id: account_id_hex(a),
+            token_out_id: account_id_hex(a),
+        })
+        .is_err());
     }
 }

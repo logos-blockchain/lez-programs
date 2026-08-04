@@ -7,8 +7,8 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
     self, AmmApiError, AmmResult, ConfigIdRequest, ContextRequest, PairIdsRequest, PlanRequest,
-    ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapPairRequest, SwapPlanRequest,
-    TokenIdsRequest,
+    PoolIdRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapPairRequest,
+    SwapPlanRequest, TokenIdsRequest,
 };
 
 #[derive(Serialize)]
@@ -115,6 +115,11 @@ pub extern "C" fn amm_swap_pair(request_json: *const c_char) -> *mut c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_resolve_pool(request_json: *const c_char) -> *mut c_char {
     call::<ResolvePoolRequest>(request_json, api::resolve_pool)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_pool_id(request_json: *const c_char) -> *mut c_char {
+    call::<PoolIdRequest>(request_json, api::pool_id)
 }
 
 #[unsafe(no_mangle)]
