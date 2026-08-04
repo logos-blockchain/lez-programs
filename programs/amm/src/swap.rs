@@ -1,7 +1,7 @@
 use amm_core::{
     assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed, mul_div_ceil,
-    mul_div_floor, read_vault_fungible_balances, spot_price_q64_64, AmmConfig, FEE_BPS_DENOMINATOR,
-    MINIMUM_LIQUIDITY,
+    read_vault_fungible_balances, spot_price_q64_64, swap_exact_in_amounts, AmmConfig,
+    FEE_BPS_DENOMINATOR, MINIMUM_LIQUIDITY,
 };
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
@@ -291,28 +291,20 @@ fn swap_logic(
     reserve_withdraw_vault_amount: u128,
     pool_id: AccountId,
 ) -> (Vec<ChainedCall>, u128, u128) {
-    let fee_multiplier = FEE_BPS_DENOMINATOR
-        .checked_sub(fee_bps)
-        .expect("fee_bps exceeds fee denominator");
-    // floor(swap_amount_in * fee_multiplier / FEE_BPS_DENOMINATOR), product widened to U256.
-    let effective_amount_in = mul_div_floor(swap_amount_in, fee_multiplier, FEE_BPS_DENOMINATOR);
+    // Fee-adjust the input and price via constant product. Shared with the
+    // off-chain swap quote (`amm_core::swap_exact_in_amounts`) so the preview and
+    // the executed trade agree exactly. The recorded pool reserves are updated
+    // later with the full `swap_amount_in`, so LP fees accrue inside `reserve_*`
+    // via invariant growth rather than as a vault-balance surplus over `reserve_*`.
+    let (effective_amount_in, withdraw_amount) = swap_exact_in_amounts(
+        swap_amount_in,
+        reserve_deposit_vault_amount,
+        reserve_withdraw_vault_amount,
+        fee_bps,
+    );
     assert!(
         effective_amount_in != 0,
         "Effective swap amount should be nonzero"
-    );
-    // Compute the withdraw amount using the fee-adjusted input for pricing.
-    // The recorded pool reserves are updated later with the full
-    // `swap_amount_in`, so LP fees accrue inside `reserve_*` via invariant
-    // growth rather than as a separate vault balance surplus over `reserve_*`.
-    // The denominator sum stays u128 (overflows only near u128::MAX, an unstorable reserve);
-    // only the `reserve * effective` product is widened to U256.
-    let reserve_plus_effective = reserve_deposit_vault_amount
-        .checked_add(effective_amount_in)
-        .expect("reserve + effective_amount_in overflows u128");
-    let withdraw_amount = mul_div_floor(
-        reserve_withdraw_vault_amount,
-        effective_amount_in,
-        reserve_plus_effective,
     );
 
     // Slippage check

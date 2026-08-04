@@ -334,6 +334,37 @@ pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
     u128::try_from(result).expect("mul_div_ceil result exceeds u128")
 }
 
+/// The constant-product output for a `SwapExactInput`, matching the AMM's on-chain
+/// pricing exactly — used by both `amm_program::swap` and the off-chain swap quote,
+/// so the preview and the executed trade agree. Fee-adjusts the input, then applies
+/// `reserve_out * effective / (reserve_in + effective)`.
+///
+/// Returns `(effective_amount_in, amount_out)`; both are `0` when the fee-adjusted
+/// input rounds to zero. Saturating: an out-of-range fee, or the impossible
+/// `reserve_in + effective` overflow (would need a reserve near `u128::MAX`),
+/// degrades to `0` output rather than panicking. Callers validate the fee tier and
+/// enforce their own nonzero / min-out checks.
+#[must_use]
+pub fn swap_exact_in_amounts(
+    amount_in: u128,
+    reserve_in: u128,
+    reserve_out: u128,
+    fee_bps: u128,
+) -> (u128, u128) {
+    let fee_multiplier = FEE_BPS_DENOMINATOR.saturating_sub(fee_bps);
+    let effective_amount_in = mul_div_floor(amount_in, fee_multiplier, FEE_BPS_DENOMINATOR);
+    let reserve_plus_effective = match reserve_in.checked_add(effective_amount_in) {
+        Some(v) => v,
+        None => return (effective_amount_in, 0),
+    };
+    let amount_out = if reserve_plus_effective == 0 {
+        0
+    } else {
+        mul_div_floor(reserve_out, effective_amount_in, reserve_plus_effective)
+    };
+    (effective_amount_in, amount_out)
+}
+
 /// `floor(sqrt(a * b))` computed in U256 so the `a * b` product can't overflow u128.
 ///
 /// # Panics
@@ -631,6 +662,21 @@ mod tests {
     #[should_panic(expected = "mul_div_floor: divisor must be non-zero")]
     fn mul_div_floor_zero_divisor_panics() {
         let _ = mul_div_floor(1, 2, 0);
+    }
+
+    #[test]
+    fn swap_exact_in_amounts_matches_constant_product() {
+        // 0.30% fee, reserves 1_000_000 in / 2_000_000 out, amount_in 10_000.
+        let (eff, out) = swap_exact_in_amounts(10_000, 1_000_000, 2_000_000, 30);
+        let expected_eff = 10_000 * (10_000 - 30) / 10_000;
+        let expected_out = 2_000_000 * expected_eff / (1_000_000 + expected_eff);
+        assert_eq!((eff, out), (expected_eff, expected_out));
+
+        // A tiny input can fee-round the effective input to zero → zero output.
+        assert_eq!(swap_exact_in_amounts(1, 1_000_000, 2_000_000, 30), (0, 0));
+
+        // Degenerate reserves saturate rather than dividing by zero.
+        assert_eq!(swap_exact_in_amounts(1, 0, 0, 30), (0, 0));
     }
 
     #[test]
