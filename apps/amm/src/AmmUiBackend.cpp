@@ -250,6 +250,23 @@ QVariantMap AmmUiBackend::swapExactOutQuote(QString tokenInHex, QString tokenOut
         tokenInHex, tokenOutHex, amountOutDecimal, slippageBps);
 }
 
+QString AmmUiBackend::swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex,
+                                       QString userOutputHoldingHex, QString amountOutDecimal,
+                                       QString maxInDecimal, QString deadlineDecimal)
+{
+    // Same connected-state submit guard as swapExactInput — this app's lock is
+    // authoritative even though the shared wallet may remain open elsewhere.
+    if (!isWalletOpen())
+        return {};
+
+    const QString txHash = m_logos->amm_module.swapExactOutput(
+        defAHex, defBHex, userInputHoldingHex, userOutputHoldingHex,
+        amountOutDecimal, maxInDecimal, deadlineDecimal);
+    if (!txHash.isEmpty())
+        refreshBalances();
+    return txHash;
+}
+
 QVariantList AmmUiBackend::tokenList()
 {
     return m_logos->amm_module.tokenList();

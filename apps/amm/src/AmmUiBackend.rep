@@ -81,6 +81,12 @@ class AmmUiBackend
     // output_exceeds_liquidity, config_missing, bad_amount, backend_error.
     // Read-only, no submission.
     SLOT(QVariantMap swapExactOutQuote(QString tokenInHex, QString tokenOutHex, QString amountOutDecimal, int slippageBps))
+    // Submits a real on-chain SwapExactOutput transaction against the pool for
+    // (defAHex, defBHex). amountOutDecimal is the exact desired output (base
+    // units); maxInDecimal is the slippage ceiling on the input actually spent;
+    // deadlineDecimal is a decimal-string u64 unix timestamp in MILLISECONDS.
+    // Same return contract as swapExactInput (tx hash, empty string on failure).
+    SLOT(QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountOutDecimal, QString maxInDecimal, QString deadlineDecimal))
     // Reads the token list config at TOKENS_CONFIG (absolute path, JSON array
     // of { symbol, name, definitionId, holding, decimals }) and returns it as
     // a QVariantList of QVariantMap entries. Returns an empty list if

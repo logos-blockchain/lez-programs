@@ -5,8 +5,9 @@ import "../shared"
 import "../../state"
 
 // The real swap UI: two token inputs (sell/buy), a token picker (backed by
-// AmmUiBackend::tokenList()/TOKENS_CONFIG via SwapPage), and a submit flow
-// wired straight to the backend's resolvePool()/swapExactInput() slots — see
+// AmmUiBackend::tokenList()/TOKENS_CONFIG via SwapPage). Editing either side
+// server-quotes that direction (swapExactInQuote / swapExactOutQuote) and the
+// matching submit slot (swapExactInput / swapExactOutput) runs on confirm — see
 // apps/amm/src/AmmUiBackend.rep for the exact contract.
 Rectangle {
     id: root
@@ -24,17 +25,17 @@ Rectangle {
     property real slippageTolerancePercent: 0.5
 
     // ── Pool resolution (backend.resolvePool) ───────────────────────────────
-    // A pool's PoolDefinition stores def_a/def_b in the pool CREATOR's order
-    // (from NewDefinition), not sorted, and not necessarily in (sellToken,
-    // buyToken) order. reserveA/reserveB mirror that same canonical order, so
-    // they must be mapped to sell/buy via poolDefAHex below — never assumed.
+    // Existence and fee drive the UI; the swap quotes read the pool and
+    // price/orient the swap server-side, so the client no longer prices against
+    // the reserves. The raw reserves are still surfaced (observability only, not
+    // used for pricing) so the e2e test can assert they changed on-chain after a
+    // swap.
     property bool poolLoading: false
     property bool poolResolved: false
     property bool poolExists: false
+    property int poolFeeBps: 30
     property string poolReserveA: "0"
     property string poolReserveB: "0"
-    property string poolDefAHex: ""
-    property int poolFeeBps: 30
     property string poolError: ""
 
     // ── Exact-input quote (backend.swapExactInQuote) ────────────────────────
@@ -130,7 +131,6 @@ Rectangle {
                 root.poolExists = !!(pool && pool.exists)
                 root.poolReserveA = (pool && pool.reserveA) || "0"
                 root.poolReserveB = (pool && pool.reserveB) || "0"
-                root.poolDefAHex = (pool && pool.defAHex) || ""
                 // feeBps === 0 is a legitimate zero-fee pool; only fall back
                 // to the 30bps default when the backend didn't send a value.
                 root.poolFeeBps = (pool && pool.feeBps !== undefined) ? pool.feeBps : 30
@@ -326,17 +326,6 @@ Rectangle {
             })
     }
 
-    // JS doubles lose precision far below u128 range; these are only used to
-    // drive the *estimate* (expected output / min received / price impact),
-    // never the actual swap amount — the sell amount sent to the backend is
-    // the user's raw input text, passed through verbatim.
-    // The pool's reserveA/reserveB follow the pool's canonical def_a/def_b
-    // order (see poolDefAHex above), which may or may not match sell/buy —
-    // map them explicitly rather than assuming reserveA == sell.
-    readonly property bool sellIsPoolA: !!root.sellToken && root.sellToken.definitionId === root.poolDefAHex
-    readonly property real sellReserveNum: Number(sellIsPoolA ? root.poolReserveA : root.poolReserveB) || 0
-    readonly property real buyReserveNum: Number(sellIsPoolA ? root.poolReserveB : root.poolReserveA) || 0
-
     readonly property real parsedSellInput: {
         var amt = parseFloat(sellInput)
         return isNaN(amt) || amt < 0 ? 0 : amt
@@ -376,36 +365,40 @@ Rectangle {
         ? root.quotePriceImpactBps / 100
         : root.quoteOutPriceImpactBps / 100
 
-    readonly property string swapModeText: editingSide === "buy" ? qsTr("Exact output (preview only)") : qsTr("Exact input")
+    readonly property string swapModeText: editingSide === "buy" ? qsTr("Exact output") : qsTr("Exact input")
 
     readonly property bool hasAmount: editingSide === "sell" ? parsedSellInput > 0 : parsedBuyInput > 0
     readonly property bool tokensSelected: sellToken !== null && buyToken !== null
-    readonly property bool insufficientLiquidity: hasAmount && root.poolExists && parsedBuyAmount > buyReserveNum
+    // Exact output only: the module reports output_exceeds_liquidity when the
+    // requested output is at least the pool's reserve. Exact input can never
+    // exceed the reserve, so it has no such case.
+    readonly property bool outputExceedsLiquidity: editingSide === "buy" && root.quoteOutError === "output_exceeds_liquidity"
+    // Loading flag for whichever direction the user is editing.
+    readonly property bool quoteLoading: editingSide === "sell" ? root.quoteInLoading : root.quoteOutLoading
     // True only when THIS app's wallet is connected. The backend also enforces
-    // this before submitting (AmmUiBackend::swapExactInput), but gate the UI too
-    // so a disconnected app never even initiates a swap against the shared wallet.
+    // this before submitting, but gate the UI too so a disconnected app never
+    // even initiates a swap against the shared wallet.
     readonly property bool walletOpen: root.backend !== null && root.backend.isWalletOpen
 
-    // The backend only exposes swapExactInput, so only the "I know exactly
-    // how much I'm selling" direction can actually be submitted. Editing the
-    // buy field still previews an estimate (via amountInFor above) but can't
-    // be submitted — see doc comment on AmmUiBackend::swapExactInput.
-    readonly property bool canSubmit: tokensSelected && editingSide === "sell" && hasAmount
+    // Both directions are submittable: exact input via swapExactInput, exact
+    // output via swapExactOutput. The typed side and the quoted side must both be
+    // positive (a fresh quote has landed) and the active quote must not be
+    // in-flight.
+    readonly property bool canSubmit: tokensSelected && hasAmount
                                        && parsedSellAmount > 0 && parsedBuyAmount > 0
                                        && root.poolResolved && root.poolExists
-                                       && !insufficientLiquidity && !root.swapInProgress
-                                       && !root.quoteInLoading && root.walletOpen
+                                       && !outputExceedsLiquidity && !root.swapInProgress
+                                       && !root.quoteLoading && root.walletOpen
 
     readonly property string submitButtonText: {
         if (!tokensSelected) return qsTr("Select tokens")
         if (root.swapInProgress) return qsTr("Submitting…")
         if (!hasAmount) return qsTr("Enter an amount")
-        if (editingSide === "buy") return qsTr("Enter a sell amount to swap")
         if (root.poolLoading || !root.poolResolved) return qsTr("Resolving pool…")
         if (!root.poolExists) return qsTr("No pool / no liquidity")
-        if (root.quoteInLoading) return qsTr("Quoting…")
-        if (insufficientLiquidity) return qsTr("Insufficient liquidity")
-        if (parsedBuyAmount <= 0) return qsTr("Amount too small")
+        if (root.quoteLoading) return qsTr("Quoting…")
+        if (outputExceedsLiquidity) return qsTr("Insufficient liquidity")
+        if (parsedSellAmount <= 0 || parsedBuyAmount <= 0) return qsTr("Amount too small")
         if (!root.walletOpen) return qsTr("Connect wallet to swap")
         return qsTr("Swap")
     }
@@ -416,35 +409,10 @@ Rectangle {
         if (root.poolLoading) return qsTr("Looking up pool…")
         if (root.poolError.length > 0) return root.poolError
         if (root.poolResolved && !root.poolExists) return qsTr("No pool / no liquidity for this pair.")
+        if (root.outputExceedsLiquidity) return qsTr("Not enough liquidity for that output amount.")
         if (root.quoteInError.length > 0) return qsTr("Quote failed: %1").arg(root.quoteInError)
         if (root.quoteOutError.length > 0) return qsTr("Quote failed: %1").arg(root.quoteOutError)
         return ""
-    }
-
-    function formatAmountValue(val) {
-        if (val >= 1) return val.toFixed(2)
-        if (val >= 0.0001) return val.toFixed(6)
-        return val.toFixed(8)
-    }
-
-    // Base units are integers; render the (estimate-only) computed side as a
-    // plain integer string rather than a fractional/scientific one.
-    function formatBaseUnits(value) {
-        if (!isFinite(value) || isNaN(value) || value <= 0)
-            return "0"
-
-        var rounded = Math.floor(value)
-        var s = rounded.toString()
-        if (s.indexOf("e") === -1 && s.indexOf("E") === -1)
-            return s
-
-        var match = s.match(/^(\d)(?:\.(\d+))?e\+(\d+)$/i)
-        if (!match)
-            return s
-
-        var digits = match[1] + (match[2] || "")
-        var exponent = parseInt(match[3], 10)
-        return digits + "0".repeat(Math.max(0, exponent - (match[2] ? match[2].length : 0)))
     }
 
     // The computed side is shown as the quote's exact-integer string verbatim (no
@@ -458,28 +426,29 @@ Rectangle {
         ? buyInput
         : ((root.quoteExpectedOutRaw && root.quoteExpectedOutRaw !== "0") ? root.quoteExpectedOutRaw : "")
 
-    // Only reached in the Sell (exact-input) direction — canSubmit gates the CTA
-    // to editingSide === "sell" — so the amounts come straight from the raw
-    // input and the quote's exact-integer figures.
+    // Confirmation-dialog preview. The typed side is exact; the quoted side and
+    // the slippage bound come from the quote's exact-integer strings. boundValue
+    // is the min received (exact input) or the max sent (exact output).
     function buildSnapshot() {
+        var isExactIn = editingSide === "sell"
         return {
             "sellToken": sellToken ? sellToken.symbol : "",
             "buyToken": buyToken ? buyToken.symbol : "",
-            "sellAmount": root.sellInput,
-            "buyAmount": root.quoteExpectedOutRaw,
-            "minReceived": root.quoteMinReceivedRaw,
+            "sellAmount": isExactIn ? root.sellInput : root.quoteRequiredInRaw,
+            "buyAmount": isExactIn ? root.quoteExpectedOutRaw : root.buyInput,
+            "boundValue": isExactIn ? root.quoteMinReceivedRaw : root.quoteMaxInRaw,
             "feeAmount": swapState.formatTokenAmount(feeAmount, sellToken ? sellToken.symbol : ""),
             "priceImpactPercent": swapState.formatPercent(priceImpactPercent),
             "priceImpactPercentValue": priceImpactPercent,
             "slippageTolerance": swapState.formatSlippagePercent(slippageTolerancePercent),
-            "swapMode": "swap-exact-input",
+            "swapMode": isExactIn ? "swap-exact-input" : "swap-exact-output",
             "swapModeText": swapModeText
         }
     }
 
     // Called by SwapPage once the user confirms in SwapConfirmationDialog.
-    // Submits the real on-chain swap for the amounts/tokens selected when the
-    // CTA was pressed (canSubmit already guarantees editingSide === "sell").
+    // Submits the real on-chain swap for the tokens/amounts in SwapCard's live
+    // state, in whichever direction the user is editing.
     function executeSwap() {
         if (!root.backend || !root.canSubmit)
             return
@@ -487,26 +456,30 @@ Rectangle {
         root.swapInProgress = true
         root.swapError = ""
 
-        // The submitted slippage floor is the quote's exact-integer minReceivedRaw
-        // (base units), derived server-side from the same formula the chain uses —
-        // no client-side reserve orientation or double-precision recompute.
-        var minOutStr = root.quoteMinReceivedRaw
         // Max u64 sentinel: "ignore deadline", per AmmUiBackend.rep.
         var deadline = "18446744073709551615"
+        var inDef = root.sellToken.definitionId
+        var outDef = root.buyToken.definitionId
+        var inHolding = root.sellToken.holding
+        var outHolding = root.buyToken.holding
 
-        logos.watch(root.backend.swapExactInput(
-                root.sellToken.definitionId, root.buyToken.definitionId,
-                root.sellToken.holding, root.buyToken.holding,
-                root.sellInput, minOutStr, deadline),
+        // The on-chain guard is the quote's exact-integer bound: the exact-input
+        // floor (minReceivedRaw) or the exact-output ceiling (maxInRaw). The typed
+        // side (sellInput / buyInput) is the exact amount for that direction.
+        var pending = root.editingSide === "sell"
+            ? root.backend.swapExactInput(inDef, outDef, inHolding, outHolding,
+                                          root.sellInput, root.quoteMinReceivedRaw, deadline)
+            : root.backend.swapExactOutput(inDef, outDef, inHolding, outHolding,
+                                           root.buyInput, root.quoteMaxInRaw, deadline)
+
+        logos.watch(pending,
             function (txHash) {
                 root.swapInProgress = false
                 if (txHash && txHash.length > 0) {
                     root.swapSucceeded({
                         "txHash": txHash,
                         "sellToken": root.sellToken.symbol,
-                        "buyToken": root.buyToken.symbol,
-                        "sellAmount": root.sellInput,
-                        "minReceived": minOutStr
+                        "buyToken": root.buyToken.symbol
                     })
                     root.resetAmounts()
                     resolveDebounce.restart()
@@ -516,7 +489,7 @@ Rectangle {
                 }
             },
             function (error) {
-                console.warn("swapExactInput error:", error)
+                console.warn("swap error:", error)
                 root.swapInProgress = false
                 root.swapError = qsTr("Swap error: %1").arg(error)
                 root.swapFailed(root.swapError)
@@ -609,6 +582,9 @@ Rectangle {
             amount: root.buyDisplay
             token: root.buyToken
             active: root.editingSide === "buy"
+            // Exact-output amount is sent to the backend as a raw base-units
+            // integer string; reject fractional entry rather than fail opaquely.
+            digitsOnly: true
             onInputEdited: function(v) {
                 root.buyInput = v
                 if (root.editingSide !== "buy") root.editingSide = "buy"
