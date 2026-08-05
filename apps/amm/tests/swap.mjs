@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// AMM UI test — swap 10000 of the first token in the list for the second.
+// AMM UI test — swap the first token in the list for the second (SELL_AMOUNT).
 //
 // Drives the running AMM UI through the QML inspector (logos-qt-mcp). Run it
 // against a LIVE app window so you can watch it happen — see "Running the UI
@@ -24,7 +24,7 @@ const fwRoot =
   new URL("../result-mcp", import.meta.url).pathname;
 const { test, run } = await import(resolve(fwRoot, "test-framework/framework.mjs"));
 
-const SELL_AMOUNT = "10000";
+const SELL_AMOUNT = "100";
 
 // --- small helpers over the raw inspector commands -------------------------
 
@@ -86,13 +86,21 @@ async function pickToken(app, index) {
 
 // Enter the sell amount by setting the SwapCard's state directly. Synthesizing
 // keystrokes needs the TextInput to hold active focus, which the inspector
-// can't reliably grant headlessly; setting sellInput drives the exact same
-// reactive flow (estimate -> CTA -> confirm -> submit) and the bound TextInput
-// still displays the value.
+// can't reliably grant headlessly; setting sellInput updates the property (and
+// the bound TextInput display) so the reactive flow can run.
+//
+// Setting a property programmatically re-evaluates dependent BINDINGS but does
+// not fire the onSellInputChanged HANDLER the way real typing does — and the
+// Sell preview is now driven by that handler (onSellInputChanged ->
+// requestQuoteIn -> async backend.swapExactInQuote), not a synchronous binding.
+// So kick the quote explicitly, mirroring the doResolvePool() nudge used in the
+// reserve-change check below. Without this the CTA never leaves "Amount too
+// small" because the server quote never fires.
 async function setSellAmount(app, amount) {
   const cardId = await idByObjectName(app, "swapCard");
   await app.inspector.send("setProperty", { objectId: cardId, property: "editingSide", value: "sell" });
   await app.inspector.send("setProperty", { objectId: cardId, property: "sellInput", value: String(amount) });
+  await app.inspector.send("evaluate", { expression: "requestQuoteIn()", objectId: cardId });
 }
 
 // Read the SwapCard's swap/pool state — explains WHY the CTA isn't "Swap" yet.
@@ -136,7 +144,7 @@ async function saveShot(app, name) {
 
 // --- the test ---------------------------------------------------------------
 
-test("amm swap: sell 10000 of token #1 for token #2", async (app) => {
+test("amm swap: sell token #1 for token #2", async (app) => {
   // 1. Wait for the swap card to render (Trade tab is the default, index 0).
   await app.waitFor(
     async () => { await app.expectTexts(["Sell", "Buy"]); },
@@ -153,7 +161,7 @@ test("amm swap: sell 10000 of token #1 for token #2", async (app) => {
   const second = await pickToken(app, 1);
   console.log(`    sell ${first} -> buy ${second}`);
 
-  // 5. Enter 10000 as the sell amount.
+  // 5. Enter the sell amount.
   await setSellAmount(app, SELL_AMOUNT);
   await app.expectTexts([SELL_AMOUNT]); // the amount should now be visible
 

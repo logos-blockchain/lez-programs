@@ -37,6 +37,13 @@ Rectangle {
     property int poolFeeBps: 30
     property string poolError: ""
 
+    // ── Exact-input quote (backend.swapExactInQuote) ────────────────────────
+    property bool quoteInLoading: false
+    property string quoteInError: ""
+    property string quoteExpectedOutRaw: "0"
+    property string quoteMinReceivedRaw: "0"
+    property int quotePriceImpactBps: 0
+
     // ── Swap submission (backend.swapExactInput) ────────────────────────────
     property bool swapInProgress: false
     property string swapError: ""
@@ -81,8 +88,11 @@ Rectangle {
             resolveDebounce.stop()
     }
 
-    onSellTokenChanged: root.requestResolve()
-    onBuyTokenChanged: root.requestResolve()
+    onSellTokenChanged: { root.requestResolve(); root.requestQuoteIn() }
+    onBuyTokenChanged: { root.requestResolve(); root.requestQuoteIn() }
+    onSellInputChanged: root.requestQuoteIn()
+    onEditingSideChanged: root.requestQuoteIn()
+    onSlippageTolerancePercentChanged: root.requestQuoteIn()
 
     function doResolvePool() {
         if (!root.backend || !root.sellToken || !root.buyToken)
@@ -129,6 +139,91 @@ Rectangle {
             })
     }
 
+    // ── Exact-input quote ──────────────────────────────────────────────────────
+    Timer {
+        id: quoteInDebounce
+        interval: 350
+        repeat: false
+        onTriggered: root.doQuoteIn()
+    }
+
+    function resetQuoteIn() {
+        root.quoteExpectedOutRaw = "0"
+        root.quoteMinReceivedRaw = "0"
+        root.quotePriceImpactBps = 0
+    }
+
+    function requestQuoteIn() {
+        root.quoteInError = ""
+        // Only the exact-input (Sell) direction is server-quoted; the Buy
+        // direction is still a local preview (see DummySwapState).
+        if (root.backend && root.editingSide === "sell" && root.sellToken && root.buyToken
+            && root.parsedSellInput > 0) {
+            // Invalidate the previous quote up front: while a re-quote is pending
+            // (debounce + in-flight), the stale expected-out / min_out must not be
+            // shown or submittable. quoteInLoading gates canSubmit until the fresh
+            // quote lands. Gating on backend here avoids setting the loading flag
+            // when doQuoteIn would only bail — which would leave it stuck.
+            root.resetQuoteIn()
+            root.quoteInLoading = true
+            quoteInDebounce.restart()
+        } else {
+            quoteInDebounce.stop()
+            root.quoteInLoading = false
+            root.resetQuoteIn()
+        }
+    }
+
+    function doQuoteIn() {
+        if (!root.backend || root.editingSide !== "sell"
+            || !root.sellToken || !root.buyToken || root.parsedSellInput <= 0) {
+            root.quoteInLoading = false
+            return
+        }
+
+        // Capture the request identity: quote callbacks can arrive out of order,
+        // so a stale one (tokens or the typed amount changed since) must not
+        // overwrite the current preview or the submitted min_out.
+        var reqSell = root.sellToken.definitionId
+        var reqBuy = root.buyToken.definitionId
+        var reqAmount = root.sellInput
+        function isStale() {
+            return root.editingSide !== "sell"
+                || !root.sellToken || !root.buyToken
+                || root.sellToken.definitionId !== reqSell
+                || root.buyToken.definitionId !== reqBuy
+                || root.sellInput !== reqAmount
+        }
+
+        var slippageBps = Math.round(root.slippageTolerancePercent * 100)
+        root.quoteInLoading = true
+        logos.watch(root.backend.swapExactInQuote(reqSell, reqBuy, reqAmount, slippageBps),
+            function (quote) {
+                if (isStale())
+                    return
+                root.quoteInLoading = false
+                if (quote && quote.status === "ok") {
+                    root.quoteExpectedOutRaw = quote.expectedOutRaw || "0"
+                    root.quoteMinReceivedRaw = quote.minReceivedRaw || "0"
+                    root.quotePriceImpactBps = quote.priceImpactBps || 0
+                    root.quoteInError = ""
+                } else {
+                    root.resetQuoteIn()
+                    // no_pool is surfaced via the pool status text, not as an error.
+                    var code = (quote && quote.error) || "backend_error"
+                    root.quoteInError = code === "no_pool" ? "" : code
+                }
+            },
+            function (error) {
+                if (isStale())
+                    return
+                console.warn("swapExactInQuote error:", error)
+                root.quoteInLoading = false
+                root.resetQuoteIn()
+                root.quoteInError = String(error)
+            })
+    }
+
     // JS doubles lose precision far below u128 range; these are only used to
     // drive the *estimate* (expected output / min received / price impact),
     // never the actual swap amount — the sell amount sent to the backend is
@@ -154,13 +249,21 @@ Rectangle {
         ? parsedSellInput
         : swapState.amountInFor(parsedBuyInput, sellReserveNum, buyReserveNum)
 
+    // Exact-input (Sell) expected output comes from the server quote; the Buy
+    // direction still estimates locally. Number() may lose precision on large
+    // base-unit values, so this drives gating only — the exact figures shown and
+    // submitted come from quoteExpectedOutRaw / quoteMinReceivedRaw directly.
     readonly property real parsedBuyAmount: editingSide === "buy"
         ? parsedBuyInput
-        : swapState.amountOutFor(parsedSellInput, sellReserveNum, buyReserveNum)
+        : (Number(root.quoteExpectedOutRaw) || 0)
 
     readonly property real feeAmount: swapState.feeAmount(parsedSellAmount)
-    readonly property real minReceivedAmount: swapState.minReceived(parsedBuyAmount, slippageTolerancePercent)
-    readonly property real priceImpactPercent: swapState.priceImpactPercent(parsedSellAmount, parsedBuyAmount, sellReserveNum, buyReserveNum)
+    readonly property real minReceivedAmount: editingSide === "sell"
+        ? (Number(root.quoteMinReceivedRaw) || 0)
+        : swapState.minReceived(parsedBuyAmount, slippageTolerancePercent)
+    readonly property real priceImpactPercent: editingSide === "sell"
+        ? root.quotePriceImpactBps / 100
+        : swapState.priceImpactPercent(parsedSellAmount, parsedBuyAmount, sellReserveNum, buyReserveNum)
 
     readonly property string swapModeText: editingSide === "buy" ? qsTr("Exact output (preview only)") : qsTr("Exact input")
 
@@ -180,7 +283,7 @@ Rectangle {
                                        && parsedSellAmount > 0 && parsedBuyAmount > 0
                                        && root.poolResolved && root.poolExists
                                        && !insufficientLiquidity && !root.swapInProgress
-                                       && root.walletOpen
+                                       && !root.quoteInLoading && root.walletOpen
 
     readonly property string submitButtonText: {
         if (!tokensSelected) return qsTr("Select tokens")
@@ -189,6 +292,7 @@ Rectangle {
         if (editingSide === "buy") return qsTr("Enter a sell amount to swap")
         if (root.poolLoading || !root.poolResolved) return qsTr("Resolving pool…")
         if (!root.poolExists) return qsTr("No pool / no liquidity")
+        if (root.quoteInLoading) return qsTr("Quoting…")
         if (insufficientLiquidity) return qsTr("Insufficient liquidity")
         if (parsedBuyAmount <= 0) return qsTr("Amount too small")
         if (!root.walletOpen) return qsTr("Connect wallet to swap")
@@ -201,6 +305,7 @@ Rectangle {
         if (root.poolLoading) return qsTr("Looking up pool…")
         if (root.poolError.length > 0) return root.poolError
         if (root.poolResolved && !root.poolExists) return qsTr("No pool / no liquidity for this pair.")
+        if (root.quoteInError.length > 0) return qsTr("Quote failed: %1").arg(root.quoteInError)
         return ""
     }
 
@@ -234,17 +339,22 @@ Rectangle {
         ? sellInput
         : (parsedSellAmount > 0 ? formatBaseUnits(parsedSellAmount) : "")
 
+    // Sell direction shows the quote's exact-integer expected output verbatim
+    // (no double round-trip); Buy direction still renders the local estimate.
     readonly property string buyDisplay: editingSide === "buy"
         ? buyInput
-        : (parsedBuyAmount > 0 ? formatBaseUnits(parsedBuyAmount) : "")
+        : ((root.quoteExpectedOutRaw && root.quoteExpectedOutRaw !== "0") ? root.quoteExpectedOutRaw : "")
 
+    // Only reached in the Sell (exact-input) direction — canSubmit gates the CTA
+    // to editingSide === "sell" — so the amounts come straight from the raw
+    // input and the quote's exact-integer figures.
     function buildSnapshot() {
         return {
             "sellToken": sellToken ? sellToken.symbol : "",
             "buyToken": buyToken ? buyToken.symbol : "",
-            "sellAmount": formatBaseUnits(parsedSellAmount),
-            "buyAmount": formatBaseUnits(parsedBuyAmount),
-            "minReceived": formatBaseUnits(minReceivedAmount),
+            "sellAmount": root.sellInput,
+            "buyAmount": root.quoteExpectedOutRaw,
+            "minReceived": root.quoteMinReceivedRaw,
             "feeAmount": swapState.formatTokenAmount(feeAmount, sellToken ? sellToken.symbol : ""),
             "priceImpactPercent": swapState.formatPercent(priceImpactPercent),
             "priceImpactPercentValue": priceImpactPercent,
@@ -264,15 +374,10 @@ Rectangle {
         root.swapInProgress = true
         root.swapError = ""
 
-        // Compute the submitted slippage floor with exact integer (BigInt) math
-        // rather than the double-based preview: base-unit values for 18-decimal
-        // tokens exceed 2^53, where doubles would understate min_out and weaken
-        // price protection. Sell/buy reserves follow the pool's canonical order.
-        var minOutStr = swapState.minOutBaseUnits(
-                root.sellInput,
-                root.sellIsPoolA ? root.poolReserveA : root.poolReserveB,
-                root.sellIsPoolA ? root.poolReserveB : root.poolReserveA,
-                root.slippageTolerancePercent)
+        // The submitted slippage floor is the quote's exact-integer minReceivedRaw
+        // (base units), derived server-side from the same formula the chain uses —
+        // no client-side reserve orientation or double-precision recompute.
+        var minOutStr = root.quoteMinReceivedRaw
         // Max u64 sentinel: "ignore deadline", per AmmUiBackend.rep.
         var deadline = "18446744073709551615"
 

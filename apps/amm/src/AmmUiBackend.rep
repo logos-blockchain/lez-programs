@@ -64,6 +64,14 @@ class AmmUiBackend
     // is enforced). Returns the tx hash, or an empty string on failure
     // (no pool, unreadable AMM_PROGRAM_BIN, bad inputs, or a failed tx).
     SLOT(QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountInDecimal, QString minOutDecimal, QString deadlineDecimal))
+    // Server-side SwapExactInput preview for (tokenInHex, tokenOutHex): reads the
+    // pool and returns { status:"ok", error:"", expectedOutRaw, minReceivedRaw,
+    // priceImpactBps }, oriented and priced via the shared on-chain formula.
+    // amountInDecimal is a decimal-string base-unit amount; slippageBps is basis
+    // points. On failure { status:"error", error:<code> } — no_pool,
+    // config_missing, bad_amount, invalid_slippage (slippageBps out of range),
+    // backend_error. Read-only, no submission.
+    SLOT(QVariantMap swapExactInQuote(QString tokenInHex, QString tokenOutHex, QString amountInDecimal, int slippageBps))
     // Reads the token list config at TOKENS_CONFIG (absolute path, JSON array
     // of { symbol, name, definitionId, holding, decimals }) and returns it as
     // a QVariantList of QVariantMap entries. Returns an empty list if

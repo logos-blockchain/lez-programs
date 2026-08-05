@@ -47,8 +47,9 @@ public:
     /// decimal string (JSON floats rejected); `slippage_bps` is basis points.
     /// On failure: `{ status:"error", error:<code> }` — `no_pool` (no pool /
     /// liquidity), `config_missing` (AMM_PROGRAM_BIN unset/unreadable),
-    /// `bad_amount`, or `backend_error`. Pool metadata (reserves, fee) comes from
-    /// `resolvePool`, so it isn't echoed here.
+    /// `bad_amount`, `invalid_slippage` (`slippage_bps` out of range), or
+    /// `backend_error`. Pool metadata (reserves, fee) comes from `resolvePool`,
+    /// so it isn't echoed here.
     LogosMap swapExactInQuote(const std::string& token_in_hex,
                        const std::string& token_out_hex,
                        const nlohmann::json& amount_in,
@@ -61,7 +62,8 @@ public:
     /// string (JSON floats rejected); `slippage_bps` is basis points. On failure:
     /// `{ status:"error", error:<code> }` — `no_pool` (no pool / liquidity),
     /// `output_exceeds_liquidity` (amount_out ≥ reserve), `config_missing`
-    /// (AMM_PROGRAM_BIN unset/unreadable), `bad_amount`, or `backend_error`.
+    /// (AMM_PROGRAM_BIN unset/unreadable), `bad_amount`, `invalid_slippage`
+    /// (`slippage_bps` out of range), or `backend_error`.
     LogosMap swapExactOutQuote(const std::string& token_in_hex,
                        const std::string& token_out_hex,
                        const nlohmann::json& amount_out,

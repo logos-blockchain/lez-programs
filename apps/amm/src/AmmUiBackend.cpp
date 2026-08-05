@@ -231,6 +231,16 @@ QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString u
     return txHash;
 }
 
+QVariantMap AmmUiBackend::swapExactInQuote(QString tokenInHex, QString tokenOutHex,
+                                            QString amountInDecimal, int slippageBps)
+{
+    // Read-only preview — no wallet guard. The module reads the pool and prices
+    // the swap server-side; the returned envelope orients reserves and computes
+    // expectedOut/minReceived/priceImpact via the same formula the chain uses.
+    return m_logos->amm_module.swapExactInQuote(
+        tokenInHex, tokenOutHex, amountInDecimal, slippageBps);
+}
+
 QVariantList AmmUiBackend::tokenList()
 {
     return m_logos->amm_module.tokenList();
