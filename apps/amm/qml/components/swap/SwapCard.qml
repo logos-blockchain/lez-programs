@@ -44,6 +44,13 @@ Rectangle {
     property string quoteMinReceivedRaw: "0"
     property int quotePriceImpactBps: 0
 
+    // ── Exact-output quote (backend.swapExactOutQuote) ──────────────────────
+    property bool quoteOutLoading: false
+    property string quoteOutError: ""
+    property string quoteRequiredInRaw: "0"
+    property string quoteMaxInRaw: "0"
+    property int quoteOutPriceImpactBps: 0
+
     // ── Swap submission (backend.swapExactInput) ────────────────────────────
     property bool swapInProgress: false
     property string swapError: ""
@@ -88,11 +95,12 @@ Rectangle {
             resolveDebounce.stop()
     }
 
-    onSellTokenChanged: { root.requestResolve(); root.requestQuoteIn() }
-    onBuyTokenChanged: { root.requestResolve(); root.requestQuoteIn() }
+    onSellTokenChanged: { root.requestResolve(); root.requestQuoteIn(); root.requestQuoteOut() }
+    onBuyTokenChanged: { root.requestResolve(); root.requestQuoteIn(); root.requestQuoteOut() }
     onSellInputChanged: root.requestQuoteIn()
-    onEditingSideChanged: root.requestQuoteIn()
-    onSlippageTolerancePercentChanged: root.requestQuoteIn()
+    onBuyInputChanged: root.requestQuoteOut()
+    onEditingSideChanged: { root.requestQuoteIn(); root.requestQuoteOut() }
+    onSlippageTolerancePercentChanged: { root.requestQuoteIn(); root.requestQuoteOut() }
 
     function doResolvePool() {
         if (!root.backend || !root.sellToken || !root.buyToken)
@@ -224,6 +232,100 @@ Rectangle {
             })
     }
 
+    // ── Exact-output quote ─────────────────────────────────────────────────────
+    Timer {
+        id: quoteOutDebounce
+        interval: 350
+        repeat: false
+        onTriggered: root.doQuoteOut()
+    }
+
+    function resetQuoteOut() {
+        root.quoteRequiredInRaw = "0"
+        root.quoteMaxInRaw = "0"
+        root.quoteOutPriceImpactBps = 0
+    }
+
+    // The Buy field is free-form (not digitsOnly like Sell), so its text is
+    // normalized to a base-units integer before quoting: trim whitespace and
+    // accept only a positive run of digits. Decimals / exponents / signs / empty
+    // yield "" (invalid), so the backend call is skipped rather than forwarding an
+    // amount that would come back as a confusing quote failure.
+    function normalizedAmountOut() {
+        var s = String(root.buyInput).trim()
+        return (/^\d+$/.test(s) && /[1-9]/.test(s)) ? s : ""
+    }
+
+    function requestQuoteOut() {
+        root.quoteOutError = ""
+        // Mirror of requestQuoteIn for the Buy direction: price the input needed
+        // for the typed output. Invalidate the previous quote up front so a stale
+        // required-in isn't shown while the re-quote is pending. Invalid input
+        // (see normalizedAmountOut) takes the else branch, clearing the loading
+        // flag so it can't get stuck.
+        if (root.editingSide === "buy" && root.sellToken && root.buyToken
+            && root.normalizedAmountOut() !== "") {
+            root.resetQuoteOut()
+            root.quoteOutLoading = true
+            quoteOutDebounce.restart()
+        } else {
+            quoteOutDebounce.stop()
+            root.quoteOutLoading = false
+            root.resetQuoteOut()
+        }
+    }
+
+    function doQuoteOut() {
+        var amountOut = root.normalizedAmountOut()
+        if (!root.backend || root.editingSide !== "buy"
+            || !root.sellToken || !root.buyToken || amountOut === "") {
+            root.quoteOutLoading = false
+            return
+        }
+
+        var reqSell = root.sellToken.definitionId
+        var reqBuy = root.buyToken.definitionId
+        // Staleness is keyed on the raw field text (a further edit re-quotes),
+        // while the backend gets the normalized base-units amount.
+        var reqInput = root.buyInput
+        function isStale() {
+            return root.editingSide !== "buy"
+                || !root.sellToken || !root.buyToken
+                || root.sellToken.definitionId !== reqSell
+                || root.buyToken.definitionId !== reqBuy
+                || root.buyInput !== reqInput
+        }
+
+        var slippageBps = Math.round(root.slippageTolerancePercent * 100)
+        root.quoteOutLoading = true
+        // tokenIn is the sold token (sell), tokenOut is the bought token (buy).
+        logos.watch(root.backend.swapExactOutQuote(reqSell, reqBuy, amountOut, slippageBps),
+            function (quote) {
+                if (isStale())
+                    return
+                root.quoteOutLoading = false
+                if (quote && quote.status === "ok") {
+                    root.quoteRequiredInRaw = quote.requiredInRaw || "0"
+                    root.quoteMaxInRaw = quote.maxInRaw || "0"
+                    root.quoteOutPriceImpactBps = quote.priceImpactBps || 0
+                    root.quoteOutError = ""
+                } else {
+                    root.resetQuoteOut()
+                    // no_pool is surfaced via the pool status text, not as an error.
+                    var code = (quote && quote.error) || "backend_error"
+                    root.quoteOutError = code === "no_pool" ? "" : code
+                }
+            },
+            function (error) {
+                if (isStale())
+                    return
+                console.warn("swapExactOutQuote error:", error)
+                root.quoteOutLoading = false
+                root.resetQuoteOut()
+                root.quoteOutError = String(error)
+            })
+    }
+
     // JS doubles lose precision far below u128 range; these are only used to
     // drive the *estimate* (expected output / min received / price impact),
     // never the actual swap amount — the sell amount sent to the backend is
@@ -245,25 +347,34 @@ Rectangle {
         return isNaN(amt) || amt < 0 ? 0 : amt
     }
 
+    // The computed side comes from the server quote: exact-input (Sell) yields the
+    // expected output, exact-output (Buy) yields the required input. Number() may
+    // lose precision on large base-unit values, so these drive gating only — the
+    // exact figures shown and submitted come from the raw quote strings directly.
     readonly property real parsedSellAmount: editingSide === "sell"
         ? parsedSellInput
-        : swapState.amountInFor(parsedBuyInput, sellReserveNum, buyReserveNum)
+        : (Number(root.quoteRequiredInRaw) || 0)
 
-    // Exact-input (Sell) expected output comes from the server quote; the Buy
-    // direction still estimates locally. Number() may lose precision on large
-    // base-unit values, so this drives gating only — the exact figures shown and
-    // submitted come from quoteExpectedOutRaw / quoteMinReceivedRaw directly.
     readonly property real parsedBuyAmount: editingSide === "buy"
         ? parsedBuyInput
         : (Number(root.quoteExpectedOutRaw) || 0)
 
     readonly property real feeAmount: swapState.feeAmount(parsedSellAmount)
-    readonly property real minReceivedAmount: editingSide === "sell"
-        ? (Number(root.quoteMinReceivedRaw) || 0)
-        : swapState.minReceived(parsedBuyAmount, slippageTolerancePercent)
+
+    // Slippage bound: exact input floors the received amount (Min received), exact
+    // output caps the spent amount (Maximum sent). Both come from the quote.
+    readonly property string boundLabel: editingSide === "sell" ? qsTr("Min received") : qsTr("Maximum sent")
+    // The quote's exact-integer bound, verbatim (no Number()/double round-trip,
+    // which would lose precision on large u128 values and diverge from execution):
+    // min received (exact input) or max sent (exact output).
+    readonly property string boundRaw: editingSide === "sell" ? root.quoteMinReceivedRaw : root.quoteMaxInRaw
+    readonly property string boundSymbol: editingSide === "sell"
+        ? (buyToken ? buyToken.symbol : "")
+        : (sellToken ? sellToken.symbol : "")
+
     readonly property real priceImpactPercent: editingSide === "sell"
         ? root.quotePriceImpactBps / 100
-        : swapState.priceImpactPercent(parsedSellAmount, parsedBuyAmount, sellReserveNum, buyReserveNum)
+        : root.quoteOutPriceImpactBps / 100
 
     readonly property string swapModeText: editingSide === "buy" ? qsTr("Exact output (preview only)") : qsTr("Exact input")
 
@@ -306,6 +417,7 @@ Rectangle {
         if (root.poolError.length > 0) return root.poolError
         if (root.poolResolved && !root.poolExists) return qsTr("No pool / no liquidity for this pair.")
         if (root.quoteInError.length > 0) return qsTr("Quote failed: %1").arg(root.quoteInError)
+        if (root.quoteOutError.length > 0) return qsTr("Quote failed: %1").arg(root.quoteOutError)
         return ""
     }
 
@@ -335,12 +447,13 @@ Rectangle {
         return digits + "0".repeat(Math.max(0, exponent - (match[2] ? match[2].length : 0)))
     }
 
+    // The computed side is shown as the quote's exact-integer string verbatim (no
+    // double round-trip): the required input in the Buy direction, the expected
+    // output in the Sell direction.
     readonly property string sellDisplay: editingSide === "sell"
         ? sellInput
-        : (parsedSellAmount > 0 ? formatBaseUnits(parsedSellAmount) : "")
+        : ((root.quoteRequiredInRaw && root.quoteRequiredInRaw !== "0") ? root.quoteRequiredInRaw : "")
 
-    // Sell direction shows the quote's exact-integer expected output verbatim
-    // (no double round-trip); Buy direction still renders the local estimate.
     readonly property string buyDisplay: editingSide === "buy"
         ? buyInput
         : ((root.quoteExpectedOutRaw && root.quoteExpectedOutRaw !== "0") ? root.quoteExpectedOutRaw : "")
@@ -538,7 +651,8 @@ Rectangle {
             feeText: swapState.formatTokenAmount(root.feeAmount, root.sellToken ? root.sellToken.symbol : "")
             priceImpactText: swapState.formatPercent(root.priceImpactPercent)
             priceImpactPercent: root.priceImpactPercent
-            minReceivedText: swapState.formatTokenAmount(root.minReceivedAmount, root.buyToken ? root.buyToken.symbol : "")
+            boundLabel: root.boundLabel
+            boundText: root.boundSymbol ? (root.boundRaw + " " + root.boundSymbol) : root.boundRaw
         }
 
         SlippageToleranceControl {

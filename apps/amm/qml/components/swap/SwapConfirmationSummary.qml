@@ -81,7 +81,7 @@ ColumnLayout {
         priceImpactText: root.snapshot.priceImpactPercent || ""
         priceImpactPercent: Number(root.snapshot.priceImpactPercentValue) || 0
         slippageText: root.snapshot.slippageTolerance || ""
-        minReceivedText: qsTr("%1 %2")
+        boundText: qsTr("%1 %2")
             .arg(root.snapshot.minReceived || "")
             .arg(root.snapshot.buyToken || "")
     }

@@ -10,7 +10,10 @@ Item {
     property string priceImpactText: ""
     property real priceImpactPercent: 0
     property string slippageText: ""
-    property string minReceivedText: ""
+    // The slippage-bound row adapts to direction: "Min received" (exact input) or
+    // "Maximum sent" (exact output).
+    property string boundLabel: qsTr("Min received")
+    property string boundText: ""
 
     readonly property color priceImpactColor: {
         if (root.priceImpactPercent > 5) return "#F08A76";
@@ -130,7 +133,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 color: root.theme.colors.textSecondary
                 font.pixelSize: 12
-                text: qsTr("Min received")
+                text: root.boundLabel
             }
 
             Text {
@@ -139,7 +142,7 @@ Item {
                 color: root.theme.colors.textPrimary
                 font.bold: true
                 font.pixelSize: 12
-                text: root.minReceivedText
+                text: root.boundText
             }
         }
     }

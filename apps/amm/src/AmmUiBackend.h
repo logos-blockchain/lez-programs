@@ -63,6 +63,8 @@ public slots:
                             QString minOutDecimal, QString deadlineDecimal) override;
     QVariantMap swapExactInQuote(QString tokenInHex, QString tokenOutHex,
                                   QString amountInDecimal, int slippageBps) override;
+    QVariantMap swapExactOutQuote(QString tokenInHex, QString tokenOutHex,
+                                   QString amountOutDecimal, int slippageBps) override;
     // Reads the token list from TOKENS_CONFIG (via the module) so the Swap UI's
     // token picker is config-driven instead of hardcoded.
     QVariantList tokenList() override;

@@ -72,6 +72,15 @@ class AmmUiBackend
     // config_missing, bad_amount, invalid_slippage (slippageBps out of range),
     // backend_error. Read-only, no submission.
     SLOT(QVariantMap swapExactInQuote(QString tokenInHex, QString tokenOutHex, QString amountInDecimal, int slippageBps))
+    // Server-side SwapExactOutput preview for (tokenInHex, tokenOutHex): reads the
+    // pool and returns { status:"ok", error:"", requiredInRaw, maxInRaw,
+    // priceImpactBps } — the input needed for the desired output and the slippage
+    // ceiling on it — oriented and priced via the shared on-chain formula.
+    // amountOutDecimal is a decimal-string base-unit amount; slippageBps is basis
+    // points. On failure { status:"error", error:<code> } — no_pool,
+    // output_exceeds_liquidity, config_missing, bad_amount, backend_error.
+    // Read-only, no submission.
+    SLOT(QVariantMap swapExactOutQuote(QString tokenInHex, QString tokenOutHex, QString amountOutDecimal, int slippageBps))
     // Reads the token list config at TOKENS_CONFIG (absolute path, JSON array
     // of { symbol, name, definitionId, holding, decimals }) and returns it as
     // a QVariantList of QVariantMap entries. Returns an empty list if

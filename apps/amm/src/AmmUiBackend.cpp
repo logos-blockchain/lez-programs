@@ -241,6 +241,15 @@ QVariantMap AmmUiBackend::swapExactInQuote(QString tokenInHex, QString tokenOutH
         tokenInHex, tokenOutHex, amountInDecimal, slippageBps);
 }
 
+QVariantMap AmmUiBackend::swapExactOutQuote(QString tokenInHex, QString tokenOutHex,
+                                             QString amountOutDecimal, int slippageBps)
+{
+    // Read-only preview — the exact-output counterpart of swapExactInQuote:
+    // prices the input required for a desired output and its slippage ceiling.
+    return m_logos->amm_module.swapExactOutQuote(
+        tokenInHex, tokenOutHex, amountOutDecimal, slippageBps);
+}
+
 QVariantList AmmUiBackend::tokenList()
 {
     return m_logos->amm_module.tokenList();
