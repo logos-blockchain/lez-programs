@@ -287,6 +287,18 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
         return Ok(json!({ "status": "error", "code": "config_unavailable" }));
     };
 
+    // Take the vaults from the pool's STORED ids, in its `def_a`/`def_b` (creation)
+    // order — the guest asserts the provided vaults against `pool.vault_a_id` /
+    // `vault_b_id`, which needn't match `derive_pair`'s canonical order for a
+    // non-canonically created pool. (`pair.pool`/`current_tick`/`clock` are
+    // order-independent, so they still come from `derive_pair`.)
+    let Some(pool) = hex::decode(&request.pool_data)
+        .ok()
+        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+    else {
+        return Ok(json!({ "status": "error", "code": "no_pool" }));
+    };
+
     let user_input_holding =
         account_id_from_hex(&request.user_input_holding_id, "user input holding id")?;
     let user_output_holding =
@@ -307,8 +319,8 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
     let account_ids = [
         pair.config,
         pair.pool,
-        pair.vault_a,
-        pair.vault_b,
+        pool.vault_a_id,
+        pool.vault_b_id,
         user_input_holding,
         user_output_holding,
         pair.current_tick,
@@ -434,6 +446,7 @@ mod tests {
             amount_in: String::new(),
             min_out: String::new(),
             deadline_ms: String::new(),
+            pool_data: String::new(),
         })
         .unwrap();
         assert_eq!(plan, expected);

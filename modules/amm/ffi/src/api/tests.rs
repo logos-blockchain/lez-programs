@@ -22,8 +22,9 @@ use super::{
     plan::plan,
     position::AccountPlanHoldings,
     quote::{div_ceil_u256, minimum_opening_pair, quote, Q64},
+    swap::swap_exact_in_plan,
     ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PositionRequest, QuoteRequest,
-    TokenIdsRequest,
+    SwapExactInPlanRequest, TokenIdsRequest,
 };
 use crate::{
     account::{account_id_hex, account_read, decode_account, parse_base58_id, program_id_bytes},
@@ -699,4 +700,55 @@ fn stale_hash_returns_recomputed_quote_without_plan() {
     assert_eq!(value["status"], "error");
     assert_eq!(value["code"], "quote_changed");
     assert_eq!(value["quote"]["status"], "ok");
+}
+
+#[test]
+fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
+    // A pool created NON-canonically: its stored def_a is the smaller-valued
+    // token, so pool.vault_a_id is the vault for the smaller token — the opposite
+    // of what canonical_pair (larger first) would derive. The plan must emit the
+    // pool's own stored vaults, which is what the guest asserts against.
+    let token_small = AccountId::new([1; 32]);
+    let token_large = AccountId::new([2; 32]);
+    assert!(is_canonical_pair(token_large, token_small)); // large is canonical token_a
+
+    let pool_id = compute_pool_pda(AMM_PROGRAM, token_small, token_large);
+    let pool = PoolDefinition {
+        definition_token_a_id: token_small, // stored non-canonically (small first)
+        definition_token_b_id: token_large,
+        vault_a_id: compute_vault_pda(AMM_PROGRAM, pool_id, token_small),
+        vault_b_id: compute_vault_pda(AMM_PROGRAM, pool_id, token_large),
+        liquidity_pool_id: compute_liquidity_token_pda(AMM_PROGRAM, pool_id),
+        liquidity_pool_supply: 1_000,
+        reserve_a: 1_000,
+        reserve_b: 1_000,
+        fees: 30,
+    };
+
+    let holding = AccountId::new([9; 32]);
+    let plan = swap_exact_in_plan(SwapExactInPlanRequest {
+        amm_program_id: amm_program_id(),
+        token_in_id: account_id_hex(token_small),
+        token_out_id: account_id_hex(token_large),
+        config: account_read(compute_config_pda(AMM_PROGRAM), &config_account()),
+        user_input_holding_id: account_id_hex(holding),
+        user_output_holding_id: account_id_hex(holding),
+        amount_in: String::from("100"),
+        min_out: String::from("0"),
+        deadline_ms: String::from("0"),
+        pool_data: hex::encode(borsh::to_vec(&pool).unwrap()),
+    })
+    .unwrap();
+
+    // Slots 2 and 3 are vault_a / vault_b — in the pool's stored order, not the
+    // canonical order. (A domain error would leave accountIds absent, so these
+    // also assert the plan succeeded.)
+    assert_eq!(plan["accountIds"][2], account_id_hex(pool.vault_a_id));
+    assert_eq!(plan["accountIds"][3], account_id_hex(pool.vault_b_id));
+    // Guard: the stored vault_a genuinely differs from the canonical derivation
+    // (the pre-fix bug would have emitted this one in slot 2).
+    assert_ne!(
+        pool.vault_a_id,
+        compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
+    );
 }

@@ -609,13 +609,28 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         return {};
     }
 
-    // amm_swap_exact_in_plan resolves the pool, reorders holdings to the pool's
-    // canonical def order, encodes SwapExactInput, and returns a ready-to-submit plan.
+    // Read the pool so the plan can use its stored vault ids (the guest asserts
+    // the vaults in the pool's creation order — see amm_swap_exact_in_plan).
+    const FfiResult poolId = call(amm_pool_id, json{
+        {"ammProgramId", net.amm_program_id},
+        {"tokenInId", def_a_hex},
+        {"tokenOutId", def_b_hex},
+    });
+    if (!poolId.ok) {
+        AMM_TRACE("swapExactInput: FAIL amm_pool_id");
+        return {};
+    }
+    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+
+    // amm_swap_exact_in_plan resolves the pool accounts, encodes SwapExactInput,
+    // and returns a ready-to-submit plan.
     const FfiResult planResult = call(amm_swap_exact_in_plan, json{
         {"ammProgramId", net.amm_program_id},
         {"tokenInId", def_a_hex},
         {"tokenOutId", def_b_hex},
         {"config", config},
+        {"poolData", pool_data},
         {"userInputHoldingId", user_input_holding_hex},
         {"userOutputHoldingId", user_output_holding_hex},
         {"amountIn", amount_in_decimal},
