@@ -92,4 +92,26 @@ class AmmUiBackend
     // a QVariantList of QVariantMap entries. Returns an empty list if
     // TOKENS_CONFIG is unset/unreadable/invalid.
     SLOT(QVariantList tokenList())
+
+    // Server-side create-pool preview from the two deposit amounts. `request`
+    // carries { tokenAId, tokenBId, amountARaw, amountBRaw } (ids hex or base58;
+    // amounts decimal-string base units). Returns { status:"ok", error:"",
+    // amountARaw, amountBRaw, expectedLpRaw, lockedLpRaw, initialPriceRaw } — the
+    // LP the creator receives and the opening price, via the shared on-chain math.
+    // On failure { status:"error", error:<code> } — invalid_token_id,
+    // same_token_pair, amount_too_low, amount_required, bad_amount, backend_error.
+    // Read-only, no submission (the fee is not needed — it isn't part of the pool
+    // PDA nor the pricing).
+    SLOT(QVariantMap liquidityQuote(QVariantMap request))
+    // Submits a NewDefinition transaction creating the pool for the request's pair.
+    // `request` carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId,
+    // amountARaw, amountBRaw, feeBps, deadlineMs } (ids hex or base58; amounts/deadline
+    // decimal strings). A new pool has no existing LP holding, so the caller supplies
+    // lpHoldingId — a fresh account it created via createAccountPublic(); the backend
+    // just forwards to the module and creates no wallet accounts here. Returns
+    // { status:"ok", error:"", transactionId:<hex tx hash> } on success, else
+    // { status:"error", error:<code> } (wallet_unavailable, config_missing,
+    // invalid_account_id, bad_amount, bad_fee_bps_amount, invalid_fee_tier,
+    // wallet_submission_failed, backend_error).
+    SLOT(QVariantMap createPool(QVariantMap request))
 }

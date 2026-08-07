@@ -20,7 +20,6 @@ QtObject {
         "quoteLoading": root.quoteLoading,
         "quoteStale": root.quoteStale,
         "submitting": root.submitting,
-        "poolCreationPending": root.selectedPoolCreationPending(),
         "transactionId": root.transactionId,
         "errorCode": root.flowErrorCode || root.contextErrorCode
                      || root.quoteErrorCode
@@ -39,12 +38,9 @@ QtObject {
     property string contextErrorCode: ""
     property string quoteErrorCode: ""
     property var pendingQuoteRequest: ({ "ok": false, "request": ({}) })
-    property var pendingPoolProbes: []
-    property bool poolProbeInFlight: false
 
     signal tokenResolutionFinished(bool finalResponse)
     signal tokenResolutionFailed(string code)
-    signal poolActivated(var quote)
     signal quoteRefreshRequested(bool immediate)
     signal submitSucceeded
     signal submitFailed
@@ -55,13 +51,6 @@ QtObject {
         interval: 250
         repeat: false
         onTriggered: root.requestQuoteNow(root.quoteSerial)
-    }
-
-    property Timer poolPoller: Timer {
-        interval: 5000
-        repeat: true
-        running: root.pendingPoolProbes.length > 0
-        onTriggered: root.pollPendingPool()
     }
 
     onNewPositionContextChanged: root.invalidateQuote()
@@ -207,13 +196,19 @@ QtObject {
             return
         }
 
+        // Pool creation (initialPriceRealRaw is set only on the missing-pool path) goes
+        // through the new createPool op — hex ids, caller-provided accounts. Add-liquidity
+        // keeps the legacy submitNewPosition.
+        if (snapshot.request.initialPriceRealRaw !== undefined) {
+            root.createPool(snapshot)
+            return
+        }
+
         root.runtime.watch(root.backend.submitNewPosition(snapshot.request, snapshot.quoteHash),
             function(result) {
                 if (result && result.status === "submitted"
                         && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(
                             String(result.transactionId || ""))) {
-                    if (snapshot.request.initialPriceRealRaw !== undefined)
-                        root.watchPoolCreation(snapshot.poolProbeRequest, result.deadlineMs)
                     root.submitting = false
                     root.transactionId = result.transactionId
                     root.flowErrorCode = ""
@@ -224,6 +219,58 @@ QtObject {
                     return
                 }
                 root.finishSubmitFailure(result || root.quoteError("wallet_submission_failed"))
+            },
+            function(error) {
+                root.finishSubmitFailure(root.quoteError("wallet_submission_failed"))
+            })
+    }
+
+    // Create a pool via the new createPool op. A new pool has no pre-existing LP
+    // holding, so the caller provides a fresh account: create one, then submit. No
+    // confirmation poll yet (transactionStatus is pending an upstream dependency).
+    function createPool(snapshot) {
+        root.runtime.watch(root.backend.createAccountPublic(),
+            function(lpId) {
+                if (!lpId || String(lpId).length === 0) {
+                    root.finishSubmitFailure(root.quoteError("wallet_submission_failed"))
+                    return
+                }
+                root.submitCreatePool(snapshot, String(lpId))
+            },
+            function(error) {
+                root.finishSubmitFailure(root.quoteError("wallet_submission_failed"))
+            })
+    }
+
+    function submitCreatePool(snapshot, lpHoldingId) {
+        var request = {
+            "tokenAId": snapshot.request.tokenAId,
+            "tokenBId": snapshot.request.tokenBId,
+            "holdingAId": snapshot.holdingAId,
+            "holdingBId": snapshot.holdingBId,
+            "lpHoldingId": lpHoldingId,
+            "amountARaw": snapshot.request.amountARaw,
+            "amountBRaw": snapshot.request.amountBRaw,
+            "feeBps": snapshot.request.feeBps,
+            // u64-max sentinel = no deadline, same as the swap submits.
+            "deadlineMs": "18446744073709551615"
+        }
+        root.runtime.watch(root.backend.createPool(request),
+            function(result) {
+                if (result && result.status === "ok"
+                        && String(result.transactionId || "").length > 0) {
+                    root.submitting = false
+                    root.transactionId = String(result.transactionId)
+                    root.flowErrorCode = ""
+                    root.contextErrorCode = ""
+                    root.quoteErrorCode = ""
+                    root.invalidateQuote()
+                    root.submitSucceeded()
+                    return
+                }
+                var code = result && result.error ? String(result.error)
+                                                  : "wallet_submission_failed"
+                root.finishSubmitFailure(root.quoteError(code))
             },
             function(error) {
                 root.finishSubmitFailure(root.quoteError("wallet_submission_failed"))
@@ -245,89 +292,6 @@ QtObject {
         if (hasFreshQuote)
             return
         root.scheduleQuote(true, root.pendingQuoteRequest)
-    }
-
-    function watchPoolCreation(request, deadlineMs) {
-        const key = root.pairKey(request)
-        let deadline = Number(deadlineMs)
-        if (!isFinite(deadline) || deadline <= 0)
-            deadline = 0
-        const pending = root.pendingPoolProbes.filter(function(item) {
-            return item.key !== key
-        })
-        pending.push({
-            "key": key,
-            "request": request,
-            "deadlineMs": deadline
-        })
-        root.pendingPoolProbes = pending
-        Qt.callLater(root.pollPendingPool)
-    }
-
-    function pollPendingPool() {
-        if (root.poolProbeInFlight || root.pendingPoolProbes.length === 0
-                || !root.walletStateReady || root.runtime === null) {
-            return
-        }
-        const pending = root.pendingPoolProbes[0]
-        root.poolProbeInFlight = true
-        root.runtime.watch(root.backend.quoteNewPosition(pending.request),
-            function(quote) {
-                root.finishPoolProbe(pending, quote)
-            },
-            function(error) {
-                root.finishPoolProbe(pending, null)
-            })
-    }
-
-    function finishPoolProbe(pending, quote) {
-        root.poolProbeInFlight = false
-        if (quote && quote.poolStatus === "active_pool") {
-            root.removePendingPool(pending.key)
-            if (root.matchesSelectedPair(pending.request)) {
-                root.poolActivated(quote)
-                root.invalidateQuote()
-                root.refreshContext(true)
-            }
-            return
-        }
-        if (pending.deadlineMs > 0 && Date.now() >= pending.deadlineMs) {
-            root.removePendingPool(pending.key)
-            return
-        }
-        root.rotatePendingPool()
-    }
-
-    function pairKey(request) {
-        return String(request.tokenAId || "") + ":" + String(request.tokenBId || "")
-    }
-
-    function matchesSelectedPair(request) {
-        return root.pairKey(root.pendingQuoteRequest.request || {}) === root.pairKey(request)
-    }
-
-    function selectedPoolCreationPending() {
-        const request = root.pendingQuoteRequest.request || {}
-        if (!request.tokenAId || !request.tokenBId)
-            return false
-        const selected = root.pairKey(request)
-        return root.pendingPoolProbes.some(function(item) {
-            return item.key === selected
-        })
-    }
-
-    function removePendingPool(key) {
-        root.pendingPoolProbes = root.pendingPoolProbes.filter(function(item) {
-            return item.key !== key
-        })
-    }
-
-    function rotatePendingPool() {
-        if (root.pendingPoolProbes.length < 2)
-            return
-        const pending = root.pendingPoolProbes.slice(1)
-        pending.push(root.pendingPoolProbes[0])
-        root.pendingPoolProbes = pending
     }
 
     function draftChanged() {

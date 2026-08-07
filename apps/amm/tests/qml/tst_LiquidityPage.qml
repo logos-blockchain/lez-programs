@@ -191,44 +191,6 @@ TestCase {
         compare(page.flow.submitting, false)
     }
 
-    function test_base58MissingPoolSubmissionStartsPoolWatch() {
-        var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true,
-            "submitResult": {
-                "status": "submitted",
-                "transactionId": submittedTransactionId,
-                "deadlineMs": String(Date.now() + 60000)
-            }
-        })
-        var runtime = createTemporaryObject(runtimeComponent, testCase)
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend,
-            "runtime": runtime
-        })
-        verify(backend)
-        verify(runtime)
-        verify(page)
-
-        var probe = {
-            "tokenAId": "22222222222222222222222222222222",
-            "tokenBId": "33333333333333333333333333333333"
-        }
-        page.flow.pendingQuoteRequest = { "ok": true, "request": probe }
-        page.flow.confirm({
-            "request": {
-                "initialPriceRealRaw": "18446744073709551616"
-            },
-            "poolProbeRequest": probe,
-            "quoteHash": "sha256:expected"
-        })
-        wait(0)
-
-        compare(page.flow.transactionId, submittedTransactionId)
-        compare(page.flow.pendingPoolProbes.length, 1)
-        compare(page.flow.selectedPoolCreationPending(), true)
-        compare(page.flow.poolProbeInFlight, false)
-    }
-
     function test_nativeHexSubmittedResultDoesNotEnterSuccessState() {
         var backend = createTemporaryObject(backendComponent, testCase, {
             "walletStateReady": true,
@@ -257,70 +219,4 @@ TestCase {
         compare(page.flow.submitting, false)
     }
 
-    function test_poolProbeDoesNotPublishProbeAmountsAsCurrentQuote() {
-        var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true
-        })
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend
-        })
-        verify(backend)
-        verify(page)
-
-        var request = {
-            "tokenAId": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
-            "tokenBId": "22222222222222222222222222222222"
-        }
-        var pending = { "key": page.flow.pairKey(request), "request": request }
-        page.flow.pendingQuoteRequest = { "ok": true, "request": request }
-        page.flow.pendingPoolProbes = [pending]
-        page.flow.newPositionQuote = {
-            "status": "ok",
-            "poolStatus": "missing_pool",
-            "tokenAId": request.tokenAId,
-            "tokenBId": request.tokenBId
-        }
-        page.flow.quoteStale = false
-
-        page.flow.finishPoolProbe(pending, {
-            "status": "ok",
-            "poolStatus": "active_pool",
-            "tokenAId": request.tokenAId,
-            "tokenBId": request.tokenBId
-        })
-
-        compare(page.flow.pendingPoolProbes.length, 0)
-        compare(page.flow.newPositionQuote.poolStatus, "missing_pool")
-        verify(page.flow.quoteStale)
-    }
-
-    function test_poolProbeStopsBlockingAfterTransactionDeadline() {
-        var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true
-        })
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend
-        })
-        verify(backend)
-        verify(page)
-
-        var request = {
-            "tokenAId": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
-            "tokenBId": "22222222222222222222222222222222"
-        }
-        var pending = {
-            "key": page.flow.pairKey(request),
-            "request": request,
-            "deadlineMs": Date.now() - 1
-        }
-        page.flow.pendingQuoteRequest = { "ok": true, "request": request }
-        page.flow.pendingPoolProbes = [pending]
-        page.flow.poolProbeInFlight = true
-
-        page.flow.finishPoolProbe(pending, null)
-
-        compare(page.flow.pendingPoolProbes.length, 0)
-        compare(page.flow.poolProbeInFlight, false)
-        verify(!page.flow.selectedPoolCreationPending())
-    }
 }

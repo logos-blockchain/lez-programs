@@ -48,7 +48,6 @@ AmmActionCard {
     readonly property bool quoteLoading: root.flowState.quoteLoading === true
     readonly property bool submitting: root.flowState.submitting === true
     readonly property bool quoteStale: root.flowState.quoteStale === true
-    readonly property bool poolCreationPending: root.flowState.poolCreationPending === true
     readonly property string submitError: root.flowState.errorCode
                                                   ? root.issueText(root.flowState.errorCode) : ""
     readonly property string transactionId: String(root.flowState.transactionId || "")
@@ -95,7 +94,11 @@ AmmActionCard {
                                        && !root.quoteLoading
                                        && !root.quoteStale
                                        && !root.submitting
-                                       && !root.poolCreationPending
+                                       // A create-pool tx for this pair is already in flight
+                                       // (transactionId set) but the pool still reads missing until
+                                       // the chain processes it — block confirm so a stale
+                                       // missing_pool quote can't submit a duplicate NewDefinition.
+                                       && !(root.missingPool && root.transactionId.length > 0)
 
     signal quoteRequested(bool immediate, var quoteRequest)
     signal confirmationRequested(var snapshot)
@@ -600,7 +603,6 @@ AmmActionCard {
             text: root.submitting
                   ? qsTr("Submitting…")
                   : root.contextLoading ? qsTr("Loading…")
-                  : root.poolCreationPending ? qsTr("Waiting for pool")
                   : root.missingPool ? qsTr("Create pool") : qsTr("Add liquidity")
             enabled: root.canConfirm
             onClicked: root.confirmationRequested(root.submissionSnapshot())
@@ -854,22 +856,6 @@ AmmActionCard {
         root.localErrors = []
         root.noteDraftChanged()
         root.requestQuote(true)
-    }
-
-    function acceptPoolActivation(quote) {
-        if (!quote || quote.status !== "ok"
-                || quote.poolStatus !== "active_pool"
-                || !root.quoteMatchesSelectedPair(quote)) {
-            return false
-        }
-        root.confirmedPoolStatus = "active_pool"
-        root.activePoolQuote = quote
-        root.amountA = ""
-        root.amountB = ""
-        root.minimumAmountARaw = ""
-        root.minimumAmountBRaw = ""
-        root.localErrors = []
-        return true
     }
 
     function noteDraftChanged() {
@@ -1449,8 +1435,12 @@ AmmActionCard {
         var built = root.buildQuoteRequest()
         return {
             "request": built.request,
-            "poolProbeRequest": root.poolProbeRequest(built.request),
             "quoteHash": String(root.quotePayload.quoteHash || ""),
+            // Canonical-order holdings for the create path's createPool call: the
+            // request's tokenAId/amountARaw are canonical, so holdingAId must be the
+            // canonical token A's holding too (createPool re-canonicalizes as a no-op).
+            "holdingAId": String((root.displayIsCanonical ? root.tokenA : root.tokenB).holdingId || ""),
+            "holdingBId": String((root.displayIsCanonical ? root.tokenB : root.tokenA).holdingId || ""),
             "pairText": qsTr("%1 / %2").arg(root.shortTokenName(root.tokenA)).arg(root.shortTokenName(root.tokenB)),
             "feeText": root.feeLabel(root.selectedFeeBps),
             "depositAText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "A"),

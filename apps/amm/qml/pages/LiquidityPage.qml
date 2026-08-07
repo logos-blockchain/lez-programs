@@ -248,10 +248,6 @@ Item {
             form.failTokenResolution(code)
         }
 
-        function onPoolActivated(quote) {
-            form.acceptPoolActivation(quote)
-        }
-
         function onQuoteRefreshRequested(immediate) {
             form.requestQuote(immediate)
         }

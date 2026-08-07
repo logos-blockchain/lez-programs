@@ -345,36 +345,6 @@ TestCase {
         compare(form.amountA, "2")
     }
 
-    function test_poolActivationClearsCreationDraftWithoutPublishingProbeAmounts() {
-        var form = createForm()
-        form.confirmedPoolStatus = "missing_pool"
-        form.amountA = "3"
-        form.amountB = "2"
-        form.minimumAmountARaw = "3"
-        form.minimumAmountBRaw = "2000000"
-
-        verify(form.acceptPoolActivation({
-            "status": "ok",
-            "tokenAId": tokenHigh,
-            "tokenBId": tokenLow,
-            "poolStatus": "active_pool",
-            "reserveARaw": "3000000",
-            "reserveBRaw": "2"
-        }))
-
-        verify(form.activePool)
-        compare(form.activePoolQuote.poolStatus, "active_pool")
-        compare(form.amountA, "")
-        compare(form.amountB, "")
-        compare(form.minimumAmountARaw, "")
-        compare(form.minimumAmountBRaw, "")
-        quoteRequestedSpy.target = form
-        quoteRequestedSpy.clear()
-        form.requestQuote(true)
-        compare(quoteRequestedSpy.count, 0)
-        compare(form.localErrors.length, 0)
-    }
-
     function test_staleQuoteErrorsDoNotMarkCurrentDraft() {
         var quote = {
             "status": "ok",
