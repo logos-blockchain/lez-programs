@@ -137,6 +137,39 @@ pub struct SwapExactOutPlanRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct LiquidityQuoteRequest {
+    pub token_a_id: String,
+    pub token_b_id: String,
+    #[serde(default)]
+    pub amount_a_raw: Option<String>,
+    #[serde(default)]
+    pub amount_b_raw: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePoolPlanRequest {
+    /// Resolved by the module from `AMM_PROGRAM_BIN` (like every id-deriving op) —
+    /// the FFI is stateless and can't read it itself.
+    pub amm_program_id: String,
+    /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
+    /// the `current_tick` PDA depends on (same as the swap plan requests).
+    pub config: AccountRead,
+    pub token_a_id: String,
+    pub token_b_id: String,
+    #[serde(default)]
+    pub amount_a_raw: Option<String>,
+    #[serde(default)]
+    pub amount_b_raw: Option<String>,
+    pub fee_bps: u32,
+    pub deadline_ms: String,
+    pub user_holding_a_id: String,
+    pub user_holding_b_id: String,
+    pub user_holding_lp_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ProgramIdRequest {
     pub elf: String,
 }

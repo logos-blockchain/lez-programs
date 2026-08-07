@@ -7,6 +7,7 @@ mod config;
 mod context;
 mod funding;
 mod holding;
+mod liquidity;
 mod pair;
 mod plan;
 mod position;
@@ -21,10 +22,10 @@ mod tests;
 use std::{error::Error, fmt};
 
 pub use request::{
-    ConfigIdRequest, ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PoolIdRequest,
-    PositionRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapExactInPlanRequest,
-    SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
-    TokenIdsRequest,
+    ConfigIdRequest, ContextRequest, CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest,
+    PairSnapshot, PlanRequest, PoolIdRequest, PositionRequest, ProgramIdRequest, QuoteRequest,
+    ResolvePoolRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
+    SwapExactOutQuoteRequest, SwapPairRequest, TokenIdsRequest,
 };
 use serde_json::Value;
 
@@ -127,6 +128,16 @@ pub fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> AmmResult {
 /// Builds the `SwapExactOutput` wallet submission for a token pair.
 pub fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> AmmResult {
     swap::swap_exact_out_plan(request).map_err(Into::into)
+}
+
+/// Prices a create-pool deposit: the LP the creator receives and the opening price.
+pub fn liquidity_quote(request: LiquidityQuoteRequest) -> AmmResult {
+    liquidity::liquidity_quote(request).map_err(Into::into)
+}
+
+/// Builds the `NewDefinition` submission for creating a pool.
+pub fn create_pool_plan(request: CreatePoolPlanRequest) -> AmmResult {
+    liquidity::create_pool_plan(request).map_err(Into::into)
 }
 
 /// Derives the AMM `ProgramId` (Image ID) from a deployed program binary.

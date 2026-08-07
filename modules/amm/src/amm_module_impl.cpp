@@ -746,6 +746,136 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
     return jStr(obj, "tx_hash");
 }
 
+LogosMap AmmModuleImpl::liquidityQuote(const LogosMap& request) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    // Pure preview — no program id / chain reads / fee. Normalize the pair to hex (the
+    // liquidity UI still sources base58 ids from newPositionContext; transitional).
+    const std::string token_a = normalizeAccountId(jStr(request, "tokenAId"));
+    const std::string token_b = normalizeAccountId(jStr(request, "tokenBId"));
+    if (token_a.empty() || token_b.empty())
+        return error("invalid_token_id");
+
+    // amountARaw/amountBRaw arrive as a JSON number (CLI) or decimal string (UI);
+    // coerce to canonical decimal strings (rejects floats — see jsonAmountToDecimal).
+    // If an amount field is present but malformed, return bad_amount; otherwise leave it
+    // out so the FFI returns amount_required.
+    json quoteRequest = {
+        {"tokenAId", token_a},
+        {"tokenBId", token_b},
+    };
+    if (request.contains("amountARaw")) {
+        std::string amount_a_decimal;
+        if (!jsonAmountToDecimal(request.at("amountARaw"), amount_a_decimal))
+            return error("bad_amount");
+        quoteRequest["amountARaw"] = amount_a_decimal;
+    }
+    if (request.contains("amountBRaw")) {
+        std::string amount_b_decimal;
+        if (!jsonAmountToDecimal(request.at("amountBRaw"), amount_b_decimal))
+            return error("bad_amount");
+        quoteRequest["amountBRaw"] = amount_b_decimal;
+    }
+
+    const FfiResult quoteResult = call(amm_liquidity_quote, quoteRequest);
+    if (!quoteResult.ok)
+        return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
+
+    // Success: wrap { amountARaw, amountBRaw, expectedLpRaw, lockedLpRaw,
+    // initialPriceRaw } in the standard envelope.
+    LogosMap out = quoteResult.value;
+    out["status"] = "ok";
+    out["error"] = "";
+    return out;
+}
+
+LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    // config_missing == no program id from AMM_PROGRAM_BIN (same as swapExactInQuote).
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return error("config_missing");
+
+    // amm_create_pool_plan needs the config account for the twap program id the
+    // current-tick PDA derives from; a bad/absent config surfaces from the plan as
+    // config_unavailable (no bespoke check here — same as the swap plans).
+    const FfiResult configResult =
+        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
+    if (!configResult.ok)
+        return error("backend_error");
+    const json config = readPublicAccount(jStr(configResult.value, "configId"));
+
+    // Normalize the pair + user holdings (incl. the caller-provided LP holding) to hex
+    // (base58 tolerated — transitional). A new pool has no pre-existing LP holding, so
+    // lpHoldingId is a fresh account the caller supplies; an empty/invalid id fails here.
+    const std::string token_a = normalizeAccountId(jStr(request, "tokenAId"));
+    const std::string token_b = normalizeAccountId(jStr(request, "tokenBId"));
+    const std::string holding_a = normalizeAccountId(jStr(request, "holdingAId"));
+    const std::string holding_b = normalizeAccountId(jStr(request, "holdingBId"));
+    const std::string user_lp = normalizeAccountId(jStr(request, "lpHoldingId"));
+    if (token_a.empty() || token_b.empty() || holding_a.empty() || holding_b.empty()
+        || user_lp.empty())
+        return error("invalid_account_id");
+
+    std::string amount_a_decimal;
+    std::string amount_b_decimal;
+    std::string deadline_decimal;
+    if (!jsonAmountToDecimal(request.value("amountARaw", json()), amount_a_decimal)
+        || !jsonAmountToDecimal(request.value("amountBRaw", json()), amount_b_decimal)
+        || !jsonAmountToDecimal(request.value("deadlineMs", json()), deadline_decimal))
+        return error("bad_amount");
+
+    // feeBps deserializes into a u32 in the plan request, so a missing / null / float / string
+    // value would fail the FFI's serde parse and leak an "invalid request JSON" error instead of
+    // a stable code. Require a JSON integer here; fee-tier support is validated in the plan op.
+    const json fee_val = request.value("feeBps", json());
+    if (!fee_val.is_number_integer())
+        return error("bad_fee_bps_amount");
+
+    // amm_create_pool_plan resolves the pool accounts (canonicalizing the pair),
+    // encodes NewDefinition (with the fee), and returns a ready-to-submit plan.
+    const FfiResult planResult = call(amm_create_pool_plan, json{
+        {"ammProgramId", amm_program_id},
+        {"config", config},
+        {"tokenAId", token_a},
+        {"tokenBId", token_b},
+        {"amountARaw", amount_a_decimal},
+        {"amountBRaw", amount_b_decimal},
+        {"feeBps", fee_val},
+        {"deadlineMs", deadline_decimal},
+        {"userHoldingAId", holding_a},
+        {"userHoldingBId", holding_b},
+        {"userHoldingLpId", user_lp},
+    });
+    if (!planResult.ok)
+        return error(planResult.error.empty() ? "backend_error" : planResult.error);
+    const json plan = planResult.value;
+
+    const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
+    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::string program_id = jStr(plan, "programId");
+
+    AMM_TRACE("createPool: SUBMIT programId=" << program_id
+              << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
+
+    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+        accounts, signers, instruction, program_id);
+    AMM_TRACE("createPool: tx reply=" << reply);
+
+    const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
+    if (!obj.is_object() || !obj.value("success", false))
+        return error("wallet_submission_failed");
+
+    // The native tx hash (64-char hex) is returned as-is — hex everywhere.
+    return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
+}
+
 LogosList AmmModuleImpl::tokenList() {
     LogosList out = LogosList::array();
 

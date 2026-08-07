@@ -101,6 +101,39 @@ public:
                                 const nlohmann::json& max_in,
                                 const nlohmann::json& deadline);
 
+    /// Prices creating a pool for (tokenAId, tokenBId) from the two deposit amounts.
+    /// A pure preview — no chain reads, and no fee needed (the fee is not part of the
+    /// pool PDA and doesn't affect the opening LP/price). Returns `{ status:"ok",
+    /// error:"", amountARaw, amountBRaw, expectedLpRaw, lockedLpRaw, initialPriceRaw }`
+    /// computed via the shared `amm_core` opening-LP math, so `expectedLpRaw` is
+    /// exactly what the guest mints. `request` carries `{ tokenAId, tokenBId,
+    /// amountARaw, amountBRaw }` (ids hex or base58, normalized to hex; amounts a JSON
+    /// integer or decimal string). On failure: `{ status:"error", error:<code> }` —
+    /// `invalid_token_id`, `same_token_pair`, `bad_amount` (an amount field is present
+    /// but not a valid integer — e.g. a float, from `jsonAmountToDecimal`),
+    /// `amount_required` (an amount field is omitted), `invalid_raw_amount` (non-digit or
+    /// beyond the u128 range), `amount_must_be_positive` (zero), `amount_too_low`
+    /// (deposits below the locked minimum), or `backend_error`. `amount_required`,
+    /// `invalid_raw_amount`, `amount_must_be_positive`, `same_token_pair`, and
+    /// `amount_too_low` come from the FFI; the rest from the module. The caller decides
+    /// create-vs-add by pool existence before calling this.
+    LogosMap liquidityQuote(const LogosMap& request);
+
+    /// Submits a `NewDefinition` transaction creating the pool for the request's pair.
+    /// `request` carries `{ tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId,
+    /// amountARaw, amountBRaw, feeBps, deadlineMs }` (ids hex or base58, normalized to
+    /// hex; amounts/deadline a JSON integer or decimal string, deadline a u64 unix-ms).
+    /// The caller provides `lpHoldingId` — a fresh (empty) account the guest initializes
+    /// and mints the creator's LP tokens into; a new pool has no pre-existing LP holding,
+    /// and the module never creates wallet accounts. On success:
+    /// `{ status:"ok", error:"", transactionId:<hex tx hash> }`. On failure:
+    /// `{ status:"error", error:<code> }` — `config_missing`, `backend_error`,
+    /// `invalid_account_id`, `bad_amount` (malformed amount/deadline), `bad_fee_bps_amount`
+    /// (`feeBps` not a JSON integer), `wallet_submission_failed`, or a plan code (e.g.
+    /// `invalid_fee_tier`, `config_unavailable`). Unlike the swaps, a submit failure carries
+    /// a code so the create-pool UI can tell the user why.
+    LogosMap createPool(const LogosMap& request);
+
     /// Reads the token list config at TOKENS_CONFIG (a JSON array of
     /// { symbol, name, definitionId, holding, decimals }) and returns it,
     /// normalizing definitionId/holding to lowercase hex. Empty list if
