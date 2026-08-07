@@ -262,6 +262,7 @@ Item {
     TransactionConfirmationDialog {
         id: confirmationDialog
 
+        objectName: "liquidityConfirmDialog"
         title: qsTr("Confirm new position")
         confirmText: qsTr("Submit")
         busy: newPositionFlow.submitting

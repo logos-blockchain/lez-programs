@@ -597,6 +597,7 @@ AmmActionCard {
         }
 
         AmmPrimaryButton {
+            objectName: "newPositionSubmitButton"
             Layout.fillWidth: true
             Layout.minimumHeight: 56
             theme: root.theme

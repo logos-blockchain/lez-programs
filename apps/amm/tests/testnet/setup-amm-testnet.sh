@@ -2,11 +2,12 @@
 #
 # setup-amm-testnet.sh
 # --------------------
-# Deploy the token/amm/twap programs, mint two fungible tokens, initialize the
-# AMM, and create a pool — from scratch — against whatever sequencer your
-# `wallet` / `spel` config points at. This is the prerequisite state that the
-# AMM UI swap test (apps/amm/tests/swap.mjs) exercises; run it once to stand up
-# a swappable pool, then launch the UI / run the test.
+# Deploy the token/amm/twap programs, mint three fungible tokens, initialize the
+# AMM, and create the A/B pool — from scratch — against whatever sequencer your
+# `wallet` / `spel` config points at. This is the prerequisite state the AMM UI
+# tests exercise: swap.mjs swaps against the seeded A/B pool, and create-pool.mjs
+# creates the (deliberately unseeded) A/C pool. Run it once, then launch the UI /
+# run the tests.
 #
 # DETERMINISTIC TEST WALLET: by default the script bootstraps an ISOLATED wallet
 # (git-ignored, under this folder) by restoring it from a fixed BIP-39 mnemonic
@@ -63,7 +64,10 @@ TEST_SEQUENCER_ADDR="${TEST_SEQUENCER_ADDR:-}"
 
 # Deterministic accounts, created in THIS fixed order after a fresh restore so
 # their ids are reproducible. Resolved to ids at runtime via `wallet account id`.
-ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding)
+# token-c-* are APPENDED (not inserted) so the pre-existing a/b/lp ids don't shift.
+# Token C has no seeded pool — the create-pool UI test (apps/amm/tests/create-pool.mjs)
+# creates the A/C pool itself, minting its own LP holding via the app.
+ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding)
 
 ###############################################################################
 # CONFIG — non-account parameters (edit freely)
@@ -81,6 +85,7 @@ AMM_IDL="artifacts/amm-idl.json"
 # --- Token metadata ---
 TOKEN_A_NAME="TOKEN A"; TOKEN_A_SYMBOL="TKA"; TOKEN_A_SUPPLY="1000000000000000000000"; TOKEN_A_DECIMALS=18
 TOKEN_B_NAME="TOKEN B"; TOKEN_B_SYMBOL="TKB"; TOKEN_B_SUPPLY="1000000000000000000000"; TOKEN_B_DECIMALS=18
+TOKEN_C_NAME="TOKEN C"; TOKEN_C_SYMBOL="TKC"; TOKEN_C_SUPPLY="1000000000000000000000"; TOKEN_C_DECIMALS=18
 
 # --- Pool inputs ---
 CLOCK_ACCOUNT="4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU"  # canonical LEZ system clock
@@ -172,10 +177,11 @@ acct_id() {
   printf '%s' "$out" | grep -oE '[1-9A-HJ-NP-Za-km-z]{32,44}' | head -n1
 }
 
-# Restore the isolated test wallet from the fixed mnemonic and register the
-# deterministic accounts. `restore-keys` REWRITES storage (safe here — it's a
-# throwaway test home). Idempotent: skips accounts that already resolve.
-bootstrap_test_wallet() {
+# Restore the isolated test wallet from the fixed mnemonic. `restore-keys`
+# REWRITES storage (safe here — it's a throwaway test home). Only the key
+# material is restored here; account registration is a separate idempotent step
+# (ensure_accounts) so adding a label doesn't require a full re-restore.
+restore_test_wallet() {
   sec "Bootstrap deterministic test wallet"
   kv "wallet home" "$TEST_WALLET_HOME"
   mkdir -p "$TEST_WALLET_HOME"
@@ -198,14 +204,24 @@ bootstrap_test_wallet() {
   printf '%s\n%s\n' "$TEST_MNEMONIC" "$TEST_WALLET_PASSWORD" \
     | wallet restore-keys --depth "$TEST_WALLET_DEPTH" \
     || die "wallet restore-keys failed"
+}
 
+# Register the deterministic accounts, in ACCOUNT_LABELS order. Idempotent —
+# skips accounts that already resolve, so newly-appended labels (e.g. token-c-*)
+# are created on an existing wallet WITHOUT re-restoring keys. Their ids stay
+# deterministic because they're appended after the pre-existing accounts.
+ensure_accounts() {
+  sec "Ensure deterministic test accounts"
   local label
   for label in "${ACCOUNT_LABELS[@]}"; do
     if acct_id "$label" >/dev/null 2>&1; then
       kv "exists" "$label"
     else
       log "${DIM}\$ wallet account new public --label $label${RST}"
-      wallet account new public --label "$label" || die "failed to create account: $label"
+      # Feed the password in case the wallet prompts to unlock before writing.
+      printf '%s\n' "$TEST_WALLET_PASSWORD" \
+        | wallet account new public --label "$label" \
+        || die "failed to create account: $label (try FORCE_BOOTSTRAP=1 to re-restore)"
     fi
   done
 }
@@ -223,10 +239,13 @@ kv "repo root"        "$REPO_ROOT"
 kv "token bin" "$TOKEN_BIN"; kv "amm bin" "$AMM_BIN"; kv "twap bin" "$TWAP_BIN"
 
 if [ ! -d "$TEST_WALLET_HOME" ] || [ "${FORCE_BOOTSTRAP:-0}" = "1" ]; then
-  bootstrap_test_wallet
+  restore_test_wallet
 else
-  kv "test wallet" "reusing $TEST_WALLET_HOME (FORCE_BOOTSTRAP=1 to re-restore)"
+  kv "test wallet" "reusing $TEST_WALLET_HOME (FORCE_BOOTSTRAP=1 to re-restore keys)"
 fi
+# Always register accounts — creates any newly-added labels (e.g. token-c-*) on
+# an existing wallet without a full key re-restore.
+ensure_accounts
 
 ###############################################################################
 # 1. Resolve the deterministic test accounts
@@ -237,12 +256,14 @@ TOKEN_A_HOLDING="$(acct_id token-a-holding)" || die "token-a-holding not registe
 TOKEN_B_DEF="$(acct_id token-b-def)"        || die "token-b-def not registered"
 TOKEN_B_HOLDING="$(acct_id token-b-holding)" || die "token-b-holding not registered"
 USER_HOLDING_LP="$(acct_id lp-holding)"     || die "lp-holding not registered"
-for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP; do
+TOKEN_C_DEF="$(acct_id token-c-def)"        || die "token-c-def not registered"
+TOKEN_C_HOLDING="$(acct_id token-c-holding)" || die "token-c-holding not registered"
+for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP TOKEN_C_DEF TOKEN_C_HOLDING; do
   [ -n "${!v}" ] || die "failed to resolve account id for $v"
 done
 
 # Derived roles (the input holding signs; mint authority == holding; authority is the A holding).
-TOKEN_A_MINT_AUTH="$TOKEN_A_HOLDING"; TOKEN_B_MINT_AUTH="$TOKEN_B_HOLDING"
+TOKEN_A_MINT_AUTH="$TOKEN_A_HOLDING"; TOKEN_B_MINT_AUTH="$TOKEN_B_HOLDING"; TOKEN_C_MINT_AUTH="$TOKEN_C_HOLDING"
 AMM_AUTHORITY="$TOKEN_A_HOLDING"
 USER_HOLDING_A="$TOKEN_A_HOLDING"; USER_HOLDING_B="$TOKEN_B_HOLDING"
 
@@ -251,6 +272,8 @@ kv "token-a-holding" "$TOKEN_A_HOLDING"
 kv "token-b-def"     "$TOKEN_B_DEF"
 kv "token-b-holding" "$TOKEN_B_HOLDING"
 kv "lp-holding"      "$USER_HOLDING_LP"
+kv "token-c-def"     "$TOKEN_C_DEF"
+kv "token-c-holding" "$TOKEN_C_HOLDING"
 
 ###############################################################################
 # 2. Deploy programs
@@ -284,6 +307,14 @@ run_tx strict "create fungible definition: $TOKEN_B_NAME" -- \
     --holding-target-account "$TOKEN_B_HOLDING" \
     --mint-authority "$TOKEN_B_MINT_AUTH"
 
+# Token C has no seeded pool — the create-pool UI test creates the A/C pool.
+run_tx strict "create fungible definition: $TOKEN_C_NAME" -- \
+  spel --idl "$TOKEN_IDL" --program "$TOKEN_BIN" -- new-fungible-definition \
+    --name "$TOKEN_C_NAME" --total-supply "$TOKEN_C_SUPPLY" \
+    --definition-target-account "$TOKEN_C_DEF" \
+    --holding-target-account "$TOKEN_C_HOLDING" \
+    --mint-authority "$TOKEN_C_MINT_AUTH"
+
 ###############################################################################
 # 5. Verify token definitions & holdings
 ###############################################################################
@@ -291,6 +322,8 @@ inspect "$TOKEN_IDL" "$TOKEN_A_DEF"     "TokenDefinition"
 inspect "$TOKEN_IDL" "$TOKEN_A_HOLDING" "TokenHolding"
 inspect "$TOKEN_IDL" "$TOKEN_B_DEF"     "TokenDefinition"
 inspect "$TOKEN_IDL" "$TOKEN_B_HOLDING" "TokenHolding"
+inspect "$TOKEN_IDL" "$TOKEN_C_DEF"     "TokenDefinition"
+inspect "$TOKEN_IDL" "$TOKEN_C_HOLDING" "TokenHolding"
 
 ###############################################################################
 # 6. Derive AMM PDAs from the program ids + token pair
@@ -378,6 +411,13 @@ cat > "$TOKENS_CONFIG_OUT" <<JSON
     "definitionId": "$TOKEN_B_DEF",
     "holding": "$TOKEN_B_HOLDING",
     "decimals": $TOKEN_B_DECIMALS
+  },
+  {
+    "symbol": "$TOKEN_C_SYMBOL",
+    "name": "$TOKEN_C_NAME",
+    "definitionId": "$TOKEN_C_DEF",
+    "holding": "$TOKEN_C_HOLDING",
+    "decimals": $TOKEN_C_DECIMALS
   }
 ]
 JSON
@@ -394,4 +434,5 @@ log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
 log "  ${DIM}  AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
 log "  ${DIM}  TOKENS_CONFIG=$REPO_ROOT/$TOKENS_CONFIG_OUT \\${RST}"
 log "  ${DIM}  nix run .#amm-ui${RST}"
-log "Then in another terminal: ${DIM}node apps/amm/tests/swap.mjs${RST}"
+log "Then in another terminal: ${DIM}node apps/amm/tests/swap.mjs${RST}  (swap A/B)"
+log "                   or:     ${DIM}node apps/amm/tests/create-pool.mjs${RST}  (create A/C pool)"

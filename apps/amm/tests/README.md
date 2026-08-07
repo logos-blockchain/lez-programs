@@ -1,10 +1,14 @@
 # AMM UI tests
 
-UI-driven tests for the AMM app. `swap.mjs` drives the running app through the
-QML inspector (framework from
-[`logos-co/logos-qt-mcp`](https://github.com/logos-co/logos-qt-mcp)): it selects
-two tokens, enters an amount, submits a swap, and verifies the pool reserves
-changed **on-chain**.
+UI-driven tests for the AMM app, driving the running app through the QML
+inspector (framework from
+[`logos-co/logos-qt-mcp`](https://github.com/logos-co/logos-qt-mcp)):
+
+- `swap.mjs` selects two tokens, enters an amount, submits a swap, and verifies
+  the **A/B** pool reserves changed **on-chain**.
+- `create-pool.mjs` selects the **A/C** pair (which the setup script leaves
+  unseeded — only A/B is created), submits a pool creation, and verifies the A/C
+  pool now exists **on-chain**.
 
 ## Isolation
 
@@ -40,8 +44,9 @@ LEE_WALLET_HOME_DIR=$(pwd)/apps/amm/tests/testnet/.wallet \
   TOKENS_CONFIG=$(pwd)/apps/amm/tests/testnet/amm-tokens.json \
   nix run .#amm-ui
 
-# 3. Terminal 2 — drive the swap test; watch it click through the live UI.
-node apps/amm/tests/swap.mjs
+# 3. Terminal 2 — drive a test; watch it click through the live UI.
+node apps/amm/tests/swap.mjs         # swap against the seeded A/B pool
+node apps/amm/tests/create-pool.mjs  # create the (unseeded) A/C pool
 ```
 
 Headless CI variant (no window, launches the app itself, pass/fail only):
@@ -71,6 +76,8 @@ nix build .#integration-test -L
 
 ## Files
 
-- `swap.mjs` — the end-to-end swap UI test.
-- `testnet/setup-amm-testnet.sh` — isolated testnet + wallet bootstrap.
+- `swap.mjs` — the end-to-end swap UI test (A/B pool).
+- `create-pool.mjs` — the end-to-end create-pool UI test (creates the A/C pool).
+- `testnet/setup-amm-testnet.sh` — isolated testnet + wallet bootstrap (TKA/TKB/TKC,
+  seeds the A/B pool only).
 - `qml/`, `cpp/` — the module's own QML/C++ unit tests.
