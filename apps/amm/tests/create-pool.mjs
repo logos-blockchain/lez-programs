@@ -63,7 +63,32 @@ async function formState(app, formId) {
     amountB: get("amountB"),
     submitError: get("submitError"),
     transactionId: get("transactionId"),
+    selectedHoldingAId: get("selectedHoldingAId"),
+    selectedHoldingBId: get("selectedHoldingBId"),
   };
+}
+
+// Pick the funding account for a create-pool side. The selector auto-selects a
+// single holding, but choose it explicitly (robust to multi-account wallets):
+// wait for the holdings to populate, then select the first match. canConfirm now
+// requires both A/B holdings before a pool can be created.
+async function selectAccount(app, selectorObjectName) {
+  // The selector lives in a Loader that instantiates only once the pool is known
+  // to be missing, so it may render a frame after missingPool flips — wait for it.
+  let id;
+  await app.waitFor(
+    async () => { id = await idByObjectName(app, selectorObjectName); },
+    { timeout: 10000, interval: 300, description: `${selectorObjectName} to render` },
+  );
+  await app.waitFor(
+    async () => { if ((await prop(app, id, "hasFunds")) !== true) throw new Error("no matching holdings yet"); },
+    { timeout: 10000, interval: 300, description: `${selectorObjectName} holdings to load` },
+  );
+  await evaluate(app, id, "setSelection(accountIdFor(matchingAccounts[0]), false)");
+  await app.waitFor(
+    async () => { if (!(await prop(app, id, "selectedAccountId"))) throw new Error("holding not selected yet"); },
+    { timeout: 5000, interval: 200, description: `${selectorObjectName} holding selected` },
+  );
 }
 
 async function saveShot(app, name) {
@@ -154,13 +179,24 @@ test("amm liquidity: create the A/C pool", async (app) => {
   );
   await evaluate(app, formId, "requestQuote(true)");
 
-  // 3. Wait for a submittable create quote (missing pool + funded minimum deposit).
+  // 3. Wait for the missing-pool quote (which makes the per-side account selectors
+  //    render), pick the funding account for each side, then wait for a submittable
+  //    create quote — canConfirm needs the funded minimum deposit AND both holdings.
   try {
     await app.waitFor(
       async () => {
         const s = await formState(app, formId);
         if (s.poolStatus === "active_pool")
           throw new Error("A/C pool already exists — reset the testnet (only A/B should be seeded)");
+        if (!s.missingPool) throw new Error("pool status not resolved yet");
+      },
+      { timeout: 20000, interval: 500, description: "missing-pool quote" },
+    );
+    await selectAccount(app, "newPositionAccountSelectorA");
+    await selectAccount(app, "newPositionAccountSelectorB");
+    await app.waitFor(
+      async () => {
+        const s = await formState(app, formId);
         if (!s.canConfirm) throw new Error("create CTA not ready yet");
       },
       { timeout: 20000, interval: 500, description: "create CTA ready" },

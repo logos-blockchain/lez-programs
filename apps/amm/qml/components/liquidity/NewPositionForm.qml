@@ -21,6 +21,12 @@ AmmActionCard {
 
     property var newPositionContext: ({})
     property var flowState: ({})
+    // Wallet token holdings (backend.tokenHoldings()) for the create-pool account
+    // selectors, narrowed per side by the selected token's base58 definitionId. The
+    // chosen holdings feed the createPool call via submissionSnapshot().
+    property var holdings: []
+    readonly property string selectedHoldingAId: tokenAInput.selectedHoldingId
+    readonly property string selectedHoldingBId: tokenBInput.selectedHoldingId
     property string selectedTokenAId: ""
     property string selectedTokenBId: ""
     property int selectedFeeBps: 30
@@ -86,10 +92,17 @@ AmmActionCard {
                                     && root.selectedTokenBId.length > 0
                                     && root.selectedTokenAId !== root.selectedTokenBId
     readonly property bool resolvingToken: root.resolvingTokenId.length > 0
+    // Creating a pool submits caller-provided A/B holdings (see submissionSnapshot);
+    // require both selectors resolved. Add-liquidity enumerates holdings server-side,
+    // so it does not gate on these.
+    readonly property bool holdingsReady: !root.missingPool
+                                          || (root.selectedHoldingAId.length > 0
+                                              && root.selectedHoldingBId.length > 0)
     readonly property bool canConfirm: root.quotePayload.status === "ok"
                                        && root.quotePayload.canSubmit === true
                                        && root.quoteMatchesPair()
                                        && String(root.quotePayload.quoteHash || "").length > 0
+                                       && root.holdingsReady
                                        && !root.contextLoading
                                        && !root.quoteLoading
                                        && !root.quoteStale
@@ -248,6 +261,10 @@ AmmActionCard {
                 tokenData: root.tokenA.definitionId ? root.tokenA : null
                 tokens: root.tokens
                 selectedTokenId: root.selectedTokenAId
+                holdings: root.holdings
+                holdingDefinitionId: root.selectedTokenAId
+                showHoldingSelector: root.missingPool && root.hasPair
+                selectorObjectName: "newPositionAccountSelectorA"
                 tokenInvalid: root.tokenHasError("A")
                 tokenSelectionEnabled: !root.contextLoading && !root.submitting
                 adjustment: root.missingPool ? priceAmountAAdjustment : null
@@ -296,6 +313,10 @@ AmmActionCard {
                 tokenData: root.tokenB.definitionId ? root.tokenB : null
                 tokens: root.tokens
                 selectedTokenId: root.selectedTokenBId
+                holdings: root.holdings
+                holdingDefinitionId: root.selectedTokenBId
+                showHoldingSelector: root.missingPool && root.hasPair
+                selectorObjectName: "newPositionAccountSelectorB"
                 tokenInvalid: root.tokenHasError("B")
                 tokenSelectionEnabled: !root.contextLoading && !root.submitting
                 adjustment: root.missingPool ? priceAmountBAdjustment : null
@@ -1440,8 +1461,10 @@ AmmActionCard {
             // Canonical-order holdings for the create path's createPool call: the
             // request's tokenAId/amountARaw are canonical, so holdingAId must be the
             // canonical token A's holding too (createPool re-canonicalizes as a no-op).
-            "holdingAId": String((root.displayIsCanonical ? root.tokenA : root.tokenB).holdingId || ""),
-            "holdingBId": String((root.displayIsCanonical ? root.tokenB : root.tokenA).holdingId || ""),
+            // The user picks these via the per-side account selectors; selectedHoldingA
+            // is display token A's holding, so it aligns with tokenA the same way.
+            "holdingAId": String(root.displayIsCanonical ? root.selectedHoldingAId : root.selectedHoldingBId),
+            "holdingBId": String(root.displayIsCanonical ? root.selectedHoldingBId : root.selectedHoldingAId),
             "pairText": qsTr("%1 / %2").arg(root.shortTokenName(root.tokenA)).arg(root.shortTokenName(root.tokenB)),
             "feeText": root.feeLabel(root.selectedFeeBps),
             "depositAText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "A"),

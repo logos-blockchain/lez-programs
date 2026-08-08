@@ -266,8 +266,14 @@ TestCase {
         verify(amountBInput)
         compare(amountAInput.selectedTokenId, tokenLow)
         compare(amountBInput.selectedTokenId, tokenHigh)
-        verify(amountAInput.height <= 114)
-        verify(amountBInput.height <= 114)
+        // missing_pool now renders the holding-selector footer, so the input card grows by the
+        // footer's own height plus its extra bottom spacing (the surface adds footerHeight + 30
+        // when a footer is active vs + 24 without one, i.e. footerHeight + 6 over the pre-footer
+        // bound). Keep the compactness guard, but make it footer-aware.
+        verify(amountAInput.footerActive) // the holding-selector footer is present in missing_pool
+        verify(amountBInput.footerActive)
+        verify(amountAInput.height <= 114 + amountAInput.footerHeight + 6)
+        verify(amountBInput.height <= 114 + amountBInput.footerHeight + 6)
         verify(findChild(form, "priceAmountAField"))
         verify(findChild(form, "priceAmountBField"))
 

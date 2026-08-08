@@ -22,12 +22,20 @@ Rectangle {
     property Component adjustment
     property real adjustmentWidth: 0
     property real adjustmentHeight: 0
+    // Optional full-width content rendered inside the card, below the amount/token
+    // row (e.g. the create-pool account selector). Null → the card is unchanged.
+    property Component footer
+    property real footerHeight: 0
+    readonly property bool footerActive: root.footer !== null
+    property alias footerItem: footerLoader.item
 
     signal amountEdited(string value)
     signal amountEditingFinished(string value)
     signal supportingActionClicked
 
-    implicitHeight: Math.max(110, contentRow.implicitHeight + 24)
+    implicitHeight: root.footerActive
+                    ? Math.max(110, contentRow.implicitHeight + root.footerHeight + 30)
+                    : Math.max(110, contentRow.implicitHeight + 24)
     radius: 16
     color: root.muted ? root.theme.colors.panelBg : root.theme.colors.inputBg
     border.color: root.invalid
@@ -46,11 +54,16 @@ Rectangle {
     RowLayout {
         id: contentRow
 
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        // When a footer is present it takes the bottom of the card; otherwise the
+        // row fills the card exactly as before (12px inset).
+        anchors.bottom: footerLoader.top
         anchors.leftMargin: 16
         anchors.rightMargin: 16
         anchors.topMargin: 12
-        anchors.bottomMargin: 12
+        anchors.bottomMargin: root.footerActive ? 6 : 12
         spacing: 10
 
         ColumnLayout {
@@ -187,6 +200,21 @@ Rectangle {
             Layout.preferredWidth: root.accessoryWidth
             Layout.preferredHeight: root.accessoryHeight
         }
+    }
+
+    Loader {
+        id: footerLoader
+
+        active: root.footerActive
+        visible: active
+        sourceComponent: root.footer
+        height: active ? root.footerHeight : 0
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: 16
+        anchors.rightMargin: 16
+        anchors.bottomMargin: active ? 12 : 0
     }
 
     Behavior on color {

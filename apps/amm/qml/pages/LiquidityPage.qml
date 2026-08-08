@@ -17,6 +17,27 @@ Item {
     property var runtime: null
     readonly property NewPositionFlow flow: newPositionFlow
 
+    // Wallet token holdings (backend.tokenHoldings()) feeding the create-pool
+    // account selectors; refetched when the wallet opens.
+    property var holdings: []
+
+    function refreshHoldings() {
+        if (!root.backend || root.runtime === null)
+            return
+        root.runtime.watch(root.backend.tokenHoldings(),
+            function(list) { root.holdings = list },
+            function(err) { console.warn("tokenHoldings error:", err) })
+    }
+
+onBackendChanged: root.refreshHoldings()
+    onRuntimeChanged: root.refreshHoldings()
+    Component.onCompleted: root.refreshHoldings()
+
+    Connections {
+        target: root.backend
+        function onIsWalletOpenChanged() { root.refreshHoldings() }
+    }
+
     readonly property int pageMargin: width < 640 ? 16 : 24
     readonly property int contentMaxWidth: 1200
     readonly property bool wideLayout: width >= 760
@@ -215,6 +236,7 @@ Item {
                                    ? qsTr("Specify the token amounts for your liquidity contribution.")
                                    : qsTr("Choose two tokens and a fee tier for this position.")
                     showRefreshAction: false
+                    holdings: root.holdings
                     newPositionContext: newPositionFlow.newPositionContext
                     flowState: newPositionFlow.viewState
 

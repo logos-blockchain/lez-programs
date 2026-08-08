@@ -2,6 +2,8 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 
+import Logos.Wallet
+
 import "../shared"
 
 AmmTokenAmountSurface {
@@ -18,6 +20,21 @@ AmmTokenAmountSurface {
     property bool tokenSelectionEnabled: true
     property bool editPending: false
     property string pendingValue: ""
+    // Account selector (create-pool only): the wallet holdings to pick from, the
+    // token's base58 definitionId to filter by, and whether to show it at all. The
+    // chosen holding id is exposed as selectedHoldingId. Mirrors the swap card, where
+    // the selector sits inside the input card below the token button.
+    property var holdings: []
+    property string holdingDefinitionId: ""
+    property bool showHoldingSelector: false
+    // objectName forwarded to the account selector, so UI tests can pick the
+    // funding holding for this side deterministically.
+    property string selectorObjectName: ""
+    readonly property string selectedHoldingId: root.footerItem && root.footerItem.selectedAccountId
+                                                ? String(root.footerItem.selectedAccountId) : ""
+
+    footer: root.showHoldingSelector ? accountFooter : null
+    footerHeight: root.footerItem ? root.footerItem.implicitHeight : 0
     property var disabledReasonForCode: function(code) {
         return qsTr("This token is unavailable (%1).").arg(code || "unknown")
     }
@@ -63,6 +80,40 @@ AmmTokenAmountSurface {
         interval: 250
         repeat: false
         onTriggered: root.commitPendingEdit()
+    }
+
+    Component {
+        id: accountFooter
+
+        // The Loader stretches this wrapper to the card width; the selector takes the
+        // right half, right-aligned, matching the swap card's account selector.
+        Item {
+            implicitHeight: footerSelector.implicitHeight
+
+            property alias selectedAccountId: footerSelector.selectedAccountId
+
+            ProgramAccountSelector {
+                id: footerSelector
+
+                objectName: root.selectorObjectName
+                width: Math.round(parent.width / 2)
+                anchors.right: parent.right
+                anchors.top: parent.top
+                sourceModel: root.holdings
+                accountType: "TokenHolding"
+                stateField: "definitionId"
+                stateValue: root.holdingDefinitionId
+                selectionMode: ProgramAccountSelector.Input
+                showWhenSingle: true
+                textAlignment: Text.AlignRight
+                backgroundColor: root.theme.colors.panelBg
+                hoverColor: root.theme.colors.panelHoverBg
+                textColor: root.theme.colors.textPrimary
+                secondaryTextColor: root.theme.colors.textSecondary
+                borderColor: root.theme.colors.borderStrong
+                focusColor: root.theme.colors.ctaBg
+            }
+        }
     }
 
     Component {
