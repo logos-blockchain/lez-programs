@@ -168,6 +168,43 @@ pub struct CreatePoolPlanRequest {
     pub user_holding_lp_id: String,
 }
 
+/// Prices an `AddLiquidity` into an existing pool — the add counterpart of
+/// `LiquidityQuoteRequest`. The two max amounts are the caller's caps (display order);
+/// `pool_data` is the hex Borsh `PoolDefinition` (empty ⇒ no pool), same as the swap quotes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AddLiquidityQuoteRequest {
+    pub token_a_id: String,
+    pub token_b_id: String,
+    pub max_amount_a_raw: String,
+    pub max_amount_b_raw: String,
+    pub pool_data: String,
+}
+
+/// Builds the `AddLiquidity` submission — the add counterpart of `CreatePoolPlanRequest`.
+/// `min_lp_raw` is the caller's slippage floor on the LP minted (the guest's
+/// `min_amount_liquidity`, applied at submit like the swap plans' `min_out`); `pool_data`
+/// supplies the stored vault / LP-definition ids the guest asserts against.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AddLiquidityPlanRequest {
+    /// Resolved by the module from `AMM_PROGRAM_BIN` (like every id-deriving op).
+    pub amm_program_id: String,
+    /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
+    /// the `current_tick` PDA depends on (same as the swap / create plan requests).
+    pub config: AccountRead,
+    pub token_a_id: String,
+    pub token_b_id: String,
+    pub max_amount_a_raw: String,
+    pub max_amount_b_raw: String,
+    pub min_lp_raw: String,
+    pub deadline_ms: String,
+    pub user_holding_a_id: String,
+    pub user_holding_b_id: String,
+    pub user_holding_lp_id: String,
+    pub pool_data: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenHoldingsRequest {

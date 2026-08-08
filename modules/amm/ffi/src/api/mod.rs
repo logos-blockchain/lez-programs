@@ -23,9 +23,10 @@ mod tests;
 use std::{error::Error, fmt};
 
 pub use request::{
-    ConfigIdRequest, ContextRequest, CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest,
-    PairSnapshot, PlanRequest, PoolIdRequest, PositionRequest, ProgramIdRequest, QuoteRequest,
-    ResolvePoolRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
+    AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigIdRequest, ContextRequest,
+    CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest, PairSnapshot, PlanRequest,
+    PoolIdRequest, PositionRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest,
+    SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
     SwapExactOutQuoteRequest, SwapPairRequest, TokenHoldingsRequest, TokenIdsRequest,
 };
 use serde_json::Value;
@@ -139,6 +140,14 @@ pub fn liquidity_quote(request: LiquidityQuoteRequest) -> AmmResult {
 /// Builds the `NewDefinition` submission for creating a pool.
 pub fn create_pool_plan(request: CreatePoolPlanRequest) -> AmmResult {
     liquidity::create_pool_plan(request).map_err(Into::into)
+}
+
+pub fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> AmmResult {
+    liquidity::add_liquidity_quote(request).map_err(Into::into)
+}
+
+pub fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> AmmResult {
+    liquidity::add_liquidity_plan(request).map_err(Into::into)
 }
 
 /// Lists the wallet's fungible token holdings for the account selector.

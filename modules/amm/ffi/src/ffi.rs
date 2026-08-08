@@ -6,11 +6,11 @@ use std::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
-    self, AmmApiError, AmmResult, ConfigIdRequest, ContextRequest, CreatePoolPlanRequest,
-    LiquidityQuoteRequest, PairIdsRequest, PlanRequest, PoolIdRequest, ProgramIdRequest,
-    QuoteRequest, ResolvePoolRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest,
-    SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest, TokenHoldingsRequest,
-    TokenIdsRequest,
+    self, AddLiquidityPlanRequest, AddLiquidityQuoteRequest, AmmApiError, AmmResult,
+    ConfigIdRequest, ContextRequest, CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest,
+    PlanRequest, PoolIdRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest,
+    SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
+    SwapExactOutQuoteRequest, SwapPairRequest, TokenHoldingsRequest, TokenIdsRequest,
 };
 
 #[derive(Serialize)]
@@ -152,6 +152,16 @@ pub extern "C" fn amm_liquidity_quote(request_json: *const c_char) -> *mut c_cha
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_create_pool_plan(request_json: *const c_char) -> *mut c_char {
     call::<CreatePoolPlanRequest>(request_json, api::create_pool_plan)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_add_liquidity_quote(request_json: *const c_char) -> *mut c_char {
+    call::<AddLiquidityQuoteRequest>(request_json, api::add_liquidity_quote)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_add_liquidity_plan(request_json: *const c_char) -> *mut c_char {
+    call::<AddLiquidityPlanRequest>(request_json, api::add_liquidity_plan)
 }
 
 #[unsafe(no_mangle)]

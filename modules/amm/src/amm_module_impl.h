@@ -134,6 +134,31 @@ public:
     /// a code so the create-pool UI can tell the user why.
     LogosMap createPool(const LogosMap& request);
 
+    /// Prices an `AddLiquidity` into the existing pool for (tokenAId, tokenBId) from the
+    /// two max deposit amounts. Reads the pool server-side (like the swap quotes) and runs
+    /// the guest's proportional-deposit math. Returns the same shape as `liquidityQuote`
+    /// minus the create-only locked LP: `{ status:"ok", error:"", amountARaw, amountBRaw,
+    /// expectedLpRaw, priceRaw }` — the actual ratio-matched deposits (display order), the
+    /// LP minted, and the pool's spot price. Slippage is applied at submit, not here.
+    /// `request` carries `{ tokenAId, tokenBId, maxAmountARaw, maxAmountBRaw }` (ids hex or
+    /// base58, normalized to hex; amounts a JSON integer or decimal string). On failure:
+    /// `{ status:"error", error:<code> }` — `invalid_token_id`, `config_missing`,
+    /// `bad_amount`, `no_pool`, `pair_mismatch`, `amount_too_low`, or `backend_error`.
+    LogosMap addLiquidityQuote(const LogosMap& request);
+
+    /// Submits an `AddLiquidity` transaction into the request's pool. `request` carries
+    /// `{ tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, maxAmountARaw,
+    /// maxAmountBRaw, minLpRaw, deadlineMs }` (ids hex or base58, normalized to hex;
+    /// amounts/deadline a JSON integer or decimal string). `minLpRaw` is the caller's
+    /// slippage floor on the LP minted (the UI derives it from the quote's expectedLpRaw
+    /// and its slippage control). `lpHoldingId` is the holding that receives the minted LP.
+    /// On success: `{ status:"ok", error:"", transactionId:<hex tx hash> }`. On failure:
+    /// `{ status:"error", error:<code> }` — `config_missing`, `backend_error`,
+    /// `invalid_account_id`, `bad_amount`, `same_token_pair` (from `amm_pool_id` or the plan),
+    /// `wallet_submission_failed`, or a plan code (e.g. `no_pool`, `pair_mismatch`,
+    /// `config_unavailable`).
+    LogosMap addLiquidity(const LogosMap& request);
+
     /// Lists the connected wallet's fungible token holdings for the account
     /// selector: `[{ accountId (hex), accountType:"TokenHolding", definitionId
     /// (base58), definitionIdHex (hex), balanceRaw }]` — one row per holding

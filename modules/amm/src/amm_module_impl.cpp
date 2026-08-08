@@ -876,6 +876,146 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
 }
 
+LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    // Normalize the pair to hex (the liquidity UI still sources base58 ids; transitional).
+    const std::string token_a = normalizeAccountId(jStr(request, "tokenAId"));
+    const std::string token_b = normalizeAccountId(jStr(request, "tokenBId"));
+    if (token_a.empty() || token_b.empty())
+        return error("invalid_token_id");
+
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return error("config_missing");
+
+    std::string max_a_decimal;
+    std::string max_b_decimal;
+    if (!jsonAmountToDecimal(request.value("maxAmountARaw", json()), max_a_decimal)
+        || !jsonAmountToDecimal(request.value("maxAmountBRaw", json()), max_b_decimal))
+        return error("bad_amount");
+
+    // Derive the pool id (config-free) and read the pool account; its raw data is handed
+    // to the pricing op. An absent account has no data → `no_pool`.
+    const FfiResult poolId = call(amm_pool_id, json{
+        {"ammProgramId", amm_program_id},
+        {"tokenInId", token_a},
+        {"tokenOutId", token_b},
+    });
+    if (!poolId.ok)
+        return error(poolId.error.empty() ? "backend_error" : poolId.error);
+    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+
+    const FfiResult quoteResult = call(amm_add_liquidity_quote, json{
+        {"tokenAId", token_a},
+        {"tokenBId", token_b},
+        {"maxAmountARaw", max_a_decimal},
+        {"maxAmountBRaw", max_b_decimal},
+        {"poolData", pool_data},
+    });
+    if (!quoteResult.ok)
+        return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
+
+    // Success: wrap { amountARaw, amountBRaw, expectedLpRaw, priceRaw } in the envelope.
+    LogosMap out = quoteResult.value;
+    out["status"] = "ok";
+    out["error"] = "";
+    return out;
+}
+
+LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    // config_missing == no program id from AMM_PROGRAM_BIN (same as createPool).
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return error("config_missing");
+
+    // amm_add_liquidity_plan needs the config account for the twap program id the
+    // current-tick PDA derives from; a bad/absent config surfaces from the plan.
+    const FfiResult configResult =
+        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
+    if (!configResult.ok)
+        return error("backend_error");
+    const json config = readPublicAccount(jStr(configResult.value, "configId"));
+
+    // Normalize the pair + user holdings (incl. the LP holding that receives the minted LP)
+    // to hex (base58 tolerated — transitional).
+    const std::string token_a = normalizeAccountId(jStr(request, "tokenAId"));
+    const std::string token_b = normalizeAccountId(jStr(request, "tokenBId"));
+    const std::string holding_a = normalizeAccountId(jStr(request, "holdingAId"));
+    const std::string holding_b = normalizeAccountId(jStr(request, "holdingBId"));
+    const std::string user_lp = normalizeAccountId(jStr(request, "lpHoldingId"));
+    if (token_a.empty() || token_b.empty() || holding_a.empty() || holding_b.empty()
+        || user_lp.empty())
+        return error("invalid_account_id");
+
+    std::string max_a_decimal;
+    std::string max_b_decimal;
+    std::string min_lp_decimal;
+    std::string deadline_decimal;
+    if (!jsonAmountToDecimal(request.value("maxAmountARaw", json()), max_a_decimal)
+        || !jsonAmountToDecimal(request.value("maxAmountBRaw", json()), max_b_decimal)
+        || !jsonAmountToDecimal(request.value("minLpRaw", json()), min_lp_decimal)
+        || !jsonAmountToDecimal(request.value("deadlineMs", json()), deadline_decimal))
+        return error("bad_amount");
+
+    // Read the pool so the plan can use its stored vault / LP-definition ids (the guest
+    // asserts the provided vaults/LP against them — see amm_add_liquidity_plan).
+    const FfiResult poolId = call(amm_pool_id, json{
+        {"ammProgramId", amm_program_id},
+        {"tokenInId", token_a},
+        {"tokenOutId", token_b},
+    });
+    if (!poolId.ok)
+        return error(poolId.error.empty() ? "backend_error" : poolId.error);
+    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+
+    // amm_add_liquidity_plan resolves the pool accounts (canonicalizing the pair), encodes
+    // AddLiquidity (with the slippage floor), and returns a ready-to-submit plan.
+    const FfiResult planResult = call(amm_add_liquidity_plan, json{
+        {"ammProgramId", amm_program_id},
+        {"config", config},
+        {"tokenAId", token_a},
+        {"tokenBId", token_b},
+        {"maxAmountARaw", max_a_decimal},
+        {"maxAmountBRaw", max_b_decimal},
+        {"minLpRaw", min_lp_decimal},
+        {"deadlineMs", deadline_decimal},
+        {"userHoldingAId", holding_a},
+        {"userHoldingBId", holding_b},
+        {"userHoldingLpId", user_lp},
+        {"poolData", pool_data},
+    });
+    if (!planResult.ok)
+        return error(planResult.error.empty() ? "backend_error" : planResult.error);
+    const json plan = planResult.value;
+
+    const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
+    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::string program_id = jStr(plan, "programId");
+
+    AMM_TRACE("addLiquidity: SUBMIT programId=" << program_id
+              << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
+
+    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+        accounts, signers, instruction, program_id);
+    AMM_TRACE("addLiquidity: tx reply=" << reply);
+
+    const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
+    if (!obj.is_object() || !obj.value("success", false))
+        return error("wallet_submission_failed");
+
+    return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
+}
+
 LogosList AmmModuleImpl::tokenList() {
     LogosList out = LogosList::array();
 
