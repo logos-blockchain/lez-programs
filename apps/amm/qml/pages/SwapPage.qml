@@ -17,12 +17,46 @@ Item {
     // until the backend is ready and the call resolves.
     property var tokens: []
 
+    // The wallet's token holdings (backend.tokenHoldings()), fed to the swap card's
+    // account selectors. Refetched when the wallet opens (it needs an open wallet).
+    property var holdings: []
+
+    // Monotonic tag for refreshHoldings() requests: a callback applies only if it is still the
+    // latest, so an out-of-order tokenHoldings reply can't clobber the current wallet's list.
+    property int holdingsGeneration: 0
+
+    function refreshHoldings() {
+        if (!root.backend)
+            return
+        // onBackendChanged and onIsWalletOpenChanged can start overlapping tokenHoldings
+        // requests (a wallet-open refresh racing a just-closed one, or a fast wallet switch)
+        // whose replies may arrive out of order. Tag each request and drop any callback a newer
+        // request has superseded, so a stale (empty, or previous-wallet) list can't overwrite
+        // the current holdings.
+        const generation = ++root.holdingsGeneration
+        logos.watch(root.backend.tokenHoldings(),
+            function(list) {
+                if (generation === root.holdingsGeneration)
+                    root.holdings = list
+            },
+            function(err) {
+                if (generation === root.holdingsGeneration)
+                    console.warn("tokenHoldings error:", err)
+            })
+    }
+
     onBackendChanged: {
         if (root.backend) {
             logos.watch(root.backend.tokenList(),
                 function(list) { root.tokens = list },
                 function(err) { console.warn("tokenList error:", err) })
+            root.refreshHoldings()
         }
+    }
+
+    Connections {
+        target: root.backend
+        function onIsWalletOpenChanged() { root.refreshHoldings() }
     }
 
     QtObject {
@@ -104,6 +138,7 @@ Item {
                 Layout.alignment: Qt.AlignHCenter
                 theme: pageTheme
                 tokens: root.tokens
+                holdings: root.holdings
                 backend: root.backend
                 width: Math.min(480, root.width - 32)
 

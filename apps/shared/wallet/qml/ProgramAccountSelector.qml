@@ -29,6 +29,13 @@ Item {
     property color secondaryTextColor: "#a1a1aa"
     property color borderColor: "#52525b"
     property color focusColor: "#f26a21"
+    // Show the combo even when only one account matches. By default a single match
+    // auto-selects and hides (no choice to make); consumers that want the chosen
+    // holding always visible set this true.
+    property bool showWhenSingle: false
+    // Horizontal alignment of the selector's text (closed combo, dropdown rows and
+    // the empty "No funds" label). Defaults to left; consumers can right-align it.
+    property int textAlignment: Text.AlignLeft
     property int modelRevision: 0
 
     readonly property bool criteriaReady: root.accountType.length > 0
@@ -50,7 +57,8 @@ Item {
                                                         : "0"
     readonly property bool showCombo: root.selectionMode === ProgramAccountSelector.Output
                                       || (root.criteriaReady
-                                          && root.matchingAccounts.length > 1)
+                                          && root.matchingAccounts.length
+                                             > (root.showWhenSingle ? 0 : 1))
     readonly property bool showEmptyInput: root.selectionMode === ProgramAccountSelector.Input
                                            && root.criteriaReady
                                            && root.matchingAccounts.length === 0
@@ -110,6 +118,7 @@ Item {
         color: root.secondaryTextColor
         font.pixelSize: 11
         verticalAlignment: Text.AlignVCenter
+        horizontalAlignment: root.textAlignment
         Accessible.role: Accessible.StaticText
         Accessible.name: text
     }
@@ -140,6 +149,7 @@ Item {
             color: accountCombo.enabled ? root.textColor : root.secondaryTextColor
             font.pixelSize: 11
             verticalAlignment: Text.AlignVCenter
+            horizontalAlignment: root.textAlignment
             elide: Text.ElideMiddle
         }
 
@@ -179,6 +189,7 @@ Item {
                 color: root.textColor
                 font.pixelSize: 11
                 verticalAlignment: Text.AlignVCenter
+                horizontalAlignment: root.textAlignment
                 elide: Text.ElideMiddle
             }
 

@@ -17,6 +17,12 @@ Rectangle {
     // Real backend replica (logos.module("amm_ui")), wired from SwapPage.
     property var backend: null
 
+    // The wallet's token holdings (backend.tokenHoldings()), fed to each slot's
+    // account selector; the chosen input/output holding ids drive the submit.
+    property var holdings: []
+    readonly property string sellHolding: sellTokenInput.selectedHoldingId
+    readonly property string buyHolding: buyTokenInput.selectedHoldingId
+
     property var sellToken: null
     property var buyToken: null
     property string sellInput: ""
@@ -389,6 +395,10 @@ Rectangle {
                                        && root.poolResolved && root.poolExists
                                        && !outputExceedsLiquidity && !root.swapInProgress
                                        && !root.quoteLoading && root.walletOpen
+                                       // Both holdings must be chosen (auto-selected
+                                       // when the wallet has exactly one per token).
+                                       && root.sellHolding.length > 0
+                                       && root.buyHolding.length > 0
 
     readonly property string submitButtonText: {
         if (!tokensSelected) return qsTr("Select tokens")
@@ -400,6 +410,8 @@ Rectangle {
         if (outputExceedsLiquidity) return qsTr("Insufficient liquidity")
         if (parsedSellAmount <= 0 || parsedBuyAmount <= 0) return qsTr("Amount too small")
         if (!root.walletOpen) return qsTr("Connect wallet to swap")
+        if (root.sellHolding.length === 0 || root.buyHolding.length === 0)
+            return qsTr("Select token accounts")
         return qsTr("Swap")
     }
 
@@ -460,8 +472,9 @@ Rectangle {
         var deadline = "18446744073709551615"
         var inDef = root.sellToken.definitionId
         var outDef = root.buyToken.definitionId
-        var inHolding = root.sellToken.holding
-        var outHolding = root.buyToken.holding
+        // Holdings come from the per-slot account selector, not the token config.
+        var inHolding = root.sellHolding
+        var outHolding = root.buyHolding
 
         // The on-chain guard is the quote's exact-integer bound: the exact-input
         // floor (minReceivedRaw) or the exact-output ceiling (maxInRaw). The typed
@@ -514,6 +527,7 @@ Rectangle {
         spacing: 0
 
         TokenInput {
+            id: sellTokenInput
             Layout.fillWidth: true
             theme: root.theme
             label: "Sell"
@@ -521,6 +535,7 @@ Rectangle {
             buttonObjectName: "swapSellTokenButton"
             amount: root.sellDisplay
             token: root.sellToken
+            holdings: root.holdings
             active: root.editingSide === "sell"
             // Sell amount is sent to the backend as a raw base-units integer
             // string; reject fractional entry rather than fail opaquely.
@@ -574,6 +589,7 @@ Rectangle {
         }
 
         TokenInput {
+            id: buyTokenInput
             Layout.fillWidth: true
             theme: root.theme
             label: "Buy"
@@ -581,6 +597,7 @@ Rectangle {
             buttonObjectName: "swapBuyTokenButton"
             amount: root.buyDisplay
             token: root.buyToken
+            holdings: root.holdings
             active: root.editingSide === "buy"
             // Exact-output amount is sent to the backend as a raw base-units
             // integer string; reject fractional entry rather than fail opaquely.
