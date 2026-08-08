@@ -533,6 +533,7 @@ Rectangle {
             label: "Sell"
             inputObjectName: "swapSellInput"
             buttonObjectName: "swapSellTokenButton"
+            selectorObjectName: "swapSellAccountSelector"
             amount: root.sellDisplay
             token: root.sellToken
             holdings: root.holdings
@@ -595,6 +596,7 @@ Rectangle {
             label: "Buy"
             inputObjectName: "swapBuyInput"
             buttonObjectName: "swapBuyTokenButton"
+            selectorObjectName: "swapBuyAccountSelector"
             amount: root.buyDisplay
             token: root.buyToken
             holdings: root.holdings

@@ -28,6 +28,9 @@ Rectangle {
     // objectName forwarded to the token-select button, so tests can open the
     // right picker by objectId rather than fuzzy text.
     property alias buttonObjectName: tokenButton.objectName
+    // objectName forwarded to the account selector, so tests can pick the funding
+    // holding for this side deterministically.
+    property alias selectorObjectName: accountSelector.objectName
 
     signal tokenClicked()
     signal inputEdited(string newValue)

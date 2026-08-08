@@ -84,6 +84,38 @@ async function pickToken(app, index) {
   return symbol;
 }
 
+// Pick the funding account for a swap side. The selector auto-selects when the
+// wallet holds the token in exactly one account, but make the choice explicit (and robust
+// to multi-account wallets with zero-balance holdings): wait for the holdings to populate,
+// then select the highest-balance match. canSubmit now requires BOTH sides' holdings to be
+// set, so a swap can't be submitted until this runs.
+async function selectAccount(app, selectorObjectName) {
+  const id = await idByObjectName(app, selectorObjectName);
+  await app.waitFor(
+    async () => { if ((await prop(app, id, "hasFunds")) !== true) throw new Error("no matching holdings yet"); },
+    { timeout: 10000, interval: 300, description: `${selectorObjectName} holdings to load` },
+  );
+  // setSelection/accountIdFor/matchingAccounts/valueFor are members of the selector, so
+  // evaluate in its own QML context (same pragmatic style as setSellAmount). tokenHoldings can
+  // include zero-balance holdings for the token, and hasFunds only checks the match COUNT — so
+  // pick the matching account with the largest balanceRaw rather than matchingAccounts[0],
+  // which could be an empty holding the swap transfer can't debit. balanceRaw values are
+  // non-negative base-unit integer strings, so "longer wins, else lexicographic" is an exact
+  // max without needing BigInt.
+  await app.inspector.send("evaluate", {
+    expression:
+      "(function(){var r=matchingAccounts,b=r[0],bb=String(valueFor(b,'balanceRaw')||'0');"
+      + "for(var i=1;i<r.length;++i){var v=String(valueFor(r[i],'balanceRaw')||'0');"
+      + "if(v.length>bb.length||(v.length===bb.length&&v>bb)){b=r[i];bb=v;}}"
+      + "setSelection(accountIdFor(b),false);})()",
+    objectId: id,
+  });
+  await app.waitFor(
+    async () => { if (!(await prop(app, id, "selectedAccountId"))) throw new Error("holding not selected yet"); },
+    { timeout: 5000, interval: 200, description: `${selectorObjectName} holding selected` },
+  );
+}
+
 // Enter the sell amount by setting the SwapCard's state directly. Synthesizing
 // keystrokes needs the TextInput to hold active focus, which the inspector
 // can't reliably grant headlessly; setting sellInput updates the property (and
@@ -118,6 +150,8 @@ async function cardState(app) {
     swapError: get("swapError"),
     canSubmit: get("canSubmit"),
     submitButtonText: get("submitButtonText"),
+    sellHolding: get("sellHolding"),
+    buyHolding: get("buyHolding"),
   };
 }
 
@@ -160,6 +194,10 @@ test("amm swap: sell token #1 for token #2", async (app) => {
   await openPicker(app, "swapBuyTokenButton");
   const second = await pickToken(app, 1);
   console.log(`    sell ${first} -> buy ${second}`);
+
+  // 4. Pick the funding account for each side (canSubmit needs both selected).
+  await selectAccount(app, "swapSellAccountSelector");
+  await selectAccount(app, "swapBuyAccountSelector");
 
   // 5. Enter the sell amount.
   await setSellAmount(app, SELL_AMOUNT);
