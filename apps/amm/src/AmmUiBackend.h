@@ -77,6 +77,8 @@ public slots:
     // accounts here.
     QVariantMap liquidityQuote(QVariantMap request) override;
     QVariantMap createPool(QVariantMap request) override;
+    // Lists the wallet's fungible token holdings for the account selector.
+    QVariantList tokenHoldings() override;
 
 private:
     void syncWalletState();

@@ -170,6 +170,17 @@ pub struct CreatePoolPlanRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct TokenHoldingsRequest {
+    pub amm_program_id: String,
+    /// AMM config account read — decoded for the `token_program_id` that identifies
+    /// which wallet accounts are token holdings.
+    pub config: AccountRead,
+    #[serde(default)]
+    pub wallet_accounts: Vec<AccountRead>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ProgramIdRequest {
     pub elf: String,
 }

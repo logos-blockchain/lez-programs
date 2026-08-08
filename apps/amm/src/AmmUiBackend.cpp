@@ -279,6 +279,13 @@ QVariantMap AmmUiBackend::liquidityQuote(QVariantMap request)
     return m_logos->amm_module.liquidityQuote(request);
 }
 
+QVariantList AmmUiBackend::tokenHoldings()
+{
+    // Read-only list of the wallet's token holdings for the account selector. Gated
+    // by this app's wallet-open state (a closed wallet has nothing to list).
+    return m_logos->amm_module.tokenHoldings(isWalletOpen());
+}
+
 QVariantMap AmmUiBackend::createPool(QVariantMap request)
 {
     // Same connected-state submit guard as the swaps — this app's lock is

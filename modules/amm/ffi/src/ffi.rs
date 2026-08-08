@@ -9,7 +9,8 @@ use crate::api::{
     self, AmmApiError, AmmResult, ConfigIdRequest, ContextRequest, CreatePoolPlanRequest,
     LiquidityQuoteRequest, PairIdsRequest, PlanRequest, PoolIdRequest, ProgramIdRequest,
     QuoteRequest, ResolvePoolRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest,
-    SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest, TokenIdsRequest,
+    SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest, TokenHoldingsRequest,
+    TokenIdsRequest,
 };
 
 #[derive(Serialize)]
@@ -151,6 +152,11 @@ pub extern "C" fn amm_liquidity_quote(request_json: *const c_char) -> *mut c_cha
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_create_pool_plan(request_json: *const c_char) -> *mut c_char {
     call::<CreatePoolPlanRequest>(request_json, api::create_pool_plan)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_token_holdings(request_json: *const c_char) -> *mut c_char {
+    call::<TokenHoldingsRequest>(request_json, api::token_holdings)
 }
 
 #[unsafe(no_mangle)]

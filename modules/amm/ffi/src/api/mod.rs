@@ -15,6 +15,7 @@ mod quote;
 mod quote_error;
 mod request;
 mod swap;
+mod token_holdings;
 
 #[cfg(test)]
 mod tests;
@@ -25,7 +26,7 @@ pub use request::{
     ConfigIdRequest, ContextRequest, CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest,
     PairSnapshot, PlanRequest, PoolIdRequest, PositionRequest, ProgramIdRequest, QuoteRequest,
     ResolvePoolRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
-    SwapExactOutQuoteRequest, SwapPairRequest, TokenIdsRequest,
+    SwapExactOutQuoteRequest, SwapPairRequest, TokenHoldingsRequest, TokenIdsRequest,
 };
 use serde_json::Value;
 
@@ -138,6 +139,11 @@ pub fn liquidity_quote(request: LiquidityQuoteRequest) -> AmmResult {
 /// Builds the `NewDefinition` submission for creating a pool.
 pub fn create_pool_plan(request: CreatePoolPlanRequest) -> AmmResult {
     liquidity::create_pool_plan(request).map_err(Into::into)
+}
+
+/// Lists the wallet's fungible token holdings for the account selector.
+pub fn token_holdings(request: TokenHoldingsRequest) -> AmmResult {
+    token_holdings::token_holdings(request).map_err(Into::into)
 }
 
 /// Derives the AMM `ProgramId` (Image ID) from a deployed program binary.

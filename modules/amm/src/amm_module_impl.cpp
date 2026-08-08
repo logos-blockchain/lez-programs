@@ -919,6 +919,37 @@ LogosList AmmModuleImpl::tokenList() {
     return out;
 }
 
+LogosList AmmModuleImpl::tokenHoldings(bool wallet_open) {
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return LogosList::array();
+
+    // The config gives the token_program_id that identifies which wallet accounts
+    // are token holdings (decoded by the FFI op).
+    const FfiResult configResult =
+        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
+    if (!configResult.ok)
+        return LogosList::array();
+    const json config = readPublicAccount(jStr(configResult.value, "configId"));
+
+    // Fresh wallet read each call — the selector wants current holdings/balances.
+    const json wallet_accounts = walletAccountReads(wallet_open, /*refresh=*/true);
+
+    const FfiResult result = call(amm_token_holdings, json{
+        {"ammProgramId", amm_program_id},
+        {"config", config},
+        {"walletAccounts", wallet_accounts},
+    });
+    if (!result.ok)
+        return LogosList::array();
+
+    LogosList out = LogosList::array();
+    const auto it = result.value.find("holdings");
+    if (it != result.value.end() && it->is_array())
+        for (const auto& holding : *it) out.push_back(holding);
+    return out;
+}
+
 nlohmann::json AmmModuleImpl::buildQuoteInput(const LogosMap& request,
                                               const Network& net,
                                               bool wallet_open,

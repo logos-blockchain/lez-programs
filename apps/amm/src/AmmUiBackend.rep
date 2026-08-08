@@ -114,4 +114,9 @@ class AmmUiBackend
     // invalid_account_id, bad_amount, bad_fee_bps_amount, invalid_fee_tier,
     // wallet_submission_failed, backend_error).
     SLOT(QVariantMap createPool(QVariantMap request))
+    // Lists the connected wallet's fungible token holdings for the account
+    // selector: [{ accountId, accountType:"TokenHolding", definitionId,
+    // definitionIdHex, balanceRaw }] — one row per holding account, every token,
+    // including zero-balance holdings. The selector narrows to a token by id.
+    SLOT(QVariantList tokenHoldings())
 }

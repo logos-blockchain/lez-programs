@@ -44,6 +44,8 @@ char *amm_liquidity_quote(const char *request_json);
 
 char *amm_create_pool_plan(const char *request_json);
 
+char *amm_token_holdings(const char *request_json);
+
 char *amm_program_id(const char *request_json);
 
 /**

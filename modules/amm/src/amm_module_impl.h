@@ -134,6 +134,16 @@ public:
     /// a code so the create-pool UI can tell the user why.
     LogosMap createPool(const LogosMap& request);
 
+    /// Lists the connected wallet's fungible token holdings for the account
+    /// selector: `[{ accountId (hex), accountType:"TokenHolding", definitionId
+    /// (base58), definitionIdHex (hex), balanceRaw }]` — one row per holding
+    /// account, every token, including zero-balance holdings. Narrowing to a
+    /// specific token is the selector's job. `wallet_open` gates the wallet read;
+    /// an empty list on a closed wallet, unset AMM_PROGRAM_BIN, or a decode failure.
+    /// (Thin stopgap — token-holding listing is wallet/token data; see
+    /// token_holdings.rs.)
+    LogosList tokenHoldings(bool wallet_open);
+
     /// Reads the token list config at TOKENS_CONFIG (a JSON array of
     /// { symbol, name, definitionId, holding, decimals }) and returns it,
     /// normalizing definitionId/holding to lowercase hex. Empty list if
