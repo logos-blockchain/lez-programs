@@ -19,15 +19,14 @@ use super::{
     context::{context, token_ids},
     holding::{select_holding, wallet_holdings, SelectedHolding},
     pair::{is_canonical_pair, pair_ids, PairIds},
-    plan::plan,
     position::AccountPlanHoldings,
     quote::{div_ceil_u256, minimum_opening_pair, quote, Q64},
     swap::{swap_exact_in_plan, swap_exact_out_plan},
-    ContextRequest, PairIdsRequest, PairSnapshot, PlanRequest, PositionRequest, QuoteRequest,
+    ContextRequest, PairIdsRequest, PairSnapshot, PositionRequest, QuoteRequest,
     SwapExactInPlanRequest, SwapExactOutPlanRequest, TokenIdsRequest,
 };
 use crate::{
-    account::{account_id_hex, account_read, decode_account, parse_base58_id, program_id_bytes},
+    account::{account_id_hex, account_read, decode_account, program_id_bytes},
     AccountRead,
 };
 
@@ -197,44 +196,6 @@ impl Scenario {
 
     fn quote(&self) -> Value {
         quote(self.quote_request()).unwrap()
-    }
-
-    fn plan(self, quote_hash: impl Into<String>, fresh_lp: Option<AccountRead>) -> Value {
-        plan(PlanRequest {
-            network_id: String::from(self.network_id),
-            network_fingerprint: String::from(self.network_fingerprint),
-            amm_program_id: amm_program_id(),
-            request: self.request,
-            snapshot: self.snapshot,
-            quote_hash: quote_hash.into(),
-            now_ms: 2_000,
-            fresh_lp,
-        })
-        .unwrap()
-    }
-}
-
-fn assert_preview_matches_plan(
-    quote_value: &Value,
-    plan_value: &Value,
-    fresh_lp: Option<AccountId>,
-) {
-    let preview = quote_value["accountPreview"].as_array().unwrap();
-    let account_ids = plan_value["accountIds"].as_array().unwrap();
-    let signing_requirements = plan_value["signingRequirements"].as_array().unwrap();
-    assert_eq!(preview.len(), account_ids.len());
-    assert_eq!(preview.len(), signing_requirements.len());
-
-    for (order, row) in preview.iter().enumerate() {
-        assert_eq!(row["order"], order);
-        assert_eq!(row["signer"], signing_requirements[order]);
-        if let Some(account_id) = row["accountId"].as_str() {
-            let account_id = parse_base58_id(account_id, "preview account id").unwrap();
-            assert_eq!(account_ids[order], account_id_hex(account_id));
-        } else {
-            assert_eq!(row["role"], "user_holding_lp");
-            assert_eq!(account_ids[order], account_id_hex(fresh_lp.unwrap()));
-        }
     }
 }
 
@@ -521,37 +482,21 @@ fn missing_pool_snapshot_defaults_remain_real_accounts() {
 }
 
 #[test]
-fn missing_pool_quote_and_plan_use_current_account_order() {
+fn missing_pool_quote_uses_current_account_order() {
     let scenario = Scenario::devnet();
     let quote_value = scenario.quote();
     assert_eq!(quote_value["status"], "ok");
     assert_eq!(quote_value["poolStatus"], "missing_pool");
     assert_eq!(quote_value["canSubmit"], true);
-    assert_eq!(quote_value["accountPreview"].as_array().unwrap().len(), 11);
-    let quote_hash = quote_value["quoteHash"].as_str().unwrap().to_owned();
-
-    let fresh_lp = AccountId::new([63; 32]);
-    let plan_value = scenario.plan(quote_hash, Some(default_read(fresh_lp)));
-    assert_eq!(plan_value["status"], "ready");
-    assert_eq!(plan_value["accountIds"].as_array().unwrap().len(), 11);
-    assert_eq!(plan_value["accountIds"][8], account_id_hex(fresh_lp));
-    assert_eq!(plan_value["signingRequirements"][6], true);
-    assert_eq!(plan_value["signingRequirements"][7], true);
-    assert_eq!(plan_value["signingRequirements"][8], true);
-    assert_preview_matches_plan(&quote_value, &plan_value, Some(fresh_lp));
-}
-
-#[test]
-fn missing_pool_plan_rejects_fresh_lp_account_collision() {
-    let scenario = Scenario::devnet();
-    let pool = scenario.pair.pool;
-    let quote_value = scenario.quote();
-    let quote_hash = quote_value["quoteHash"].as_str().unwrap().to_owned();
-
-    let plan_value = scenario.plan(quote_hash, Some(default_read(pool)));
-
-    assert_eq!(plan_value["status"], "error");
-    assert_eq!(plan_value["code"], "wallet_submission_failed");
+    // The 11-account NewDefinition preview order (config, pool, vaults, lp def/lock,
+    // holdings a/b/lp, current_tick, clock) — the create submit consumes the same shape.
+    let preview = quote_value["accountPreview"].as_array().unwrap();
+    assert_eq!(preview.len(), 11);
+    assert_eq!(preview[6]["role"], "user_holding_a");
+    assert_eq!(preview[6]["signer"], true);
+    assert_eq!(preview[7]["signer"], true);
+    assert_eq!(preview[8]["role"], "user_holding_lp");
+    assert_eq!(preview[8]["signer"], true);
 }
 
 #[test]
@@ -570,33 +515,6 @@ fn missing_pool_quote_accepts_large_direct_raw_amounts() {
     assert_eq!(quote_value["actualAmountARaw"], amount_a.to_string());
     assert_eq!(quote_value["actualAmountBRaw"], amount_b.to_string());
     assert!(quote_value.get("depositScaleBps").is_none());
-}
-
-#[test]
-fn advancing_clock_does_not_stale_quote() {
-    let mut scenario = Scenario::testnet();
-    let quote_value = scenario.quote();
-
-    scenario.snapshot.clock = account_read(
-        scenario.pair.clock,
-        &account(
-            [44; 8],
-            Data::try_from(
-                ClockAccountData {
-                    block_id: 11,
-                    timestamp: 1_500,
-                }
-                .to_bytes(),
-            )
-            .unwrap(),
-        ),
-    );
-    let plan_value = scenario.plan(
-        quote_value["quoteHash"].as_str().unwrap(),
-        Some(default_read(AccountId::new([63; 32]))),
-    );
-
-    assert_eq!(plan_value["status"], "ready");
 }
 
 #[test]
@@ -671,35 +589,27 @@ fn active_pool_quote_uses_ratio_and_existing_lp_holding() {
     assert_eq!(quote_value["canSubmit"], true);
     assert_eq!(quote_value["errors"], json!([]));
 
-    let plan_value = scenario.plan(quote_value["quoteHash"].as_str().unwrap(), None);
-    assert_eq!(plan_value["status"], "ready");
-    assert_eq!(plan_value["accountIds"].as_array().unwrap().len(), 10);
-    assert_eq!(plan_value["accountIds"][7], account_id_hex(lp_holding));
-    assert_eq!(plan_value["signingRequirements"][7], false);
-    assert_preview_matches_plan(&quote_value, &plan_value, None);
+    // The existing LP holding (not a fresh one) fills the LP slot of the 10-account
+    // AddLiquidity preview, and only the two token holdings sign.
+    let preview = quote_value["accountPreview"].as_array().unwrap();
+    assert_eq!(preview.len(), 10);
+    assert_eq!(preview[7]["role"], "user_holding_lp");
+    assert_eq!(
+        preview[7]["accountId"].as_str().unwrap(),
+        lp_holding.to_string()
+    );
+    assert_eq!(preview[7]["signer"], false);
+    assert_eq!(preview[5]["signer"], true);
+    assert_eq!(preview[6]["signer"], true);
 }
 
 #[test]
-fn matching_unfunded_quote_has_no_transaction_plan() {
+fn unfunded_quote_cannot_submit() {
     let mut scenario = Scenario::devnet();
     scenario.snapshot.wallet_available = false;
     scenario.snapshot.wallet_accounts.clear();
     let quote_value = scenario.quote();
     assert_eq!(quote_value["canSubmit"], false);
-
-    let plan_value = scenario.plan(quote_value["quoteHash"].as_str().unwrap(), None);
-
-    assert_eq!(plan_value["status"], "error");
-    assert_eq!(plan_value["code"], "quote_not_submittable");
-    assert_eq!(plan_value["quote"], quote_value);
-}
-
-#[test]
-fn stale_hash_returns_recomputed_quote_without_plan() {
-    let value = Scenario::devnet().plan("sha256:deadbeef", None);
-    assert_eq!(value["status"], "error");
-    assert_eq!(value["code"], "quote_changed");
-    assert_eq!(value["quote"]["status"], "ok");
 }
 
 #[test]

@@ -24,8 +24,6 @@ char *amm_context(const char *request_json);
 
 char *amm_quote(const char *request_json);
 
-char *amm_plan(const char *request_json);
-
 char *amm_swap_pair(const char *request_json);
 
 char *amm_resolve_pool(const char *request_json);

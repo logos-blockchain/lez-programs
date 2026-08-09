@@ -9,7 +9,6 @@ mod funding;
 mod holding;
 mod liquidity;
 mod pair;
-mod plan;
 mod position;
 mod quote;
 mod quote_error;
@@ -24,10 +23,10 @@ use std::{error::Error, fmt};
 
 pub use request::{
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigIdRequest, ContextRequest,
-    CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest, PairSnapshot, PlanRequest,
-    PoolIdRequest, PositionRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest,
-    SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
-    SwapExactOutQuoteRequest, SwapPairRequest, TokenHoldingsRequest, TokenIdsRequest,
+    CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest, PairSnapshot, PoolIdRequest,
+    PositionRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapExactInPlanRequest,
+    SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
+    TokenHoldingsRequest, TokenIdsRequest,
 };
 use serde_json::Value;
 
@@ -90,11 +89,6 @@ pub fn context(request: ContextRequest) -> AmmResult {
 /// Evaluates a pool-creation or add-liquidity request.
 pub fn quote(request: QuoteRequest) -> AmmResult {
     quote::quote(request).map_err(Into::into)
-}
-
-/// Materializes a previously quoted request into wallet submission arguments.
-pub fn plan(request: PlanRequest) -> AmmResult {
-    plan::plan(request).map_err(Into::into)
 }
 
 /// Derives the canonical account ids for a swap pair (tokens in either order).

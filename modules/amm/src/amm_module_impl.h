@@ -189,18 +189,6 @@ public:
     /// requiresFreshLp, amounts, warnings). Read-only — no submission.
     LogosMap quoteNewPosition(const LogosMap& request, bool wallet_open);
 
-    /// Submits an add-liquidity transaction. Re-quotes and validates `quote_hash`
-    /// against the current quote. If the quote requires a fresh LP holding and
-    /// `fresh_lp_id` is empty, returns `{ "status": "requires_fresh_lp", ... }`
-    /// WITHOUT submitting — the caller (the app backend, which owns the wallet
-    /// keyset) creates the account and calls again with its id. Otherwise builds
-    /// the plan (injecting the fresh LP account when given) and submits, then
-    /// returns the new-position submitted/error map.
-    LogosMap submitNewPosition(const LogosMap& request,
-                               const std::string& quote_hash,
-                               bool wallet_open,
-                               const std::string& fresh_lp_id);
-
 private:
     // Off-chain "network" context, derived from the process env (the same
     // sources the app backend used): AMM deployment id from AMM_PROGRAM_BIN,
@@ -248,19 +236,14 @@ private:
     nlohmann::json walletAccountReads(bool wallet_open, bool refresh);
 
     // Builds the { networkId, networkFingerprint, ammProgramId, request,
-    // snapshot } input shared by quoteNewPosition / submitNewPosition. On a
-    // recoverable precondition failure, sets *error to a new-position error
-    // map and returns a null json.
+    // snapshot } input for quoteNewPosition's amm_quote call. On a recoverable
+    // precondition failure, sets *error to a new-position error map and returns
+    // a null json.
     nlohmann::json buildQuoteInput(const LogosMap& request,
                                    const Network& net,
                                    bool wallet_open,
                                    bool fresh_wallet_accounts,
                                    nlohmann::json* error);
-
-    // Guards against a re-entrant in-flight request (e.g. a double-submit) on the
-    // shared module instance. Released per call, so the app's fresh-LP resubmit
-    // still proceeds.
-    bool m_requestPending = false;
 
     // Process-lifetime network config, resolved once (see network()). Serialized
     // module dispatch means no locking is needed; there is no invalidation, as

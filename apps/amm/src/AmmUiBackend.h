@@ -48,7 +48,6 @@ public slots:
     QString getBalance(QString accountIdHex, bool isPublic) override;
     void refreshNewPositionContext(QVariantMap request) override;
     QVariantMap quoteNewPosition(QVariantMap request) override;
-    QVariantMap submitNewPosition(QVariantMap request, QString quoteHash) override;
     // Return the new wallet's BIP39 mnemonic (empty string on failure) so the
     // UI can force a one-time seed-phrase backup step.
     QString createNewDefault(QString password) override;

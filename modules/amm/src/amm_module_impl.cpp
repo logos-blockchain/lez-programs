@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -86,31 +85,6 @@ std::string toHex(const uint8_t* p, size_t n) {
 std::string jStr(const json& obj, const char* key) {
     const auto it = obj.find(key);
     return (it != obj.end() && it->is_string()) ? it->get<std::string>() : std::string();
-}
-
-// Milliseconds since the unix epoch (u64). Used for the plan's `nowMs` and the
-// client deadline check — the module runs on the host, not in the zkVM, so wall
-// clock is available (unlike a guest).
-uint64_t nowMs() {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
-            .count());
-}
-
-// Decimal string -> u64. False (leaving `out` unset) on empty, non-digit, or
-// overflow.
-bool parseU64(const std::string& s, uint64_t& out) {
-    if (s.empty()) return false;
-    uint64_t value = 0;
-    for (const char c : s) {
-        if (c < '0' || c > '9') return false;
-        const uint64_t d = static_cast<uint64_t>(c - '0');
-        if (value > (~static_cast<uint64_t>(0) - d) / 10) return false;
-        value = value * 10 + d;
-    }
-    out = value;
-    return true;
 }
 
 // Coerce a swap amount arg — arriving as EITHER a JSON number (bare `1000` on
@@ -1214,89 +1188,3 @@ LogosMap AmmModuleImpl::quoteNewPosition(const LogosMap& request, bool wallet_op
     return result.ok ? result.value : publicError("backend_error");
 }
 
-LogosMap AmmModuleImpl::submitNewPosition(const LogosMap& request,
-                                          const std::string& quote_hash,
-                                          bool wallet_open,
-                                          const std::string& fresh_lp_id) {
-    if (m_requestPending) return publicError("submit_in_progress");
-    if (!wallet_open) return publicError("wallet_unavailable");
-    m_requestPending = true;
-    struct Guard {
-        bool* flag;
-        ~Guard() { *flag = false; }
-    } guard{&m_requestPending};
-
-    const Network net = network();
-    json error;
-    const json input = buildQuoteInput(request, net, wallet_open, /*fresh=*/true, &error);
-    if (!error.is_null()) return error;
-
-    const FfiResult quoteResult = call(amm_quote, input);
-    if (!quoteResult.ok) return publicError("backend_error");
-    const json quote = quoteResult.value;
-    if (jStr(quote, "quoteHash") != quote_hash) {
-        json result = publicError("quote_changed");
-        result["quote"] = quote;
-        return result;
-    }
-    if (!quote.value("canSubmit", false)) {
-        json result = publicError("quote_not_submittable");
-        result["quote"] = quote;
-        return result;
-    }
-
-    // Fresh LP holding: the app owns wallet-keyset mutation. If the quote needs
-    // one and the caller hasn't supplied it, ask for it (no submit) so the
-    // backend can create it through its own wallet provider and call again.
-    json freshLp;  // null
-    if (quote.value("requiresFreshLp", false)) {
-        if (fresh_lp_id.empty()) {
-            return json{
-                {"status", "requires_fresh_lp"},
-                {"quote", quote},
-            };
-        }
-        freshLp = readPublicAccount(fresh_lp_id);
-    }
-
-    json planInput = input;
-    planInput["quoteHash"] = quote_hash;
-    planInput["nowMs"] = nowMs();
-    if (!freshLp.is_null()) planInput["freshLp"] = freshLp;
-
-    const FfiResult planResult = call(amm_plan, planInput);
-    if (!planResult.ok) return publicError("backend_error");
-    const json plan = planResult.value;
-    if (jStr(plan, "status") != "ready") {
-        const std::string code = jStr(plan, "code");
-        return publicError(code.empty() ? "wallet_submission_failed" : code);
-    }
-
-    uint64_t deadline = 0;
-    if (!parseU64(jStr(plan, "deadlineMs"), deadline) || nowMs() >= deadline)
-        return publicError("transaction_deadline_expired");
-
-    const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
-    const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
-    const std::string program_id = jStr(plan, "programId");
-
-    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
-        accounts, signers, instruction, program_id);
-    const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
-    if (!obj.is_object() || !obj.value("success", false))
-        return publicError("wallet_submission_failed");
-
-    // Native tx hash (64-char hex) -> base58 transaction id via the wallet
-    // module (avoids linking libbase58 just for this encode).
-    const std::string tx_hash = jStr(obj, "tx_hash");
-    const std::string transaction_id =
-        modules().logos_execution_zone.account_id_to_base58(tx_hash);
-    if (transaction_id.empty()) return publicError("wallet_submission_failed");
-
-    return {
-        {"status", "submitted"},
-        {"transactionId", transaction_id},
-        {"deadlineMs", plan.value("deadlineMs", json())},
-    };
-}

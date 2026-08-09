@@ -9,15 +9,12 @@ TestCase {
     id: testCase
 
     name: "LiquidityPage"
-    readonly property string submittedTransactionId:
-        "1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"
 
     Component {
         id: backendComponent
 
         QtObject {
             property bool walletStateReady: false
-            property var submitResult: ({})
             property var quoteResult: ({
                 "status": "ok",
                 "poolStatus": "missing_pool"
@@ -27,10 +24,6 @@ TestCase {
                 "tokens": [],
                 "feeTiers": []
             })
-
-            function submitNewPosition(request, quoteHash) {
-                return submitResult
-            }
 
             function quoteNewPosition(request) {
                 return quoteResult
@@ -62,16 +55,6 @@ TestCase {
         verify(compactSteps.implicitHeight > 0)
         verify(form.width > 0)
         verify(form.width <= page.width - 32)
-    }
-
-    Component {
-        id: runtimeComponent
-
-        QtObject {
-            function watch(value, succeeded, failed) {
-                succeeded(value)
-            }
-        }
     }
 
     Component {
@@ -161,62 +144,6 @@ TestCase {
         compare(page.flow.quoteSerial, 7)
         compare(page.flow.newPositionQuote.quoteHash, "sha256:fresh")
         compare(page.flow.quoteStale, false)
-    }
-
-    function test_base58SubmittedResultEntersSuccessState() {
-        var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true,
-            "submitResult": {
-                "status": "submitted",
-                "transactionId": submittedTransactionId,
-                "deadlineMs": String(Date.now() + 60000)
-            }
-        })
-        var runtime = createTemporaryObject(runtimeComponent, testCase)
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend,
-            "runtime": runtime
-        })
-        verify(backend)
-        verify(runtime)
-        verify(page)
-
-        page.flow.confirm({
-            "request": ({}),
-            "quoteHash": "sha256:expected"
-        })
-
-        compare(page.flow.transactionId, submittedTransactionId)
-        compare(page.flow.flowErrorCode, "")
-        compare(page.flow.submitting, false)
-    }
-
-    function test_nativeHexSubmittedResultDoesNotEnterSuccessState() {
-        var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true,
-            "submitResult": {
-                "status": "submitted",
-                "transactionId": "000102030405060708090a0b0c0d0e0f"
-                                 + "101112131415161718191a1b1c1d1e1f"
-            }
-        })
-        var runtime = createTemporaryObject(runtimeComponent, testCase)
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend,
-            "runtime": runtime
-        })
-        verify(backend)
-        verify(runtime)
-        verify(page)
-
-        page.flow.confirm({
-            "request": ({}),
-            "quoteHash": "sha256:expected"
-        })
-
-        compare(page.flow.transactionId, "")
-        compare(page.flow.flowErrorCode, "wallet_submission_failed")
-        compare(page.flow.submitting, false)
     }
 
 }

@@ -269,17 +269,3 @@ pub struct QuoteRequest {
     pub request: PositionRequest,
     pub snapshot: PairSnapshot,
 }
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct PlanRequest {
-    pub network_id: String,
-    pub network_fingerprint: String,
-    pub amm_program_id: String,
-    pub request: PositionRequest,
-    pub snapshot: PairSnapshot,
-    pub quote_hash: String,
-    pub now_ms: u64,
-    #[serde(default)]
-    pub fresh_lp: Option<AccountRead>,
-}

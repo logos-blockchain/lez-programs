@@ -32,7 +32,6 @@ class AmmUiBackend
     PROP(QVariantMap newPositionContext READONLY)
     SLOT(void refreshNewPositionContext(QVariantMap request))
     SLOT(QVariantMap quoteNewPosition(QVariantMap request))
-    SLOT(QVariantMap submitNewPosition(QVariantMap request, QString quoteHash))
 
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
     // fresh wallet at the canonical walletHome with no path picking. createNew()
