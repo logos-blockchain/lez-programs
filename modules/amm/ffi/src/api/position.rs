@@ -7,24 +7,8 @@ use super::{
 };
 use crate::account::{account_id_from_hex, program_id_base58};
 
-#[derive(Clone)]
-pub(super) enum QuoteBranch {
-    Missing {
-        amount_a: u128,
-        amount_b: u128,
-    },
-    Active {
-        max_a: u128,
-        max_b: u128,
-        minimum_lp: u128,
-        stored_reversed: bool,
-    },
-}
-
 pub(super) struct EvaluatedQuote {
     pub(super) value: Value,
-    pub(super) quote_hash: String,
-    pub(super) plan: Option<NewPositionPlan>,
 }
 
 pub(super) enum QuoteComputation {
@@ -36,11 +20,6 @@ pub(super) struct QuoteFailure {
     pub(super) code: &'static str,
     pub(super) fields: Vec<&'static str>,
     pub(super) details: Value,
-}
-
-pub(super) struct NewPositionPlan {
-    pub(super) accounts: AccountPlan,
-    pub(super) branch: QuoteBranch,
 }
 
 pub(super) struct AccountPlan {
@@ -70,13 +49,6 @@ impl QuoteComputation {
             Self::Evaluated(EvaluatedQuote { value, .. }) => value,
         }
     }
-
-    pub(super) fn quote_hash(&self) -> Option<&str> {
-        match self {
-            Self::Failed(_) => None,
-            Self::Evaluated(quote) => Some(&quote.quote_hash),
-        }
-    }
 }
 
 impl QuoteFailure {
@@ -97,17 +69,6 @@ impl QuoteFailure {
             )],
             "warnings": [],
         })
-    }
-}
-
-impl NewPositionPlan {
-    pub(super) fn new(accounts: AccountPlan, branch: QuoteBranch) -> Result<Self, String> {
-        accounts.validate_ready()?;
-        Ok(Self { accounts, branch })
-    }
-
-    pub(super) fn requires_fresh_lp(&self) -> bool {
-        self.accounts.requires_fresh_lp()
     }
 }
 
@@ -150,47 +111,6 @@ impl AccountPlan {
 
     pub(super) fn take_sources(&mut self) -> Vec<SourceCommitment> {
         std::mem::take(&mut self.sources)
-    }
-
-    pub(super) fn requires_fresh_lp(&self) -> bool {
-        self.rows
-            .iter()
-            .any(|row| row.role == "user_holding_lp" && row.account_id.is_none())
-    }
-
-    pub(super) fn contains(&self, account_id: AccountId) -> bool {
-        self.rows
-            .iter()
-            .any(|row| row.account_id == Some(account_id))
-    }
-
-    pub(super) fn validate_ready(&self) -> Result<(), String> {
-        if self.rows.iter().any(|row| {
-            row.account_id.is_none() && !(row.role == "user_holding_lp" && row.signer && row.init)
-        }) {
-            return Err(String::from("submittable quote has an unresolved account"));
-        }
-        Ok(())
-    }
-
-    pub(super) fn wallet_args(
-        &self,
-        fresh_lp: Option<AccountId>,
-    ) -> Result<(Vec<AccountId>, Vec<bool>), String> {
-        let mut account_ids = Vec::with_capacity(self.rows.len());
-        let mut signing_requirements = Vec::with_capacity(self.rows.len());
-        for row in &self.rows {
-            let account_id = match row.account_id {
-                Some(account_id) => account_id,
-                None if row.role == "user_holding_lp" => {
-                    fresh_lp.ok_or_else(|| String::from("transaction plan has no LP holding"))?
-                }
-                None => return Err(String::from("transaction plan has an unresolved account")),
-            };
-            account_ids.push(account_id);
-            signing_requirements.push(row.signer);
-        }
-        Ok((account_ids, signing_requirements))
     }
 }
 

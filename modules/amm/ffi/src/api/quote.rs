@@ -19,10 +19,7 @@ use super::{
     funding::{funding_commitments, funding_issues, hash_quote},
     holding::{decode_fungible_holding, select_holding, wallet_holdings},
     pair::{derive_pair, is_canonical_pair, PairIds},
-    position::{
-        AccountPlan, AccountPlanHoldings, EvaluatedQuote, NewPositionPlan, QuoteBranch,
-        QuoteComputation,
-    },
+    position::{AccountPlan, AccountPlanHoldings, EvaluatedQuote, QuoteComputation},
     quote_error::{fatal_quote, issue},
     QuoteRequest,
 };
@@ -277,19 +274,7 @@ fn compute_missing_quote(
         "errors": funding,
         "warnings": [],
     });
-    let plan = if can_submit {
-        Some(NewPositionPlan::new(
-            account_plan,
-            QuoteBranch::Missing { amount_a, amount_b },
-        )?)
-    } else {
-        None
-    };
-    Ok(QuoteComputation::Evaluated(EvaluatedQuote {
-        value,
-        quote_hash,
-        plan,
-    }))
+    Ok(QuoteComputation::Evaluated(EvaluatedQuote { value }))
 }
 
 fn compute_active_quote(
@@ -525,24 +510,7 @@ fn compute_active_quote(
         "errors": funding,
         "warnings": warnings,
     });
-    let plan = if can_submit {
-        Some(NewPositionPlan::new(
-            account_plan,
-            QuoteBranch::Active {
-                max_a,
-                max_b,
-                minimum_lp,
-                stored_reversed,
-            },
-        )?)
-    } else {
-        None
-    };
-    Ok(QuoteComputation::Evaluated(EvaluatedQuote {
-        value,
-        quote_hash,
-        plan,
-    }))
+    Ok(QuoteComputation::Evaluated(EvaluatedQuote { value }))
 }
 
 fn validate_active_accounts(

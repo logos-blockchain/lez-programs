@@ -22,25 +22,6 @@ namespace {
             { QStringLiteral("warnings"), QVariantList() },
         };
     }
-
-    // A new-position error envelope (matches the module's publicError), for
-    // the backend-side failure paths (e.g. LP-account creation failing).
-    QVariantMap newPositionError(const QString& code)
-    {
-        return QVariantMap {
-            { QStringLiteral("status"), QStringLiteral("error") },
-            { QStringLiteral("canSubmit"), false },
-            { QStringLiteral("code"), code },
-            { QStringLiteral("errors"), QVariantList { QVariantMap {
-                { QStringLiteral("code"), code },
-                { QStringLiteral("recoverable"), true },
-                { QStringLiteral("blockingFields"), QVariantList() },
-                { QStringLiteral("details"), QVariantMap() },
-            } } },
-            { QStringLiteral("warnings"), QVariantList() },
-            { QStringLiteral("accountPreview"), QVariantList() },
-        };
-    }
 }
 
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
@@ -154,29 +135,6 @@ void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
 QVariantMap AmmUiBackend::quoteNewPosition(QVariantMap request)
 {
     return m_logos->amm_module.quoteNewPosition(request, isWalletOpen());
-}
-
-QVariantMap AmmUiBackend::submitNewPosition(QVariantMap request, QString quoteHash)
-{
-    // First attempt with no LP account. If the module needs a fresh LP holding
-    // it returns "requires_fresh_lp" without submitting; we own wallet-keyset
-    // mutation, so create the account here (keeping the account model + on-disk
-    // storage coherent) and resubmit with its id.
-    QVariantMap result = m_logos->amm_module.submitNewPosition(
-        request, quoteHash, isWalletOpen(), QString());
-
-    if (result.value(QStringLiteral("status")).toString()
-        == QStringLiteral("requires_fresh_lp")) {
-        const QString lpId = m_walletController->createAccount(true);
-        if (lpId.isEmpty())
-            return newPositionError(QStringLiteral("wallet_submission_failed"));
-        result = m_logos->amm_module.submitNewPosition(
-            request, quoteHash, isWalletOpen(), lpId);
-    }
-
-    if (result.value(QStringLiteral("status")).toString() == QStringLiteral("submitted"))
-        refreshBalances();
-    return result;
 }
 
 void AmmUiBackend::syncWalletState()
