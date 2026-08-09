@@ -114,6 +114,16 @@ class AmmUiBackend
     // invalid_account_id, bad_amount, bad_fee_bps_amount, invalid_fee_tier,
     // wallet_submission_failed, backend_error).
     SLOT(QVariantMap createPool(QVariantMap request))
+    // Submits an AddLiquidity transaction into the request's existing pool. `request`
+    // carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, maxAmountARaw,
+    // maxAmountBRaw, minLpRaw, deadlineMs } (ids hex or base58; amounts/deadline decimal
+    // strings). minLpRaw is the slippage floor on the LP minted; lpHoldingId is a fresh
+    // holding the caller supplies (the flow creates it) to receive the minted LP — the
+    // backend forwards and creates no wallet accounts. Returns
+    // { status:"ok", error:"", transactionId:<hex tx hash> } on success, else
+    // { status:"error", error:<code> } (wallet_unavailable, config_missing,
+    // invalid_account_id, bad_amount, no_pool, wallet_submission_failed, backend_error).
+    SLOT(QVariantMap addLiquidity(QVariantMap request))
     // Lists the connected wallet's fungible token holdings for the account
     // selector: [{ accountId, accountType:"TokenHolding", definitionId,
     // definitionIdHex, balanceRaw }] — one row per holding account, every token,

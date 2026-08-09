@@ -77,6 +77,9 @@ public slots:
     // accounts here.
     QVariantMap liquidityQuote(QVariantMap request) override;
     QVariantMap createPool(QVariantMap request) override;
+    // Add-liquidity submit. Forwards to the module; the flow supplies a fresh LP
+    // holding in the request (the backend creates no wallet accounts here).
+    QVariantMap addLiquidity(QVariantMap request) override;
     // Lists the wallet's fungible token holdings for the account selector.
     QVariantList tokenHoldings() override;
 

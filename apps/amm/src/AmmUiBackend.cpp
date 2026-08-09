@@ -305,3 +305,22 @@ QVariantMap AmmUiBackend::createPool(QVariantMap request)
         refreshBalances();
     return result;
 }
+
+QVariantMap AmmUiBackend::addLiquidity(QVariantMap request)
+{
+    // Same connected-state submit guard as createPool — this app's lock is authoritative
+    // even though the shared wallet may remain open elsewhere.
+    if (!isWalletOpen())
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
+        };
+
+    // The caller supplies the fresh LP holding in the request; the backend forwards to the
+    // module (it creates no wallet accounts) and refreshes balances on a successful submit.
+    const QVariantMap result = m_logos->amm_module.addLiquidity(request);
+    if (result.value(QStringLiteral("status")).toString() == QStringLiteral("ok")
+        && !result.value(QStringLiteral("transactionId")).toString().isEmpty())
+        refreshBalances();
+    return result;
+}

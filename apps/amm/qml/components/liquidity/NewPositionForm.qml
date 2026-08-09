@@ -92,17 +92,23 @@ AmmActionCard {
                                     && root.selectedTokenBId.length > 0
                                     && root.selectedTokenAId !== root.selectedTokenBId
     readonly property bool resolvingToken: root.resolvingTokenId.length > 0
-    // Creating a pool submits caller-provided A/B holdings (see submissionSnapshot);
-    // require both selectors resolved. Add-liquidity enumerates holdings server-side,
-    // so it does not gate on these.
-    readonly property bool holdingsReady: !root.missingPool
+    // Both createPool and addLiquidity submit caller-provided A/B holdings (see
+    // submissionSnapshot), so once a pool status is known both require the two selectors
+    // resolved (the selectors are shown for both branches).
+    readonly property bool holdingsReady: !(root.missingPool || root.activePool)
                                           || (root.selectedHoldingAId.length > 0
                                               && root.selectedHoldingBId.length > 0)
+    // Both deposit amounts must be present. For create the quote auto-fills them from the
+    // opening deposit; for add the user enters one and the other ratio-fills. Without this
+    // the active-pool probe quote (sent on pair-select with simulated amounts) reports
+    // canSubmit, wrongly enabling the CTA before any amount is entered.
+    readonly property bool hasDepositAmounts: root.amountA.length > 0 && root.amountB.length > 0
     readonly property bool canConfirm: root.quotePayload.status === "ok"
                                        && root.quotePayload.canSubmit === true
                                        && root.quoteMatchesPair()
                                        && String(root.quotePayload.quoteHash || "").length > 0
                                        && root.holdingsReady
+                                       && root.hasDepositAmounts
                                        && !root.contextLoading
                                        && !root.quoteLoading
                                        && !root.quoteStale
@@ -263,7 +269,7 @@ AmmActionCard {
                 selectedTokenId: root.selectedTokenAId
                 holdings: root.holdings
                 holdingDefinitionId: root.selectedTokenAId
-                showHoldingSelector: root.missingPool && root.hasPair
+                showHoldingSelector: (root.missingPool || root.activePool) && root.hasPair
                 selectorObjectName: "newPositionAccountSelectorA"
                 tokenInvalid: root.tokenHasError("A")
                 tokenSelectionEnabled: !root.contextLoading && !root.submitting
@@ -315,7 +321,7 @@ AmmActionCard {
                 selectedTokenId: root.selectedTokenBId
                 holdings: root.holdings
                 holdingDefinitionId: root.selectedTokenBId
-                showHoldingSelector: root.missingPool && root.hasPair
+                showHoldingSelector: (root.missingPool || root.activePool) && root.hasPair
                 selectorObjectName: "newPositionAccountSelectorB"
                 tokenInvalid: root.tokenHasError("B")
                 tokenSelectionEnabled: !root.contextLoading && !root.submitting
@@ -1458,13 +1464,16 @@ AmmActionCard {
         return {
             "request": built.request,
             "quoteHash": String(root.quotePayload.quoteHash || ""),
-            // Canonical-order holdings for the create path's createPool call: the
+            // Canonical-order holdings for the createPool / addLiquidity calls: the
             // request's tokenAId/amountARaw are canonical, so holdingAId must be the
-            // canonical token A's holding too (createPool re-canonicalizes as a no-op).
+            // canonical token A's holding too (the module re-canonicalizes as a no-op).
             // The user picks these via the per-side account selectors; selectedHoldingA
             // is display token A's holding, so it aligns with tokenA the same way.
             "holdingAId": String(root.displayIsCanonical ? root.selectedHoldingAId : root.selectedHoldingBId),
             "holdingBId": String(root.displayIsCanonical ? root.selectedHoldingBId : root.selectedHoldingAId),
+            // The add path's slippage floor on the LP minted (orientation-independent),
+            // taken from the active-pool quote; ignored by the create path.
+            "minLpRaw": String(root.quotePayload.minimumLpRaw || ""),
             "pairText": qsTr("%1 / %2").arg(root.shortTokenName(root.tokenA)).arg(root.shortTokenName(root.tokenB)),
             "feeText": root.feeLabel(root.selectedFeeBps),
             "depositAText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "A"),

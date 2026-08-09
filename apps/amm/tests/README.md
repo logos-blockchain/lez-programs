@@ -9,6 +9,9 @@ inspector (framework from
 - `create-pool.mjs` selects the **A/C** pair (which the setup script leaves
   unseeded — only A/B is created), submits a pool creation, and verifies the A/C
   pool now exists **on-chain**.
+- `add-liquidity.mjs` selects the seeded **A/B** pair, asserts the CTA stays
+  disabled until deposit amounts are entered, submits an add, and verifies the
+  A/B pool reserves grew **on-chain**.
 
 ## Isolation
 
@@ -45,8 +48,9 @@ LEE_WALLET_HOME_DIR=$(pwd)/apps/amm/tests/testnet/.wallet \
   nix run .#amm-ui
 
 # 3. Terminal 2 — drive a test; watch it click through the live UI.
-node apps/amm/tests/swap.mjs         # swap against the seeded A/B pool
-node apps/amm/tests/create-pool.mjs  # create the (unseeded) A/C pool
+node apps/amm/tests/swap.mjs          # swap against the seeded A/B pool
+node apps/amm/tests/create-pool.mjs   # create the (unseeded) A/C pool
+node apps/amm/tests/add-liquidity.mjs # add liquidity to the seeded A/B pool
 ```
 
 Headless CI variant (no window, launches the app itself, pass/fail only):
@@ -78,6 +82,7 @@ nix build .#integration-test -L
 
 - `swap.mjs` — the end-to-end swap UI test (A/B pool).
 - `create-pool.mjs` — the end-to-end create-pool UI test (creates the A/C pool).
+- `add-liquidity.mjs` — the end-to-end add-liquidity UI test (adds to the A/B pool).
 - `testnet/setup-amm-testnet.sh` — isolated testnet + wallet bootstrap (TKA/TKB/TKC,
   seeds the A/B pool only).
 - `qml/`, `cpp/` — the module's own QML/C++ unit tests.
