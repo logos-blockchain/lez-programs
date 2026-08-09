@@ -196,33 +196,14 @@ QtObject {
             return
         }
 
-        // Pool creation (initialPriceRealRaw is set only on the missing-pool path) goes
-        // through the new createPool op — hex ids, caller-provided accounts. Add-liquidity
-        // keeps the legacy submitNewPosition.
-        if (snapshot.request.initialPriceRealRaw !== undefined) {
+        // Route by pool state: creation (initialPriceRealRaw is set only on the missing-pool
+        // path) goes through createPool; the active-pool branch through addLiquidity. Both
+        // mint a fresh LP holding then submit via the lean module ops (hex ids,
+        // caller-provided accounts). Quoting stays on the legacy quoteNewPosition for now.
+        if (snapshot.request.initialPriceRealRaw !== undefined)
             root.createPool(snapshot)
-            return
-        }
-
-        root.runtime.watch(root.backend.submitNewPosition(snapshot.request, snapshot.quoteHash),
-            function(result) {
-                if (result && result.status === "submitted"
-                        && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(
-                            String(result.transactionId || ""))) {
-                    root.submitting = false
-                    root.transactionId = result.transactionId
-                    root.flowErrorCode = ""
-                    root.contextErrorCode = ""
-                    root.quoteErrorCode = ""
-                    root.invalidateQuote()
-                    root.submitSucceeded()
-                    return
-                }
-                root.finishSubmitFailure(result || root.quoteError("wallet_submission_failed"))
-            },
-            function(error) {
-                root.finishSubmitFailure(root.quoteError("wallet_submission_failed"))
-            })
+        else
+            root.addLiquidity(snapshot)
     }
 
     // Create a pool via the new createPool op. A new pool has no pre-existing LP
@@ -256,6 +237,59 @@ QtObject {
             "deadlineMs": "18446744073709551615"
         }
         root.runtime.watch(root.backend.createPool(request),
+            function(result) {
+                if (result && result.status === "ok"
+                        && String(result.transactionId || "").length > 0) {
+                    root.submitting = false
+                    root.transactionId = String(result.transactionId)
+                    root.flowErrorCode = ""
+                    root.contextErrorCode = ""
+                    root.quoteErrorCode = ""
+                    root.invalidateQuote()
+                    root.submitSucceeded()
+                    return
+                }
+                var code = result && result.error ? String(result.error)
+                                                  : "wallet_submission_failed"
+                root.finishSubmitFailure(root.quoteError(code))
+            },
+            function(error) {
+                root.finishSubmitFailure(root.quoteError("wallet_submission_failed"))
+            })
+    }
+
+    // Add liquidity to an existing pool via the new addLiquidity op. Like createPool a fresh
+    // LP holding receives the minted LP, so create one then submit. The submit is priced off
+    // the legacy quote's maxAmounts + minimumLpRaw (quoting stays legacy for now; the
+    // module's addLiquidityQuote is built but unwired). No confirmation poll yet.
+    function addLiquidity(snapshot) {
+        root.runtime.watch(root.backend.createAccountPublic(),
+            function(lpId) {
+                if (!lpId || String(lpId).length === 0) {
+                    root.finishSubmitFailure(root.quoteError("wallet_submission_failed"))
+                    return
+                }
+                root.submitAddLiquidity(snapshot, String(lpId))
+            },
+            function(error) {
+                root.finishSubmitFailure(root.quoteError("wallet_submission_failed"))
+            })
+    }
+
+    function submitAddLiquidity(snapshot, lpHoldingId) {
+        var request = {
+            "tokenAId": snapshot.request.tokenAId,
+            "tokenBId": snapshot.request.tokenBId,
+            "holdingAId": snapshot.holdingAId,
+            "holdingBId": snapshot.holdingBId,
+            "lpHoldingId": lpHoldingId,
+            "maxAmountARaw": snapshot.request.maxAmountARaw,
+            "maxAmountBRaw": snapshot.request.maxAmountBRaw,
+            "minLpRaw": snapshot.minLpRaw,
+            // u64-max sentinel = no deadline, same as the swap submits.
+            "deadlineMs": "18446744073709551615"
+        }
+        root.runtime.watch(root.backend.addLiquidity(request),
             function(result) {
                 if (result && result.status === "ok"
                         && String(result.transactionId || "").length > 0) {
