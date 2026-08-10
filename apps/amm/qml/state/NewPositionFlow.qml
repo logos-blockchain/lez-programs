@@ -164,6 +164,73 @@ QtObject {
             return
         }
 
+        // Route on pool existence (read the pool account), like the swap card. resolvePool
+        // returns the reserves oriented to our requested token order (reserveA is tokenAId's).
+        root.runtime.watch(root.backend.resolvePool(built.request.tokenAId, built.request.tokenBId),
+            function(pool) {
+                if (serial !== root.quoteSerial)
+                    return
+                if (pool && pool.exists) {
+                    root.requestAddQuote(serial, built, pool)
+                    return
+                }
+                // resolvePool returns exists:false for BOTH the normal "no pool yet" case and
+                // hard failures (no_program_bin, amm_not_initialized, bad_config). Only the
+                // former — an empty error or no_pool — is a create-pool signal; surface any other
+                // pool.error as a quote error instead of masking it as a create quote (which
+                // would hide the backend failure and enable the wrong flow).
+                var poolError = pool ? String(pool.error || "") : ""
+                if (poolError.length === 0 || poolError === "no_pool") {
+                    root.requestCreateQuote(serial, built)
+                } else {
+                    root.quoteLoading = false
+                    root.quoteStale = false
+                    root.quoteErrorCode = ""
+                    root.newPositionQuote = root.quoteError(poolError)
+                }
+            },
+            function(error) {
+                if (serial !== root.quoteSerial)
+                    return
+                root.quoteLoading = false
+                root.quoteStale = true
+                root.quoteErrorCode = "backend_error"
+            })
+    }
+
+    // Add-liquidity preview via the lean addLiquidityQuote; reserves + fee come from the
+    // resolvePool read. The result is assembled into the shape the form already consumes.
+    function requestAddQuote(serial, built, pool) {
+        root.runtime.watch(root.backend.addLiquidityQuote({
+            "tokenAId": built.request.tokenAId,
+            "tokenBId": built.request.tokenBId,
+            "maxAmountARaw": built.request.maxAmountARaw,
+            "maxAmountBRaw": built.request.maxAmountBRaw,
+            "slippageBps": built.request.slippageBps
+        }),
+            function(quote) {
+                if (serial !== root.quoteSerial)
+                    return
+                root.quoteLoading = false
+                root.quoteStale = false
+                root.quoteErrorCode = ""
+                if (quote && quote.status === "ok")
+                    root.newPositionQuote = root.assembleAddQuote(built, pool, quote)
+                else
+                    root.newPositionQuote = root.quoteError((quote && quote.error) || "backend_error")
+            },
+            function(error) {
+                if (serial !== root.quoteSerial)
+                    return
+                root.quoteLoading = false
+                root.quoteStale = true
+                root.quoteErrorCode = "backend_error"
+            })
+    }
+
+    // Create-pool preview still on the legacy quoteNewPosition — migrated to createPoolQuote
+    // (the create counterpart of addLiquidityQuote) in a later step.
+    function requestCreateQuote(serial, built) {
         root.runtime.watch(root.backend.quoteNewPosition(built.request),
             function(quote) {
                 if (serial !== root.quoteSerial)
@@ -185,6 +252,31 @@ QtObject {
             })
     }
 
+    // Maps addLiquidityQuote + the pool read into the quote shape NewPositionForm reads for an
+    // active pool. Amounts/reserves are in the request's (canonical) order, matching the form's
+    // displayIsCanonical mapping; minimumLpRaw is the slippage floor the module computed.
+    function assembleAddQuote(built, pool, quote) {
+        return {
+            "status": "ok",
+            "poolStatus": "active_pool",
+            "canSubmit": true,
+            "tokenAId": built.request.tokenAId,
+            "tokenBId": built.request.tokenBId,
+            "actualAmountARaw": String(quote.amountARaw || "0"),
+            "actualAmountBRaw": String(quote.amountBRaw || "0"),
+            "expectedLpRaw": String(quote.expectedLpRaw || "0"),
+            "minimumLpRaw": String(quote.minimumLpRaw || "0"),
+            "reserveARaw": String(pool.reserveA || "0"),
+            "reserveBRaw": String(pool.reserveB || "0"),
+            "poolFeeBps": pool.feeBps,
+            "requiresFreshLp": true,
+            "initialPriceRealRaw": String(quote.priceRaw || "0"),
+            "errors": [],
+            "warnings": [],
+            "accountPreview": []
+        }
+    }
+
     function confirm(snapshot) {
         if (root.submitting)
             return
@@ -199,7 +291,8 @@ QtObject {
         // Route by pool state: creation (initialPriceRealRaw is set only on the missing-pool
         // path) goes through createPool; the active-pool branch through addLiquidity. Both
         // mint a fresh LP holding then submit via the lean module ops (hex ids,
-        // caller-provided accounts). Quoting stays on the legacy quoteNewPosition for now.
+        // caller-provided accounts). Add quoting is now on addLiquidityQuote; create quoting
+        // stays on the legacy quoteNewPosition until createPoolQuote is wired.
         if (snapshot.request.initialPriceRealRaw !== undefined)
             root.createPool(snapshot)
         else
@@ -259,9 +352,9 @@ QtObject {
     }
 
     // Add liquidity to an existing pool via the new addLiquidity op. Like createPool a fresh
-    // LP holding receives the minted LP, so create one then submit. The submit is priced off
-    // the legacy quote's maxAmounts + minimumLpRaw (quoting stays legacy for now; the
-    // module's addLiquidityQuote is built but unwired). No confirmation poll yet.
+    // LP holding receives the minted LP, so create one then submit. The submit reuses the
+    // addLiquidityQuote result (maxAmounts + minimumLpRaw) carried on the snapshot. No
+    // confirmation poll yet.
     function addLiquidity(snapshot) {
         root.runtime.watch(root.backend.createAccountPublic(),
             function(lpId) {

@@ -75,6 +75,8 @@ public slots:
     // createAccountPublic() — so createPool forwards to the module and creates no wallet
     // accounts here.
     QVariantMap liquidityQuote(QVariantMap request) override;
+    // Read-only add-liquidity preview (forwards to the module).
+    QVariantMap addLiquidityQuote(QVariantMap request) override;
     QVariantMap createPool(QVariantMap request) override;
     // Add-liquidity submit. Forwards to the module; the flow supplies a fresh LP
     // holding in the request (the backend creates no wallet accounts here).

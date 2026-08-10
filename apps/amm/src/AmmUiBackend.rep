@@ -102,6 +102,15 @@ class AmmUiBackend
     // Read-only, no submission (the fee is not needed — it isn't part of the pool
     // PDA nor the pricing).
     SLOT(QVariantMap liquidityQuote(QVariantMap request))
+    // Server-side add-liquidity preview from the two max deposit amounts. `request`
+    // carries { tokenAId, tokenBId, maxAmountARaw, maxAmountBRaw, slippageBps } (ids hex or
+    // base58). Reads the pool and returns { status:"ok", error:"", amountARaw, amountBRaw
+    // (the actual ratio-matched deposits, display order), expectedLpRaw, minimumLpRaw (the
+    // slippage floor on the LP minted — the submit's min_amount_liquidity), priceRaw }. On
+    // failure { status:"error", error:<code> } — no_pool, pair_mismatch, invalid_token_id,
+    // invalid_slippage, amount_too_low, minimum_lp_zero, bad_amount, backend_error.
+    // Read-only, no submission.
+    SLOT(QVariantMap addLiquidityQuote(QVariantMap request))
     // Submits a NewDefinition transaction creating the pool for the request's pair.
     // `request` carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId,
     // amountARaw, amountBRaw, feeBps, deadlineMs } (ids hex or base58; amounts/deadline
