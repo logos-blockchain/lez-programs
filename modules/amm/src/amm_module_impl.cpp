@@ -1096,63 +1096,6 @@ LogosList AmmModuleImpl::tokenHoldings(bool wallet_open) {
     return out;
 }
 
-nlohmann::json AmmModuleImpl::buildQuoteInput(const LogosMap& request,
-                                              const Network& net,
-                                              bool wallet_open,
-                                              bool fresh_wallet_accounts,
-                                              nlohmann::json* error) {
-    if (net.status != "ready") {
-        *error = publicError(net.status);
-        return json();
-    }
-    const FfiResult configResult =
-        call(amm_config_id, json{{"ammProgramId", net.amm_program_id}});
-    if (!configResult.ok) {
-        *error = publicError("backend_error");
-        return json();
-    }
-    const json config = readPublicAccount(jStr(configResult.value, "configId"));
-
-    const FfiResult pairResult = call(amm_pair_ids, json{
-        {"ammProgramId", net.amm_program_id},
-        {"config", config},
-        {"tokenAId", request.value("tokenAId", json())},
-        {"tokenBId", request.value("tokenBId", json())},
-    });
-    if (!pairResult.ok) {
-        *error = publicError("backend_error");
-        return json();
-    }
-    const json pairManifest = pairResult.value;
-    if (jStr(pairManifest, "status") != "ok") {
-        *error = publicError(jStr(pairManifest, "code"));
-        return json();
-    }
-
-    const json walletAccounts = walletAccountReads(wallet_open, fresh_wallet_accounts);
-    const json snapshot = {
-        {"config", config},
-        {"tokenA", readPublicAccount(jStr(pairManifest, "tokenAId"))},
-        {"tokenB", readPublicAccount(jStr(pairManifest, "tokenBId"))},
-        {"pool", readPublicAccount(jStr(pairManifest, "poolId"))},
-        {"vaultA", readPublicAccount(jStr(pairManifest, "vaultAId"))},
-        {"vaultB", readPublicAccount(jStr(pairManifest, "vaultBId"))},
-        {"lpDefinition", readPublicAccount(jStr(pairManifest, "lpDefinitionId"))},
-        {"lpLockHolding", readPublicAccount(jStr(pairManifest, "lpLockHoldingId"))},
-        {"currentTick", readPublicAccount(jStr(pairManifest, "currentTickId"))},
-        {"clock", readPublicAccount(jStr(pairManifest, "clockId"))},
-        {"walletAvailable", wallet_open},
-        {"walletAccounts", walletAccounts},
-    };
-    return {
-        {"networkId", net.id},
-        {"networkFingerprint", net.fingerprint},
-        {"ammProgramId", net.amm_program_id},
-        {"request", request},
-        {"snapshot", snapshot},
-    };
-}
-
 LogosMap AmmModuleImpl::newPositionContext(const LogosMap& request,
                                            bool wallet_open,
                                            bool refresh_wallet_accounts) {
@@ -1208,15 +1151,5 @@ LogosMap AmmModuleImpl::newPositionContext(const LogosMap& request,
     return contextResult.ok
         ? contextResult.value
         : contextState("error", net.id, net.fingerprint, "backend_error");
-}
-
-LogosMap AmmModuleImpl::quoteNewPosition(const LogosMap& request, bool wallet_open) {
-    const Network net = network();
-    json error;
-    const json input = buildQuoteInput(request, net, wallet_open, /*fresh=*/false, &error);
-    if (!error.is_null()) return error;
-
-    const FfiResult result = call(amm_quote, input);
-    return result.ok ? result.value : publicError("backend_error");
 }
 

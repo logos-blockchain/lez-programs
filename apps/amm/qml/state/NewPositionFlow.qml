@@ -431,18 +431,11 @@ QtObject {
 
     function finishSubmitFailure(result) {
         root.submitting = false
-        const hasFreshQuote = result && result.quote
-                              && result.quote.status
-        if (hasFreshQuote) {
-            root.newPositionQuote = result.quote
-            root.quoteLoading = false
-            root.quoteStale = false
-        }
         const code = result && result.code ? result.code : "wallet_submission_failed"
         root.flowErrorCode = code
         root.submitFailed()
-        if (hasFreshQuote)
-            return
+        // The lean submit ops report only a status/error (never a re-quote), so a failure
+        // always re-quotes to refresh state against the current pool.
         root.scheduleQuote(true, root.pendingQuoteRequest)
     }
 

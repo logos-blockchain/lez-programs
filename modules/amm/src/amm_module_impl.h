@@ -184,11 +184,6 @@ public:
                                 bool wallet_open,
                                 bool refresh_wallet_accounts);
 
-    /// Prices an add-liquidity request against current on-chain state and
-    /// returns the new-position quote map (quoteHash, canSubmit,
-    /// requiresFreshLp, amounts, warnings). Read-only — no submission.
-    LogosMap quoteNewPosition(const LogosMap& request, bool wallet_open);
-
 private:
     // Off-chain "network" context, derived from the process env (the same
     // sources the app backend used): AMM deployment id from AMM_PROGRAM_BIN,
@@ -234,16 +229,6 @@ private:
     // the cache — quote reuses it, submit forces fresh — since each read is a
     // live sequencer round-trip.
     nlohmann::json walletAccountReads(bool wallet_open, bool refresh);
-
-    // Builds the { networkId, networkFingerprint, ammProgramId, request,
-    // snapshot } input for quoteNewPosition's amm_quote call. On a recoverable
-    // precondition failure, sets *error to a new-position error map and returns
-    // a null json.
-    nlohmann::json buildQuoteInput(const LogosMap& request,
-                                   const Network& net,
-                                   bool wallet_open,
-                                   bool fresh_wallet_accounts,
-                                   nlohmann::json* error);
 
     // Process-lifetime network config, resolved once (see network()). Serialized
     // module dispatch means no locking is needed; there is no invalidation, as

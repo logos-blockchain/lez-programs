@@ -22,8 +22,6 @@ pub(super) struct PairIds {
     pub(super) lp_lock_holding: AccountId,
     pub(super) current_tick: AccountId,
     pub(super) clock: AccountId,
-    pub(super) token_program: ProgramId,
-    pub(super) twap_program: ProgramId,
 }
 
 pub(super) fn pair_ids(request: PairIdsRequest) -> Result<Value, String> {
@@ -71,8 +69,6 @@ pub(super) fn derive_pair(
         lp_lock_holding: compute_lp_lock_holding_pda(amm_program, pool),
         current_tick: compute_current_tick_account_pda(config.twap_oracle_program_id, pool),
         clock: CLOCK_01_PROGRAM_ACCOUNT_ID,
-        token_program: config.token_program_id,
-        twap_program: config.twap_oracle_program_id,
     })
 }
 
