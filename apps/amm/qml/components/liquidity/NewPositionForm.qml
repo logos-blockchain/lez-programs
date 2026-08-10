@@ -106,7 +106,6 @@ AmmActionCard {
     readonly property bool canConfirm: root.quotePayload.status === "ok"
                                        && root.quotePayload.canSubmit === true
                                        && root.quoteMatchesPair()
-                                       && String(root.quotePayload.quoteHash || "").length > 0
                                        && root.holdingsReady
                                        && root.hasDepositAmounts
                                        && !root.contextLoading

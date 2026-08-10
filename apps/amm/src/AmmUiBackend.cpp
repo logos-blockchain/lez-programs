@@ -237,6 +237,13 @@ QVariantMap AmmUiBackend::liquidityQuote(QVariantMap request)
     return m_logos->amm_module.liquidityQuote(request);
 }
 
+QVariantMap AmmUiBackend::addLiquidityQuote(QVariantMap request)
+{
+    // Read-only add-liquidity preview — no wallet guard. The module reads the pool and
+    // ratio-matches the deposit server-side from the two max amounts.
+    return m_logos->amm_module.addLiquidityQuote(request);
+}
+
 QVariantList AmmUiBackend::tokenHoldings()
 {
     // Read-only list of the wallet's token holdings for the account selector. Gated
