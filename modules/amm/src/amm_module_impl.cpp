@@ -425,10 +425,15 @@ LogosMap AmmModuleImpl::resolvePool(const std::string& def_a_hex,
     if (config.is_null())
         return failed("bad_config");  // amm_config_id op failed (malformed program id)
 
+    // The liquidity view passes base58 ids; the swap card passes hex. Normalize both to hex
+    // (idempotent for hex) so the FFI id derivation works either way.
+    const std::string token_a = normalizeAccountId(def_a_hex);
+    const std::string token_b = normalizeAccountId(def_b_hex);
+
     const FfiResult pairResult = call(amm_swap_pair, json{
         {"ammProgramId", net.amm_program_id},
-        {"tokenInId", def_a_hex},
-        {"tokenOutId", def_b_hex},
+        {"tokenInId", token_a},
+        {"tokenOutId", token_b},
         {"config", config},
     });
     if (!pairResult.ok)
@@ -448,10 +453,18 @@ LogosMap AmmModuleImpl::resolvePool(const std::string& def_a_hex,
         return failed("bad_config");  // amm_resolve_pool op failed
     // resolve_pool returns { exists:false } (no error) for a missing pool / no
     // liquidity; re-tag it "no_pool" — the code SwapCard expects for that state.
-    const json resolved = resolveResult.value;
+    json resolved = resolveResult.value;
     if (!resolved.value("exists", false))
         return failed("no_pool");
-    return resolved;  // { exists:true, reserveA, reserveB, feeBps }
+    // resolve_pool labels the reserves in the pool's STORED order (reserveA is defAHex's).
+    // Orient them to the CALLER's requested order so reserveA is token_a's reserve — the
+    // pool's stored order needn't match (it can be non-canonical, e.g. the testnet setup's
+    // pool). Both callers then read reserveA/reserveB as their own token-a/token-b directly.
+    if (jStr(resolved, "defAHex") != token_a) {
+        resolved["reserveA"].swap(resolved["reserveB"]);
+        resolved["defAHex"].swap(resolved["defBHex"]);
+    }
+    return resolved;  // { exists:true, reserveA, reserveB, feeBps } in the caller's order
 }
 
 LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
