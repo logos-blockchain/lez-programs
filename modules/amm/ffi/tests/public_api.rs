@@ -22,11 +22,12 @@ fn create_pool_surface_is_reexported_from_crate_root() {
     let quote = liquidity_quote(LiquidityQuoteRequest {
         token_a_id: "11".repeat(32),
         token_b_id: "22".repeat(32),
+        initial_price_real_raw: None, // amounts supplied ⇒ the op derives the price
         amount_a_raw: Some("1000000".into()),
         amount_b_raw: Some("4000000".into()),
     })
     .expect("a valid pure create-pool quote should succeed");
-    assert_eq!(quote["amountARaw"], "1000000");
+    assert_eq!(quote["actualAmountARaw"], "1000000");
 
     let _plan: fn(CreatePoolPlanRequest) -> AmmResult = create_pool_plan;
 }

@@ -56,7 +56,7 @@ async function formState(app, formId) {
   const props = (await app.getProperties(formId)).properties || [];
   const get = (n) => { const p = props.find((x) => x.name === n); return p ? p.value : undefined; };
   return {
-    poolStatus: get("poolStatus"),
+    activePool: get("activePool"),
     missingPool: get("missingPool"),
     canConfirm: get("canConfirm"),
     amountA: get("amountA"),
@@ -186,7 +186,7 @@ test("amm liquidity: create the A/C pool", async (app) => {
     await app.waitFor(
       async () => {
         const s = await formState(app, formId);
-        if (s.poolStatus === "active_pool")
+        if (s.activePool === true)
           throw new Error("A/C pool already exists — reset the testnet (only A/B should be seeded)");
         if (!s.missingPool) throw new Error("pool status not resolved yet");
       },
@@ -194,6 +194,13 @@ test("amm liquidity: create the A/C pool", async (app) => {
     );
     await selectAccount(app, "newPositionAccountSelectorA");
     await selectAccount(app, "newPositionAccountSelectorB");
+    // The live app window persists across runs, so the form may carry leftover deposit
+    // amounts and a stale "Position submitted" transactionId from a prior create — both
+    // block a clean run (mismatched amounts keep canConfirm false; a stale txId would make
+    // step 5's "submitted" wait pass instantly). resetPairDraft() clears the amounts/price
+    // and re-quotes (price-only), so applyQuoteSideEffects re-fills the fresh minimum
+    // deposit, and its draftChanged() clears the stale transactionId. Holdings are kept.
+    await evaluate(app, formId, "resetPairDraft()");
     await app.waitFor(
       async () => {
         const s = await formState(app, formId);

@@ -27,6 +27,8 @@ AmmActionCard {
     property var holdings: []
     readonly property string selectedHoldingAId: tokenAInput.selectedHoldingId
     readonly property string selectedHoldingBId: tokenBInput.selectedHoldingId
+    readonly property string selectedBalanceARaw: tokenAInput.selectedBalanceRaw
+    readonly property string selectedBalanceBRaw: tokenBInput.selectedBalanceRaw
     property string selectedTokenAId: ""
     property string selectedTokenBId: ""
     property int selectedFeeBps: 30
@@ -43,7 +45,6 @@ AmmActionCard {
     property string tokenResolutionError: ""
     property string tokenResolutionErrorSide: ""
     property string tokenResolutionMessage: ""
-    property string confirmedPoolStatus: ""
     property var activePoolQuote: ({})
     property string headingText: qsTr("New position")
     property string headingDetail: ""
@@ -83,9 +84,10 @@ AmmActionCard {
     readonly property string inverseInitialPrice: AmountMath.ratioValue(root.priceAmountB,
                                                                          root.priceAmountA,
                                                                          12)
-    readonly property string poolStatus: root.effectivePoolStatus()
-    readonly property bool activePool: root.poolStatus === "active_pool"
-    readonly property bool missingPool: root.poolStatus === "missing_pool"
+    // Create-vs-add comes from the flow's resolvePool read (pool existence), not the quote.
+    // undefined ⇒ not resolved yet (neither branch shown).
+    readonly property bool activePool: root.flowState.poolExists === true
+    readonly property bool missingPool: root.flowState.poolExists === false
     readonly property int poolFeeBps: root.knownPoolFeeBps()
     readonly property bool compact: root.width < 420
     readonly property bool hasPair: root.selectedTokenAId.length > 0
@@ -100,14 +102,18 @@ AmmActionCard {
                                               && root.selectedHoldingBId.length > 0)
     // Both deposit amounts must be present. For create the quote auto-fills them from the
     // opening deposit; for add the user enters one and the other ratio-fills. Without this
-    // the active-pool probe quote (sent on pair-select with simulated amounts) reports
-    // canSubmit, wrongly enabling the CTA before any amount is entered.
+    // an active-pool probe quote (sent on pair-select with simulated amounts) would enable
+    // the CTA before any amount is entered.
     readonly property bool hasDepositAmounts: root.amountA.length > 0 && root.amountB.length > 0
+    // A successful lean quote is submittable — funding is gated below (holdings + amounts),
+    // not by a quote-side canSubmit flag.
     readonly property bool canConfirm: root.quotePayload.status === "ok"
-                                       && root.quotePayload.canSubmit === true
                                        && root.quoteMatchesPair()
                                        && root.holdingsReady
                                        && root.hasDepositAmounts
+                                       // The lean quotes don't check funding, so gate the CTA on
+                                       // the entered amounts fitting the selected holdings' balances.
+                                       && root.fundingSufficient
                                        && !root.contextLoading
                                        && !root.quoteLoading
                                        && !root.quoteStale
@@ -117,11 +123,19 @@ AmmActionCard {
                                        // the chain processes it — block confirm so a stale
                                        // missing_pool quote can't submit a duplicate NewDefinition.
                                        && !(root.missingPool && root.transactionId.length > 0)
+    // Per-side funding check, decoupled from buildQuoteRequest/the quote: the deposit each side
+    // spends must fit its selected holding's balance (the lean liquidityQuote / addLiquidityQuote
+    // ops never compare amount to balance, so a submit would otherwise fail on an
+    // insufficient-balance transfer). amountA / selectedBalanceARaw are both the display token-A
+    // side, so no canonical reorientation is needed.
+    readonly property bool fundingSufficient: root.fundingError("A").length === 0
+                                              && root.fundingError("B").length === 0
 
     signal quoteRequested(bool immediate, var quoteRequest)
     signal confirmationRequested(var snapshot)
     signal tokenResolveRequested(string tokenId)
     signal draftChanged
+    signal pairReset
     signal refreshRequested
 
     readonly property int contentPadding: width >= 600 ? 24 : 16
@@ -140,7 +154,6 @@ AmmActionCard {
     onQuotePayloadChanged: {
         if (root.quoteStale)
             return
-        root.rememberPoolStatus()
         root.rememberActivePoolQuote()
         Qt.callLater(root.applyQuoteSideEffects)
     }
@@ -558,41 +571,6 @@ AmmActionCard {
                                       ? root.quotePayload.minimumLpRaw
                                       : root.quotePayload.lockedLpRaw)
             }
-
-            LabelValueRow {
-                label: qsTr("Pool")
-                value: String(root.quotePayload.poolId || "")
-                valueWrapAnywhere: true
-            }
-
-            LogosButton {
-                id: accountPlanButton
-                text: qsTr("Account plan (%1)").arg(root.accountPreview().length)
-                enabled: root.accountPreview().length > 0
-                property bool checked: false
-                implicitWidth: 150
-                implicitHeight: 36
-                radius: 6
-                Layout.alignment: Qt.AlignLeft
-                onClicked: checked = !checked
-            }
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 5
-                visible: accountPlanButton.checked
-
-                Repeater {
-                    model: root.accountPreview()
-
-                    LabelValueRow {
-                        required property var modelData
-                        label: qsTr("%1. %2 · %3").arg(modelData.order + 1).arg(modelData.role).arg(modelData.action)
-                        value: modelData.accountId ? modelData.accountId : qsTr("Assigned by wallet")
-                        valueWrapAnywhere: true
-                    }
-                }
-            }
         }
 
         Rectangle {
@@ -872,7 +850,6 @@ AmmActionCard {
     }
 
     function resetPairDraft() {
-        root.confirmedPoolStatus = ""
         root.activePoolQuote = ({})
         root.amountA = ""
         root.amountB = ""
@@ -881,6 +858,10 @@ AmmActionCard {
         root.minimumAmountARaw = ""
         root.minimumAmountBRaw = ""
         root.localErrors = []
+        // The pair changed: the pool is unknown until re-resolved. Reset poolExists BEFORE
+        // requestQuote so activePool is false and the empty-amount short-circuit doesn't fire
+        // — the probe quote reloads the new pair's reserves/minimum like a fresh selection.
+        root.pairReset()
         root.noteDraftChanged()
         root.requestQuote(true)
     }
@@ -889,30 +870,9 @@ AmmActionCard {
         root.draftChanged()
     }
 
-    function effectivePoolStatus() {
-        if (root.quoteStale || !root.quoteMatchesPair())
-            return root.confirmedPoolStatus
-        var status = String(root.quotePayload.poolStatus || "")
-        if (status === "active_pool" || status === "missing_pool")
-            return status
-        if (root.quotePayload.code === "fee_tier_mismatch")
-            return "active_pool"
-        return root.confirmedPoolStatus
-    }
-
-    function rememberPoolStatus() {
-        if (!root.quoteMatchesPair())
-            return
-        var status = String(root.quotePayload.poolStatus || "")
-        if (status === "active_pool" || status === "missing_pool")
-            root.confirmedPoolStatus = status
-        else if (root.quotePayload.code === "fee_tier_mismatch")
-            root.confirmedPoolStatus = "active_pool"
-    }
-
     function rememberActivePoolQuote() {
         if (root.quotePayload.status !== "ok"
-                || root.quotePayload.poolStatus !== "active_pool"
+                || !root.activePool
                 || !root.quoteMatchesPair()) {
             return
         }
@@ -1150,7 +1110,28 @@ AmmActionCard {
         return field
     }
 
+    // "amount_exceeds_balance" when `side` (A/B)'s entered deposit exceeds its selected holding's
+    // balance; "" when no holding is selected, the amount is unparsable, or it fits. Drives
+    // fundingSufficient (canConfirm) and the field / form error text.
+    function fundingError(side) {
+        var holdingId = side === "A" ? root.selectedHoldingAId : root.selectedHoldingBId
+        if (holdingId.length === 0)
+            return ""
+        var amount = side === "A" ? root.amountA : root.amountB
+        var decimals = side === "A" ? root.decimalsA : root.decimalsB
+        var balanceRaw = side === "A" ? root.selectedBalanceARaw : root.selectedBalanceBRaw
+        var parsed = AmountMath.parseHuman(amount, decimals)
+        if (parsed.ok && AmountMath.compare(parsed.raw, balanceRaw) > 0)
+            return "amount_exceeds_balance"
+        return ""
+    }
+
     function fieldError(field) {
+        // Funding is checked independently of the quote — surface it on the offending amount field.
+        if (field === "amountA" && root.fundingError("A").length > 0)
+            return root.issueText("amount_exceeds_balance")
+        if (field === "amountB" && root.fundingError("B").length > 0)
+            return root.issueText("amount_exceeds_balance")
         var collections = [root.localErrors, root.currentQuoteErrors()]
         for (var c = 0; c < collections.length; ++c) {
             for (var i = 0; i < collections[c].length; ++i) {
@@ -1181,6 +1162,8 @@ AmmActionCard {
             return root.tokenResolutionError
         if (root.submitError.length > 0)
             return root.submitError
+        if (root.fundingError("A").length > 0 || root.fundingError("B").length > 0)
+            return root.issueText("amount_exceeds_balance")
         var collections = [root.localErrors, root.currentQuoteErrors()]
         for (var c = 0; c < collections.length; ++c) {
             for (var i = 0; i < collections[c].length; ++i) {
@@ -1435,11 +1418,6 @@ AmmActionCard {
                 .arg(root.shortTokenName(root.tokenA))
                 .arg(price)
                 .arg(root.shortTokenName(root.tokenB))
-    }
-
-    function accountPreview() {
-        return !root.quoteStale && root.quoteMatchesPair()
-                ? root.quotePayload.accountPreview || [] : []
     }
 
     function quoteError() {

@@ -140,6 +140,11 @@ pub struct SwapExactOutPlanRequest {
 pub struct LiquidityQuoteRequest {
     pub token_a_id: String,
     pub token_b_id: String,
+    /// The opening price as a `Q64.64` fixed-point value (token B per token A, canonical
+    /// order). Required only in the price-only mode (no `amount_*_raw`), where it drives the
+    /// minimum opening deposit; when amounts are supplied the op derives the price from them.
+    #[serde(default)]
+    pub initial_price_real_raw: Option<String>,
     #[serde(default)]
     pub amount_a_raw: Option<String>,
     #[serde(default)]
