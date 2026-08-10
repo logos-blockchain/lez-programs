@@ -300,9 +300,7 @@ pub struct InitializePlanInput {
 
 pub struct UpdateConfigPlanInput<'a> {
     pub context: &'a AmmContext,
-    pub token_program_id: Option<ProgramId>,
-    pub twap_oracle_program_id: Option<ProgramId>,
-    pub new_authority: Option<AccountId>,
+    pub new_authority: AccountId,
 }
 
 pub struct CreatePriceObservationsPlanInput<'a> {
@@ -403,8 +401,6 @@ pub fn plan_update_config(input: UpdateConfigPlanInput<'_>) -> TransactionPlan {
     TransactionPlan::new(
         input.context.amm_program_id,
         Instruction::UpdateConfig {
-            token_program_id: input.token_program_id,
-            twap_oracle_program_id: input.twap_oracle_program_id,
             new_authority: input.new_authority,
         },
         vec![

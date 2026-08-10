@@ -114,12 +114,8 @@ enum PlanRequest {
     },
     UpdateConfig {
         context: ContextInput,
-        #[serde(rename = "tokenProgramId")]
-        token_program_id: Option<ProgramIdInput>,
-        #[serde(rename = "twapOracleProgramId")]
-        twap_oracle_program_id: Option<ProgramIdInput>,
         #[serde(rename = "newAuthority")]
-        new_authority: Option<String>,
+        new_authority: String,
     },
     CreatePriceObservations {
         context: ContextInput,
@@ -873,19 +869,12 @@ pub fn plan_json(value: Value) -> Result<Value, WireError> {
         })),
         PlanRequest::UpdateConfig {
             context,
-            token_program_id,
-            twap_oracle_program_id,
             new_authority,
         } => {
             let context = context.into_context()?;
-            let new_authority = new_authority
-                .as_deref()
-                .map(|value| account_id(value, "newAuthority"))
-                .transpose()?;
+            let new_authority = account_id(&new_authority, "newAuthority")?;
             transaction_plan_json(&plan_update_config(UpdateConfigPlanInput {
                 context: &context,
-                token_program_id: token_program_id.map(Into::into),
-                twap_oracle_program_id: twap_oracle_program_id.map(Into::into),
                 new_authority,
             }))
         }
@@ -1810,14 +1799,8 @@ fn instruction_args_json(instruction: &Instruction) -> Value {
             "twapOracleProgramId": program_id_words(*twap_oracle_program_id),
             "authority": authority.to_string(),
         }),
-        Instruction::UpdateConfig {
-            token_program_id,
-            twap_oracle_program_id,
-            new_authority,
-        } => json!({
-            "tokenProgramId": token_program_id.map(program_id_words),
-            "twapOracleProgramId": twap_oracle_program_id.map(program_id_words),
-            "newAuthority": new_authority.map(|authority| authority.to_string()),
+        Instruction::UpdateConfig { new_authority } => json!({
+            "newAuthority": new_authority.to_string(),
         }),
         Instruction::CreatePriceObservations { window_duration }
         | Instruction::CreateOraclePriceAccount { window_duration } => json!({

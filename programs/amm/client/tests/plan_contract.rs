@@ -76,9 +76,7 @@ fn all_plans() -> Vec<TransactionPlan> {
         }),
         plan_update_config(UpdateConfigPlanInput {
             context: &context,
-            token_program_id: Some(program(16)),
-            twap_oracle_program_id: Some(program(78)),
-            new_authority: Some(account(10)),
+            new_authority: account(10),
         }),
         plan_create_price_observations(CreatePriceObservationsPlanInput {
             context: &context,
@@ -175,24 +173,24 @@ fn every_instruction_round_trips_through_guest_codec() {
 }
 
 #[test]
-fn update_config_none_options_round_trip() {
+fn update_config_authority_round_trip() {
+    let expected_authority = account(10);
     let instruction = Instruction::UpdateConfig {
-        token_program_id: None,
-        twap_oracle_program_id: None,
-        new_authority: None,
+        new_authority: expected_authority,
     };
     let words = encode_instruction(&instruction).expect("instruction must serialize");
     let decoded: Instruction =
         risc0_zkvm::serde::from_slice(&words).expect("instruction must deserialize");
 
-    assert!(matches!(
-        decoded,
-        Instruction::UpdateConfig {
-            token_program_id: None,
-            twap_oracle_program_id: None,
-            new_authority: None,
+    match decoded {
+        Instruction::UpdateConfig { new_authority } => {
+            assert_eq!(new_authority, expected_authority)
         }
-    ));
+        other => panic!(
+            "expected UpdateConfig, got variant index {}",
+            variant_index(&other)
+        ),
+    }
 }
 
 #[test]

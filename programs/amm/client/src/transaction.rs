@@ -958,9 +958,7 @@ enum CommitmentGuards {
         authority: AccountId,
     },
     UpdateConfig {
-        token_program_id: Option<ProgramId>,
-        twap_oracle_program_id: Option<ProgramId>,
-        new_authority: Option<AccountId>,
+        new_authority: AccountId,
     },
     CreatePriceObservations {
         window_duration: u64,
@@ -1006,13 +1004,7 @@ impl From<&amm_core::Instruction> for CommitmentGuards {
                 twap_oracle_program_id: *twap_oracle_program_id,
                 authority: *authority,
             },
-            amm_core::Instruction::UpdateConfig {
-                token_program_id,
-                twap_oracle_program_id,
-                new_authority,
-            } => Self::UpdateConfig {
-                token_program_id: *token_program_id,
-                twap_oracle_program_id: *twap_oracle_program_id,
+            amm_core::Instruction::UpdateConfig { new_authority } => Self::UpdateConfig {
                 new_authority: *new_authority,
             },
             amm_core::Instruction::CreatePriceObservations { window_duration } => {
