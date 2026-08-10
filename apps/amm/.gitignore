@@ -6,6 +6,9 @@ modules/
 # your own definitionId/holding accounts. Never commit your real accounts.
 amm-tokens.json
 
+# Personal known-pools config (AMM_POOLS_CONFIG). Same rationale as above.
+amm-pools.json
+
 # Screenshot artifacts written by tests/swap.mjs
 tests/*.png
 
@@ -14,3 +17,6 @@ tests/testnet/.wallet/
 
 # Isolated token config written by tests/testnet/setup-amm-testnet.sh
 tests/testnet/amm-tokens.json
+
+# Isolated known-pools config written by tests/testnet/setup-amm-testnet.sh
+tests/testnet/amm-pools.json

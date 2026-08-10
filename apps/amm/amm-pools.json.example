@@ -1,0 +1,10 @@
+[
+  {
+    "tokenA": "TKA",
+    "tokenB": "TKB",
+    "feeBps": 1,
+    "poolId": "REPLACE_WITH_POOL_PDA",
+    "tokenADefinitionId": "REPLACE_WITH_TOKEN_A_DEFINITION_ID",
+    "tokenBDefinitionId": "REPLACE_WITH_TOKEN_B_DEFINITION_ID"
+  }
+]

@@ -1,6 +1,10 @@
 #include "AmmUiBackend.h"
 
 #include <QDebug>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTimer>
 
 #include "LogosWalletProvider.h"
@@ -9,6 +13,59 @@
 #include "logos_sdk.h"
 
 namespace {
+    // Absolute path to the JSON known-pools config consumed by poolList().
+    // Mirrors TOKENS_CONFIG for the token list; produced by the AMM testnet
+    // setup script (apps/amm/tests/testnet/setup-amm-testnet.sh).
+    constexpr char POOLS_CONFIG_ENV[] = "AMM_POOLS_CONFIG";
+
+    // Parses the AMM_POOLS_CONFIG JSON file into the QVariantList the Pools UI
+    // renders. Fails soft (empty list) when the env var is unset, the file is
+    // unreadable, or the payload is not a JSON array — one malformed entry is
+    // skipped rather than dropping the whole list. tokenA/tokenB (display
+    // symbols) and a numeric feeBps are required; the id fields pass through
+    // when present so the entry can later be resolved on-chain.
+    QVariantList readPoolsConfig()
+    {
+        QVariantList out;
+
+        const QString path = qEnvironmentVariable(POOLS_CONFIG_ENV);
+        if (path.isEmpty())
+            return out;
+
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            return out;
+
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        if (!doc.isArray())
+            return out;
+
+        for (const QJsonValue& entry : doc.array()) {
+            if (!entry.isObject())
+                continue;
+            const QJsonObject obj = entry.toObject();
+
+            const QString tokenA = obj.value(QStringLiteral("tokenA")).toString();
+            const QString tokenB = obj.value(QStringLiteral("tokenB")).toString();
+            const QJsonValue feeBps = obj.value(QStringLiteral("feeBps"));
+            if (tokenA.isEmpty() || tokenB.isEmpty() || !feeBps.isDouble())
+                continue;
+
+            QVariantMap pool;
+            pool.insert(QStringLiteral("tokenA"), tokenA);
+            pool.insert(QStringLiteral("tokenB"), tokenB);
+            pool.insert(QStringLiteral("feeBps"), feeBps.toInt());
+            pool.insert(QStringLiteral("poolId"),
+                        obj.value(QStringLiteral("poolId")).toString());
+            pool.insert(QStringLiteral("tokenADefinitionId"),
+                        obj.value(QStringLiteral("tokenADefinitionId")).toString());
+            pool.insert(QStringLiteral("tokenBDefinitionId"),
+                        obj.value(QStringLiteral("tokenBDefinitionId")).toString());
+            out.append(pool);
+        }
+        return out;
+    }
+
     // The new-position context placeholder published before the module
     // connection is up (matches the module's "loading" contextState).
     QVariantMap loadingContext()
@@ -247,6 +304,15 @@ QVariantList AmmUiBackend::tokenHoldings()
     // Read-only list of the wallet's token holdings for the account selector. Gated
     // by this app's wallet-open state (a closed wallet has nothing to list).
     return m_logos->amm_module.tokenHoldings(isWalletOpen());
+}
+
+QVariantList AmmUiBackend::poolList()
+{
+    // Config-driven known pools. Read straight from AMM_POOLS_CONFIG on every
+    // call (the UI fetches this once on load); adding more pairs is a config
+    // edit, no app change. Pool discovery is an app concern, so this stays in
+    // the backend rather than the amm_module.
+    return readPoolsConfig();
 }
 
 QVariantMap AmmUiBackend::createPool(QVariantMap request)

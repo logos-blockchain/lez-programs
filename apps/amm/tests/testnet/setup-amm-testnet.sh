@@ -100,6 +100,11 @@ POOL_DEADLINE="18446744073709551615"
 # TOKENS_CONFIG when launching the UI for a test run.
 TOKENS_CONFIG_OUT="apps/amm/tests/testnet/amm-tokens.json"
 
+# Where the UI known-pools config is written (git-ignored, tests only). Pass this
+# path as AMM_POOLS_CONFIG when launching the UI; the Pools page renders one row
+# per entry. More seeded pools = more entries here, no app change.
+POOLS_CONFIG_OUT="apps/amm/tests/testnet/amm-pools.json"
+
 ###############################################################################
 # Helpers
 ###############################################################################
@@ -423,6 +428,42 @@ cat > "$TOKENS_CONFIG_OUT" <<JSON
 JSON
 kv "wrote" "$TOKENS_CONFIG_OUT"
 
+###############################################################################
+# 11. Write the UI known-pools config from the seeded pool(s)
+###############################################################################
+sec "Write UI pools config -> $POOLS_CONFIG_OUT"
+# One row per seeded pool: "SYMBOL_A SYMBOL_B FEE_BPS POOL_ID DEF_A DEF_B".
+# Add a line here for each new seeded pool — nothing else (script or app) needs
+# to change; the Pools page renders one row per entry generically.
+POOL_SPECS=(
+  "$TOKEN_A_SYMBOL $TOKEN_B_SYMBOL $POOL_FEES $POOL $TOKEN_A_DEF $TOKEN_B_DEF"
+)
+
+pool_entry() {
+  cat <<JSON
+  {
+    "tokenA": "$1",
+    "tokenB": "$2",
+    "feeBps": $3,
+    "poolId": "$4",
+    "tokenADefinitionId": "$5",
+    "tokenBDefinitionId": "$6"
+  }
+JSON
+}
+
+{
+  echo "["
+  for i in "${!POOL_SPECS[@]}"; do
+    [ "$i" -gt 0 ] && echo "  ,"
+    # shellcheck disable=SC2086 # deliberate word-split of the spec into fields
+    set -- ${POOL_SPECS[$i]}
+    pool_entry "$1" "$2" "$3" "$4" "$5" "$6"
+  done
+  echo "]"
+} > "$POOLS_CONFIG_OUT"
+kv "wrote" "$POOLS_CONFIG_OUT"
+
 sec "Done"
 log "${GRN}✅ Setup complete.${RST}"
 kv "AMM program id"  "$AMM_PID"
@@ -433,6 +474,7 @@ log "Launch the UI against the ISOLATED test wallet + test token config:"
 log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
 log "  ${DIM}  AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
 log "  ${DIM}  TOKENS_CONFIG=$REPO_ROOT/$TOKENS_CONFIG_OUT \\${RST}"
+log "  ${DIM}  AMM_POOLS_CONFIG=$REPO_ROOT/$POOLS_CONFIG_OUT \\${RST}"
 log "  ${DIM}  nix run .#amm-ui${RST}"
 log "Then in another terminal: ${DIM}node apps/amm/tests/swap.mjs${RST}  (swap A/B)"
 log "                   or:     ${DIM}node apps/amm/tests/create-pool.mjs${RST}  (create A/C pool)"

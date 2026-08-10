@@ -19,7 +19,7 @@ amm_import="$amm_qml/lib/qml"
 test -f "$amm_import/Logos/Wallet/qmldir"
 "$qt_qml/bin/qmltestrunner" -import "$qt_qml/lib/qt-6/qml" -import "$logos_qml/lib" -import "$amm_import" -input apps/shared/wallet/tests/qml
 "$qt_qml/bin/qmltestrunner" -import "$qt_qml/lib/qt-6/qml" -import "$logos_qml/lib" -import "$amm_import" -input apps/amm/tests/qml
-"$qt_qml/bin/qmllint" -I "$qt_qml/lib/qt-6/qml" -I "$logos_qml/lib" -I "$amm_qml/lib" -I "$amm_import" apps/amm/qml/pages/LiquidityPage.qml apps/amm/qml/components/liquidity/NewPositionForm.qml apps/amm/qml/components/liquidity/LiquidityConfirmationSummary.qml
+"$qt_qml/bin/qmllint" -I "$qt_qml/lib/qt-6/qml" -I "$logos_qml/lib" -I "$amm_qml/lib" -I "$amm_import" apps/amm/qml/pages/LiquidityPage.qml apps/amm/qml/pages/PoolsPage.qml apps/amm/qml/components/liquidity/NewPositionForm.qml apps/amm/qml/components/liquidity/LiquidityConfirmationSummary.qml
 ```
 
 When shared AMM program types or instruction signatures change, also run the

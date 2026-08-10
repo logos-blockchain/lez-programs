@@ -211,11 +211,44 @@ picker stays empty (a `qWarning` naming the exact cause is logged to stderr; no
 swap can be started). `definitionId`/`holding` may be given as base58 (as the
 wallet/runbook display them) or hex — the app normalizes both to hex.
 
-Full command with both variables set (absolute paths, from the repo root):
+### Known-pools config (optional, for the Pools list)
+
+The Pools view is config-driven the same way: it reads a flat JSON list from the
+`AMM_POOLS_CONFIG` environment variable (absolute path) and renders one row per
+entry. `tokenA`/`tokenB` are the display symbols and `feeBps` the fee tier;
+`poolId`/`tokenADefinitionId`/`tokenBDefinitionId` identify the pool on-chain.
+Adding more pairs is purely a config edit — no app change:
+
+```json
+[
+  {
+    "tokenA": "TKA",
+    "tokenB": "TKB",
+    "feeBps": 1,
+    "poolId": "9qbX…",
+    "tokenADefinitionId": "4T69…",
+    "tokenBDefinitionId": "7Zc2…"
+  }
+]
+```
+
+Copy the checked-in template to start (`amm-pools.json` is git-ignored):
+
+```bash
+cp apps/amm/amm-pools.json.example apps/amm/amm-pools.json   # then replace the REPLACE_… placeholders
+```
+
+If `AMM_POOLS_CONFIG` is unset, unreadable, or not a valid JSON array, the Pools
+list shows its empty state. Entries missing `tokenA`, `tokenB`, or a numeric
+`feeBps` are skipped individually. The AMM testnet setup script writes this file
+for the pool(s) it seeds (see below).
+
+Full command with the variables set (absolute paths, from the repo root):
 
 ```bash
 AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
 TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
+AMM_POOLS_CONFIG=$(pwd)/apps/amm/amm-pools.json \
 nix run .#amm-ui
 ```
 

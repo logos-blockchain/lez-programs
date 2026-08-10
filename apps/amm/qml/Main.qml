@@ -92,5 +92,12 @@ Item {
             runtime: logos
             visible: navbar.currentIndex === 1
         }
+
+        PoolsPage {
+            anchors.fill: parent
+            backend: root.ready ? root.backend : null
+            runtime: logos
+            visible: navbar.currentIndex === 2
+        }
     }
 }

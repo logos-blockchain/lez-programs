@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
 
@@ -10,7 +12,7 @@ Item {
     id: root
 
     property int currentIndex: 0
-    readonly property var tabs: ["Trade", "Liquidity"]
+    readonly property var tabs: [qsTr("Trade"), qsTr("Liquidity"), qsTr("Pools")]
 
     // Wallet wiring, passed down from Main.qml.
     property var backend: null
@@ -44,7 +46,7 @@ Item {
 
             // App identity
             Text {
-                text: "Logos AMM"
+                text: qsTr("Logos AMM")
                 color: Theme.palette.text
                 font.pixelSize: 17
                 font.weight: Font.Bold
@@ -54,28 +56,61 @@ Item {
 
             // Tab pills
             Row {
+                Accessible.role: Accessible.PageTabList
+                Accessible.name: qsTr("Primary navigation")
+
                 spacing: 4
 
                 Repeater {
                     model: root.tabs
 
                     delegate: Rectangle {
+                        id: tabButton
+
+                        required property int index
+                        required property string modelData
+
                         readonly property bool active: root.currentIndex === index
 
                         height: 36
                         width:  tabLabel.implicitWidth + 28
                         radius: 18
                         color:  active ? Theme.palette.backgroundSecondary : "transparent"
+                        border.width: activeFocus ? 1 : 0
+                        border.color: Theme.palette.text
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.PageTab
+                        Accessible.name: tabLabel.text
+
+                        function activate() {
+                            root.currentIndex = index
+                            root.tabChanged(index)
+                        }
 
                         Behavior on color { ColorAnimation { duration: 150 } }
+
+                        Keys.onReturnPressed: function(event) {
+                            tabButton.activate()
+                            event.accepted = true
+                        }
+
+                        Keys.onEnterPressed: function(event) {
+                            tabButton.activate()
+                            event.accepted = true
+                        }
+
+                        Keys.onSpacePressed: function(event) {
+                            tabButton.activate()
+                            event.accepted = true
+                        }
 
                         Text {
                             id: tabLabel
                             anchors.centerIn: parent
-                            text:        modelData
-                            color:       active ? Theme.palette.text : Theme.palette.textSecondary
+                            text: tabButton.modelData
+                            color: tabButton.active ? Theme.palette.text : Theme.palette.textSecondary
                             font.pixelSize: 14
-                            font.weight: active ? Font.Medium : Font.Normal
+                            font.weight: tabButton.active ? Font.Medium : Font.Normal
 
                             Behavior on color { ColorAnimation { duration: 150 } }
                         }
@@ -84,8 +119,8 @@ Item {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
-                                root.currentIndex = index
-                                root.tabChanged(index)
+                                tabButton.forceActiveFocus()
+                                tabButton.activate()
                             }
                         }
                     }

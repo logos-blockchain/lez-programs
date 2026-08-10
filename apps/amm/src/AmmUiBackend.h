@@ -82,6 +82,9 @@ public slots:
     QVariantMap addLiquidity(QVariantMap request) override;
     // Lists the wallet's fungible token holdings for the account selector.
     QVariantList tokenHoldings() override;
+    // Reads the known-pools list from AMM_POOLS_CONFIG (app config JSON, read
+    // here rather than in the amm_module — pool discovery is an app detail).
+    QVariantList poolList() override;
 
 private:
     void syncWalletState();

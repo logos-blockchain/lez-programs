@@ -137,4 +137,11 @@ class AmmUiBackend
     // definitionIdHex, balanceRaw }] — one row per holding account, every token,
     // including zero-balance holdings. The selector narrows to a token by id.
     SLOT(QVariantList tokenHoldings())
+    // Reads the known-pools config at AMM_POOLS_CONFIG (absolute path, JSON array
+    // of { tokenA, tokenB, feeBps, poolId, tokenADefinitionId, tokenBDefinitionId })
+    // and returns it as a QVariantList of QVariantMap entries. tokenA/tokenB are
+    // display symbols; the id fields identify the pool on-chain. Returns an empty
+    // list if AMM_POOLS_CONFIG is unset/unreadable/invalid. This is app config, not
+    // an on-chain read, so it lives in the backend rather than the amm_module.
+    SLOT(QVariantList poolList())
 }
