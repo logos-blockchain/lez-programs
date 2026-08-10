@@ -214,6 +214,46 @@ pub struct AddLiquidityPlanRequest {
     pub pool_data: String,
 }
 
+/// Prices burning `lp_amount_raw` of an existing pool's LP. `slippage_bps` sets the
+/// `minimumAmount*Raw` floors the submit enforces (the guest requires both nonzero and
+/// `withdraw >= min`). `pool_data` is the hex Borsh `PoolDefinition` (empty ⇒ no pool).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveLiquidityQuoteRequest {
+    pub token_a_id: String,
+    pub token_b_id: String,
+    pub lp_amount_raw: String,
+    #[serde(default)]
+    pub slippage_bps: u32,
+    pub pool_data: String,
+}
+
+/// Builds the `RemoveLiquidity` submission — the remove counterpart of
+/// `AddLiquidityPlanRequest`. `min_amount_*_raw` are the caller's slippage floors on the
+/// tokens withdrawn (the guest's `min_amount_to_remove_token_*`, both applied at submit and
+/// required nonzero); `pool_data` supplies the stored vault / LP-definition ids the guest
+/// asserts against. Unlike add/create there is no fresh holding — the caller's existing LP
+/// holding is burned and the existing token a/b holdings receive the withdrawal.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveLiquidityPlanRequest {
+    /// Resolved by the module from `AMM_PROGRAM_BIN` (like every id-deriving op).
+    pub amm_program_id: String,
+    /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
+    /// the `current_tick` PDA depends on (same as the swap / add plan requests).
+    pub config: AccountRead,
+    pub token_a_id: String,
+    pub token_b_id: String,
+    pub lp_amount_raw: String,
+    pub min_amount_a_raw: String,
+    pub min_amount_b_raw: String,
+    pub deadline_ms: String,
+    pub user_holding_a_id: String,
+    pub user_holding_b_id: String,
+    pub user_holding_lp_id: String,
+    pub pool_data: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenHoldingsRequest {

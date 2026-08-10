@@ -19,7 +19,8 @@ use std::{error::Error, fmt};
 pub use request::{
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigIdRequest, ContextRequest,
     CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest,
-    ResolvePoolRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
+    RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
+    SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
     SwapExactOutQuoteRequest, SwapPairRequest, TokenHoldingsRequest, TokenIdsRequest,
 };
 use serde_json::Value;
@@ -131,6 +132,14 @@ pub fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> AmmResult {
 
 pub fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> AmmResult {
     liquidity::add_liquidity_plan(request).map_err(Into::into)
+}
+
+pub fn remove_liquidity_quote(request: RemoveLiquidityQuoteRequest) -> AmmResult {
+    liquidity::remove_liquidity_quote(request).map_err(Into::into)
+}
+
+pub fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> AmmResult {
+    liquidity::remove_liquidity_plan(request).map_err(Into::into)
 }
 
 /// Lists the wallet's fungible token holdings for the account selector.

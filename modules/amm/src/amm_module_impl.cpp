@@ -1022,6 +1022,157 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
 }
 
+LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    // Normalize the pair to hex (the liquidity UI still sources base58 ids; transitional).
+    const std::string token_a = normalizeAccountId(jStr(request, "tokenAId"));
+    const std::string token_b = normalizeAccountId(jStr(request, "tokenBId"));
+    if (token_a.empty() || token_b.empty())
+        return error("invalid_token_id");
+
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return error("config_missing");
+
+    std::string lp_amount_decimal;
+    if (!jsonAmountToDecimal(request.value("lpAmountRaw", json()), lp_amount_decimal))
+        return error("bad_amount");
+
+    // Derive the pool id (config-free) and read the pool account; its raw data is handed to
+    // the pricing op. An absent account has no data → `no_pool`.
+    const FfiResult poolId = call(amm_pool_id, json{
+        {"ammProgramId", amm_program_id},
+        {"tokenInId", token_a},
+        {"tokenOutId", token_b},
+    });
+    if (!poolId.ok)
+        return error(poolId.error.empty() ? "backend_error" : poolId.error);
+    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+
+    // slippageBps derives the minimumAmount*Raw floors the submit enforces. Require an integer
+    // JSON number and reject everything else with a stable invalid_slippage (same as
+    // addLiquidityQuote): is_number() would also accept a float (and get<int64_t>() on a
+    // number_float THROWS, terminating the module), while a string / bool would fall through to a
+    // silent 0. A missing field defaults to 0 (no slippage). Negative or >= 100% is likewise
+    // invalid_slippage.
+    const json slippage_val = request.value("slippageBps", json(0));
+    if (!slippage_val.is_number_integer())
+        return error("invalid_slippage");
+    const int64_t slippage_bps = slippage_val.get<int64_t>();
+    if (slippage_bps < 0 || slippage_bps >= 10000)
+        return error("invalid_slippage");
+
+    const FfiResult quoteResult = call(amm_remove_liquidity_quote, json{
+        {"tokenAId", token_a},
+        {"tokenBId", token_b},
+        {"lpAmountRaw", lp_amount_decimal},
+        {"slippageBps", slippage_bps},
+        {"poolData", pool_data},
+    });
+    if (!quoteResult.ok)
+        return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
+
+    // Success: wrap { amountARaw, amountBRaw, minimumAmountARaw, minimumAmountBRaw, priceRaw }.
+    LogosMap out = quoteResult.value;
+    out["status"] = "ok";
+    out["error"] = "";
+    return out;
+}
+
+LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    // config_missing == no program id from AMM_PROGRAM_BIN (same as addLiquidity).
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return error("config_missing");
+
+    // amm_remove_liquidity_plan needs the config account for the twap program id the
+    // current-tick PDA derives from; a bad/absent config surfaces from the plan.
+    const FfiResult configResult =
+        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
+    if (!configResult.ok)
+        return error("backend_error");
+    const json config = readPublicAccount(jStr(configResult.value, "configId"));
+
+    // Normalize the pair + user holdings. Unlike add/create there is no fresh account: the LP
+    // holding already exists (it is burned) and the token a/b holdings receive the withdrawal.
+    const std::string token_a = normalizeAccountId(jStr(request, "tokenAId"));
+    const std::string token_b = normalizeAccountId(jStr(request, "tokenBId"));
+    const std::string holding_a = normalizeAccountId(jStr(request, "holdingAId"));
+    const std::string holding_b = normalizeAccountId(jStr(request, "holdingBId"));
+    const std::string user_lp = normalizeAccountId(jStr(request, "lpHoldingId"));
+    if (token_a.empty() || token_b.empty() || holding_a.empty() || holding_b.empty()
+        || user_lp.empty())
+        return error("invalid_account_id");
+
+    std::string lp_amount_decimal;
+    std::string min_a_decimal;
+    std::string min_b_decimal;
+    std::string deadline_decimal;
+    if (!jsonAmountToDecimal(request.value("lpAmountRaw", json()), lp_amount_decimal)
+        || !jsonAmountToDecimal(request.value("minAmountARaw", json()), min_a_decimal)
+        || !jsonAmountToDecimal(request.value("minAmountBRaw", json()), min_b_decimal)
+        || !jsonAmountToDecimal(request.value("deadlineMs", json()), deadline_decimal))
+        return error("bad_amount");
+
+    // Read the pool so the plan can use its stored vault / LP-definition ids (the guest
+    // asserts the provided vaults/LP against them — see amm_remove_liquidity_plan).
+    const FfiResult poolId = call(amm_pool_id, json{
+        {"ammProgramId", amm_program_id},
+        {"tokenInId", token_a},
+        {"tokenOutId", token_b},
+    });
+    if (!poolId.ok)
+        return error(poolId.error.empty() ? "backend_error" : poolId.error);
+    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+
+    // amm_remove_liquidity_plan resolves the pool accounts, encodes RemoveLiquidity (with the
+    // per-side slippage floors + caller deadline), and returns a ready-to-submit plan.
+    const FfiResult planResult = call(amm_remove_liquidity_plan, json{
+        {"ammProgramId", amm_program_id},
+        {"config", config},
+        {"tokenAId", token_a},
+        {"tokenBId", token_b},
+        {"lpAmountRaw", lp_amount_decimal},
+        {"minAmountARaw", min_a_decimal},
+        {"minAmountBRaw", min_b_decimal},
+        {"deadlineMs", deadline_decimal},
+        {"userHoldingAId", holding_a},
+        {"userHoldingBId", holding_b},
+        {"userHoldingLpId", user_lp},
+        {"poolData", pool_data},
+    });
+    if (!planResult.ok)
+        return error(planResult.error.empty() ? "backend_error" : planResult.error);
+    const json plan = planResult.value;
+
+    const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
+    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::string program_id = jStr(plan, "programId");
+
+    AMM_TRACE("removeLiquidity: SUBMIT programId=" << program_id
+              << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
+
+    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+        accounts, signers, instruction, program_id);
+    AMM_TRACE("removeLiquidity: tx reply=" << reply);
+
+    const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
+    if (!obj.is_object() || !obj.value("success", false))
+        return error("wallet_submission_failed");
+
+    return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
+}
+
 LogosList AmmModuleImpl::tokenList() {
     LogosList out = LogosList::array();
 
