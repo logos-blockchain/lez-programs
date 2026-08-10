@@ -48,6 +48,8 @@ char *amm_remove_liquidity_quote(const char *request_json);
 
 char *amm_remove_liquidity_plan(const char *request_json);
 
+char *amm_sync_reserves_plan(const char *request_json);
+
 char *amm_token_holdings(const char *request_json);
 
 char *amm_program_id(const char *request_json);

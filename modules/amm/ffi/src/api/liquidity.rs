@@ -23,6 +23,7 @@ use super::{
     quote::minimum_opening_pair,
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, CreatePoolPlanRequest,
     LiquidityQuoteRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest,
+    SyncReservesPlanRequest,
 };
 use crate::account::{account_id_from_hex, account_id_hex, parse_program_id};
 
@@ -565,6 +566,58 @@ pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Resu
     let signing_requirements = [
         false, false, false, false, false, false, false, true, false, false,
     ];
+
+    Ok(plan_response(
+        &request.amm_program_id,
+        account_ids,
+        &signing_requirements,
+        instruction,
+    ))
+}
+
+/// Builds the `SyncReserves` submission — a permissionless keeper op that refreshes the pool's
+/// stored reserves to the live vault balances (and its TWAP tick). A unit instruction: no
+/// amounts, deadline, or holdings, and nothing signs. config / pool / current_tick / clock are
+/// order-independent PDAs from `derive_pair`; the vaults come from the pool's stored ids in
+/// `pool_data` (read-only, but the guest still asserts them). Fixed 6-account IDL order.
+/// Recoverable failures fail closed as `Err` (`same_token_pair`, `config_unavailable`,
+/// `no_pool`).
+pub(super) fn sync_reserves_plan(request: SyncReservesPlanRequest) -> Result<Value, String> {
+    let amm_program = parse_program_id(&request.amm_program_id)?;
+    let token_a = account_id_from_hex(&request.token_a_id, "token A id")?;
+    let token_b = account_id_from_hex(&request.token_b_id, "token B id")?;
+    if token_a == token_b {
+        return Err(String::from("same_token_pair"));
+    }
+
+    // config / pool / current_tick / clock are order-independent PDAs, so the token order does
+    // not matter for derive_pair.
+    let Ok(pair) = derive_pair(amm_program, token_a, token_b, &request.config) else {
+        return Err(String::from("config_unavailable"));
+    };
+
+    // The vaults are asserted against the pool's stored ids, so take them from pool_data (a pool
+    // created outside the FFI can store a non-canonical order — see add/remove/swap plans).
+    let Some(pool) = hex::decode(&request.pool_data)
+        .ok()
+        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+    else {
+        return Err(String::from("no_pool"));
+    };
+
+    let instruction = risc0_zkvm::serde::to_vec(&amm_core::Instruction::SyncReserves)
+        .map_err(|error| format!("instruction serialization failed: {error}"))?;
+
+    // Fixed IDL account order for SyncReserves; nothing signs (permissionless keeper op).
+    let account_ids = [
+        pair.config,
+        pair.pool,
+        pool.vault_a_id,
+        pool.vault_b_id,
+        pair.current_tick,
+        pair.clock,
+    ];
+    let signing_requirements = [false, false, false, false, false, false];
 
     Ok(plan_response(
         &request.amm_program_id,
@@ -1381,5 +1434,89 @@ mod tests {
         let mut no_pool = base(token, other, String::new());
         no_pool.config = valid_config(amm);
         assert_eq!(remove_liquidity_plan(no_pool), Err(String::from("no_pool")));
+    }
+
+    #[test]
+    fn sync_plan_emits_pool_stored_vaults_and_signs_nothing() {
+        let program = "00".repeat(32);
+        let amm = parse_program_id(&program).unwrap();
+        let token_a = AccountId::new([0x11; 32]);
+        let token_b = AccountId::new([0x22; 32]);
+        let vault_a = AccountId::new([0xA1; 32]);
+        let vault_b = AccountId::new([0xB1; 32]);
+        let pool = PoolDefinition {
+            definition_token_a_id: token_a,
+            definition_token_b_id: token_b,
+            vault_a_id: vault_a,
+            vault_b_id: vault_b,
+            liquidity_pool_id: AccountId::new([0xCC; 32]),
+            liquidity_pool_supply: 1_000_000,
+            reserve_a: 1_000_000,
+            reserve_b: 2_000_000,
+            fees: 30,
+        };
+        let value = sync_reserves_plan(SyncReservesPlanRequest {
+            amm_program_id: program.clone(),
+            config: valid_config(amm),
+            token_a_id: account_id_hex(token_a),
+            token_b_id: account_id_hex(token_b),
+            pool_data: pool_hex(&pool),
+        })
+        .unwrap();
+
+        let ids = value["accountIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect::<Vec<String>>();
+        assert_eq!(ids.len(), 6);
+        assert_eq!(ids[0], account_id_hex(compute_config_pda(amm)));
+        assert_eq!(
+            ids[1],
+            account_id_hex(compute_pool_pda(amm, token_a, token_b))
+        );
+        assert_eq!(ids[2], account_id_hex(vault_a)); // pool's stored vaults
+        assert_eq!(ids[3], account_id_hex(vault_b));
+        // ids[4] current_tick, ids[5] clock — order-independent PDAs.
+        assert_eq!(
+            value["signingRequirements"],
+            serde_json::json!([false, false, false, false, false, false])
+        );
+        let expected_instruction = {
+            let words = risc0_zkvm::serde::to_vec(&amm_core::Instruction::SyncReserves).unwrap();
+            serde_json::json!(words.iter().map(|w| u64::from(*w)).collect::<Vec<u64>>())
+        };
+        assert_eq!(value["instruction"], expected_instruction);
+    }
+
+    #[test]
+    fn sync_plan_fails_closed() {
+        let token = AccountId::new([0xAA; 32]);
+        let other = AccountId::new([0xBB; 32]);
+        let base =
+            |token_a: AccountId, token_b: AccountId, pool_data: String| SyncReservesPlanRequest {
+                amm_program_id: "00".repeat(32),
+                config: read_failed(),
+                token_a_id: account_id_hex(token_a),
+                token_b_id: account_id_hex(token_b),
+                pool_data,
+            };
+
+        // Same token pair — rejected before any config/pool work.
+        assert_eq!(
+            sync_reserves_plan(base(token, token, String::new())),
+            Err(String::from("same_token_pair"))
+        );
+        // Unavailable config (read_failed) surfaces before the pool decode.
+        assert_eq!(
+            sync_reserves_plan(base(token, other, String::new())),
+            Err(String::from("config_unavailable"))
+        );
+        // Valid config but no pool data → no_pool (decode happens after derive_pair).
+        let amm = parse_program_id(&"00".repeat(32)).unwrap();
+        let mut no_pool = base(token, other, String::new());
+        no_pool.config = valid_config(amm);
+        assert_eq!(sync_reserves_plan(no_pool), Err(String::from("no_pool")));
     }
 }

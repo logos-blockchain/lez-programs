@@ -254,6 +254,23 @@ pub struct RemoveLiquidityPlanRequest {
     pub pool_data: String,
 }
 
+/// Builds the `SyncReserves` submission — a permissionless keeper op refreshing the pool's
+/// stored reserves to the live vault balances (and its TWAP tick). No amounts / deadline /
+/// holdings: it is a unit instruction over pool-derived accounts. `pool_data` supplies the
+/// stored vault ids the guest asserts against.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncReservesPlanRequest {
+    /// Resolved by the module from `AMM_PROGRAM_BIN` (like every id-deriving op).
+    pub amm_program_id: String,
+    /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
+    /// the `current_tick` PDA depends on (same as the swap / liquidity plan requests).
+    pub config: AccountRead,
+    pub token_a_id: String,
+    pub token_b_id: String,
+    pub pool_data: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenHoldingsRequest {

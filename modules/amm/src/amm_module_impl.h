@@ -184,6 +184,16 @@ public:
     /// `no_pool`, `config_unavailable`).
     LogosMap removeLiquidity(const LogosMap& request);
 
+    /// Submits a `SyncReserves` transaction for the (tokenAId, tokenBId) pool — a
+    /// permissionless keeper op that refreshes the pool's stored reserves to the live vault
+    /// balances and its TWAP tick. `request` carries just `{ tokenAId, tokenBId }` (ids hex or
+    /// base58, normalized to hex): no amounts, deadline, or holdings, and nothing signs. On
+    /// success: `{ status:"ok", error:"", transactionId:<hex tx hash> }`. On failure:
+    /// `{ status:"error", error:<code> }` — `invalid_token_id`, `config_missing`,
+    /// `backend_error`, `wallet_submission_failed`, or a plan code (e.g. `no_pool`,
+    /// `config_unavailable`).
+    LogosMap syncReserves(const LogosMap& request);
+
     /// Lists the connected wallet's fungible token holdings for the account
     /// selector: `[{ accountId (hex), accountType:"TokenHolding", definitionId
     /// (base58), definitionIdHex (hex), balanceRaw }]` — one row per holding
