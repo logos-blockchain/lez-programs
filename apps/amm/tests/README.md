@@ -50,6 +50,33 @@ Headless CI variant (no window, launches the app itself, pass/fail only):
 nix build .#integration-test -L
 ```
 
+## Use local wallet settings
+
+Set `WALLET_MODE=local` to deploy against the wallet home's existing network
+and accounts. The script leaves `LEE_WALLET_HOME_DIR` and
+`NSSA_WALLET_HOME_DIR` unchanged, never restores keys, never creates wallet
+accounts, and does not change the sequencer configuration.
+
+Supply the five role accounts as account labels, BIP-32 paths, or account IDs.
+The two definition accounts must be suitable for creating new token definitions;
+the two token holdings and LP holding must be controlled by the local wallet.
+
+```bash
+WALLET_MODE=local \
+  LOCAL_TOKEN_A_DEF_ACCOUNT=token-a-def \
+  LOCAL_TOKEN_A_HOLDING_ACCOUNT=token-a-holding \
+  LOCAL_TOKEN_B_DEF_ACCOUNT=token-b-def \
+  LOCAL_TOKEN_B_HOLDING_ACCOUNT=token-b-holding \
+  LOCAL_LP_HOLDING_ACCOUNT=lp-holding \
+  TOKENS_CONFIG_OUT=apps/amm/amm-tokens.json \
+  apps/amm/tests/testnet/setup-amm-testnet.sh
+```
+
+`TOKENS_CONFIG_OUT` defaults to the isolated test config. Set it explicitly to
+the ignored local `apps/amm/amm-tokens.json` only when overwriting that file is
+intended. `TEST_SEQUENCER_ADDR` and `FORCE_BOOTSTRAP` are rejected in local mode
+so the script cannot alter or reset the local wallet.
+
 ## Notes
 
 - **Wallet password.** The wallet's key storage is encrypted with a password —
@@ -62,8 +89,10 @@ nix build .#integration-test -L
   password.
 - **Re-bootstrap.** `FORCE_BOOTSTRAP=1 apps/amm/tests/testnet/setup-amm-testnet.sh`
   re-restores the isolated `.wallet` (rewrites only that directory).
-- **Overrides.** `TEST_WALLET_HOME`, `TEST_MNEMONIC`, `TEST_WALLET_PASSWORD`,
-  `TEST_WALLET_DEPTH`, `TEST_SEQUENCER_ADDR` — see the script header.
+- **Overrides.** Isolated mode accepts `TEST_WALLET_HOME`, `TEST_MNEMONIC`,
+  `TEST_WALLET_PASSWORD`, `TEST_WALLET_DEPTH`, `TEST_SEQUENCER_ADDR`, and
+  `TOKENS_CONFIG_OUT`. Local mode requires the five `LOCAL_*_ACCOUNT` variables
+  and accepts `TOKENS_CONFIG_OUT`.
 - **Framework location.** `swap.mjs` loads `../result-mcp` by default; override
   with `LOGOS_QT_MCP=/abs/path/to/result-mcp`.
 - **Artifacts.** On failure `swap.mjs` prints the `SwapCard` state and saves

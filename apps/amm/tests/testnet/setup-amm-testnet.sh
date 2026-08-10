@@ -12,8 +12,13 @@
 # (git-ignored, under this folder) by restoring it from a fixed BIP-39 mnemonic
 # and creating its accounts in a fixed order. The wallet's BIP-32 key tree makes
 # those account ids reproducible across machines, so the whole team gets the
-# same token/holding ids — and the script auto-writes apps/amm/amm-tokens.json
-# from them for the UI. It never touches your personal ~/.lee/wallet.
+# same token/holding ids — and the script auto-writes a test token config from
+# them for the UI. It never touches your personal ~/.lee/wallet.
+#
+# LOCAL WALLET MODE: set WALLET_MODE=local to use your current wallet home,
+# network, and account settings. This mode does not restore keys, create wallet
+# accounts, or change the sequencer. Pass the five LOCAL_*_ACCOUNT variables
+# below as wallet account labels, BIP-32 paths, or account IDs.
 #
 # Program IDs and all AMM PDAs (config, pool, vaults, LP, tick) are DERIVED at
 # runtime from the deployed binaries + the token definition accounts, so this
@@ -32,6 +37,9 @@
 #   apps/amm/tests/testnet/setup-amm-testnet.sh
 #   TEST_SEQUENCER_ADDR=http://127.0.0.1:8080 apps/amm/tests/testnet/setup-amm-testnet.sh
 #   FORCE_BOOTSTRAP=1 ...        # re-restore the test wallet (rewrites its storage)
+#   WALLET_MODE=local LOCAL_TOKEN_A_DEF_ACCOUNT=... LOCAL_TOKEN_A_HOLDING_ACCOUNT=... \
+#     LOCAL_TOKEN_B_DEF_ACCOUNT=... LOCAL_TOKEN_B_HOLDING_ACCOUNT=... \
+#     LOCAL_LP_HOLDING_ACCOUNT=... apps/amm/tests/testnet/setup-amm-testnet.sh
 #
 set -euo pipefail
 
@@ -42,15 +50,21 @@ REPO_ROOT="${REPO_ROOT:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/
 cd "$REPO_ROOT"
 
 ###############################################################################
-# TEST WALLET — isolated + deterministic
+# WALLET MODE
 ###############################################################################
+
+# `isolated` keeps the original deterministic, throwaway test-wallet behavior.
+# `local` leaves wallet-home and network selection to the caller's wallet setup.
+WALLET_MODE="${WALLET_MODE:-isolated}"
 
 # Dedicated wallet home for tests. Kept out of git (see .gitignore). Exported
 # under both env var names so whichever the installed `wallet`/`spel` expects is
 # satisfied (the current wallet uses LEE_WALLET_HOME_DIR).
 TEST_WALLET_HOME="${TEST_WALLET_HOME:-$SCRIPT_DIR/.wallet}"
-export LEE_WALLET_HOME_DIR="$TEST_WALLET_HOME"
-export NSSA_WALLET_HOME_DIR="$TEST_WALLET_HOME"
+if [ "$WALLET_MODE" = "isolated" ]; then
+  export LEE_WALLET_HOME_DIR="$TEST_WALLET_HOME"
+  export NSSA_WALLET_HOME_DIR="$TEST_WALLET_HOME"
+fi
 
 # The deterministic test seed. A wallet restored from this mnemonic yields the
 # same account ids every time, which is why they can be shared/pinned.
@@ -64,6 +78,14 @@ TEST_SEQUENCER_ADDR="${TEST_SEQUENCER_ADDR:-}"
 # Deterministic accounts, created in THIS fixed order after a fresh restore so
 # their ids are reproducible. Resolved to ids at runtime via `wallet account id`.
 ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding)
+
+# In local mode these must name existing accounts in the caller's wallet. Each
+# value may be a wallet account label, BIP-32 path, or account ID.
+LOCAL_TOKEN_A_DEF_ACCOUNT="${LOCAL_TOKEN_A_DEF_ACCOUNT:-}"
+LOCAL_TOKEN_A_HOLDING_ACCOUNT="${LOCAL_TOKEN_A_HOLDING_ACCOUNT:-}"
+LOCAL_TOKEN_B_DEF_ACCOUNT="${LOCAL_TOKEN_B_DEF_ACCOUNT:-}"
+LOCAL_TOKEN_B_HOLDING_ACCOUNT="${LOCAL_TOKEN_B_HOLDING_ACCOUNT:-}"
+LOCAL_LP_HOLDING_ACCOUNT="${LOCAL_LP_HOLDING_ACCOUNT:-}"
 
 ###############################################################################
 # CONFIG — non-account parameters (edit freely)
@@ -93,7 +115,12 @@ POOL_DEADLINE="18446744073709551615"
 # deliberately NOT apps/amm/amm-tokens.json — that file is your personal local
 # config with your own accounts. Tests stay fully isolated: pass this path as
 # TOKENS_CONFIG when launching the UI for a test run.
-TOKENS_CONFIG_OUT="apps/amm/tests/testnet/amm-tokens.json"
+TOKENS_CONFIG_OUT="${TOKENS_CONFIG_OUT:-apps/amm/tests/testnet/amm-tokens.json}"
+if [[ "$TOKENS_CONFIG_OUT" = /* ]]; then
+  TOKENS_CONFIG_PATH="$TOKENS_CONFIG_OUT"
+else
+  TOKENS_CONFIG_PATH="$REPO_ROOT/$TOKENS_CONFIG_OUT"
+fi
 
 ###############################################################################
 # Helpers
@@ -164,12 +191,23 @@ program_id() {
   printf '%s' "$pid"
 }
 
-# Resolve a wallet account id (bare base58) from its label. Deterministic under
-# the test mnemonic. Returns non-zero if the label isn't registered yet.
+# Resolve a wallet account ID (bare base58) from any wallet account mention.
+# Returns non-zero if the account is not registered or cannot be resolved.
 acct_id() {
   local label="$1" out
   out="$(wallet account id --account-id "$label" 2>/dev/null)" || return 1
   printf '%s' "$out" | grep -oE '[1-9A-HJ-NP-Za-km-z]{32,44}' | head -n1
+}
+
+local_account_id() {
+  local variable="$1"
+  local account_ref="${!variable:-}"
+  local account_id
+  [ -n "$account_ref" ] || die "$variable must be set when WALLET_MODE=local"
+  account_id="$(acct_id "$account_ref")" \
+    || die "could not resolve $variable from local wallet account '$account_ref'"
+  [ -n "$account_id" ] || die "could not resolve $variable from local wallet account '$account_ref'"
+  printf '%s' "$account_id"
 }
 
 # Restore the isolated test wallet from the fixed mnemonic and register the
@@ -211,7 +249,7 @@ bootstrap_test_wallet() {
 }
 
 ###############################################################################
-# 0. Preflight + wallet bootstrap
+# 0. Preflight + wallet setup
 ###############################################################################
 sec "Preflight"
 require_cmd wallet
@@ -222,21 +260,44 @@ require_file "$TOKEN_IDL"; require_file "$AMM_IDL"
 kv "repo root"        "$REPO_ROOT"
 kv "token bin" "$TOKEN_BIN"; kv "amm bin" "$AMM_BIN"; kv "twap bin" "$TWAP_BIN"
 
-if [ ! -d "$TEST_WALLET_HOME" ] || [ "${FORCE_BOOTSTRAP:-0}" = "1" ]; then
-  bootstrap_test_wallet
-else
-  kv "test wallet" "reusing $TEST_WALLET_HOME (FORCE_BOOTSTRAP=1 to re-restore)"
-fi
+case "$WALLET_MODE" in
+  isolated)
+    if [ ! -d "$TEST_WALLET_HOME" ] || [ "${FORCE_BOOTSTRAP:-0}" = "1" ]; then
+      bootstrap_test_wallet
+    else
+      kv "test wallet" "reusing $TEST_WALLET_HOME (FORCE_BOOTSTRAP=1 to re-restore)"
+    fi
+    ;;
+  local)
+    [ -z "$TEST_SEQUENCER_ADDR" ] \
+      || die "TEST_SEQUENCER_ADDR cannot be used with WALLET_MODE=local; configure the local wallet network instead"
+    [ "${FORCE_BOOTSTRAP:-0}" != "1" ] \
+      || die "FORCE_BOOTSTRAP cannot be used with WALLET_MODE=local"
+    kv "wallet mode" "local (preserving caller wallet-home and network settings)"
+    ;;
+  *)
+    die "WALLET_MODE must be 'isolated' or 'local', got '$WALLET_MODE'"
+    ;;
+esac
 
 ###############################################################################
-# 1. Resolve the deterministic test accounts
+# 1. Resolve wallet accounts
 ###############################################################################
-sec "Resolve deterministic test accounts (from the test mnemonic)"
-TOKEN_A_DEF="$(acct_id token-a-def)"        || die "token-a-def not registered — run with FORCE_BOOTSTRAP=1"
-TOKEN_A_HOLDING="$(acct_id token-a-holding)" || die "token-a-holding not registered"
-TOKEN_B_DEF="$(acct_id token-b-def)"        || die "token-b-def not registered"
-TOKEN_B_HOLDING="$(acct_id token-b-holding)" || die "token-b-holding not registered"
-USER_HOLDING_LP="$(acct_id lp-holding)"     || die "lp-holding not registered"
+if [ "$WALLET_MODE" = "isolated" ]; then
+  sec "Resolve deterministic test accounts (from the test mnemonic)"
+  TOKEN_A_DEF="$(acct_id token-a-def)"        || die "token-a-def not registered — run with FORCE_BOOTSTRAP=1"
+  TOKEN_A_HOLDING="$(acct_id token-a-holding)" || die "token-a-holding not registered"
+  TOKEN_B_DEF="$(acct_id token-b-def)"        || die "token-b-def not registered"
+  TOKEN_B_HOLDING="$(acct_id token-b-holding)" || die "token-b-holding not registered"
+  USER_HOLDING_LP="$(acct_id lp-holding)"     || die "lp-holding not registered"
+else
+  sec "Resolve local wallet accounts"
+  TOKEN_A_DEF="$(local_account_id LOCAL_TOKEN_A_DEF_ACCOUNT)"
+  TOKEN_A_HOLDING="$(local_account_id LOCAL_TOKEN_A_HOLDING_ACCOUNT)"
+  TOKEN_B_DEF="$(local_account_id LOCAL_TOKEN_B_DEF_ACCOUNT)"
+  TOKEN_B_HOLDING="$(local_account_id LOCAL_TOKEN_B_HOLDING_ACCOUNT)"
+  USER_HOLDING_LP="$(local_account_id LOCAL_LP_HOLDING_ACCOUNT)"
+fi
 for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP; do
   [ -n "${!v}" ] || die "failed to resolve account id for $v"
 done
@@ -389,9 +450,15 @@ kv "AMM program id"  "$AMM_PID"
 kv "TWAP program id" "$TWAP_PID"
 kv "pool"            "$POOL"
 log ""
-log "Launch the UI against the ISOLATED test wallet + test token config:"
-log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
-log "  ${DIM}  AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
-log "  ${DIM}  TOKENS_CONFIG=$REPO_ROOT/$TOKENS_CONFIG_OUT \\${RST}"
-log "  ${DIM}  nix run .#amm-ui${RST}"
+if [ "$WALLET_MODE" = "isolated" ]; then
+  log "Launch the UI against the ISOLATED test wallet + test token config:"
+  log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
+  log "  ${DIM}  AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
+  log "  ${DIM}  TOKENS_CONFIG=$TOKENS_CONFIG_PATH \\${RST}"
+else
+  log "Launch the UI against your LOCAL wallet + generated token config:"
+  log "  ${DIM}AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
+  log "  ${DIM}TOKENS_CONFIG=$TOKENS_CONFIG_PATH \\${RST}"
+fi
+log "  ${DIM}nix run .#amm-ui${RST}"
 log "Then in another terminal: ${DIM}node apps/amm/tests/swap.mjs${RST}"
