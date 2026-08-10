@@ -1,15 +1,10 @@
 //! Transport-independent AMM client operations.
 
-mod accounts;
-mod clock;
-mod commitment;
 mod config;
 mod context;
-mod funding;
 mod holding;
 mod liquidity;
 mod pair;
-mod position;
 mod quote;
 mod quote_error;
 mod request;
@@ -23,10 +18,9 @@ use std::{error::Error, fmt};
 
 pub use request::{
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigIdRequest, ContextRequest,
-    CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest, PairSnapshot, PoolIdRequest,
-    PositionRequest, ProgramIdRequest, QuoteRequest, ResolvePoolRequest, SwapExactInPlanRequest,
-    SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
-    TokenHoldingsRequest, TokenIdsRequest,
+    CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest,
+    ResolvePoolRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
+    SwapExactOutQuoteRequest, SwapPairRequest, TokenHoldingsRequest, TokenIdsRequest,
 };
 use serde_json::Value;
 
@@ -84,11 +78,6 @@ pub fn pair_ids(request: PairIdsRequest) -> AmmResult {
 /// Builds network, token, holding, and fee-tier context.
 pub fn context(request: ContextRequest) -> AmmResult {
     context::context(request).map_err(Into::into)
-}
-
-/// Evaluates a pool-creation or add-liquidity request.
-pub fn quote(request: QuoteRequest) -> AmmResult {
-    quote::quote(request).map_err(Into::into)
 }
 
 /// Derives the canonical account ids for a swap pair (tokens in either order).

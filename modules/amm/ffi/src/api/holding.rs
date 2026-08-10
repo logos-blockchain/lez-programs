@@ -1,7 +1,4 @@
-use nssa_core::{
-    account::{Account, AccountId},
-    program::ProgramId,
-};
+use nssa_core::{account::AccountId, program::ProgramId};
 use token_core::TokenHolding;
 
 use crate::account::{decode_account, AccountRead};
@@ -11,7 +8,6 @@ pub(super) struct SelectedHolding {
     pub(super) id: AccountId,
     pub(super) definition_id: AccountId,
     pub(super) balance: u128,
-    pub(super) account: Account,
 }
 
 pub(super) fn wallet_holdings(
@@ -44,7 +40,6 @@ pub(super) fn decode_fungible_holding(
         id,
         definition_id,
         balance,
-        account,
     })
 }
 

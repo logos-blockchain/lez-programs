@@ -1440,7 +1440,6 @@ AmmActionCard {
         var built = root.buildQuoteRequest()
         return {
             "request": built.request,
-            "quoteHash": String(root.quotePayload.quoteHash || ""),
             // Canonical-order holdings for the createPool / addLiquidity calls: the
             // request's tokenAId/amountARaw are canonical, so holdingAId must be the
             // canonical token A's holding too (the module re-canonicalizes as a no-op).
@@ -1456,7 +1455,8 @@ AmmActionCard {
             "depositAText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "A"),
             "depositBText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "B"),
             "expectedLpText": root.rawLpText(root.quotePayload.expectedLpRaw),
-            "instruction": String(root.quotePayload.instruction || "")
+            // Confirm-dialog action derives from the resolved pool state (add vs create).
+            "poolExists": root.activePool
         }
     }
 

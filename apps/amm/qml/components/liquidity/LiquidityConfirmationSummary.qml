@@ -8,12 +8,8 @@ ColumnLayout {
 
     spacing: 8
 
-    function actionText(instruction) {
-        if (instruction === "NewDefinition")
-            return qsTr("Create pool")
-        if (instruction === "AddLiquidity")
-            return qsTr("Add liquidity")
-        return instruction || "-"
+    function actionText() {
+        return root.snapshot.poolExists ? qsTr("Add liquidity") : qsTr("Create pool")
     }
 
     SummaryRow {
@@ -25,7 +21,7 @@ ColumnLayout {
     SummaryRow {
         Layout.fillWidth: true
         label: qsTr("Action")
-        value: root.actionText(root.snapshot.instruction)
+        value: root.actionText()
     }
 
     SummaryRow {

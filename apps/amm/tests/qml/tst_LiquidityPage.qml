@@ -15,19 +15,11 @@ TestCase {
 
         QtObject {
             property bool walletStateReady: false
-            property var quoteResult: ({
-                "status": "ok",
-                "poolStatus": "missing_pool"
-            })
             property var newPositionContext: ({
                 "status": "ready",
                 "tokens": [],
                 "feeTiers": []
             })
-
-            function quoteNewPosition(request) {
-                return quoteResult
-            }
         }
     }
 
@@ -118,32 +110,6 @@ TestCase {
         page.flow.finishContextRefresh(2, null)
         compare(page.flow.contextLoading, false)
         compare(page.flow.contextErrorCode, "")
-    }
-
-    function test_submitFailureKeepsReturnedFreshQuoteWithoutRequery() {
-        var backend = createTemporaryObject(backendComponent, testCase, {
-            "walletStateReady": true
-        })
-        var page = createTemporaryObject(pageComponent, testCase, {
-            "backend": backend
-        })
-        verify(backend)
-        verify(page)
-
-        page.flow.quoteSerial = 7
-        page.flow.finishSubmitFailure({
-            "status": "error",
-            "code": "quote_not_submittable",
-            "quote": {
-                "status": "ok",
-                "canSubmit": false,
-                "quoteHash": "sha256:fresh"
-            }
-        })
-
-        compare(page.flow.quoteSerial, 7)
-        compare(page.flow.newPositionQuote.quoteHash, "sha256:fresh")
-        compare(page.flow.quoteStale, false)
     }
 
 }

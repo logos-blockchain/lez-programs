@@ -132,11 +132,6 @@ void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
         request, isWalletOpen(), refreshWalletAccounts));
 }
 
-QVariantMap AmmUiBackend::quoteNewPosition(QVariantMap request)
-{
-    return m_logos->amm_module.quoteNewPosition(request, isWalletOpen());
-}
-
 void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
