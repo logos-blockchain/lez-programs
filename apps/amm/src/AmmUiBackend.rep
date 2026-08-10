@@ -30,7 +30,8 @@ class AmmUiBackend
     // The QVariant payloads are stable maps/lists so the UI never assembles AMM
     // transactions or duplicates quote state.
     PROP(QVariantMap newPositionContext READONLY)
-    SLOT(void refreshNewPositionContext(QVariantMap request))
+    // Return the published context so the QML refresh watcher always settles.
+    SLOT(QVariantMap refreshNewPositionContext(QVariantMap request))
 
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
     // fresh wallet at the canonical walletHome with no path picking. createNew()

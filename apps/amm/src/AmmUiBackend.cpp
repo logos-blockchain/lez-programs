@@ -113,7 +113,7 @@ QString AmmUiBackend::getBalance(QString accountIdHex, bool isPublic)
     return m_walletController->balance(accountIdHex, isPublic);
 }
 
-void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
+QVariantMap AmmUiBackend::refreshNewPositionContext(QVariantMap request)
 {
     const bool refreshWalletAccounts =
         request.take(QStringLiteral("refreshWalletAccounts")).toBool();
@@ -125,11 +125,14 @@ void AmmUiBackend::refreshNewPositionContext(QVariantMap request)
         request = m_newPositionHints;
     }
     if (!walletStateReady()) {
-        setNewPositionContext(loadingContext());
-        return;
+        const QVariantMap context = loadingContext();
+        setNewPositionContext(context);
+        return context;
     }
-    setNewPositionContext(m_logos->amm_module.newPositionContext(
-        request, isWalletOpen(), refreshWalletAccounts));
+    const QVariantMap context = m_logos->amm_module.newPositionContext(
+        request, isWalletOpen(), refreshWalletAccounts);
+    setNewPositionContext(context);
+    return context;
 }
 
 void AmmUiBackend::syncWalletState()

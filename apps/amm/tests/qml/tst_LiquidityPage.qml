@@ -15,11 +15,17 @@ TestCase {
 
         QtObject {
             property bool walletStateReady: false
+            property int contextRefreshCalls: 0
             property var newPositionContext: ({
                 "status": "ready",
                 "tokens": [],
                 "feeTiers": []
             })
+
+            function refreshNewPositionContext(request) {
+                ++contextRefreshCalls
+                return newPositionContext
+            }
         }
     }
 
@@ -47,6 +53,18 @@ TestCase {
         verify(compactSteps.implicitHeight > 0)
         verify(form.width > 0)
         verify(form.width <= page.width - 32)
+    }
+
+    Component {
+        id: runtimeComponent
+
+        QtObject {
+            function watch(value, succeeded, failed) {
+                if (value === undefined)
+                    return
+                succeeded(value)
+            }
+        }
     }
 
     Component {
@@ -85,6 +103,32 @@ TestCase {
 
         compare(page.flow.contextHints(false).refreshWalletAccounts, false)
         compare(page.flow.contextHints(true).refreshWalletAccounts, true)
+    }
+
+    function test_refreshPositionCompletesAndReenablesTokenSelection() {
+        var backend = createTemporaryObject(backendComponent, testCase, {
+            "walletStateReady": true
+        })
+        var runtime = createTemporaryObject(runtimeComponent, testCase)
+        var page = createTemporaryObject(pageComponent, testCase, {
+            "backend": backend,
+            "runtime": runtime
+        })
+        verify(backend)
+        verify(runtime)
+        verify(page)
+
+        var refreshButton = findChild(page, "refreshPositionButton")
+        var tokenAInput = findChild(page, "tokenAAmountInput")
+        verify(refreshButton)
+        verify(tokenAInput)
+
+        refreshButton.clicked()
+
+        tryCompare(backend, "contextRefreshCalls", 1)
+        tryCompare(page.flow, "contextLoading", false)
+        compare(refreshButton.enabled, true)
+        compare(tokenAInput.tokenSelectionEnabled, true)
     }
 
     function test_staleContextCompletionCannotFinishNewerRefresh() {
