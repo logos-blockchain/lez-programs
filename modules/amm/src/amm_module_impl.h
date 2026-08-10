@@ -159,6 +159,31 @@ public:
     /// `config_unavailable`).
     LogosMap addLiquidity(const LogosMap& request);
 
+    /// Prices a `RemoveLiquidity` from the existing pool for (tokenAId, tokenBId): burning
+    /// `lpAmountRaw` returns the proportional share of each reserve. Reads the pool
+    /// server-side (like the add quote) and runs the guest's `floor(reserve·lp/supply)` math.
+    /// Returns `{ status:"ok", error:"", amountARaw, amountBRaw, minimumAmountARaw,
+    /// minimumAmountBRaw, priceRaw }` — the withdrawals (display order), the slippage floors
+    /// the submit enforces, and the pool's spot price. `request` carries `{ tokenAId, tokenBId,
+    /// lpAmountRaw, slippageBps }` (ids hex or base58, normalized to hex; amount a JSON integer
+    /// or decimal string). On failure: `{ status:"error", error:<code> }` — `invalid_token_id`,
+    /// `config_missing`, `bad_amount`, `invalid_slippage`, `no_pool`, `pair_mismatch`,
+    /// `insufficient_pool_liquidity`, `amount_too_low`, `minimum_amount_zero`, or
+    /// `backend_error`.
+    LogosMap removeLiquidityQuote(const LogosMap& request);
+
+    /// Submits a `RemoveLiquidity` transaction against the request's pool. `request` carries
+    /// `{ tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, lpAmountRaw, minAmountARaw,
+    /// minAmountBRaw, deadlineMs }` (ids hex or base58, normalized to hex; amounts/deadline a
+    /// JSON integer or decimal string). `lpHoldingId` is the existing holding burned; the token
+    /// a/b holdings receive the withdrawal (no fresh account, unlike add/create). `minAmount*Raw`
+    /// are the caller's slippage floors on the tokens withdrawn. On success:
+    /// `{ status:"ok", error:"", transactionId:<hex tx hash> }`. On failure:
+    /// `{ status:"error", error:<code> }` — `config_missing`, `backend_error`,
+    /// `invalid_account_id`, `bad_amount`, `wallet_submission_failed`, or a plan code (e.g.
+    /// `no_pool`, `config_unavailable`).
+    LogosMap removeLiquidity(const LogosMap& request);
+
     /// Lists the connected wallet's fungible token holdings for the account
     /// selector: `[{ accountId (hex), accountType:"TokenHolding", definitionId
     /// (base58), definitionIdHex (hex), balanceRaw }]` — one row per holding

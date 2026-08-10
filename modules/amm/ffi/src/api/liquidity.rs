@@ -22,7 +22,7 @@ use super::{
     pair::{derive_pair, is_canonical_pair},
     quote::minimum_opening_pair,
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, CreatePoolPlanRequest,
-    LiquidityQuoteRequest,
+    LiquidityQuoteRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest,
 };
 use crate::account::{account_id_from_hex, account_id_hex, parse_program_id};
 
@@ -387,6 +387,183 @@ pub(super) fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> Result<Val
     ];
     let signing_requirements = [
         false, false, false, false, false, true, true, true, false, false,
+    ];
+
+    Ok(plan_response(
+        &request.amm_program_id,
+        account_ids,
+        &signing_requirements,
+        instruction,
+    ))
+}
+
+/// Prices removing liquidity: burning `lp_amount_raw` of the pool returns the proportional
+/// share of each reserve — `withdraw = floor(reserve · lp / supply)`, the same math the guest
+/// (`amm_program::remove::remove_liquidity`) runs. `slippage_bps` sets the `minimumAmount*Raw`
+/// floors the submit passes as the guest's nonzero `min_amount_to_remove_token_*`. Amounts are
+/// returned in the caller's (display) token order. Errors: `same_token_pair`, `invalid_slippage`,
+/// `no_pool`, `insufficient_pool_liquidity` (the burn exceeds the supply unlocked above the
+/// permanently-locked `MINIMUM_LIQUIDITY`), `pair_mismatch`, `amount_too_low` (a withdrawal
+/// rounds to zero), `minimum_amount_zero` (slippage rounds a floor to zero), plus the shared
+/// amount-parse codes.
+pub(super) fn remove_liquidity_quote(
+    request: RemoveLiquidityQuoteRequest,
+) -> Result<Value, String> {
+    let token_a = account_id_from_hex(&request.token_a_id, "token A id")?;
+    let token_b = account_id_from_hex(&request.token_b_id, "token B id")?;
+    if token_a == token_b {
+        return Err(String::from("same_token_pair"));
+    }
+    let lp_amount = positive_amount(Some(&request.lp_amount_raw))?;
+    if u128::from(request.slippage_bps) >= FEE_BPS_DENOMINATOR {
+        return Err(String::from("invalid_slippage"));
+    }
+
+    // Decode the pool; absent / undecodable / zero-supply ⇒ nothing to remove from.
+    let pool = hex::decode(&request.pool_data)
+        .ok()
+        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .filter(|pool| pool.liquidity_pool_supply != 0)
+        .ok_or_else(|| String::from("no_pool"))?;
+    if pool.reserve_a == 0 || pool.reserve_b == 0 {
+        return Err(String::from("no_pool"));
+    }
+
+    // The pool permanently locks MINIMUM_LIQUIDITY at creation, so a burn can only draw on the
+    // supply beyond it — the guest asserts `remove_amount <= supply - MINIMUM_LIQUIDITY`.
+    let unlocked = pool
+        .liquidity_pool_supply
+        .checked_sub(MINIMUM_LIQUIDITY)
+        .filter(|unlocked| *unlocked > 0)
+        .ok_or_else(|| String::from("no_pool"))?;
+    if lp_amount > unlocked {
+        return Err(String::from("insufficient_pool_liquidity"));
+    }
+
+    // Orient the caller's (display) tokens to the pool's canonical (a, b) order so the reserve
+    // math lines up with the guest; `reversed` flips the results back to display order.
+    let reversed = if token_a == pool.definition_token_a_id && token_b == pool.definition_token_b_id
+    {
+        false
+    } else if token_a == pool.definition_token_b_id && token_b == pool.definition_token_a_id {
+        true
+    } else {
+        return Err(String::from("pair_mismatch"));
+    };
+
+    // Guest math: floor(reserve · lp / supply) per side.
+    let withdraw_a = mul_div_floor(pool.reserve_a, lp_amount, pool.liquidity_pool_supply);
+    let withdraw_b = mul_div_floor(pool.reserve_b, lp_amount, pool.liquidity_pool_supply);
+    if withdraw_a == 0 || withdraw_b == 0 {
+        return Err(String::from("amount_too_low"));
+    }
+
+    // Slippage floors — the guest requires both `min_amount_to_remove_token_*` nonzero.
+    let slippage_complement = FEE_BPS_DENOMINATOR - u128::from(request.slippage_bps);
+    let minimum_a = mul_div_floor(withdraw_a, slippage_complement, FEE_BPS_DENOMINATOR);
+    let minimum_b = mul_div_floor(withdraw_b, slippage_complement, FEE_BPS_DENOMINATOR);
+    if minimum_a == 0 || minimum_b == 0 {
+        return Err(String::from("minimum_amount_zero"));
+    }
+
+    // Back to display order for the response; the price uses the display-oriented reserves.
+    let (display_a, display_b, minimum_display_a, minimum_display_b) = if reversed {
+        (withdraw_b, withdraw_a, minimum_b, minimum_a)
+    } else {
+        (withdraw_a, withdraw_b, minimum_a, minimum_b)
+    };
+    let (reserve_display_a, reserve_display_b) = if reversed {
+        (pool.reserve_b, pool.reserve_a)
+    } else {
+        (pool.reserve_a, pool.reserve_b)
+    };
+    let price = spot_price_q64_64(reserve_display_a, reserve_display_b);
+
+    Ok(json!({
+        "amountARaw": display_a.to_string(),
+        "amountBRaw": display_b.to_string(),
+        "minimumAmountARaw": minimum_display_a.to_string(),
+        "minimumAmountBRaw": minimum_display_b.to_string(),
+        "priceRaw": price.to_string(),
+    }))
+}
+
+/// Builds the `RemoveLiquidity` submission for an existing pool. Like `add_liquidity_plan` it
+/// orients the `(min_amount, holding)` pair to the pool's ALREADY-STORED order — vaults and the
+/// LP definition come from `pool_data`, which the guest asserts against — but only
+/// `user_holding_lp` signs (it is burned), and there is no fresh holding: the existing token
+/// a/b holdings receive the withdrawal. `min_amount_*_raw` are the caller's slippage floors and
+/// must be positive (the guest rejects a zero). Emits the fixed 10-account IDL order.
+/// Recoverable failures fail closed as `Err` (`same_token_pair`, `config_unavailable`,
+/// `no_pool`, `pair_mismatch`, bad amounts).
+pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Result<Value, String> {
+    let amm_program = parse_program_id(&request.amm_program_id)?;
+    let token_a = account_id_from_hex(&request.token_a_id, "token A id")?;
+    let token_b = account_id_from_hex(&request.token_b_id, "token B id")?;
+    if token_a == token_b {
+        return Err(String::from("same_token_pair"));
+    }
+    let holding_a = account_id_from_hex(&request.user_holding_a_id, "user holding A id")?;
+    let holding_b = account_id_from_hex(&request.user_holding_b_id, "user holding B id")?;
+    let user_lp = account_id_from_hex(&request.user_holding_lp_id, "user LP holding id")?;
+
+    let lp_amount = positive_amount(Some(&request.lp_amount_raw))?;
+    let min_a = positive_amount(Some(&request.min_amount_a_raw))?;
+    let min_b = positive_amount(Some(&request.min_amount_b_raw))?;
+    let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
+
+    // config / pool / current_tick / clock are order-independent PDAs, so derive_pair takes the
+    // tokens in the caller's order. (Its vaults are canonical and unused here — the guest
+    // asserts the vaults against the pool's stored ids, taken below.)
+    let Ok(pair) = derive_pair(amm_program, token_a, token_b, &request.config) else {
+        return Err(String::from("config_unavailable"));
+    };
+
+    // Vaults + LP definition come from the pool's stored ids (the guest asserts against them).
+    let Some(pool) = hex::decode(&request.pool_data)
+        .ok()
+        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+    else {
+        return Err(String::from("no_pool"));
+    };
+
+    // Orient (min amount, holding) to the pool's STORED order — NOT is_canonical_pair. The guest
+    // transfers vault_a (== pool.vault_a_id, which holds definition_token_a_id) into
+    // user_holding_a, so user_a / min_pool_a must be that token's holding / floor. A pool created
+    // outside the FFI can store a non-canonical order, so keying off is_canonical_pair would
+    // route a withdrawal into the wrong holding.
+    let (min_pool_a, min_pool_b, user_a, user_b) =
+        if token_a == pool.definition_token_a_id && token_b == pool.definition_token_b_id {
+            (min_a, min_b, holding_a, holding_b)
+        } else if token_a == pool.definition_token_b_id && token_b == pool.definition_token_a_id {
+            (min_b, min_a, holding_b, holding_a)
+        } else {
+            return Err(String::from("pair_mismatch"));
+        };
+
+    let instruction = risc0_zkvm::serde::to_vec(&amm_core::Instruction::RemoveLiquidity {
+        remove_liquidity_amount: lp_amount,
+        min_amount_to_remove_token_a: min_pool_a,
+        min_amount_to_remove_token_b: min_pool_b,
+        deadline,
+    })
+    .map_err(|error| format!("instruction serialization failed: {error}"))?;
+
+    // Fixed IDL account order for RemoveLiquidity; only user_holding_lp (burned) signs.
+    let account_ids = [
+        pair.config,
+        pair.pool,
+        pool.vault_a_id,
+        pool.vault_b_id,
+        pool.liquidity_pool_id,
+        user_a,
+        user_b,
+        user_lp,
+        pair.current_tick,
+        pair.clock,
+    ];
+    let signing_requirements = [
+        false, false, false, false, false, false, false, true, false, false,
     ];
 
     Ok(plan_response(
@@ -904,5 +1081,305 @@ mod tests {
         let mut no_pool = base(token, other, String::new());
         no_pool.config = valid_config(amm);
         assert_eq!(add_liquidity_plan(no_pool), Err(String::from("no_pool")));
+    }
+
+    #[test]
+    fn remove_quote_prices_via_guest_formula_and_orients() {
+        let def_a = AccountId::new([0xAA; 32]);
+        let def_b = AccountId::new([0xBB; 32]);
+        let pool = PoolDefinition {
+            definition_token_a_id: def_a,
+            definition_token_b_id: def_b,
+            liquidity_pool_supply: 1_000_000,
+            reserve_a: 1_000_000,
+            reserve_b: 2_000_000,
+            fees: 30,
+            ..Default::default()
+        };
+
+        // Display == canonical. Burning 10% of supply returns 10% of each reserve.
+        let ab = remove_liquidity_quote(RemoveLiquidityQuoteRequest {
+            token_a_id: account_id_hex(def_a),
+            token_b_id: account_id_hex(def_b),
+            lp_amount_raw: String::from("100000"),
+            slippage_bps: 50,
+            pool_data: pool_hex(&pool),
+        })
+        .unwrap();
+        assert_eq!(ab["amountARaw"], "100000"); // floor(1_000_000 * 100_000 / 1_000_000)
+        assert_eq!(ab["amountBRaw"], "200000"); // floor(2_000_000 * 100_000 / 1_000_000)
+                                                // minimum = floor(withdraw * (10000 - 50) / 10000) — the slippage floor per side.
+        assert_eq!(ab["minimumAmountARaw"], "99500");
+        assert_eq!(ab["minimumAmountBRaw"], "199000");
+        assert_eq!(
+            ab["priceRaw"],
+            spot_price_q64_64(1_000_000, 2_000_000).to_string()
+        );
+
+        // Reverse display order: withdrawals, minimums, and the price all flip to display order.
+        let ba = remove_liquidity_quote(RemoveLiquidityQuoteRequest {
+            token_a_id: account_id_hex(def_b),
+            token_b_id: account_id_hex(def_a),
+            lp_amount_raw: String::from("100000"),
+            slippage_bps: 50,
+            pool_data: pool_hex(&pool),
+        })
+        .unwrap();
+        assert_eq!(ba["amountARaw"], "200000"); // display token def_b side
+        assert_eq!(ba["amountBRaw"], "100000"); // display token def_a side
+        assert_eq!(ba["minimumAmountARaw"], "199000");
+        assert_eq!(ba["minimumAmountBRaw"], "99500");
+        assert_eq!(
+            ba["priceRaw"],
+            spot_price_q64_64(2_000_000, 1_000_000).to_string()
+        );
+    }
+
+    #[test]
+    fn remove_quote_rejects_no_pool_mismatch_and_bounds() {
+        let def_a = AccountId::new([0xAA; 32]);
+        let def_b = AccountId::new([0xBB; 32]);
+        let pool = PoolDefinition {
+            definition_token_a_id: def_a,
+            definition_token_b_id: def_b,
+            liquidity_pool_supply: 1_000_000,
+            reserve_a: 1_000_000,
+            reserve_b: 2_000_000,
+            fees: 30,
+            ..Default::default()
+        };
+        let req = |token_a: AccountId, token_b: AccountId, lp: &str, data: String| {
+            RemoveLiquidityQuoteRequest {
+                token_a_id: account_id_hex(token_a),
+                token_b_id: account_id_hex(token_b),
+                lp_amount_raw: lp.into(),
+                slippage_bps: 50,
+                pool_data: data,
+            }
+        };
+
+        // Same token pair.
+        assert_eq!(
+            remove_liquidity_quote(req(def_a, def_a, "1", pool_hex(&pool))),
+            Err(String::from("same_token_pair"))
+        );
+        // Empty / undecodable pool data, and a zero-supply pool.
+        assert_eq!(
+            remove_liquidity_quote(req(def_a, def_b, "1", String::new())),
+            Err(String::from("no_pool"))
+        );
+        let empty = PoolDefinition {
+            definition_token_a_id: def_a,
+            definition_token_b_id: def_b,
+            liquidity_pool_supply: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            remove_liquidity_quote(req(def_a, def_b, "1", pool_hex(&empty))),
+            Err(String::from("no_pool"))
+        );
+        // Burning more than the supply unlocked above MINIMUM_LIQUIDITY (1_000_000 - 1000).
+        assert_eq!(
+            remove_liquidity_quote(req(def_a, def_b, "999001", pool_hex(&pool))),
+            Err(String::from("insufficient_pool_liquidity"))
+        );
+        // A decoded pool that isn't for this pair.
+        let other = AccountId::new([0xCC; 32]);
+        assert_eq!(
+            remove_liquidity_quote(req(def_a, other, "1", pool_hex(&pool))),
+            Err(String::from("pair_mismatch"))
+        );
+        // Slippage at/above 100%.
+        assert_eq!(
+            remove_liquidity_quote(RemoveLiquidityQuoteRequest {
+                token_a_id: account_id_hex(def_a),
+                token_b_id: account_id_hex(def_b),
+                lp_amount_raw: String::from("100000"),
+                slippage_bps: 10_000,
+                pool_data: pool_hex(&pool),
+            }),
+            Err(String::from("invalid_slippage"))
+        );
+        // A lopsided pool where one side's withdrawal floors to zero.
+        let lopsided = PoolDefinition {
+            definition_token_a_id: def_a,
+            definition_token_b_id: def_b,
+            liquidity_pool_supply: 1_000_000,
+            reserve_a: 1_000_000,
+            reserve_b: 1,
+            fees: 30,
+            ..Default::default()
+        };
+        assert_eq!(
+            remove_liquidity_quote(req(def_a, def_b, "1", pool_hex(&lopsided))),
+            Err(String::from("amount_too_low"))
+        );
+        // Withdrawals of 1 and 2: 50 bps slippage floors the token-A minimum to 0, which the
+        // guest's nonzero `min_amount_to_remove_token_a` rejects.
+        assert_eq!(
+            remove_liquidity_quote(req(def_a, def_b, "1", pool_hex(&pool))),
+            Err(String::from("minimum_amount_zero"))
+        );
+    }
+
+    #[test]
+    fn remove_plan_orients_holdings_to_the_pools_stored_order() {
+        let program = "00".repeat(32);
+        let amm = parse_program_id(&program).unwrap();
+
+        // Same non-canonical pool as the add-plan test: definition_token_a_id = token_a even
+        // though is_canonical_pair's canonical-a is token_b. The plan must follow the POOL's
+        // stored order so each withdrawal lands in the right holding.
+        let token_a = AccountId::new([0x11; 32]);
+        let token_b = AccountId::new([0x22; 32]);
+        assert!(!is_canonical_pair(token_a, token_b));
+
+        let vault_a = AccountId::new([0xA1; 32]);
+        let vault_b = AccountId::new([0xB1; 32]);
+        let lp_def = AccountId::new([0xCC; 32]);
+        let pool = PoolDefinition {
+            definition_token_a_id: token_a,
+            definition_token_b_id: token_b,
+            vault_a_id: vault_a,
+            vault_b_id: vault_b,
+            liquidity_pool_id: lp_def,
+            liquidity_pool_supply: 1_000_000,
+            reserve_a: 1_000_000,
+            reserve_b: 2_000_000,
+            fees: 30,
+        };
+
+        let holding_a = AccountId::new([0x0A; 32]); // token_a holding (receives)
+        let holding_b = AccountId::new([0x0B; 32]); // token_b holding (receives)
+        let lp = AccountId::new([0x0C; 32]); // burned (signs)
+
+        let run = |ta: String,
+                   tb: String,
+                   min_a: &str,
+                   min_b: &str,
+                   ha: String,
+                   hb: String|
+         -> (Vec<String>, serde_json::Value, serde_json::Value) {
+            let value = remove_liquidity_plan(RemoveLiquidityPlanRequest {
+                amm_program_id: program.clone(),
+                config: valid_config(amm),
+                token_a_id: ta,
+                token_b_id: tb,
+                lp_amount_raw: String::from("100000"),
+                min_amount_a_raw: min_a.to_string(),
+                min_amount_b_raw: min_b.to_string(),
+                deadline_ms: String::from("1000"),
+                user_holding_a_id: ha,
+                user_holding_b_id: hb,
+                user_holding_lp_id: account_id_hex(lp),
+                pool_data: pool_hex(&pool),
+            })
+            .unwrap();
+            let ids = value["accountIds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect::<Vec<String>>();
+            (
+                ids,
+                value["instruction"].clone(),
+                value["signingRequirements"].clone(),
+            )
+        };
+
+        // The instruction the guest must receive: token_a's floor with vault_a's token,
+        // token_b's floor with vault_b's — regardless of the caller's argument order.
+        let expected_instruction = {
+            let words = risc0_zkvm::serde::to_vec(&amm_core::Instruction::RemoveLiquidity {
+                remove_liquidity_amount: 100_000,
+                min_amount_to_remove_token_a: 90_000, // token_a's floor
+                min_amount_to_remove_token_b: 180_000, // token_b's floor
+                deadline: 1_000,
+            })
+            .unwrap();
+            serde_json::json!(words.iter().map(|w| u64::from(*w)).collect::<Vec<u64>>())
+        };
+        // Only user_holding_lp (index 7) signs — a/b just receive.
+        let expected_signers = serde_json::json!([
+            false, false, false, false, false, false, false, true, false, false,
+        ]);
+        let assert_aligned =
+            |ids: &[String], instruction: &serde_json::Value, signers: &serde_json::Value| {
+                assert_eq!(ids[0], account_id_hex(compute_config_pda(amm)));
+                assert_eq!(
+                    ids[1],
+                    account_id_hex(compute_pool_pda(amm, token_a, token_b))
+                );
+                assert_eq!(ids[2], account_id_hex(vault_a));
+                assert_eq!(ids[3], account_id_hex(vault_b));
+                assert_eq!(ids[4], account_id_hex(lp_def));
+                assert_eq!(ids[5], account_id_hex(holding_a));
+                assert_eq!(ids[6], account_id_hex(holding_b));
+                assert_eq!(ids[7], account_id_hex(lp));
+                assert_eq!(instruction, &expected_instruction);
+                assert_eq!(signers, &expected_signers);
+            };
+
+        // Caller order == the pool's stored order → NO swap.
+        let (ids, instruction, signers) = run(
+            account_id_hex(token_a),
+            account_id_hex(token_b),
+            "90000",
+            "180000",
+            account_id_hex(holding_a),
+            account_id_hex(holding_b),
+        );
+        assert_aligned(&ids, &instruction, &signers);
+
+        // Caller order reversed vs the pool → SWAP, so user_a stays token_a's holding and each
+        // floor follows its token.
+        let (ids, instruction, signers) = run(
+            account_id_hex(token_b),
+            account_id_hex(token_a),
+            "180000",
+            "90000",
+            account_id_hex(holding_b),
+            account_id_hex(holding_a),
+        );
+        assert_aligned(&ids, &instruction, &signers);
+    }
+
+    #[test]
+    fn remove_plan_fails_closed() {
+        let token = AccountId::new([0xAA; 32]);
+        let other = AccountId::new([0xBB; 32]);
+        let base = |token_a: AccountId, token_b: AccountId, pool_data: String| {
+            RemoveLiquidityPlanRequest {
+                amm_program_id: "00".repeat(32),
+                config: read_failed(),
+                token_a_id: account_id_hex(token_a),
+                token_b_id: account_id_hex(token_b),
+                lp_amount_raw: String::from("1"),
+                min_amount_a_raw: String::from("1"),
+                min_amount_b_raw: String::from("1"),
+                deadline_ms: String::from("1"),
+                user_holding_a_id: account_id_hex(token_a),
+                user_holding_b_id: account_id_hex(token_b),
+                user_holding_lp_id: account_id_hex(token_a),
+                pool_data,
+            }
+        };
+
+        // Same token pair — rejected before any config/pool work.
+        assert_eq!(
+            remove_liquidity_plan(base(token, token, String::new())),
+            Err(String::from("same_token_pair"))
+        );
+        // Unavailable config (read_failed) surfaces before the pool decode.
+        assert_eq!(
+            remove_liquidity_plan(base(token, other, String::new())),
+            Err(String::from("config_unavailable"))
+        );
+        // Valid config but no pool data → no_pool (decode happens after derive_pair).
+        let amm = parse_program_id(&"00".repeat(32)).unwrap();
+        let mut no_pool = base(token, other, String::new());
+        no_pool.config = valid_config(amm);
+        assert_eq!(remove_liquidity_plan(no_pool), Err(String::from("no_pool")));
     }
 }
