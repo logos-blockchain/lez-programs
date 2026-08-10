@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 
 use super::{
     pair::{derive_pair, is_canonical_pair},
+    quote::minimum_opening_pair,
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, CreatePoolPlanRequest,
     LiquidityQuoteRequest,
 };
@@ -83,17 +84,19 @@ fn plan_response(
     })
 }
 
-/// Prices a create-pool deposit: the LP the creator receives and the opening price.
+/// Prices a create-pool deposit — dual mode, matching the legacy create quote (minus its
+/// funding/account-preview machinery). Pure: no chain reads, no fee (the fee isn't part of
+/// the pool PDA nor the pricing).
 ///
-/// Pure — no chain reads. The fee tier is not needed: it is not part of the pool PDA
-/// (`compute_pool_pda_seed` hashes only the pair) and does not enter the pricing —
-/// only the two deposit amounts do. `expected_lp = floor(sqrt(a*b)) - MINIMUM_LIQUIDITY`
-/// (the post-permanent-lock remainder the guest mints to the creator); `initialPriceRaw`
-/// is the `Q64.64` display price (token B per token A, in the caller's order). The LP
-/// figure is orientation-independent (the product is symmetric); the price follows the
-/// display order. Errors are stable short codes: `same_token_pair`, `amount_required`,
-/// `invalid_raw_amount`, `amount_must_be_positive`, `amount_too_low` (deposits too small
-/// to clear the locked minimum — the pool can't open).
+/// The opening price *is* the deposit ratio. With **amounts** supplied, the op uses them and
+/// derives the price (`spot_price_q64_64`); **price-only** (no amounts), it takes
+/// `initial_price_real_raw` (Q64.64, canonical) and uses `minimum_opening_pair` — the smallest
+/// deposit at that price that clears the permanently-locked `MINIMUM_LIQUIDITY`. Either way it
+/// also returns that `minimum*` pair (the form validates entered amounts against it) and
+/// `expected_lp = floor(sqrt(a·b)) - MINIMUM_LIQUIDITY` (LP is orientation-independent — the
+/// product is symmetric). Errors: `same_token_pair`, `amount_required` (price-only without a
+/// price), `invalid_raw_amount`, `amount_must_be_positive`, `amount_too_low` (deposits too
+/// small to clear the locked minimum).
 pub(super) fn liquidity_quote(request: LiquidityQuoteRequest) -> Result<Value, String> {
     let token_a = account_id_from_hex(&request.token_a_id, "token A id")?;
     let token_b = account_id_from_hex(&request.token_b_id, "token B id")?;
@@ -101,25 +104,38 @@ pub(super) fn liquidity_quote(request: LiquidityQuoteRequest) -> Result<Value, S
         return Err(String::from("same_token_pair"));
     }
 
-    let amount_a = positive_amount(request.amount_a_raw.as_deref())?;
-    let amount_b = positive_amount(request.amount_b_raw.as_deref())?;
+    // Amounts define the opening price; without them the price input drives the minimum.
+    let amounts = if request.amount_a_raw.is_some() || request.amount_b_raw.is_some() {
+        Some((
+            positive_amount(request.amount_a_raw.as_deref())?,
+            positive_amount(request.amount_b_raw.as_deref())?,
+        ))
+    } else {
+        None
+    };
+    let price = match amounts {
+        Some((amount_a, amount_b)) => spot_price_q64_64(amount_a, amount_b),
+        None => positive_amount(request.initial_price_real_raw.as_deref())?,
+    };
+    let (minimum_a, minimum_b) = minimum_opening_pair(price)?;
+    let (actual_a, actual_b) = amounts.unwrap_or((minimum_a, minimum_b));
 
-    // LP math (shared with the guest's new_definition via amm_core): the initial LP
-    // must clear the permanently-locked minimum before the creator receives any.
-    let initial_lp = isqrt_product(amount_a, amount_b);
+    // LP math (shared with the guest's new_definition via amm_core): the initial LP must
+    // clear the permanently-locked minimum before the creator receives any.
+    let initial_lp = isqrt_product(actual_a, actual_b);
     let expected_lp = initial_lp
         .checked_sub(MINIMUM_LIQUIDITY)
         .filter(|user_lp| *user_lp > 0)
         .ok_or("amount_too_low")?;
-    // Display-order price: token B per token A (the caller's orientation).
-    let initial_price = spot_price_q64_64(amount_a, amount_b);
 
     Ok(json!({
-        "amountARaw": amount_a.to_string(),
-        "amountBRaw": amount_b.to_string(),
+        "actualAmountARaw": actual_a.to_string(),
+        "actualAmountBRaw": actual_b.to_string(),
+        "minimumAmountARaw": minimum_a.to_string(),
+        "minimumAmountBRaw": minimum_b.to_string(),
         "expectedLpRaw": expected_lp.to_string(),
         "lockedLpRaw": MINIMUM_LIQUIDITY.to_string(),
-        "initialPriceRaw": initial_price.to_string(),
+        "initialPriceRealRaw": price.to_string(),
     }))
 }
 
@@ -393,6 +409,7 @@ mod tests {
         LiquidityQuoteRequest {
             token_a_id: account_id_hex(token_a),
             token_b_id: account_id_hex(token_b),
+            initial_price_real_raw: None,
             amount_a_raw: Some(String::from("1000000")),
             amount_b_raw: Some(String::from("4000000")),
         }
@@ -423,13 +440,14 @@ mod tests {
     }
 
     #[test]
-    fn create_quote_prices_the_opening() {
+    fn create_quote_prices_supplied_amounts() {
         let token_a = AccountId::new([0xAA; 32]);
         let token_b = AccountId::new([0xBB; 32]);
         let value = liquidity_quote(quote_request(token_a, token_b)).unwrap();
 
-        assert_eq!(value["amountARaw"], "1000000");
-        assert_eq!(value["amountBRaw"], "4000000");
+        // Amounts supplied ⇒ actual == the amounts; the price is derived from them.
+        assert_eq!(value["actualAmountARaw"], "1000000");
+        assert_eq!(value["actualAmountBRaw"], "4000000");
         assert_eq!(value["lockedLpRaw"], MINIMUM_LIQUIDITY.to_string());
         // initial_lp = isqrt(1_000_000 * 4_000_000) = 2_000_000; creator LP = minus lock.
         let initial_lp = isqrt_product(1_000_000, 4_000_000);
@@ -437,14 +455,40 @@ mod tests {
             value["expectedLpRaw"],
             (initial_lp - MINIMUM_LIQUIDITY).to_string()
         );
-        assert_eq!(
-            value["initialPriceRaw"],
-            spot_price_q64_64(1_000_000, 4_000_000).to_string()
-        );
+        let price = spot_price_q64_64(1_000_000, 4_000_000);
+        assert_eq!(value["initialPriceRealRaw"], price.to_string());
+        // The minimum opening deposit for that price is echoed for the form to validate against.
+        let (min_a, min_b) = minimum_opening_pair(price).unwrap();
+        assert_eq!(value["minimumAmountARaw"], min_a.to_string());
+        assert_eq!(value["minimumAmountBRaw"], min_b.to_string());
         // Lean preview — no commitment / status / submittability fields.
         assert!(value.get("quoteHash").is_none());
         assert!(value.get("canSubmit").is_none());
         assert!(value.get("poolStatus").is_none());
+    }
+
+    #[test]
+    fn create_quote_price_only_returns_the_minimum_opening_deposit() {
+        let token_a = AccountId::new([0xAA; 32]);
+        let token_b = AccountId::new([0xBB; 32]);
+        let price = spot_price_q64_64(1_000_000, 4_000_000);
+        let (min_a, min_b) = minimum_opening_pair(price).unwrap();
+
+        let value = liquidity_quote(LiquidityQuoteRequest {
+            token_a_id: account_id_hex(token_a),
+            token_b_id: account_id_hex(token_b),
+            initial_price_real_raw: Some(price.to_string()),
+            amount_a_raw: None,
+            amount_b_raw: None,
+        })
+        .unwrap();
+
+        // Price-only ⇒ the actual deposit is the minimum opening pair for that price.
+        assert_eq!(value["actualAmountARaw"], min_a.to_string());
+        assert_eq!(value["actualAmountBRaw"], min_b.to_string());
+        assert_eq!(value["minimumAmountARaw"], min_a.to_string());
+        assert_eq!(value["minimumAmountBRaw"], min_b.to_string());
+        assert_eq!(value["initialPriceRealRaw"], price.to_string());
     }
 
     #[test]

@@ -60,8 +60,9 @@ async function formState(app, formId) {
   const props = (await app.getProperties(formId)).properties || [];
   const get = (n) => { const p = props.find((x) => x.name === n); return p ? p.value : undefined; };
   return {
-    poolStatus: get("poolStatus"),
     activePool: get("activePool"),
+    quoteStale: get("quoteStale"),
+    quoteLoading: get("quoteLoading"),
     canConfirm: get("canConfirm"),
     amountA: get("amountA"),
     amountB: get("amountB"),
@@ -197,8 +198,8 @@ test("amm liquidity: add to the A/B pool", async (app) => {
   await app.waitFor(
     async () => {
       const s = await formState(app, formId);
-      if (s.poolStatus !== "active_pool")
-        throw new Error(`pool not active yet (status=${s.poolStatus})`);
+      if (s.activePool !== true)
+        throw new Error(`pool not active yet (activePool=${s.activePool})`);
     },
     { timeout: 20000, interval: 500, description: "active-pool quote" },
   );
@@ -207,23 +208,26 @@ test("amm liquidity: add to the A/B pool", async (app) => {
   await selectAccount(app, "newPositionAccountSelectorA");
   await selectAccount(app, "newPositionAccountSelectorB");
 
-  // 5. The CTA must be DISABLED when no deposit amounts are entered — even though the
-  //    pool is active and the pair's probe quote reports canSubmit on simulated amounts.
-  //    resetPairDraft() clears the amount fields and re-fires that probe quote, reaching
-  //    this exact state deterministically regardless of any prior form state (the live app
-  //    window persists across runs, so the fields may carry leftover amounts).
+  // 5. The CTA must be DISABLED when no deposit amounts are entered — even though the pool is
+  //    active. canConfirm gates on the entered amounts (+ holdings), not on any quote-side
+  //    flag. resetPairDraft() clears the amount fields (the live app window persists across
+  //    runs, so they may carry leftover amounts) and, because the pair is treated as changed,
+  //    re-resolves the pool. Wait for that active-pool quote to FULLY settle (activePool back
+  //    to true and the quote no longer stale/loading) so the reserves are reloaded before the
+  //    step-6 ratio-fill needs them. At that point amounts are still empty → canConfirm false.
   await evaluate(app, formId, "resetPairDraft()");
   await app.waitFor(
     async () => {
       const s = await formState(app, formId);
-      if (s.poolStatus !== "active_pool")
-        throw new Error(`probe quote not back yet (status=${s.poolStatus})`);
+      if (s.activePool !== true || s.quoteStale === true || s.quoteLoading === true)
+        throw new Error(`reset quote not settled (activePool=${s.activePool} `
+          + `stale=${s.quoteStale} loading=${s.quoteLoading})`);
       if (s.amountA || s.amountB)
         throw new Error(`deposit amounts not cleared (A=${s.amountA} B=${s.amountB})`);
       if (s.canConfirm)
         throw new Error("Add-liquidity CTA is enabled with no deposit amounts entered");
     },
-    { timeout: 20000, interval: 500, description: "CTA disabled with no amounts" },
+    { timeout: 20000, interval: 500, description: "CTA disabled, pool re-resolved" },
   );
   console.log("    CTA correctly disabled with no amounts entered  ✓");
 

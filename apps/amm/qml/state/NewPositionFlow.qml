@@ -21,11 +21,17 @@ QtObject {
         "quoteStale": root.quoteStale,
         "submitting": root.submitting,
         "transactionId": root.transactionId,
+        // Create-vs-add routing signal, from the resolvePool read: true = add (pool exists),
+        // false = create, undefined = not resolved yet (a new pair, still resolving).
+        "poolExists": root.poolExists,
         "errorCode": root.flowErrorCode || root.contextErrorCode
                      || root.quoteErrorCode
     })
 
     property var newPositionQuote: ({})
+    // Whether the selected pair's pool exists (from resolvePool); drives create-vs-add.
+    // undefined until the first resolve for the current pair lands.
+    property var poolExists: undefined
     property var resolvedTokenIds: []
     property int contextSerial: 0
     property int quoteSerial: 0
@@ -171,6 +177,7 @@ QtObject {
                 if (serial !== root.quoteSerial)
                     return
                 if (pool && pool.exists) {
+                    root.poolExists = true
                     root.requestAddQuote(serial, built, pool)
                     return
                 }
@@ -181,8 +188,12 @@ QtObject {
                 // would hide the backend failure and enable the wrong flow).
                 var poolError = pool ? String(pool.error || "") : ""
                 if (poolError.length === 0 || poolError === "no_pool") {
+                    root.poolExists = false
                     root.requestCreateQuote(serial, built)
                 } else {
+                    // Hard failure: leave poolExists unresolved so the form doesn't drop into
+                    // create mode on a backend/config error.
+                    root.poolExists = undefined
                     root.quoteLoading = false
                     root.quoteStale = false
                     root.quoteErrorCode = ""
@@ -228,20 +239,22 @@ QtObject {
             })
     }
 
-    // Create-pool preview still on the legacy quoteNewPosition — migrated to createPoolQuote
-    // (the create counterpart of addLiquidityQuote) in a later step.
+    // Create-pool preview via the lean liquidityQuote (dual-mode: price-only returns the
+    // minimum opening deposit; supplied amounts return the actual). Assembled into the
+    // missing-pool shape the form consumes. built.request carries the price (+ amounts once
+    // the user edits past the minimum), so it can be forwarded as-is.
     function requestCreateQuote(serial, built) {
-        root.runtime.watch(root.backend.quoteNewPosition(built.request),
+        root.runtime.watch(root.backend.liquidityQuote(built.request),
             function(quote) {
                 if (serial !== root.quoteSerial)
                     return
                 root.quoteLoading = false
                 root.quoteStale = false
                 root.quoteErrorCode = ""
-                if (!quote || !quote.status)
-                    root.newPositionQuote = root.quoteError("backend_error")
+                if (quote && quote.status === "ok")
+                    root.newPositionQuote = root.assembleCreateQuote(built, quote)
                 else
-                    root.newPositionQuote = quote
+                    root.newPositionQuote = root.quoteError((quote && quote.error) || "backend_error")
             },
             function(error) {
                 if (serial !== root.quoteSerial)
@@ -252,14 +265,30 @@ QtObject {
             })
     }
 
+    // Maps liquidityQuote into the quote shape NewPositionForm reads for a missing pool.
+    // Amounts are in the request's (canonical) order, matching the form's displayIsCanonical
+    // mapping; minimumAmount* is what the form validates the entered deposit against.
+    function assembleCreateQuote(built, quote) {
+        return {
+            "status": "ok",
+            "tokenAId": built.request.tokenAId,
+            "tokenBId": built.request.tokenBId,
+            "actualAmountARaw": String(quote.actualAmountARaw || "0"),
+            "actualAmountBRaw": String(quote.actualAmountBRaw || "0"),
+            "minimumAmountARaw": String(quote.minimumAmountARaw || "0"),
+            "minimumAmountBRaw": String(quote.minimumAmountBRaw || "0"),
+            "expectedLpRaw": String(quote.expectedLpRaw || "0"),
+            "lockedLpRaw": String(quote.lockedLpRaw || "0"),
+            "initialPriceRealRaw": String(quote.initialPriceRealRaw || "0")
+        }
+    }
+
     // Maps addLiquidityQuote + the pool read into the quote shape NewPositionForm reads for an
     // active pool. Amounts/reserves are in the request's (canonical) order, matching the form's
     // displayIsCanonical mapping; minimumLpRaw is the slippage floor the module computed.
     function assembleAddQuote(built, pool, quote) {
         return {
             "status": "ok",
-            "poolStatus": "active_pool",
-            "canSubmit": true,
             "tokenAId": built.request.tokenAId,
             "tokenBId": built.request.tokenBId,
             "actualAmountARaw": String(quote.amountARaw || "0"),
@@ -269,11 +298,7 @@ QtObject {
             "reserveARaw": String(pool.reserveA || "0"),
             "reserveBRaw": String(pool.reserveB || "0"),
             "poolFeeBps": pool.feeBps,
-            "requiresFreshLp": true,
-            "initialPriceRealRaw": String(quote.priceRaw || "0"),
-            "errors": [],
-            "warnings": [],
-            "accountPreview": []
+            "initialPriceRealRaw": String(quote.priceRaw || "0")
         }
     }
 
@@ -291,8 +316,8 @@ QtObject {
         // Route by pool state: creation (initialPriceRealRaw is set only on the missing-pool
         // path) goes through createPool; the active-pool branch through addLiquidity. Both
         // mint a fresh LP holding then submit via the lean module ops (hex ids,
-        // caller-provided accounts). Add quoting is now on addLiquidityQuote; create quoting
-        // stays on the legacy quoteNewPosition until createPoolQuote is wired.
+        // caller-provided accounts). Quoting for both branches is now on the lean ops
+        // (liquidityQuote / addLiquidityQuote), routed by resolvePool in requestQuoteNow.
         if (snapshot.request.initialPriceRealRaw !== undefined)
             root.createPool(snapshot)
         else
@@ -429,6 +454,15 @@ QtObject {
         root.quoteErrorCode = ""
     }
 
+    // The selected pair changed, so the pool it maps to is unknown until the next
+    // resolvePool. Clearing poolExists drops both activePool/missingPool to false, which
+    // keeps requestQuote from short-circuiting an active pool's empty-amount probe and lets
+    // buildQuoteRequest emit the price+probe request a fresh selection would — reloading the
+    // reserves (add) or the opening minimum (create) for the new pair.
+    function resetPoolExistence() {
+        root.poolExists = undefined
+    }
+
     function invalidateQuote() {
         ++root.quoteSerial
         root.quoteDebounce.stop()
@@ -447,16 +481,12 @@ QtObject {
     function quoteError(code) {
         return {
             "status": "error",
-            "canSubmit": false,
             "code": code,
-            "poolStatus": "unavailable_pool",
             "errors": [{
                 "code": code,
                 "blockingFields": [],
                 "details": ({})
-            }],
-            "warnings": [],
-            "accountPreview": []
+            }]
         }
     }
 }

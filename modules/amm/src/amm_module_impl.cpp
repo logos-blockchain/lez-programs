@@ -753,6 +753,11 @@ LogosMap AmmModuleImpl::liquidityQuote(const LogosMap& request) {
         {"tokenAId", token_a},
         {"tokenBId", token_b},
     };
+    // initialPriceRealRaw is the Q64.64 opening price; used when no amounts are supplied
+    // (price-only ⇒ the op returns the minimum opening deposit). Left out if absent.
+    std::string price_decimal;
+    if (jsonAmountToDecimal(request.value("initialPriceRealRaw", json()), price_decimal))
+        quoteRequest["initialPriceRealRaw"] = price_decimal;
     if (request.contains("amountARaw")) {
         std::string amount_a_decimal;
         if (!jsonAmountToDecimal(request.at("amountARaw"), amount_a_decimal))
@@ -770,8 +775,8 @@ LogosMap AmmModuleImpl::liquidityQuote(const LogosMap& request) {
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
 
-    // Success: wrap { amountARaw, amountBRaw, expectedLpRaw, lockedLpRaw,
-    // initialPriceRaw } in the standard envelope.
+    // Success: wrap { actualAmountARaw, actualAmountBRaw, minimumAmountARaw,
+    // minimumAmountBRaw, expectedLpRaw, lockedLpRaw, initialPriceRealRaw } in the envelope.
     LogosMap out = quoteResult.value;
     out["status"] = "ok";
     out["error"] = "";

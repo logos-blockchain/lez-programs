@@ -253,6 +253,7 @@ onBackendChanged: root.refreshHoldings()
                     }
 
                     onDraftChanged: newPositionFlow.draftChanged()
+                    onPairReset: newPositionFlow.resetPoolExistence()
                     onRefreshRequested: newPositionFlow.refreshContext(true)
                 }
             }
