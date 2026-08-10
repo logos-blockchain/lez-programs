@@ -12,7 +12,8 @@
 //! guest's `assert pool uninitialized`.
 
 use amm_core::{
-    isqrt_product, mul_div_floor, spot_price_q64_64, PoolDefinition, MINIMUM_LIQUIDITY,
+    isqrt_product, mul_div_floor, spot_price_q64_64, PoolDefinition, FEE_BPS_DENOMINATOR,
+    MINIMUM_LIQUIDITY,
 };
 use nssa_core::account::AccountId;
 use serde_json::{json, Value};
@@ -202,13 +203,14 @@ pub(super) fn create_pool_plan(request: CreatePoolPlanRequest) -> Result<Value, 
 /// caller's max amounts to the pool's canonical `(a, b)` order, then run the guest's exact
 /// proportional-deposit math (`amm_program::add::add_liquidity`): the ideal→actual clamp
 /// and `delta_lp = min(supply·actual_a/reserve_a, supply·actual_b/reserve_b)`. Returns the
-/// same shape as the create quote minus the create-only locked LP: the actual ratio-matched
-/// deposits (display order), the LP minted, and the pool's spot price (`priceRaw`, token B
-/// per token A in display order). The slippage floor is applied at submit, not here — the
-/// quote is a pure preview like create. Errors: `same_token_pair`, `no_pool`,
-/// `pair_mismatch` (the pool isn't for this pair), bad amounts (`amount_required`,
-/// `invalid_raw_amount`, `amount_must_be_positive`), `amount_too_low` (the deposit rounds
-/// to zero LP — nothing to mint).
+/// actual ratio-matched deposits (display order), the LP minted (`expectedLpRaw`), the
+/// slippage floor on that LP (`minimumLpRaw = floor(delta_lp · (1 − slippage))`, the
+/// submit's `min_amount_liquidity` — like the swap quotes' `minReceivedRaw`), and the pool's
+/// spot price (`priceRaw`, token B per token A in display order). Errors: `same_token_pair`,
+/// `no_pool`, `pair_mismatch` (the pool isn't for this pair), `invalid_slippage` (≥ 100%),
+/// bad amounts (`amount_required`, `invalid_raw_amount`, `amount_must_be_positive`),
+/// `amount_too_low` (the deposit rounds to zero LP), `minimum_lp_zero` (slippage leaves no
+/// LP floor — the guest requires a nonzero minimum).
 pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<Value, String> {
     let token_a = account_id_from_hex(&request.token_a_id, "token A id")?;
     let token_b = account_id_from_hex(&request.token_b_id, "token B id")?;
@@ -217,6 +219,9 @@ pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<V
     }
     let max_a = positive_amount(Some(&request.max_amount_a_raw))?;
     let max_b = positive_amount(Some(&request.max_amount_b_raw))?;
+    if u128::from(request.slippage_bps) >= FEE_BPS_DENOMINATOR {
+        return Err(String::from("invalid_slippage"));
+    }
 
     // Decode the pool; absent / undecodable / empty ⇒ nothing to add to.
     let pool = hex::decode(&request.pool_data)
@@ -258,6 +263,14 @@ pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<V
         return Err(String::from("amount_too_low"));
     }
 
+    // Slippage floor on the LP minted (orientation-independent — LP is symmetric). The guest
+    // requires a nonzero `min_amount_liquidity`, so reject a slippage that rounds it to zero.
+    let slippage_complement = FEE_BPS_DENOMINATOR - u128::from(request.slippage_bps);
+    let minimum_lp = mul_div_floor(delta_lp, slippage_complement, FEE_BPS_DENOMINATOR);
+    if minimum_lp == 0 {
+        return Err(String::from("minimum_lp_zero"));
+    }
+
     // Back to display order for the response; the price uses the display-oriented reserves.
     let (display_a, display_b) = if reversed {
         (actual_b, actual_a)
@@ -275,6 +288,7 @@ pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<V
         "amountARaw": display_a.to_string(),
         "amountBRaw": display_b.to_string(),
         "expectedLpRaw": delta_lp.to_string(),
+        "minimumLpRaw": minimum_lp.to_string(),
         "priceRaw": price.to_string(),
     }))
 }
@@ -587,17 +601,19 @@ mod tests {
             token_b_id: account_id_hex(def_b),
             max_amount_a_raw: String::from("10000"),
             max_amount_b_raw: String::from("100000"),
+            slippage_bps: 50,
             pool_data: pool_hex(&pool),
         })
         .unwrap();
         assert_eq!(ab["amountARaw"], "10000");
         assert_eq!(ab["amountBRaw"], "20000");
         assert_eq!(ab["expectedLpRaw"], "10000");
+        // minimumLpRaw = floor(10000 * (10000 - 50) / 10000) = 9950 (slippage floor on LP).
+        assert_eq!(ab["minimumLpRaw"], "9950");
         assert_eq!(
             ab["priceRaw"],
             spot_price_q64_64(1_000_000, 2_000_000).to_string()
         );
-        // Shape parity with create, minus the create-only locked LP and with priceRaw.
         assert!(ab.get("lockedLpRaw").is_none());
         assert!(ab.get("initialPriceRaw").is_none());
 
@@ -607,6 +623,7 @@ mod tests {
             token_b_id: account_id_hex(def_a),
             max_amount_a_raw: String::from("100000"),
             max_amount_b_raw: String::from("10000"),
+            slippage_bps: 50,
             pool_data: pool_hex(&pool),
         })
         .unwrap();
@@ -639,6 +656,7 @@ mod tests {
                     token_b_id: account_id_hex(token_b),
                     max_amount_a_raw: max_a.into(),
                     max_amount_b_raw: max_b.into(),
+                    slippage_bps: 50,
                     pool_data: data,
                 }
             };
@@ -674,6 +692,24 @@ mod tests {
         assert_eq!(
             add_liquidity_quote(req(def_a, def_b, "1", "1", pool_hex(&pool))),
             Err(String::from("amount_too_low"))
+        );
+        // A deposit that mints only 1 LP: 50 bps slippage floors the minimum to 0, which the
+        // guest's nonzero `min_amount_liquidity` rejects.
+        assert_eq!(
+            add_liquidity_quote(req(def_a, def_b, "1", "2", pool_hex(&pool))),
+            Err(String::from("minimum_lp_zero"))
+        );
+        // Slippage at/above 100%.
+        assert_eq!(
+            add_liquidity_quote(AddLiquidityQuoteRequest {
+                token_a_id: account_id_hex(def_a),
+                token_b_id: account_id_hex(def_b),
+                max_amount_a_raw: String::from("10000"),
+                max_amount_b_raw: String::from("10000"),
+                slippage_bps: 10_000,
+                pool_data: pool_hex(&pool),
+            }),
+            Err(String::from("invalid_slippage"))
         );
     }
 

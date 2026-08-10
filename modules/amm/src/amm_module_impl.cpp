@@ -896,17 +896,31 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
+    // slippageBps is a fraction of 100% in basis points; the pricing op uses it to derive
+    // minimumLpRaw (the LP floor the submit accepts). Require an integer JSON number and reject
+    // everything else with a stable invalid_slippage: is_number() would also accept a float
+    // (and get<int64_t>() on a number_float THROWS, terminating the module), while a string /
+    // bool would otherwise fall through to a silent 0. A missing field defaults to 0 (no
+    // slippage). A negative or >= 100% value is likewise invalid_slippage.
+    const json slippage_val = request.value("slippageBps", json(0));
+    if (!slippage_val.is_number_integer())
+        return error("invalid_slippage");
+    const int64_t slippage_bps = slippage_val.get<int64_t>();
+    if (slippage_bps < 0 || slippage_bps >= 10000)
+        return error("invalid_slippage");
+
     const FfiResult quoteResult = call(amm_add_liquidity_quote, json{
         {"tokenAId", token_a},
         {"tokenBId", token_b},
         {"maxAmountARaw", max_a_decimal},
         {"maxAmountBRaw", max_b_decimal},
+        {"slippageBps", slippage_bps},
         {"poolData", pool_data},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
 
-    // Success: wrap { amountARaw, amountBRaw, expectedLpRaw, priceRaw } in the envelope.
+    // Success: wrap { amountARaw, amountBRaw, expectedLpRaw, minimumLpRaw, priceRaw }.
     LogosMap out = quoteResult.value;
     out["status"] = "ok";
     out["error"] = "";

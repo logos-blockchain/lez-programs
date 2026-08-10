@@ -178,6 +178,10 @@ pub struct AddLiquidityQuoteRequest {
     pub token_b_id: String,
     pub max_amount_a_raw: String,
     pub max_amount_b_raw: String,
+    /// Slippage tolerance in basis points — the quote returns `minimumLpRaw`, the LP floor
+    /// the submit accepts (like the swap quotes take `slippageBps` → `minReceivedRaw`).
+    #[serde(default)]
+    pub slippage_bps: u32,
     pub pool_data: String,
 }
 
