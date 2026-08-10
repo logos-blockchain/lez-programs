@@ -108,6 +108,9 @@ pub struct SwapExactInPlanRequest {
     pub config: AccountRead,
     pub user_input_holding_id: String,
     pub user_output_holding_id: String,
+    /// Current read of the output holding. The plan uses its owner to avoid
+    /// requesting a signature for an already initialized Token holding.
+    pub user_output_holding: AccountRead,
     pub amount_in: String,
     pub min_out: String,
     pub deadline_ms: String,
@@ -126,6 +129,9 @@ pub struct SwapExactOutPlanRequest {
     pub config: AccountRead,
     pub user_input_holding_id: String,
     pub user_output_holding_id: String,
+    /// Current read of the output holding. The plan uses its owner to avoid
+    /// requesting a signature for an already initialized Token holding.
+    pub user_output_holding: AccountRead,
     pub amount_out: String,
     pub max_in: String,
     pub deadline_ms: String,

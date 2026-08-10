@@ -7,7 +7,7 @@ use amm_core::{
     compute_pool_pda, mul_div_ceil, mul_div_floor, price_impact_bps, swap_exact_in_amounts,
     swap_exact_out_amounts, PoolDefinition, FEE_BPS_DENOMINATOR,
 };
-use nssa_core::account::AccountId;
+use nssa_core::{account::AccountId, program::ProgramId};
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
 
@@ -18,7 +18,19 @@ use super::{
 };
 use crate::account::{
     account_id_from_hex, account_id_hex, decode_account, parse_program_id, program_id_bytes,
+    AccountRead,
 };
+
+fn output_holding_requires_signature(
+    read: &AccountRead,
+    expected_id: AccountId,
+    token_program_id: ProgramId,
+) -> bool {
+    let Ok((account_id, account)) = decode_account(read) else {
+        return true;
+    };
+    account_id != expected_id || account.program_owner != token_program_id
+}
 
 /// Orders `(token_in, token_out)` into the pool's canonical `(token_a, token_b)`
 /// so derived vault PDAs line up with the pool's stored `vault_a`/`vault_b`.
@@ -330,7 +342,21 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
         pair.current_tick,
         pair.clock,
     ];
-    let signing_requirements = [false, false, false, false, true, true, false, false];
+    let output_requires_signature = output_holding_requires_signature(
+        &request.user_output_holding,
+        user_output_holding,
+        pair.token_program,
+    );
+    let signing_requirements = [
+        false,
+        false,
+        false,
+        false,
+        true,
+        output_requires_signature,
+        false,
+        false,
+    ];
 
     Ok(json!({
         "programId": request.amm_program_id,
@@ -397,7 +423,21 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
         pair.current_tick,
         pair.clock,
     ];
-    let signing_requirements = [false, false, false, false, true, true, false, false];
+    let output_requires_signature = output_holding_requires_signature(
+        &request.user_output_holding,
+        user_output_holding,
+        pair.token_program,
+    );
+    let signing_requirements = [
+        false,
+        false,
+        false,
+        false,
+        true,
+        output_requires_signature,
+        false,
+        false,
+    ];
 
     Ok(json!({
         "programId": request.amm_program_id,
@@ -439,6 +479,54 @@ mod tests {
                 data: hex::encode(borsh::to_vec(pool).unwrap()),
             }),
         }
+    }
+
+    #[test]
+    fn output_holding_signature_requires_fresh_or_unreadable_account() {
+        let output_id = AccountId::new([0xAB; 32]);
+        let token_program = [22; 8];
+        let initialized = AccountRead {
+            id: account_id_hex(output_id),
+            status: String::from("ok"),
+            account: Some(WalletAccount {
+                program_owner: crate::account::program_id_hex(token_program),
+                balance: "00".repeat(16),
+                nonce: "00".repeat(16),
+                data: String::new(),
+            }),
+        };
+        assert!(!output_holding_requires_signature(
+            &initialized,
+            output_id,
+            token_program,
+        ));
+
+        let fresh = AccountRead {
+            id: account_id_hex(output_id),
+            status: String::from("ok"),
+            account: Some(WalletAccount {
+                program_owner: "00".repeat(32),
+                balance: "00".repeat(16),
+                nonce: "00".repeat(16),
+                data: String::new(),
+            }),
+        };
+        assert!(output_holding_requires_signature(
+            &fresh,
+            output_id,
+            token_program,
+        ));
+
+        let unreadable = AccountRead {
+            id: account_id_hex(output_id),
+            status: String::from("read_failed"),
+            account: None,
+        };
+        assert!(output_holding_requires_signature(
+            &unreadable,
+            output_id,
+            token_program,
+        ));
     }
 
     #[test]
@@ -515,6 +603,11 @@ mod tests {
             config: dummy_config,
             user_input_holding_id: String::new(),
             user_output_holding_id: String::new(),
+            user_output_holding: AccountRead {
+                id: String::new(),
+                status: String::from("read_failed"),
+                account: None,
+            },
             amount_in: String::new(),
             min_out: String::new(),
             deadline_ms: String::new(),
@@ -540,6 +633,11 @@ mod tests {
             },
             user_input_holding_id: String::new(),
             user_output_holding_id: String::new(),
+            user_output_holding: AccountRead {
+                id: String::new(),
+                status: String::from("read_failed"),
+                account: None,
+            },
             amount_in: String::new(),
             min_out: String::new(),
             deadline_ms: String::new(),
@@ -566,6 +664,11 @@ mod tests {
             config: dummy_config,
             user_input_holding_id: String::new(),
             user_output_holding_id: String::new(),
+            user_output_holding: AccountRead {
+                id: String::new(),
+                status: String::from("read_failed"),
+                account: None,
+            },
             amount_out: String::new(),
             max_in: String::new(),
             deadline_ms: String::new(),

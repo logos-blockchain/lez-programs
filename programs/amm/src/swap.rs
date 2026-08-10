@@ -203,12 +203,12 @@ pub fn swap_exact_input(
     assert_user_holding_owner_or_fresh(
         &user_holding_a,
         token_program_id,
-        "User Token A holding must be owned by the configured Token Program",
+        "User Token A holding must be owned by the configured Token Program or be a fresh authorized account",
     );
     assert_user_holding_owner_or_fresh(
         &user_holding_b,
         token_program_id,
-        "User Token B holding must be owned by the configured Token Program",
+        "User Token B holding must be owned by the configured Token Program or be a fresh authorized account",
     );
     // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
     // clock here so the swap is rejected early with an AMM-level error.

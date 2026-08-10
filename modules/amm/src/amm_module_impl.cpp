@@ -622,6 +622,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
     }
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const json user_output_holding = readPublicAccount(user_output_holding_hex);
 
     // amm_swap_exact_in_plan resolves the pool accounts, encodes SwapExactInput,
     // and returns a ready-to-submit plan.
@@ -633,6 +634,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         {"poolData", pool_data},
         {"userInputHoldingId", user_input_holding_hex},
         {"userOutputHoldingId", user_output_holding_hex},
+        {"userOutputHolding", user_output_holding},
         {"amountIn", amount_in_decimal},
         {"minOut", min_out_decimal},
         {"deadlineMs", deadline_decimal},
@@ -705,6 +707,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
     }
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const json user_output_holding = readPublicAccount(user_output_holding_hex);
 
     // amm_swap_exact_out_plan resolves the pool accounts, encodes SwapExactOutput,
     // and returns a ready-to-submit plan.
@@ -716,6 +719,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
         {"poolData", pool_data},
         {"userInputHoldingId", user_input_holding_hex},
         {"userOutputHoldingId", user_output_holding_hex},
+        {"userOutputHolding", user_output_holding},
         {"amountOut", amount_out_decimal},
         {"maxIn", max_in_decimal},
         {"deadlineMs", deadline_decimal},
