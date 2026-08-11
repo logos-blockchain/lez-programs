@@ -1198,8 +1198,6 @@ AmmActionCard {
             "wallet_unavailable": qsTr("Wallet is unavailable."),
             "wallet_submission_failed": qsTr("Wallet submission failed. Review and retry manually."),
             "signature_rejected": qsTr("Wallet approval was rejected."),
-            "quote_changed": qsTr("Pool or wallet state changed. Review the refreshed quote."),
-            "quote_not_submittable": qsTr("Current quote cannot be submitted."),
             "submit_in_progress": qsTr("A submission is already in progress."),
             "transaction_deadline_expired": qsTr("Wallet approval expired. Retry to create a fresh request."),
             "high_slippage": qsTr("High slippage tolerance."),
@@ -1207,8 +1205,6 @@ AmmActionCard {
             "token_program_mismatch": qsTr("Token belongs to a different TokenProgram."),
             "token_not_fungible": qsTr("Token is not a public fungible token."),
             "backend_error": qsTr("Position backend failed. Refresh and retry."),
-            "network_unknown": qsTr("Network identity could not be verified. Refresh and retry."),
-            "network_mismatch": qsTr("Connected wallet uses a different network."),
             "config_missing": qsTr("Network configuration is missing."),
             "account_read_failed": qsTr("Required on-chain state could not be read."),
             "pool_unavailable": qsTr("Pool state is unavailable."),
@@ -1429,10 +1425,8 @@ AmmActionCard {
     }
 
     function warningText() {
-        var warnings = !root.quoteStale && root.quoteMatchesPair()
-                ? root.quotePayload.warnings || [] : []
-        if (warnings.length === 0)
-            warnings = root.newPositionContext.warnings || []
+        // The lean quotes carry no warnings; only the token-sourcing context may.
+        var warnings = root.newPositionContext.warnings || []
         return warnings.length > 0 ? root.issueText(warnings[0].code) : ""
     }
 
