@@ -69,11 +69,11 @@ public slots:
     // Reads the token list from TOKENS_CONFIG (via the module) so the Swap UI's
     // token picker is config-driven instead of hardcoded.
     QVariantList tokenList() override;
-    // Create-pool preview (liquidityQuote, read-only) and submit (createPool). The caller
+    // Create-pool preview (createPoolQuote, read-only) and submit (createPool). The caller
     // supplies lpHoldingId in the request — a fresh account it created via
     // createAccountPublic() — so createPool forwards to the module and creates no wallet
     // accounts here.
-    QVariantMap liquidityQuote(QVariantMap request) override;
+    QVariantMap createPoolQuote(QVariantMap request) override;
     // Read-only add-liquidity preview (forwards to the module).
     QVariantMap addLiquidityQuote(QVariantMap request) override;
     QVariantMap createPool(QVariantMap request) override;

@@ -239,12 +239,12 @@ QtObject {
             })
     }
 
-    // Create-pool preview via the lean liquidityQuote (dual-mode: price-only returns the
+    // Create-pool preview via the lean createPoolQuote (dual-mode: price-only returns the
     // minimum opening deposit; supplied amounts return the actual). Assembled into the
     // missing-pool shape the form consumes. built.request carries the price (+ amounts once
     // the user edits past the minimum), so it can be forwarded as-is.
     function requestCreateQuote(serial, built) {
-        root.runtime.watch(root.backend.liquidityQuote(built.request),
+        root.runtime.watch(root.backend.createPoolQuote(built.request),
             function(quote) {
                 if (serial !== root.quoteSerial)
                     return
@@ -265,7 +265,7 @@ QtObject {
             })
     }
 
-    // Maps liquidityQuote into the quote shape NewPositionForm reads for a missing pool.
+    // Maps createPoolQuote into the quote shape NewPositionForm reads for a missing pool.
     // Amounts are in the request's (canonical) order, matching the form's displayIsCanonical
     // mapping; minimumAmount* is what the form validates the entered deposit against.
     function assembleCreateQuote(built, quote) {
@@ -279,7 +279,7 @@ QtObject {
             "minimumAmountBRaw": String(quote.minimumAmountBRaw || "0"),
             "expectedLpRaw": String(quote.expectedLpRaw || "0"),
             "lockedLpRaw": String(quote.lockedLpRaw || "0"),
-            "initialPriceRealRaw": String(quote.initialPriceRealRaw || "0")
+            "priceRaw": String(quote.priceRaw || "0")
         }
     }
 
@@ -298,7 +298,7 @@ QtObject {
             "reserveARaw": String(pool.reserveA || "0"),
             "reserveBRaw": String(pool.reserveB || "0"),
             "poolFeeBps": pool.feeBps,
-            "initialPriceRealRaw": String(quote.priceRaw || "0")
+            "priceRaw": String(quote.priceRaw || "0")
         }
     }
 
@@ -313,12 +313,12 @@ QtObject {
             return
         }
 
-        // Route by pool state: creation (initialPriceRealRaw is set only on the missing-pool
+        // Route by pool state: creation (priceRaw is set only on the missing-pool
         // path) goes through createPool; the active-pool branch through addLiquidity. Both
         // mint a fresh LP holding then submit via the lean module ops (hex ids,
         // caller-provided accounts). Quoting for both branches is now on the lean ops
-        // (liquidityQuote / addLiquidityQuote), routed by resolvePool in requestQuoteNow.
-        if (snapshot.request.initialPriceRealRaw !== undefined)
+        // (createPoolQuote / addLiquidityQuote), routed by resolvePool in requestQuoteNow.
+        if (snapshot.request.priceRaw !== undefined)
             root.createPool(snapshot)
         else
             root.addLiquidity(snapshot)

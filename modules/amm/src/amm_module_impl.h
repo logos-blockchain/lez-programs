@@ -117,7 +117,7 @@ public:
     /// `invalid_raw_amount`, `amount_must_be_positive`, `same_token_pair`, and
     /// `amount_too_low` come from the FFI; the rest from the module. The caller decides
     /// create-vs-add by pool existence before calling this.
-    LogosMap liquidityQuote(const LogosMap& request);
+    LogosMap createPoolQuote(const LogosMap& request);
 
     /// Submits a `NewDefinition` transaction creating the pool for the request's pair.
     /// `request` carries `{ tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId,
@@ -136,7 +136,7 @@ public:
 
     /// Prices an `AddLiquidity` into the existing pool for (tokenAId, tokenBId) from the
     /// two max deposit amounts. Reads the pool server-side (like the swap quotes) and runs
-    /// the guest's proportional-deposit math. Returns the same shape as `liquidityQuote`
+    /// the guest's proportional-deposit math. Returns the same shape as `createPoolQuote`
     /// minus the create-only locked LP: `{ status:"ok", error:"", amountARaw, amountBRaw,
     /// expectedLpRaw, priceRaw }` — the actual ratio-matched deposits (display order), the
     /// LP minted, and the pool's spot price. Slippage is applied at submit, not here.

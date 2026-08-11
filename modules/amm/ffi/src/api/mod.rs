@@ -18,7 +18,7 @@ use std::{error::Error, fmt};
 
 pub use request::{
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigIdRequest, ContextRequest,
-    CreatePoolPlanRequest, LiquidityQuoteRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest,
+    CreatePoolPlanRequest, CreatePoolQuoteRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest,
     RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
     SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
     SwapExactOutQuoteRequest, SwapPairRequest, SyncReservesPlanRequest, TokenHoldingsRequest,
@@ -118,8 +118,8 @@ pub fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> AmmResult {
 }
 
 /// Prices a create-pool deposit: the LP the creator receives and the opening price.
-pub fn liquidity_quote(request: LiquidityQuoteRequest) -> AmmResult {
-    liquidity::liquidity_quote(request).map_err(Into::into)
+pub fn create_pool_quote(request: CreatePoolQuoteRequest) -> AmmResult {
+    liquidity::create_pool_quote(request).map_err(Into::into)
 }
 
 /// Builds the `NewDefinition` submission for creating a pool.

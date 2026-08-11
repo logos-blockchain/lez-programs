@@ -1,6 +1,6 @@
 //! Shared opening-deposit math for pool creation.
 //!
-//! Reused by `liquidity::liquidity_quote` to size the smallest deposit that clears
+//! Reused by `liquidity::create_pool_quote` to size the smallest deposit that clears
 //! `MINIMUM_LIQUIDITY` for a given opening price.
 
 use alloy_primitives::U256;

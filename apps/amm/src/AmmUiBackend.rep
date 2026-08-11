@@ -101,7 +101,7 @@ class AmmUiBackend
     // same_token_pair, amount_too_low, amount_required, bad_amount, backend_error.
     // Read-only, no submission (the fee is not needed — it isn't part of the pool
     // PDA nor the pricing).
-    SLOT(QVariantMap liquidityQuote(QVariantMap request))
+    SLOT(QVariantMap createPoolQuote(QVariantMap request))
     // Server-side add-liquidity preview from the two max deposit amounts. `request`
     // carries { tokenAId, tokenBId, maxAmountARaw, maxAmountBRaw, slippageBps } (ids hex or
     // base58). Reads the pool and returns { status:"ok", error:"", amountARaw, amountBRaw

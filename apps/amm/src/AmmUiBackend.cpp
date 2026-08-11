@@ -228,11 +228,11 @@ QVariantList AmmUiBackend::tokenList()
     return m_logos->amm_module.tokenList();
 }
 
-QVariantMap AmmUiBackend::liquidityQuote(QVariantMap request)
+QVariantMap AmmUiBackend::createPoolQuote(QVariantMap request)
 {
     // Read-only create-pool preview — no wallet guard. The module prices the opening
     // LP and price server-side from the two deposit amounts.
-    return m_logos->amm_module.liquidityQuote(request);
+    return m_logos->amm_module.createPoolQuote(request);
 }
 
 QVariantMap AmmUiBackend::addLiquidityQuote(QVariantMap request)

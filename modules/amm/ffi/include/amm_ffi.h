@@ -36,7 +36,7 @@ char *amm_swap_exact_in_plan(const char *request_json);
 
 char *amm_swap_exact_out_plan(const char *request_json);
 
-char *amm_liquidity_quote(const char *request_json);
+char *amm_create_pool_quote(const char *request_json);
 
 char *amm_create_pool_plan(const char *request_json);
 

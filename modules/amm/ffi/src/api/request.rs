@@ -137,14 +137,14 @@ pub struct SwapExactOutPlanRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct LiquidityQuoteRequest {
+pub struct CreatePoolQuoteRequest {
     pub token_a_id: String,
     pub token_b_id: String,
     /// The opening price as a `Q64.64` fixed-point value (token B per token A, canonical
     /// order). Required only in the price-only mode (no `amount_*_raw`), where it drives the
     /// minimum opening deposit; when amounts are supplied the op derives the price from them.
     #[serde(default)]
-    pub initial_price_real_raw: Option<String>,
+    pub price_raw: Option<String>,
     #[serde(default)]
     pub amount_a_raw: Option<String>,
     #[serde(default)]
@@ -174,7 +174,7 @@ pub struct CreatePoolPlanRequest {
 }
 
 /// Prices an `AddLiquidity` into an existing pool — the add counterpart of
-/// `LiquidityQuoteRequest`. The two max amounts are the caller's caps (display order);
+/// `CreatePoolQuoteRequest`. The two max amounts are the caller's caps (display order);
 /// `pool_data` is the hex Borsh `PoolDefinition` (empty ⇒ no pool), same as the swap quotes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]

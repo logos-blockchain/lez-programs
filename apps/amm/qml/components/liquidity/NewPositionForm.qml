@@ -124,7 +124,7 @@ AmmActionCard {
                                        // missing_pool quote can't submit a duplicate NewDefinition.
                                        && !(root.missingPool && root.transactionId.length > 0)
     // Per-side funding check, decoupled from buildQuoteRequest/the quote: the deposit each side
-    // spends must fit its selected holding's balance (the lean liquidityQuote / addLiquidityQuote
+    // spends must fit its selected holding's balance (the lean createPoolQuote / addLiquidityQuote
     // ops never compare amount to balance, so a submit would otherwise fail on an
     // insufficient-balance transfer). amountA / selectedBalanceARaw are both the display token-A
     // side, so no canonical reorientation is needed.
@@ -1022,7 +1022,7 @@ AmmActionCard {
                                                                root.canonicalDecimalsB,
                                                                root.displayIsCanonical)
                         if (actualPrice.ok) {
-                            request.initialPriceRealRaw = actualPrice.raw
+                            request.priceRaw = actualPrice.raw
                             priceFromAmounts = true
                         } else {
                             errors.push(root.localIssue(actualPrice.code, ["initialPrice"]))
@@ -1031,7 +1031,7 @@ AmmActionCard {
                 }
             }
             if (price.ok && !priceFromAmounts)
-                request.initialPriceRealRaw = price.raw
+                request.priceRaw = price.raw
 
             if (!root.missingPool) {
                 var probeA = root.probeRaw(root.tokenA, root.decimalsA)
@@ -1105,7 +1105,7 @@ AmmActionCard {
             return root.displayIsCanonical ? "amountA" : "amountB"
         if (field === "amountBRaw")
             return root.displayIsCanonical ? "amountB" : "amountA"
-        if (field === "initialPriceRealRaw")
+        if (field === "priceRaw")
             return "initialPrice"
         return field
     }
@@ -1397,9 +1397,9 @@ AmmActionCard {
     }
 
     function activePriceValue() {
-        var priceRaw = String(root.quotePayload.initialPriceRealRaw || "")
+        var priceRaw = String(root.quotePayload.priceRaw || "")
         if (priceRaw.length === 0 && root.quoteMatchesSelectedPair(root.activePoolQuote))
-            priceRaw = String(root.activePoolQuote.initialPriceRealRaw || "")
+            priceRaw = String(root.activePoolQuote.priceRaw || "")
         return AmountMath.priceFromQ64(priceRaw,
                                        root.canonicalDecimalsA,
                                        root.canonicalDecimalsB,

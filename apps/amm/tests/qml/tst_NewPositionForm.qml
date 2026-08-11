@@ -197,7 +197,7 @@ TestCase {
         verify(built.ok)
         compare(built.request.amountARaw, "100")
         compare(built.request.amountBRaw, "150")
-        compare(built.request.initialPriceRealRaw, "27670116110564327424")
+        compare(built.request.priceRaw, "27670116110564327424")
         verify(!built.request.hasOwnProperty("depositScaleBps"))
 
         form.finishMissingAmount("B", "200")

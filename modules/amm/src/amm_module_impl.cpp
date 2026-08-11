@@ -733,7 +733,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
     return jStr(obj, "tx_hash");
 }
 
-LogosMap AmmModuleImpl::liquidityQuote(const LogosMap& request) {
+LogosMap AmmModuleImpl::createPoolQuote(const LogosMap& request) {
     auto error = [](const std::string& err) {
         return LogosMap{{"status", "error"}, {"error", err}};
     };
@@ -753,11 +753,11 @@ LogosMap AmmModuleImpl::liquidityQuote(const LogosMap& request) {
         {"tokenAId", token_a},
         {"tokenBId", token_b},
     };
-    // initialPriceRealRaw is the Q64.64 opening price; used when no amounts are supplied
+    // priceRaw is the Q64.64 opening price; used when no amounts are supplied
     // (price-only ⇒ the op returns the minimum opening deposit). Left out if absent.
     std::string price_decimal;
-    if (jsonAmountToDecimal(request.value("initialPriceRealRaw", json()), price_decimal))
-        quoteRequest["initialPriceRealRaw"] = price_decimal;
+    if (jsonAmountToDecimal(request.value("priceRaw", json()), price_decimal))
+        quoteRequest["priceRaw"] = price_decimal;
     if (request.contains("amountARaw")) {
         std::string amount_a_decimal;
         if (!jsonAmountToDecimal(request.at("amountARaw"), amount_a_decimal))
@@ -771,12 +771,12 @@ LogosMap AmmModuleImpl::liquidityQuote(const LogosMap& request) {
         quoteRequest["amountBRaw"] = amount_b_decimal;
     }
 
-    const FfiResult quoteResult = call(amm_liquidity_quote, quoteRequest);
+    const FfiResult quoteResult = call(amm_create_pool_quote, quoteRequest);
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
 
     // Success: wrap { actualAmountARaw, actualAmountBRaw, minimumAmountARaw,
-    // minimumAmountBRaw, expectedLpRaw, lockedLpRaw, initialPriceRealRaw } in the envelope.
+    // minimumAmountBRaw, expectedLpRaw, lockedLpRaw, priceRaw } in the envelope.
     LogosMap out = quoteResult.value;
     out["status"] = "ok";
     out["error"] = "";
