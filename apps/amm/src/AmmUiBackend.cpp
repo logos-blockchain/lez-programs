@@ -71,21 +71,8 @@ namespace {
         }
         return out;
     }
-
-    // The new-position context placeholder published before the module
-    // connection is up (matches the module's "loading" contextState).
-    QVariantMap loadingContext()
-    {
-        return QVariantMap {
-            { QStringLiteral("status"), QStringLiteral("loading") },
-            { QStringLiteral("networkId"), QStringLiteral("lez") },
-            { QStringLiteral("networkFingerprint"), QString() },
-            { QStringLiteral("tokens"), QVariantList() },
-            { QStringLiteral("feeTiers"), QVariantList() },
-            { QStringLiteral("warnings"), QVariantList() },
-        };
-    }
 }
+
 
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     : AmmUiBackendSimpleSource(parent),
@@ -148,7 +135,6 @@ void AmmUiBackend::disconnectWallet()
 {
     m_walletController->disconnect();
     setWalletStateReady(true);
-    refreshNewPositionContext(QVariantMap());
 }
 
 QString AmmUiBackend::createAccountPublic()
@@ -176,28 +162,6 @@ QString AmmUiBackend::getBalance(QString accountIdHex, bool isPublic)
     return m_walletController->balance(accountIdHex, isPublic);
 }
 
-QVariantMap AmmUiBackend::refreshNewPositionContext(QVariantMap request)
-{
-    const bool refreshWalletAccounts =
-        request.take(QStringLiteral("refreshWalletAccounts")).toBool();
-    if (request.contains(QStringLiteral("recentTokenIds"))
-        || request.contains(QStringLiteral("resolvedTokenIds"))) {
-        m_newPositionHints = request;
-    }
-    else {
-        request = m_newPositionHints;
-    }
-    if (!walletStateReady()) {
-        const QVariantMap context = loadingContext();
-        setNewPositionContext(context);
-        return context;
-    }
-    const QVariantMap context = m_logos->amm_module.newPositionContext(
-        request, isWalletOpen(), refreshWalletAccounts);
-    setNewPositionContext(context);
-    return context;
-}
-
 void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
@@ -211,18 +175,6 @@ void AmmUiBackend::syncWalletState()
     setCurrentBlockHeight(state.currentBlockHeight);
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
-
-    publishNetworkContext();
-}
-
-void AmmUiBackend::publishNetworkContext()
-{
-    if (!walletStateReady()) {
-        setNewPositionContext(loadingContext());
-        return;
-    }
-    setNewPositionContext(m_logos->amm_module.newPositionContext(
-        m_newPositionHints, isWalletOpen(), false));
 }
 
 QVariantMap AmmUiBackend::resolvePool(QString defAHex, QString defBHex)

@@ -26,17 +26,16 @@ methods (the module API is generated from the header) are:
   **Amount / id conventions** below.
 - `tokenList()` — reads the `TOKENS_CONFIG` JSON array and returns it with
   `definitionId`/`holding` normalized to hex.
-- `newPositionContext(request, walletOpen, refreshWalletAccounts)` — the
-  add-liquidity view state (available tokens, fee tiers, warnings) as a
-  context map.
-- `quoteNewPosition(request, walletOpen)` — prices an add-liquidity request
-  against current on-chain state (read-only).
-- `submitNewPosition(request, quoteHash, walletOpen, freshLpId)` — submits an
-  add-liquidity transaction. When the quote needs a fresh LP holding and
-  `freshLpId` is empty, returns `{ status: "requires_fresh_lp" }` **without**
-  submitting: the caller (the app backend, which owns the wallet keyset) creates
-  the account and calls again with its id. Headless callers pre-create an LP
-  holding and pass it.
+- `resolveTokens(request, walletOpen)` — resolves an app-provided set of token
+  ids into selector rows (definition + wallet holding per id). The lean,
+  stateless successor to the removed `newPositionContext` path: the app owns the
+  id set, so there is no network envelope or process-cached wallet state here.
+- `feeTiers()` — the AMM's supported fee tiers as raw basis points.
+- `createPoolQuote(request)` / `createPool(request)` and
+  `addLiquidityQuote(request)` / `addLiquidity(request)` — the add-liquidity
+  preview (read-only) and submit paths. The submit forwards the app-supplied
+  fresh LP holding id; the app backend, which owns the wallet keyset, creates
+  that account.
 
 ## How it fits together
 

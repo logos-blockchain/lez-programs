@@ -237,32 +237,6 @@ json publicError(const std::string& code,
     };
 }
 
-json contextState(const std::string& status,
-                  const std::string& network_id,
-                  const std::string& network_fingerprint,
-                  const std::string& code = {}) {
-    json state = {
-        {"status", status},
-        {"networkId", network_id},
-        {"networkFingerprint", network_fingerprint},
-        {"tokens", json::array()},
-        {"feeTiers", json::array()},
-        {"warnings", json::array()},
-    };
-    if (!code.empty()) state["code"] = code;
-    return state;
-}
-
-// A json array of the strings at `obj[key]` (empty array when absent/wrong type).
-json stringArray(const json& obj, const char* key) {
-    const auto it = obj.find(key);
-    if (it == obj.end() || !it->is_array()) return json::array();
-    json out = json::array();
-    for (const auto& v : *it)
-        if (v.is_string()) out.push_back(v);
-    return out;
-}
-
 }  // namespace
 
 std::vector<uint8_t> AmmModuleImpl::loadAmmElf() {
@@ -286,37 +260,6 @@ std::string AmmModuleImpl::ammProgramId() {
         return {};
     }
     return jStr(r.value, "programId");
-}
-
-AmmModuleImpl::Network AmmModuleImpl::network() {
-    // AMM_PROGRAM_BIN / TOKENS_CONFIG are fixed for the process lifetime and this
-    // runs on the hot reply path, so resolve the program id + token ids once.
-    if (!networkResolved) {
-        const std::string id = ammProgramId();
-        if (id.empty()) {
-            // Not resolvable yet (AMM_PROGRAM_BIN unset/unreadable). Don't cache a
-            // transient miss — a later call retries.
-            Network net;
-            net.status = "config_missing";
-            return net;
-        }
-        programId = id;
-        tokenIds.clear();
-        for (const auto& token : tokenList()) {
-            const std::string token_id = jStr(token, "definitionId");
-            if (!token_id.empty()) tokenIds.push_back(token_id);
-        }
-        networkResolved = true;
-    }
-
-    Network net;
-    net.amm_program_id = programId;
-    // The program id changes per deployment, so it doubles as the network
-    // fingerprint (a quote can't be replayed against a different program).
-    net.fingerprint = programId;
-    net.token_ids = tokenIds;
-    net.status = "ready";
-    return net;
 }
 
 std::string AmmModuleImpl::normalizeAccountId(const std::string& id) {
@@ -369,21 +312,15 @@ nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
     return result;
 }
 
-nlohmann::json AmmModuleImpl::walletAccountReads(bool wallet_open, bool refresh) {
-    if (!wallet_open) {
-        walletAccounts = json();  // invalidate — nothing to read while closed
-        return json::array();
-    }
-    // Each readPublicAccount is a live sequencer round-trip, so serve the cached
-    // set unless the caller forces a reload (submit / explicit UI refresh).
-    if (!refresh && !walletAccounts.is_null())
-        return walletAccounts;
+nlohmann::json AmmModuleImpl::walletAccountReads(bool wallet_open) {
+    if (!wallet_open)
+        return json::array();  // nothing to read while closed
 
     // Normalize the wallet module's [any] return (a vector or a json array)
     // through json so we can iterate/type-check it uniformly.
     json accounts = modules().logos_execution_zone.list_accounts();
     if (!accounts.is_array())
-        return json::array();  // transient — don't cache
+        return json::array();
 
     json out = json::array();
     for (const auto& entry : accounts) {
@@ -394,13 +331,12 @@ nlohmann::json AmmModuleImpl::walletAccountReads(bool wallet_open, bool refresh)
         if (id.empty()) continue;
         out.push_back(readPublicAccount(id));
     }
-    walletAccounts = out;
     return out;
 }
 
-nlohmann::json AmmModuleImpl::readConfig(const Network& net) {
+nlohmann::json AmmModuleImpl::readConfig(const std::string& amm_program_id) {
     const FfiResult configResult =
-        call(amm_config_id, json{{"ammProgramId", net.amm_program_id}});
+        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
     if (!configResult.ok) return json();  // null: config_id op failed
     return readPublicAccount(jStr(configResult.value, "configId"));
 }
@@ -416,12 +352,12 @@ LogosMap AmmModuleImpl::resolvePool(const std::string& def_a_hex,
         return LogosMap{{"exists", false}, {"error", error}};
     };
 
-    const Network net = network();
-    if (net.status != "ready")
-        // config_missing == no program id from AMM_PROGRAM_BIN (unset/unreadable/bad).
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        // no program id from AMM_PROGRAM_BIN (unset/unreadable/bad).
         return failed("no_program_bin");
 
-    const json config = readConfig(net);
+    const json config = readConfig(amm_program_id);
     if (config.is_null())
         return failed("bad_config");  // amm_config_id op failed (malformed program id)
 
@@ -431,7 +367,7 @@ LogosMap AmmModuleImpl::resolvePool(const std::string& def_a_hex,
     const std::string token_b = normalizeAccountId(def_b_hex);
 
     const FfiResult pairResult = call(amm_swap_pair, json{
-        {"ammProgramId", net.amm_program_id},
+        {"ammProgramId", amm_program_id},
         {"tokenInId", token_a},
         {"tokenOutId", token_b},
         {"config", config},
@@ -584,13 +520,13 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         return {};
     }
 
-    const Network net = network();
-    if (net.status != "ready") {
-        AMM_TRACE("swapExactInput: FAIL network not ready (" << net.status << ")");
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty()) {
+        AMM_TRACE("swapExactInput: FAIL no program id (AMM_PROGRAM_BIN unset/unreadable)");
         return {};
     }
 
-    const json config = readConfig(net);
+    const json config = readConfig(amm_program_id);
     if (config.is_null()) {
         AMM_TRACE("swapExactInput: FAIL config_id op failed");
         return {};
@@ -599,7 +535,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
     // Read the pool so the plan can use its stored vault ids (the guest asserts
     // the vaults in the pool's creation order — see amm_swap_exact_in_plan).
     const FfiResult poolId = call(amm_pool_id, json{
-        {"ammProgramId", net.amm_program_id},
+        {"ammProgramId", amm_program_id},
         {"tokenInId", def_a_hex},
         {"tokenOutId", def_b_hex},
     });
@@ -613,7 +549,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
     // amm_swap_exact_in_plan resolves the pool accounts, encodes SwapExactInput,
     // and returns a ready-to-submit plan.
     const FfiResult planResult = call(amm_swap_exact_in_plan, json{
-        {"ammProgramId", net.amm_program_id},
+        {"ammProgramId", amm_program_id},
         {"tokenInId", def_a_hex},
         {"tokenOutId", def_b_hex},
         {"config", config},
@@ -667,13 +603,13 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
         return {};
     }
 
-    const Network net = network();
-    if (net.status != "ready") {
-        AMM_TRACE("swapExactOutput: FAIL network not ready (" << net.status << ")");
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty()) {
+        AMM_TRACE("swapExactOutput: FAIL no program id (AMM_PROGRAM_BIN unset/unreadable)");
         return {};
     }
 
-    const json config = readConfig(net);
+    const json config = readConfig(amm_program_id);
     if (config.is_null()) {
         AMM_TRACE("swapExactOutput: FAIL config_id op failed");
         return {};
@@ -682,7 +618,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
     // Read the pool so the plan can use its stored vault ids (the guest asserts
     // the vaults in the pool's creation order — see amm_swap_exact_out_plan).
     const FfiResult poolId = call(amm_pool_id, json{
-        {"ammProgramId", net.amm_program_id},
+        {"ammProgramId", amm_program_id},
         {"tokenInId", def_a_hex},
         {"tokenOutId", def_b_hex},
     });
@@ -696,7 +632,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
     // amm_swap_exact_out_plan resolves the pool accounts, encodes SwapExactOutput,
     // and returns a ready-to-submit plan.
     const FfiResult planResult = call(amm_swap_exact_out_plan, json{
-        {"ammProgramId", net.amm_program_id},
+        {"ammProgramId", amm_program_id},
         {"tokenInId", def_a_hex},
         {"tokenOutId", def_b_hex},
         {"config", config},
@@ -739,7 +675,7 @@ LogosMap AmmModuleImpl::createPoolQuote(const LogosMap& request) {
     };
 
     // Pure preview — no program id / chain reads / fee. Normalize the pair to hex (the
-    // liquidity UI still sources base58 ids from newPositionContext; transitional).
+    // liquidity UI sources base58 ids from resolveTokens).
     const std::string token_a = normalizeAccountId(jStr(request, "tokenAId"));
     const std::string token_b = normalizeAccountId(jStr(request, "tokenBId"));
     if (token_a.empty() || token_b.empty())
@@ -1297,7 +1233,7 @@ LogosList AmmModuleImpl::tokenHoldings(bool wallet_open) {
     const json config = readPublicAccount(jStr(configResult.value, "configId"));
 
     // Fresh wallet read each call — the selector wants current holdings/balances.
-    const json wallet_accounts = walletAccountReads(wallet_open, /*refresh=*/true);
+    const json wallet_accounts = walletAccountReads(wallet_open);
 
     const FfiResult result = call(amm_token_holdings, json{
         {"ammProgramId", amm_program_id},
@@ -1365,7 +1301,7 @@ LogosList AmmModuleImpl::resolveTokens(const LogosMap& request, bool wallet_open
     }
 
     // Fresh wallet read — the selector wants current holdings/balances.
-    const json wallet_accounts = walletAccountReads(wallet_open, /*refresh=*/true);
+    const json wallet_accounts = walletAccountReads(wallet_open);
 
     const FfiResult result = call(amm_resolve_tokens, json{
         {"ammProgramId", amm_program_id},
@@ -1382,62 +1318,5 @@ LogosList AmmModuleImpl::resolveTokens(const LogosMap& request, bool wallet_open
     if (it != result.value.end() && it->is_array())
         for (const auto& row : *it) out.push_back(row);
     return out;
-}
-
-LogosMap AmmModuleImpl::newPositionContext(const LogosMap& request,
-                                           bool wallet_open,
-                                           bool refresh_wallet_accounts) {
-    const Network net = network();
-    if (net.status != "ready")
-        return contextState(net.status, net.id, net.fingerprint);
-
-    const json walletAccounts = walletAccountReads(wallet_open, refresh_wallet_accounts);
-
-    const FfiResult configResult =
-        call(amm_config_id, json{{"ammProgramId", net.amm_program_id}});
-    if (!configResult.ok)
-        return contextState("error", net.id, net.fingerprint, "backend_error");
-    const json config = readPublicAccount(jStr(configResult.value, "configId"));
-
-    json configured = json::array();
-    for (const auto& id : net.token_ids) configured.push_back(id);
-    const json recent = stringArray(request, "recentTokenIds");
-    const json resolved = stringArray(request, "resolvedTokenIds");
-
-    const FfiResult tokenResult = call(amm_token_ids, json{
-        {"ammProgramId", net.amm_program_id},
-        {"config", config},
-        {"walletAccounts", walletAccounts},
-        {"configuredTokenIds", configured},
-        {"recentTokenIds", recent},
-        {"resolvedTokenIds", resolved},
-    });
-    const json tokenManifest = tokenResult.value;
-    if (!tokenResult.ok || jStr(tokenManifest, "status") != "ok") {
-        const std::string code =
-            tokenResult.ok ? jStr(tokenManifest, "code") : std::string("backend_error");
-        return contextState("error", net.id, net.fingerprint,
-                            code.empty() ? "backend_error" : code);
-    }
-
-    json definitions = json::array();
-    for (const auto& id : tokenManifest.value("tokenIds", json::array()))
-        if (id.is_string()) definitions.push_back(readPublicAccount(id.get<std::string>()));
-
-    const FfiResult contextResult = call(amm_context, json{
-        {"networkId", net.id},
-        {"networkFingerprint", net.fingerprint},
-        {"ammProgramId", net.amm_program_id},
-        {"walletAvailable", wallet_open},
-        {"config", config},
-        {"walletAccounts", walletAccounts},
-        {"tokenDefinitions", definitions},
-        {"configuredTokenIds", configured},
-        {"recentTokenIds", recent},
-        {"resolvedTokenIds", resolved},
-    });
-    return contextResult.ok
-        ? contextResult.value
-        : contextState("error", net.id, net.fingerprint, "backend_error");
 }
 

@@ -26,13 +26,6 @@ class AmmUiBackend
     SLOT(void refreshBalances())
     SLOT(QString getBalance(QString accountIdHex, bool isPublic))
 
-    // New Position backend surface. QML calls these through logos.watch(...).
-    // The QVariant payloads are stable maps/lists so the UI never assembles AMM
-    // transactions or duplicates quote state.
-    PROP(QVariantMap newPositionContext READONLY)
-    // Return the published context so the QML refresh watcher always settles.
-    SLOT(QVariantMap refreshNewPositionContext(QVariantMap request))
-
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
     // fresh wallet at the canonical walletHome with no path picking. createNew()
     // keeps explicit paths for an "advanced" flow. Both return the new wallet's

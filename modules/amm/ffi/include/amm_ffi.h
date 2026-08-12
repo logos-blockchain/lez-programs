@@ -16,11 +16,7 @@ extern "C" {
 
 char *amm_config_id(const char *request_json);
 
-char *amm_token_ids(const char *request_json);
-
 char *amm_pair_ids(const char *request_json);
-
-char *amm_context(const char *request_json);
 
 char *amm_resolve_tokens(const char *request_json);
 

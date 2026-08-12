@@ -46,7 +46,6 @@ public slots:
     void refreshAccounts() override;
     void refreshBalances() override;
     QString getBalance(QString accountIdHex, bool isPublic) override;
-    QVariantMap refreshNewPositionContext(QVariantMap request) override;
     // Return the new wallet's BIP39 mnemonic (empty string on failure) so the
     // UI can force a one-time seed-phrase backup step.
     QString createNewDefault(QString password) override;
@@ -101,24 +100,16 @@ private:
     QStringList loadCustomTokenIds() const;
     bool saveCustomTokenIds(const QStringList& ids) const;
     QString customTokenStorePath() const;
-    // Publishes the new-position context PROP: a local "loading" placeholder
-    // until wallet state (and thus the module connection) is ready, then the
-    // module's newPositionContext for the current hints.
-    void publishNetworkContext();
 
     LogosAPI* m_logosAPI;
     // Handle for the amm_module core module (resolvePool / swapExactInput /
-    // tokenList / new-position). The module wraps the amm_ffi brain and
+    // tokenList / resolveTokens). The module wraps the amm_ffi brain and
     // reaches the shared wallet through its own logos_execution_zone dependency;
     // this backend keeps a thin LogosModules over the same LogosAPI as the
     // wallet provider so both resolve that one shared wallet instance.
     std::unique_ptr<LogosModules> m_logos;
     std::unique_ptr<LogosWalletProvider> m_wallet;
     std::unique_ptr<WalletController> m_walletController;
-
-    // Sticky new-position hints (recent/resolved token ids) so a bare
-    // republish (wallet-state change) keeps the user's last selection.
-    QVariantMap m_newPositionHints;
 };
 
 #endif // AMM_UI_BACKEND_H

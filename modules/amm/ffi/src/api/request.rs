@@ -8,45 +8,9 @@ pub struct ConfigIdRequest {
     pub amm_program_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct TokenIdsRequest {
-    pub amm_program_id: String,
-    pub config: AccountRead,
-    #[serde(default)]
-    pub wallet_accounts: Vec<AccountRead>,
-    #[serde(default)]
-    pub configured_token_ids: Vec<String>,
-    #[serde(default)]
-    pub recent_token_ids: Vec<String>,
-    #[serde(default)]
-    pub resolved_token_ids: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ContextRequest {
-    pub network_id: String,
-    pub network_fingerprint: String,
-    pub amm_program_id: String,
-    pub wallet_available: bool,
-    pub config: AccountRead,
-    #[serde(default)]
-    pub wallet_accounts: Vec<AccountRead>,
-    #[serde(default)]
-    pub token_definitions: Vec<AccountRead>,
-    #[serde(default)]
-    pub configured_token_ids: Vec<String>,
-    #[serde(default)]
-    pub recent_token_ids: Vec<String>,
-    #[serde(default)]
-    pub resolved_token_ids: Vec<String>,
-}
-
-/// Resolves an app-provided set of token ids into selector rows (the lean successor to
-/// `ContextRequest`). `token_ids` are hex — the module normalizes base58→hex and reads each
-/// definition into `token_definitions` (keyed by hex id) plus the wallet accounts; the FFI is
-/// stateless and reads nothing itself.
+/// Resolves an app-provided set of token ids into selector rows. `token_ids` are hex — the
+/// module normalizes base58→hex and reads each definition into `token_definitions` (keyed by
+/// hex id) plus the wallet accounts; the FFI is stateless and reads nothing itself.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolveTokensRequest {

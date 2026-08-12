@@ -231,33 +231,7 @@ public:
     /// universal-module glue only supports map/scalar inputs.)
     LogosList resolveTokens(const LogosMap& request, bool wallet_open);
 
-    /// New-position (add-liquidity) view state: reads the AMM config + the
-    /// user's wallet accounts and returns the new-position context map the
-    /// UI renders (available tokens, fee tiers, warnings). `wallet_open` gates
-    /// whether wallet accounts are included; `refresh_wallet_accounts` forces a
-    /// fresh read rather than a cached one.
-    LogosMap newPositionContext(const LogosMap& request,
-                                bool wallet_open,
-                                bool refresh_wallet_accounts);
-
 private:
-    // Off-chain "network" context, derived from the process env (the same
-    // sources the app backend used): AMM deployment id from AMM_PROGRAM_BIN,
-    // configured token set from TOKENS_CONFIG. `status` is "ready" once the
-    // program id resolves, else "config_missing".
-    struct Network {
-        std::string id = "lez";
-        std::string status;
-        std::string fingerprint;      // == amm_program_id (binds a quote to the deploy)
-        std::string amm_program_id;   // 64-char lowercase hex
-        std::vector<std::string> token_ids;
-    };
-    // AMM_PROGRAM_BIN / TOKENS_CONFIG are fixed for the process lifetime, and
-    // this runs on the hot reply path (every op), so it resolves the program id
-    // + token ids ONCE and caches them (networkResolved). Cached only on
-    // success, so a startup miss (bin not readable yet) retries.
-    Network network();
-
     // 64-char lowercase-hex AMM program id via the amm_ffi `program_id` op
     // over the AMM_PROGRAM_BIN bytes (empty if unset/unreadable/bad).
     std::string ammProgramId();
@@ -272,7 +246,7 @@ private:
     // Derives the config account id (amm_config_id) and reads it, returning the
     // account-read shape the amm_ffi ops embed. Null json when the config_id
     // op itself fails (readPublicAccount always yields at least {id,status}).
-    nlohmann::json readConfig(const Network& net);
+    nlohmann::json readConfig(const std::string& amm_program_id);
 
     // Reads a public account through the wallet module and returns the
     // { id, status, account:{ program_owner, balance, nonce, data } } shape the
@@ -280,21 +254,7 @@ private:
     // omitted when the read has no data (uninitialized/nonexistent).
     nlohmann::json readPublicAccount(const std::string& account_id);
 
-    // The user's own public account reads (empty when the wallet is closed).
-    // Cached across calls (walletAccounts); `refresh` reloads instead of serving
-    // the cache — quote reuses it, submit forces fresh — since each read is a
-    // live sequencer round-trip.
-    nlohmann::json walletAccountReads(bool wallet_open, bool refresh);
-
-    // Process-lifetime network config, resolved once (see network()). Serialized
-    // module dispatch means no locking is needed; there is no invalidation, as
-    // runtime env reload is not supported.
-    bool networkResolved = false;
-    std::string programId;
-    std::vector<std::string> tokenIds;
-
-    // Cache of the user's public account reads for the context/quote path (each
-    // read is a live sequencer round-trip). Null until first read; `refresh`
-    // reloads it, and it's dropped when the wallet closes. See walletAccountReads.
-    nlohmann::json walletAccounts;
+    // The user's own public account reads, fresh each call (empty when the wallet
+    // is closed). Each read is a live sequencer round-trip.
+    nlohmann::json walletAccountReads(bool wallet_open);
 };

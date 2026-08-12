@@ -7,11 +7,11 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
     self, AddLiquidityPlanRequest, AddLiquidityQuoteRequest, AmmApiError, AmmResult,
-    ConfigIdRequest, ContextRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest,
-    FeeTiersRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest, RemoveLiquidityPlanRequest,
+    ConfigIdRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest, FeeTiersRequest,
+    PairIdsRequest, PoolIdRequest, ProgramIdRequest, RemoveLiquidityPlanRequest,
     RemoveLiquidityQuoteRequest, ResolvePoolRequest, ResolveTokensRequest, SwapExactInPlanRequest,
     SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
-    SyncReservesPlanRequest, TokenHoldingsRequest, TokenIdsRequest,
+    SyncReservesPlanRequest, TokenHoldingsRequest,
 };
 
 #[derive(Serialize)]
@@ -86,18 +86,8 @@ pub extern "C" fn amm_config_id(request_json: *const c_char) -> *mut c_char {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn amm_token_ids(request_json: *const c_char) -> *mut c_char {
-    call::<TokenIdsRequest>(request_json, api::token_ids)
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn amm_pair_ids(request_json: *const c_char) -> *mut c_char {
     call::<PairIdsRequest>(request_json, api::pair_ids)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn amm_context(request_json: *const c_char) -> *mut c_char {
-    call::<ContextRequest>(request_json, api::context)
 }
 
 #[unsafe(no_mangle)]

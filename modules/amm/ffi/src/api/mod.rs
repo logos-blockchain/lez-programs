@@ -7,7 +7,6 @@ mod holding;
 mod liquidity;
 mod pair;
 mod quote;
-mod quote_error;
 mod request;
 mod swap;
 mod token_holdings;
@@ -18,12 +17,11 @@ mod tests;
 use std::{error::Error, fmt};
 
 pub use request::{
-    AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigIdRequest, ContextRequest,
-    CreatePoolPlanRequest, CreatePoolQuoteRequest, FeeTiersRequest, PairIdsRequest, PoolIdRequest,
-    ProgramIdRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
+    AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigIdRequest, CreatePoolPlanRequest,
+    CreatePoolQuoteRequest, FeeTiersRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest,
+    RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
     ResolveTokensRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
     SwapExactOutQuoteRequest, SwapPairRequest, SyncReservesPlanRequest, TokenHoldingsRequest,
-    TokenIdsRequest,
 };
 use serde_json::Value;
 
@@ -68,22 +66,12 @@ pub fn config_id(request: ConfigIdRequest) -> AmmResult {
     config::config_id(request).map_err(Into::into)
 }
 
-/// Discovers token definition IDs available to the active wallet and app.
-pub fn token_ids(request: TokenIdsRequest) -> AmmResult {
-    context::token_ids(request).map_err(Into::into)
-}
-
 /// Derives canonical accounts for one token pair.
 pub fn pair_ids(request: PairIdsRequest) -> AmmResult {
     pair::pair_ids(request).map_err(Into::into)
 }
 
-/// Builds network, token, holding, and fee-tier context.
-pub fn context(request: ContextRequest) -> AmmResult {
-    context::context(request).map_err(Into::into)
-}
-
-/// Resolves an app-provided set of token ids into selector rows (lean successor to `context`).
+/// Resolves an app-provided set of token ids into liquidity selector rows.
 pub fn resolve_tokens(request: ResolveTokensRequest) -> AmmResult {
     context::resolve_tokens(request).map_err(Into::into)
 }

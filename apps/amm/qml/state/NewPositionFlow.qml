@@ -9,14 +9,8 @@ QtObject {
 
     readonly property bool walletStateReady: root.backend !== null
                                                && root.backend.walletStateReady === true
-    readonly property var newPositionContext: root.walletStateReady
-                                              && root.backend.newPositionContext
-                                              ? root.backend.newPositionContext
-                                              : root.loadingContext()
     readonly property var viewState: ({
         "quote": root.newPositionQuote,
-        "contextLoading": root.contextLoading || !root.walletStateReady
-                          || root.newPositionContext.status === "loading",
         "quoteLoading": root.quoteLoading,
         "quoteStale": root.quoteStale,
         "submitting": root.submitting,
@@ -24,29 +18,22 @@ QtObject {
         // Create-vs-add routing signal, from the resolvePool read: true = add (pool exists),
         // false = create, undefined = not resolved yet (a new pair, still resolving).
         "poolExists": root.poolExists,
-        "errorCode": root.flowErrorCode || root.contextErrorCode
-                     || root.quoteErrorCode
+        "errorCode": root.flowErrorCode || root.quoteErrorCode
     })
 
     property var newPositionQuote: ({})
     // Whether the selected pair's pool exists (from resolvePool); drives create-vs-add.
     // undefined until the first resolve for the current pair lands.
     property var poolExists: undefined
-    property var resolvedTokenIds: []
-    property int contextSerial: 0
     property int quoteSerial: 0
-    property bool contextLoading: false
     property bool quoteLoading: false
     property bool quoteStale: true
     property bool submitting: false
     property string transactionId: ""
     property string flowErrorCode: ""
-    property string contextErrorCode: ""
     property string quoteErrorCode: ""
     property var pendingQuoteRequest: ({ "ok": false, "request": ({}) })
 
-    signal tokenResolutionFinished(bool finalResponse)
-    signal tokenResolutionFailed(string code)
     signal quoteRefreshRequested(bool immediate)
     signal submitSucceeded
     signal submitFailed
@@ -59,14 +46,7 @@ QtObject {
         onTriggered: root.requestQuoteNow(root.quoteSerial)
     }
 
-    onNewPositionContextChanged: root.invalidateQuote()
-
-    onWalletStateReadyChanged: {
-        ++root.contextSerial
-        if (!root.walletStateReady)
-            root.contextLoading = false
-        root.invalidateQuote()
-    }
+    onWalletStateReadyChanged: root.invalidateQuote()
 
     onActiveChanged: {
         if (!root.active)
@@ -75,72 +55,6 @@ QtObject {
             if (root.active && root.walletStateReady)
                 root.quoteRefreshRequested(true)
         })
-    }
-
-    function contextHints(refreshWalletAccounts) {
-        const request = root.pendingQuoteRequest.request || {}
-        const recent = []
-        if (request.tokenAId)
-            recent.push(request.tokenAId)
-        if (request.tokenBId && request.tokenBId !== request.tokenAId)
-            recent.push(request.tokenBId)
-        return {
-            "recentTokenIds": recent,
-            "resolvedTokenIds": root.resolvedTokenIds,
-            "refreshWalletAccounts": refreshWalletAccounts === true
-        }
-    }
-
-    function refreshContext(refreshWalletAccounts, completed) {
-        const serial = ++root.contextSerial
-        root.contextLoading = true
-        if (!root.walletStateReady || root.runtime === null) {
-            root.contextLoading = false
-            return
-        }
-
-        root.runtime.watch(root.backend.refreshNewPositionContext(
-                               root.contextHints(refreshWalletAccounts)),
-            function() {
-                root.finishContextRefresh(serial, completed)
-            },
-            function(error) {
-                root.failContextRefresh(serial)
-            })
-    }
-
-    function finishContextRefresh(serial, completed) {
-        if (serial !== root.contextSerial)
-            return
-        root.contextLoading = false
-        root.contextErrorCode = ""
-        Qt.callLater(function() {
-            if (serial !== root.contextSerial)
-                return
-            root.tokenResolutionFinished(true)
-            if (completed)
-                completed()
-        })
-    }
-
-    function failContextRefresh(serial) {
-        if (serial !== root.contextSerial)
-            return
-        root.contextLoading = false
-        root.contextErrorCode = "backend_error"
-        root.tokenResolutionFailed("backend_error")
-    }
-
-    function resolveToken(tokenId) {
-        const value = String(tokenId || "").trim()
-        if (value.length === 0)
-            return
-        if (root.resolvedTokenIds.indexOf(value) < 0) {
-            const next = root.resolvedTokenIds.slice(0)
-            next.push(value)
-            root.resolvedTokenIds = next
-        }
-        root.refreshContext(false)
     }
 
     function scheduleQuote(immediate, quoteRequest) {
@@ -361,7 +275,6 @@ QtObject {
                     root.submitting = false
                     root.transactionId = String(result.transactionId)
                     root.flowErrorCode = ""
-                    root.contextErrorCode = ""
                     root.quoteErrorCode = ""
                     root.invalidateQuote()
                     root.submitSucceeded()
@@ -414,7 +327,6 @@ QtObject {
                     root.submitting = false
                     root.transactionId = String(result.transactionId)
                     root.flowErrorCode = ""
-                    root.contextErrorCode = ""
                     root.quoteErrorCode = ""
                     root.invalidateQuote()
                     root.submitSucceeded()
@@ -443,7 +355,6 @@ QtObject {
         root.invalidateQuote()
         root.transactionId = ""
         root.flowErrorCode = ""
-        root.contextErrorCode = ""
         root.quoteErrorCode = ""
     }
 
@@ -461,13 +372,6 @@ QtObject {
         root.quoteDebounce.stop()
         root.quoteLoading = false
         root.quoteStale = true
-    }
-
-    function loadingContext() {
-        return {
-            "status": "loading",
-            "tokens": []
-        }
     }
 
     function quoteError(code) {

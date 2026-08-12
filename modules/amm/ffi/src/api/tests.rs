@@ -14,13 +14,12 @@ use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::compute_current_tick_account_pda;
 
 use super::{
-    context::{context, resolve_tokens, token_ids},
+    context::resolve_tokens,
     holding::{select_holding, SelectedHolding},
     pair::{is_canonical_pair, pair_ids, PairIds},
     quote::{div_ceil_u256, minimum_opening_pair, Q64},
     swap::{swap_exact_in_plan, swap_exact_out_plan},
-    ContextRequest, PairIdsRequest, ResolveTokensRequest, SwapExactInPlanRequest,
-    SwapExactOutPlanRequest, TokenIdsRequest,
+    PairIdsRequest, ResolveTokensRequest, SwapExactInPlanRequest, SwapExactOutPlanRequest,
 };
 use crate::{
     account::{account_id_hex, account_read, decode_account, program_id_bytes},
@@ -188,107 +187,6 @@ fn pair_manifest_reports_unavailable_config_as_domain_error() {
 
     assert_eq!(result["status"], "error");
     assert_eq!(result["code"], "config_unavailable");
-}
-
-#[test]
-fn token_manifest_includes_compatible_wallet_holdings() {
-    let config_id = compute_config_pda(AMM_PROGRAM);
-    let configured = AccountId::new([1; 32]);
-    let held = AccountId::new([2; 32]);
-    let recent = AccountId::new([3; 32]);
-    let resolved = AccountId::new([4; 32]);
-
-    let value = token_ids(TokenIdsRequest {
-        amm_program_id: amm_program_id(),
-        config: account_read(config_id, &config_account()),
-        wallet_accounts: vec![account_read(
-            AccountId::new([5; 32]),
-            &token_holding(held, 9),
-        )],
-        configured_token_ids: vec![account_id_hex(configured)],
-        recent_token_ids: vec![recent.to_string()],
-        resolved_token_ids: vec![resolved.to_string()],
-    })
-    .unwrap();
-
-    assert_eq!(
-        value["tokenIds"],
-        json!([
-            account_id_hex(configured),
-            account_id_hex(held),
-            account_id_hex(recent),
-            account_id_hex(resolved),
-        ])
-    );
-}
-
-#[test]
-fn wrong_program_holdings_do_not_contribute_token_candidates() {
-    let config_id = compute_config_pda(AMM_PROGRAM);
-    let config = config_account();
-    let definition = AccountId::new([2; 32]);
-    let wrong_owner_holding = account(
-        [99; 8],
-        Data::from(&TokenHolding::Fungible {
-            definition_id: definition,
-            balance: 9,
-        }),
-    );
-    let wallet_accounts = vec![account_read(AccountId::new([3; 32]), &wrong_owner_holding)];
-
-    let manifest = token_ids(TokenIdsRequest {
-        amm_program_id: amm_program_id(),
-        config: account_read(config_id, &config),
-        wallet_accounts: wallet_accounts.clone(),
-        configured_token_ids: Vec::new(),
-        recent_token_ids: Vec::new(),
-        resolved_token_ids: Vec::new(),
-    })
-    .unwrap();
-    assert_eq!(manifest["tokenIds"], json!([]));
-
-    let value = context(ContextRequest {
-        network_id: String::from("testnet"),
-        network_fingerprint: String::from("block10:abc"),
-        amm_program_id: amm_program_id(),
-        wallet_available: true,
-        config: account_read(config_id, &config),
-        wallet_accounts,
-        token_definitions: vec![account_read(
-            definition,
-            &token_definition("Token", 1_000_000),
-        )],
-        configured_token_ids: Vec::new(),
-        recent_token_ids: Vec::new(),
-        resolved_token_ids: Vec::new(),
-    })
-    .unwrap();
-    assert_eq!(value["tokens"], json!([]));
-}
-
-#[test]
-fn context_selects_tokens_without_holdings() {
-    let token_id = AccountId::new([3; 32]);
-    let config_id = compute_config_pda(AMM_PROGRAM);
-    let value = context(ContextRequest {
-        network_id: String::from("testnet"),
-        network_fingerprint: String::from("block10:abc"),
-        amm_program_id: amm_program_id(),
-        wallet_available: true,
-        config: account_read(config_id, &config_account()),
-        wallet_accounts: Vec::new(),
-        token_definitions: vec![account_read(
-            token_id,
-            &token_definition("Token", 1_000_000),
-        )],
-        configured_token_ids: vec![account_id_hex(token_id)],
-        recent_token_ids: Vec::new(),
-        resolved_token_ids: Vec::new(),
-    })
-    .unwrap();
-    assert_eq!(value["tokens"][0]["selectable"], true);
-    assert_eq!(value["tokens"][0]["sources"], json!(["config"]));
-    assert!(value["tokens"][0].get("holdingId").is_none());
 }
 
 #[test]
