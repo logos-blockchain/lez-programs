@@ -14,13 +14,13 @@ use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::compute_current_tick_account_pda;
 
 use super::{
-    context::{context, token_ids},
+    context::{context, resolve_tokens, token_ids},
     holding::{select_holding, SelectedHolding},
     pair::{is_canonical_pair, pair_ids, PairIds},
     quote::{div_ceil_u256, minimum_opening_pair, Q64},
     swap::{swap_exact_in_plan, swap_exact_out_plan},
-    ContextRequest, PairIdsRequest, SwapExactInPlanRequest, SwapExactOutPlanRequest,
-    TokenIdsRequest,
+    ContextRequest, PairIdsRequest, ResolveTokensRequest, SwapExactInPlanRequest,
+    SwapExactOutPlanRequest, TokenIdsRequest,
 };
 use crate::{
     account::{account_id_hex, account_read, decode_account, program_id_bytes},
@@ -289,6 +289,55 @@ fn context_selects_tokens_without_holdings() {
     assert_eq!(value["tokens"][0]["selectable"], true);
     assert_eq!(value["tokens"][0]["sources"], json!(["config"]));
     assert!(value["tokens"][0].get("holdingId").is_none());
+}
+
+#[test]
+fn resolve_tokens_returns_lean_rows_held_first_and_omits_unresolvable() {
+    let held = AccountId::new([2; 32]);
+    let listed = AccountId::new([5; 32]);
+    let missing = AccountId::new([9; 32]); // requested but no definition read supplied
+    let config_id = compute_config_pda(AMM_PROGRAM);
+
+    let value = resolve_tokens(ResolveTokensRequest {
+        amm_program_id: amm_program_id(),
+        config: account_read(config_id, &config_account()),
+        token_ids: vec![
+            account_id_hex(held),
+            account_id_hex(listed),
+            account_id_hex(missing),
+        ],
+        wallet_accounts: vec![account_read(
+            AccountId::new([6; 32]),
+            &token_holding(held, 42),
+        )],
+        token_definitions: vec![
+            account_read(held, &token_definition("Held", 1_000)),
+            account_read(listed, &token_definition("Listed", 2_000)),
+        ],
+    })
+    .unwrap();
+
+    // Held token sorts first; the requested id with no readable definition is omitted. Every row
+    // carries the same fields — the non-held token gets an empty holdingId and "0" balance.
+    assert_eq!(
+        value["tokens"],
+        json!([
+            {
+                "definitionId": held.to_string(),
+                "name": "Held",
+                "totalSupply": "1000",
+                "holdingId": AccountId::new([6; 32]).to_string(),
+                "balance": "42",
+            },
+            {
+                "definitionId": listed.to_string(),
+                "name": "Listed",
+                "totalSupply": "2000",
+                "holdingId": "",
+                "balance": "0",
+            },
+        ])
+    );
 }
 
 #[test]

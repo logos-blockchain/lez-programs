@@ -2,12 +2,17 @@
 #
 # setup-amm-testnet.sh
 # --------------------
-# Deploy the token/amm/twap programs, mint three fungible tokens, initialize the
+# Deploy the token/amm/twap programs, mint four fungible tokens, initialize the
 # AMM, and create the A/B pool — from scratch — against whatever sequencer your
 # `wallet` / `spel` config points at. This is the prerequisite state the AMM UI
-# tests exercise: swap.mjs swaps against the seeded A/B pool, and create-pool.mjs
-# creates the (deliberately unseeded) A/C pool. Run it once, then launch the UI /
-# run the tests.
+# tests exercise: swap.mjs swaps against the seeded A/B pool, create-pool.mjs
+# creates the (deliberately unseeded) A/C pool, and custom-token.mjs adds token D
+# by id. Run it once, then launch the UI / run the tests.
+#
+# Token D is created ON-CHAIN but deliberately LEFT OUT of the written token config
+# (amm-tokens.json) — it is the "custom" token the custom-token.mjs test pastes by
+# id to confirm the liquidity view resolves and adds an unlisted token. Its id is
+# written to custom-token.json for that test to read.
 #
 # DETERMINISTIC TEST WALLET: by default the script bootstraps an ISOLATED wallet
 # (git-ignored, under this folder) by restoring it from a fixed BIP-39 mnemonic
@@ -64,10 +69,12 @@ TEST_SEQUENCER_ADDR="${TEST_SEQUENCER_ADDR:-}"
 
 # Deterministic accounts, created in THIS fixed order after a fresh restore so
 # their ids are reproducible. Resolved to ids at runtime via `wallet account id`.
-# token-c-* are APPENDED (not inserted) so the pre-existing a/b/lp ids don't shift.
+# token-c-*/token-d-* are APPENDED (not inserted) so the pre-existing a/b/lp ids don't shift.
 # Token C has no seeded pool — the create-pool UI test (apps/amm/tests/create-pool.mjs)
 # creates the A/C pool itself, minting its own LP holding via the app.
-ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding)
+# Token D is created but LEFT OUT of the token config — the custom-token UI test
+# (apps/amm/tests/custom-token.mjs) adds it by id.
+ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding token-d-def token-d-holding)
 
 ###############################################################################
 # CONFIG — non-account parameters (edit freely)
@@ -86,6 +93,8 @@ AMM_IDL="artifacts/amm-idl.json"
 TOKEN_A_NAME="TOKEN A"; TOKEN_A_SYMBOL="TKA"; TOKEN_A_SUPPLY="1000000000000000000000"; TOKEN_A_DECIMALS=18
 TOKEN_B_NAME="TOKEN B"; TOKEN_B_SYMBOL="TKB"; TOKEN_B_SUPPLY="1000000000000000000000"; TOKEN_B_DECIMALS=18
 TOKEN_C_NAME="TOKEN C"; TOKEN_C_SYMBOL="TKC"; TOKEN_C_SUPPLY="1000000000000000000000"; TOKEN_C_DECIMALS=18
+# Token D is the "custom" token: created on-chain but NOT written to the token config.
+TOKEN_D_NAME="TOKEN D"; TOKEN_D_SYMBOL="TKD"; TOKEN_D_SUPPLY="1000000000000000000000"; TOKEN_D_DECIMALS=18
 
 # --- Pool inputs ---
 CLOCK_ACCOUNT="4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU"  # canonical LEZ system clock
@@ -104,6 +113,11 @@ TOKENS_CONFIG_OUT="apps/amm/tests/testnet/amm-tokens.json"
 # path as AMM_POOLS_CONFIG when launching the UI; the Pools page renders one row
 # per entry. More seeded pools = more entries here, no app change.
 POOLS_CONFIG_OUT="apps/amm/tests/testnet/amm-pools.json"
+
+# Isolated custom-token store for TESTS ONLY (git-ignored). Pass this path as
+# CUSTOM_TOKEN_CONFIG when launching the UI so custom-token.mjs controls it instead of
+# the app's default per-user store. Initialized empty so a test run starts clean.
+CUSTOM_TOKEN_CONFIG_OUT="apps/amm/tests/testnet/custom-tokens.json"
 
 ###############################################################################
 # Helpers
@@ -263,12 +277,14 @@ TOKEN_B_HOLDING="$(acct_id token-b-holding)" || die "token-b-holding not registe
 USER_HOLDING_LP="$(acct_id lp-holding)"     || die "lp-holding not registered"
 TOKEN_C_DEF="$(acct_id token-c-def)"        || die "token-c-def not registered"
 TOKEN_C_HOLDING="$(acct_id token-c-holding)" || die "token-c-holding not registered"
-for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP TOKEN_C_DEF TOKEN_C_HOLDING; do
+TOKEN_D_DEF="$(acct_id token-d-def)"        || die "token-d-def not registered"
+TOKEN_D_HOLDING="$(acct_id token-d-holding)" || die "token-d-holding not registered"
+for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP TOKEN_C_DEF TOKEN_C_HOLDING TOKEN_D_DEF TOKEN_D_HOLDING; do
   [ -n "${!v}" ] || die "failed to resolve account id for $v"
 done
 
 # Derived roles (the input holding signs; mint authority == holding; authority is the A holding).
-TOKEN_A_MINT_AUTH="$TOKEN_A_HOLDING"; TOKEN_B_MINT_AUTH="$TOKEN_B_HOLDING"; TOKEN_C_MINT_AUTH="$TOKEN_C_HOLDING"
+TOKEN_A_MINT_AUTH="$TOKEN_A_HOLDING"; TOKEN_B_MINT_AUTH="$TOKEN_B_HOLDING"; TOKEN_C_MINT_AUTH="$TOKEN_C_HOLDING"; TOKEN_D_MINT_AUTH="$TOKEN_D_HOLDING"
 AMM_AUTHORITY="$TOKEN_A_HOLDING"
 USER_HOLDING_A="$TOKEN_A_HOLDING"; USER_HOLDING_B="$TOKEN_B_HOLDING"
 
@@ -279,6 +295,8 @@ kv "token-b-holding" "$TOKEN_B_HOLDING"
 kv "lp-holding"      "$USER_HOLDING_LP"
 kv "token-c-def"     "$TOKEN_C_DEF"
 kv "token-c-holding" "$TOKEN_C_HOLDING"
+kv "token-d-def"     "$TOKEN_D_DEF"
+kv "token-d-holding" "$TOKEN_D_HOLDING"
 
 ###############################################################################
 # 2. Deploy programs
@@ -320,6 +338,16 @@ run_tx strict "create fungible definition: $TOKEN_C_NAME" -- \
     --holding-target-account "$TOKEN_C_HOLDING" \
     --mint-authority "$TOKEN_C_MINT_AUTH"
 
+# Token D is deliberately LEFT OUT of the token config below — the custom-token UI
+# test pastes its id to add it as a custom token. Its definition must exist on-chain
+# so the app can resolve it.
+run_tx strict "create fungible definition: $TOKEN_D_NAME" -- \
+  spel --idl "$TOKEN_IDL" --program "$TOKEN_BIN" -- new-fungible-definition \
+    --name "$TOKEN_D_NAME" --total-supply "$TOKEN_D_SUPPLY" \
+    --definition-target-account "$TOKEN_D_DEF" \
+    --holding-target-account "$TOKEN_D_HOLDING" \
+    --mint-authority "$TOKEN_D_MINT_AUTH"
+
 ###############################################################################
 # 5. Verify token definitions & holdings
 ###############################################################################
@@ -329,6 +357,8 @@ inspect "$TOKEN_IDL" "$TOKEN_B_DEF"     "TokenDefinition"
 inspect "$TOKEN_IDL" "$TOKEN_B_HOLDING" "TokenHolding"
 inspect "$TOKEN_IDL" "$TOKEN_C_DEF"     "TokenDefinition"
 inspect "$TOKEN_IDL" "$TOKEN_C_HOLDING" "TokenHolding"
+inspect "$TOKEN_IDL" "$TOKEN_D_DEF"     "TokenDefinition"
+inspect "$TOKEN_IDL" "$TOKEN_D_HOLDING" "TokenHolding"
 
 ###############################################################################
 # 6. Derive AMM PDAs from the program ids + token pair
@@ -400,6 +430,8 @@ inspect "$AMM_IDL" "$POOL" "PoolDefinition"
 ###############################################################################
 # 10. Write the UI token config from the deterministic accounts
 ###############################################################################
+# NOTE: token D is intentionally NOT written here — it is the "custom" token the
+# custom-token.mjs test adds by id, so it must be absent from the known list.
 sec "Write UI token config -> $TOKENS_CONFIG_OUT"
 cat > "$TOKENS_CONFIG_OUT" <<JSON
 [
@@ -464,6 +496,15 @@ JSON
 } > "$POOLS_CONFIG_OUT"
 kv "wrote" "$POOLS_CONFIG_OUT"
 
+###############################################################################
+# 12. Initialize the isolated custom-token store (empty)
+###############################################################################
+sec "Write custom-token store -> $CUSTOM_TOKEN_CONFIG_OUT"
+# Initialize the isolated custom-token store empty so a test run starts with no
+# custom tokens. custom-token.mjs adds token D by id and clears this again after.
+printf '%s\n' "[]" > "$CUSTOM_TOKEN_CONFIG_OUT"
+kv "wrote" "$CUSTOM_TOKEN_CONFIG_OUT (empty)"
+
 sec "Done"
 log "${GRN}✅ Setup complete.${RST}"
 kv "AMM program id"  "$AMM_PID"
@@ -475,6 +516,12 @@ log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
 log "  ${DIM}  AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
 log "  ${DIM}  TOKENS_CONFIG=$REPO_ROOT/$TOKENS_CONFIG_OUT \\${RST}"
 log "  ${DIM}  AMM_POOLS_CONFIG=$REPO_ROOT/$POOLS_CONFIG_OUT \\${RST}"
+log "  ${DIM}  CUSTOM_TOKEN_CONFIG=$REPO_ROOT/$CUSTOM_TOKEN_CONFIG_OUT \\${RST}"
 log "  ${DIM}  nix run .#amm-ui${RST}"
+log ""
+log "Token D was created ON-CHAIN but left out of the token config (the ${DIM}custom${RST}"
+log "token). Its id: ${DIM}$TOKEN_D_DEF${RST}"
+log ""
 log "Then in another terminal: ${DIM}node apps/amm/tests/swap.mjs${RST}  (swap A/B)"
 log "                   or:     ${DIM}node apps/amm/tests/create-pool.mjs${RST}  (create A/C pool)"
+log "                   or:     ${DIM}node apps/amm/tests/custom-token.mjs${RST}  (add token D by id)"

@@ -21,7 +21,7 @@ pub use request::{
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigIdRequest, ContextRequest,
     CreatePoolPlanRequest, CreatePoolQuoteRequest, FeeTiersRequest, PairIdsRequest, PoolIdRequest,
     ProgramIdRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
-    SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
+    ResolveTokensRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
     SwapExactOutQuoteRequest, SwapPairRequest, SyncReservesPlanRequest, TokenHoldingsRequest,
     TokenIdsRequest,
 };
@@ -81,6 +81,11 @@ pub fn pair_ids(request: PairIdsRequest) -> AmmResult {
 /// Builds network, token, holding, and fee-tier context.
 pub fn context(request: ContextRequest) -> AmmResult {
     context::context(request).map_err(Into::into)
+}
+
+/// Resolves an app-provided set of token ids into selector rows (lean successor to `context`).
+pub fn resolve_tokens(request: ResolveTokensRequest) -> AmmResult {
+    context::resolve_tokens(request).map_err(Into::into)
 }
 
 /// Derives the canonical account ids for a swap pair (tokens in either order).

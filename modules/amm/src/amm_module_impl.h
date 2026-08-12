@@ -217,6 +217,20 @@ public:
     /// TOKENS_CONFIG is unset / unreadable / not a JSON array.
     LogosList tokenList();
 
+    /// Resolves an app-provided set of token ids into liquidity selector rows.
+    /// `request` carries `{ tokenIds: [<definition id>, …] }` (base58 or hex,
+    /// normalized to hex here) — the app owns the set: its configured tokens plus any
+    /// custom/pasted ids it remembers (held-but-unlisted tokens are not auto-added by
+    /// the app). Reads each definition and (when `wallet_open`) the wallet, then returns
+    /// `[{ definitionId (base58), name, totalSupply, holdingId, balance }]`. Every
+    /// row has the same fields — a token the wallet doesn't hold gets `holdingId:""`
+    /// and `balance:"0"` — held tokens first. A requested id whose definition is
+    /// unreadable / non-fungible is omitted (the app treats a missing row as
+    /// unresolved). Empty list if AMM_PROGRAM_BIN is unset or the config read fails.
+    /// (`tokenIds` is wrapped in a map, not passed as a bare list, because the
+    /// universal-module glue only supports map/scalar inputs.)
+    LogosList resolveTokens(const LogosMap& request, bool wallet_open);
+
     /// New-position (add-liquidity) view state: reads the AMM config + the
     /// user's wallet accounts and returns the new-position context map the
     /// UI renders (available tokens, fee tiers, warnings). `wallet_open` gates

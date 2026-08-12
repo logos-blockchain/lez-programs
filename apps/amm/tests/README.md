@@ -12,6 +12,10 @@ inspector (framework from
 - `add-liquidity.mjs` selects the seeded **A/B** pair, asserts the CTA stays
   disabled until deposit amounts are entered, submits an add, and verifies the
   A/B pool reserves grew **on-chain**.
+- `custom-token.mjs` pastes token **D**'s id (created on-chain by the setup but
+  deliberately **absent** from the token config) into a Liquidity token slot and
+  verifies the app resolves it, selects it, and **persists** it to the custom-token
+  store — the "add an unlisted token by id" path. No pool / submit involved.
 
 ## Isolation
 
@@ -42,15 +46,21 @@ nix build .#test-framework -o apps/amm/result-mcp
 TEST_SEQUENCER_ADDR=http://127.0.0.1:3040 apps/amm/tests/testnet/setup-amm-testnet.sh
 
 # 2. Terminal 1 — launch the UI against ONLY the isolated wallet + test tokens.
+#    CUSTOM_TOKEN_CONFIG (where the app persists tokens added by id) defaults to the
+#    per-user store; set it to an isolated path so custom-token.mjs controls the store
+#    (it clears this file before + after running). Required for custom-token.mjs to
+#    avoid touching your real custom-token store.
 LEE_WALLET_HOME_DIR=$(pwd)/apps/amm/tests/testnet/.wallet \
   AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
   TOKENS_CONFIG=$(pwd)/apps/amm/tests/testnet/amm-tokens.json \
+  CUSTOM_TOKEN_CONFIG=$(pwd)/apps/amm/tests/testnet/custom-tokens.json \
   nix run .#amm-ui
 
 # 3. Terminal 2 — drive a test; watch it click through the live UI.
 node apps/amm/tests/swap.mjs          # swap against the seeded A/B pool
 node apps/amm/tests/create-pool.mjs   # create the (unseeded) A/C pool
 node apps/amm/tests/add-liquidity.mjs # add liquidity to the seeded A/B pool
+node apps/amm/tests/custom-token.mjs  # add token D (unlisted) by id
 ```
 
 Headless CI variant (no window, launches the app itself, pass/fail only):

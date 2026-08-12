@@ -19,8 +19,10 @@ AmmActionCard {
         id: fallbackTheme
     }
 
-    property var newPositionContext: ({})
     property var flowState: ({})
+    // True while the app is (re)loading the token selector rows (backend.resolveTokens());
+    // gates the selectors/spinner like the old context load did.
+    property bool loadingTokens: false
     // Wallet token holdings (backend.tokenHoldings()) for the create-pool account
     // selectors, narrowed per side by the selected token's base58 definitionId. The
     // chosen holdings feed the createPool call via submissionSnapshot().
@@ -51,7 +53,7 @@ AmmActionCard {
     property bool showRefreshAction: true
 
     readonly property var quotePayload: root.flowState.quote || ({})
-    readonly property bool contextLoading: root.flowState.contextLoading === true
+    readonly property bool contextLoading: root.loadingTokens
     readonly property bool quoteLoading: root.flowState.quoteLoading === true
     readonly property bool submitting: root.flowState.submitting === true
     readonly property bool quoteStale: root.flowState.quoteStale === true
@@ -61,12 +63,23 @@ AmmActionCard {
     readonly property var emptyToken: ({
         "definitionId": "",
         "name": "",
-        "totalSupplyRaw": "0",
-        "balanceRaw": "0",
-        "selectable": false
+        "totalSupply": "0",
+        "balance": "0"
     })
-    readonly property var tokens: root.newPositionContext && root.newPositionContext.tokens
-                                         ? root.newPositionContext.tokens : []
+    // The liquidity token selector rows, injected from the app (backend.resolveTokens()):
+    // the union of configured tokens and persisted-custom tokens. Every row is
+    // { definitionId (base58), name, totalSupply, holdingId, balance } and already valid
+    // (unresolvable ids are omitted upstream), so every listed token is selectable.
+    property var tokens: []
+    // The ids currently offered by the selector — a readable projection of `tokens` (every
+    // listed token is selectable). Exposed as a property so it can be observed directly.
+    readonly property var selectableTokenIdList: root.selectableTokenIds()
+    // Same set as a comma-joined string — a form that serializes reliably over the QML
+    // inspector (var arrays may not), used by the custom-token test.
+    readonly property string selectableTokenIdsCsv: root.selectableTokenIds().join(",")
+    // Whether the wallet session is ready (from the flow); gates funding/selection like the
+    // old context "ready"/"no_wallet" status did, minus the network envelope.
+    property bool walletReady: false
     // Supported fee tiers as raw bps, injected from backend.feeTiers() (amm_core's
     // SUPPORTED_FEE_TIERS). The selector's delegate wants { feeBps } rows, so wrap
     // each int; labels are derived locally via feeLabel().
@@ -149,13 +162,10 @@ AmmActionCard {
     implicitWidth: 480
 
     Component.onCompleted: Qt.callLater(root.reconcileSelection)
-    onNewPositionContextChanged: Qt.callLater(root.applyContextChange)
-    function applyContextChange() {
-        if (root.resolvingToken)
-            root.finishTokenResolution()
-        else
-            root.reconcileSelection()
-    }
+    // Re-reconcile the current selection whenever the app's token list changes (e.g. after a
+    // wallet toggle or a custom token is added). Resolution completion is driven externally
+    // (LiquidityPage calls finishTokenResolution once addCustomToken returns).
+    onTokensChanged: Qt.callLater(root.reconcileSelection)
     onQuotePayloadChanged: {
         if (root.quoteStale)
             return
@@ -239,26 +249,6 @@ AmmActionCard {
                 ToolTip.visible: hovered
                 ToolTip.text: Accessible.name
                 onClicked: root.refreshRequested()
-            }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: networkMessage.implicitHeight + 20
-            radius: 6
-            color: root.theme.colors.panelBg
-            border.color: root.theme.colors.error
-            visible: root.contextBlocksForm()
-
-            Text {
-                id: networkMessage
-                anchors.fill: parent
-                anchors.margins: 10
-                text: root.contextErrorText()
-                color: root.theme.colors.textPrimary
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
-                verticalAlignment: Text.AlignVCenter
             }
         }
 
@@ -578,26 +568,6 @@ AmmActionCard {
             }
         }
 
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: warningTextItem.implicitHeight + 20
-            radius: 6
-            color: root.theme.colors.panelBg
-            border.color: root.theme.colors.ctaBg
-            visible: root.warningText().length > 0
-
-            Text {
-                id: warningTextItem
-                anchors.fill: parent
-                anchors.margins: 10
-                text: root.warningText()
-                color: root.theme.colors.textPrimary
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
-                verticalAlignment: Text.AlignVCenter
-            }
-        }
-
         SubmittedTransaction {
             Layout.fillWidth: true
             title: qsTr("Position submitted")
@@ -712,9 +682,11 @@ AmmActionCard {
     }
 
     function selectableTokenIds() {
+        // Every injected row is already a valid, selectable token (resolveTokens omits
+        // anything unresolvable), so all listed ids are selectable.
         var result = []
         for (var i = 0; i < root.tokens.length; ++i) {
-            if (root.tokens[i].selectable === true)
+            if (root.tokens[i].definitionId)
                 result.push(root.tokens[i].definitionId)
         }
         return result
@@ -735,55 +707,33 @@ AmmActionCard {
             return
         }
 
+        // Already in the app's token list → select directly (every listed token is valid).
         var current = root.tokenById(tokenId)
         if (current.definitionId === tokenId) {
-            if (current.selectable === true)
-                root.selectToken(side, tokenId)
-            else {
-                root.tokenResolutionError = root.issueText(current.code || current.status)
-                root.tokenResolutionErrorSide = side
-            }
+            root.selectToken(side, tokenId)
             return
         }
+        // A custom/pasted id: ask the app to validate + persist it (backend.addCustomToken),
+        // which calls finishTokenResolution(token) on success or failTokenResolution(code) on
+        // an unresolvable / non-fungible id.
         root.resolvingTokenId = tokenId
         root.resolvingTokenSide = side
         root.tokenResolveRequested(tokenId)
     }
 
-    function finishTokenResolution(finalResponse) {
+    function finishTokenResolution(token) {
         if (!root.resolvingToken)
             return
-        var token = root.tokenById(root.resolvingTokenId)
         if (!token || !token.definitionId) {
-            if (finalResponse === true) {
-                var currentStatus = String(root.newPositionContext.status || "")
-                var code = currentStatus !== "ready" && currentStatus !== "no_wallet"
-                           && currentStatus !== "loading"
-                         ? root.newPositionContext.code || currentStatus
-                         : "token_definition_unreadable"
-                root.failTokenResolution(code)
-            }
-            return
-        }
-        var status = String(root.newPositionContext.status || "")
-        if (status === "loading")
-            return
-        if (status !== "ready" && status !== "no_wallet") {
-            root.failTokenResolution(root.newPositionContext.code || status)
+            root.failTokenResolution("token_definition_unreadable")
             return
         }
         var side = root.resolvingTokenSide
         root.resolvingTokenId = ""
         root.resolvingTokenSide = ""
-        if (token.selectable !== true) {
-            root.tokenResolutionError = root.issueText(token.code || token.status)
-            root.tokenResolutionErrorSide = side
-            return
-        }
-
         root.tokenResolutionMessage = qsTr("%1 - raw supply %2")
                 .arg(token.name || root.shortId(token.definitionId))
-                .arg(AmountMath.formatRaw(token.totalSupplyRaw || "0", 0))
+                .arg(AmountMath.formatRaw(token.totalSupply || "0", 0))
         root.selectToken(side, token.definitionId)
     }
 
@@ -798,9 +748,6 @@ AmmActionCard {
     }
 
     function reconcileSelection() {
-        var status = String(root.newPositionContext.status || "")
-        if (status !== "ready" && status !== "no_wallet")
-            return
         var previousA = root.selectedTokenAId
         var previousB = root.selectedTokenBId
         var selectable = root.selectableTokenIds()
@@ -1070,7 +1017,7 @@ AmmActionCard {
     }
 
     function probeRaw(token, decimals) {
-        var balance = String(token.balanceRaw || "0")
+        var balance = String(token.balance || "0")
         var simulated = AmountMath.multiply(AmountMath.pow10(decimals), "1000")
         if (AmountMath.isUnsigned(balance) && AmountMath.compare(balance, simulated) > 0)
             return balance
@@ -1258,8 +1205,8 @@ AmmActionCard {
         var reserveB = root.poolReserve("B")
         if (!reserveA || !reserveB || reserveA === "0" || reserveB === "0")
             return
-        var balanceA = String(root.tokenA.balanceRaw || "0")
-        var balanceB = String(root.tokenB.balanceRaw || "0")
+        var balanceA = String(root.tokenA.balance || "0")
+        var balanceB = String(root.tokenB.balance || "0")
         var fitA = AmountMath.mulDivFloor(balanceB, reserveA, reserveB)
         var rawA = AmountMath.compare(balanceA, fitA) < 0 ? balanceA : fitA
         var rawB = AmountMath.mulDivFloor(rawA, reserveB, reserveA)
@@ -1429,12 +1376,6 @@ AmmActionCard {
         return ""
     }
 
-    function warningText() {
-        // The lean quotes carry no warnings; only the token-sourcing context may.
-        var warnings = root.newPositionContext.warnings || []
-        return warnings.length > 0 ? root.issueText(warnings[0].code) : ""
-    }
-
     function submissionSnapshot() {
         var built = root.buildQuoteRequest()
         return {
@@ -1466,7 +1407,7 @@ AmmActionCard {
     }
 
     function balanceText(token, decimals) {
-        return AmountMath.formatRaw(String(token.balanceRaw || "0"), decimals)
+        return AmountMath.formatRaw(String(token.balance || "0"), decimals)
     }
 
     function tokenBalanceDetail(token) {
@@ -1514,20 +1455,7 @@ AmmActionCard {
     }
 
     function contextStatusText() {
-        var network = String(root.newPositionContext.networkId || "")
-        if (root.newPositionContext.status === "no_wallet")
-            return qsTr("%1 · simulation only").arg(network || qsTr("Wallet disconnected"))
-        if (root.newPositionContext.status === "ready")
-            return qsTr("%1 · wallet ready").arg(network)
-        return network.length > 0 ? network : qsTr("Loading network")
-    }
-
-    function contextBlocksForm() {
-        var status = String(root.newPositionContext.status || "")
-        return status !== "" && status !== "ready" && status !== "no_wallet" && status !== "loading"
-    }
-
-    function contextErrorText() {
-        return root.issueText(root.newPositionContext.code || root.newPositionContext.status)
+        return root.walletReady ? qsTr("Wallet ready")
+                                : qsTr("Wallet disconnected · simulation only")
     }
 }

@@ -13,6 +13,8 @@ import "../state"
 Item {
     id: root
 
+    objectName: "liquidityPage"
+
     property var backend: null
     property var runtime: null
     readonly property NewPositionFlow flow: newPositionFlow
@@ -25,6 +27,13 @@ Item {
     // Program-derived and wallet-independent, so it's fetched once when the backend
     // becomes available.
     property var feeTiers: []
+
+    // The liquidity token selector rows (backend.resolveTokens()): the app-owned union of
+    // configured tokens and persisted-custom tokens. Refetched when the wallet opens/closes
+    // (holdingId/balance change) and after a custom token is added.
+    property var resolvedTokens: []
+    property bool tokensLoading: false
+    property int tokensGeneration: 0
 
     function refreshHoldings() {
         if (!root.backend || root.runtime === null)
@@ -42,13 +51,58 @@ Item {
             function(err) { console.warn("feeTiers error:", err) })
     }
 
-onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers() }
-    onRuntimeChanged: { root.refreshHoldings(); root.refreshFeeTiers() }
-    Component.onCompleted: { root.refreshHoldings(); root.refreshFeeTiers() }
+    function refreshTokens() {
+        if (!root.backend || root.runtime === null)
+            return
+        // Tag each request; a wallet toggle can start overlapping resolveTokens calls whose
+        // replies arrive out of order — drop any superseded callback (mirrors SwapPage's
+        // holdings-generation guard).
+        const generation = ++root.tokensGeneration
+        root.tokensLoading = true
+        root.runtime.watch(root.backend.resolveTokens(),
+            function(list) {
+                if (generation !== root.tokensGeneration)
+                    return
+                root.resolvedTokens = list
+                root.tokensLoading = false
+            },
+            function(err) {
+                if (generation !== root.tokensGeneration)
+                    return
+                root.tokensLoading = false
+                console.warn("resolveTokens error:", err)
+            })
+    }
+
+    // Validates + persists a user-pasted custom token id, then refreshes the list and hands the
+    // resolved row back to the form to complete selection (or reports the failure).
+    function addCustomToken(tokenId) {
+        if (!root.backend || root.runtime === null) {
+            form.failTokenResolution("backend_error")
+            return
+        }
+        root.runtime.watch(root.backend.addCustomToken(tokenId),
+            function(result) {
+                if (result && result.ok === true) {
+                    root.refreshTokens()
+                    form.finishTokenResolution(result.token)
+                } else {
+                    form.failTokenResolution(result && result.error ? result.error : "unresolved")
+                }
+            },
+            function(err) {
+                console.warn("addCustomToken error:", err)
+                form.failTokenResolution("backend_error")
+            })
+    }
+
+onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers(); root.refreshTokens() }
+    onRuntimeChanged: { root.refreshHoldings(); root.refreshFeeTiers(); root.refreshTokens() }
+    Component.onCompleted: { root.refreshHoldings(); root.refreshFeeTiers(); root.refreshTokens() }
 
     Connections {
         target: root.backend
-        function onIsWalletOpenChanged() { root.refreshHoldings() }
+        function onIsWalletOpenChanged() { root.refreshHoldings(); root.refreshTokens() }
     }
 
     readonly property int pageMargin: width < 640 ? 16 : 24
@@ -130,11 +184,11 @@ onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers() }
                     iconSize: 18
                     Layout.preferredWidth: 40
                     Layout.preferredHeight: 40
-                    enabled: !newPositionFlow.contextLoading && !newPositionFlow.submitting
+                    enabled: !root.tokensLoading && !newPositionFlow.submitting
                     Accessible.name: qsTr("Refresh position data")
                     ToolTip.visible: hovered
                     ToolTip.text: Accessible.name
-                    onClicked: newPositionFlow.refreshContext(true)
+                    onClicked: { root.refreshTokens(); root.refreshHoldings() }
                 }
             }
 
@@ -251,7 +305,9 @@ onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers() }
                     showRefreshAction: false
                     holdings: root.holdings
                     feeTiers: root.feeTiers
-                    newPositionContext: newPositionFlow.newPositionContext
+                    tokens: root.resolvedTokens
+                    loadingTokens: root.tokensLoading
+                    walletReady: newPositionFlow.walletStateReady
                     flowState: newPositionFlow.viewState
 
                     onQuoteRequested: function(immediate, quoteRequest) {
@@ -263,12 +319,12 @@ onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers() }
                     }
 
                     onTokenResolveRequested: function(tokenId) {
-                        newPositionFlow.resolveToken(tokenId)
+                        root.addCustomToken(tokenId)
                     }
 
                     onDraftChanged: newPositionFlow.draftChanged()
                     onPairReset: newPositionFlow.resetPoolExistence()
-                    onRefreshRequested: newPositionFlow.refreshContext(true)
+                    onRefreshRequested: { root.refreshTokens(); root.refreshHoldings() }
                 }
             }
         }
@@ -277,14 +333,8 @@ onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers() }
     Connections {
         target: newPositionFlow
 
-        function onTokenResolutionFinished(finalResponse) {
-            form.finishTokenResolution(finalResponse)
-        }
-
-        function onTokenResolutionFailed(code) {
-            form.failTokenResolution(code)
-        }
-
+        // Token resolution now goes app-side (addCustomToken → form callbacks); the flow only
+        // signals when a pool-existence change should re-request the quote.
         function onQuoteRefreshRequested(immediate) {
             form.requestQuote(immediate)
         }

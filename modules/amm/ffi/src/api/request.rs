@@ -43,6 +43,23 @@ pub struct ContextRequest {
     pub resolved_token_ids: Vec<String>,
 }
 
+/// Resolves an app-provided set of token ids into selector rows (the lean successor to
+/// `ContextRequest`). `token_ids` are hex — the module normalizes base58→hex and reads each
+/// definition into `token_definitions` (keyed by hex id) plus the wallet accounts; the FFI is
+/// stateless and reads nothing itself.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveTokensRequest {
+    pub amm_program_id: String,
+    pub config: AccountRead,
+    #[serde(default)]
+    pub token_ids: Vec<String>,
+    #[serde(default)]
+    pub wallet_accounts: Vec<AccountRead>,
+    #[serde(default)]
+    pub token_definitions: Vec<AccountRead>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PairIdsRequest {

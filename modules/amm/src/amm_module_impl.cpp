@@ -1328,6 +1328,62 @@ LogosList AmmModuleImpl::feeTiers() {
     return out;
 }
 
+LogosList AmmModuleImpl::resolveTokens(const LogosMap& request, bool wallet_open) {
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return LogosList::array();
+
+    // The config gives the token_program_id the FFI needs to decode definitions/holdings.
+    const FfiResult configResult =
+        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
+    if (!configResult.ok)
+        return LogosList::array();
+    const json config = readPublicAccount(jStr(configResult.value, "configId"));
+
+    // Normalize the app-provided ids (base58 or hex) → hex, de-dup, and read each
+    // definition account. The FFI is stateless, so it gets the reads pre-fetched.
+    const auto token_ids_it = request.find("tokenIds");
+    const json token_ids = (token_ids_it != request.end() && token_ids_it->is_array())
+                               ? *token_ids_it
+                               : json::array();
+
+    std::vector<std::string> ids_vec;
+    ids_vec.reserve(token_ids.size());
+    for (const auto& raw : token_ids) {
+        if (!raw.is_string()) continue;
+        const std::string hex = normalizeAccountId(raw.get<std::string>());
+        if (!hex.empty()) ids_vec.push_back(hex);
+    }
+    std::sort(ids_vec.begin(), ids_vec.end());
+    ids_vec.erase(std::unique(ids_vec.begin(), ids_vec.end()), ids_vec.end());
+
+    json ids = json::array();
+    json definitions = json::array();
+    for (const auto& hex : ids_vec) {
+        ids.push_back(hex);
+        definitions.push_back(readPublicAccount(hex));
+    }
+
+    // Fresh wallet read — the selector wants current holdings/balances.
+    const json wallet_accounts = walletAccountReads(wallet_open, /*refresh=*/true);
+
+    const FfiResult result = call(amm_resolve_tokens, json{
+        {"ammProgramId", amm_program_id},
+        {"config", config},
+        {"tokenIds", ids},
+        {"walletAccounts", wallet_accounts},
+        {"tokenDefinitions", definitions},
+    });
+    if (!result.ok)
+        return LogosList::array();
+
+    LogosList out = LogosList::array();
+    const auto it = result.value.find("tokens");
+    if (it != result.value.end() && it->is_array())
+        for (const auto& row : *it) out.push_back(row);
+    return out;
+}
+
 LogosMap AmmModuleImpl::newPositionContext(const LogosMap& request,
                                            bool wallet_open,
                                            bool refresh_wallet_accounts) {

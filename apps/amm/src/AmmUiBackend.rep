@@ -150,4 +150,18 @@ class AmmUiBackend
     // guest enforces), so the fee selector never hardcodes or drifts. The QML
     // formats labels and decides selectability.
     SLOT(QVariantList feeTiers())
+
+    // Resolves the liquidity token selector's rows. The backend owns the id set:
+    // the configured tokens (TOKENS_CONFIG) plus the user's persisted custom tokens
+    // (see addCustomToken) — the same "known list" shape the swap side shows. Tokens
+    // the wallet merely holds are NOT auto-listed; add an unlisted one by id. Returns
+    // [{ definitionId (base58), name, totalSupply, holdingId, balance }] — every row
+    // the same shape, held tokens first (holdingId "" / balance "0" when not held).
+    SLOT(QVariantList resolveTokens())
+
+    // Adds a user-pasted custom token id (base58 or hex) to the persisted set, after
+    // validating it resolves to a fungible definition. On success persists it (de-duped)
+    // and returns { ok: true, token: <row> } with the resolved row; on an unresolvable /
+    // non-fungible id returns { ok: false, error: "unresolved" } and persists nothing.
+    SLOT(QVariantMap addCustomToken(QString tokenId))
 }

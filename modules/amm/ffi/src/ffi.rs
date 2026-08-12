@@ -9,7 +9,7 @@ use crate::api::{
     self, AddLiquidityPlanRequest, AddLiquidityQuoteRequest, AmmApiError, AmmResult,
     ConfigIdRequest, ContextRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest,
     FeeTiersRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest, RemoveLiquidityPlanRequest,
-    RemoveLiquidityQuoteRequest, ResolvePoolRequest, SwapExactInPlanRequest,
+    RemoveLiquidityQuoteRequest, ResolvePoolRequest, ResolveTokensRequest, SwapExactInPlanRequest,
     SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
     SyncReservesPlanRequest, TokenHoldingsRequest, TokenIdsRequest,
 };
@@ -98,6 +98,11 @@ pub extern "C" fn amm_pair_ids(request_json: *const c_char) -> *mut c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_context(request_json: *const c_char) -> *mut c_char {
     call::<ContextRequest>(request_json, api::context)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_resolve_tokens(request_json: *const c_char) -> *mut c_char {
+    call::<ResolveTokensRequest>(request_json, api::resolve_tokens)
 }
 
 #[unsafe(no_mangle)]

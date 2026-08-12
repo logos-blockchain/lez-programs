@@ -87,9 +87,20 @@ public slots:
     QVariantList poolList() override;
     // The AMM's supported fee tiers (raw bps) for the fee selector.
     QVariantList feeTiers() override;
+    // Resolves the liquidity token selector rows for the app-owned id set
+    // (configured ∪ persisted custom; held-but-unlisted tokens are added by id).
+    QVariantList resolveTokens() override;
+    // Validates + persists a user-pasted custom token id (see the .rep).
+    QVariantMap addCustomToken(QString tokenId) override;
 
 private:
     void syncWalletState();
+    // Persisted custom (user-pasted) token ids. Stored as a JSON array of id
+    // strings at customTokenStorePath(); missing/unreadable ⇒ empty. The path is
+    // CUSTOM_TOKEN_CONFIG if set, else a per-user app-data fallback.
+    QStringList loadCustomTokenIds() const;
+    bool saveCustomTokenIds(const QStringList& ids) const;
+    QString customTokenStorePath() const;
     // Publishes the new-position context PROP: a local "loading" placeholder
     // until wallet state (and thus the module connection) is ready, then the
     // module's newPositionContext for the current hints.

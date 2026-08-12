@@ -1,10 +1,16 @@
 #include "AmmUiBackend.h"
 
+#include <QByteArray>
 #include <QDebug>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
+#include <QJsonValue>
+#include <QStandardPaths>
 #include <QTimer>
 
 #include "LogosWalletProvider.h"
@@ -322,6 +328,120 @@ QVariantList AmmUiBackend::feeTiers()
     return m_logos->amm_module.feeTiers();
 }
 
+QVariantList AmmUiBackend::resolveTokens()
+{
+    // The app owns the token set: the configured tokens (TOKENS_CONFIG) and the user's
+    // persisted custom ids — the same "known list" shape the swap side shows. Tokens the
+    // wallet merely holds are NOT auto-listed here; to provide liquidity with an unlisted
+    // token the user adds it by id (addCustomToken). The module still annotates
+    // holdingId/balance for whichever of these ids the wallet does hold.
+    const bool wallet_open = isWalletOpen();
+
+    QVariantList ids;
+    const QVariantList configured = m_logos->amm_module.tokenList();
+    for (const QVariant& entry : configured) {
+        const QString id = entry.toMap().value(QStringLiteral("definitionId")).toString();
+        if (!id.isEmpty())
+            ids.append(id);
+    }
+    const QStringList custom = loadCustomTokenIds();
+    for (const QString& id : custom)
+        ids.append(id);
+
+    QVariantMap request;
+    request.insert(QStringLiteral("tokenIds"), ids);
+    return m_logos->amm_module.resolveTokens(request, wallet_open);
+}
+
+QVariantMap AmmUiBackend::addCustomToken(QString tokenId)
+{
+    const QString id = tokenId.trimmed();
+    if (id.isEmpty())
+        return QVariantMap{{QStringLiteral("ok"), false},
+                           {QStringLiteral("error"), QStringLiteral("unresolved")}};
+
+    // Validate before persisting: resolve just this id and keep it only if it is a
+    // real fungible token (a non-fungible / unreadable id yields no row).
+    QVariantMap probe;
+    probe.insert(QStringLiteral("tokenIds"), QVariantList{id});
+    const QVariantMap token = rows.first().toMap();
+    const QString canonicalId = token.value(QStringLiteral("definitionId")).toString();
+    if (canonicalId.isEmpty())
+        return QVariantMap{{QStringLiteral("ok"), false},
+                           {QStringLiteral("error"), QStringLiteral("unresolved")}};
+
+    QStringList custom = loadCustomTokenIds();
+    if (!custom.contains(canonicalId)) {
+        custom.append(canonicalId);
+        if (!saveCustomTokenIds(custom))
+            return QVariantMap{{QStringLiteral("ok"), false},
+                               {QStringLiteral("error"), QStringLiteral("backend_error")}};
+    }
+    return QVariantMap{{QStringLiteral("ok"), true}, {QStringLiteral("token"), token}};
+
+QString AmmUiBackend::customTokenStorePath() const
+{
+    // A dedicated store path via CUSTOM_TOKEN_CONFIG (akin to the module's env-configured
+    // TOKENS_CONFIG). Otherwise per-user app data — but in a QML plugin with no
+    // QCoreApplication application name that can come back empty, so fall back to a fixed
+    // dot-dir under HOME. Persistence must never silently no-op on an empty path.
+    const QByteArray env = qgetenv("CUSTOM_TOKEN_CONFIG");
+    if (!env.isEmpty())
+        return QString::fromLocal8Bit(env);
+    const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString dir = !appData.isEmpty()
+        ? appData
+        : QDir(QDir::homePath()).filePath(QStringLiteral(".logos-amm"));
+    return QDir(dir).filePath(QStringLiteral("amm-custom-tokens.json"));
+}
+
+QStringList AmmUiBackend::loadCustomTokenIds() const
+{
+    const QString path = customTokenStorePath();
+    if (path.isEmpty())
+        return {};
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    const QByteArray bytes = file.readAll();
+    file.close();
+
+    QJsonParseError error{};
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes, &error);
+    if (error.error != QJsonParseError::NoError || !doc.isArray())
+        return {};
+
+    QStringList ids;
+    for (const QJsonValue& value : doc.array()) {
+        const QString id = value.toString().trimmed();
+        if (!id.isEmpty() && !ids.contains(id))
+            ids.append(id);
+    }
+    return ids;
+}
+
+bool AmmUiBackend::saveCustomTokenIds(const QStringList& ids) const
+{
+    const QString path = customTokenStorePath();
+    if (path.isEmpty()) {
+        qWarning() << "AmmUiBackend: no custom-token store path; not persisting custom tokens";
+        return false;
+    }
+    QDir().mkpath(QFileInfo(path).absolutePath());
+
+    QJsonArray array;
+    for (const QString& id : ids)
+        array.append(id);
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "AmmUiBackend: cannot write custom-token store" << path << file.errorString();
+        return false;
+    }
+    file.write(QJsonDocument(array).toJson(QJsonDocument::Compact));
+    file.close();
+    return true;
+}
 
 QVariantMap AmmUiBackend::createPool(QVariantMap request)
 {
