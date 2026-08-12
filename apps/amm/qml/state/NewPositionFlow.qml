@@ -466,8 +466,7 @@ QtObject {
     function loadingContext() {
         return {
             "status": "loading",
-            "tokens": [],
-            "feeTiers": []
+            "tokens": []
         }
     }
 

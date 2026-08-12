@@ -257,6 +257,17 @@ pub const FEE_TIER_BPS_5: u128 = 5;
 pub const FEE_TIER_BPS_30: u128 = 30;
 pub const FEE_TIER_BPS_100: u128 = 100;
 
+/// The supported fee tiers (raw bps), ascending — the canonical list for off-chain callers
+/// (the module/UI) to enumerate without hardcoding. The guest's check stays `is_supported_fee_tier`
+/// below (its `match` is unchanged, so this addition does not affect the program ImageID — the
+/// const is unused on-chain); `fee_tiers_list_matches_the_check` locks the two together.
+pub const SUPPORTED_FEE_TIERS: [u128; 4] = [
+    FEE_TIER_BPS_1,
+    FEE_TIER_BPS_5,
+    FEE_TIER_BPS_30,
+    FEE_TIER_BPS_100,
+];
+
 pub fn is_supported_fee_tier(fees: u128) -> bool {
     matches!(
         fees,
@@ -676,6 +687,26 @@ mod tests {
 
     /// `1.0` in Q64.64 is `2^64`.
     const ONE_Q64_64: u128 = 1u128 << 64;
+
+    #[test]
+    fn fee_tiers_list_matches_the_check() {
+        // The enumerated list must agree with the guest's `is_supported_fee_tier` match: every
+        // listed tier is accepted, and nothing adjacent to them is (guards a drifted list).
+        for tier in SUPPORTED_FEE_TIERS {
+            assert!(
+                is_supported_fee_tier(tier),
+                "{tier} listed but not accepted"
+            );
+        }
+        for probe in [0u128, 2, 4, 6, 29, 31, 99, 101, 10_000] {
+            assert!(
+                !is_supported_fee_tier(probe),
+                "{probe} accepted but not listed"
+            );
+        }
+        // Ascending and de-duplicated.
+        assert!(SUPPORTED_FEE_TIERS.windows(2).all(|w| w[0] < w[1]));
+    }
 
     #[test]
     fn equal_reserves_map_to_unit_price() {

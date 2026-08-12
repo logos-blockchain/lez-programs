@@ -7,11 +7,11 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
     self, AddLiquidityPlanRequest, AddLiquidityQuoteRequest, AmmApiError, AmmResult,
-    ConfigIdRequest, ContextRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest, PairIdsRequest,
-    PoolIdRequest, ProgramIdRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest,
-    ResolvePoolRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
-    SwapExactOutQuoteRequest, SwapPairRequest, SyncReservesPlanRequest, TokenHoldingsRequest,
-    TokenIdsRequest,
+    ConfigIdRequest, ContextRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest,
+    FeeTiersRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest, RemoveLiquidityPlanRequest,
+    RemoveLiquidityQuoteRequest, ResolvePoolRequest, SwapExactInPlanRequest,
+    SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
+    SyncReservesPlanRequest, TokenHoldingsRequest, TokenIdsRequest,
 };
 
 #[derive(Serialize)]
@@ -178,6 +178,11 @@ pub extern "C" fn amm_token_holdings(request_json: *const c_char) -> *mut c_char
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_program_id(request_json: *const c_char) -> *mut c_char {
     call::<ProgramIdRequest>(request_json, api::program_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_fee_tiers(request_json: *const c_char) -> *mut c_char {
+    call::<FeeTiersRequest>(request_json, api::fee_tiers)
 }
 
 /// Releases a string returned by an `amm_*` operation.

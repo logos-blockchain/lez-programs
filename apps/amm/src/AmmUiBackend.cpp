@@ -315,6 +315,14 @@ QVariantList AmmUiBackend::poolList()
     return readPoolsConfig();
 }
 
+QVariantList AmmUiBackend::feeTiers()
+{
+    // Pure, input-free enumeration of the AMM's supported fee tiers (raw bps) —
+    // no wallet or module connection state involved.
+    return m_logos->amm_module.feeTiers();
+}
+
+
 QVariantMap AmmUiBackend::createPool(QVariantMap request)
 {
     // Same connected-state submit guard as the swaps — this app's lock is

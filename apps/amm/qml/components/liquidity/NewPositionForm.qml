@@ -67,8 +67,13 @@ AmmActionCard {
     })
     readonly property var tokens: root.newPositionContext && root.newPositionContext.tokens
                                          ? root.newPositionContext.tokens : []
-    readonly property var feeTiers: root.newPositionContext && root.newPositionContext.feeTiers
-                                           ? root.newPositionContext.feeTiers : []
+    // Supported fee tiers as raw bps, injected from backend.feeTiers() (amm_core's
+    // SUPPORTED_FEE_TIERS). The selector's delegate wants { feeBps } rows, so wrap
+    // each int; labels are derived locally via feeLabel().
+    property var feeTiers: []
+    readonly property var feeTierModel: (root.feeTiers || []).map(function(bps) {
+        return { "feeBps": Number(bps) }
+    })
     readonly property var tokenA: root.tokenById(root.selectedTokenAId)
     readonly property var tokenB: root.tokenById(root.selectedTokenBId)
     readonly property int decimalsA: 0
@@ -407,7 +412,7 @@ AmmActionCard {
                 rowSpacing: 8
 
                 Repeater {
-                    model: root.feeTiers
+                    model: root.feeTierModel
 
                     Item {
                         id: feeTierOption

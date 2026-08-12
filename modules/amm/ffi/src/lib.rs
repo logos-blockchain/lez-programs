@@ -6,11 +6,11 @@ mod ffi;
 pub mod api;
 
 pub use api::{
-    config_id, context, create_pool_plan, create_pool_quote, pair_ids, pool_id, program_id,
-    resolve_pool, swap_exact_in_plan, swap_exact_in_quote, swap_exact_out_plan,
+    config_id, context, create_pool_plan, create_pool_quote, fee_tiers, pair_ids, pool_id,
+    program_id, resolve_pool, swap_exact_in_plan, swap_exact_in_quote, swap_exact_out_plan,
     swap_exact_out_quote, swap_pair, token_ids, AccountRead, AmmApiError, AmmResponse, AmmResult,
-    ConfigIdRequest, ContextRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest, PairIdsRequest,
-    PoolIdRequest, ProgramIdRequest, ResolvePoolRequest, SwapExactInPlanRequest,
-    SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
-    TokenIdsRequest, WalletAccount,
+    ConfigIdRequest, ContextRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest,
+    FeeTiersRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest, ResolvePoolRequest,
+    SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
+    SwapExactOutQuoteRequest, SwapPairRequest, TokenIdsRequest, WalletAccount,
 };

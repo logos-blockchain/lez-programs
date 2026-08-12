@@ -287,3 +287,9 @@ pub struct TokenHoldingsRequest {
 pub struct ProgramIdRequest {
     pub elf: String,
 }
+
+/// No inputs — `fee_tiers` enumerates `amm_core::SUPPORTED_FEE_TIERS`. An empty struct so the
+/// op keeps the uniform `call::<T>` request-decoding path (the module sends `{}`).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FeeTiersRequest {}

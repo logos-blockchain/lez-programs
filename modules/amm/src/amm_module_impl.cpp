@@ -1314,6 +1314,20 @@ LogosList AmmModuleImpl::tokenHoldings(bool wallet_open) {
     return out;
 }
 
+LogosList AmmModuleImpl::feeTiers() {
+    // Pure enumeration of amm_core::SUPPORTED_FEE_TIERS — no program id, config,
+    // or wallet read needed. The FFI wraps the list as { feeTiers: [...] }.
+    const FfiResult result = call(amm_fee_tiers, json::object());
+    if (!result.ok)
+        return LogosList::array();
+
+    LogosList out = LogosList::array();
+    const auto it = result.value.find("feeTiers");
+    if (it != result.value.end() && it->is_array())
+        for (const auto& tier : *it) out.push_back(tier);
+    return out;
+}
+
 LogosMap AmmModuleImpl::newPositionContext(const LogosMap& request,
                                            bool wallet_open,
                                            bool refresh_wallet_accounts) {

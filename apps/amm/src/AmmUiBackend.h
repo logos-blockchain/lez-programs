@@ -85,6 +85,8 @@ public slots:
     // Reads the known-pools list from AMM_POOLS_CONFIG (app config JSON, read
     // here rather than in the amm_module — pool discovery is an app detail).
     QVariantList poolList() override;
+    // The AMM's supported fee tiers (raw bps) for the fee selector.
+    QVariantList feeTiers() override;
 
 private:
     void syncWalletState();

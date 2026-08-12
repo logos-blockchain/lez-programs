@@ -54,6 +54,8 @@ char *amm_token_holdings(const char *request_json);
 
 char *amm_program_id(const char *request_json);
 
+char *amm_fee_tiers(const char *request_json);
+
 /**
  * Releases a string returned by an `amm_*` operation.
  *

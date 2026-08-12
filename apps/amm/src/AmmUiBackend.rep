@@ -144,4 +144,10 @@ class AmmUiBackend
     // list if AMM_POOLS_CONFIG is unset/unreadable/invalid. This is app config, not
     // an on-chain read, so it lives in the backend rather than the amm_module.
     SLOT(QVariantList poolList())
+
+    // The AMM's supported fee tiers as raw basis points, ascending: [1, 5, 30,
+    // 100]. Input-free — sourced from amm_core's SUPPORTED_FEE_TIERS (the set the
+    // guest enforces), so the fee selector never hardcodes or drifts. The QML
+    // formats labels and decides selectability.
+    SLOT(QVariantList feeTiers())
 }

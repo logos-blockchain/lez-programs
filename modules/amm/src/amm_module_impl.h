@@ -204,6 +204,13 @@ public:
     /// token_holdings.rs.)
     LogosList tokenHoldings(bool wallet_open);
 
+    /// Lists the AMM's supported fee tiers as raw basis points, ascending:
+    /// `[1, 5, 30, 100]`. Pure and input-free — the list is `amm_core`'s
+    /// `SUPPORTED_FEE_TIERS` (the same set the guest enforces), so the UI's fee
+    /// selector never hardcodes or drifts from the program. The app formats the
+    /// labels and decides selectability.
+    LogosList feeTiers();
+
     /// Reads the token list config at TOKENS_CONFIG (a JSON array of
     /// { symbol, name, definitionId, holding, decimals }) and returns it,
     /// normalizing definitionId/holding to lowercase hex. Empty list if

@@ -2,6 +2,7 @@
 
 mod config;
 mod context;
+mod fee;
 mod holding;
 mod liquidity;
 mod pair;
@@ -18,8 +19,8 @@ use std::{error::Error, fmt};
 
 pub use request::{
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigIdRequest, ContextRequest,
-    CreatePoolPlanRequest, CreatePoolQuoteRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest,
-    RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
+    CreatePoolPlanRequest, CreatePoolQuoteRequest, FeeTiersRequest, PairIdsRequest, PoolIdRequest,
+    ProgramIdRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
     SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
     SwapExactOutQuoteRequest, SwapPairRequest, SyncReservesPlanRequest, TokenHoldingsRequest,
     TokenIdsRequest,
@@ -155,4 +156,9 @@ pub fn token_holdings(request: TokenHoldingsRequest) -> AmmResult {
 /// Derives the AMM `ProgramId` (Image ID) from a deployed program binary.
 pub fn program_id(request: ProgramIdRequest) -> AmmResult {
     swap::program_id(request).map_err(Into::into)
+}
+
+/// Lists the AMM's supported fee tiers (raw bps) from `amm_core` — no inputs.
+pub fn fee_tiers(request: FeeTiersRequest) -> AmmResult {
+    fee::fee_tiers(request).map_err(Into::into)
 }

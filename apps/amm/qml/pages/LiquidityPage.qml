@@ -21,6 +21,11 @@ Item {
     // account selectors; refetched when the wallet opens.
     property var holdings: []
 
+    // The AMM's supported fee tiers (backend.feeTiers()) feeding the fee selector.
+    // Program-derived and wallet-independent, so it's fetched once when the backend
+    // becomes available.
+    property var feeTiers: []
+
     function refreshHoldings() {
         if (!root.backend || root.runtime === null)
             return
@@ -29,9 +34,17 @@ Item {
             function(err) { console.warn("tokenHoldings error:", err) })
     }
 
-onBackendChanged: root.refreshHoldings()
-    onRuntimeChanged: root.refreshHoldings()
-    Component.onCompleted: root.refreshHoldings()
+    function refreshFeeTiers() {
+        if (!root.backend || root.runtime === null || root.feeTiers.length > 0)
+            return
+        root.runtime.watch(root.backend.feeTiers(),
+            function(list) { root.feeTiers = list },
+            function(err) { console.warn("feeTiers error:", err) })
+    }
+
+onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers() }
+    onRuntimeChanged: { root.refreshHoldings(); root.refreshFeeTiers() }
+    Component.onCompleted: { root.refreshHoldings(); root.refreshFeeTiers() }
 
     Connections {
         target: root.backend
@@ -237,6 +250,7 @@ onBackendChanged: root.refreshHoldings()
                                    : qsTr("Choose two tokens and a fee tier for this position.")
                     showRefreshAction: false
                     holdings: root.holdings
+                    feeTiers: root.feeTiers
                     newPositionContext: newPositionFlow.newPositionContext
                     flowState: newPositionFlow.viewState
 
