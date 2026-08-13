@@ -56,6 +56,7 @@ public slots:
     // AMM — all forwarded to the amm_module core module.
     QVariantMap resolvePoolAccount(QString defAHex, QString defBHex) override;
     QVariantMap configAccount() override;
+    QVariantMap transferOwnership(QVariantMap request) override;
     QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                             QString userOutputHoldingHex, QString amountInDecimal,
                             QString minOutDecimal, QString deadlineDecimal) override;

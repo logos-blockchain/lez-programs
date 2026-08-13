@@ -47,6 +47,13 @@ public:
     /// `backend_error` when the backend FFI call fails.
     LogosMap configAccount();
 
+    /// Submits an `UpdateConfig` transferring admin authority to `request.newAuthorityId`
+    /// (base58 or hex). Only the current admin can sign, so the connected wallet must control it.
+    /// On success `{ status:"ok", error:"", transactionId:<hex> }`; on failure:
+    /// `{ status:"error", error:<code> }` — `config_missing`, `invalid_account_id`,
+    /// `wallet_submission_failed`, `backend_error`, or a plan code (e.g. `config_unavailable`).
+    LogosMap transferOwnership(const LogosMap& request);
+
     /// Prices a `SwapExactInput` for the (token_in_hex, token_out_hex) pair:
     /// reads the pool and returns `{ status:"ok", error:"", expectedOutRaw,
     /// minReceivedRaw, priceImpactBps }`, oriented and computed server-side via

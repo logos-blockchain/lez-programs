@@ -1,7 +1,7 @@
 use alloy_primitives::U256;
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
-    compute_vault_pda, isqrt_product, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_vault_pda, isqrt_product, AmmConfig, Instruction, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use nssa_core::{
@@ -14,6 +14,7 @@ use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::compute_current_tick_account_pda;
 
 use super::{
+    admin::transfer_ownership_plan,
     config::config_account as decode_config_account,
     context::resolve_tokens,
     holding::{select_holding, SelectedHolding},
@@ -21,7 +22,7 @@ use super::{
     quote::{div_ceil_u256, minimum_opening_pair, Q64},
     swap::{swap_exact_in_plan, swap_exact_out_plan},
     ConfigAccountRequest, PairIdsRequest, ResolveTokensRequest, SwapExactInPlanRequest,
-    SwapExactOutPlanRequest,
+    SwapExactOutPlanRequest, TransferOwnershipPlanRequest,
 };
 use crate::{
     account::{account_id_hex, account_read, decode_account, program_id_base58, program_id_bytes},
@@ -238,6 +239,44 @@ fn resolve_tokens_returns_lean_rows_held_first_and_omits_unresolvable() {
             },
         ])
     );
+}
+
+#[test]
+fn transfer_ownership_plan_targets_config_and_current_admin() {
+    let config_id = compute_config_pda(AMM_PROGRAM);
+    let new_authority = AccountId::new([5; 32]);
+    let plan = transfer_ownership_plan(TransferOwnershipPlanRequest {
+        amm_program_id: amm_program_id(),
+        config: account_read(config_id, &config_account()),
+        new_authority_id: account_id_hex(new_authority),
+    })
+    .unwrap();
+
+    // Accounts: [config (not signer), current admin (signs)]. The current admin is [7; 32] (the
+    // config_account fixture's authority); new_authority is instruction data, not an account.
+    assert_eq!(
+        plan["accountIds"],
+        json!([
+            account_id_hex(config_id),
+            account_id_hex(AccountId::new([7; 32]))
+        ])
+    );
+    assert_eq!(plan["signingRequirements"], json!([false, true]));
+
+    // The instruction decodes back to UpdateConfig { new_authority }.
+    let words: Vec<u32> = plan["instruction"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|word| word.as_u64().unwrap() as u32)
+        .collect();
+    let Instruction::UpdateConfig {
+        new_authority: decoded,
+    } = risc0_zkvm::serde::from_slice(&words).unwrap()
+    else {
+        panic!("expected UpdateConfig");
+    };
+    assert_eq!(decoded, new_authority);
 }
 
 #[test]

@@ -11,7 +11,7 @@ use crate::api::{
     FeeTiersRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest, RemoveLiquidityPlanRequest,
     RemoveLiquidityQuoteRequest, ResolvePoolRequest, ResolveTokensRequest, SwapExactInPlanRequest,
     SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
-    SyncReservesPlanRequest, TokenHoldingsRequest,
+    SyncReservesPlanRequest, TokenHoldingsRequest, TransferOwnershipPlanRequest,
 };
 
 #[derive(Serialize)]
@@ -168,6 +168,11 @@ pub extern "C" fn amm_remove_liquidity_plan(request_json: *const c_char) -> *mut
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_sync_reserves_plan(request_json: *const c_char) -> *mut c_char {
     call::<SyncReservesPlanRequest>(request_json, api::sync_reserves_plan)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_transfer_ownership_plan(request_json: *const c_char) -> *mut c_char {
+    call::<TransferOwnershipPlanRequest>(request_json, api::transfer_ownership_plan)
 }
 
 #[unsafe(no_mangle)]

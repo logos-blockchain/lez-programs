@@ -187,6 +187,20 @@ QVariantMap AmmUiBackend::configAccount()
     return m_logos->amm_module.configAccount();
 }
 
+QVariantMap AmmUiBackend::transferOwnership(QVariantMap request)
+{
+    // Submit guard — this app's wallet-open state is authoritative even though the shared
+    // wallet may remain open elsewhere (same guard as createPool / the swaps).
+    if (!isWalletOpen())
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
+        };
+
+    // No balance refresh — transferring admin authority doesn't touch token balances.
+    return m_logos->amm_module.transferOwnership(request);
+}
+
 QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                                       QString userOutputHoldingHex, QString amountInDecimal,
                                       QString minOutDecimal, QString deadlineDecimal)

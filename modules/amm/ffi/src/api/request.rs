@@ -18,6 +18,17 @@ pub struct ConfigAccountRequest {
     pub config: AccountRead,
 }
 
+/// Builds the `UpdateConfig` submission transferring admin authority. `config` is the read of the
+/// config PDA (the current admin — the sole signer — is decoded from it); `new_authority_id` is
+/// hex (the module normalizes base58→hex).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferOwnershipPlanRequest {
+    pub amm_program_id: String,
+    pub config: AccountRead,
+    pub new_authority_id: String,
+}
+
 /// Resolves an app-provided set of token ids into selector rows. `token_ids` are hex — the
 /// module normalizes base58→hex and reads each definition into `token_definitions` (keyed by
 /// hex id) plus the wallet accounts; the FFI is stateless and reads nothing itself.

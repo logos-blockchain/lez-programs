@@ -1,5 +1,6 @@
 //! Transport-independent AMM client operations.
 
+mod admin;
 mod config;
 mod context;
 mod fee;
@@ -22,6 +23,7 @@ pub use request::{
     ProgramIdRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
     ResolveTokensRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
     SwapExactOutQuoteRequest, SwapPairRequest, SyncReservesPlanRequest, TokenHoldingsRequest,
+    TransferOwnershipPlanRequest,
 };
 use serde_json::Value;
 
@@ -144,6 +146,11 @@ pub fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> AmmResult {
 
 pub fn sync_reserves_plan(request: SyncReservesPlanRequest) -> AmmResult {
     liquidity::sync_reserves_plan(request).map_err(Into::into)
+}
+
+/// Builds the `UpdateConfig` submission that transfers the AMM's admin authority.
+pub fn transfer_ownership_plan(request: TransferOwnershipPlanRequest) -> AmmResult {
+    admin::transfer_ownership_plan(request).map_err(Into::into)
 }
 
 /// Lists the wallet's fungible token holdings for the account selector.

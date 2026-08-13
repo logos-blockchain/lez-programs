@@ -53,6 +53,12 @@ class AmmUiBackend
     // ammProgramId, authority, tokenProgramId, twapOracleProgramId }` (ids base58), or
     // `{ status:"error", error:"config_missing"|"config_unavailable"|"backend_error" }`.
     SLOT(QVariantMap configAccount())
+    // Submits an UpdateConfig transferring admin authority. `request` carries
+    // { newAuthorityId } (base58 or hex). Only the current admin can sign, so the
+    // connected wallet must control it. Returns { status:"ok", error:"",
+    // transactionId:<hex> } or { status:"error", error:<code> } (wallet_unavailable,
+    // config_missing, invalid_account_id, wallet_submission_failed, backend_error).
+    SLOT(QVariantMap transferOwnership(QVariantMap request))
     // Submits a real on-chain SwapExactInput transaction against the pool for
     // (defAHex, defBHex). amountInDecimal/minOutDecimal are decimal-string
     // u128 amounts in base units; deadlineDecimal is a decimal-string u64 unix

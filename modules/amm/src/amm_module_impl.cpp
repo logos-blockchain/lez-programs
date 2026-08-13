@@ -420,6 +420,52 @@ LogosMap AmmModuleImpl::configAccount() {
     return result.value;
 }
 
+LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return error("config_missing");
+
+    // The plan needs the config account to decode the CURRENT admin (the sole signer).
+    const json config = readConfig(amm_program_id);
+    if (config.is_null())
+        return error("config_missing");
+
+    const std::string new_authority = normalizeAccountId(jStr(request, "newAuthorityId"));
+    if (new_authority.empty())
+        return error("invalid_account_id");
+
+    const FfiResult planResult = call(amm_transfer_ownership_plan, json{
+        {"ammProgramId", amm_program_id},
+        {"config", config},
+        {"newAuthorityId", new_authority},
+    });
+    if (!planResult.ok)
+        return error(planResult.error.empty() ? "backend_error" : planResult.error);
+    const json plan = planResult.value;
+
+    const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
+    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::string program_id = jStr(plan, "programId");
+
+    AMM_TRACE("transferOwnership: SUBMIT programId=" << program_id
+              << " accounts=" << accounts.size());
+
+    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+        accounts, signers, instruction, program_id);
+    AMM_TRACE("transferOwnership: tx reply=" << reply);
+
+    const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
+    if (!obj.is_object() || !obj.value("success", false))
+        return error("wallet_submission_failed");
+
+    return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
+}
+
 LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
                                   const std::string& token_out_hex,
                                   const nlohmann::json& amount_in,
