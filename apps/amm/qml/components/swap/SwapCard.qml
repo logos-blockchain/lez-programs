@@ -30,7 +30,7 @@ Rectangle {
     property string editingSide: "sell"
     property real slippageTolerancePercent: 0.5
 
-    // ── Pool resolution (backend.resolvePool) ───────────────────────────────
+    // ── Pool resolution (backend.resolvePoolAccount) ───────────────────────────────
     // Existence and fee drive the UI; the swap quotes read the pool and
     // price/orient the swap server-side, so the client no longer prices against
     // the reserves. The raw reserves are still surfaced (observability only, not
@@ -128,13 +128,13 @@ Rectangle {
         }
 
         root.poolLoading = true
-        logos.watch(root.backend.resolvePool(reqSell, reqBuy),
+        logos.watch(root.backend.resolvePoolAccount(reqSell, reqBuy),
             function (pool) {
                 if (isStale())
                     return
                 root.poolLoading = false
                 root.poolResolved = true
-                root.poolExists = !!(pool && pool.exists)
+                root.poolExists = !!(pool && pool.status === "ok")
                 root.poolReserveA = (pool && pool.reserveA) || "0"
                 root.poolReserveB = (pool && pool.reserveB) || "0"
                 // feeBps === 0 is a legitimate zero-fee pool; only fall back

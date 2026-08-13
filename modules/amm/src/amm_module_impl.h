@@ -30,15 +30,15 @@ public:
     AmmModuleImpl() = default;
     ~AmmModuleImpl() = default;
 
-    /// Derives the pool PDAs (config / pool / vaults / current-tick) for the
-    /// (def_a_hex, def_b_hex) pair and reads the pool's on-chain reserves.
-    /// On success: `{ exists:true, reserveA, reserveB, feeBps }` (reserveA/
-    /// reserveB in the pool's canonical def order). Otherwise
-    /// `{ exists:false, error:<code> }`: `no_program_bin` (AMM_PROGRAM_BIN
-    /// unset/unreadable/bad), `amm_not_initialized` (config undecodable),
-    /// `bad_config` (bad ids / internal decode failure), `same_token_pair`, or
-    /// `no_pool` for the ordinary "no pool / no liquidity yet" state.
-    LogosMap resolvePool(const std::string& def_a_hex, const std::string& def_b_hex);
+    /// Derives the pool PDA for the (def_a_hex, def_b_hex) pair and reads/decodes the
+    /// pool account. On success: `{ status:"ok", error:"", poolId, defAHex, defBHex,
+    /// vaultAId, vaultBId, lpDefinitionId, reserveA, reserveB, liquiditySupply, feeBps }`
+    /// — the A/B fields oriented to the caller's requested order (A is def_a_hex's).
+    /// Otherwise `{ status:"error", error:<code> }`: `no_program_bin` (AMM_PROGRAM_BIN
+    /// unset/unreadable/bad), `amm_not_initialized` (config undecodable), `bad_config`
+    /// (bad ids / internal decode failure), `same_token_pair`, or `no_pool` for the
+    /// ordinary "no pool / no liquidity yet" state (still carries `poolId`).
+    LogosMap resolvePoolAccount(const std::string& def_a_hex, const std::string& def_b_hex);
 
     /// Prices a `SwapExactInput` for the (token_in_hex, token_out_hex) pair:
     /// reads the pool and returns `{ status:"ok", error:"", expectedOutRaw,

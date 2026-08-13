@@ -41,13 +41,14 @@ class AmmUiBackend
     SLOT(void disconnectWallet())
 
     // AMM
-    // Derives the AMM pool's PDAs (config/pool/vaults/current-tick) from the
-    // deployed AMM program binary (see AMM_PROGRAM_BIN — a RISC Zero
-    // ProgramBinary .bin, not a raw ELF) and reads the pool's
-    // on-chain reserves. Returns `{ exists: false }` if the AMM program bin
-    // isn't configured, the AMM isn't initialized, or the pool has no
-    // liquidity yet.
-    SLOT(QVariantMap resolvePool(QString defAHex, QString defBHex))
+    // Derives the AMM pool PDA for (defAHex, defBHex) from the deployed AMM program
+    // binary (see AMM_PROGRAM_BIN — a RISC Zero ProgramBinary .bin, not a raw ELF)
+    // and reads/decodes the pool account. On success `{ status:"ok", error:"", poolId,
+    // defAHex, defBHex, vaultAId, vaultBId, lpDefinitionId, reserveA, reserveB,
+    // liquiditySupply, feeBps }` (A/B oriented to the requested order); otherwise
+    // `{ status:"error", error:<code> }` — `no_pool` for the ordinary "no pool /
+    // no liquidity yet" state, else no_program_bin / amm_not_initialized / bad_config.
+    SLOT(QVariantMap resolvePoolAccount(QString defAHex, QString defBHex))
     // Submits a real on-chain SwapExactInput transaction against the pool for
     // (defAHex, defBHex). amountInDecimal/minOutDecimal are decimal-string
     // u128 amounts in base units; deadlineDecimal is a decimal-string u64 unix

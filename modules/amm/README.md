@@ -16,10 +16,13 @@ transport-independent JSON FFI), and this module sequences those pure ops with
 chain I/O delegated to the `logos_execution_zone` wallet module. Its public
 methods (the module API is generated from the header) are:
 
-- `resolvePool(defAHex, defBHex)` — derives the pool PDAs
-  (config/pool/vaults/current-tick) and reads the pool's on-chain reserves.
-  Returns `{ exists: false, error }` when the AMM isn't configured/initialized or
-  the pool has no liquidity.
+- `resolvePoolAccount(defAHex, defBHex)` — derives the pool PDA and reads/decodes
+  the pool account (reserves in canonical `a`/`b` order, fee tier). On success
+  `{ status: "ok", error: "", poolId, defAHex, defBHex, vaultAId, vaultBId,
+  lpDefinitionId, reserveA, reserveB, liquiditySupply, feeBps }`; an absent /
+  uninitialized pool or one with no liquidity is `{ status: "error", error:
+  "no_pool", poolId }` (other codes: `no_program_bin`, `amm_not_initialized`,
+  `bad_config`).
 - `swapExactInput(defAHex, defBHex, userInputHoldingHex, userOutputHoldingHex, amountIn, minOut, deadline)`
   — submits an on-chain `SwapExactInput` transaction (defA = token in,
   defB = token out); returns the tx hash (or empty on failure). See
@@ -99,8 +102,8 @@ Both are absolute-path env vars set on the **process that hosts the module**
 (the `logoscore` daemon, or Basecamp) — not on the `call`:
 
 - `AMM_PROGRAM_BIN` — the deployed `amm.bin`. Required; its ELF determines the
-  program id and every derived PDA. Without it, `resolvePool` returns
-  `{ exists: false, error: "no_program_bin" }`.
+  program id and every derived PDA. Without it, `resolvePoolAccount` returns
+  `{ status: "error", error: "no_program_bin" }`.
 - `TOKENS_CONFIG` — JSON array of `{ symbol, name, definitionId, holding, decimals }`
   consumed by `tokenList()`.
 

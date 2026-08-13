@@ -177,9 +177,9 @@ void AmmUiBackend::syncWalletState()
     setSequencerReachable(state.sequencerReachable);
 }
 
-QVariantMap AmmUiBackend::resolvePool(QString defAHex, QString defBHex)
+QVariantMap AmmUiBackend::resolvePoolAccount(QString defAHex, QString defBHex)
 {
-    return m_logos->amm_module.resolvePool(defAHex, defBHex);
+    return m_logos->amm_module.resolvePoolAccount(defAHex, defBHex);
 }
 
 QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,

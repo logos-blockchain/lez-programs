@@ -341,15 +341,15 @@ nlohmann::json AmmModuleImpl::readConfig(const std::string& amm_program_id) {
     return readPublicAccount(jStr(configResult.value, "configId"));
 }
 
-LogosMap AmmModuleImpl::resolvePool(const std::string& def_a_hex,
-                                    const std::string& def_b_hex) {
+LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
+                                           const std::string& def_b_hex) {
     // A hard failure carries a stable `error` code (no_program_bin /
-    // amm_not_initialized / bad_config) so SwapCard can surface it via poolError.
-    // `no_pool` is the ordinary "no pool / no liquidity yet" state, which SwapCard
-    // treats as its normal empty state (SwapCard.qml `error !== "no_pool"`). The
-    // underlying FFI error string is AMM_TRACE'd to the daemon log.
+    // amm_not_initialized / bad_config) so callers can surface it. `no_pool` is the
+    // ordinary "no pool / no liquidity yet" state — also a `status:"error"` result
+    // (SwapCard treats it as its normal empty state via `error !== "no_pool"`, the
+    // flow routes it to create-pool). The underlying FFI error is AMM_TRACE'd.
     auto failed = [](const std::string& error) {
-        return LogosMap{{"exists", false}, {"error", error}};
+        return LogosMap{{"status", "error"}, {"error", error}};
     };
 
     const std::string amm_program_id = ammProgramId();
@@ -387,20 +387,18 @@ LogosMap AmmModuleImpl::resolvePool(const std::string& def_a_hex,
     const FfiResult resolveResult = call(amm_resolve_pool, json{{"pool", pool}});
     if (!resolveResult.ok)
         return failed("bad_config");  // amm_resolve_pool op failed
-    // resolve_pool returns { exists:false } (no error) for a missing pool / no
-    // liquidity; re-tag it "no_pool" — the code SwapCard expects for that state.
+    // resolve_pool returns status:"error"/no_pool for a missing pool (pass through) or
+    // status:"ok" with the decoded state. It labels reserves/vaults in the pool's STORED
+    // order (reserveA is defAHex's); orient them to the CALLER's requested order so reserveA /
+    // vaultAId are token_a's — the stored order needn't match (it can be non-canonical, e.g.
+    // the testnet setup's pool). Callers then read A/B as their own token-a/token-b directly.
     json resolved = resolveResult.value;
-    if (!resolved.value("exists", false))
-        return failed("no_pool");
-    // resolve_pool labels the reserves in the pool's STORED order (reserveA is defAHex's).
-    // Orient them to the CALLER's requested order so reserveA is token_a's reserve — the
-    // pool's stored order needn't match (it can be non-canonical, e.g. the testnet setup's
-    // pool). Both callers then read reserveA/reserveB as their own token-a/token-b directly.
-    if (jStr(resolved, "defAHex") != token_a) {
+    if (jStr(resolved, "status") == "ok" && jStr(resolved, "defAHex") != token_a) {
         resolved["reserveA"].swap(resolved["reserveB"]);
         resolved["defAHex"].swap(resolved["defBHex"]);
+        resolved["vaultAId"].swap(resolved["vaultBId"]);
     }
-    return resolved;  // { exists:true, reserveA, reserveB, feeBps } in the caller's order
+    return resolved;
 }
 
 LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,

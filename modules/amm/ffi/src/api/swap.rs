@@ -71,28 +71,45 @@ pub(super) fn swap_pair(request: SwapPairRequest) -> Result<Value, String> {
 /// Decodes a pool account: whether it holds liquidity, its canonical token ids
 /// (`defAHex`/`defBHex`), its reserves (same canonical `a`/`b` order — the
 /// caller matches a reserve to its own direction by comparing its token id
-/// against `defAHex`), and fee tier. Absent/empty/uninitialized pool →
-/// `{ exists: false }`.
+/// against `defAHex`), and fee tier. On success returns a `{ status: "ok",
+/// error: "", poolId, defAHex, defBHex, vaultAId, vaultBId, lpDefinitionId,
+/// reserveA, reserveB, liquiditySupply, feeBps }` envelope; an absent / empty /
+/// uninitialized pool is the `{ status: "error", error: "no_pool", poolId }`
+/// envelope (the derived `poolId` is still carried, for address derivation).
 pub(super) fn resolve_pool(request: ResolvePoolRequest) -> Result<Value, String> {
+    // The pool's presence IS the signal: existing pools return their decoded state; a missing /
+    // uninitialized pool is the `no_pool` error (still carrying the derived `poolId` for address
+    // derivation). The read's id is hex (the module reads by hex); undecodable ⇒ "".
+    let pool_id = account_id_from_hex(&request.pool.id, "pool id")
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let missing = || json!({ "status": "error", "error": "no_pool", "poolId": pool_id });
+
     if request.pool.status != "ok" {
-        return Ok(json!({ "exists": false }));
+        return Ok(missing());
     }
     let Ok((_, pool_account)) = decode_account(&request.pool) else {
-        return Ok(json!({ "exists": false }));
+        return Ok(missing());
     };
     let Ok(pool) = PoolDefinition::try_from(&pool_account.data) else {
-        return Ok(json!({ "exists": false }));
+        return Ok(missing());
     };
     if pool.liquidity_pool_supply == 0 {
-        return Ok(json!({ "exists": false }));
+        return Ok(missing());
     }
     let fee_bps = u32::try_from(pool.fees).map_err(|_| String::from("invalid_fee_tier"))?;
     Ok(json!({
-        "exists": true,
+        "status": "ok",
+        "error": "",
+        "poolId": pool_id,
         "defAHex": account_id_hex(pool.definition_token_a_id),
         "defBHex": account_id_hex(pool.definition_token_b_id),
+        "vaultAId": pool.vault_a_id.to_string(),
+        "vaultBId": pool.vault_b_id.to_string(),
+        "lpDefinitionId": pool.liquidity_pool_id.to_string(),
         "reserveA": pool.reserve_a.to_string(),
         "reserveB": pool.reserve_b.to_string(),
+        "liquiditySupply": pool.liquidity_pool_supply.to_string(),
         "feeBps": fee_bps,
     }))
 }
@@ -441,17 +458,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_pool_reports_canonical_token_ids() {
+    fn resolve_pool_reports_canonical_token_ids_and_derived_accounts() {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
+        let vault_a = AccountId::new([0xC1; 32]);
+        let vault_b = AccountId::new([0xC2; 32]);
+        let lp = AccountId::new([0xD0; 32]);
         let pool = PoolDefinition {
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
+            vault_a_id: vault_a,
+            vault_b_id: vault_b,
+            liquidity_pool_id: lp,
             liquidity_pool_supply: 1_000,
             reserve_a: 111,
             reserve_b: 222,
             fees: 30,
-            ..Default::default()
         };
 
         let value = resolve_pool(ResolvePoolRequest {
@@ -459,19 +481,24 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(value["exists"], true);
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["poolId"], AccountId::new([0x11; 32]).to_string());
         // The Swap UI matches reserveA/reserveB to its own sell/buy direction by
         // comparing the sold token's id against defAHex — so both ids must be
         // present in canonical order.
         assert_eq!(value["defAHex"], account_id_hex(def_a));
         assert_eq!(value["defBHex"], account_id_hex(def_b));
+        assert_eq!(value["vaultAId"], vault_a.to_string());
+        assert_eq!(value["vaultBId"], vault_b.to_string());
+        assert_eq!(value["lpDefinitionId"], lp.to_string());
         assert_eq!(value["reserveA"], "111");
         assert_eq!(value["reserveB"], "222");
+        assert_eq!(value["liquiditySupply"], "1000");
         assert_eq!(value["feeBps"], 30);
     }
 
     #[test]
-    fn resolve_pool_absent_when_no_liquidity() {
+    fn resolve_pool_absent_is_a_no_pool_error_carrying_the_pool_id() {
         let pool = PoolDefinition {
             liquidity_pool_supply: 0,
             ..Default::default()
@@ -480,7 +507,14 @@ mod tests {
             pool: pool_read(&pool),
         })
         .unwrap();
-        assert_eq!(value, json!({ "exists": false }));
+        assert_eq!(
+            value,
+            json!({
+                "status": "error",
+                "error": "no_pool",
+                "poolId": AccountId::new([0x11; 32]).to_string(),
+            })
+        );
     }
 
     #[test]

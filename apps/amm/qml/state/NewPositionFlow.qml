@@ -84,22 +84,22 @@ QtObject {
             return
         }
 
-        // Route on pool existence (read the pool account), like the swap card. resolvePool
-        // returns the reserves oriented to our requested token order (reserveA is tokenAId's).
-        root.runtime.watch(root.backend.resolvePool(built.request.tokenAId, built.request.tokenBId),
+        // Route on pool existence (read the pool account), like the swap card.
+        // resolvePoolAccount returns status:"ok" with reserves oriented to our requested token
+        // order (reserveA is tokenAId's), or status:"error" (no_pool / hard failure).
+        root.runtime.watch(root.backend.resolvePoolAccount(built.request.tokenAId, built.request.tokenBId),
             function(pool) {
                 if (serial !== root.quoteSerial)
                     return
-                if (pool && pool.exists) {
+                if (pool && pool.status === "ok") {
                     root.poolExists = true
                     root.requestAddQuote(serial, built, pool)
                     return
                 }
-                // resolvePool returns exists:false for BOTH the normal "no pool yet" case and
-                // hard failures (no_program_bin, amm_not_initialized, bad_config). Only the
-                // former — an empty error or no_pool — is a create-pool signal; surface any other
-                // pool.error as a quote error instead of masking it as a create quote (which
-                // would hide the backend failure and enable the wrong flow).
+                // A status:"error" result is EITHER the normal "no pool yet" case (error
+                // "no_pool") or a hard failure (no_program_bin, amm_not_initialized, bad_config).
+                // Only the former is a create-pool signal; surface any other pool.error as a quote
+                // error instead of masking it as a create quote (which would enable the wrong flow).
                 var poolError = pool ? String(pool.error || "") : ""
                 if (poolError.length === 0 || poolError === "no_pool") {
                     root.poolExists = false
