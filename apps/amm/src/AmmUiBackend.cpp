@@ -364,6 +364,11 @@ QVariantMap AmmUiBackend::addCustomToken(QString tokenId)
     // real fungible token (a non-fungible / unreadable id yields no row).
     QVariantMap probe;
     probe.insert(QStringLiteral("tokenIds"), QVariantList{id});
+    const QVariantList rows = m_logos->amm_module.resolveTokens(probe, isWalletOpen());
+    if (rows.isEmpty())
+        return QVariantMap{{QStringLiteral("ok"), false},
+                           {QStringLiteral("error"), QStringLiteral("unresolved")}};
+
     const QVariantMap token = rows.first().toMap();
     const QString canonicalId = token.value(QStringLiteral("definitionId")).toString();
     if (canonicalId.isEmpty())
@@ -378,6 +383,7 @@ QVariantMap AmmUiBackend::addCustomToken(QString tokenId)
                                {QStringLiteral("error"), QStringLiteral("backend_error")}};
     }
     return QVariantMap{{QStringLiteral("ok"), true}, {QStringLiteral("token"), token}};
+}
 
 QString AmmUiBackend::customTokenStorePath() const
 {
