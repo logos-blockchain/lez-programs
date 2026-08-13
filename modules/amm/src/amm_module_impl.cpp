@@ -401,6 +401,25 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
     return resolved;
 }
 
+LogosMap AmmModuleImpl::configAccount() {
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return LogosMap{{"status", "error"}, {"error", "config_missing"}};
+
+    const json config = readConfig(amm_program_id);
+    if (config.is_null())
+        return LogosMap{{"status", "error"}, {"error", "backend_error"}};
+
+    const FfiResult result = call(amm_config_account, json{
+        {"ammProgramId", amm_program_id},
+        {"config", config},
+    });
+    if (!result.ok)
+        return LogosMap{{"status", "error"},
+                        {"error", result.error.empty() ? "backend_error" : result.error}};
+    return result.value;
+}
+
 LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
                                   const std::string& token_out_hex,
                                   const nlohmann::json& amount_in,

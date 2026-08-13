@@ -14,15 +14,17 @@ use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::compute_current_tick_account_pda;
 
 use super::{
+    config::config_account as decode_config_account,
     context::resolve_tokens,
     holding::{select_holding, SelectedHolding},
     pair::{is_canonical_pair, pair_ids, PairIds},
     quote::{div_ceil_u256, minimum_opening_pair, Q64},
     swap::{swap_exact_in_plan, swap_exact_out_plan},
-    PairIdsRequest, ResolveTokensRequest, SwapExactInPlanRequest, SwapExactOutPlanRequest,
+    ConfigAccountRequest, PairIdsRequest, ResolveTokensRequest, SwapExactInPlanRequest,
+    SwapExactOutPlanRequest,
 };
 use crate::{
-    account::{account_id_hex, account_read, decode_account, program_id_bytes},
+    account::{account_id_hex, account_read, decode_account, program_id_base58, program_id_bytes},
     AccountRead,
 };
 
@@ -236,6 +238,39 @@ fn resolve_tokens_returns_lean_rows_held_first_and_omits_unresolvable() {
             },
         ])
     );
+}
+
+#[test]
+fn config_account_decodes_authority_and_program_ids() {
+    let config_id = compute_config_pda(AMM_PROGRAM);
+    let value = decode_config_account(ConfigAccountRequest {
+        amm_program_id: amm_program_id(),
+        config: account_read(config_id, &config_account()),
+    })
+    .unwrap();
+
+    assert_eq!(value["status"], "ok");
+    assert_eq!(value["configId"], config_id.to_string());
+    assert_eq!(value["ammProgramId"], program_id_base58(AMM_PROGRAM));
+    assert_eq!(value["authority"], AccountId::new([7; 32]).to_string());
+    assert_eq!(value["tokenProgramId"], program_id_base58(TOKEN_PROGRAM));
+    assert_eq!(
+        value["twapOracleProgramId"],
+        program_id_base58(TWAP_PROGRAM)
+    );
+}
+
+#[test]
+fn config_account_is_unavailable_when_not_on_chain() {
+    let config_id = compute_config_pda(AMM_PROGRAM);
+    let value = decode_config_account(ConfigAccountRequest {
+        amm_program_id: amm_program_id(),
+        config: default_read(config_id),
+    })
+    .unwrap();
+
+    assert_eq!(value["status"], "error");
+    assert_eq!(value["error"], "config_unavailable");
 }
 
 #[test]

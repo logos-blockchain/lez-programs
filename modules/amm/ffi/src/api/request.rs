@@ -8,6 +8,16 @@ pub struct ConfigIdRequest {
     pub amm_program_id: String,
 }
 
+/// Decodes the singleton AMM config account. `config` is the read of the config PDA the module
+/// derives from `amm_program_id`; the op returns the authority + program ids (or
+/// `{ status:"error", error:"config_unavailable" }` when the config isn't on-chain yet).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigAccountRequest {
+    pub amm_program_id: String,
+    pub config: AccountRead,
+}
+
 /// Resolves an app-provided set of token ids into selector rows. `token_ids` are hex — the
 /// module normalizes base58→hex and reads each definition into `token_definitions` (keyed by
 /// hex id) plus the wallet accounts; the FFI is stateless and reads nothing itself.

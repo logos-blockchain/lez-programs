@@ -49,6 +49,10 @@ class AmmUiBackend
     // `{ status:"error", error:<code> }` — `no_pool` for the ordinary "no pool /
     // no liquidity yet" state, else no_program_bin / amm_not_initialized / bad_config.
     SLOT(QVariantMap resolvePoolAccount(QString defAHex, QString defBHex))
+    // Decodes the singleton AMM config account: `{ status:"ok", error:"", configId,
+    // ammProgramId, authority, tokenProgramId, twapOracleProgramId }` (ids base58), or
+    // `{ status:"error", error:"config_missing"|"config_unavailable"|"backend_error" }`.
+    SLOT(QVariantMap configAccount())
     // Submits a real on-chain SwapExactInput transaction against the pool for
     // (defAHex, defBHex). amountInDecimal/minOutDecimal are decimal-string
     // u128 amounts in base units; deadlineDecimal is a decimal-string u64 unix

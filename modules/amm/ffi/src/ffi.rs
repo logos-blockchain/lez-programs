@@ -7,8 +7,8 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
     self, AddLiquidityPlanRequest, AddLiquidityQuoteRequest, AmmApiError, AmmResult,
-    ConfigIdRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest, FeeTiersRequest,
-    PairIdsRequest, PoolIdRequest, ProgramIdRequest, RemoveLiquidityPlanRequest,
+    ConfigAccountRequest, ConfigIdRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest,
+    FeeTiersRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest, RemoveLiquidityPlanRequest,
     RemoveLiquidityQuoteRequest, ResolvePoolRequest, ResolveTokensRequest, SwapExactInPlanRequest,
     SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
     SyncReservesPlanRequest, TokenHoldingsRequest,
@@ -83,6 +83,11 @@ fn encode_envelope(envelope: &Envelope) -> *mut c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_config_id(request_json: *const c_char) -> *mut c_char {
     call::<ConfigIdRequest>(request_json, api::config_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_config_account(request_json: *const c_char) -> *mut c_char {
+    call::<ConfigAccountRequest>(request_json, api::config_account)
 }
 
 #[unsafe(no_mangle)]

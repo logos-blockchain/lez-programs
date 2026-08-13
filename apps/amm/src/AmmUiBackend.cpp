@@ -182,6 +182,11 @@ QVariantMap AmmUiBackend::resolvePoolAccount(QString defAHex, QString defBHex)
     return m_logos->amm_module.resolvePoolAccount(defAHex, defBHex);
 }
 
+QVariantMap AmmUiBackend::configAccount()
+{
+    return m_logos->amm_module.configAccount();
+}
+
 QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                                       QString userOutputHoldingHex, QString amountInDecimal,
                                       QString minOutDecimal, QString deadlineDecimal)

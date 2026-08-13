@@ -17,9 +17,9 @@ mod tests;
 use std::{error::Error, fmt};
 
 pub use request::{
-    AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigIdRequest, CreatePoolPlanRequest,
-    CreatePoolQuoteRequest, FeeTiersRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest,
-    RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
+    AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigAccountRequest, ConfigIdRequest,
+    CreatePoolPlanRequest, CreatePoolQuoteRequest, FeeTiersRequest, PairIdsRequest, PoolIdRequest,
+    ProgramIdRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
     ResolveTokensRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
     SwapExactOutQuoteRequest, SwapPairRequest, SyncReservesPlanRequest, TokenHoldingsRequest,
 };
@@ -64,6 +64,11 @@ impl From<String> for AmmApiError {
 /// Derives the AMM configuration account ID.
 pub fn config_id(request: ConfigIdRequest) -> AmmResult {
     config::config_id(request).map_err(Into::into)
+}
+
+/// Decodes the singleton config account (authority + token/twap program ids).
+pub fn config_account(request: ConfigAccountRequest) -> AmmResult {
+    config::config_account(request).map_err(Into::into)
 }
 
 /// Derives canonical accounts for one token pair.

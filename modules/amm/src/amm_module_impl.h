@@ -40,6 +40,13 @@ public:
     /// ordinary "no pool / no liquidity yet" state (still carries `poolId`).
     LogosMap resolvePoolAccount(const std::string& def_a_hex, const std::string& def_b_hex);
 
+    /// Decodes the singleton AMM config account. On success: `{ status:"ok", error:"",
+    /// configId, ammProgramId, authority, tokenProgramId, twapOracleProgramId }` (ids
+    /// base58). `{ status:"error", error:"config_missing" }` when AMM_PROGRAM_BIN is
+    /// unset/unreadable; `config_unavailable` when the config isn't on-chain yet; or
+    /// `backend_error` when the backend FFI call fails.
+    LogosMap configAccount();
+
     /// Prices a `SwapExactInput` for the (token_in_hex, token_out_hex) pair:
     /// reads the pool and returns `{ status:"ok", error:"", expectedOutRaw,
     /// minReceivedRaw, priceImpactBps }`, oriented and computed server-side via

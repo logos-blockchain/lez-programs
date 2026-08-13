@@ -60,6 +60,10 @@ pub(crate) fn program_id_hex(program_id: ProgramId) -> String {
     hex::encode(bytes)
 }
 
+pub(crate) fn program_id_base58(program_id: ProgramId) -> String {
+    AccountId::new(program_id_bytes(program_id)).to_string()
+}
+
 pub(crate) fn program_id_bytes(program_id: ProgramId) -> [u8; 32] {
     let mut bytes = [0_u8; 32];
     for (chunk, word) in bytes.chunks_exact_mut(4).zip(program_id) {
