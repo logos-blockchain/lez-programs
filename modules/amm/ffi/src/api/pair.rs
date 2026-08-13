@@ -22,6 +22,8 @@ pub(super) struct PairIds {
     pub(super) lp_lock_holding: AccountId,
     pub(super) current_tick: AccountId,
     pub(super) clock: AccountId,
+    /// The configured TWAP oracle program — the price/observation PDAs are seeded by it.
+    pub(super) twap_oracle_program: ProgramId,
 }
 
 pub(super) fn pair_ids(request: PairIdsRequest) -> Result<Value, String> {
@@ -69,6 +71,7 @@ pub(super) fn derive_pair(
         lp_lock_holding: compute_lp_lock_holding_pda(amm_program, pool),
         current_tick: compute_current_tick_account_pda(config.twap_oracle_program_id, pool),
         clock: CLOCK_01_PROGRAM_ACCOUNT_ID,
+        twap_oracle_program: config.twap_oracle_program_id,
     })
 }
 

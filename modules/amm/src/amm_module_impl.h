@@ -54,6 +54,17 @@ public:
     /// `wallet_submission_failed`, `backend_error`, or a plan code (e.g. `config_unavailable`).
     LogosMap transferOwnership(const LogosMap& request);
 
+    /// Submits `CreatePriceObservations` / `CreateOraclePriceAccount` — seeds a pool's TWAP feed /
+    /// creates its oracle price account for `request.windowDurationMs` (a distinct account per
+    /// window). `request` carries `{ tokenAId, tokenBId, windowDurationMs }`. Both are direct
+    /// submits (chained into the oracle, seeded from validated pool state — nothing signs). On
+    /// success `{ status:"ok", error:"", transactionId:<hex> }`; on failure
+    /// `{ status:"error", error:<code> }` — `config_missing`, `invalid_token_id`,
+    /// `invalid_window`, `same_token_pair`, `config_unavailable`, `wallet_submission_failed`,
+    /// `backend_error` (`already_exists` if the target account is already created).
+    LogosMap createPriceObservations(const LogosMap& request);
+    LogosMap createOraclePriceAccount(const LogosMap& request);
+
     /// Prices a `SwapExactInput` for the (token_in_hex, token_out_hex) pair:
     /// reads the pool and returns `{ status:"ok", error:"", expectedOutRaw,
     /// minReceivedRaw, priceImpactBps }`, oriented and computed server-side via
@@ -271,4 +282,8 @@ private:
     // The user's own public account reads, fresh each call (empty when the wallet
     // is closed). Each read is a live sequencer round-trip.
     nlohmann::json walletAccountReads(bool wallet_open);
+
+    // Shared body for createPriceObservations / createOraclePriceAccount: reads the config,
+    // builds the window-seeded oracle plan (observations vs price account), and submits it.
+    LogosMap oracleSetupSubmit(const LogosMap& request, bool observations);
 };

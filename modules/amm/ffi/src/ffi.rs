@@ -7,7 +7,8 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
     self, AddLiquidityPlanRequest, AddLiquidityQuoteRequest, AmmApiError, AmmResult,
-    ConfigAccountRequest, ConfigIdRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest,
+    ConfigAccountRequest, ConfigIdRequest, CreateOraclePriceAccountPlanRequest,
+    CreatePoolPlanRequest, CreatePoolQuoteRequest, CreatePriceObservationsPlanRequest,
     FeeTiersRequest, PairIdsRequest, PoolIdRequest, ProgramIdRequest, RemoveLiquidityPlanRequest,
     RemoveLiquidityQuoteRequest, ResolvePoolRequest, ResolveTokensRequest, SwapExactInPlanRequest,
     SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
@@ -173,6 +174,16 @@ pub extern "C" fn amm_sync_reserves_plan(request_json: *const c_char) -> *mut c_
 #[unsafe(no_mangle)]
 pub extern "C" fn amm_transfer_ownership_plan(request_json: *const c_char) -> *mut c_char {
     call::<TransferOwnershipPlanRequest>(request_json, api::transfer_ownership_plan)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_create_price_observations_plan(request_json: *const c_char) -> *mut c_char {
+    call::<CreatePriceObservationsPlanRequest>(request_json, api::create_price_observations_plan)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn amm_create_oracle_price_account_plan(request_json: *const c_char) -> *mut c_char {
+    call::<CreateOraclePriceAccountPlanRequest>(request_json, api::create_oracle_price_account_plan)
 }
 
 #[unsafe(no_mangle)]

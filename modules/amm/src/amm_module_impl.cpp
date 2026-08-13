@@ -466,6 +466,91 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
     return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
 }
 
+LogosMap AmmModuleImpl::createPriceObservations(const LogosMap& request) {
+    return oracleSetupSubmit(request, /*observations=*/true);
+}
+
+LogosMap AmmModuleImpl::createOraclePriceAccount(const LogosMap& request) {
+    return oracleSetupSubmit(request, /*observations=*/false);
+}
+
+LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observations) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return error("config_missing");
+
+    // The plan derives the feed PDAs from the config's twap_oracle_program_id + the pool.
+    const json config = readConfig(amm_program_id);
+    if (config.is_null())
+        return error("config_missing");
+
+    const std::string token_a = normalizeAccountId(jStr(request, "tokenAId"));
+    const std::string token_b = normalizeAccountId(jStr(request, "tokenBId"));
+    if (token_a.empty() || token_b.empty())
+        return error("invalid_token_id");
+
+    // windowDurationMs may arrive as a JSON number (UI) or a decimal string (CLI); the FFI wants
+    // a u64. A zero / unparsable window is rejected — each window is a distinct feed PDA.
+    const json window_json = request.value("windowDurationMs", json());
+    uint64_t window = 0;
+    if (window_json.is_number_unsigned()) {
+        window = window_json.get<uint64_t>();
+    } else if (window_json.is_number_integer() && window_json.get<int64_t>() > 0) {
+        window = window_json.get<uint64_t>();
+    } else if (window_json.is_string()) {
+        try {
+            window = std::stoull(window_json.get<std::string>());
+        } catch (...) {
+            window = 0;
+        }
+    }
+    if (window == 0)
+        return error("invalid_window");
+
+    auto* const plan_op =
+        observations ? amm_create_price_observations_plan : amm_create_oracle_price_account_plan;
+    const FfiResult planResult = call(plan_op, json{
+        {"ammProgramId", amm_program_id},
+        {"config", config},
+        {"tokenAId", token_a},
+        {"tokenBId", token_b},
+        {"windowDurationMs", window},
+    });
+    if (!planResult.ok)
+        return error(planResult.error.empty() ? "backend_error" : planResult.error);
+    const json plan = planResult.value;
+
+    const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
+    const std::vector<uint8_t> instruction =
+        jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::string program_id = jStr(plan, "programId");
+
+    // Surface a stable error code when the target PDA already exists instead of failing at submit.
+    const size_t target_index = observations ? 3 : 2;
+    if (accounts.size() > target_index) {
+        const json existing = readPublicAccount(accounts[target_index]);
+        if (jStr(existing, "status") == "ok")
+            return error("already_exists");
+    }
+
+    AMM_TRACE("oracleSetup(" << (observations ? "observations" : "priceAccount")
+              << "): SUBMIT programId=" << program_id << " accounts=" << accounts.size());
+    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+        accounts, signers, instruction, program_id);
+    AMM_TRACE("oracleSetup: tx reply=" << reply);
+
+    const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
+    if (!obj.is_object() || !obj.value("success", false))
+        return error("wallet_submission_failed");
+
+    return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
+}
+
 LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
                                   const std::string& token_out_hex,
                                   const nlohmann::json& amount_in,

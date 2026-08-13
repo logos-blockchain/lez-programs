@@ -11,18 +11,23 @@ use nssa_core::{
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use token_core::{TokenDefinition, TokenHolding};
-use twap_oracle_core::compute_current_tick_account_pda;
+use twap_oracle_core::{
+    compute_current_tick_account_pda, compute_oracle_price_account_pda,
+    compute_price_observations_pda,
+};
 
 use super::{
     admin::transfer_ownership_plan,
     config::config_account as decode_config_account,
     context::resolve_tokens,
     holding::{select_holding, SelectedHolding},
+    oracle::{create_oracle_price_account_plan, create_price_observations_plan},
     pair::{is_canonical_pair, pair_ids, PairIds},
     quote::{div_ceil_u256, minimum_opening_pair, Q64},
     swap::{swap_exact_in_plan, swap_exact_out_plan},
-    ConfigAccountRequest, PairIdsRequest, ResolveTokensRequest, SwapExactInPlanRequest,
-    SwapExactOutPlanRequest, TransferOwnershipPlanRequest,
+    ConfigAccountRequest, CreateOraclePriceAccountPlanRequest, CreatePriceObservationsPlanRequest,
+    PairIdsRequest, ResolveTokensRequest, SwapExactInPlanRequest, SwapExactOutPlanRequest,
+    TransferOwnershipPlanRequest,
 };
 use crate::{
     account::{account_id_hex, account_read, decode_account, program_id_base58, program_id_bytes},
@@ -95,6 +100,7 @@ fn ids() -> PairIds {
         lp_lock_holding: compute_lp_lock_holding_pda(AMM_PROGRAM, pool),
         current_tick: compute_current_tick_account_pda(TWAP_PROGRAM, pool),
         clock: CLOCK_01_PROGRAM_ACCOUNT_ID,
+        twap_oracle_program: TWAP_PROGRAM,
     }
 }
 
@@ -277,6 +283,99 @@ fn transfer_ownership_plan_targets_config_and_current_admin() {
         panic!("expected UpdateConfig");
     };
     assert_eq!(decoded, new_authority);
+}
+
+#[test]
+fn create_price_observations_plan_targets_the_window_feed_accounts() {
+    let token_a = AccountId::new([2; 32]);
+    let token_b = AccountId::new([1; 32]);
+    let config_id = compute_config_pda(AMM_PROGRAM);
+    let pool = compute_pool_pda(AMM_PROGRAM, token_a, token_b);
+    let window = 3_600_000_u64;
+
+    let plan = create_price_observations_plan(CreatePriceObservationsPlanRequest {
+        amm_program_id: amm_program_id(),
+        config: account_read(config_id, &config_account()),
+        token_a_id: account_id_hex(token_a),
+        token_b_id: account_id_hex(token_b),
+        window_duration_ms: window,
+    })
+    .unwrap();
+
+    // config, pool (price source), current_tick (initial tick), price_observations (init), clock.
+    assert_eq!(
+        plan["accountIds"],
+        json!([
+            account_id_hex(config_id),
+            account_id_hex(pool),
+            account_id_hex(compute_current_tick_account_pda(TWAP_PROGRAM, pool)),
+            account_id_hex(compute_price_observations_pda(TWAP_PROGRAM, pool, window)),
+            account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        ])
+    );
+    assert_eq!(
+        plan["signingRequirements"],
+        json!([false, false, false, false, false])
+    );
+
+    let words: Vec<u32> = plan["instruction"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|word| word.as_u64().unwrap() as u32)
+        .collect();
+    let Instruction::CreatePriceObservations { window_duration } =
+        risc0_zkvm::serde::from_slice(&words).unwrap()
+    else {
+        panic!("expected CreatePriceObservations");
+    };
+    assert_eq!(window_duration, window);
+}
+
+#[test]
+fn create_oracle_price_account_plan_targets_the_window_price_account() {
+    let token_a = AccountId::new([2; 32]);
+    let token_b = AccountId::new([1; 32]);
+    let config_id = compute_config_pda(AMM_PROGRAM);
+    let pool = compute_pool_pda(AMM_PROGRAM, token_a, token_b);
+    let window = 900_000_u64;
+
+    let plan = create_oracle_price_account_plan(CreateOraclePriceAccountPlanRequest {
+        amm_program_id: amm_program_id(),
+        config: account_read(config_id, &config_account()),
+        token_a_id: account_id_hex(token_a),
+        token_b_id: account_id_hex(token_b),
+        window_duration_ms: window,
+    })
+    .unwrap();
+
+    // config, pool (price source), oracle_price_account (init), clock.
+    assert_eq!(
+        plan["accountIds"],
+        json!([
+            account_id_hex(config_id),
+            account_id_hex(pool),
+            account_id_hex(compute_oracle_price_account_pda(TWAP_PROGRAM, pool, window)),
+            account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        ])
+    );
+    assert_eq!(
+        plan["signingRequirements"],
+        json!([false, false, false, false])
+    );
+
+    let words: Vec<u32> = plan["instruction"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|word| word.as_u64().unwrap() as u32)
+        .collect();
+    let Instruction::CreateOraclePriceAccount { window_duration } =
+        risc0_zkvm::serde::from_slice(&words).unwrap()
+    else {
+        panic!("expected CreateOraclePriceAccount");
+    };
+    assert_eq!(window_duration, window);
 }
 
 #[test]

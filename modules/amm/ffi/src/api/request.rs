@@ -29,6 +29,31 @@ pub struct TransferOwnershipPlanRequest {
     pub new_authority_id: String,
 }
 
+/// Builds the `CreatePriceObservations` submission — seeds the pool's TWAP observations feed for a
+/// window. `config` is the read of the config PDA (its `twap_oracle_program_id` seeds the feed
+/// PDAs); `token_ids` are hex; `window_duration_ms` is the TWAP window in milliseconds.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePriceObservationsPlanRequest {
+    pub amm_program_id: String,
+    pub config: AccountRead,
+    pub token_a_id: String,
+    pub token_b_id: String,
+    pub window_duration_ms: u64,
+}
+
+/// Builds the `CreateOraclePriceAccount` submission — creates the pool's TWAP oracle price account
+/// for a window. Same inputs as `CreatePriceObservationsPlanRequest`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateOraclePriceAccountPlanRequest {
+    pub amm_program_id: String,
+    pub config: AccountRead,
+    pub token_a_id: String,
+    pub token_b_id: String,
+    pub window_duration_ms: u64,
+}
+
 /// Resolves an app-provided set of token ids into selector rows. `token_ids` are hex — the
 /// module normalizes base58→hex and reads each definition into `token_definitions` (keyed by
 /// hex id) plus the wallet accounts; the FFI is stateless and reads nothing itself.

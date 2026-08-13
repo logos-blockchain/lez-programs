@@ -59,6 +59,14 @@ class AmmUiBackend
     // transactionId:<hex> } or { status:"error", error:<code> } (wallet_unavailable,
     // config_missing, invalid_account_id, wallet_submission_failed, backend_error).
     SLOT(QVariantMap transferOwnership(QVariantMap request))
+    // Oracle setup (keeper): seed a pool's TWAP feed / create its oracle price account for a
+    // window. `request` carries { tokenAId, tokenBId, windowDurationMs }. Direct submits
+    // (chained into the oracle, seeded from validated pool state — nothing signs). Return
+    // { status:"ok", error:"", transactionId:<hex> } or { status:"error", error:<code> }
+    // (wallet_unavailable, config_missing, invalid_token_id, invalid_window, same_token_pair,
+    // config_unavailable, already_exists, wallet_submission_failed, backend_error).
+    SLOT(QVariantMap createPriceObservations(QVariantMap request))
+    SLOT(QVariantMap createOraclePriceAccount(QVariantMap request))
     // Submits a real on-chain SwapExactInput transaction against the pool for
     // (defAHex, defBHex). amountInDecimal/minOutDecimal are decimal-string
     // u128 amounts in base units; deadlineDecimal is a decimal-string u64 unix

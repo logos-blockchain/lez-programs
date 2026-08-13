@@ -201,6 +201,27 @@ QVariantMap AmmUiBackend::transferOwnership(QVariantMap request)
     return m_logos->amm_module.transferOwnership(request);
 }
 
+QVariantMap AmmUiBackend::createPriceObservations(QVariantMap request)
+{
+    if (!isWalletOpen())
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
+        };
+    // Oracle setup doesn't touch token balances — no refresh.
+    return m_logos->amm_module.createPriceObservations(request);
+}
+
+QVariantMap AmmUiBackend::createOraclePriceAccount(QVariantMap request)
+{
+    if (!isWalletOpen())
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
+        };
+    return m_logos->amm_module.createOraclePriceAccount(request);
+}
+
 QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                                       QString userOutputHoldingHex, QString amountInDecimal,
                                       QString minOutDecimal, QString deadlineDecimal)

@@ -6,6 +6,7 @@ mod context;
 mod fee;
 mod holding;
 mod liquidity;
+mod oracle;
 mod pair;
 mod quote;
 mod request;
@@ -19,7 +20,8 @@ use std::{error::Error, fmt};
 
 pub use request::{
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, ConfigAccountRequest, ConfigIdRequest,
-    CreatePoolPlanRequest, CreatePoolQuoteRequest, FeeTiersRequest, PairIdsRequest, PoolIdRequest,
+    CreateOraclePriceAccountPlanRequest, CreatePoolPlanRequest, CreatePoolQuoteRequest,
+    CreatePriceObservationsPlanRequest, FeeTiersRequest, PairIdsRequest, PoolIdRequest,
     ProgramIdRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
     ResolveTokensRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
     SwapExactOutQuoteRequest, SwapPairRequest, SyncReservesPlanRequest, TokenHoldingsRequest,
@@ -151,6 +153,16 @@ pub fn sync_reserves_plan(request: SyncReservesPlanRequest) -> AmmResult {
 /// Builds the `UpdateConfig` submission that transfers the AMM's admin authority.
 pub fn transfer_ownership_plan(request: TransferOwnershipPlanRequest) -> AmmResult {
     admin::transfer_ownership_plan(request).map_err(Into::into)
+}
+
+/// Builds the `CreatePriceObservations` submission — seeds a pool's TWAP observations feed.
+pub fn create_price_observations_plan(request: CreatePriceObservationsPlanRequest) -> AmmResult {
+    oracle::create_price_observations_plan(request).map_err(Into::into)
+}
+
+/// Builds the `CreateOraclePriceAccount` submission — creates a pool's TWAP oracle price account.
+pub fn create_oracle_price_account_plan(request: CreateOraclePriceAccountPlanRequest) -> AmmResult {
+    oracle::create_oracle_price_account_plan(request).map_err(Into::into)
 }
 
 /// Lists the wallet's fungible token holdings for the account selector.
