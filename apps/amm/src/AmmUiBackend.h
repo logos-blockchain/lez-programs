@@ -69,8 +69,8 @@ public slots:
     QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                              QString userOutputHoldingHex, QString amountOutDecimal,
                              QString maxInDecimal, QString deadlineDecimal) override;
-    // Reads the token list from TOKENS_CONFIG (via the module) so the Swap UI's
-    // token picker is config-driven instead of hardcoded.
+    // Reads the token list from TOKENS_CONFIG app-side (like poolList reads
+    // AMM_POOLS_CONFIG) so the Swap UI's token picker is config-driven.
     QVariantList tokenList() override;
     // Create-pool preview (createPoolQuote, read-only) and submit (createPool). The caller
     // supplies lpHoldingId in the request — a fresh account it created via
@@ -107,7 +107,7 @@ private:
 
     LogosAPI* m_logosAPI;
     // Handle for the amm_module core module (resolvePool / swapExactInput /
-    // tokenList / resolveTokens). The module wraps the amm_ffi brain and
+    // resolveTokens). The module wraps the amm_ffi brain and
     // reaches the shared wallet through its own logos_execution_zone dependency;
     // this backend keeps a thin LogosModules over the same LogosAPI as the
     // wallet provider so both resolve that one shared wallet instance.

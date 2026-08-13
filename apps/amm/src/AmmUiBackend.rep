@@ -100,8 +100,10 @@ class AmmUiBackend
     SLOT(QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountOutDecimal, QString maxInDecimal, QString deadlineDecimal))
     // Reads the token list config at TOKENS_CONFIG (absolute path, JSON array
     // of { symbol, name, definitionId, holding, decimals }) and returns it as
-    // a QVariantList of QVariantMap entries. Returns an empty list if
-    // TOKENS_CONFIG is unset/unreadable/invalid.
+    // a QVariantList of QVariantMap entries. Read app-side (like poolList); ids
+    // pass through as configured (base58 or hex) and the swap/quote module
+    // methods normalize them. Returns an empty list if TOKENS_CONFIG is
+    // unset/unreadable/invalid.
     SLOT(QVariantList tokenList())
 
     // Server-side create-pool preview from the two deposit amounts. `request`

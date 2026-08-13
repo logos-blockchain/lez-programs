@@ -27,8 +27,6 @@ methods (the module API is generated from the header) are:
   — submits an on-chain `SwapExactInput` transaction (defA = token in,
   defB = token out); returns the tx hash (or empty on failure). See
   **Amount / id conventions** below.
-- `tokenList()` — reads the `TOKENS_CONFIG` JSON array and returns it with
-  `definitionId`/`holding` normalized to hex.
 - `resolveTokens(request, walletOpen)` — resolves an app-provided set of token
   ids into selector rows (definition + wallet holding per id). The lean,
   stateless successor to the removed `newPositionContext` path: the app owns the
@@ -67,9 +65,9 @@ The impl is deliberately **Qt-free** (`std::string` / `LogosMap` / `LogosList` /
 
 ## Amount / id conventions
 
-**Account ids are hex**, not base58. The `*Hex` args are parsed as 32-byte hex;
-a base58 id (what the wallet/runbook display) fails that parse. Convert with
-`tokenList()` (it emits hex) or `logos_execution_zone.account_id_from_base58 <base58>`.
+**Account ids accept base58 or hex.** The `*Hex` args and request-map ids are
+normalized at each method's boundary (via `logos_execution_zone.account_id_from_base58`
+for base58 inputs), so the wallet/runbook's base58 ids can be passed directly.
 
 **Amounts (`amountIn`/`minOut`, u128) and `deadline` (u64 unix-ms)** are declared
 `nlohmann::json`, so each accepts **either a JSON number or a decimal string**:
@@ -104,8 +102,9 @@ Both are absolute-path env vars set on the **process that hosts the module**
 - `AMM_PROGRAM_BIN` — the deployed `amm.bin`. Required; its ELF determines the
   program id and every derived PDA. Without it, `resolvePoolAccount` returns
   `{ status: "error", error: "no_program_bin" }`.
-- `TOKENS_CONFIG` — JSON array of `{ symbol, name, definitionId, holding, decimals }`
-  consumed by `tokenList()`.
+
+(The token list config `TOKENS_CONFIG` is an **app** concern now — the module no
+longer reads it; see `apps/amm/README.md`.)
 
 ## Headless usage with `logoscore`
 
@@ -145,18 +144,13 @@ Have all of the following in place before staging the modules dir:
    your target sequencer (its ELF fixes the program id and every PDA). See
    `apps/amm/README.md` and the testnet runbook.
 
-6. **A tokens config** for `TOKENS_CONFIG` — a JSON array of
-   `{ symbol, name, definitionId, holding, decimals }` (e.g. the repo's
-   `amm-tokens.json`).
-
-7. **A wallet** at `~/.lee/wallet` (`wallet_config.json` with `sequencer_addr`
+6. **A wallet** at `~/.lee/wallet` (`wallet_config.json` with `sequencer_addr`
    pointing at your sequencer, plus `storage.json` with your accounts), and a
    **running sequencer** with the AMM initialized and a pool holding liquidity.
-   `tokenList` reads `TOKENS_CONFIG` from disk and needs no wallet, but every
-   other op (including `resolvePool`) reads on-chain through the wallet module's
-   `get_account_public`, which needs the wallet **open** (the handle is null
-   until `open`/`create_new`); `swapExactInput` additionally needs it **synced**
-   (see below).
+   Every op (including `resolvePoolAccount`) reads on-chain through the wallet
+   module's `get_account_public`, which needs the wallet **open** (the handle is
+   null until `open`/`create_new`); `swapExactInput` additionally needs it
+   **synced** (see below).
 
 ### Staging the modules directory
 
@@ -195,17 +189,10 @@ first, then the module:
 
 ```bash
 AMM_PROGRAM_BIN=/abs/path/to/amm.bin \
-TOKENS_CONFIG=/abs/path/to/amm-tokens.json \
 logoscore -D -m ./modules --persistence-path ./data
 
 logoscore load-module logos_execution_zone     # dependency first
 logoscore load-module amm_module
-```
-
-`tokenList` reads `TOKENS_CONFIG` from disk — no wallet needed:
-
-```bash
-logoscore call amm_module tokenList
 ```
 
 Every other op reads on-chain through the wallet module's `get_account_public`,

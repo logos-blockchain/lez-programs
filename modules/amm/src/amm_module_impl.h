@@ -236,12 +236,6 @@ public:
     /// labels and decides selectability.
     LogosList feeTiers();
 
-    /// Reads the token list config at TOKENS_CONFIG (a JSON array of
-    /// { symbol, name, definitionId, holding, decimals }) and returns it,
-    /// normalizing definitionId/holding to lowercase hex. Empty list if
-    /// TOKENS_CONFIG is unset / unreadable / not a JSON array.
-    LogosList tokenList();
-
     /// Resolves an app-provided set of token ids into liquidity selector rows.
     /// `request` carries `{ tokenIds: [<definition id>, …] }` (base58 or hex,
     /// normalized to hex here) — the app owns the set: its configured tokens plus any

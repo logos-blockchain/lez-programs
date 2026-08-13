@@ -43,9 +43,6 @@ bool ammDebug() {
 // what determine the program id (and every PDA derived from it).
 constexpr char AMM_PROGRAM_BIN_ENV[] = "AMM_PROGRAM_BIN";
 
-// Absolute path to the JSON token-list config consumed by tokenList().
-constexpr char TOKENS_CONFIG_ENV[] = "TOKENS_CONFIG";
-
 int hexVal(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -576,12 +573,19 @@ LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
     if (amm_program_id.empty())
         return error("config_missing");
 
+    // tokenList() moved app-side, so token ids arrive as configured (base58 or
+    // hex); normalize to the hex the FFI expects.
+    const std::string token_in = normalizeAccountId(token_in_hex);
+    const std::string token_out = normalizeAccountId(token_out_hex);
+    if (token_in.empty() || token_out.empty())
+        return error("invalid_token_id");
+
     // Derive the pool id (config-free) and read the pool account; its raw data is
     // handed to the pricing op. An absent account has no data → `no_pool`.
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
-        {"tokenInId", token_in_hex},
-        {"tokenOutId", token_out_hex},
+        {"tokenInId", token_in},
+        {"tokenOutId", token_out},
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
@@ -589,8 +593,8 @@ LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     const FfiResult quoteResult = call(amm_swap_exact_in_quote, json{
-        {"tokenInId", token_in_hex},
-        {"tokenOutId", token_out_hex},
+        {"tokenInId", token_in},
+        {"tokenOutId", token_out},
         {"amountInRaw", amount_in_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
@@ -622,12 +626,17 @@ LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
     if (amm_program_id.empty())
         return error("config_missing");
 
+    // tokenList() moved app-side, so token ids arrive as configured (base58 or
+    // hex); normalize to the hex the FFI expects.
+    const std::string token_in = normalizeAccountId(token_in_hex);
+    const std::string token_out = normalizeAccountId(token_out_hex);
+
     // Derive the pool id (config-free) and read the pool account; its raw data is
     // handed to the pricing op. An absent account has no data → `no_pool`.
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
-        {"tokenInId", token_in_hex},
-        {"tokenOutId", token_out_hex},
+        {"tokenInId", token_in},
+        {"tokenOutId", token_out},
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
@@ -635,8 +644,8 @@ LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     const FfiResult quoteResult = call(amm_swap_exact_out_quote, json{
-        {"tokenInId", token_in_hex},
-        {"tokenOutId", token_out_hex},
+        {"tokenInId", token_in},
+        {"tokenOutId", token_out},
         {"amountOutRaw", amount_out_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
@@ -680,12 +689,23 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         return {};
     }
 
+    // tokenList() moved app-side, so token/holding ids arrive as configured
+    // (base58 or hex); normalize to the hex the FFI expects.
+    const std::string def_a = normalizeAccountId(def_a_hex);
+    const std::string def_b = normalizeAccountId(def_b_hex);
+    const std::string input_holding = normalizeAccountId(user_input_holding_hex);
+    const std::string output_holding = normalizeAccountId(user_output_holding_hex);
+    if (def_a.empty() || def_b.empty() || input_holding.empty() || output_holding.empty()) {
+        AMM_TRACE("swapExactInput: FAIL invalid token/holding id");
+        return {};
+    }
+
     // Read the pool so the plan can use its stored vault ids (the guest asserts
     // the vaults in the pool's creation order — see amm_swap_exact_in_plan).
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
-        {"tokenInId", def_a_hex},
-        {"tokenOutId", def_b_hex},
+        {"tokenInId", def_a},
+        {"tokenOutId", def_b},
     });
     if (!poolId.ok) {
         AMM_TRACE("swapExactInput: FAIL amm_pool_id");
@@ -698,12 +718,12 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
     // and returns a ready-to-submit plan.
     const FfiResult planResult = call(amm_swap_exact_in_plan, json{
         {"ammProgramId", amm_program_id},
-        {"tokenInId", def_a_hex},
-        {"tokenOutId", def_b_hex},
+        {"tokenInId", def_a},
+        {"tokenOutId", def_b},
         {"config", config},
         {"poolData", pool_data},
-        {"userInputHoldingId", user_input_holding_hex},
-        {"userOutputHoldingId", user_output_holding_hex},
+        {"userInputHoldingId", input_holding},
+        {"userOutputHoldingId", output_holding},
         {"amountIn", amount_in_decimal},
         {"minOut", min_out_decimal},
         {"deadlineMs", deadline_decimal},
@@ -763,12 +783,19 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
         return {};
     }
 
+    // tokenList() moved app-side, so token/holding ids arrive as configured
+    // (base58 or hex); normalize to the hex the FFI expects.
+    const std::string def_a = normalizeAccountId(def_a_hex);
+    const std::string def_b = normalizeAccountId(def_b_hex);
+    const std::string input_holding = normalizeAccountId(user_input_holding_hex);
+    const std::string output_holding = normalizeAccountId(user_output_holding_hex);
+
     // Read the pool so the plan can use its stored vault ids (the guest asserts
     // the vaults in the pool's creation order — see amm_swap_exact_out_plan).
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
-        {"tokenInId", def_a_hex},
-        {"tokenOutId", def_b_hex},
+        {"tokenInId", def_a},
+        {"tokenOutId", def_b},
     });
     if (!poolId.ok) {
         AMM_TRACE("swapExactOutput: FAIL amm_pool_id");
@@ -781,12 +808,12 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
     // and returns a ready-to-submit plan.
     const FfiResult planResult = call(amm_swap_exact_out_plan, json{
         {"ammProgramId", amm_program_id},
-        {"tokenInId", def_a_hex},
-        {"tokenOutId", def_b_hex},
+        {"tokenInId", def_a},
+        {"tokenOutId", def_b},
         {"config", config},
         {"poolData", pool_data},
-        {"userInputHoldingId", user_input_holding_hex},
-        {"userOutputHoldingId", user_output_holding_hex},
+        {"userInputHoldingId", input_holding},
+        {"userOutputHoldingId", output_holding},
         {"amountOut", amount_out_decimal},
         {"maxIn", max_in_decimal},
         {"deadlineMs", deadline_decimal},
@@ -1322,49 +1349,6 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
         return error("wallet_submission_failed");
 
     return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
-}
-
-LogosList AmmModuleImpl::tokenList() {
-    LogosList out = LogosList::array();
-
-    const char* path = std::getenv(TOKENS_CONFIG_ENV);
-    if (path == nullptr || *path == '\0') return out;
-
-    std::ifstream file(path);
-    if (!file) return out;
-    const std::string content((std::istreambuf_iterator<char>(file)),
-                              std::istreambuf_iterator<char>());
-
-    const auto arr = json::parse(content, nullptr, /*allow_exceptions=*/false);
-    if (!arr.is_array()) return out;
-
-    for (const auto& entry : arr) {
-        if (!entry.is_object()) continue;
-
-        // definitionId/holding may be base58 or hex — normalize both to
-        // lowercase hex so downstream consumers can assume hex.
-        const std::string definition_id = normalizeAccountId(jStr(entry, "definitionId"));
-        const std::string holding = normalizeAccountId(jStr(entry, "holding"));
-        if (definition_id.empty() || holding.empty()) continue;
-
-        // decimals must be a non-negative integer. A present-but-non-integer
-        // value (e.g. "decimals": "18") would make value<int>() throw
-        // type_error.302; that exception becomes dispatch_failed and the Qt
-        // caller gets an EMPTY list — one malformed entry dropping every token.
-        // Validate and skip just this entry (a wrong decimals would misrender
-        // amounts, so fail closed) instead.
-        const auto decimals = entry.find("decimals");
-        if (decimals == entry.end() || !decimals->is_number_unsigned()) continue;
-
-        json token;
-        token["symbol"] = jStr(entry, "symbol");
-        token["name"] = jStr(entry, "name");
-        token["definitionId"] = definition_id;
-        token["holding"] = holding;
-        token["decimals"] = decimals->get<int>();
-        out.push_back(token);
-    }
-    return out;
 }
 
 LogosList AmmModuleImpl::tokenHoldings(bool wallet_open) {

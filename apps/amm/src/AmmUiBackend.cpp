@@ -71,6 +71,53 @@ namespace {
         }
         return out;
     }
+
+    // Absolute path to the JSON token-list config consumed by tokenList().
+    constexpr char TOKENS_CONFIG_ENV[] = "TOKENS_CONFIG";
+
+    // Parses the TOKENS_CONFIG JSON file into the QVariantList the Swap token
+    // picker renders. Same fail-soft, skip-malformed-entry behavior as
+    // readPoolsConfig(). symbol/name are display; definitionId/holding are the
+    // token's account ids and pass through as configured (base58 or hex) — the
+    // module methods normalize to hex at their boundary. decimals must be a
+    // non-negative integer (a wrong value would misrender amounts).
+    QVariantList readTokensConfig()
+    {
+        QVariantList out;
+
+        const QString path = qEnvironmentVariable(TOKENS_CONFIG_ENV);
+        if (path.isEmpty())
+            return out;
+
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            return out;
+
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        if (!doc.isArray())
+            return out;
+
+        for (const QJsonValue& entry : doc.array()) {
+            if (!entry.isObject())
+                continue;
+            const QJsonObject obj = entry.toObject();
+
+            const QString definitionId = obj.value(QStringLiteral("definitionId")).toString();
+            const QString holding = obj.value(QStringLiteral("holding")).toString();
+            const QJsonValue decimals = obj.value(QStringLiteral("decimals"));
+            if (definitionId.isEmpty() || holding.isEmpty() || !decimals.isDouble())
+                continue;
+
+            QVariantMap token;
+            token.insert(QStringLiteral("symbol"), obj.value(QStringLiteral("symbol")).toString());
+            token.insert(QStringLiteral("name"), obj.value(QStringLiteral("name")).toString());
+            token.insert(QStringLiteral("definitionId"), definitionId);
+            token.insert(QStringLiteral("holding"), holding);
+            token.insert(QStringLiteral("decimals"), decimals.toInt());
+            out.append(token);
+        }
+        return out;
+    }
 }
 
 
@@ -280,7 +327,11 @@ QString AmmUiBackend::swapExactOutput(QString defAHex, QString defBHex, QString 
 
 QVariantList AmmUiBackend::tokenList()
 {
-    return m_logos->amm_module.tokenList();
+    // Config-driven token list, read straight from TOKENS_CONFIG (like poolList
+    // reads AMM_POOLS_CONFIG). Token discovery is an app concern, so this stays
+    // in the backend rather than the amm_module; the swap/quote module methods
+    // normalize the ids (base58 or hex) at their boundary.
+    return readTokensConfig();
 }
 
 QVariantMap AmmUiBackend::createPoolQuote(QVariantMap request)
@@ -330,7 +381,7 @@ QVariantList AmmUiBackend::resolveTokens()
     const bool wallet_open = isWalletOpen();
 
     QVariantList ids;
-    const QVariantList configured = m_logos->amm_module.tokenList();
+    const QVariantList configured = readTokensConfig();
     for (const QVariant& entry : configured) {
         const QString id = entry.toMap().value(QStringLiteral("definitionId")).toString();
         if (!id.isEmpty())
