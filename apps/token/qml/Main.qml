@@ -14,10 +14,10 @@ Item {
 
     property bool ready: false
 
-    // Local-only prototype data. It is seeded from the supplied testnet
-    // deployment record and never performs a chain read or submits a call.
-    TokenPrototypeStore {
-        id: tokenPrototypeStore
+    // Fixture data remains available before a wallet is connected. Once the
+    // wallet opens, ManagePage replaces it with live token-module reads.
+    TokenStore {
+        id: tokenStore
     }
 
     Connections {
@@ -67,8 +67,8 @@ Item {
         }
     }
 
-    // The app is always usable; the wallet is opt-in via the navbar "Connect"
-    // control. Prototype views render immediately and stay local-only.
+    // The app is usable before wallet connection; writes and live reads become
+    // available as soon as the navbar opens a wallet.
     NavBar {
         id: navbar
         anchors.top: connectionBanner.bottom
@@ -89,13 +89,19 @@ Item {
         CreatePage {
             anchors.fill: parent
             visible: navbar.currentIndex === 0
-            store: tokenPrototypeStore
+            store: tokenStore
+            backend: root.ready ? root.backend : null
+            runtime: logos
+
+            onRequestInspect: navbar.currentIndex = 1
         }
 
         ManagePage {
             anchors.fill: parent
             visible: navbar.currentIndex === 1
-            store: tokenPrototypeStore
+            store: tokenStore
+            backend: root.ready ? root.backend : null
+            runtime: logos
         }
     }
 }

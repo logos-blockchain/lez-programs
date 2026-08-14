@@ -621,7 +621,11 @@ QtObject {
     ]
 
     property var draftDefinitions: []
-    readonly property var allDefinitions: root.fixtureDefinitions.concat(root.draftDefinitions)
+    property var liveDefinitions: []
+    property bool liveDefinitionsLoaded: false
+    readonly property var allDefinitions: root.liveDefinitionsLoaded
+        ? root.liveDefinitions.concat(root.draftDefinitions)
+        : root.fixtureDefinitions.concat(root.draftDefinitions)
 
     function findDefinition(id) {
         var wantedId = String(id || "")
@@ -669,5 +673,15 @@ QtObject {
 
         root.draftDefinitions = root.draftDefinitions.concat([draft])
         return draft
+    }
+
+    function setLiveDefinitions(definitions) {
+        root.liveDefinitions = definitions || []
+        root.liveDefinitionsLoaded = true
+    }
+
+    function clearLiveDefinitions() {
+        root.liveDefinitions = []
+        root.liveDefinitionsLoaded = false
     }
 }

@@ -4,12 +4,7 @@ import QtQuick 2.15
 import QtQuick.Layouts 1.15
 
 import Logos.Theme
-
-// Shared wallet UI module (apps/common/wallet-ui). Imported by relative path
-// because the ui-host only searches the runtime's own QML import path, not the
-// app's plugin dir. Once the module ships as a compiled qrc module (see PR #228)
-// this becomes `import Logos.Wallet`.
-import "Logos/Wallet"
+import Logos.Wallet
 
 // Self-contained navigation bar — styling is independent of any view's theme.
 // Use currentIndex to read the active tab; tabChanged(index) fires on selection.
@@ -22,6 +17,7 @@ Item {
     // Wallet wiring, passed down from Main.qml.
     property var backend: null
     property var accountModel: null
+    readonly property bool compact: width < 560
 
     // Address of the account currently selected in the header control.
     readonly property string selectedAddress: accountControl.selectedAddress
@@ -45,9 +41,9 @@ Item {
 
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 20
-            anchors.rightMargin: 20
-            spacing: 4
+            anchors.leftMargin: root.compact ? 12 : 20
+            anchors.rightMargin: root.compact ? 12 : 20
+            spacing: root.compact ? 2 : 4
 
             // App identity
             Text {
@@ -77,7 +73,7 @@ Item {
                         readonly property bool active: root.currentIndex === tabIndex
 
                         height: 36
-                        width: tabLabel.implicitWidth + 28
+                        width: tabLabel.implicitWidth + (root.compact ? 20 : 28)
                         radius: 18
                         color: active ? Theme.palette.backgroundSecondary : "transparent"
                         border.color: activeFocus ? Theme.palette.overlayOrange : "transparent"
@@ -128,9 +124,14 @@ Item {
             // Wallet / account control on the far right.
             WalletControl {
                 id: accountControl
-                Layout.leftMargin: 12
-                backend: root.backend
+                Layout.leftMargin: root.compact ? 4 : 12
+                compact: root.compact
+                wallet: root.backend
                 accountModel: root.accountModel
+                viewportWidth: root.width
+                watchCall: function(result, success, failure) {
+                    logos.watch(result, success, failure)
+                }
             }
         }
     }

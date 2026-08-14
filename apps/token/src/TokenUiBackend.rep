@@ -37,10 +37,29 @@ class TokenUiBackend
     // Basecamp, does not close the wallet other apps share.
     SLOT(void disconnectWallet())
 
-    // Settings. Rewrites the wallet config's sequencer_addr and re-opens the
-    // wallet so the new network takes effect immediately.
-    SLOT(bool changeSequencerAddr(QString url))
+    // Token Program reads. walletDefinitions() joins the module's account
+    // discovery and inspect calls into the record shape consumed by QML.
+    SLOT(QVariantMap tokenProgramInfo())
+    SLOT(QVariantMap inspectDefinition(QString definitionId))
+    SLOT(QVariantMap inspectHolding(QString holdingId))
+    SLOT(QVariantMap inspectMetadata(QString metadataId))
+    SLOT(QVariantMap walletTokenAccounts())
+    SLOT(QVariantList walletDefinitions())
 
-    // Misc
-    SLOT(void copyToClipboard(QString text))
+    // Token Program creation surface. Raw amounts remain decimal strings so
+    // QML never narrows u128 values through a JavaScript number.
+    SLOT(QVariantMap createFungible(QString definitionTargetId, QString holdingTargetId, QString name, QString totalSupplyRaw, QString mintAuthority))
+    SLOT(QVariantMap createFungibleWithMetadata(QString definitionTargetId, QString holdingTargetId, QString metadataTargetId, QString name, QString totalSupplyRaw, QString mintAuthority, QString metadataStandard, QString uri, QString creators))
+    SLOT(QVariantMap createNonFungible(QString definitionTargetId, QString masterHoldingTargetId, QString metadataTargetId, QString name, QString printableSupplyRaw, QString metadataStandard, QString uri, QString creators))
+
+    // Token Program holding and authority operations are exposed through the
+    // same adapter for future Manage actions and Basecamp consumers.
+    SLOT(QVariantMap initializeHolding(QString definitionId, QString holdingTargetId))
+    SLOT(QVariantMap transfer(QString senderHoldingId, QString recipientHoldingId, QString amountRaw))
+    SLOT(QVariantMap burn(QString definitionId, QString holdingId, QString amountRaw))
+    SLOT(QVariantMap mint(QString definitionId, QString holdingId, QString amountRaw))
+    SLOT(QVariantMap mintWithAuthority(QString definitionId, QString holdingId, QString authorityId, QString amountRaw))
+    SLOT(QVariantMap setAuthority(QString definitionId, QString newAuthority))
+    SLOT(QVariantMap setAuthorityWithAuthority(QString definitionId, QString authorityId, QString newAuthority))
+    SLOT(QVariantMap printNft(QString masterHoldingId, QString printedHoldingTargetId))
 }

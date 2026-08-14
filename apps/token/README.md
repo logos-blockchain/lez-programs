@@ -1,19 +1,18 @@
 # Token UI
 
-A QML UI application for the token program.
+A Basecamp-compatible QML UI module for creating and inspecting Token Program
+assets through the `token_module` core module.
 
 See the [Logos QML UI App Tutorial](https://github.com/logos-co/logos-tutorial/blob/master/tutorial-qml-ui-app.md) for more information.
 
-> **Status:** interactive UI prototype. The **Create** view models the current
-> Token Program's fungible and non-fungible definition settings, and **Inspect**
-> renders the supplied July 12, 2026 testnet fixture snapshot. It never creates
-> accounts, signs, reads a live chain, or submits a transaction.
+The UI creates fresh public wallet accounts, submits fungible and
+non-fungible definition transactions through `token_module`, and reads the
+connected wallet's Token-owned accounts for the Inspect view. Raw `u128`
+values stay decimal strings across the QML/C++ boundary.
 
-## Token-definition prototype
+## Token definitions
 
-The prototype is deliberately local-only. It lets an operator prepare every
-currently supported creation shape and see the resulting stored state before a
-production transaction path exists:
+The Create view supports every current definition shape:
 
 - Fungible definitions: raw `u128` supply; fixed (`None`), self, or external
   mint authority; metadata omitted or linked.
@@ -26,25 +25,24 @@ production transaction path exists:
 - Target accounts: definition, first holding/master, and metadata (when used)
   are surfaced because each must be fresh and authorized at submission time.
 
-The **Inspect** fixtures are a historical testnet reference, not a live read.
-They include fixed, self-authorized, external-authority, revoked-authority, and
-metadata-backed fungibles, plus the Glitchlings NFT collection. Display decimals
-shown for fungibles are UI inference from the fixture policy; the Token Program
-does not store a decimal field.
+Before a wallet is connected, Inspect shows bundled example records so the
+module remains useful as a visual shell. After connection it replaces those
+records with live `walletTokenAccounts`, `inspectDefinition`, and
+`inspectMetadata` results. Display decimals shown for bundled examples are UI
+inference; the Token Program does not store a decimal field.
 
-Metadata-backed definitions and NFT definitions need typed instruction
-serialization today because the generic IDL cannot encode the structured
-creation arguments. Any production submission implementation must use that
-route rather than treating this prototype as a transaction client.
+Metadata-backed and NFT definitions use the typed token-module submission path;
+the UI does not assemble transaction instructions itself.
 
 ## Wallet / chain integration
 
 This app is a `ui_qml` module with a hand-written C++ backend
 (`src/TokenUiBackend.*`, plugin in `src/TokenUiPlugin.*`) that depends on the
-core **`logos_execution_zone`** wallet module. The backend calls the core
-module's wallet FFI through `m_logos->logos_execution_zone.*` and exposes an
-async QtRO surface (`src/TokenUiBackend.rep`) plus an account list model to the
-QML view. The wallet backend and navbar are ported from the AMM UI app.
+core **`logos_execution_zone`** wallet module and **`token_module`** Token
+Program API. The backend exposes an async QtRO surface
+(`src/TokenUiBackend.rep`) plus an account list model to the QML view. Wallet
+session behavior and the `Logos.Wallet` control come from
+`apps/shared/wallet`.
 
 **Onboarding is non-invasive.** The app opens straight to the first screen; the
 navbar shows **Connect** (opens a password-only modal) or **Connected** + the
@@ -58,8 +56,8 @@ Account/keystore sharing follows the runtime:
   `~/.lee/wallet` keystore is shared with the LEZ wallet UI and any other LEZ
   app on the machine. A previously-created wallet auto-opens on launch.
 - **Inside Basecamp**: the core wallet module is a single shared instance, so on
-  startup the backend **adopts** the already-open wallet (see
-  `openOrAdoptWallet()`), surfacing **shared** accounts across apps.
+  startup `LogosWalletProvider` adopts the already-open wallet, surfacing
+  **shared** accounts across apps.
 
 ## Setup
 
@@ -71,10 +69,10 @@ mkdir -p ~/.config/nix && echo "experimental-features = nix-command flakes" >> ~
 
 ## Running the UI
 
-Start the UI with:
+From the repository root, start the packaged UI with:
 
 ```bash
-nix run .
+nix run .#token-ui
 ```
 
 This builds and runs the application in development mode.

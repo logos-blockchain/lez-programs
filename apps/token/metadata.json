@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "type": "ui_qml",
   "category": "token",
-  "description": "UI module for the token program",
+  "description": "Logos UI module for creating and inspecting Token Program assets",
   "main": "token_ui_plugin",
   "view": "qml/Main.qml",
   "icon": "icons/token.png",
-  "dependencies": ["logos_execution_zone"],
+  "dependencies": ["logos_execution_zone", "token_module"],
 
   "nix": {
     "packages": {

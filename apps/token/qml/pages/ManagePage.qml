@@ -1,20 +1,21 @@
-/*
- * Historical-definition inspector. This is intentionally a read model: the
- * testnet snapshot and locally prepared drafts never trigger a chain query.
- */
 pragma ComponentBehavior: Bound
 
 import QtQuick 2.15
-import QtQuick.Controls 2.15
+import QtQuick.Controls.Basic
 import QtQuick.Layouts 1.15
 
 Item {
     id: root
 
     property var store: null
+    property var backend: null
+    property var runtime: null
     property string query: ""
     property string typeFilter: "all"
     property string selectedId: ""
+    property bool loading: false
+    property string loadError: ""
+    property int refreshSerial: 0
 
     readonly property var definitions: store ? store.allDefinitions : []
     readonly property var filteredDefinitions: root.filterDefinitions()
@@ -71,7 +72,13 @@ Item {
     function sourceLabel(definition) {
         if (!definition)
             return "";
-        return definition.source === "draft" ? qsTr("Local draft") : qsTr("Testnet snapshot · 12 Jul 2026");
+        if (definition.source === "pending")
+            return qsTr("Pending transaction");
+        if (definition.source === "network")
+            return qsTr("Network");
+        if (definition.source === "draft")
+            return qsTr("Draft");
+        return qsTr("Example");
     }
 
     function authorityTitle(definition) {
@@ -98,13 +105,60 @@ Item {
         if (definition.authorityMode === "self")
             return qsTr("The definition account is the mint authority.");
         if (definition.authorityMode === "renounced")
-            return qsTr("This historical definition exercised authority changes, then ended with no authority.");
+            return qsTr("No mint authority is stored; the supply cannot be increased.");
         return qsTr("No mint authority is stored; the supply cannot be increased.");
     }
 
-    Component.onCompleted: root.ensureSelection()
+    function refreshLiveDefinitions() {
+        if (!root.store)
+            return;
+
+        if (!root.backend || !root.backend.isWalletOpen || !root.runtime) {
+            root.loading = false;
+            root.loadError = "";
+            if (root.store.clearLiveDefinitions)
+                root.store.clearLiveDefinitions();
+            root.ensureSelection();
+            return;
+        }
+
+        var requestSerial = ++root.refreshSerial;
+        root.loading = true;
+        root.loadError = "";
+        root.runtime.watch(root.backend.walletDefinitions(), function(definitions) {
+            if (requestSerial !== root.refreshSerial)
+                return;
+            root.loading = false;
+            root.store.setLiveDefinitions(definitions || []);
+            root.ensureSelection();
+        }, function(error) {
+            if (requestSerial !== root.refreshSerial)
+                return;
+            root.loading = false;
+            root.loadError = qsTr("Token accounts could not be read: %1").arg(error);
+            root.store.clearLiveDefinitions();
+            root.ensureSelection();
+        });
+    }
+
+    onVisibleChanged: {
+        if (visible)
+            root.refreshLiveDefinitions();
+    }
+    onBackendChanged: root.refreshLiveDefinitions()
+    onRuntimeChanged: root.refreshLiveDefinitions()
+    Component.onCompleted: {
+        root.ensureSelection();
+        root.refreshLiveDefinitions();
+    }
     onStoreChanged: root.ensureSelection()
     onFilteredDefinitionsChanged: root.ensureSelection()
+
+    Connections {
+        target: root.backend
+        ignoreUnknownSignals: true
+        function onIsWalletOpenChanged() { root.refreshLiveDefinitions() }
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -117,58 +171,114 @@ Item {
         anchors.fill: parent
         clip: true
         contentWidth: width
-        contentHeight: content.implicitHeight + 48
+        contentHeight: content.implicitHeight + 32
         flickableDirection: Flickable.VerticalFlick
+
+        ScrollBar.vertical: ScrollBar {
+            id: verticalScrollBar
+
+            parent: scroll.parent
+            anchors.top: scroll.top
+            anchors.right: scroll.right
+            anchors.bottom: scroll.bottom
+            anchors.topMargin: 4
+            anchors.rightMargin: 4
+            anchors.bottomMargin: 4
+            policy: scroll.contentHeight > scroll.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+            active: true
+            visible: policy === ScrollBar.AlwaysOn
+            width: 12
+            z: 10
+
+            background: Rectangle {
+                radius: 6
+                color: "#292929"
+            }
+
+            contentItem: Rectangle {
+                implicitWidth: 8
+                implicitHeight: 32
+                radius: 4
+                color: verticalScrollBar.pressed ? "#F26A21" : "#9A8C81"
+                opacity: 1
+            }
+        }
 
         ColumnLayout {
             id: content
 
-            width: Math.max(280, Math.min(scroll.width - 40, 1440))
-            x: Math.max(20, (scroll.width - width) / 2)
+            width: Math.max(240, Math.min(scroll.width - 32, 1440))
+            x: Math.max(16, (scroll.width - width) / 2)
             y: 24
             spacing: 18
 
-            RowLayout {
+            ColumnLayout {
+                id: pageHeader
+
                 Layout.fillWidth: true
-                spacing: 18
+                spacing: 5
 
                 ColumnLayout {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     spacing: 5
 
                     Text {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
                         color: "#E7E1D8"
                         font.pixelSize: 28
                         font.weight: Font.DemiBold
+                        wrapMode: Text.Wrap
                         text: qsTr("Inspect token definitions")
                     }
 
                     Text {
                         Layout.fillWidth: true
+                        Layout.minimumWidth: 0
                         color: "#A9A098"
                         font.pixelSize: 14
                         wrapMode: Text.Wrap
-                        text: qsTr("Read the deployed definition state and locally prepared drafts. Testnet data is a historical reference, not a live chain response.")
+                        text: qsTr("View deployed token definitions and account state.")
                     }
-                }
 
-                Rectangle {
-                    Layout.alignment: Qt.AlignTop
-                    Layout.preferredHeight: 28
-                    Layout.preferredWidth: snapshotLabel.implicitWidth + 18
-                    radius: 14
-                    color: "#182534"
-                    border.color: "#40607A"
-                    border.width: 1
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
 
-                    Text {
-                        id: snapshotLabel
+                        Text {
+                            Layout.fillWidth: true
+                            color: root.loadError.length > 0 ? "#F08A76" : "#8E8780"
+                            font.pixelSize: 12
+                            elide: Text.ElideRight
+                            text: root.loadError.length > 0 ? root.loadError : root.loading ? qsTr("Reading wallet token accounts…") : root.backend && root.backend.isWalletOpen ? qsTr("Live wallet view") : qsTr("Connect wallet to inspect live assets")
+                        }
 
-                        anchors.centerIn: parent
-                        color: "#BFD8F4"
-                        font.pixelSize: 12
-                        font.weight: Font.DemiBold
-                        text: qsTr("Read-only snapshot")
+                        Button {
+                            id: refreshDefinitionsButton
+
+                            Layout.preferredWidth: 86
+                            Layout.preferredHeight: 32
+                            enabled: root.backend !== null && root.backend.isWalletOpen && !root.loading
+                            text: root.loading ? qsTr("Reading…") : qsTr("Refresh")
+                            Accessible.name: qsTr("Refresh live token definitions")
+                            onClicked: root.refreshLiveDefinitions()
+
+                            contentItem: Text {
+                                color: parent.enabled ? "#F2D8C7" : "#8E8780"
+                                font.pixelSize: 12
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                text: refreshDefinitionsButton.text
+                            }
+
+                            background: Rectangle {
+                                radius: 7
+                                color: parent.enabled ? "#211914" : "#282522"
+                                border.color: parent.enabled ? "#49301F" : "#3C3833"
+                                border.width: 1
+                            }
+                        }
                     }
                 }
             }
@@ -176,9 +286,10 @@ Item {
             GridLayout {
                 id: workbench
 
-                readonly property int columnCount: content.width >= 1100 ? 2 : 1
+                readonly property int columnCount: content.width >= 1180 ? 2 : 1
 
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
                 columns: columnCount
                 columnSpacing: 14
                 rowSpacing: 14
@@ -188,7 +299,9 @@ Item {
 
                     Layout.alignment: Qt.AlignTop
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     Layout.preferredWidth: workbench.columnCount === 2 ? 390 : 0
+                    Layout.maximumWidth: workbench.columnCount === 2 ? 430 : 1440
                     implicitHeight: indexContent.implicitHeight + 32
                     radius: 16
                     color: "#1B1B1B"
@@ -423,9 +536,9 @@ Item {
                                         }
 
                                         Text {
-                                            color: definitionRow.modelData.source === "draft" ? "#78C88D" : "#A9A098"
+                                            color: definitionRow.modelData.source === "pending" || definitionRow.modelData.source === "draft" ? "#78C88D" : "#A9A098"
                                             font.pixelSize: 11
-                                            text: definitionRow.modelData.source === "draft" ? qsTr("Draft") : qsTr("Testnet")
+                                            text: root.sourceLabel(definitionRow.modelData)
                                         }
                                     }
                                 }
@@ -441,25 +554,6 @@ Item {
                             }
                         }
 
-                        Rectangle {
-                            Layout.fillWidth: true
-                            implicitHeight: indexFootnote.implicitHeight + 20
-                            radius: 8
-                            color: "#181818"
-                            border.color: "#303030"
-                            border.width: 1
-
-                            Text {
-                                id: indexFootnote
-
-                                anchors.fill: parent
-                                anchors.margins: 10
-                                color: "#8E8780"
-                                font.pixelSize: 12
-                                wrapMode: Text.Wrap
-                                text: qsTr("A prepared draft joins this index locally; it is not an account, does not reserve an address, and is never sent to testnet.")
-                            }
-                        }
                     }
                 }
 
@@ -468,6 +562,9 @@ Item {
 
                     Layout.alignment: Qt.AlignTop
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.preferredWidth: workbench.columnCount === 2 ? 850 : 0
+                    Layout.maximumWidth: 1440
                     implicitHeight: detailContent.implicitHeight + 32
                     radius: 16
                     color: "#1B1B1B"
@@ -527,7 +624,7 @@ Item {
 
                                     Text {
                                         Layout.fillWidth: true
-                                        color: root.hasSelection && root.selectedDefinition.source === "draft" ? "#78C88D" : "#A9A098"
+                                        color: root.hasSelection && (root.selectedDefinition.source === "pending" || root.selectedDefinition.source === "draft") ? "#78C88D" : "#A9A098"
                                         font.pixelSize: 12
                                         text: root.hasSelection ? root.sourceLabel(root.selectedDefinition) : ""
                                     }
@@ -855,7 +952,7 @@ Item {
                                     Layout.preferredHeight: visible ? implicitHeight : 0
                                     color: "#A9A098"
                                     font.pixelSize: 12
-                                    text: root.hasSelection ? root.selectedDefinition.authorityLabel : ""
+                                    text: root.hasSelection ? String(root.selectedDefinition.authorityLabel || "") : ""
                                 }
 
                                 Text {
@@ -955,7 +1052,7 @@ Item {
                                     color: "#A9A098"
                                     font.pixelSize: 12
                                     wrapMode: Text.Wrap
-                                    text: root.hasSelection && root.selectedDefinition.source === "draft" ? qsTr("A prepared draft has an intended initial holding target but no observed account state.") : qsTr("Balances and ownership shown here belong to the supplied historical snapshot.")
+                                    text: root.hasSelection && root.selectedDefinition.source === "pending" ? qsTr("Transaction accepted; refresh after the account state is indexed.") : qsTr("Balances and ownership reflect the selected network state.")
                                 }
 
                                 Column {

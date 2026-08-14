@@ -26768,7 +26768,7 @@
           "logos-module-builder",
           "nixpkgs"
         ],
-        "wallet_ui": "wallet_ui"
+        "shared_wallet": "shared_wallet"
       }
     },
     "rust-overlay": {
@@ -26855,14 +26855,14 @@
         "type": "github"
       }
     },
-    "wallet_ui": {
+    "shared_wallet": {
       "flake": false,
       "locked": {
-        "path": "../common/wallet-ui",
+        "path": "../shared/wallet",
         "type": "path"
       },
       "original": {
-        "path": "../common/wallet-ui",
+        "path": "../shared/wallet",
         "type": "path"
       },
       "parent": []

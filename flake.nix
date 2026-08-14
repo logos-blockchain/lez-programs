@@ -143,15 +143,42 @@
         # built QML module the same way. Keep in sync with apps/amm/flake.nix.
         preConfigure = ''
           cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${./apps/shared/wallet}")
+          cmakeFlagsArray+=("-DLOGOS_WALLET_GENERATED_DIR=$PWD/generated_code/include")
         '';
         postInstall = ''
-          test -f ${./apps/amm/qml}/Logos/Wallet/qmldir
-
-          walletQmlDir="shared-wallet/qml/Logos/Wallet"
-          if [ ! -d "$walletQmlDir" ]; then
+          walletQmlDescriptor="$(find "$PWD" -type f -path '*/shared-wallet/qml/Logos/Wallet/qmldir' -print -quit)"
+          if [ -z "$walletQmlDescriptor" ]; then
             echo "Built Logos.Wallet QML module not found"
             exit 1
           fi
+          walletQmlDir="$(dirname "$walletQmlDescriptor")"
+          walletQmlInstallDir="$out/lib/Logos/Wallet"
+          mkdir -p "$walletQmlInstallDir"
+          cp -r "$walletQmlDir/." "$walletQmlInstallDir/"
+          test -f "$walletQmlInstallDir/qmldir"
+        '';
+      };
+
+      # Token QML UI (apps/token). This UI consumes the token_module core
+      # module through its generated Logos SDK and the reusable shared wallet
+      # access/QML module. Keep the output separate so Basecamp can install or
+      # run `token-ui` independently from the AMM UI.
+      tokenAppOutputs = logos-module-builder.lib.mkLogosQmlModule {
+        src = ./apps/token;
+        configFile = ./apps/token/metadata.json;
+        flakeInputs = inputs // { token_module = tokenModuleOutputs; };
+        externalLibInputs = { };
+        preConfigure = ''
+          cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${./apps/shared/wallet}")
+          cmakeFlagsArray+=("-DLOGOS_WALLET_GENERATED_DIR=$PWD/generated_code/include")
+        '';
+        postInstall = ''
+          walletQmlDescriptor="$(find "$PWD" -type f -path '*/shared-wallet/qml/Logos/Wallet/qmldir' -print -quit)"
+          if [ -z "$walletQmlDescriptor" ]; then
+            echo "Built Logos.Wallet QML module not found"
+            exit 1
+          fi
+          walletQmlDir="$(dirname "$walletQmlDescriptor")"
           walletQmlInstallDir="$out/lib/Logos/Wallet"
           mkdir -p "$walletQmlInstallDir"
           cp -r "$walletQmlDir/." "$walletQmlInstallDir/"
@@ -167,6 +194,8 @@
       # for either attribute set.
       appApps = appOutputs.apps or { };
       appPkgs = appOutputs.packages or { };
+      tokenAppApps = tokenAppOutputs.apps or { };
+      tokenAppPkgs = tokenAppOutputs.packages or { };
 
       # AMM core module (modules/amm): the AMM business logic as a headless
       # `core` Logos module. It links the amm_ffi crate (the transport-
@@ -224,16 +253,29 @@
         (builtins.removeAttrs attrs [ "default" ]) // (if attrs ? default then { amm-ui = wrapWithDyld system attrs.default; } else { })
       ) appApps;
 
+      renamedTokenApps = builtins.mapAttrs (
+        system: attrs:
+        (builtins.removeAttrs attrs [ "default" ]) // (if attrs ? default then { token-ui = attrs.default; } else { })
+      ) tokenAppApps;
+
+      mergedApps = builtins.mapAttrs (
+        system: attrs:
+        attrs // (renamedTokenApps.${system} or { })
+      ) renamedApps;
+
       mergedPackages = builtins.mapAttrs (
         system: cratePkgs:
         let
           appSysPkgs = appPkgs.${system} or { };
+          tokenAppSysPkgs = tokenAppPkgs.${system} or { };
           ammModSysPkgs = ammModulePkgs.${system} or { };
           tokenModSysPkgs = tokenModulePkgs.${system} or { };
         in
         (builtins.removeAttrs cratePkgs [ "default" ])
         // (builtins.removeAttrs appSysPkgs [ "default" ])
         // (if appSysPkgs ? default then { amm-ui = appSysPkgs.default; } else { })
+        // (builtins.removeAttrs tokenAppSysPkgs [ "default" ])
+        // (if tokenAppSysPkgs ? default then { token-ui = tokenAppSysPkgs.default; } else { })
         // (builtins.removeAttrs ammModSysPkgs [ "default" ])
         // (if ammModSysPkgs ? default then { amm-module = ammModSysPkgs.default; } else { })
         // (builtins.removeAttrs tokenModSysPkgs [ "default" ])
@@ -242,7 +284,7 @@
     in
     (builtins.removeAttrs appOutputs [ "apps" "packages" ])
     // {
-      apps = renamedApps;
+      apps = mergedApps;
       packages = mergedPackages;
     };
 }

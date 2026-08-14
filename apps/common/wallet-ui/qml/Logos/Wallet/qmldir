@@ -1,4 +1,0 @@
-module Logos.Wallet
-# Public API. Implementation controls live under internal/ and are intentionally
-# not exported — importers of Logos.Wallet only see WalletControl.
-WalletControl 1.0 WalletControl.qml
