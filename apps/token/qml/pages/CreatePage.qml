@@ -7,6 +7,8 @@ import QtQuick.Layouts
 Item {
     id: root
 
+    objectName: "tokenCreatePage"
+
     property var store: null
     property var backend: null
     property var runtime: null
@@ -301,17 +303,22 @@ Item {
     Menu {
         id: examplesMenu
 
+        objectName: "tokenExamplesMenu"
+
         MenuItem {
+            objectName: "tokenFixedTemplate"
             text: qsTr("Fixed supply")
             onTriggered: root.setPattern("fixed")
         }
 
         MenuItem {
+            objectName: "tokenMetadataTemplate"
             text: qsTr("Metadata-backed fungible")
             onTriggered: root.setPattern("metadata")
         }
 
         MenuItem {
+            objectName: "tokenNftTemplate"
             text: qsTr("NFT collection")
             onTriggered: root.setPattern("nft")
         }
@@ -535,6 +542,8 @@ Item {
                                     Button {
                                     id: fungibleTab
 
+                                    objectName: "tokenFungibleTab"
+
                                     property bool selected: root.tokenKind === 0
 
                                     Layout.fillWidth: true
@@ -563,6 +572,8 @@ Item {
 
                                     Button {
                                     id: nonFungibleTab
+
+                                    objectName: "tokenNonFungibleTab"
 
                                     property bool selected: root.tokenKind === 1
 
@@ -622,6 +633,8 @@ Item {
                             TextField {
                                 id: nameField
 
+                                objectName: "tokenNameField"
+
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
                                 Accessible.name: qsTr("Token definition name")
@@ -650,6 +663,8 @@ Item {
 
                             TextField {
                                 id: supplyField
+
+                                objectName: "tokenSupplyField"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
@@ -704,6 +719,8 @@ Item {
 
                                 ComboBox {
                                     id: authoritySelector
+
+                                    objectName: "tokenAuthoritySelector"
 
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 44
@@ -791,8 +808,10 @@ Item {
                                         }
                                     }
 
-                                    CheckBox {
-                                        id: metadataCheckBox
+                                CheckBox {
+                                    id: metadataCheckBox
+
+                                    objectName: "tokenMetadataCheckBox"
 
                                         Layout.alignment: Qt.AlignVCenter
                                         Accessible.name: qsTr("Include metadata account")
@@ -948,8 +967,10 @@ Item {
                                 Layout.fillWidth: true
                                 spacing: 8
 
-                                Button {
-                                    id: examplesButton
+                            Button {
+                                id: examplesButton
+
+                                objectName: "tokenExamplesButton"
 
                                     Layout.preferredHeight: 36
                                     text: qsTr("Use template")
@@ -980,6 +1001,8 @@ Item {
 
                             Button {
                                 id: continueButton
+
+                                objectName: "tokenContinueButton"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: visible ? 46 : 0
@@ -1051,6 +1074,8 @@ Item {
                             Button {
                                 id: createAccountsButton
 
+                                objectName: "tokenCreateAccountsButton"
+
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 38
                                 enabled: root.backend !== null && root.backend.isWalletOpen && !root.accountBusy
@@ -1083,6 +1108,8 @@ Item {
 
                             TextField {
                                 id: definitionTargetField
+
+                                objectName: "tokenDefinitionTargetField"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
@@ -1120,6 +1147,8 @@ Item {
 
                             TextField {
                                 id: holdingTargetField
+
+                                objectName: "tokenHoldingTargetField"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
@@ -1164,6 +1193,8 @@ Item {
                                 TextField {
                                     id: metadataTargetField
 
+                                    objectName: "tokenMetadataTargetField"
+
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 44
                                     Accessible.name: qsTr("Metadata target account ID")
@@ -1200,6 +1231,8 @@ Item {
                                 Button {
                                     id: backToConfigureButton
 
+                                    objectName: "tokenBackToConfigureButton"
+
                                     Layout.preferredWidth: 112
                                     Layout.preferredHeight: 46
                                     activeFocusOnTab: true
@@ -1223,8 +1256,10 @@ Item {
                                     }
                                 }
 
-                                Button {
-                                    id: reviewButton
+                            Button {
+                                id: reviewButton
+
+                                objectName: "tokenReviewButton"
 
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 46
@@ -1466,6 +1501,8 @@ Item {
                                 Button {
                                     id: backToAccountsButton
 
+                                    objectName: "tokenBackToAccountsButton"
+
                                     Layout.preferredWidth: 112
                                     Layout.preferredHeight: 46
                                     activeFocusOnTab: true
@@ -1490,8 +1527,10 @@ Item {
                                     }
                                 }
 
-                                Button {
-                                    id: prepareButton
+                            Button {
+                                id: prepareButton
+
+                                objectName: "tokenPrepareButton"
 
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 46
@@ -1521,6 +1560,8 @@ Item {
 
                             Button {
                                 id: inspectButton
+
+                                objectName: "tokenInspectButton"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 42
@@ -1737,6 +1778,8 @@ Item {
 
                         Button {
                             id: summaryContinueButton
+
+                            objectName: "tokenSummaryContinueButton"
 
                             Layout.fillWidth: true
                             Layout.preferredHeight: visible ? 46 : 0

@@ -179,9 +179,29 @@
             exit 1
           fi
           walletQmlDir="$(dirname "$walletQmlDescriptor")"
+          # Stage the shared Logos.Wallet module at the plugin ROOT (NOT under
+          # qml/), and strip every plugin/resource directive from its qmldir so
+          # it loads as PURE QML from the co-located .qml files. Two reasons:
+          #   1. Basecamp's QML sandbox rejects `prefer :/qt/qml/...` (and the
+          #      `classname`/`typeinfo`/`linktarget` it pairs with) with
+          #      "Invalid null URL" — that compiled resource isn't registered
+          #      there. The .qml files are physically present, so the module
+          #      resolves without any native plugin; Token drives wallet ops
+          #      through TokenUiBackend regardless.
+          #   2. Basecamp adds the *containing dir* of every discovered Logos.*
+          #      module to a shared QML import path. Keeping Logos.Wallet at the
+          #      root means only the root is shared — putting it under qml/ would
+          #      also leak qml/NavBar.qml et al. into that shared namespace and
+          #      collide with other plugins' identically-named types (e.g. amm's
+          #      NavBar). Standalone reaches this root module via QML_IMPORT_PATH
+          #      (see the token-ui app wrapper), not a qml/ stub. Keep in sync
+          #      with apps/amm.
           walletQmlInstallDir="$out/lib/Logos/Wallet"
           mkdir -p "$walletQmlInstallDir"
           cp -r "$walletQmlDir/." "$walletQmlInstallDir/"
+          grep -vE '^(linktarget|optional plugin|plugin|classname|typeinfo|prefer)([[:space:]]|$)' \
+            "$walletQmlInstallDir/qmldir" > "$walletQmlInstallDir/qmldir.pureqml"
+          mv "$walletQmlInstallDir/qmldir.pureqml" "$walletQmlInstallDir/qmldir"
           test -f "$walletQmlInstallDir/qmldir"
         '';
       };
@@ -196,6 +216,18 @@
       appPkgs = appOutputs.packages or { };
       tokenAppApps = tokenAppOutputs.apps or { };
       tokenAppPkgs = tokenAppOutputs.packages or { };
+
+      # Keep the token UI's Basecamp install artifacts addressable after the
+      # core token module is merged into the same package set. Both builders
+      # expose an `lgx` attribute, so a named alias prevents the core module
+      # package from shadowing the UI package.
+      tokenUiPackages = builtins.mapAttrs (
+        system: attrs:
+        (if attrs ? lgx then { token-ui-lgx = attrs.lgx; } else { })
+        // (if attrs ? lgx-portable then { token-ui-lgx-portable = attrs.lgx-portable; } else { })
+        // (if attrs ? install then { token-ui-install = attrs.install; } else { })
+        // (if attrs ? install-portable then { token-ui-install-portable = attrs.install-portable; } else { })
+      ) tokenAppPkgs;
 
       # AMM core module (modules/amm): the AMM business logic as a headless
       # `core` Logos module. It links the amm_ffi crate (the transport-
@@ -230,6 +262,16 @@
       };
       tokenModulePkgs = tokenModuleOutputs.packages or { };
 
+      # Alias the token core module's Basecamp install artifacts. The bare
+      # `lgx` / `install` attrs collide across builders in the merged package
+      # set (last write wins), so expose an explicit `token-module-lgx` /
+      # `token-module-install` that resolves unambiguously.
+      tokenModuleAliases = builtins.mapAttrs (
+        system: attrs:
+        (if attrs ? lgx then { token-module-lgx = attrs.lgx; } else { })
+        // (if attrs ? install then { token-module-install = attrs.install; } else { })
+      ) tokenModulePkgs;
+
       # Wrap the app launcher to export DYLD_FALLBACK_LIBRARY_PATH pointing at the
       # amm_ffi lib. The logos module builder links the plugin against
       # @rpath/libamm_ffi.dylib but does NOT stage that dylib into the
@@ -253,9 +295,31 @@
         (builtins.removeAttrs attrs [ "default" ]) // (if attrs ? default then { amm-ui = wrapWithDyld system attrs.default; } else { })
       ) appApps;
 
+      # Prepend the token UI module's `lib` dir to QML_IMPORT_PATH before the
+      # standalone shell runs. The shared Logos.Wallet module is staged at the
+      # plugin ROOT (lib/Logos/Wallet), NOT under the view dir (lib/qml) — see
+      # the tokenAppOutputs postInstall for why (Basecamp shared-import-path
+      # collisions). But the standalone shell only searches the view dir for
+      # unqualified imports, so `import Logos.Wallet` from lib/qml/Main.qml would
+      # not resolve without help. logos-standalone-app appends any pre-existing
+      # QML_IMPORT_PATH to the paths it sets, so exporting lib here makes the
+      # root module resolvable with no qml/ stub. tokenAppPkgs.<sys>.default is
+      # the module derivation whose /lib is the plugin dir the app loads.
+      wrapTokenQmlImportPath = system: app:
+        let
+          pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
+          moduleDir = tokenAppPkgs.${system}.default;
+        in
+        app // {
+          program = "${pkgs.writeShellScript "run-token-ui" ''
+            export QML_IMPORT_PATH="${moduleDir}/lib''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
+            exec ${app.program} "$@"
+          ''}";
+        };
+
       renamedTokenApps = builtins.mapAttrs (
         system: attrs:
-        (builtins.removeAttrs attrs [ "default" ]) // (if attrs ? default then { token-ui = attrs.default; } else { })
+        (builtins.removeAttrs attrs [ "default" ]) // (if attrs ? default then { token-ui = wrapTokenQmlImportPath system attrs.default; } else { })
       ) tokenAppApps;
 
       mergedApps = builtins.mapAttrs (
@@ -268,18 +332,22 @@
         let
           appSysPkgs = appPkgs.${system} or { };
           tokenAppSysPkgs = tokenAppPkgs.${system} or { };
+          tokenUiSysPkgs = tokenUiPackages.${system} or { };
           ammModSysPkgs = ammModulePkgs.${system} or { };
           tokenModSysPkgs = tokenModulePkgs.${system} or { };
+          tokenModAliasPkgs = tokenModuleAliases.${system} or { };
         in
         (builtins.removeAttrs cratePkgs [ "default" ])
         // (builtins.removeAttrs appSysPkgs [ "default" ])
         // (if appSysPkgs ? default then { amm-ui = appSysPkgs.default; } else { })
         // (builtins.removeAttrs tokenAppSysPkgs [ "default" ])
         // (if tokenAppSysPkgs ? default then { token-ui = tokenAppSysPkgs.default; } else { })
+        // tokenUiSysPkgs
         // (builtins.removeAttrs ammModSysPkgs [ "default" ])
         // (if ammModSysPkgs ? default then { amm-module = ammModSysPkgs.default; } else { })
         // (builtins.removeAttrs tokenModSysPkgs [ "default" ])
         // (if tokenModSysPkgs ? default then { token-module = tokenModSysPkgs.default; } else { })
+        // tokenModAliasPkgs
       ) crateOutputs.packages;
     in
     (builtins.removeAttrs appOutputs [ "apps" "packages" ])

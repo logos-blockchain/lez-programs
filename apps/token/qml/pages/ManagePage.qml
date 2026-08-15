@@ -7,6 +7,8 @@ import QtQuick.Layouts 1.15
 Item {
     id: root
 
+    objectName: "tokenManagePage"
+
     property var store: null
     property var backend: null
     property var runtime: null
@@ -247,6 +249,7 @@ Item {
                         spacing: 8
 
                         Text {
+                            objectName: "tokenManageStatus"
                             Layout.fillWidth: true
                             color: root.loadError.length > 0 ? "#F08A76" : "#8E8780"
                             font.pixelSize: 12
@@ -256,6 +259,8 @@ Item {
 
                         Button {
                             id: refreshDefinitionsButton
+
+                            objectName: "tokenRefreshButton"
 
                             Layout.preferredWidth: 86
                             Layout.preferredHeight: 32
@@ -339,6 +344,8 @@ Item {
                         TextField {
                             id: searchField
 
+                            objectName: "tokenSearchField"
+
                             Layout.fillWidth: true
                             Layout.preferredHeight: 42
                             Accessible.name: qsTr("Search token definitions")
@@ -363,6 +370,8 @@ Item {
 
                             Button {
                                 id: allFilterButton
+
+                                objectName: "tokenAllFilterButton"
 
                                 Layout.preferredHeight: 30
                                 activeFocusOnTab: true
@@ -389,6 +398,8 @@ Item {
                             Button {
                                 id: fungibleFilterButton
 
+                                objectName: "tokenFungibleFilterButton"
+
                                 Layout.preferredHeight: 30
                                 activeFocusOnTab: true
                                 Accessible.name: qsTr("Show fungible definitions")
@@ -413,6 +424,8 @@ Item {
 
                             Button {
                                 id: nftFilterButton
+
+                                objectName: "tokenNftFilterButton"
 
                                 Layout.preferredHeight: 30
                                 activeFocusOnTab: true
@@ -458,6 +471,8 @@ Item {
 
                                 delegate: Rectangle {
                                     id: definitionRow
+
+                                    objectName: "tokenDefinitionRow"
 
                                     required property var modelData
 
@@ -802,7 +817,7 @@ Item {
 
                                 Text {
                                     Layout.fillWidth: true
-                                    visible: root.hasSelection && root.selectedDefinition.definitionHex
+                                    visible: root.hasSelection && !!root.selectedDefinition.definitionHex
                                     Layout.preferredHeight: visible ? implicitHeight : 0
                                     color: "#8E8780"
                                     elide: Text.ElideMiddle
@@ -1118,7 +1133,7 @@ Item {
                                                         visible: holdingRow.modelData.displayBalance !== undefined || holdingRow.modelData.printBalance !== undefined
                                                         color: "#8E8780"
                                                         font.pixelSize: 11
-                                                        text: holdingRow.modelData.printBalance !== undefined ? qsTr("print balance") : holdingRow.modelData.displayBalance
+                                                        text: holdingRow.modelData.printBalance !== undefined ? qsTr("print balance") : root.valueOrDash(holdingRow.modelData.displayBalance)
                                                     }
                                                 }
                                             }
@@ -1211,7 +1226,7 @@ Item {
                                     color: "#A9A098"
                                     font.pixelSize: 13
                                     wrapMode: Text.Wrap
-                                    text: root.hasSelection ? root.selectedDefinition.description : ""
+                                    text: root.hasSelection ? (root.selectedDefinition.description || "") : ""
                                 }
 
                                 Rectangle {

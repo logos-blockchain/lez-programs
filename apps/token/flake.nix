@@ -32,7 +32,18 @@
         walletQmlInstallDir="$out/lib/Logos/Wallet"
         mkdir -p "$walletQmlInstallDir"
         cp -r "$walletQmlDir/." "$walletQmlInstallDir/"
+        # Basecamp ui_qml views run in a sandboxed QML host and cannot load
+        # native plugins from an imported QML module. Token already exposes
+        # wallet operations through TokenUiBackend, so the shared wallet
+        # controls only need their pure-QML files here.
+        sed -i -E '/^(linktarget|optional plugin|classname|typeinfo|prefer)/d' \
+          "$walletQmlInstallDir/qmldir"
+        find "$walletQmlInstallDir" -maxdepth 1 -type f \
+          \( -name 'liblogos_wallet_qml*' -o -name 'plugins.qmltypes' \
+             -o -name '*module_dir_map.qrc' \) -delete
         test -f "$walletQmlInstallDir/qmldir"
+        grep -q '^module Logos.Wallet$' "$walletQmlInstallDir/qmldir"
+        grep -q '^WalletControl 1.0 WalletControl.qml$' "$walletQmlInstallDir/qmldir"
       '';
     };
 }

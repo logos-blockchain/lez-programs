@@ -69,6 +69,7 @@ Item {
 
                         required property int index
                         required property var modelData
+                        objectName: tabIndex === 0 ? "tokenCreateTab" : "tokenInspectTab"
                         readonly property int tabIndex: index
                         readonly property bool active: root.currentIndex === tabIndex
 

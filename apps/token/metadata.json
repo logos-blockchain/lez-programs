@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "ui_qml",
   "category": "token",
+  "display_name": "Token",
   "description": "Logos UI module for creating and inspecting Token Program assets",
   "main": "token_ui_plugin",
   "view": "qml/Main.qml",

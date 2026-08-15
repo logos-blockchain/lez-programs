@@ -2,11 +2,14 @@ import QtQuick 2.15
 
 import Logos.Theme
 
+import "chrome"
 import "pages"
 import "state"
 
 Item {
     id: root
+
+    objectName: "tokenApp"
 
     // Backend replica + account model, bridged from the C++ backend.
     readonly property var backend: logos.module("token_ui")
