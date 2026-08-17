@@ -99,7 +99,7 @@ pub struct ResolvePoolRequest {
 pub struct SwapExactInQuoteRequest {
     pub token_in_id: String,
     pub token_out_id: String,
-    pub amount_in_raw: String,
+    pub amount_in: String,
     pub slippage_bps: u32,
     /// Pool account data (hex Borsh `PoolDefinition`). Empty / undecodable ⇒ the
     /// op returns the `no_pool` error.
@@ -111,7 +111,7 @@ pub struct SwapExactInQuoteRequest {
 pub struct SwapExactOutQuoteRequest {
     pub token_in_id: String,
     pub token_out_id: String,
-    pub amount_out_raw: String,
+    pub amount_out: String,
     pub slippage_bps: u32,
     /// Pool account data (hex Borsh `PoolDefinition`). Empty / undecodable ⇒ the
     /// op returns the `no_pool` error.
@@ -171,11 +171,11 @@ pub struct CreatePoolQuoteRequest {
     /// order). Required only in the price-only mode (no `amount_*_raw`), where it drives the
     /// minimum opening deposit; when amounts are supplied the op derives the price from them.
     #[serde(default)]
-    pub price_raw: Option<String>,
+    pub price: Option<String>,
     #[serde(default)]
-    pub amount_a_raw: Option<String>,
+    pub amount_a: Option<String>,
     #[serde(default)]
-    pub amount_b_raw: Option<String>,
+    pub amount_b: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -190,9 +190,9 @@ pub struct CreatePoolPlanRequest {
     pub token_a_id: String,
     pub token_b_id: String,
     #[serde(default)]
-    pub amount_a_raw: Option<String>,
+    pub amount_a: Option<String>,
     #[serde(default)]
-    pub amount_b_raw: Option<String>,
+    pub amount_b: Option<String>,
     pub fee_bps: u32,
     pub deadline_ms: String,
     pub user_holding_a_id: String,
@@ -208,17 +208,17 @@ pub struct CreatePoolPlanRequest {
 pub struct AddLiquidityQuoteRequest {
     pub token_a_id: String,
     pub token_b_id: String,
-    pub max_amount_a_raw: String,
-    pub max_amount_b_raw: String,
-    /// Slippage tolerance in basis points — the quote returns `minimumLpRaw`, the LP floor
-    /// the submit accepts (like the swap quotes take `slippageBps` → `minReceivedRaw`).
+    pub max_amount_a: String,
+    pub max_amount_b: String,
+    /// Slippage tolerance in basis points — the quote returns `minimumLp`, the LP floor
+    /// the submit accepts (like the swap quotes take `slippageBps` → `minReceived`).
     #[serde(default)]
     pub slippage_bps: u32,
     pub pool_data: String,
 }
 
 /// Builds the `AddLiquidity` submission — the add counterpart of `CreatePoolPlanRequest`.
-/// `min_lp_raw` is the caller's slippage floor on the LP minted (the guest's
+/// `min_lp` is the caller's slippage floor on the LP minted (the guest's
 /// `min_amount_liquidity`, applied at submit like the swap plans' `min_out`); `pool_data`
 /// supplies the stored vault / LP-definition ids the guest asserts against.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -231,9 +231,9 @@ pub struct AddLiquidityPlanRequest {
     pub config: AccountRead,
     pub token_a_id: String,
     pub token_b_id: String,
-    pub max_amount_a_raw: String,
-    pub max_amount_b_raw: String,
-    pub min_lp_raw: String,
+    pub max_amount_a: String,
+    pub max_amount_b: String,
+    pub min_lp: String,
     pub deadline_ms: String,
     pub user_holding_a_id: String,
     pub user_holding_b_id: String,
@@ -241,7 +241,7 @@ pub struct AddLiquidityPlanRequest {
     pub pool_data: String,
 }
 
-/// Prices burning `lp_amount_raw` of an existing pool's LP. `slippage_bps` sets the
+/// Prices burning `lp_amount` of an existing pool's LP. `slippage_bps` sets the
 /// `minimumAmount*Raw` floors the submit enforces (the guest requires both nonzero and
 /// `withdraw >= min`). `pool_data` is the hex Borsh `PoolDefinition` (empty ⇒ no pool).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -249,7 +249,7 @@ pub struct AddLiquidityPlanRequest {
 pub struct RemoveLiquidityQuoteRequest {
     pub token_a_id: String,
     pub token_b_id: String,
-    pub lp_amount_raw: String,
+    pub lp_amount: String,
     #[serde(default)]
     pub slippage_bps: u32,
     pub pool_data: String,
@@ -271,9 +271,9 @@ pub struct RemoveLiquidityPlanRequest {
     pub config: AccountRead,
     pub token_a_id: String,
     pub token_b_id: String,
-    pub lp_amount_raw: String,
-    pub min_amount_a_raw: String,
-    pub min_amount_b_raw: String,
+    pub lp_amount: String,
+    pub min_amount_a: String,
+    pub min_amount_b: String,
     pub deadline_ms: String,
     pub user_holding_a_id: String,
     pub user_holding_b_id: String,

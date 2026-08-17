@@ -296,7 +296,7 @@ app through a QML inspector: each test connects to the inspector's TCP server,
 finds elements, clicks them, and asserts on the resulting state. `swap.mjs`
 selects two tokens, enters a sell amount, submits a swap end-to-end, and then
 verifies the pool reserves actually changed on-chain (read back from the
-sequencer via the app's `resolvePool`).
+sequencer via the app's `resolvePoolAccount`).
 
 > **For the fully isolated, script-driven test flow** (a dedicated wallet from a
 > fixed mnemonic + auto-created pool + isolated token config, touching nothing in

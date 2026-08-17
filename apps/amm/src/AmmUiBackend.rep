@@ -76,7 +76,7 @@ class AmmUiBackend
     // (no pool, unreadable AMM_PROGRAM_BIN, bad inputs, or a failed tx).
     SLOT(QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountInDecimal, QString minOutDecimal, QString deadlineDecimal))
     // Server-side SwapExactInput preview for (tokenInHex, tokenOutHex): reads the
-    // pool and returns { status:"ok", error:"", expectedOutRaw, minReceivedRaw,
+    // pool and returns { status:"ok", error:"", expectedOut, minReceived,
     // priceImpactBps }, oriented and priced via the shared on-chain formula.
     // amountInDecimal is a decimal-string base-unit amount; slippageBps is basis
     // points. On failure { status:"error", error:<code> } — no_pool,
@@ -84,7 +84,7 @@ class AmmUiBackend
     // backend_error. Read-only, no submission.
     SLOT(QVariantMap swapExactInQuote(QString tokenInHex, QString tokenOutHex, QString amountInDecimal, int slippageBps))
     // Server-side SwapExactOutput preview for (tokenInHex, tokenOutHex): reads the
-    // pool and returns { status:"ok", error:"", requiredInRaw, maxInRaw,
+    // pool and returns { status:"ok", error:"", requiredIn, maxIn,
     // priceImpactBps } — the input needed for the desired output and the slippage
     // ceiling on it — oriented and priced via the shared on-chain formula.
     // amountOutDecimal is a decimal-string base-unit amount; slippageBps is basis
@@ -107,9 +107,9 @@ class AmmUiBackend
     SLOT(QVariantList tokenList())
 
     // Server-side create-pool preview from the two deposit amounts. `request`
-    // carries { tokenAId, tokenBId, amountARaw, amountBRaw } (ids hex or base58;
+    // carries { tokenAId, tokenBId, amountA, amountB } (ids hex or base58;
     // amounts decimal-string base units). Returns { status:"ok", error:"",
-    // amountARaw, amountBRaw, expectedLpRaw, lockedLpRaw, initialPriceRaw } — the
+    // amountA, amountB, expectedLp, lockedLp, initialPrice } — the
     // LP the creator receives and the opening price, via the shared on-chain math.
     // On failure { status:"error", error:<code> } — invalid_token_id,
     // same_token_pair, amount_too_low, amount_required, bad_amount, backend_error.
@@ -117,17 +117,17 @@ class AmmUiBackend
     // PDA nor the pricing).
     SLOT(QVariantMap createPoolQuote(QVariantMap request))
     // Server-side add-liquidity preview from the two max deposit amounts. `request`
-    // carries { tokenAId, tokenBId, maxAmountARaw, maxAmountBRaw, slippageBps } (ids hex or
-    // base58). Reads the pool and returns { status:"ok", error:"", amountARaw, amountBRaw
-    // (the actual ratio-matched deposits, display order), expectedLpRaw, minimumLpRaw (the
-    // slippage floor on the LP minted — the submit's min_amount_liquidity), priceRaw }. On
+    // carries { tokenAId, tokenBId, maxAmountA, maxAmountB, slippageBps } (ids hex or
+    // base58). Reads the pool and returns { status:"ok", error:"", amountA, amountB
+    // (the actual ratio-matched deposits, display order), expectedLp, minimumLp (the
+    // slippage floor on the LP minted — the submit's min_amount_liquidity), price }. On
     // failure { status:"error", error:<code> } — no_pool, pair_mismatch, invalid_token_id,
     // invalid_slippage, amount_too_low, minimum_lp_zero, bad_amount, backend_error.
     // Read-only, no submission.
     SLOT(QVariantMap addLiquidityQuote(QVariantMap request))
     // Submits a NewDefinition transaction creating the pool for the request's pair.
     // `request` carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId,
-    // amountARaw, amountBRaw, feeBps, deadlineMs } (ids hex or base58; amounts/deadline
+    // amountA, amountB, feeBps, deadlineMs } (ids hex or base58; amounts/deadline
     // decimal strings). A new pool has no existing LP holding, so the caller supplies
     // lpHoldingId — a fresh account it created via createAccountPublic(); the backend
     // just forwards to the module and creates no wallet accounts here. Returns
@@ -137,28 +137,28 @@ class AmmUiBackend
     // wallet_submission_failed, backend_error).
     SLOT(QVariantMap createPool(QVariantMap request))
     // Submits an AddLiquidity transaction into the request's existing pool. `request`
-    // carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, maxAmountARaw,
-    // maxAmountBRaw, minLpRaw, deadlineMs } (ids hex or base58; amounts/deadline decimal
-    // strings). minLpRaw is the slippage floor on the LP minted; lpHoldingId is a fresh
+    // carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, maxAmountA,
+    // maxAmountB, minLp, deadlineMs } (ids hex or base58; amounts/deadline decimal
+    // strings). minLp is the slippage floor on the LP minted; lpHoldingId is a fresh
     // holding the caller supplies (the flow creates it) to receive the minted LP — the
     // backend forwards and creates no wallet accounts. Returns
     // { status:"ok", error:"", transactionId:<hex tx hash> } on success, else
     // { status:"error", error:<code> } (wallet_unavailable, config_missing,
     // invalid_account_id, bad_amount, no_pool, wallet_submission_failed, backend_error).
     SLOT(QVariantMap addLiquidity(QVariantMap request))
-    // Server-side remove-liquidity preview: burning `lpAmountRaw` returns the
+    // Server-side remove-liquidity preview: burning `lpAmount` returns the
     // proportional share of each reserve. `request` carries { tokenAId, tokenBId,
-    // lpAmountRaw, slippageBps } (ids hex or base58). Reads the pool and returns
-    // { status:"ok", error:"", amountARaw, amountBRaw (the withdrawals, display
-    // order), minimumAmountARaw, minimumAmountBRaw (the slippage floors the submit
-    // enforces), priceRaw }. On failure { status:"error", error:<code> } —
+    // lpAmount, slippageBps } (ids hex or base58). Reads the pool and returns
+    // { status:"ok", error:"", amountA, amountB (the withdrawals, display
+    // order), minimumAmountA, minimumAmountB (the slippage floors the submit
+    // enforces), price }. On failure { status:"error", error:<code> } —
     // no_pool, pair_mismatch, invalid_token_id, invalid_slippage,
     // insufficient_pool_liquidity, amount_too_low, minimum_amount_zero,
     // bad_amount, config_missing, backend_error. Read-only, no submission.
     SLOT(QVariantMap removeLiquidityQuote(QVariantMap request))
     // Submits a RemoveLiquidity transaction against the request's pool. `request`
-    // carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, lpAmountRaw,
-    // minAmountARaw, minAmountBRaw, deadlineMs } (ids hex or base58;
+    // carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, lpAmount,
+    // minAmountA, minAmountB, deadlineMs } (ids hex or base58;
     // amounts/deadline decimal strings). Unlike createPool/addLiquidity nothing
     // fresh is created: lpHoldingId is the existing holding burned from, and the
     // token a/b holdings receive the withdrawal. minAmount*Raw are the slippage

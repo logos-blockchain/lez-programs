@@ -47,15 +47,15 @@ Rectangle {
     // ── Exact-input quote (backend.swapExactInQuote) ────────────────────────
     property bool quoteInLoading: false
     property string quoteInError: ""
-    property string quoteExpectedOutRaw: "0"
-    property string quoteMinReceivedRaw: "0"
+    property string quoteExpectedOut: "0"
+    property string quoteMinReceived: "0"
     property int quotePriceImpactBps: 0
 
     // ── Exact-output quote (backend.swapExactOutQuote) ──────────────────────
     property bool quoteOutLoading: false
     property string quoteOutError: ""
-    property string quoteRequiredInRaw: "0"
-    property string quoteMaxInRaw: "0"
+    property string quoteRequiredIn: "0"
+    property string quoteMaxIn: "0"
     property int quoteOutPriceImpactBps: 0
 
     // ── Swap submission (backend.swapExactInput) ────────────────────────────
@@ -162,8 +162,8 @@ Rectangle {
     }
 
     function resetQuoteIn() {
-        root.quoteExpectedOutRaw = "0"
-        root.quoteMinReceivedRaw = "0"
+        root.quoteExpectedOut = "0"
+        root.quoteMinReceived = "0"
         root.quotePriceImpactBps = 0
     }
 
@@ -217,8 +217,8 @@ Rectangle {
                     return
                 root.quoteInLoading = false
                 if (quote && quote.status === "ok") {
-                    root.quoteExpectedOutRaw = quote.expectedOutRaw || "0"
-                    root.quoteMinReceivedRaw = quote.minReceivedRaw || "0"
+                    root.quoteExpectedOut = quote.expectedOut || "0"
+                    root.quoteMinReceived = quote.minReceived || "0"
                     root.quotePriceImpactBps = quote.priceImpactBps || 0
                     root.quoteInError = ""
                 } else {
@@ -247,8 +247,8 @@ Rectangle {
     }
 
     function resetQuoteOut() {
-        root.quoteRequiredInRaw = "0"
-        root.quoteMaxInRaw = "0"
+        root.quoteRequiredIn = "0"
+        root.quoteMaxIn = "0"
         root.quoteOutPriceImpactBps = 0
     }
 
@@ -311,8 +311,8 @@ Rectangle {
                     return
                 root.quoteOutLoading = false
                 if (quote && quote.status === "ok") {
-                    root.quoteRequiredInRaw = quote.requiredInRaw || "0"
-                    root.quoteMaxInRaw = quote.maxInRaw || "0"
+                    root.quoteRequiredIn = quote.requiredIn || "0"
+                    root.quoteMaxIn = quote.maxIn || "0"
                     root.quoteOutPriceImpactBps = quote.priceImpactBps || 0
                     root.quoteOutError = ""
                 } else {
@@ -348,11 +348,11 @@ Rectangle {
     // exact figures shown and submitted come from the raw quote strings directly.
     readonly property real parsedSellAmount: editingSide === "sell"
         ? parsedSellInput
-        : (Number(root.quoteRequiredInRaw) || 0)
+        : (Number(root.quoteRequiredIn) || 0)
 
     readonly property real parsedBuyAmount: editingSide === "buy"
         ? parsedBuyInput
-        : (Number(root.quoteExpectedOutRaw) || 0)
+        : (Number(root.quoteExpectedOut) || 0)
 
     readonly property real feeAmount: swapState.feeAmount(parsedSellAmount)
 
@@ -362,7 +362,7 @@ Rectangle {
     // The quote's exact-integer bound, verbatim (no Number()/double round-trip,
     // which would lose precision on large u128 values and diverge from execution):
     // min received (exact input) or max sent (exact output).
-    readonly property string boundRaw: editingSide === "sell" ? root.quoteMinReceivedRaw : root.quoteMaxInRaw
+    readonly property string bound: editingSide === "sell" ? root.quoteMinReceived : root.quoteMaxIn
     readonly property string boundSymbol: editingSide === "sell"
         ? (buyToken ? buyToken.symbol : "")
         : (sellToken ? sellToken.symbol : "")
@@ -432,11 +432,11 @@ Rectangle {
     // output in the Sell direction.
     readonly property string sellDisplay: editingSide === "sell"
         ? sellInput
-        : ((root.quoteRequiredInRaw && root.quoteRequiredInRaw !== "0") ? root.quoteRequiredInRaw : "")
+        : ((root.quoteRequiredIn && root.quoteRequiredIn !== "0") ? root.quoteRequiredIn : "")
 
     readonly property string buyDisplay: editingSide === "buy"
         ? buyInput
-        : ((root.quoteExpectedOutRaw && root.quoteExpectedOutRaw !== "0") ? root.quoteExpectedOutRaw : "")
+        : ((root.quoteExpectedOut && root.quoteExpectedOut !== "0") ? root.quoteExpectedOut : "")
 
     // Confirmation-dialog preview. The typed side is exact; the quoted side and
     // the slippage bound come from the quote's exact-integer strings. boundValue
@@ -446,9 +446,9 @@ Rectangle {
         return {
             "sellToken": sellToken ? sellToken.symbol : "",
             "buyToken": buyToken ? buyToken.symbol : "",
-            "sellAmount": isExactIn ? root.sellInput : root.quoteRequiredInRaw,
-            "buyAmount": isExactIn ? root.quoteExpectedOutRaw : root.buyInput,
-            "boundValue": isExactIn ? root.quoteMinReceivedRaw : root.quoteMaxInRaw,
+            "sellAmount": isExactIn ? root.sellInput : root.quoteRequiredIn,
+            "buyAmount": isExactIn ? root.quoteExpectedOut : root.buyInput,
+            "boundValue": isExactIn ? root.quoteMinReceived : root.quoteMaxIn,
             "feeAmount": swapState.formatTokenAmount(feeAmount, sellToken ? sellToken.symbol : ""),
             "priceImpactPercent": swapState.formatPercent(priceImpactPercent),
             "priceImpactPercentValue": priceImpactPercent,
@@ -477,13 +477,13 @@ Rectangle {
         var outHolding = root.buyHolding
 
         // The on-chain guard is the quote's exact-integer bound: the exact-input
-        // floor (minReceivedRaw) or the exact-output ceiling (maxInRaw). The typed
+        // floor (minReceived) or the exact-output ceiling (maxIn). The typed
         // side (sellInput / buyInput) is the exact amount for that direction.
         var pending = root.editingSide === "sell"
             ? root.backend.swapExactInput(inDef, outDef, inHolding, outHolding,
-                                          root.sellInput, root.quoteMinReceivedRaw, deadline)
+                                          root.sellInput, root.quoteMinReceived, deadline)
             : root.backend.swapExactOutput(inDef, outDef, inHolding, outHolding,
-                                           root.buyInput, root.quoteMaxInRaw, deadline)
+                                           root.buyInput, root.quoteMaxIn, deadline)
 
         logos.watch(pending,
             function (txHash) {
@@ -647,7 +647,7 @@ Rectangle {
             priceImpactText: swapState.formatPercent(root.priceImpactPercent)
             priceImpactPercent: root.priceImpactPercent
             boundLabel: root.boundLabel
-            boundText: root.boundSymbol ? (root.boundRaw + " " + root.boundSymbol) : root.boundRaw
+            boundText: root.boundSymbol ? (root.bound + " " + root.boundSymbol) : root.bound
         }
 
         SlippageToleranceControl {

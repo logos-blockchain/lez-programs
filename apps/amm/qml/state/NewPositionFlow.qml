@@ -129,8 +129,8 @@ QtObject {
         root.runtime.watch(root.backend.addLiquidityQuote({
             "tokenAId": built.request.tokenAId,
             "tokenBId": built.request.tokenBId,
-            "maxAmountARaw": built.request.maxAmountARaw,
-            "maxAmountBRaw": built.request.maxAmountBRaw,
+            "maxAmountA": built.request.maxAmountA,
+            "maxAmountB": built.request.maxAmountB,
             "slippageBps": built.request.slippageBps
         }),
             function(quote) {
@@ -187,32 +187,32 @@ QtObject {
             "status": "ok",
             "tokenAId": built.request.tokenAId,
             "tokenBId": built.request.tokenBId,
-            "actualAmountARaw": String(quote.actualAmountARaw || "0"),
-            "actualAmountBRaw": String(quote.actualAmountBRaw || "0"),
-            "minimumAmountARaw": String(quote.minimumAmountARaw || "0"),
-            "minimumAmountBRaw": String(quote.minimumAmountBRaw || "0"),
-            "expectedLpRaw": String(quote.expectedLpRaw || "0"),
-            "lockedLpRaw": String(quote.lockedLpRaw || "0"),
-            "priceRaw": String(quote.priceRaw || "0")
+            "actualAmountA": String(quote.actualAmountA || "0"),
+            "actualAmountB": String(quote.actualAmountB || "0"),
+            "minimumAmountA": String(quote.minimumAmountA || "0"),
+            "minimumAmountB": String(quote.minimumAmountB || "0"),
+            "expectedLp": String(quote.expectedLp || "0"),
+            "lockedLp": String(quote.lockedLp || "0"),
+            "price": String(quote.price || "0")
         }
     }
 
     // Maps addLiquidityQuote + the pool read into the quote shape NewPositionForm reads for an
     // active pool. Amounts/reserves are in the request's (canonical) order, matching the form's
-    // displayIsCanonical mapping; minimumLpRaw is the slippage floor the module computed.
+    // displayIsCanonical mapping; minimumLp is the slippage floor the module computed.
     function assembleAddQuote(built, pool, quote) {
         return {
             "status": "ok",
             "tokenAId": built.request.tokenAId,
             "tokenBId": built.request.tokenBId,
-            "actualAmountARaw": String(quote.amountARaw || "0"),
-            "actualAmountBRaw": String(quote.amountBRaw || "0"),
-            "expectedLpRaw": String(quote.expectedLpRaw || "0"),
-            "minimumLpRaw": String(quote.minimumLpRaw || "0"),
-            "reserveARaw": String(pool.reserveA || "0"),
-            "reserveBRaw": String(pool.reserveB || "0"),
+            "actualAmountA": String(quote.amountA || "0"),
+            "actualAmountB": String(quote.amountB || "0"),
+            "expectedLp": String(quote.expectedLp || "0"),
+            "minimumLp": String(quote.minimumLp || "0"),
+            "reserveA": String(pool.reserveA || "0"),
+            "reserveB": String(pool.reserveB || "0"),
             "poolFeeBps": pool.feeBps,
-            "priceRaw": String(quote.priceRaw || "0")
+            "price": String(quote.price || "0")
         }
     }
 
@@ -227,12 +227,12 @@ QtObject {
             return
         }
 
-        // Route by pool state: creation (priceRaw is set only on the missing-pool
+        // Route by pool state: creation (price is set only on the missing-pool
         // path) goes through createPool; the active-pool branch through addLiquidity. Both
         // mint a fresh LP holding then submit via the lean module ops (hex ids,
         // caller-provided accounts). Quoting for both branches is now on the lean ops
         // (createPoolQuote / addLiquidityQuote), routed by resolvePool in requestQuoteNow.
-        if (snapshot.request.priceRaw !== undefined)
+        if (snapshot.request.price !== undefined)
             root.createPool(snapshot)
         else
             root.addLiquidity(snapshot)
@@ -262,8 +262,8 @@ QtObject {
             "holdingAId": snapshot.holdingAId,
             "holdingBId": snapshot.holdingBId,
             "lpHoldingId": lpHoldingId,
-            "amountARaw": snapshot.request.amountARaw,
-            "amountBRaw": snapshot.request.amountBRaw,
+            "amountA": snapshot.request.amountA,
+            "amountB": snapshot.request.amountB,
             "feeBps": snapshot.request.feeBps,
             // u64-max sentinel = no deadline, same as the swap submits.
             "deadlineMs": "18446744073709551615"
@@ -291,7 +291,7 @@ QtObject {
 
     // Add liquidity to an existing pool via the new addLiquidity op. Like createPool a fresh
     // LP holding receives the minted LP, so create one then submit. The submit reuses the
-    // addLiquidityQuote result (maxAmounts + minimumLpRaw) carried on the snapshot. No
+    // addLiquidityQuote result (maxAmounts + minimumLp) carried on the snapshot. No
     // confirmation poll yet.
     function addLiquidity(snapshot) {
         root.runtime.watch(root.backend.createAccountPublic(),
@@ -314,9 +314,9 @@ QtObject {
             "holdingAId": snapshot.holdingAId,
             "holdingBId": snapshot.holdingBId,
             "lpHoldingId": lpHoldingId,
-            "maxAmountARaw": snapshot.request.maxAmountARaw,
-            "maxAmountBRaw": snapshot.request.maxAmountBRaw,
-            "minLpRaw": snapshot.minLpRaw,
+            "maxAmountA": snapshot.request.maxAmountA,
+            "maxAmountB": snapshot.request.maxAmountB,
+            "minLp": snapshot.minLp,
             // u64-max sentinel = no deadline, same as the swap submits.
             "deadlineMs": "18446744073709551615"
         }

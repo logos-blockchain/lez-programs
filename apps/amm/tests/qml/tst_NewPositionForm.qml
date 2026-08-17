@@ -44,14 +44,14 @@ TestCase {
                 {
                     "definitionId": tokenLow,
                     "name": "Low",
-                    "totalSupplyRaw": "1000000",
+                    "totalSupply": "1000000",
                     "balanceRaw": "1000",
                     "selectable": true
                 },
                 {
                     "definitionId": tokenHigh,
                     "name": "High",
-                    "totalSupplyRaw": "1000000000000",
+                    "totalSupply": "1000000000000",
                     "balanceRaw": "5000000000",
                     "selectable": true
                 }
@@ -66,14 +66,14 @@ TestCase {
                 {
                     "definitionId": tokenLow,
                     "name": "Sir Mints-a-Lot",
-                    "totalSupplyRaw": "1000000000000",
+                    "totalSupply": "1000000000000",
                     "balanceRaw": "1000000000",
                     "selectable": true
                 },
                 {
                     "definitionId": tokenHigh,
                     "name": "Aurora",
-                    "totalSupplyRaw": "1000000000000",
+                    "totalSupply": "1000000000000",
                     "balanceRaw": "1000000000",
                     "selectable": true
                 }
@@ -148,10 +148,10 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "missing_pool",
-            "minimumAmountARaw": "2",
-            "minimumAmountBRaw": "3",
-            "actualAmountARaw": "2",
-            "actualAmountBRaw": "3"
+            "minimumAmountA": "2",
+            "minimumAmountB": "3",
+            "actualAmountA": "2",
+            "actualAmountB": "3"
         }
         var form = createForm()
         form.priceAmountA = "3"
@@ -170,8 +170,8 @@ TestCase {
 
         var built = form.buildQuoteRequest()
         verify(built.ok)
-        compare(built.request.amountARaw, "4")
-        compare(built.request.amountBRaw, "6")
+        compare(built.request.amountA, "4")
+        compare(built.request.amountB, "6")
     }
 
     function test_missingPoolAcceptsLargeDirectAmountsFromEitherSide() {
@@ -183,10 +183,10 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "missing_pool",
-            "minimumAmountARaw": "26",
-            "minimumAmountBRaw": "39",
-            "actualAmountARaw": "26",
-            "actualAmountBRaw": "39"
+            "minimumAmountA": "26",
+            "minimumAmountB": "39",
+            "actualAmountA": "26",
+            "actualAmountB": "39"
         })
         wait(0)
 
@@ -195,9 +195,9 @@ TestCase {
         compare(form.amountB, "100")
         var built = form.buildQuoteRequest()
         verify(built.ok)
-        compare(built.request.amountARaw, "100")
-        compare(built.request.amountBRaw, "150")
-        compare(built.request.priceRaw, "27670116110564327424")
+        compare(built.request.amountA, "100")
+        compare(built.request.amountB, "150")
+        compare(built.request.price, "27670116110564327424")
         verify(!built.request.hasOwnProperty("depositScaleBps"))
 
         form.finishMissingAmount("B", "200")
@@ -205,8 +205,8 @@ TestCase {
         compare(form.amountB, "200")
         built = form.buildQuoteRequest()
         verify(built.ok)
-        compare(built.request.amountARaw, "200")
-        compare(built.request.amountBRaw, "300")
+        compare(built.request.amountA, "200")
+        compare(built.request.amountB, "300")
     }
 
     function test_missingPoolRoundsPairedRawAmounts() {
@@ -218,10 +218,10 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "missing_pool",
-            "minimumAmountARaw": "1",
-            "minimumAmountBRaw": "1",
-            "actualAmountARaw": "1",
-            "actualAmountBRaw": "1"
+            "minimumAmountA": "1",
+            "minimumAmountB": "1",
+            "actualAmountA": "1",
+            "actualAmountB": "1"
         })
         wait(0)
 
@@ -236,8 +236,8 @@ TestCase {
             compare(form.amountB, cases[i].paired)
             var built = form.buildQuoteRequest()
             verify(built.ok)
-            compare(built.request.amountARaw, cases[i].rawA)
-            compare(built.request.amountBRaw, cases[i].rawB)
+            compare(built.request.amountA, cases[i].rawA)
+            compare(built.request.amountB, cases[i].rawB)
         }
 
         form.finishMissingAmount("A", "1.1234567")
@@ -253,10 +253,10 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "missing_pool",
-            "minimumAmountARaw": "2000000",
-            "minimumAmountBRaw": "3",
-            "actualAmountARaw": "2000000",
-            "actualAmountBRaw": "3"
+            "minimumAmountA": "2000000",
+            "minimumAmountB": "3",
+            "actualAmountA": "2000000",
+            "actualAmountB": "3"
         })
         wait(0)
 
@@ -290,10 +290,10 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "missing_pool",
-            "minimumAmountARaw": "2000000",
-            "minimumAmountBRaw": "3",
-            "actualAmountARaw": "2000000",
-            "actualAmountBRaw": "3"
+            "minimumAmountA": "2000000",
+            "minimumAmountB": "3",
+            "actualAmountA": "2000000",
+            "actualAmountB": "3"
         })
         wait(0)
         var amountAInput = findChild(form, "tokenAAmountInput")
@@ -319,10 +319,10 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "missing_pool",
-            "minimumAmountARaw": "2000000",
-            "minimumAmountBRaw": "3",
-            "actualAmountARaw": "2000000",
-            "actualAmountBRaw": "3"
+            "minimumAmountA": "2000000",
+            "minimumAmountB": "3",
+            "actualAmountA": "2000000",
+            "actualAmountB": "3"
         }
         var form = createForm()
         form.flowState = flowState(quote)
@@ -336,10 +336,10 @@ TestCase {
                 "tokenAId": tokenHigh,
                 "tokenBId": tokenLow,
                 "poolStatus": "missing_pool",
-                "minimumAmountARaw": "2000000",
-                "minimumAmountBRaw": "3",
-                "actualAmountARaw": "2000000",
-                "actualAmountBRaw": "3"
+                "minimumAmountA": "2000000",
+                "minimumAmountB": "3",
+                "actualAmountA": "2000000",
+                "actualAmountB": "3"
             },
             "contextLoading": false,
             "quoteLoading": false,
@@ -357,13 +357,13 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "active_pool",
-            "reserveARaw": "2",
-            "reserveBRaw": "10",
-            "maxAmountARaw": "4",
-            "maxAmountBRaw": "20",
+            "reserveA": "2",
+            "reserveB": "10",
+            "maxAmountA": "4",
+            "maxAmountB": "20",
             "errors": [{
                 "code": "amount_exceeds_balance",
-                "blockingFields": ["maxAmountARaw"]
+                "blockingFields": ["maxAmountA"]
             }]
         }
         var form = createForm()
@@ -387,10 +387,10 @@ TestCase {
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow,
             "poolStatus": "active_pool",
-            "reserveARaw": "2",
-            "reserveBRaw": "10",
-            "maxAmountARaw": "4",
-            "maxAmountBRaw": "20"
+            "reserveA": "2",
+            "reserveB": "10",
+            "maxAmountA": "4",
+            "maxAmountB": "20"
         }
         var form = createForm()
         form.flowState = flowState(quote)
@@ -411,8 +411,8 @@ TestCase {
 
         var built = form.buildQuoteRequest()
         verify(built.ok)
-        compare(built.request.maxAmountARaw, "1")
-        compare(built.request.maxAmountBRaw, "5")
+        compare(built.request.maxAmountA, "1")
+        compare(built.request.maxAmountB, "5")
 
         form.finishActiveAmount("B", "1.1234567")
         compare(form.amountB, "1.1234567")
@@ -427,10 +427,10 @@ TestCase {
             "tokenBId": tokenLow,
             "poolStatus": "active_pool",
             "poolFeeBps": 30,
-            "reserveARaw": "2",
-            "reserveBRaw": "10",
-            "maxAmountARaw": "4",
-            "maxAmountBRaw": "20"
+            "reserveA": "2",
+            "reserveB": "10",
+            "maxAmountA": "4",
+            "maxAmountB": "20"
         })
         wait(0)
 
@@ -450,8 +450,8 @@ TestCase {
 
         var built = form.buildQuoteRequest()
         verify(built.ok)
-        compare(built.request.maxAmountARaw, "1")
-        compare(built.request.maxAmountBRaw, "5")
+        compare(built.request.maxAmountA, "1")
+        compare(built.request.maxAmountB, "5")
     }
 
     function test_quoteStateChangeDoesNotRequestAnotherQuote() {
@@ -493,8 +493,8 @@ TestCase {
         compare(form.amountB, "")
         compare(quoteRequestedSpy.count, 1)
         verify(quoteRequestedSpy.signalArguments[0][1].ok)
-        compare(quoteRequestedSpy.signalArguments[0][1].request.maxAmountARaw, "5000000000")
-        compare(quoteRequestedSpy.signalArguments[0][1].request.maxAmountBRaw, "1000")
+        compare(quoteRequestedSpy.signalArguments[0][1].request.maxAmountA, "5000000000")
+        compare(quoteRequestedSpy.signalArguments[0][1].request.maxAmountB, "1000")
     }
 
     function test_contextFailureFinishesTokenResolution() {
@@ -539,8 +539,8 @@ TestCase {
         var form = createForm()
         form.amountA = "12"
         form.amountB = "34"
-        form.minimumAmountARaw = "12"
-        form.minimumAmountBRaw = "34"
+        form.minimumAmountA = "12"
+        form.minimumAmountB = "34"
         form.confirmedPoolStatus = "active_pool"
 
         form.newPositionContext = {
@@ -549,14 +549,14 @@ TestCase {
                 {
                     "definitionId": tokenHigh,
                     "name": "High",
-                    "totalSupplyRaw": "1000000000000",
+                    "totalSupply": "1000000000000",
                     "balanceRaw": "5000000000",
                     "selectable": true
                 },
                 {
                     "definitionId": tokenThird,
                     "name": "Third",
-                    "totalSupplyRaw": "1000000",
+                    "totalSupply": "1000000",
                     "balanceRaw": "100",
                     "selectable": true
                 }
@@ -568,8 +568,8 @@ TestCase {
         compare(form.selectedTokenBId, tokenHigh)
         compare(form.amountA, "")
         compare(form.amountB, "")
-        compare(form.minimumAmountARaw, "")
-        compare(form.minimumAmountBRaw, "")
+        compare(form.minimumAmountA, "")
+        compare(form.minimumAmountB, "")
         compare(form.confirmedPoolStatus, "")
     }
 

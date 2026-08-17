@@ -34,8 +34,8 @@ AmmTokenAmountSurface {
                                                 ? String(root.footerItem.selectedAccountId) : ""
     // Base-unit balance of the selected funding holding (the lean quotes don't check funding,
     // so the form compares this against the entered amount). "0" when nothing is selected.
-    readonly property string selectedBalanceRaw: root.footerItem && root.footerItem.selectedBalanceRaw
-                                                 ? String(root.footerItem.selectedBalanceRaw) : "0"
+    readonly property string selectedBalance: root.footerItem && root.footerItem.selectedBalance
+                                                 ? String(root.footerItem.selectedBalance) : "0"
 
     footer: root.showHoldingSelector ? accountFooter : null
     footerHeight: root.footerItem ? root.footerItem.implicitHeight : 0
@@ -95,7 +95,7 @@ AmmTokenAmountSurface {
             implicitHeight: footerSelector.implicitHeight
 
             property alias selectedAccountId: footerSelector.selectedAccountId
-            property alias selectedBalanceRaw: footerSelector.selectedBalanceRaw
+            property alias selectedBalance: footerSelector.selectedBalance
 
             ProgramAccountSelector {
                 id: footerSelector

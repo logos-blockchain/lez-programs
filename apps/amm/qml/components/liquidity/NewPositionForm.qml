@@ -29,8 +29,8 @@ AmmActionCard {
     property var holdings: []
     readonly property string selectedHoldingAId: tokenAInput.selectedHoldingId
     readonly property string selectedHoldingBId: tokenBInput.selectedHoldingId
-    readonly property string selectedBalanceARaw: tokenAInput.selectedBalanceRaw
-    readonly property string selectedBalanceBRaw: tokenBInput.selectedBalanceRaw
+    readonly property string selectedBalanceA: tokenAInput.selectedBalance
+    readonly property string selectedBalanceB: tokenBInput.selectedBalance
     property string selectedTokenAId: ""
     property string selectedTokenBId: ""
     property int selectedFeeBps: 30
@@ -39,8 +39,8 @@ AmmActionCard {
     property string amountB: ""
     property string priceAmountA: "1"
     property string priceAmountB: "1"
-    property string minimumAmountARaw: ""
-    property string minimumAmountBRaw: ""
+    property string minimumAmountA: ""
+    property string minimumAmountB: ""
     property var localErrors: []
     property string resolvingTokenId: ""
     property string resolvingTokenSide: ""
@@ -144,7 +144,7 @@ AmmActionCard {
     // Per-side funding check, decoupled from buildQuoteRequest/the quote: the deposit each side
     // spends must fit its selected holding's balance (the lean createPoolQuote / addLiquidityQuote
     // ops never compare amount to balance, so a submit would otherwise fail on an
-    // insufficient-balance transfer). amountA / selectedBalanceARaw are both the display token-A
+    // insufficient-balance transfer). amountA / selectedBalanceA are both the display token-A
     // side, so no canonical reorientation is needed.
     readonly property bool fundingSufficient: root.fundingError("A").length === 0
                                               && root.fundingError("B").length === 0
@@ -557,14 +557,14 @@ AmmActionCard {
 
             LabelValueRow {
                 label: qsTr("Expected LP")
-                value: root.rawLpText(root.quotePayload.expectedLpRaw)
+                value: root.rawLpText(root.quotePayload.expectedLp)
             }
 
             LabelValueRow {
                 label: root.activePool ? qsTr("Minimum LP") : qsTr("Locked LP")
                 value: root.rawLpText(root.activePool
-                                      ? root.quotePayload.minimumLpRaw
-                                      : root.quotePayload.lockedLpRaw)
+                                      ? root.quotePayload.minimumLp
+                                      : root.quotePayload.lockedLp)
             }
         }
 
@@ -791,9 +791,9 @@ AmmActionCard {
         var amount = root.amountA
         root.amountA = root.amountB
         root.amountB = amount
-        var minimum = root.minimumAmountARaw
-        root.minimumAmountARaw = root.minimumAmountBRaw
-        root.minimumAmountBRaw = minimum
+        var minimum = root.minimumAmountA
+        root.minimumAmountA = root.minimumAmountB
+        root.minimumAmountB = minimum
         var priceAmount = root.priceAmountA
         root.priceAmountA = root.priceAmountB
         root.priceAmountB = priceAmount
@@ -824,8 +824,8 @@ AmmActionCard {
         root.amountB = ""
         root.priceAmountA = "1"
         root.priceAmountB = "1"
-        root.minimumAmountARaw = ""
-        root.minimumAmountBRaw = ""
+        root.minimumAmountA = ""
+        root.minimumAmountB = ""
         root.localErrors = []
         // The pair changed: the pool is unknown until re-resolved. Reset poolExists BEFORE
         // requestQuote so activePool is false and the empty-amount short-circuit doesn't fire
@@ -845,8 +845,8 @@ AmmActionCard {
                 || !root.quoteMatchesPair()) {
             return
         }
-        var reserveA = String(root.quotePayload.reserveARaw || "")
-        var reserveB = String(root.quotePayload.reserveBRaw || "")
+        var reserveA = String(root.quotePayload.reserveA || "")
+        var reserveB = String(root.quotePayload.reserveB || "")
         if (AmountMath.isUnsigned(reserveA) && reserveA !== "0"
                 && AmountMath.isUnsigned(reserveB) && reserveB !== "0") {
             root.activePoolQuote = root.quotePayload
@@ -934,8 +934,8 @@ AmmActionCard {
             if (!parsedB.ok)
                 errors.push(root.localIssue(parsedB.code, ["amountB"]))
             if (errors.length === 0) {
-                request.maxAmountARaw = root.displayIsCanonical ? parsedA.raw : parsedB.raw
-                request.maxAmountBRaw = root.displayIsCanonical ? parsedB.raw : parsedA.raw
+                request.maxAmountA = root.displayIsCanonical ? parsedA.raw : parsedB.raw
+                request.maxAmountB = root.displayIsCanonical ? parsedB.raw : parsedA.raw
                 request.slippageBps = root.slippageBps
             }
         } else {
@@ -947,7 +947,7 @@ AmmActionCard {
                                               root.displayIsCanonical)
             if (!price.ok)
                 errors.push(root.localIssue(price.code, ["initialPrice"]))
-            if (root.missingPool && root.minimumAmountARaw.length > 0) {
+            if (root.missingPool && root.minimumAmountA.length > 0) {
                 var parsedMissingA = AmountMath.parseHuman(root.amountA, root.decimalsA)
                 var parsedMissingB = AmountMath.parseHuman(root.amountB, root.decimalsB)
                 if (!parsedMissingA.ok)
@@ -955,9 +955,9 @@ AmmActionCard {
                 if (!parsedMissingB.ok)
                     errors.push(root.localIssue(parsedMissingB.code, ["amountB"]))
                 if (parsedMissingA.ok && parsedMissingB.ok) {
-                    if (AmountMath.compare(parsedMissingA.raw, root.minimumAmountARaw) < 0)
+                    if (AmountMath.compare(parsedMissingA.raw, root.minimumAmountA) < 0)
                         errors.push(root.localIssue("amount_too_low", ["amountA"]))
-                    if (AmountMath.compare(parsedMissingB.raw, root.minimumAmountBRaw) < 0)
+                    if (AmountMath.compare(parsedMissingB.raw, root.minimumAmountB) < 0)
                         errors.push(root.localIssue("amount_too_low", ["amountB"]))
                     var pairedB = AmountMath.pairAmount(parsedMissingA.raw,
                                                         true,
@@ -981,9 +981,9 @@ AmmActionCard {
                         errors.push(root.localIssue("deposit_ratio_mismatch", ["amountA", "amountB"]))
                     }
                     if (errors.length === 0) {
-                        request.amountARaw = root.displayIsCanonical
+                        request.amountA = root.displayIsCanonical
                                 ? parsedMissingA.raw : parsedMissingB.raw
-                        request.amountBRaw = root.displayIsCanonical
+                        request.amountB = root.displayIsCanonical
                                 ? parsedMissingB.raw : parsedMissingA.raw
                         var actualPrice = AmountMath.ratioToQ64(root.amountA,
                                                                root.amountB,
@@ -991,7 +991,7 @@ AmmActionCard {
                                                                root.canonicalDecimalsB,
                                                                root.displayIsCanonical)
                         if (actualPrice.ok) {
-                            request.priceRaw = actualPrice.raw
+                            request.price = actualPrice.raw
                             priceFromAmounts = true
                         } else {
                             errors.push(root.localIssue(actualPrice.code, ["initialPrice"]))
@@ -1000,13 +1000,13 @@ AmmActionCard {
                 }
             }
             if (price.ok && !priceFromAmounts)
-                request.priceRaw = price.raw
+                request.price = price.raw
 
             if (!root.missingPool) {
                 var probeA = root.probeRaw(root.tokenA, root.decimalsA)
                 var probeB = root.probeRaw(root.tokenB, root.decimalsB)
-                request.maxAmountARaw = root.displayIsCanonical ? probeA : probeB
-                request.maxAmountBRaw = root.displayIsCanonical ? probeB : probeA
+                request.maxAmountA = root.displayIsCanonical ? probeA : probeB
+                request.maxAmountB = root.displayIsCanonical ? probeB : probeA
                 request.slippageBps = root.slippageBps
             }
         }
@@ -1047,8 +1047,8 @@ AmmActionCard {
             probe[field] = request[field]
         var amountA = root.probeRaw(root.tokenA, root.decimalsA)
         var amountB = root.probeRaw(root.tokenB, root.decimalsB)
-        probe.maxAmountARaw = root.displayIsCanonical ? amountA : amountB
-        probe.maxAmountBRaw = root.displayIsCanonical ? amountB : amountA
+        probe.maxAmountA = root.displayIsCanonical ? amountA : amountB
+        probe.maxAmountB = root.displayIsCanonical ? amountB : amountA
         probe.slippageBps = root.slippageBps
         return probe
     }
@@ -1066,15 +1066,15 @@ AmmActionCard {
             return root.displayIsCanonical ? "tokenAId" : "tokenBId"
         if (field === "tokenBId")
             return root.displayIsCanonical ? "tokenBId" : "tokenAId"
-        if (field === "maxAmountARaw")
+        if (field === "maxAmountA")
             return root.displayIsCanonical ? "amountA" : "amountB"
-        if (field === "maxAmountBRaw")
+        if (field === "maxAmountB")
             return root.displayIsCanonical ? "amountB" : "amountA"
-        if (field === "amountARaw")
+        if (field === "amountA")
             return root.displayIsCanonical ? "amountA" : "amountB"
-        if (field === "amountBRaw")
+        if (field === "amountB")
             return root.displayIsCanonical ? "amountB" : "amountA"
-        if (field === "priceRaw")
+        if (field === "price")
             return "initialPrice"
         return field
     }
@@ -1088,7 +1088,7 @@ AmmActionCard {
             return ""
         var amount = side === "A" ? root.amountA : root.amountB
         var decimals = side === "A" ? root.decimalsA : root.decimalsB
-        var balanceRaw = side === "A" ? root.selectedBalanceARaw : root.selectedBalanceBRaw
+        var balanceRaw = side === "A" ? root.selectedBalanceA : root.selectedBalanceB
         var parsed = AmountMath.parseHuman(amount, decimals)
         if (parsed.ok && AmountMath.compare(parsed.raw, balanceRaw) > 0)
             return "amount_exceeds_balance"
@@ -1238,8 +1238,8 @@ AmmActionCard {
             root.priceAmountA = value
         else
             root.priceAmountB = value
-        root.minimumAmountARaw = ""
-        root.minimumAmountBRaw = ""
+        root.minimumAmountA = ""
+        root.minimumAmountB = ""
         root.amountA = ""
         root.amountB = ""
         root.noteDraftChanged()
@@ -1299,12 +1299,12 @@ AmmActionCard {
             return
 
         if (root.missingPool) {
-            var rawA = root.displayRaw("actualAmountARaw", "actualAmountBRaw", "A")
-            var rawB = root.displayRaw("actualAmountARaw", "actualAmountBRaw", "B")
-            var minimumA = root.displayRaw("minimumAmountARaw", "minimumAmountBRaw", "A")
-            var minimumB = root.displayRaw("minimumAmountARaw", "minimumAmountBRaw", "B")
-            root.minimumAmountARaw = minimumA.length > 0 ? minimumA : rawA
-            root.minimumAmountBRaw = minimumB.length > 0 ? minimumB : rawB
+            var rawA = root.displayRaw("actualAmountA", "actualAmountB", "A")
+            var rawB = root.displayRaw("actualAmountA", "actualAmountB", "B")
+            var minimumA = root.displayRaw("minimumAmountA", "minimumAmountB", "A")
+            var minimumB = root.displayRaw("minimumAmountA", "minimumAmountB", "B")
+            root.minimumAmountA = minimumA.length > 0 ? minimumA : rawA
+            root.minimumAmountB = minimumB.length > 0 ? minimumB : rawB
             if (rawA.length > 0 && rawB.length > 0) {
                 root.amountA = AmountMath.formatRaw(rawA, root.decimalsA)
                 root.amountB = AmountMath.formatRaw(rawB, root.decimalsB)
@@ -1325,12 +1325,12 @@ AmmActionCard {
     }
 
     function poolReserve(side) {
-        var reserve = root.displayRaw("reserveARaw", "reserveBRaw", side)
+        var reserve = root.displayRaw("reserveA", "reserveB", side)
         if (AmountMath.isUnsigned(reserve) && reserve !== "0")
             return reserve
         if (!root.quoteMatchesSelectedPair(root.activePoolQuote))
             return ""
-        return root.displayQuoteRaw(root.activePoolQuote, "reserveARaw", "reserveBRaw", side)
+        return root.displayQuoteRaw(root.activePoolQuote, "reserveA", "reserveB", side)
     }
 
     function quoteAmount(canonicalAField, canonicalBField, side) {
@@ -1343,8 +1343,8 @@ AmmActionCard {
     }
 
     function depositSummary() {
-        var amountA = root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "A")
-        var amountB = root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "B")
+        var amountA = root.quoteAmount("actualAmountA", "actualAmountB", "A")
+        var amountB = root.quoteAmount("actualAmountA", "actualAmountB", "B")
         return amountA + " + " + amountB
     }
 
@@ -1366,10 +1366,10 @@ AmmActionCard {
     }
 
     function activePriceValue() {
-        var priceRaw = String(root.quotePayload.priceRaw || "")
-        if (priceRaw.length === 0 && root.quoteMatchesSelectedPair(root.activePoolQuote))
-            priceRaw = String(root.activePoolQuote.priceRaw || "")
-        return AmountMath.priceFromQ64(priceRaw,
+        var price = String(root.quotePayload.price || "")
+        if (price.length === 0 && root.quoteMatchesSelectedPair(root.activePoolQuote))
+            price = String(root.activePoolQuote.price || "")
+        return AmountMath.priceFromQ64(price,
                                        root.canonicalDecimalsA,
                                        root.canonicalDecimalsB,
                                        root.displayIsCanonical)
@@ -1398,7 +1398,7 @@ AmmActionCard {
         return {
             "request": built.request,
             // Canonical-order holdings for the createPool / addLiquidity calls: the
-            // request's tokenAId/amountARaw are canonical, so holdingAId must be the
+            // request's tokenAId/amountA are canonical, so holdingAId must be the
             // canonical token A's holding too (the module re-canonicalizes as a no-op).
             // The user picks these via the per-side account selectors; selectedHoldingA
             // is display token A's holding, so it aligns with tokenA the same way.
@@ -1406,12 +1406,12 @@ AmmActionCard {
             "holdingBId": String(root.displayIsCanonical ? root.selectedHoldingBId : root.selectedHoldingAId),
             // The add path's slippage floor on the LP minted (orientation-independent),
             // taken from the active-pool quote; ignored by the create path.
-            "minLpRaw": String(root.quotePayload.minimumLpRaw || ""),
+            "minLp": String(root.quotePayload.minimumLp || ""),
             "pairText": qsTr("%1 / %2").arg(root.shortTokenName(root.tokenA)).arg(root.shortTokenName(root.tokenB)),
             "feeText": root.feeLabel(root.selectedFeeBps),
-            "depositAText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "A"),
-            "depositBText": root.quoteAmount("actualAmountARaw", "actualAmountBRaw", "B"),
-            "expectedLpText": root.rawLpText(root.quotePayload.expectedLpRaw),
+            "depositAText": root.quoteAmount("actualAmountA", "actualAmountB", "A"),
+            "depositBText": root.quoteAmount("actualAmountA", "actualAmountB", "B"),
+            "expectedLpText": root.rawLpText(root.quotePayload.expectedLp),
             // Confirm-dialog action derives from the resolved pool state (add vs create).
             "poolExists": root.activePool
         }
@@ -1455,17 +1455,17 @@ AmmActionCard {
 
     function depositScaleValue() {
         var parsed = AmountMath.parseHuman(root.amountA, root.decimalsA)
-        if (!parsed.ok || !AmountMath.isUnsigned(root.minimumAmountARaw)
-                || root.minimumAmountARaw === "0"
-                || AmountMath.compare(parsed.raw, root.minimumAmountARaw) < 0) {
+        if (!parsed.ok || !AmountMath.isUnsigned(root.minimumAmountA)
+                || root.minimumAmountA === "0"
+                || AmountMath.compare(parsed.raw, root.minimumAmountA) < 0) {
             return ""
         }
         return AmountMath.divide(AmountMath.multiply(parsed.raw, "10000"),
-                                 root.minimumAmountARaw).quotient
+                                 root.minimumAmountA).quotient
     }
 
     function minimumAmountText(side) {
-        var raw = side === "A" ? root.minimumAmountARaw : root.minimumAmountBRaw
+        var raw = side === "A" ? root.minimumAmountA : root.minimumAmountB
         var decimals = side === "A" ? root.decimalsA : root.decimalsB
         return raw.length > 0
                 ? qsTr("Min %1").arg(AmountMath.formatRaw(raw, decimals)) : ""

@@ -91,7 +91,7 @@ fn plan_response(
 ///
 /// The opening price *is* the deposit ratio. With **amounts** supplied, the op uses them and
 /// derives the price (`spot_price_q64_64`); **price-only** (no amounts), it takes
-/// `price_raw` (Q64.64, canonical) and uses `minimum_opening_pair` — the smallest
+/// `price` (Q64.64, canonical) and uses `minimum_opening_pair` — the smallest
 /// deposit at that price that clears the permanently-locked `MINIMUM_LIQUIDITY`. Either way it
 /// also returns that `minimum*` pair (the form validates entered amounts against it) and
 /// `expected_lp = floor(sqrt(a·b)) - MINIMUM_LIQUIDITY` (LP is orientation-independent — the
@@ -106,17 +106,17 @@ pub(super) fn create_pool_quote(request: CreatePoolQuoteRequest) -> Result<Value
     }
 
     // Amounts define the opening price; without them the price input drives the minimum.
-    let amounts = if request.amount_a_raw.is_some() || request.amount_b_raw.is_some() {
+    let amounts = if request.amount_a.is_some() || request.amount_b.is_some() {
         Some((
-            positive_amount(request.amount_a_raw.as_deref())?,
-            positive_amount(request.amount_b_raw.as_deref())?,
+            positive_amount(request.amount_a.as_deref())?,
+            positive_amount(request.amount_b.as_deref())?,
         ))
     } else {
         None
     };
     let price = match amounts {
         Some((amount_a, amount_b)) => spot_price_q64_64(amount_a, amount_b),
-        None => positive_amount(request.price_raw.as_deref())?,
+        None => positive_amount(request.price.as_deref())?,
     };
     let (minimum_a, minimum_b) = minimum_opening_pair(price)?;
     let (actual_a, actual_b) = amounts.unwrap_or((minimum_a, minimum_b));
@@ -130,13 +130,13 @@ pub(super) fn create_pool_quote(request: CreatePoolQuoteRequest) -> Result<Value
         .ok_or("amount_too_low")?;
 
     Ok(json!({
-        "actualAmountARaw": actual_a.to_string(),
-        "actualAmountBRaw": actual_b.to_string(),
-        "minimumAmountARaw": minimum_a.to_string(),
-        "minimumAmountBRaw": minimum_b.to_string(),
-        "expectedLpRaw": expected_lp.to_string(),
-        "lockedLpRaw": MINIMUM_LIQUIDITY.to_string(),
-        "priceRaw": price.to_string(),
+        "actualAmountA": actual_a.to_string(),
+        "actualAmountB": actual_b.to_string(),
+        "minimumAmountA": minimum_a.to_string(),
+        "minimumAmountB": minimum_b.to_string(),
+        "expectedLp": expected_lp.to_string(),
+        "lockedLp": MINIMUM_LIQUIDITY.to_string(),
+        "price": price.to_string(),
     }))
 }
 
@@ -165,8 +165,8 @@ pub(super) fn create_pool_plan(request: CreatePoolPlanRequest) -> Result<Value, 
     let holding_b = account_id_from_hex(&request.user_holding_b_id, "user holding B id")?;
     let user_lp = account_id_from_hex(&request.user_holding_lp_id, "user LP holding id")?;
 
-    let amount_a = positive_amount(request.amount_a_raw.as_deref())?;
-    let amount_b = positive_amount(request.amount_b_raw.as_deref())?;
+    let amount_a = positive_amount(request.amount_a.as_deref())?;
+    let amount_b = positive_amount(request.amount_b.as_deref())?;
     if !amm_core::is_supported_fee_tier(u128::from(request.fee_bps)) {
         return Err(String::from("invalid_fee_tier"));
     }
@@ -220,10 +220,10 @@ pub(super) fn create_pool_plan(request: CreatePoolPlanRequest) -> Result<Value, 
 /// caller's max amounts to the pool's canonical `(a, b)` order, then run the guest's exact
 /// proportional-deposit math (`amm_program::add::add_liquidity`): the ideal→actual clamp
 /// and `delta_lp = min(supply·actual_a/reserve_a, supply·actual_b/reserve_b)`. Returns the
-/// actual ratio-matched deposits (display order), the LP minted (`expectedLpRaw`), the
-/// slippage floor on that LP (`minimumLpRaw = floor(delta_lp · (1 − slippage))`, the
-/// submit's `min_amount_liquidity` — like the swap quotes' `minReceivedRaw`), and the pool's
-/// spot price (`priceRaw`, token B per token A in display order). Errors: `same_token_pair`,
+/// actual ratio-matched deposits (display order), the LP minted (`expectedLp`), the
+/// slippage floor on that LP (`minimumLp = floor(delta_lp · (1 − slippage))`, the
+/// submit's `min_amount_liquidity` — like the swap quotes' `minReceived`), and the pool's
+/// spot price (`price`, token B per token A in display order). Errors: `same_token_pair`,
 /// `no_pool`, `pair_mismatch` (the pool isn't for this pair), `invalid_slippage` (≥ 100%),
 /// bad amounts (`amount_required`, `invalid_raw_amount`, `amount_must_be_positive`),
 /// `amount_too_low` (the deposit rounds to zero LP), `minimum_lp_zero` (slippage leaves no
@@ -234,8 +234,8 @@ pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<V
     if token_a == token_b {
         return Err(String::from("same_token_pair"));
     }
-    let max_a = positive_amount(Some(&request.max_amount_a_raw))?;
-    let max_b = positive_amount(Some(&request.max_amount_b_raw))?;
+    let max_a = positive_amount(Some(&request.max_amount_a))?;
+    let max_b = positive_amount(Some(&request.max_amount_b))?;
     if u128::from(request.slippage_bps) >= FEE_BPS_DENOMINATOR {
         return Err(String::from("invalid_slippage"));
     }
@@ -302,11 +302,11 @@ pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<V
     let price = spot_price_q64_64(reserve_display_a, reserve_display_b);
 
     Ok(json!({
-        "amountARaw": display_a.to_string(),
-        "amountBRaw": display_b.to_string(),
-        "expectedLpRaw": delta_lp.to_string(),
-        "minimumLpRaw": minimum_lp.to_string(),
-        "priceRaw": price.to_string(),
+        "amountA": display_a.to_string(),
+        "amountB": display_b.to_string(),
+        "expectedLp": delta_lp.to_string(),
+        "minimumLp": minimum_lp.to_string(),
+        "price": price.to_string(),
     }))
 }
 
@@ -329,9 +329,9 @@ pub(super) fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> Result<Val
     let holding_b = account_id_from_hex(&request.user_holding_b_id, "user holding B id")?;
     let user_lp = account_id_from_hex(&request.user_holding_lp_id, "user LP holding id")?;
 
-    let max_a = positive_amount(Some(&request.max_amount_a_raw))?;
-    let max_b = positive_amount(Some(&request.max_amount_b_raw))?;
-    let min_lp = positive_amount(Some(&request.min_lp_raw))?;
+    let max_a = positive_amount(Some(&request.max_amount_a))?;
+    let max_b = positive_amount(Some(&request.max_amount_b))?;
+    let min_lp = positive_amount(Some(&request.min_lp))?;
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
 
     // config / pool / current_tick / clock are order-independent PDAs, so derive_pair takes the
@@ -398,7 +398,7 @@ pub(super) fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> Result<Val
     ))
 }
 
-/// Prices removing liquidity: burning `lp_amount_raw` of the pool returns the proportional
+/// Prices removing liquidity: burning `lp_amount` of the pool returns the proportional
 /// share of each reserve — `withdraw = floor(reserve · lp / supply)`, the same math the guest
 /// (`amm_program::remove::remove_liquidity`) runs. `slippage_bps` sets the `minimumAmount*Raw`
 /// floors the submit passes as the guest's nonzero `min_amount_to_remove_token_*`. Amounts are
@@ -415,7 +415,7 @@ pub(super) fn remove_liquidity_quote(
     if token_a == token_b {
         return Err(String::from("same_token_pair"));
     }
-    let lp_amount = positive_amount(Some(&request.lp_amount_raw))?;
+    let lp_amount = positive_amount(Some(&request.lp_amount))?;
     if u128::from(request.slippage_bps) >= FEE_BPS_DENOMINATOR {
         return Err(String::from("invalid_slippage"));
     }
@@ -481,11 +481,11 @@ pub(super) fn remove_liquidity_quote(
     let price = spot_price_q64_64(reserve_display_a, reserve_display_b);
 
     Ok(json!({
-        "amountARaw": display_a.to_string(),
-        "amountBRaw": display_b.to_string(),
-        "minimumAmountARaw": minimum_display_a.to_string(),
-        "minimumAmountBRaw": minimum_display_b.to_string(),
-        "priceRaw": price.to_string(),
+        "amountA": display_a.to_string(),
+        "amountB": display_b.to_string(),
+        "minimumAmountA": minimum_display_a.to_string(),
+        "minimumAmountB": minimum_display_b.to_string(),
+        "price": price.to_string(),
     }))
 }
 
@@ -508,9 +508,9 @@ pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Resu
     let holding_b = account_id_from_hex(&request.user_holding_b_id, "user holding B id")?;
     let user_lp = account_id_from_hex(&request.user_holding_lp_id, "user LP holding id")?;
 
-    let lp_amount = positive_amount(Some(&request.lp_amount_raw))?;
-    let min_a = positive_amount(Some(&request.min_amount_a_raw))?;
-    let min_b = positive_amount(Some(&request.min_amount_b_raw))?;
+    let lp_amount = positive_amount(Some(&request.lp_amount))?;
+    let min_a = positive_amount(Some(&request.min_amount_a))?;
+    let min_b = positive_amount(Some(&request.min_amount_b))?;
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
 
     // config / pool / current_tick / clock are order-independent PDAs, so derive_pair takes the
@@ -639,9 +639,9 @@ mod tests {
         CreatePoolQuoteRequest {
             token_a_id: account_id_hex(token_a),
             token_b_id: account_id_hex(token_b),
-            price_raw: None,
-            amount_a_raw: Some(String::from("1000000")),
-            amount_b_raw: Some(String::from("4000000")),
+            price: None,
+            amount_a: Some(String::from("1000000")),
+            amount_b: Some(String::from("4000000")),
         }
     }
 
@@ -676,21 +676,21 @@ mod tests {
         let value = create_pool_quote(quote_request(token_a, token_b)).unwrap();
 
         // Amounts supplied ⇒ actual == the amounts; the price is derived from them.
-        assert_eq!(value["actualAmountARaw"], "1000000");
-        assert_eq!(value["actualAmountBRaw"], "4000000");
-        assert_eq!(value["lockedLpRaw"], MINIMUM_LIQUIDITY.to_string());
+        assert_eq!(value["actualAmountA"], "1000000");
+        assert_eq!(value["actualAmountB"], "4000000");
+        assert_eq!(value["lockedLp"], MINIMUM_LIQUIDITY.to_string());
         // initial_lp = isqrt(1_000_000 * 4_000_000) = 2_000_000; creator LP = minus lock.
         let initial_lp = isqrt_product(1_000_000, 4_000_000);
         assert_eq!(
-            value["expectedLpRaw"],
+            value["expectedLp"],
             (initial_lp - MINIMUM_LIQUIDITY).to_string()
         );
         let price = spot_price_q64_64(1_000_000, 4_000_000);
-        assert_eq!(value["priceRaw"], price.to_string());
+        assert_eq!(value["price"], price.to_string());
         // The minimum opening deposit for that price is echoed for the form to validate against.
         let (min_a, min_b) = minimum_opening_pair(price).unwrap();
-        assert_eq!(value["minimumAmountARaw"], min_a.to_string());
-        assert_eq!(value["minimumAmountBRaw"], min_b.to_string());
+        assert_eq!(value["minimumAmountA"], min_a.to_string());
+        assert_eq!(value["minimumAmountB"], min_b.to_string());
         // Lean preview — no commitment / status / submittability fields.
         assert!(value.get("quoteHash").is_none());
         assert!(value.get("canSubmit").is_none());
@@ -707,18 +707,18 @@ mod tests {
         let value = create_pool_quote(CreatePoolQuoteRequest {
             token_a_id: account_id_hex(token_a),
             token_b_id: account_id_hex(token_b),
-            price_raw: Some(price.to_string()),
-            amount_a_raw: None,
-            amount_b_raw: None,
+            price: Some(price.to_string()),
+            amount_a: None,
+            amount_b: None,
         })
         .unwrap();
 
         // Price-only ⇒ the actual deposit is the minimum opening pair for that price.
-        assert_eq!(value["actualAmountARaw"], min_a.to_string());
-        assert_eq!(value["actualAmountBRaw"], min_b.to_string());
-        assert_eq!(value["minimumAmountARaw"], min_a.to_string());
-        assert_eq!(value["minimumAmountBRaw"], min_b.to_string());
-        assert_eq!(value["priceRaw"], price.to_string());
+        assert_eq!(value["actualAmountA"], min_a.to_string());
+        assert_eq!(value["actualAmountB"], min_b.to_string());
+        assert_eq!(value["minimumAmountA"], min_a.to_string());
+        assert_eq!(value["minimumAmountB"], min_b.to_string());
+        assert_eq!(value["price"], price.to_string());
     }
 
     #[test]
@@ -728,10 +728,10 @@ mod tests {
         let ab = create_pool_quote(quote_request(token_a, token_b)).unwrap();
         // Swap display order and the paired amounts: the LP figure is symmetric.
         let mut ba = quote_request(token_b, token_a);
-        ba.amount_a_raw = Some(String::from("4000000"));
-        ba.amount_b_raw = Some(String::from("1000000"));
+        ba.amount_a = Some(String::from("4000000"));
+        ba.amount_b = Some(String::from("1000000"));
         let ba = create_pool_quote(ba).unwrap();
-        assert_eq!(ab["expectedLpRaw"], ba["expectedLpRaw"]);
+        assert_eq!(ab["expectedLp"], ba["expectedLp"]);
     }
 
     #[test]
@@ -745,8 +745,8 @@ mod tests {
         // isqrt(1 * 1) = 1 ≤ MINIMUM_LIQUIDITY ⇒ the pool can't open.
         let token_b = AccountId::new([0xBB; 32]);
         let mut tiny = quote_request(token, token_b);
-        tiny.amount_a_raw = Some(String::from("1"));
-        tiny.amount_b_raw = Some(String::from("1"));
+        tiny.amount_a = Some(String::from("1"));
+        tiny.amount_b = Some(String::from("1"));
         assert_eq!(create_pool_quote(tiny), Err(String::from("amount_too_low")));
     }
 
@@ -771,8 +771,8 @@ mod tests {
             config: valid_config(amm),
             token_a_id: account_id_hex(token_a),
             token_b_id: account_id_hex(token_b),
-            amount_a_raw: Some(String::from("1000000")), // deposit for display token_a
-            amount_b_raw: Some(String::from("4000000")), // deposit for display token_b
+            amount_a: Some(String::from("1000000")), // deposit for display token_a
+            amount_b: Some(String::from("4000000")), // deposit for display token_b
             fee_bps: 30,
             deadline_ms: String::from("1000"),
             user_holding_a_id: account_id_hex(holding_a),
@@ -839,8 +839,8 @@ mod tests {
             config: read_failed(),
             token_a_id: account_id_hex(token),
             token_b_id: account_id_hex(token),
-            amount_a_raw: Some(String::from("1")),
-            amount_b_raw: Some(String::from("1")),
+            amount_a: Some(String::from("1")),
+            amount_b: Some(String::from("1")),
             fee_bps: 30,
             deadline_ms: String::from("1"),
             user_holding_a_id: account_id_hex(token),
@@ -873,39 +873,39 @@ mod tests {
         let ab = add_liquidity_quote(AddLiquidityQuoteRequest {
             token_a_id: account_id_hex(def_a),
             token_b_id: account_id_hex(def_b),
-            max_amount_a_raw: String::from("10000"),
-            max_amount_b_raw: String::from("100000"),
+            max_amount_a: String::from("10000"),
+            max_amount_b: String::from("100000"),
             slippage_bps: 50,
             pool_data: pool_hex(&pool),
         })
         .unwrap();
-        assert_eq!(ab["amountARaw"], "10000");
-        assert_eq!(ab["amountBRaw"], "20000");
-        assert_eq!(ab["expectedLpRaw"], "10000");
-        // minimumLpRaw = floor(10000 * (10000 - 50) / 10000) = 9950 (slippage floor on LP).
-        assert_eq!(ab["minimumLpRaw"], "9950");
+        assert_eq!(ab["amountA"], "10000");
+        assert_eq!(ab["amountB"], "20000");
+        assert_eq!(ab["expectedLp"], "10000");
+        // minimumLp = floor(10000 * (10000 - 50) / 10000) = 9950 (slippage floor on LP).
+        assert_eq!(ab["minimumLp"], "9950");
         assert_eq!(
-            ab["priceRaw"],
+            ab["price"],
             spot_price_q64_64(1_000_000, 2_000_000).to_string()
         );
-        assert!(ab.get("lockedLpRaw").is_none());
-        assert!(ab.get("initialPriceRaw").is_none());
+        assert!(ab.get("lockedLp").is_none());
+        assert!(ab.get("initialPrice").is_none());
 
         // Reverse display order: the actual amounts and the price flip to display order.
         let ba = add_liquidity_quote(AddLiquidityQuoteRequest {
             token_a_id: account_id_hex(def_b),
             token_b_id: account_id_hex(def_a),
-            max_amount_a_raw: String::from("100000"),
-            max_amount_b_raw: String::from("10000"),
+            max_amount_a: String::from("100000"),
+            max_amount_b: String::from("10000"),
             slippage_bps: 50,
             pool_data: pool_hex(&pool),
         })
         .unwrap();
-        assert_eq!(ba["amountARaw"], "20000"); // display token def_b side
-        assert_eq!(ba["amountBRaw"], "10000"); // display token def_a side
-        assert_eq!(ba["expectedLpRaw"], "10000");
+        assert_eq!(ba["amountA"], "20000"); // display token def_b side
+        assert_eq!(ba["amountB"], "10000"); // display token def_a side
+        assert_eq!(ba["expectedLp"], "10000");
         assert_eq!(
-            ba["priceRaw"],
+            ba["price"],
             spot_price_q64_64(2_000_000, 1_000_000).to_string()
         );
     }
@@ -928,8 +928,8 @@ mod tests {
                 AddLiquidityQuoteRequest {
                     token_a_id: account_id_hex(token_a),
                     token_b_id: account_id_hex(token_b),
-                    max_amount_a_raw: max_a.into(),
-                    max_amount_b_raw: max_b.into(),
+                    max_amount_a: max_a.into(),
+                    max_amount_b: max_b.into(),
                     slippage_bps: 50,
                     pool_data: data,
                 }
@@ -978,8 +978,8 @@ mod tests {
             add_liquidity_quote(AddLiquidityQuoteRequest {
                 token_a_id: account_id_hex(def_a),
                 token_b_id: account_id_hex(def_b),
-                max_amount_a_raw: String::from("10000"),
-                max_amount_b_raw: String::from("10000"),
+                max_amount_a: String::from("10000"),
+                max_amount_b: String::from("10000"),
                 slippage_bps: 10_000,
                 pool_data: pool_hex(&pool),
             }),
@@ -1027,9 +1027,9 @@ mod tests {
                 config: valid_config(amm),
                 token_a_id: ta,
                 token_b_id: tb,
-                max_amount_a_raw: ma.to_string(),
-                max_amount_b_raw: mb.to_string(),
-                min_lp_raw: String::from("500"),
+                max_amount_a: ma.to_string(),
+                max_amount_b: mb.to_string(),
+                min_lp: String::from("500"),
                 deadline_ms: String::from("1000"),
                 user_holding_a_id: ha,
                 user_holding_b_id: hb,
@@ -1109,9 +1109,9 @@ mod tests {
                 config: read_failed(),
                 token_a_id: account_id_hex(token_a),
                 token_b_id: account_id_hex(token_b),
-                max_amount_a_raw: String::from("1"),
-                max_amount_b_raw: String::from("1"),
-                min_lp_raw: String::from("1"),
+                max_amount_a: String::from("1"),
+                max_amount_b: String::from("1"),
+                min_lp: String::from("1"),
                 deadline_ms: String::from("1"),
                 user_holding_a_id: account_id_hex(token_a),
                 user_holding_b_id: account_id_hex(token_b),
@@ -1154,18 +1154,18 @@ mod tests {
         let ab = remove_liquidity_quote(RemoveLiquidityQuoteRequest {
             token_a_id: account_id_hex(def_a),
             token_b_id: account_id_hex(def_b),
-            lp_amount_raw: String::from("100000"),
+            lp_amount: String::from("100000"),
             slippage_bps: 50,
             pool_data: pool_hex(&pool),
         })
         .unwrap();
-        assert_eq!(ab["amountARaw"], "100000"); // floor(1_000_000 * 100_000 / 1_000_000)
-        assert_eq!(ab["amountBRaw"], "200000"); // floor(2_000_000 * 100_000 / 1_000_000)
-                                                // minimum = floor(withdraw * (10000 - 50) / 10000) — the slippage floor per side.
-        assert_eq!(ab["minimumAmountARaw"], "99500");
-        assert_eq!(ab["minimumAmountBRaw"], "199000");
+        assert_eq!(ab["amountA"], "100000"); // floor(1_000_000 * 100_000 / 1_000_000)
+        assert_eq!(ab["amountB"], "200000"); // floor(2_000_000 * 100_000 / 1_000_000)
+                                             // minimum = floor(withdraw * (10000 - 50) / 10000) — the slippage floor per side.
+        assert_eq!(ab["minimumAmountA"], "99500");
+        assert_eq!(ab["minimumAmountB"], "199000");
         assert_eq!(
-            ab["priceRaw"],
+            ab["price"],
             spot_price_q64_64(1_000_000, 2_000_000).to_string()
         );
 
@@ -1173,17 +1173,17 @@ mod tests {
         let ba = remove_liquidity_quote(RemoveLiquidityQuoteRequest {
             token_a_id: account_id_hex(def_b),
             token_b_id: account_id_hex(def_a),
-            lp_amount_raw: String::from("100000"),
+            lp_amount: String::from("100000"),
             slippage_bps: 50,
             pool_data: pool_hex(&pool),
         })
         .unwrap();
-        assert_eq!(ba["amountARaw"], "200000"); // display token def_b side
-        assert_eq!(ba["amountBRaw"], "100000"); // display token def_a side
-        assert_eq!(ba["minimumAmountARaw"], "199000");
-        assert_eq!(ba["minimumAmountBRaw"], "99500");
+        assert_eq!(ba["amountA"], "200000"); // display token def_b side
+        assert_eq!(ba["amountB"], "100000"); // display token def_a side
+        assert_eq!(ba["minimumAmountA"], "199000");
+        assert_eq!(ba["minimumAmountB"], "99500");
         assert_eq!(
-            ba["priceRaw"],
+            ba["price"],
             spot_price_q64_64(2_000_000, 1_000_000).to_string()
         );
     }
@@ -1205,7 +1205,7 @@ mod tests {
             RemoveLiquidityQuoteRequest {
                 token_a_id: account_id_hex(token_a),
                 token_b_id: account_id_hex(token_b),
-                lp_amount_raw: lp.into(),
+                lp_amount: lp.into(),
                 slippage_bps: 50,
                 pool_data: data,
             }
@@ -1247,7 +1247,7 @@ mod tests {
             remove_liquidity_quote(RemoveLiquidityQuoteRequest {
                 token_a_id: account_id_hex(def_a),
                 token_b_id: account_id_hex(def_b),
-                lp_amount_raw: String::from("100000"),
+                lp_amount: String::from("100000"),
                 slippage_bps: 10_000,
                 pool_data: pool_hex(&pool),
             }),
@@ -1318,9 +1318,9 @@ mod tests {
                 config: valid_config(amm),
                 token_a_id: ta,
                 token_b_id: tb,
-                lp_amount_raw: String::from("100000"),
-                min_amount_a_raw: min_a.to_string(),
-                min_amount_b_raw: min_b.to_string(),
+                lp_amount: String::from("100000"),
+                min_amount_a: min_a.to_string(),
+                min_amount_b: min_b.to_string(),
                 deadline_ms: String::from("1000"),
                 user_holding_a_id: ha,
                 user_holding_b_id: hb,
@@ -1408,9 +1408,9 @@ mod tests {
                 config: read_failed(),
                 token_a_id: account_id_hex(token_a),
                 token_b_id: account_id_hex(token_b),
-                lp_amount_raw: String::from("1"),
-                min_amount_a_raw: String::from("1"),
-                min_amount_b_raw: String::from("1"),
+                lp_amount: String::from("1"),
+                min_amount_a: String::from("1"),
+                min_amount_b: String::from("1"),
                 deadline_ms: String::from("1"),
                 user_holding_a_id: account_id_hex(token_a),
                 user_holding_b_id: account_id_hex(token_b),

@@ -16,6 +16,7 @@ transport-independent JSON FFI), and this module sequences those pure ops with
 chain I/O delegated to the `logos_execution_zone` wallet module. Its public
 methods (the module API is generated from the header) are:
 
+**Reads**
 - `resolvePoolAccount(defAHex, defBHex)` — derives the pool PDA and reads/decodes
   the pool account (reserves in canonical `a`/`b` order, fee tier). On success
   `{ status: "ok", error: "", poolId, defAHex, defBHex, vaultAId, vaultBId,
@@ -23,20 +24,30 @@ methods (the module API is generated from the header) are:
   uninitialized pool or one with no liquidity is `{ status: "error", error:
   "no_pool", poolId }` (other codes: `no_program_bin`, `amm_not_initialized`,
   `bad_config`).
-- `swapExactInput(defAHex, defBHex, userInputHoldingHex, userOutputHoldingHex, amountIn, minOut, deadline)`
-  — submits an on-chain `SwapExactInput` transaction (defA = token in,
-  defB = token out); returns the tx hash (or empty on failure). See
-  **Amount / id conventions** below.
+- `configAccount()` — decodes the singleton AMM config (authority + the
+  token/oracle program ids it was initialized with).
+- `feeTiers()` — the AMM's supported fee tiers as raw basis points `[1, 5, 30, 100]`.
+- `tokenHoldings(walletOpen)` — the connected wallet's fungible token holdings.
 - `resolveTokens(request, walletOpen)` — resolves an app-provided set of token
-  ids into selector rows (definition + wallet holding per id). The lean,
-  stateless successor to the removed `newPositionContext` path: the app owns the
+  ids into selector rows (definition + wallet holding per id). The app owns the
   id set, so there is no network envelope or process-cached wallet state here.
-- `feeTiers()` — the AMM's supported fee tiers as raw basis points.
-- `createPoolQuote(request)` / `createPool(request)` and
-  `addLiquidityQuote(request)` / `addLiquidity(request)` — the add-liquidity
-  preview (read-only) and submit paths. The submit forwards the app-supplied
-  fresh LP holding id; the app backend, which owns the wallet keyset, creates
-  that account.
+
+**Quotes** (read-only pricing; no submit)
+- `swapExactInQuote` / `swapExactOutQuote` — price a swap.
+- `createPoolQuote` / `addLiquidityQuote` / `removeLiquidityQuote` — price a
+  liquidity op.
+
+**Submits** (on-chain transactions; return `{ status, error, transactionId }`,
+except the two swaps which return a bare tx hash)
+- `swapExactInput` / `swapExactOutput` (defA = token in, defB = token out).
+- `createPool` / `addLiquidity` / `removeLiquidity` — the create/add paths take a
+  fresh `lpHoldingId` the app supplies (the module never creates wallet accounts).
+- `syncReserves` — permissionless keeper op refreshing stored reserves + TWAP tick.
+- `createPriceObservations` / `createOraclePriceAccount` — seed a pool's TWAP feed.
+- `transferOwnership` — admin-only `UpdateConfig` handing over the authority.
+
+See **Amount / id conventions** below, and the
+[full `logoscore` runbook](../../docs/module/amm.md) for a worked call per method.
 
 ## How it fits together
 
@@ -197,11 +208,11 @@ logoscore load-module amm_module
 
 Every other op reads on-chain through the wallet module's `get_account_public`,
 which fails on a null wallet handle (surfacing as an absent pool), so open the
-wallet first — `resolvePool` then works:
+wallet first — `resolvePoolAccount` then works:
 
 ```bash
 logoscore call logos_execution_zone open ~/.lee/wallet/wallet_config.json ~/.lee/wallet/storage.json
-logoscore call amm_module resolvePool <defA_hex> <defB_hex>
+logoscore call amm_module resolvePoolAccount <defA_hex> <defB_hex>
 ```
 
 `swapExactInput` reuses that open wallet but additionally needs it **synced**
@@ -230,8 +241,8 @@ wallet's `storage.json` may keep a stale `last_synced_block` ahead of the new
 chain — transactions then reference dead state and the sequencer rejects them
 (reserves don't move). Reset the cursor (`last_synced_block: 0`, keep
 `key_chain`/`labels`) and re-`open` + `sync_to_block <height>` to re-sync from
-genesis. `resolvePool` is a **live** sequencer read, so the stale cursor doesn't
-affect it — but it still needs the wallet **open**: the read goes through the
+genesis. `resolvePoolAccount` is a **live** sequencer read, so the stale cursor
+doesn't affect it — but it still needs the wallet **open**: the read goes through the
 wallet's sequencer connection (not its private keys), which only exists once the
 wallet is opened.
 
@@ -252,11 +263,9 @@ It requires the wallet module built with the byte-string `instruction` param —
 the fork pinned as the `logos_execution_zone` input. See
 `docs/amm-swap-qtro-serialization-bug.md`.
 
-## Known follow-ups
+## Full API runbook
 
-- **`swapExactOutput` is not exposed yet.** The on-chain program supports it
-  (`amm_core::Instruction::SwapExactOutput`, identical account layout to
-  `SwapExactInput`), but the client path was only ever built for exact-input:
-  `amm_ffi` has no exact-output op and neither the UI nor this module has a
-  `swapExactOutput` method. Adding it is a near-copy of the exact-input path — an
-  `amm_swap_exact_output_*` op in the crate plus a `swapExactOutput` method here.
+The method list above is a curated subset. For a complete, worked `logoscore`
+walkthrough of **every** `amm_module` API — reads, swaps, add/remove liquidity,
+the keeper `syncReserves`, oracle setup, and admin — see
+[`docs/module/amm.md`](../../docs/module/amm.md).

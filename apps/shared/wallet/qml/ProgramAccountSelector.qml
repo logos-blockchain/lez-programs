@@ -50,7 +50,7 @@ Item {
                                       || (root.selectionMode === ProgramAccountSelector.Output
                                           && root.createNewSelected))
     readonly property var selectedAccount: root.accountById(root.selectedAccountId)
-    readonly property string selectedBalanceRaw: root.selectedAccount
+    readonly property string selectedBalance: root.selectedAccount
                                                         ? String(root.valueFor(
                                                                      root.selectedAccount,
                                                                      "balanceRaw") || "0")

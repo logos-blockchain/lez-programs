@@ -40,16 +40,16 @@ Popup {
     property int slippageBps: 50
 
     // 1..100. Percent rather than a raw amount: it is what the presets and the
-    // slider both drive, and it keeps "all of it" exact (see lpAmountRaw).
+    // slider both drive, and it keeps "all of it" exact (see lpAmount).
     property int percent: 50
 
     // ── Quote state (backend.removeLiquidityQuote) ───────────────────────────
     property bool quoteLoading: false
     property string quoteError: ""
-    property string amountARaw: "0"
-    property string amountBRaw: "0"
-    property string minimumAmountARaw: "0"
-    property string minimumAmountBRaw: "0"
+    property string amountA: "0"
+    property string amountB: "0"
+    property string minimumAmountA: "0"
+    property string minimumAmountB: "0"
     property bool quoteReady: false
 
     property bool submitting: false
@@ -63,12 +63,12 @@ Popup {
 
     // 100% burns the whole balance exactly; anything else floors, so the dust
     // stays in the position rather than rounding the request above the balance.
-    readonly property string lpAmountRaw: root.percent >= 100
+    readonly property string lpAmount: root.percent >= 100
         ? AmountMath.normalize(root.lpBalance)
         : AmountMath.mulDivFloor(root.lpBalance, String(root.percent), "100")
 
-    readonly property bool hasAmount: AmountMath.isUnsigned(root.lpAmountRaw)
-                                      && AmountMath.normalize(root.lpAmountRaw) !== "0"
+    readonly property bool hasAmount: AmountMath.isUnsigned(root.lpAmount)
+                                      && AmountMath.normalize(root.lpAmount) !== "0"
     readonly property bool canSubmit: root.hasAmount
                                       && root.quoteReady
                                       && !root.quoteLoading
@@ -97,10 +97,10 @@ Popup {
         root.quoteError = ""
         root.submitError = ""
         root.quoteReady = false
-        root.amountARaw = "0"
-        root.amountBRaw = "0"
-        root.minimumAmountARaw = "0"
-        root.minimumAmountBRaw = "0"
+        root.amountA = "0"
+        root.amountB = "0"
+        root.minimumAmountA = "0"
+        root.minimumAmountB = "0"
         root.open()
         root.requestQuote()
     }
@@ -132,7 +132,7 @@ Popup {
         root.runtime.watch(root.backend.removeLiquidityQuote({
             "tokenAId": root.tokenAId,
             "tokenBId": root.tokenBId,
-            "lpAmountRaw": root.lpAmountRaw,
+            "lpAmount": root.lpAmount,
             "slippageBps": root.slippageBps
         }),
             function(quote) {
@@ -140,10 +140,10 @@ Popup {
                     return
                 root.quoteLoading = false
                 if (quote && quote.status === "ok") {
-                    root.amountARaw = String(quote.amountARaw || "0")
-                    root.amountBRaw = String(quote.amountBRaw || "0")
-                    root.minimumAmountARaw = String(quote.minimumAmountARaw || "0")
-                    root.minimumAmountBRaw = String(quote.minimumAmountBRaw || "0")
+                    root.amountA = String(quote.amountA || "0")
+                    root.amountB = String(quote.amountB || "0")
+                    root.minimumAmountA = String(quote.minimumAmountA || "0")
+                    root.minimumAmountB = String(quote.minimumAmountB || "0")
                     root.quoteError = ""
                     root.quoteReady = true
                     return
@@ -173,11 +173,11 @@ Popup {
             "holdingAId": root.holdingAId,
             "holdingBId": root.holdingBId,
             "lpHoldingId": root.lpHoldingId,
-            "lpAmountRaw": root.lpAmountRaw,
+            "lpAmount": root.lpAmount,
             // The floors the quote computed for this exact amount, so the submit
             // enforces the slippage the preview promised.
-            "minAmountARaw": root.minimumAmountARaw,
-            "minAmountBRaw": root.minimumAmountBRaw,
+            "minAmountA": root.minimumAmountA,
+            "minAmountB": root.minimumAmountB,
             // u64-max sentinel = no deadline, same as the other submits.
             "deadlineMs": "18446744073709551615"
         }),
@@ -367,21 +367,21 @@ Popup {
             AmountLine {
                 objectName: "removeReceiveA"
                 symbol: root.symbolA
-                amount: root.quoteReady ? root.amountText(root.amountARaw) : qsTr("—")
+                amount: root.quoteReady ? root.amountText(root.amountA) : qsTr("—")
             }
 
             AmountLine {
                 objectName: "removeReceiveB"
                 symbol: root.symbolB
-                amount: root.quoteReady ? root.amountText(root.amountBRaw) : qsTr("—")
+                amount: root.quoteReady ? root.amountText(root.amountB) : qsTr("—")
             }
 
             Text {
                 Layout.fillWidth: true
                 visible: root.quoteReady
                 text: qsTr("At least %1 %2 and %3 %4 after slippage.")
-                      .arg(root.amountText(root.minimumAmountARaw)).arg(root.symbolA)
-                      .arg(root.amountText(root.minimumAmountBRaw)).arg(root.symbolB)
+                      .arg(root.amountText(root.minimumAmountA)).arg(root.symbolA)
+                      .arg(root.amountText(root.minimumAmountB)).arg(root.symbolB)
                 color: root.theme.colors.textPlaceholder
                 font.pixelSize: 11
                 wrapMode: Text.Wrap

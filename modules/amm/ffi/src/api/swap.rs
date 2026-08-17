@@ -146,7 +146,7 @@ pub(super) fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> Result<Va
     if token_in == token_out {
         return Err(String::from("same_token_pair"));
     }
-    let amount_in = parse_u128(&request.amount_in_raw, "amountInRaw")?;
+    let amount_in = parse_u128(&request.amount_in, "amountIn")?;
     if u128::from(request.slippage_bps) >= FEE_BPS_DENOMINATOR {
         return Err(String::from("invalid_slippage"));
     }
@@ -192,8 +192,8 @@ pub(super) fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> Result<Va
     let price_impact_bps = price_impact_bps(amount_in, expected_out, reserve_in, reserve_out);
 
     Ok(json!({
-        "expectedOutRaw": expected_out.to_string(),
-        "minReceivedRaw": min_received.to_string(),
+        "expectedOut": expected_out.to_string(),
+        "minReceived": min_received.to_string(),
         "priceImpactBps": price_impact_bps,
     }))
 }
@@ -214,7 +214,7 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
     if token_in == token_out {
         return Err(String::from("same_token_pair"));
     }
-    let amount_out = parse_u128(&request.amount_out_raw, "amountOutRaw")?;
+    let amount_out = parse_u128(&request.amount_out, "amountOut")?;
     if amount_out == 0 {
         // The guest's exact_output_swap_logic rejects a zero output before any
         // transfer, so a zero-output preview would claim an unexecutable quote
@@ -278,8 +278,8 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
     };
 
     Ok(json!({
-        "requiredInRaw": required_in.to_string(),
-        "maxInRaw": max_in.to_string(),
+        "requiredIn": required_in.to_string(),
+        "maxIn": max_in.to_string(),
         "priceImpactBps": price_impact_bps,
     }))
 }
@@ -630,21 +630,21 @@ mod tests {
         let ab = swap_exact_in_quote(SwapExactInQuoteRequest {
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
-            amount_in_raw: "10000".into(),
+            amount_in: "10000".into(),
             slippage_bps: 50,
             pool_data: pool_data_hex(&pool),
         })
         .unwrap();
         // expectedOut comes from the shared on-chain formula (single source of truth).
         let (_, expected_out) = swap_exact_in_amounts(10_000, 1_000_000, 2_000_000, 30);
-        assert_eq!(ab["expectedOutRaw"], expected_out.to_string());
+        assert_eq!(ab["expectedOut"], expected_out.to_string());
         assert_eq!(
-            ab["minReceivedRaw"],
+            ab["minReceived"],
             (expected_out * (FEE_BPS_DENOMINATOR - 50) / FEE_BPS_DENOMINATOR).to_string()
         );
         assert!(ab["priceImpactBps"].is_number());
         // Only the priced results are echoed — no pool metadata.
-        assert!(ab.get("reserveInRaw").is_none());
+        assert!(ab.get("reserveIn").is_none());
         assert!(ab.get("feeBps").is_none());
         assert!(ab.get("poolStatus").is_none());
 
@@ -652,13 +652,13 @@ mod tests {
         let ba = swap_exact_in_quote(SwapExactInQuoteRequest {
             token_in_id: account_id_hex(def_b),
             token_out_id: account_id_hex(def_a),
-            amount_in_raw: "10000".into(),
+            amount_in: "10000".into(),
             slippage_bps: 50,
             pool_data: pool_data_hex(&pool),
         })
         .unwrap();
         let (_, expected_out_ba) = swap_exact_in_amounts(10_000, 2_000_000, 1_000_000, 30);
-        assert_eq!(ba["expectedOutRaw"], expected_out_ba.to_string());
+        assert_eq!(ba["expectedOut"], expected_out_ba.to_string());
     }
 
     #[test]
@@ -668,7 +668,7 @@ mod tests {
         let req = |pool_data: String| SwapExactInQuoteRequest {
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
-            amount_in_raw: "10000".into(),
+            amount_in: "10000".into(),
             slippage_bps: 50,
             pool_data,
         };
@@ -706,7 +706,7 @@ mod tests {
         let req = |amount: &str| SwapExactInQuoteRequest {
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
-            amount_in_raw: amount.into(),
+            amount_in: amount.into(),
             slippage_bps: 50,
             pool_data: pool_data_hex(&pool),
         };
@@ -722,7 +722,7 @@ mod tests {
             Err(String::from("amount_too_small"))
         );
         // A normal amount above the fee-rounding floor still quotes.
-        assert!(swap_exact_in_quote(req("10000")).unwrap()["expectedOutRaw"].is_string());
+        assert!(swap_exact_in_quote(req("10000")).unwrap()["expectedOut"].is_string());
     }
 
     #[test]
@@ -744,12 +744,12 @@ mod tests {
         let quote = swap_exact_in_quote(SwapExactInQuoteRequest {
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
-            amount_in_raw: "2".into(),
+            amount_in: "2".into(),
             slippage_bps: 50,
             pool_data: pool_data_hex(&pool),
         })
         .unwrap();
-        assert!(quote["expectedOutRaw"].is_string());
+        assert!(quote["expectedOut"].is_string());
         assert!(
             quote["priceImpactBps"].as_u64().unwrap()
                 <= u64::try_from(FEE_BPS_DENOMINATOR).unwrap()
@@ -769,10 +769,10 @@ mod tests {
             fees: 30,
             ..Default::default()
         };
-        let req = |amount_out_raw: &str| SwapExactOutQuoteRequest {
+        let req = |amount_out: &str| SwapExactOutQuoteRequest {
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
-            amount_out_raw: amount_out_raw.into(),
+            amount_out: amount_out.into(),
             slippage_bps: 50,
             pool_data: pool_data_hex(&pool),
         };
@@ -780,16 +780,16 @@ mod tests {
         // Sell A to receive exactly 10_000 B.
         let q = swap_exact_out_quote(req("10000")).unwrap();
         let (_, required_in) = swap_exact_out_amounts(10_000, 1_000_000, 2_000_000, 30).unwrap();
-        assert_eq!(q["requiredInRaw"], required_in.to_string());
+        assert_eq!(q["requiredIn"], required_in.to_string());
         // maxIn = required_in * (10000 + 50) / 10000, rounded up.
         assert_eq!(
-            q["maxInRaw"],
+            q["maxIn"],
             (required_in * 10_050).div_ceil(10_000).to_string()
         );
         assert!(q["priceImpactBps"].is_number());
         // Only the input-side results are echoed — no output/reserves.
-        assert!(q.get("expectedOutRaw").is_none());
-        assert!(q.get("reserveInRaw").is_none());
+        assert!(q.get("expectedOut").is_none());
+        assert!(q.get("reserveIn").is_none());
 
         // Zero requested output is rejected — the guest rejects exact_amount_out
         // == 0, so a zero-output preview would claim an unexecutable quote.
@@ -819,7 +819,7 @@ mod tests {
             swap_exact_out_quote(SwapExactOutQuoteRequest {
                 token_in_id: account_id_hex(def_a),
                 token_out_id: account_id_hex(def_b),
-                amount_out_raw: "10000".into(),
+                amount_out: "10000".into(),
                 slippage_bps: 50,
                 pool_data: pool_data_hex(&empty_side),
             }),

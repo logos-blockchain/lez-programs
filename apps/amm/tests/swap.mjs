@@ -104,8 +104,8 @@ async function selectAccount(app, selectorObjectName) {
   // max without needing BigInt.
   await app.inspector.send("evaluate", {
     expression:
-      "(function(){var r=matchingAccounts,b=r[0],bb=String(valueFor(b,'balanceRaw')||'0');"
-      + "for(var i=1;i<r.length;++i){var v=String(valueFor(r[i],'balanceRaw')||'0');"
+      "(function(){var r=matchingAccounts,b=r[0],bb=String(valueFor(b, 'balanceRaw')||'0');"
+      + "for(var i=1;i<r.length;++i){var v=String(valueFor(r[i], 'balanceRaw')||'0');"
       + "if(v.length>bb.length||(v.length===bb.length&&v>bb)){b=r[i];bb=v;}}"
       + "setSelection(accountIdFor(b),false);})()",
     objectId: id,

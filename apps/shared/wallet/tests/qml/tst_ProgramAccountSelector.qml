@@ -72,7 +72,7 @@ Item {
             compare(selector.showCombo, false)
             compare(selector.hasFunds, true)
             compare(selector.ready, true)
-            compare(selector.selectedBalanceRaw, "120")
+            compare(selector.selectedBalance, "120")
         }
 
         function test_inputMultipleHoldingsRequiresSelection() {
@@ -87,7 +87,7 @@ Item {
 
             selector.setSelection("holding-b", false)
             compare(selector.selectedAccountId, "holding-b")
-            compare(selector.selectedBalanceRaw, "80")
+            compare(selector.selectedBalance, "80")
             compare(selector.ready, true)
         }
 

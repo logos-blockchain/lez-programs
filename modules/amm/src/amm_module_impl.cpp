@@ -595,14 +595,14 @@ LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
     const FfiResult quoteResult = call(amm_swap_exact_in_quote, json{
         {"tokenInId", token_in},
         {"tokenOutId", token_out},
-        {"amountInRaw", amount_in_decimal},
+        {"amountIn", amount_in_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
 
-    // Success: wrap the priced payload { expectedOutRaw, minReceivedRaw,
+    // Success: wrap the priced payload { expectedOut, minReceived,
     // priceImpactBps } in the standard envelope.
     LogosMap out = quoteResult.value;
     out["status"] = "ok";
@@ -646,14 +646,14 @@ LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
     const FfiResult quoteResult = call(amm_swap_exact_out_quote, json{
         {"tokenInId", token_in},
         {"tokenOutId", token_out},
-        {"amountOutRaw", amount_out_decimal},
+        {"amountOut", amount_out_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
 
-    // Success: wrap { requiredInRaw, maxInRaw, priceImpactBps } in the envelope.
+    // Success: wrap { requiredIn, maxIn, priceImpactBps } in the envelope.
     LogosMap out = quoteResult.value;
     out["status"] = "ok";
     out["error"] = "";
@@ -856,7 +856,7 @@ LogosMap AmmModuleImpl::createPoolQuote(const LogosMap& request) {
     if (token_a.empty() || token_b.empty())
         return error("invalid_token_id");
 
-    // amountARaw/amountBRaw arrive as a JSON number (CLI) or decimal string (UI);
+    // amountA/amountB arrive as a JSON number (CLI) or decimal string (UI);
     // coerce to canonical decimal strings (rejects floats — see jsonAmountToDecimal).
     // If an amount field is present but malformed, return bad_amount; otherwise leave it
     // out so the FFI returns amount_required.
@@ -864,30 +864,30 @@ LogosMap AmmModuleImpl::createPoolQuote(const LogosMap& request) {
         {"tokenAId", token_a},
         {"tokenBId", token_b},
     };
-    // priceRaw is the Q64.64 opening price; used when no amounts are supplied
+    // price is the Q64.64 opening price; used when no amounts are supplied
     // (price-only ⇒ the op returns the minimum opening deposit). Left out if absent.
     std::string price_decimal;
-    if (jsonAmountToDecimal(request.value("priceRaw", json()), price_decimal))
-        quoteRequest["priceRaw"] = price_decimal;
-    if (request.contains("amountARaw")) {
+    if (jsonAmountToDecimal(request.value("price", json()), price_decimal))
+        quoteRequest["price"] = price_decimal;
+    if (request.contains("amountA")) {
         std::string amount_a_decimal;
-        if (!jsonAmountToDecimal(request.at("amountARaw"), amount_a_decimal))
+        if (!jsonAmountToDecimal(request.at("amountA"), amount_a_decimal))
             return error("bad_amount");
-        quoteRequest["amountARaw"] = amount_a_decimal;
+        quoteRequest["amountA"] = amount_a_decimal;
     }
-    if (request.contains("amountBRaw")) {
+    if (request.contains("amountB")) {
         std::string amount_b_decimal;
-        if (!jsonAmountToDecimal(request.at("amountBRaw"), amount_b_decimal))
+        if (!jsonAmountToDecimal(request.at("amountB"), amount_b_decimal))
             return error("bad_amount");
-        quoteRequest["amountBRaw"] = amount_b_decimal;
+        quoteRequest["amountB"] = amount_b_decimal;
     }
 
     const FfiResult quoteResult = call(amm_create_pool_quote, quoteRequest);
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
 
-    // Success: wrap { actualAmountARaw, actualAmountBRaw, minimumAmountARaw,
-    // minimumAmountBRaw, expectedLpRaw, lockedLpRaw, priceRaw } in the envelope.
+    // Success: wrap { actualAmountA, actualAmountB, minimumAmountA,
+    // minimumAmountB, expectedLp, lockedLp, price } in the envelope.
     LogosMap out = quoteResult.value;
     out["status"] = "ok";
     out["error"] = "";
@@ -928,8 +928,8 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     std::string amount_a_decimal;
     std::string amount_b_decimal;
     std::string deadline_decimal;
-    if (!jsonAmountToDecimal(request.value("amountARaw", json()), amount_a_decimal)
-        || !jsonAmountToDecimal(request.value("amountBRaw", json()), amount_b_decimal)
+    if (!jsonAmountToDecimal(request.value("amountA", json()), amount_a_decimal)
+        || !jsonAmountToDecimal(request.value("amountB", json()), amount_b_decimal)
         || !jsonAmountToDecimal(request.value("deadlineMs", json()), deadline_decimal))
         return error("bad_amount");
 
@@ -947,8 +947,8 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
         {"config", config},
         {"tokenAId", token_a},
         {"tokenBId", token_b},
-        {"amountARaw", amount_a_decimal},
-        {"amountBRaw", amount_b_decimal},
+        {"amountA", amount_a_decimal},
+        {"amountB", amount_b_decimal},
         {"feeBps", fee_val},
         {"deadlineMs", deadline_decimal},
         {"userHoldingAId", holding_a},
@@ -996,8 +996,8 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
 
     std::string max_a_decimal;
     std::string max_b_decimal;
-    if (!jsonAmountToDecimal(request.value("maxAmountARaw", json()), max_a_decimal)
-        || !jsonAmountToDecimal(request.value("maxAmountBRaw", json()), max_b_decimal))
+    if (!jsonAmountToDecimal(request.value("maxAmountA", json()), max_a_decimal)
+        || !jsonAmountToDecimal(request.value("maxAmountB", json()), max_b_decimal))
         return error("bad_amount");
 
     // Derive the pool id (config-free) and read the pool account; its raw data is handed
@@ -1013,7 +1013,7 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // slippageBps is a fraction of 100% in basis points; the pricing op uses it to derive
-    // minimumLpRaw (the LP floor the submit accepts). Require an integer JSON number and reject
+    // minimumLp (the LP floor the submit accepts). Require an integer JSON number and reject
     // everything else with a stable invalid_slippage: is_number() would also accept a float
     // (and get<int64_t>() on a number_float THROWS, terminating the module), while a string /
     // bool would otherwise fall through to a silent 0. A missing field defaults to 0 (no
@@ -1028,15 +1028,15 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     const FfiResult quoteResult = call(amm_add_liquidity_quote, json{
         {"tokenAId", token_a},
         {"tokenBId", token_b},
-        {"maxAmountARaw", max_a_decimal},
-        {"maxAmountBRaw", max_b_decimal},
+        {"maxAmountA", max_a_decimal},
+        {"maxAmountB", max_b_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
 
-    // Success: wrap { amountARaw, amountBRaw, expectedLpRaw, minimumLpRaw, priceRaw }.
+    // Success: wrap { amountA, amountB, expectedLp, minimumLp, price }.
     LogosMap out = quoteResult.value;
     out["status"] = "ok";
     out["error"] = "";
@@ -1076,9 +1076,9 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     std::string max_b_decimal;
     std::string min_lp_decimal;
     std::string deadline_decimal;
-    if (!jsonAmountToDecimal(request.value("maxAmountARaw", json()), max_a_decimal)
-        || !jsonAmountToDecimal(request.value("maxAmountBRaw", json()), max_b_decimal)
-        || !jsonAmountToDecimal(request.value("minLpRaw", json()), min_lp_decimal)
+    if (!jsonAmountToDecimal(request.value("maxAmountA", json()), max_a_decimal)
+        || !jsonAmountToDecimal(request.value("maxAmountB", json()), max_b_decimal)
+        || !jsonAmountToDecimal(request.value("minLp", json()), min_lp_decimal)
         || !jsonAmountToDecimal(request.value("deadlineMs", json()), deadline_decimal))
         return error("bad_amount");
 
@@ -1101,9 +1101,9 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
         {"config", config},
         {"tokenAId", token_a},
         {"tokenBId", token_b},
-        {"maxAmountARaw", max_a_decimal},
-        {"maxAmountBRaw", max_b_decimal},
-        {"minLpRaw", min_lp_decimal},
+        {"maxAmountA", max_a_decimal},
+        {"maxAmountB", max_b_decimal},
+        {"minLp", min_lp_decimal},
         {"deadlineMs", deadline_decimal},
         {"userHoldingAId", holding_a},
         {"userHoldingBId", holding_b},
@@ -1149,7 +1149,7 @@ LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
         return error("config_missing");
 
     std::string lp_amount_decimal;
-    if (!jsonAmountToDecimal(request.value("lpAmountRaw", json()), lp_amount_decimal))
+    if (!jsonAmountToDecimal(request.value("lpAmount", json()), lp_amount_decimal))
         return error("bad_amount");
 
     // Derive the pool id (config-free) and read the pool account; its raw data is handed to
@@ -1180,14 +1180,14 @@ LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
     const FfiResult quoteResult = call(amm_remove_liquidity_quote, json{
         {"tokenAId", token_a},
         {"tokenBId", token_b},
-        {"lpAmountRaw", lp_amount_decimal},
+        {"lpAmount", lp_amount_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
 
-    // Success: wrap { amountARaw, amountBRaw, minimumAmountARaw, minimumAmountBRaw, priceRaw }.
+    // Success: wrap { amountA, amountB, minimumAmountA, minimumAmountB, price }.
     LogosMap out = quoteResult.value;
     out["status"] = "ok";
     out["error"] = "";
@@ -1227,9 +1227,9 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     std::string min_a_decimal;
     std::string min_b_decimal;
     std::string deadline_decimal;
-    if (!jsonAmountToDecimal(request.value("lpAmountRaw", json()), lp_amount_decimal)
-        || !jsonAmountToDecimal(request.value("minAmountARaw", json()), min_a_decimal)
-        || !jsonAmountToDecimal(request.value("minAmountBRaw", json()), min_b_decimal)
+    if (!jsonAmountToDecimal(request.value("lpAmount", json()), lp_amount_decimal)
+        || !jsonAmountToDecimal(request.value("minAmountA", json()), min_a_decimal)
+        || !jsonAmountToDecimal(request.value("minAmountB", json()), min_b_decimal)
         || !jsonAmountToDecimal(request.value("deadlineMs", json()), deadline_decimal))
         return error("bad_amount");
 
@@ -1252,9 +1252,9 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
         {"config", config},
         {"tokenAId", token_a},
         {"tokenBId", token_b},
-        {"lpAmountRaw", lp_amount_decimal},
-        {"minAmountARaw", min_a_decimal},
-        {"minAmountBRaw", min_b_decimal},
+        {"lpAmount", lp_amount_decimal},
+        {"minAmountA", min_a_decimal},
+        {"minAmountB", min_b_decimal},
         {"deadlineMs", deadline_decimal},
         {"userHoldingAId", holding_a},
         {"userHoldingBId", holding_b},

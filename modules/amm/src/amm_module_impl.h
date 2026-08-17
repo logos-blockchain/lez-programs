@@ -66,8 +66,8 @@ public:
     LogosMap createOraclePriceAccount(const LogosMap& request);
 
     /// Prices a `SwapExactInput` for the (token_in_hex, token_out_hex) pair:
-    /// reads the pool and returns `{ status:"ok", error:"", expectedOutRaw,
-    /// minReceivedRaw, priceImpactBps }`, oriented and computed server-side via
+    /// reads the pool and returns `{ status:"ok", error:"", expectedOut,
+    /// minReceived, priceImpactBps }`, oriented and computed server-side via
     /// the shared on-chain formula. `amount_in` accepts a JSON integer or a
     /// decimal string (JSON floats rejected); `slippage_bps` is basis points.
     /// On failure: `{ status:"error", error:<code> }` — `no_pool` (no pool /
@@ -81,8 +81,8 @@ public:
                        int64_t slippage_bps);
 
     /// Prices a `SwapExactOutput` for the (token_in_hex, token_out_hex) pair:
-    /// reads the pool and returns `{ status:"ok", error:"", requiredInRaw,
-    /// maxInRaw, priceImpactBps }`, oriented and computed server-side via the
+    /// reads the pool and returns `{ status:"ok", error:"", requiredIn,
+    /// maxIn, priceImpactBps }`, oriented and computed server-side via the
     /// shared on-chain formula. `amount_out` accepts a JSON integer or a decimal
     /// string (JSON floats rejected); `slippage_bps` is basis points. On failure:
     /// `{ status:"error", error:<code> }` — `no_pool` (no pool / liquidity),
@@ -129,10 +129,10 @@ public:
     /// Prices creating a pool for (tokenAId, tokenBId) from the two deposit amounts.
     /// A pure preview — no chain reads, and no fee needed (the fee is not part of the
     /// pool PDA and doesn't affect the opening LP/price). Returns `{ status:"ok",
-    /// error:"", amountARaw, amountBRaw, expectedLpRaw, lockedLpRaw, initialPriceRaw }`
-    /// computed via the shared `amm_core` opening-LP math, so `expectedLpRaw` is
+    /// error:"", amountA, amountB, expectedLp, lockedLp, initialPrice }`
+    /// computed via the shared `amm_core` opening-LP math, so `expectedLp` is
     /// exactly what the guest mints. `request` carries `{ tokenAId, tokenBId,
-    /// amountARaw, amountBRaw }` (ids hex or base58, normalized to hex; amounts a JSON
+    /// amountA, amountB }` (ids hex or base58, normalized to hex; amounts a JSON
     /// integer or decimal string). On failure: `{ status:"error", error:<code> }` —
     /// `invalid_token_id`, `same_token_pair`, `bad_amount` (an amount field is present
     /// but not a valid integer — e.g. a float, from `jsonAmountToDecimal`),
@@ -146,7 +146,7 @@ public:
 
     /// Submits a `NewDefinition` transaction creating the pool for the request's pair.
     /// `request` carries `{ tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId,
-    /// amountARaw, amountBRaw, feeBps, deadlineMs }` (ids hex or base58, normalized to
+    /// amountA, amountB, feeBps, deadlineMs }` (ids hex or base58, normalized to
     /// hex; amounts/deadline a JSON integer or decimal string, deadline a u64 unix-ms).
     /// The caller provides `lpHoldingId` — a fresh (empty) account the guest initializes
     /// and mints the creator's LP tokens into; a new pool has no pre-existing LP holding,
@@ -162,20 +162,20 @@ public:
     /// Prices an `AddLiquidity` into the existing pool for (tokenAId, tokenBId) from the
     /// two max deposit amounts. Reads the pool server-side (like the swap quotes) and runs
     /// the guest's proportional-deposit math. Returns the same shape as `createPoolQuote`
-    /// minus the create-only locked LP: `{ status:"ok", error:"", amountARaw, amountBRaw,
-    /// expectedLpRaw, priceRaw }` — the actual ratio-matched deposits (display order), the
+    /// minus the create-only locked LP: `{ status:"ok", error:"", amountA, amountB,
+    /// expectedLp, price }` — the actual ratio-matched deposits (display order), the
     /// LP minted, and the pool's spot price. Slippage is applied at submit, not here.
-    /// `request` carries `{ tokenAId, tokenBId, maxAmountARaw, maxAmountBRaw }` (ids hex or
+    /// `request` carries `{ tokenAId, tokenBId, maxAmountA, maxAmountB }` (ids hex or
     /// base58, normalized to hex; amounts a JSON integer or decimal string). On failure:
     /// `{ status:"error", error:<code> }` — `invalid_token_id`, `config_missing`,
     /// `bad_amount`, `no_pool`, `pair_mismatch`, `amount_too_low`, or `backend_error`.
     LogosMap addLiquidityQuote(const LogosMap& request);
 
     /// Submits an `AddLiquidity` transaction into the request's pool. `request` carries
-    /// `{ tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, maxAmountARaw,
-    /// maxAmountBRaw, minLpRaw, deadlineMs }` (ids hex or base58, normalized to hex;
-    /// amounts/deadline a JSON integer or decimal string). `minLpRaw` is the caller's
-    /// slippage floor on the LP minted (the UI derives it from the quote's expectedLpRaw
+    /// `{ tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, maxAmountA,
+    /// maxAmountB, minLp, deadlineMs }` (ids hex or base58, normalized to hex;
+    /// amounts/deadline a JSON integer or decimal string). `minLp` is the caller's
+    /// slippage floor on the LP minted (the UI derives it from the quote's expectedLp
     /// and its slippage control). `lpHoldingId` is the holding that receives the minted LP.
     /// On success: `{ status:"ok", error:"", transactionId:<hex tx hash> }`. On failure:
     /// `{ status:"error", error:<code> }` — `config_missing`, `backend_error`,
@@ -185,12 +185,12 @@ public:
     LogosMap addLiquidity(const LogosMap& request);
 
     /// Prices a `RemoveLiquidity` from the existing pool for (tokenAId, tokenBId): burning
-    /// `lpAmountRaw` returns the proportional share of each reserve. Reads the pool
+    /// `lpAmount` returns the proportional share of each reserve. Reads the pool
     /// server-side (like the add quote) and runs the guest's `floor(reserve·lp/supply)` math.
-    /// Returns `{ status:"ok", error:"", amountARaw, amountBRaw, minimumAmountARaw,
-    /// minimumAmountBRaw, priceRaw }` — the withdrawals (display order), the slippage floors
+    /// Returns `{ status:"ok", error:"", amountA, amountB, minimumAmountA,
+    /// minimumAmountB, price }` — the withdrawals (display order), the slippage floors
     /// the submit enforces, and the pool's spot price. `request` carries `{ tokenAId, tokenBId,
-    /// lpAmountRaw, slippageBps }` (ids hex or base58, normalized to hex; amount a JSON integer
+    /// lpAmount, slippageBps }` (ids hex or base58, normalized to hex; amount a JSON integer
     /// or decimal string). On failure: `{ status:"error", error:<code> }` — `invalid_token_id`,
     /// `config_missing`, `bad_amount`, `invalid_slippage`, `no_pool`, `pair_mismatch`,
     /// `insufficient_pool_liquidity`, `amount_too_low`, `minimum_amount_zero`, or
@@ -198,8 +198,8 @@ public:
     LogosMap removeLiquidityQuote(const LogosMap& request);
 
     /// Submits a `RemoveLiquidity` transaction against the request's pool. `request` carries
-    /// `{ tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, lpAmountRaw, minAmountARaw,
-    /// minAmountBRaw, deadlineMs }` (ids hex or base58, normalized to hex; amounts/deadline a
+    /// `{ tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, lpAmount, minAmountA,
+    /// minAmountB, deadlineMs }` (ids hex or base58, normalized to hex; amounts/deadline a
     /// JSON integer or decimal string). `lpHoldingId` is the existing holding burned; the token
     /// a/b holdings receive the withdrawal (no fresh account, unlike add/create). `minAmount*Raw`
     /// are the caller's slippage floors on the tokens withdrawn. On success:
