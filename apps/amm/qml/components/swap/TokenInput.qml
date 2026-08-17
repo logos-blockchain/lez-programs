@@ -14,7 +14,13 @@ Rectangle {
     // The wallet's token holdings (backend.tokenHoldings()); the selector narrows
     // them to this slot's token. The chosen holding id is exposed as selectedHoldingId.
     property var holdings: []
-    readonly property string tokenDefinitionIdHex: root.token ? String(root.token.definitionId || "") : ""
+    // The token's definitionId as configured (TOKENS_CONFIG passes it through
+    // as-is — base58 or hex). tokenHoldings emits both encodings per holding, so
+    // match on whichever this id is: a 64-char hex string filters the holding's
+    // definitionIdHex, otherwise the base58 definitionId. (Filtering on a single
+    // fixed encoding shows "No funds" whenever the config uses the other one.)
+    readonly property string tokenDefinitionId: root.token ? String(root.token.definitionId || "") : ""
+    readonly property bool tokenIdIsHex: /^[0-9a-fA-F]{64}$/.test(root.tokenDefinitionId)
     readonly property string selectedHoldingId: accountSelector.selectedAccountId
     property bool active: true
     // When true, restrict input to digits only — used for the sell-amount
@@ -182,12 +188,10 @@ Rectangle {
             Layout.preferredWidth: Math.round(tiContent.width / 2)
             sourceModel: root.holdings
             accountType: "TokenHolding"
-            // The swap view is hex end-to-end: the token's definitionId is hex, so match the
-            // holding's hex definitionIdHex (tokenHoldings emits both — `definitionId` is base58
-            // for the liquidity view). Filtering on `definitionId` here never matches a hex
-            // stateValue, so every token would show "No funds".
-            stateField: "definitionIdHex"
-            stateValue: root.tokenDefinitionIdHex
+            // Match the holding encoding to the configured id's encoding (see
+            // tokenDefinitionId above): hex → definitionIdHex, base58 → definitionId.
+            stateField: root.tokenIdIsHex ? "definitionIdHex" : "definitionId"
+            stateValue: root.tokenIdIsHex ? root.tokenDefinitionId.toLowerCase() : root.tokenDefinitionId
             selectionMode: ProgramAccountSelector.Input
             showWhenSingle: true
             textAlignment: Text.AlignRight
