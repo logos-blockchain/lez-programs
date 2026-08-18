@@ -56,11 +56,15 @@ impl Ids {
         ))
     }
 
+    fn position_nonce() -> u64 {
+        0
+    }
+
     fn position() -> AccountId {
         compute_position_pda(
             Self::stablecoin_program(),
             Self::owner(),
-            Self::collateral_definition(),
+            Self::position_nonce(),
         )
     }
 
@@ -157,10 +161,12 @@ impl Accounts {
             program_owner: stablecoin_methods::STABLECOIN_ID,
             balance: 0_u128,
             data: Data::from(&Position {
-                collateral_vault_id: Ids::vault(),
-                collateral_definition_id: Ids::collateral_definition(),
+                owner_account_id: Ids::owner(),
+                position_nonce: Ids::position_nonce(),
+                vault_account_id: Ids::vault(),
                 collateral_amount: Balances::collateral_deposit(),
-                debt_amount: Balances::initial_debt(),
+                normalized_debt_amount: Balances::initial_debt(),
+                opened_at: 0,
             }),
             nonce: Nonce(0),
         }
@@ -223,12 +229,10 @@ fn assert_position(state: &V03State, expected_collateral: u128) {
     let position =
         Position::try_from(&state.get_account_by_id(Ids::position()).data).expect("valid Position");
     assert_eq!(position.collateral_amount, expected_collateral);
-    assert_eq!(position.debt_amount, 0);
-    assert_eq!(position.collateral_vault_id, Ids::vault());
-    assert_eq!(
-        position.collateral_definition_id,
-        Ids::collateral_definition()
-    );
+    assert_eq!(position.normalized_debt_amount, 0);
+    assert_eq!(position.vault_account_id, Ids::vault());
+    assert_eq!(position.owner_account_id, Ids::owner());
+    assert_eq!(position.position_nonce, Ids::position_nonce());
 }
 
 fn assert_fungible_balance(state: &V03State, account_id: AccountId, expected_balance: u128) {
@@ -254,6 +258,7 @@ fn stablecoin_open_position_then_withdraw_collateral() {
 
     // Open the position: deposit collateral from the user's holding into a fresh vault.
     let open = stablecoin_core::Instruction::OpenPosition {
+        position_nonce: Ids::position_nonce(),
         collateral_amount: Balances::collateral_deposit(),
     };
     let message = public_transaction::Message::try_new(
@@ -363,7 +368,7 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
     let position =
         Position::try_from(&state.get_account_by_id(Ids::position()).data).expect("valid Position");
     assert_eq!(
-        position.debt_amount,
+        position.normalized_debt_amount,
         Balances::initial_debt() - Balances::debt_repay_amount()
     );
     assert_eq!(position.collateral_amount, Balances::collateral_deposit());

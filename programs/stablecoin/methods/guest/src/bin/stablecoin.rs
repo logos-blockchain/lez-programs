@@ -18,6 +18,10 @@ mod stablecoin {
     /// Returns the host program's panic-converted error if any precondition fails (see
     /// [`stablecoin_program::open_position::open_position`] for the full list).
     #[instruction]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "account inputs + nonce + amount mirror the host function's ABI"
+    )]
     pub fn open_position(
         ctx: ProgramContext,
         #[account(signer)]
@@ -29,6 +33,7 @@ mod stablecoin {
         #[account(mut, signer)]
         user_holding: AccountWithMetadata,
         token_definition: AccountWithMetadata,
+        position_nonce: u64,
         collateral_amount: u128,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::open_position::open_position(
@@ -38,6 +43,7 @@ mod stablecoin {
             user_holding,
             token_definition,
             ctx.self_program_id,
+            position_nonce,
             collateral_amount,
         );
         Ok(spel_framework::SpelOutput::execute(

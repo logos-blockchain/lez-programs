@@ -17,6 +17,7 @@ use token_core::{TokenDefinition, TokenHolding};
 
 const STABLECOIN_PROGRAM_ID: ProgramId = [3u32; 8];
 const TOKEN_PROGRAM_ID: ProgramId = [2u32; 8];
+const TEST_POSITION_NONCE: u64 = 0;
 
 fn owner_id() -> AccountId {
     AccountId::new([0x10u8; 32])
@@ -51,11 +52,7 @@ fn token_holding_account(
 }
 
 fn position_id() -> AccountId {
-    compute_position_pda(
-        STABLECOIN_PROGRAM_ID,
-        owner_id(),
-        collateral_definition_id(),
-    )
+    compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), TEST_POSITION_NONCE)
 }
 
 fn vault_id() -> AccountId {
@@ -114,16 +111,21 @@ fn destination_holding_id() -> AccountId {
     AccountId::new([0x40u8; 32])
 }
 
-fn init_position_account(collateral_amount: u128, debt_amount: u128) -> AccountWithMetadata {
+fn init_position_account(
+    collateral_amount: u128,
+    normalized_debt_amount: u128,
+) -> AccountWithMetadata {
     AccountWithMetadata {
         account: Account {
             program_owner: STABLECOIN_PROGRAM_ID,
             balance: 0,
             data: Data::from(&Position {
-                collateral_vault_id: vault_id(),
-                collateral_definition_id: collateral_definition_id(),
+                owner_account_id: owner_id(),
+                position_nonce: TEST_POSITION_NONCE,
+                vault_account_id: vault_id(),
                 collateral_amount,
-                debt_amount,
+                normalized_debt_amount,
+                opened_at: 0,
             }),
             nonce: Nonce(0),
         },
@@ -186,6 +188,7 @@ fn open_position_claims_pda_and_emits_chained_calls() {
         user_holding_account(1_000),
         collateral_definition_account(),
         STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
         collateral_amount,
     );
 
@@ -197,17 +200,19 @@ fn open_position_claims_pda_and_emits_chained_calls() {
         position_post.required_claim(),
         Some(Claim::Pda(compute_position_pda_seed(
             owner_id(),
-            collateral_definition_id()
+            TEST_POSITION_NONCE
         )))
     );
     let position = Position::try_from(&position_post.account().data).expect("valid Position");
     assert_eq!(
         position,
         Position {
-            collateral_vault_id: vault_id(),
-            collateral_definition_id: collateral_definition_id(),
+            owner_account_id: owner_id(),
+            position_nonce: TEST_POSITION_NONCE,
+            vault_account_id: vault_id(),
             collateral_amount,
-            debt_amount: 0,
+            normalized_debt_amount: 0,
+            opened_at: 0,
         }
     );
     // The runtime sets the program_owner on the claimed account after validating Claim::Pda.
@@ -261,6 +266,7 @@ fn open_position_requires_owner_authorization() {
         user_holding_account(1_000),
         collateral_definition_account(),
         STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
         500,
     );
 }
@@ -278,6 +284,7 @@ fn open_position_requires_user_holding_authorization() {
         holding,
         collateral_definition_account(),
         STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
         500,
     );
 }
@@ -290,10 +297,12 @@ fn open_position_rejects_initialized_position() {
             program_owner: STABLECOIN_PROGRAM_ID,
             balance: 0,
             data: Data::from(&Position {
-                collateral_vault_id: vault_id(),
-                collateral_definition_id: collateral_definition_id(),
+                owner_account_id: owner_id(),
+                position_nonce: TEST_POSITION_NONCE,
+                vault_account_id: vault_id(),
                 collateral_amount: 1,
-                debt_amount: 0,
+                normalized_debt_amount: 0,
+                opened_at: 0,
             }),
             nonce: Nonce(0),
         },
@@ -308,6 +317,7 @@ fn open_position_rejects_initialized_position() {
         user_holding_account(1_000),
         collateral_definition_account(),
         STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
         500,
     );
 }
@@ -336,6 +346,7 @@ fn open_position_rejects_initialized_vault() {
         user_holding_account(1_000),
         collateral_definition_account(),
         STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
         500,
     );
 }
@@ -356,6 +367,7 @@ fn open_position_rejects_wrong_position_address() {
         user_holding_account(1_000),
         collateral_definition_account(),
         STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
         500,
     );
 }
@@ -376,6 +388,7 @@ fn open_position_rejects_wrong_vault_address() {
         user_holding_account(1_000),
         collateral_definition_account(),
         STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
         500,
     );
 }
@@ -406,6 +419,7 @@ fn open_position_rejects_mismatched_token_definition() {
         user_holding_account(1_000),
         other_definition,
         STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
         500,
     );
 }
@@ -425,37 +439,26 @@ fn open_position_rejects_definition_with_wrong_token_program() {
         user_holding_account(1_000),
         definition,
         STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
         500,
     );
 }
 
 #[test]
-fn position_pda_is_deterministic_and_owner_and_collateral_specific() {
-    let id_a = compute_position_pda(
-        STABLECOIN_PROGRAM_ID,
-        owner_id(),
-        collateral_definition_id(),
-    );
-    let id_b = compute_position_pda(
-        STABLECOIN_PROGRAM_ID,
-        owner_id(),
-        collateral_definition_id(),
-    );
+fn position_pda_is_deterministic_and_owner_and_nonce_specific() {
+    let id_a = compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), TEST_POSITION_NONCE);
+    let id_b = compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), TEST_POSITION_NONCE);
     assert_eq!(id_a, id_b);
 
     let other_owner = AccountId::new([0x11u8; 32]);
     assert_ne!(
-        compute_position_pda(
-            STABLECOIN_PROGRAM_ID,
-            other_owner,
-            collateral_definition_id()
-        ),
+        compute_position_pda(STABLECOIN_PROGRAM_ID, other_owner, TEST_POSITION_NONCE),
         id_a
     );
 
-    let other_definition = AccountId::new([0x21u8; 32]);
+    let other_nonce = TEST_POSITION_NONCE + 1;
     assert_ne!(
-        compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), other_definition),
+        compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), other_nonce),
         id_a
     );
 }
@@ -463,11 +466,7 @@ fn position_pda_is_deterministic_and_owner_and_collateral_specific() {
 #[test]
 fn position_pda_and_vault_pda_do_not_collide() {
     // Distinct domain tags must keep the position id and its vault id disjoint.
-    let position = compute_position_pda(
-        STABLECOIN_PROGRAM_ID,
-        owner_id(),
-        collateral_definition_id(),
-    );
+    let position = compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), TEST_POSITION_NONCE);
     let vault = compute_position_vault_pda(STABLECOIN_PROGRAM_ID, position);
     assert_ne!(position, vault);
 }
@@ -494,10 +493,12 @@ fn withdraw_collateral_updates_position_and_emits_transfer() {
     assert_eq!(
         position,
         Position {
-            collateral_vault_id: vault_id(),
-            collateral_definition_id: collateral_definition_id(),
+            owner_account_id: owner_id(),
+            position_nonce: TEST_POSITION_NONCE,
+            vault_account_id: vault_id(),
             collateral_amount: initial_collateral - amount,
-            debt_amount: 0,
+            normalized_debt_amount: 0,
+            opened_at: 0,
         }
     );
     assert_eq!(position_post.account().program_owner, STABLECOIN_PROGRAM_ID);
@@ -537,7 +538,7 @@ fn withdraw_collateral_allows_full_drain() {
     );
     let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
     assert_eq!(position.collateral_amount, 0);
-    assert_eq!(position.debt_amount, 0);
+    assert_eq!(position.normalized_debt_amount, 0);
 }
 
 #[test]
@@ -641,18 +642,20 @@ fn withdraw_collateral_rejects_wrong_vault_address() {
 }
 
 #[test]
-#[should_panic(expected = "Vault token holding is not for the position's collateral definition")]
-fn withdraw_collateral_rejects_vault_for_other_definition() {
-    let mut vault = init_vault_account();
-    vault.account.data = Data::from(&TokenHolding::Fungible {
+#[should_panic(
+    expected = "Destination token definition does not match the position's collateral definition"
+)]
+fn withdraw_collateral_rejects_destination_for_other_definition() {
+    let mut destination = destination_holding_account();
+    destination.account.data = Data::from(&TokenHolding::Fungible {
         definition_id: AccountId::new([0x21u8; 32]),
         balance: 0,
     });
     crate::withdraw_collateral::withdraw_collateral(
         owner_account(),
         init_position_account(500, 0),
-        vault,
-        destination_holding_account(),
+        init_vault_account(),
+        destination,
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -681,26 +684,6 @@ fn withdraw_collateral_rejects_uninitialized_destination() {
 fn withdraw_collateral_rejects_destination_with_wrong_token_program() {
     let mut destination = destination_holding_account();
     destination.account.program_owner = [9u32; 8];
-    crate::withdraw_collateral::withdraw_collateral(
-        owner_account(),
-        init_position_account(500, 0),
-        init_vault_account(),
-        destination,
-        STABLECOIN_PROGRAM_ID,
-        100,
-    );
-}
-
-#[test]
-#[should_panic(
-    expected = "Destination token definition does not match the position's collateral definition"
-)]
-fn withdraw_collateral_rejects_destination_for_other_definition() {
-    let mut destination = destination_holding_account();
-    destination.account.data = Data::from(&TokenHolding::Fungible {
-        definition_id: AccountId::new([0x21u8; 32]),
-        balance: 0,
-    });
     crate::withdraw_collateral::withdraw_collateral(
         owner_account(),
         init_position_account(500, 0),
@@ -762,10 +745,12 @@ fn repay_debt_decreases_debt_and_emits_burn() {
     assert_eq!(
         position,
         Position {
-            collateral_vault_id: vault_id(),
-            collateral_definition_id: collateral_definition_id(),
+            owner_account_id: owner_id(),
+            position_nonce: TEST_POSITION_NONCE,
+            vault_account_id: vault_id(),
             collateral_amount: initial_collateral,
-            debt_amount: initial_debt - amount,
+            normalized_debt_amount: initial_debt - amount,
+            opened_at: 0,
         }
     );
     assert_eq!(position_post.account().program_owner, STABLECOIN_PROGRAM_ID);
@@ -807,7 +792,7 @@ fn repay_debt_allows_full_repayment() {
         debt,
     );
     let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
-    assert_eq!(position.debt_amount, 0);
+    assert_eq!(position.normalized_debt_amount, 0);
     assert_eq!(position.collateral_amount, 500);
 }
 
@@ -823,7 +808,7 @@ fn repay_debt_allows_zero_amount() {
         0,
     );
     let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
-    assert_eq!(position.debt_amount, initial_debt);
+    assert_eq!(position.normalized_debt_amount, initial_debt);
 
     let expected_burn = ChainedCall::new(
         TOKEN_PROGRAM_ID,

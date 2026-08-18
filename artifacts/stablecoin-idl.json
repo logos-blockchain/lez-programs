@@ -38,6 +38,10 @@
       ],
       "args": [
         {
+          "name": "position_nonce",
+          "type": "u64"
+        },
+        {
           "name": "collateral_amount",
           "type": "u128"
         }
@@ -217,11 +221,15 @@
         "kind": "struct",
         "fields": [
           {
-            "name": "collateral_vault_id",
+            "name": "owner_account_id",
             "type": "account_id"
           },
           {
-            "name": "collateral_definition_id",
+            "name": "position_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "vault_account_id",
             "type": "account_id"
           },
           {
@@ -229,8 +237,12 @@
             "type": "u128"
           },
           {
-            "name": "debt_amount",
+            "name": "normalized_debt_amount",
             "type": "u128"
+          },
+          {
+            "name": "opened_at",
+            "type": "u64"
           }
         ]
       }

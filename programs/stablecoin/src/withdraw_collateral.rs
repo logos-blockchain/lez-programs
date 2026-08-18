@@ -13,22 +13,22 @@ use token_core::TokenHolding;
 /// the initial PDA claim already happened in
 /// [`crate::open_position::open_position`].
 ///
-/// Until issues #95 / #96 / #97 land (redemption price, price feed, stability
-/// fee accrual), this instruction hard-asserts `Position.debt_amount == 0`.
-/// When those land, this guard is replaced by real fee accrual + a
+/// Until Plan 3 lands (redemption price, price feed, stability fee accrual),
+/// this instruction hard-asserts `Position.normalized_debt_amount == 0`.
+/// When that lands, this guard is replaced by real fee accrual + a
 /// collateralization-ratio check against the post-withdrawal collateral.
 ///
 /// # Panics
 /// - `owner` is not authorized.
 /// - `position` is uninitialized, not owned by `stablecoin_program_id`, holds data that does not
 ///   decode as a [`Position`], or sits at an address that does not match
-///   `compute_position_pda(stablecoin_program_id, owner, Position.collateral_definition_id)`.
+///   `compute_position_pda(stablecoin_program_id, owner, Position.position_nonce)`.
 /// - `vault` sits at an address that does not match
-///   `compute_position_vault_pda(stablecoin_program_id, position_id)`, or holds a [`TokenHolding`]
-///   whose `definition_id` does not match the position's collateral definition.
+///   `compute_position_vault_pda(stablecoin_program_id, position_id)`.
 /// - `destination` is uninitialized, owned by a different Token Program than the vault, or holds a
-///   [`TokenHolding`] whose `definition_id` does not match the position's collateral definition.
-/// - `Position.debt_amount` is non-zero.
+///   [`TokenHolding`] whose `definition_id` does not match the vault holding's collateral
+///   definition.
+/// - `Position.normalized_debt_amount` is non-zero.
 /// - `amount > Position.collateral_amount`.
 pub fn withdraw_collateral(
     owner: AccountWithMetadata,
@@ -57,7 +57,7 @@ pub fn withdraw_collateral(
     let _position_seed = verify_position_and_get_seed(
         &position,
         &owner,
-        position_data.collateral_definition_id,
+        position_data.position_nonce,
         stablecoin_program_id,
     );
     let vault_seed =
@@ -65,11 +65,11 @@ pub fn withdraw_collateral(
 
     let vault_holding = TokenHolding::try_from(&vault.account.data)
         .expect("Vault account must hold a valid TokenHolding");
-    assert_eq!(
-        vault_holding.definition_id(),
-        position_data.collateral_definition_id,
-        "Vault token holding is not for the position's collateral definition"
-    );
+    // The vault PDA is verified to belong to this position, so its holding's
+    // definition is the authoritative collateral definition. Plan 1 dropped the
+    // redundant copy from `Position`; `ProtocolParameters` owns the global
+    // collateral definition from Plan 3 onward.
+    let collateral_definition_id = vault_holding.definition_id();
 
     let token_program_id = vault.account.program_owner;
     assert_ne!(
@@ -85,13 +85,13 @@ pub fn withdraw_collateral(
         .expect("Destination account must hold a valid TokenHolding");
     assert_eq!(
         destination_holding.definition_id(),
-        position_data.collateral_definition_id,
+        collateral_definition_id,
         "Destination token definition does not match the position's collateral definition"
     );
 
     assert_eq!(
-        position_data.debt_amount, 0,
-        "withdraw_collateral with debt is not supported yet — stability fee accrual and collateralization check land with #97/#96"
+        position_data.normalized_debt_amount, 0,
+        "withdraw_collateral with debt is not supported yet — fee accrual + collateralization check land in Plan 3"
     );
     let new_collateral = position_data
         .collateral_amount
@@ -99,10 +99,12 @@ pub fn withdraw_collateral(
         .expect("Withdrawal amount exceeds position collateral");
 
     let updated_position = Position {
-        collateral_vault_id: position_data.collateral_vault_id,
-        collateral_definition_id: position_data.collateral_definition_id,
+        owner_account_id: position_data.owner_account_id,
+        position_nonce: position_data.position_nonce,
+        vault_account_id: position_data.vault_account_id,
         collateral_amount: new_collateral,
-        debt_amount: position_data.debt_amount,
+        normalized_debt_amount: position_data.normalized_debt_amount,
+        opened_at: position_data.opened_at,
     };
     let mut position_post = position.account.clone();
     position_post.data = Data::from(&updated_position);

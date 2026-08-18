@@ -23,6 +23,10 @@ use token_core::TokenHolding;
 /// - `user_holding` cannot be decoded as a [`TokenHolding`].
 /// - `user_holding`'s definition does not match `token_definition`.
 /// - `token_definition.program_owner` does not match `user_holding.program_owner`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "account inputs + program id + nonce + amount are all required; a param struct would obscure the host-call ABI"
+)]
 pub fn open_position(
     owner: AccountWithMetadata,
     position: AccountWithMetadata,
@@ -30,6 +34,7 @@ pub fn open_position(
     user_holding: AccountWithMetadata,
     token_definition: AccountWithMetadata,
     stablecoin_program_id: ProgramId,
+    position_nonce: u64,
     collateral_amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     assert!(owner.is_authorized, "Owner authorization is missing");
@@ -61,21 +66,21 @@ pub fn open_position(
         "Collateral token definition is not owned by the user holding's Token Program"
     );
 
-    let position_seed = verify_position_and_get_seed(
-        &position,
-        &owner,
-        token_definition.account_id,
-        stablecoin_program_id,
-    );
+    let position_seed =
+        verify_position_and_get_seed(&position, &owner, position_nonce, stablecoin_program_id);
     let vault_seed =
         verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
 
     let mut position_post = position.account;
     position_post.data = Data::from(&Position {
-        collateral_vault_id: vault.account_id,
-        collateral_definition_id: token_definition.account_id,
+        owner_account_id: owner.account_id,
+        position_nonce,
+        vault_account_id: vault.account_id,
         collateral_amount,
-        debt_amount: 0,
+        normalized_debt_amount: 0,
+        // TODO(Plan 3): read from ctx clock once `open_position` is rebuilt with
+        // the fee-aware flow. Setting 0 keeps Plan 1 a pure refactor.
+        opened_at: 0,
     });
 
     let post_states = vec![

@@ -48,6 +48,9 @@ pub enum Instruction {
     ///   its `program_owner` determines the Token Program used by the chained `InitializeAccount`
     ///   / `Transfer` calls)
     OpenPosition {
+        /// Caller-chosen nonce that, with the owner's account id, forms the
+        /// position PDA's seed pre-image. Lets one owner hold many positions.
+        position_nonce: u64,
         /// Amount of collateral tokens to deposit into the position vault.
         collateral_amount: u128,
     },
@@ -101,19 +104,30 @@ pub enum Instruction {
 
 /// Persistent state held by a Stablecoin [`Position`] account.
 ///
-/// `debt_amount` is included for forward compatibility with `generate_debt`; until that
-/// instruction lands `open_position` always initializes it to `0`.
+/// See spec §4.4. `normalized_debt_amount` is the RAI-style "shares in a debt
+/// pool whose value per share is the stability-fee accumulator" — multiply by
+/// the current accumulator to get the position's nominal debt at any moment.
 #[account_type]
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct Position {
-    /// Token holding account (vault PDA) that custodies the collateral backing this position.
-    pub collateral_vault_id: AccountId,
-    /// Token definition for the collateral held in `collateral_vault_id`.
-    pub collateral_definition_id: AccountId,
-    /// Amount of collateral tokens deposited.
+    /// Owner of the position. Must be `is_authorized` for every position op.
+    /// Stored for client discovery (PDA seed isn't reversible).
+    pub owner_account_id: AccountId,
+    /// Caller-chosen nonce; together with `owner_account_id` forms the PDA
+    /// seed for this position.
+    pub position_nonce: u64,
+    /// Collateral vault PDA (= `compute_position_vault_pda(program, position_id)`).
+    /// Stored explicitly for op-time efficiency.
+    pub vault_account_id: AccountId,
+    /// Collateral tokens currently held in the vault. Invariant:
+    /// equals `vault_holding.balance` after every modifying op.
     pub collateral_amount: u128,
-    /// Outstanding stablecoin debt against this position.
-    pub debt_amount: u128,
+    /// Stablecoin atomic units divided by the accumulator at mint time.
+    /// Nominal debt at time T = `normalized_debt_amount * accumulated_rate(T) / FIXED_POINT_ONE`.
+    pub normalized_debt_amount: u128,
+    /// Unix milliseconds when the position was first opened. UX/analytics only;
+    /// not used in protocol logic.
+    pub opened_at: u64,
 }
 
 impl TryFrom<&Data> for Position {
@@ -126,26 +140,27 @@ impl TryFrom<&Data> for Position {
 
 impl From<&Position> for Data {
     fn from(position: &Position) -> Self {
-        let mut data = Vec::with_capacity(std::mem::size_of_val(position));
-        BorshSerialize::serialize(position, &mut data)
-            .expect("Serialization to Vec should not fail");
-        Self::try_from(data).expect("Position encoded data should fit into Data")
+        let len = borsh::object_length(position).expect("Position length must be known");
+        let mut buf = Vec::with_capacity(len);
+        BorshSerialize::serialize(position, &mut buf)
+            .expect("Position serialization should not fail");
+        Self::try_from(buf).expect("Position encoded data should fit into Data")
     }
 }
 
-/// PDA seed for the [`Position`] account owned by `owner_id` for `collateral_definition_id`.
+/// PDA seed for the [`Position`] account at `(owner_id, position_nonce)`.
 ///
-/// Derived from the owner and collateral definition addresses with a domain-separation tag
-/// so one owner can hold separate positions for separate collateral definitions.
-pub fn compute_position_pda_seed(
-    owner_id: AccountId,
-    collateral_definition_id: AccountId,
-) -> PdaSeed {
+/// The single-instance protocol has only one collateral definition globally
+/// (stored on `ProtocolParameters`), so it no longer factors into the seed.
+/// The 64-bit `position_nonce` is caller-chosen and lets one owner hold
+/// many positions (spec §3.2).
+#[must_use]
+pub fn compute_position_pda_seed(owner_id: AccountId, position_nonce: u64) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256 as _};
 
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&owner_id.to_bytes());
-    bytes.extend_from_slice(&collateral_definition_id.to_bytes());
+    bytes.extend_from_slice(&position_nonce.to_le_bytes());
     bytes.extend_from_slice(POSITION_PDA_DOMAIN);
 
     let mut out = [0u8; 32];
@@ -153,15 +168,17 @@ pub fn compute_position_pda_seed(
     PdaSeed::new(out)
 }
 
-/// Account id of the [`Position`] PDA owned by `owner_id` under `stablecoin_program_id`.
+/// Account id of the [`Position`] PDA for `(owner_id, position_nonce)` under
+/// `stablecoin_program_id`.
+#[must_use]
 pub fn compute_position_pda(
     stablecoin_program_id: ProgramId,
     owner_id: AccountId,
-    collateral_definition_id: AccountId,
+    position_nonce: u64,
 ) -> AccountId {
     AccountId::for_public_pda(
         &stablecoin_program_id,
-        &compute_position_pda_seed(owner_id, collateral_definition_id),
+        &compute_position_pda_seed(owner_id, position_nonce),
     )
 }
 
@@ -192,20 +209,19 @@ pub fn compute_position_vault_pda(
     )
 }
 
-/// Verify the position account's address matches
-/// `(stablecoin_program_id, owner, collateral_definition_id)` and return the [`PdaSeed`] for
-/// use in post-state claims.
+/// Verify the position account's address matches `(stablecoin_program_id,
+/// owner, position_nonce)` and return the [`PdaSeed`] for use in post-state
+/// claims.
 ///
 /// # Panics
-/// If `position.account_id` does not match the address derived from `owner`,
-/// `collateral_definition_id`, and `stablecoin_program_id`.
+/// If `position.account_id` does not match the derived PDA.
 pub fn verify_position_and_get_seed(
     position: &AccountWithMetadata,
     owner: &AccountWithMetadata,
-    collateral_definition_id: AccountId,
+    position_nonce: u64,
     stablecoin_program_id: ProgramId,
 ) -> PdaSeed {
-    let seed = compute_position_pda_seed(owner.account_id, collateral_definition_id);
+    let seed = compute_position_pda_seed(owner.account_id, position_nonce);
     let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
     assert_eq!(
         position.account_id, expected_id,
