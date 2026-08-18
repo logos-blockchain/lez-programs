@@ -689,6 +689,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clock_core"
+version = "0.1.0"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
+dependencies = [
+ "borsh",
+ "lee_core",
+]
+
+[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2709,9 +2718,11 @@ dependencies = [
 name = "stablecoin_program"
 version = "0.1.0"
 dependencies = [
+ "clock_core",
  "lee_core",
  "stablecoin_core",
  "token_core",
+ "twap_oracle_core",
 ]
 
 [[package]]

@@ -2,6 +2,9 @@
 
 pub use stablecoin_core as core;
 
+/// Bootstrap the protocol: create the global PDAs and the stablecoin definition.
+pub mod initialize_program;
+
 /// Open a new collateral-only position for a calling owner.
 pub mod open_position;
 

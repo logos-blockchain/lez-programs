@@ -31,6 +31,8 @@ pub use stability_fee_accumulator::{
 // compatibility.
 const POSITION_PDA_DOMAIN: &[u8] = b"POSITION";
 const POSITION_VAULT_PDA_DOMAIN: &[u8] = b"POSITION_VAULT";
+const STABLECOIN_DEFINITION_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__DEFINITION__________";
+const STABLECOIN_MASTER_HOLDING_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__MASTER_HOLDING______";
 
 /// Stablecoin Program Instruction.
 #[derive(Debug, Serialize, Deserialize)]
@@ -297,6 +299,62 @@ pub fn verify_position_vault_and_get_seed(
         "Position vault account ID does not match expected derivation"
     );
     seed
+}
+
+/// PDA seed for the stablecoin's Token Program-owned `TokenDefinition`
+/// account, derived under the stablecoin program id so the stablecoin
+/// program's PDA seed authorizes every chained `Token::Mint` / `Token::Burn`.
+#[must_use]
+pub fn compute_stablecoin_definition_pda_seed() -> PdaSeed {
+    use risc0_zkvm::sha::{Impl, Sha256 as _};
+
+    let mut out = [0u8; 32];
+    out.copy_from_slice(Impl::hash_bytes(&STABLECOIN_DEFINITION_PDA_DOMAIN).as_bytes());
+    PdaSeed::new(out)
+}
+
+#[must_use]
+pub fn compute_stablecoin_definition_pda(stablecoin_program_id: ProgramId) -> AccountId {
+    AccountId::for_public_pda(
+        &stablecoin_program_id,
+        &compute_stablecoin_definition_pda_seed(),
+    )
+}
+
+/// PDA seed for the empty `TokenHolding` paired with the stablecoin definition
+/// at `Token::NewFungibleDefinition` time. The protocol passes `total_supply = 0`
+/// so this holding stays empty forever; the PDA contains the artifact at a
+/// deterministic address. See spec §3.1 / §10.1 for the full rationale.
+#[must_use]
+pub fn compute_stablecoin_master_holding_pda_seed() -> PdaSeed {
+    use risc0_zkvm::sha::{Impl, Sha256 as _};
+
+    let mut out = [0u8; 32];
+    out.copy_from_slice(Impl::hash_bytes(&STABLECOIN_MASTER_HOLDING_PDA_DOMAIN).as_bytes());
+    PdaSeed::new(out)
+}
+
+#[must_use]
+pub fn compute_stablecoin_master_holding_pda(stablecoin_program_id: ProgramId) -> AccountId {
+    AccountId::for_public_pda(
+        &stablecoin_program_id,
+        &compute_stablecoin_master_holding_pda_seed(),
+    )
+}
+
+#[cfg(test)]
+mod global_pda_tests {
+    use super::*;
+
+    #[test]
+    fn stablecoin_definition_and_master_holding_pdas_are_distinct() {
+        let program_id: ProgramId = [11u32; 8];
+        let def = compute_stablecoin_definition_pda(program_id);
+        let master = compute_stablecoin_master_holding_pda(program_id);
+        assert_ne!(def, master);
+        assert_ne!(def, compute_protocol_parameters_pda(program_id));
+        assert_ne!(master, compute_stability_fee_accumulator_pda(program_id));
+    }
 }
 
 #[cfg(test)]

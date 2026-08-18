@@ -3946,9 +3946,11 @@ dependencies = [
 name = "stablecoin_program"
 version = "0.1.0"
 dependencies = [
+ "clock_core",
  "lee_core",
  "stablecoin_core",
  "token_core",
+ "twap_oracle_core",
 ]
 
 [[package]]
