@@ -35,6 +35,54 @@ const POSITION_VAULT_PDA_DOMAIN: &[u8] = b"POSITION_VAULT";
 /// Stablecoin Program Instruction.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Instruction {
+    /// Bootstrap the protocol. One-shot — fails if any of the five global PDAs
+    /// is already initialized.
+    ///
+    /// Required accounts (9), in order:
+    /// 1. `admin` — authorized; becomes `ProtocolParameters.admin_account_id`.
+    /// 2. `protocol_parameters` — uninitialized, PDA at
+    ///    `compute_protocol_parameters_pda(self_program_id)`.
+    /// 3. `stability_fee_accumulator` — uninitialized, PDA at
+    ///    `compute_stability_fee_accumulator_pda(self_program_id)`.
+    /// 4. `redemption_price_state` — uninitialized, PDA at
+    ///    `compute_redemption_price_state_pda(self_program_id)`.
+    /// 5. `stablecoin_definition` — uninitialized, PDA at
+    ///    `compute_stablecoin_definition_pda(self_program_id)`; claimed via the chained
+    ///    `Token::NewFungibleDefinition`.
+    /// 6. `stablecoin_master_holding` — uninitialized, PDA at
+    ///    `compute_stablecoin_master_holding_pda(self_program_id)`; also claimed via the chained
+    ///    call (Token-Program API artifact — receives `total_supply = 0`).
+    /// 7. `collateral_definition` — initialized; validated as `TokenDefinition::Fungible` and
+    ///    recorded into `ProtocolParameters.collateral_definition_id` (immutable thereafter).
+    /// 8. `market_price_oracle` — initialized; validated as an `OraclePriceAccount` with
+    ///    `base_asset` = stablecoin definition, `quote_asset` = collateral definition.
+    /// 9. `clock` — the system `CLOCK_01` account; read-only. Its timestamp anchors the
+    ///    accumulator and redemption-price state. (The pinned spel-framework exposes no
+    ///    `ProgramContext` clock, so wall-clock time is read from this account.)
+    InitializeProgram {
+        /// Designated freeze authority. Held in `ProtocolParameters`; can be
+        /// rotated post-init via `set_freeze_authority`.
+        freeze_authority_account_id: AccountId,
+        /// Per-millisecond stability fee multiplier in fixed-point. Bound:
+        /// `FIXED_POINT_ONE <= x <= FIXED_POINT_ONE * 2` (see spec §8).
+        initial_stability_fee_per_millisecond: u128,
+        /// PI controller `Kp`. Signed. Bound: `|x| <= FIXED_POINT_ONE * 10^3`.
+        initial_controller_proportional_gain: i128,
+        /// PI controller `Ki`. Signed. Bound: `|x| <= FIXED_POINT_ONE`.
+        initial_controller_integral_gain: i128,
+        /// Minimum collateralization ratio in fixed-point. Bound:
+        /// `FIXED_POINT_ONE * 1.1 <= x <= FIXED_POINT_ONE * 10`.
+        initial_minimum_collateralization_ratio: u128,
+        /// Min milliseconds between `update_redemption_rate` calls. Bound: 1..=86_400_000.
+        minimum_milliseconds_between_rate_updates: u64,
+        /// Max accepted oracle observation age, in milliseconds. Bound: 1..=86_400_000.
+        maximum_oracle_price_age_milliseconds: u64,
+        /// Initial redemption price in fixed-point (collateral-per-stablecoin).
+        /// Must be > 0; chosen by the deployer to reflect the launch target.
+        initial_redemption_price: u128,
+        /// Name baked into the stablecoin's `TokenDefinition::Fungible`.
+        stablecoin_name: String,
+    },
     /// Open a new collateral-only [`Position`] for the calling owner.
     ///
     /// Required accounts (5):
@@ -249,4 +297,57 @@ pub fn verify_position_vault_and_get_seed(
         "Position vault account ID does not match expected derivation"
     );
     seed
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::*;
+    use crate::math::FIXED_POINT_ONE;
+
+    #[test]
+    fn initialize_program_json_roundtrip() {
+        let original = Instruction::InitializeProgram {
+            freeze_authority_account_id: AccountId::new([0xFF; 32]),
+            initial_stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000,
+            initial_controller_proportional_gain: -42,
+            initial_controller_integral_gain: 123_456,
+            initial_minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
+            minimum_milliseconds_between_rate_updates: 300_000,
+            maximum_oracle_price_age_milliseconds: 900_000,
+            initial_redemption_price: FIXED_POINT_ONE / 2,
+            stablecoin_name: "test-stable".to_owned(),
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+        match decoded {
+            Instruction::InitializeProgram {
+                freeze_authority_account_id,
+                initial_stability_fee_per_millisecond,
+                initial_controller_proportional_gain,
+                initial_controller_integral_gain,
+                initial_minimum_collateralization_ratio,
+                minimum_milliseconds_between_rate_updates,
+                maximum_oracle_price_age_milliseconds,
+                initial_redemption_price,
+                stablecoin_name,
+            } => {
+                assert_eq!(freeze_authority_account_id, AccountId::new([0xFF; 32]));
+                assert_eq!(
+                    initial_stability_fee_per_millisecond,
+                    FIXED_POINT_ONE + 1_500_000_000_000_000
+                );
+                assert_eq!(initial_controller_proportional_gain, -42);
+                assert_eq!(initial_controller_integral_gain, 123_456);
+                assert_eq!(
+                    initial_minimum_collateralization_ratio,
+                    FIXED_POINT_ONE * 3 / 2
+                );
+                assert_eq!(minimum_milliseconds_between_rate_updates, 300_000);
+                assert_eq!(maximum_oracle_price_age_milliseconds, 900_000);
+                assert_eq!(initial_redemption_price, FIXED_POINT_ONE / 2);
+                assert_eq!(stablecoin_name, "test-stable");
+            }
+            _ => panic!("decoded into wrong variant"),
+        }
+    }
 }
