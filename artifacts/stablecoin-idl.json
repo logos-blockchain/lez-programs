@@ -3,6 +3,103 @@
   "name": "stablecoin",
   "instructions": [
     {
+      "name": "initialize_program",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "redemption_price_state",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_master_holding",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "collateral_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "market_price_oracle",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "freeze_authority_account_id",
+          "type": "account_id"
+        },
+        {
+          "name": "initial_stability_fee_per_millisecond",
+          "type": "u128"
+        },
+        {
+          "name": "initial_controller_proportional_gain",
+          "type": "i128"
+        },
+        {
+          "name": "initial_controller_integral_gain",
+          "type": "i128"
+        },
+        {
+          "name": "initial_minimum_collateralization_ratio",
+          "type": "u128"
+        },
+        {
+          "name": "minimum_milliseconds_between_rate_updates",
+          "type": "u64"
+        },
+        {
+          "name": "maximum_oracle_price_age_milliseconds",
+          "type": "u64"
+        },
+        {
+          "name": "initial_redemption_price",
+          "type": "u128"
+        },
+        {
+          "name": "stablecoin_name",
+          "type": "string"
+        }
+      ]
+    },
+    {
       "name": "open_position",
       "accounts": [
         {
