@@ -172,6 +172,22 @@
       }
     },
     {
+      "name": "StabilityFeeAccumulator",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "accumulated_rate_at_last_accrual",
+            "type": "u128"
+          },
+          {
+            "name": "last_accrued_at",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "Position",
       "type": {
         "kind": "struct",

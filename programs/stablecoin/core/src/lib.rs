@@ -4,6 +4,8 @@ pub mod math;
 
 pub mod protocol_parameters;
 
+pub mod stability_fee_accumulator;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
@@ -14,6 +16,10 @@ pub use protocol_parameters::{
 };
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
+pub use stability_fee_accumulator::{
+    compute_stability_fee_accumulator_pda, compute_stability_fee_accumulator_pda_seed,
+    StabilityFeeAccumulator,
+};
 
 // Stable domain-separation tags for the position PDAs; these must stay unchanged for address
 // compatibility.
