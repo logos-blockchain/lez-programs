@@ -4,6 +4,8 @@ pub mod math;
 
 pub mod protocol_parameters;
 
+pub mod redemption_price_state;
+
 pub mod stability_fee_accumulator;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -13,6 +15,10 @@ use nssa_core::{
 };
 pub use protocol_parameters::{
     compute_protocol_parameters_pda, compute_protocol_parameters_pda_seed, ProtocolParameters,
+};
+pub use redemption_price_state::{
+    compute_redemption_price_state_pda, compute_redemption_price_state_pda_seed,
+    RedemptionPriceState,
 };
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;

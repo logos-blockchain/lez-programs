@@ -172,6 +172,30 @@
       }
     },
     {
+      "name": "RedemptionPriceState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "redemption_price_at_last_update",
+            "type": "u128"
+          },
+          {
+            "name": "redemption_rate_per_millisecond",
+            "type": "u128"
+          },
+          {
+            "name": "controller_integral_term",
+            "type": "i128"
+          },
+          {
+            "name": "last_updated_at",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "StabilityFeeAccumulator",
       "type": {
         "kind": "struct",
