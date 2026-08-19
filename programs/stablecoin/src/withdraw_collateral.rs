@@ -76,7 +76,7 @@ pub fn withdraw_collateral(
     let vault_holding = TokenHolding::try_from(&vault.account.data)
         .expect("Vault account must hold a valid TokenHolding");
     // The vault PDA is verified to belong to this position, so its holding's
-    // definition is the authoritative collateral definition. Plan 1 dropped the
+    // definition is the authoritative collateral definition. #161 dropped the
     // redundant copy from `Position`; `ProtocolParameters` owns the global
     // collateral definition from #173 onward.
     let collateral_definition_id = vault_holding.definition_id();

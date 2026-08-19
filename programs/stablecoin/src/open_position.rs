@@ -79,7 +79,7 @@ pub fn open_position(
         collateral_amount,
         normalized_debt_amount: 0,
         // TODO(#173): read from ctx clock once `open_position` is rebuilt with
-        // the fee-aware flow. Setting 0 keeps Plan 1 a pure refactor.
+        // the fee-aware flow. Setting 0 keeps #156 a pure refactor.
         opened_at: 0,
     });
 
