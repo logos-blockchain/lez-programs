@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
 
 /// PDA seed domain for the [`StabilityFeeAccumulator`].
-const STABILITY_FEE_ACCUMULATOR_PDA_DOMAIN: &[u8; 32] = b"STABLECOIN__STABILITY_FEE_ACCUM_";
+const STABILITY_FEE_ACCUMULATOR_PDA_DOMAIN: &[u8] = b"STABILITY_FEE_ACCUMULATOR";
 
 /// Compounded stability-fee multiplier, lazy form.
 ///
