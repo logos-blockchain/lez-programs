@@ -4,6 +4,7 @@ import QtQuick.Layouts 1.15
 
 import Logos.Theme
 
+import "chrome"
 import "pages"
 
 Item {
