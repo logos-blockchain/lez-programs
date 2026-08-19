@@ -1,0 +1,29 @@
+// QtRO view contract for the Token UI backend. PROPs auto-sync to every QML
+// replica; SLOTs are the async surface QML calls via logos.watch(...).
+// The account list is exposed separately as a Q_PROPERTY model on the backend
+// (reached from QML via logos.model("token_ui", "accountModel")).
+class TokenUiBackend
+{
+    PROP(bool isWalletOpen READONLY)
+    PROP(bool walletExists READONLY)
+    PROP(QString walletHome READONLY)
+    PROP(QString sequencerAddr READONLY)
+    // Whether the configured sequencer answered the last reachability probe.
+    // Defaults true so the UI doesn't flash a warning before the first check.
+    PROP(bool sequencerReachable READONLY)
+
+    // Account management
+    SLOT(QString createAccountPublic())
+    SLOT(QString createAccountPrivate())
+
+    // Creates a fresh per-app wallet at walletHome and returns its BIP39
+    // mnemonic (empty on failure), which is the only chance to record it.
+    SLOT(QString createNewDefault(QString password))
+
+    // Re-open the existing on-disk wallet after a disconnect.
+    SLOT(bool openExisting())
+    // Close this app's wallet view (lock); does not delete the wallet and, in
+    // Basecamp, does not close the wallet other apps share.
+    SLOT(void disconnectWallet())
+
+}

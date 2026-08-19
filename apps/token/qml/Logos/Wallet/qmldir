@@ -1,0 +1,5 @@
+module Logos.Wallet
+optional plugin logos_wallet_qmlplugin ../../../Logos/Wallet
+classname Logos_WalletPlugin
+prefer :/qt/qml/Logos/Wallet/
+depends QtQuick
