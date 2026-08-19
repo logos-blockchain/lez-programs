@@ -13,7 +13,7 @@ use token_core::TokenHolding;
 /// the initial PDA claim already happened in
 /// [`crate::open_position::open_position`].
 ///
-/// Until Plan 3 lands (redemption price, price feed, stability fee accrual),
+/// Until #173 lands (redemption price, price feed, stability fee accrual),
 /// this instruction hard-asserts `Position.normalized_debt_amount == 0`.
 /// When that lands, this guard is replaced by real fee accrual + a
 /// collateralization-ratio check against the post-withdrawal collateral.
@@ -52,7 +52,7 @@ pub fn withdraw_collateral(
     let position_data = Position::try_from(&position.account.data)
         .expect("Position account must hold valid Position state");
     // `verify_position_and_get_seed` asserts the position address matches the
-    // (owner, collateral_definition) PDA derivation. We do not use the seed
+    // (owner, position_nonce) PDA derivation. We do not use the seed
     // downstream — the position is already PDA-claimed.
     let _position_seed = verify_position_and_get_seed(
         &position,
@@ -60,15 +60,25 @@ pub fn withdraw_collateral(
         position_data.position_nonce,
         stablecoin_program_id,
     );
+    // The PDA derivation above already binds the owner; this guards the stored
+    // discovery copy against silently drifting out of sync.
+    assert_eq!(
+        position_data.owner_account_id, owner.account_id,
+        "Position owner_account_id does not match the owner account"
+    );
     let vault_seed =
         verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
+    assert_eq!(
+        position_data.vault_account_id, vault.account_id,
+        "Position vault_account_id does not match the vault account"
+    );
 
     let vault_holding = TokenHolding::try_from(&vault.account.data)
         .expect("Vault account must hold a valid TokenHolding");
     // The vault PDA is verified to belong to this position, so its holding's
     // definition is the authoritative collateral definition. Plan 1 dropped the
     // redundant copy from `Position`; `ProtocolParameters` owns the global
-    // collateral definition from Plan 3 onward.
+    // collateral definition from #173 onward.
     let collateral_definition_id = vault_holding.definition_id();
 
     let token_program_id = vault.account.program_owner;
@@ -91,7 +101,7 @@ pub fn withdraw_collateral(
 
     assert_eq!(
         position_data.normalized_debt_amount, 0,
-        "withdraw_collateral with debt is not supported yet — fee accrual + collateralization check land in Plan 3"
+        "withdraw_collateral with debt is not supported yet — fee accrual + collateralization check land in #173"
     );
     let new_collateral = position_data
         .collateral_amount

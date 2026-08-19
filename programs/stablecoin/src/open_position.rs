@@ -78,7 +78,7 @@ pub fn open_position(
         vault_account_id: vault.account_id,
         collateral_amount,
         normalized_debt_amount: 0,
-        // TODO(Plan 3): read from ctx clock once `open_position` is rebuilt with
+        // TODO(#173): read from ctx clock once `open_position` is rebuilt with
         // the fee-aware flow. Setting 0 keeps Plan 1 a pure refactor.
         opened_at: 0,
     });

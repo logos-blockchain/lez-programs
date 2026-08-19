@@ -40,7 +40,7 @@ pub enum Instruction {
     /// Required accounts (5):
     /// - Owner account (authorized)
     /// - Position account (uninitialized, address must match
-    ///   `compute_position_pda(self_program_id, owner, token_definition)`)
+    ///   `compute_position_pda(self_program_id, owner, position_nonce)`)
     /// - Position vault token holding account (uninitialized, address must match
     ///   `compute_position_vault_pda(self_program_id, position_id)`)
     /// - Owner's source token holding for the collateral (authorized, initialized)
@@ -62,14 +62,14 @@ pub enum Instruction {
     /// - Position vault token holding (address must match
     ///   `compute_position_vault_pda(self_program_id, position_id)`)
     /// - Destination user collateral holding (initialized, owned by the vault's Token Program,
-    ///   `TokenHolding.definition_id == Position.collateral_definition_id`)
+    ///   `TokenHolding.definition_id` matches the vault holding's definition)
     ///
     /// `token_program_id` is derived from `vault.account.program_owner`;
-    /// `collateral_definition_id` is read from the decoded [`Position`].
+    /// the collateral definition is read from the PDA-verified vault holding.
     ///
-    /// **Note:** until issues #97/#96/#95 land, this instruction hard-asserts
-    /// `Position.debt_amount == 0` instead of accruing fees and checking the
-    /// collateralization ratio.
+    /// **Note:** until issues #97/#95 land, this instruction hard-asserts
+    /// `Position.normalized_debt_amount == 0` instead of accruing fees and
+    /// checking the collateralization ratio.
     WithdrawCollateral {
         /// Amount of collateral tokens to move from the vault back to `destination`.
         amount: u128,
@@ -84,13 +84,14 @@ pub enum Instruction {
     ///   the definition, with `TokenHolding.definition_id == stablecoin_definition.account_id`)
     ///
     /// `token_program_id` is derived from `user_stablecoin_holding.account.program_owner`.
-    /// `collateral_definition_id` (for position PDA verification) is read from the
+    /// `position_nonce` (for position PDA verification) is read from the
     /// decoded [`Position`].
     ///
     /// **Note:** until issue #97 (stability fee accrual) lands, this instruction does
     /// not accrue fees before reducing debt. A `// TODO(#97)` comment in the host
     /// function marks where the accrual code will plug in. Today every position has
-    /// `debt_amount = 0` (no `generate_debt` yet), so the precondition is vacuously met.
+    /// `normalized_debt_amount = 0` (no `generate_debt` yet), so the precondition
+    /// is vacuously met.
     ///
     /// **Note:** until issue #91 (`generate_debt`) records the stablecoin definition
     /// into `Position`, this instruction cannot validate that the passed

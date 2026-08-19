@@ -12,13 +12,13 @@ use token_core::TokenHolding;
 /// amount. The position post-state uses plain [`AccountPostState::new`] — the
 /// PDA was already claimed at `open_position` time.
 ///
-/// Until Plan 3 (stability fee accrual) lands, the fee-accrual step is a
+/// Until #173 (stability fee accrual) lands, the fee-accrual step is a
 /// no-op (every position structurally has `normalized_debt_amount = 0` today
 /// because `generate_debt` is unimplemented; "fees-accrued" is therefore
-/// vacuously true). A `// TODO(Plan 3)` comment marks where the accrual code
+/// vacuously true). A `// TODO(#173)` comment marks where the accrual code
 /// will plug in — right before the `checked_sub` below.
 ///
-/// Until Plan 3 (`generate_debt`) records the stablecoin definition into
+/// Until #173 (`generate_debt`) records the stablecoin definition into
 /// `Position`, this instruction cannot validate that `stablecoin_definition`
 /// is the correct one for the position's debt. The caller is trusted.
 ///
@@ -54,13 +54,19 @@ pub fn repay_debt(
     let position_data = Position::try_from(&position.account.data)
         .expect("Position account must hold valid Position state");
     // `verify_position_and_get_seed` asserts the position address matches the
-    // (owner, collateral_definition) PDA derivation. The returned seed is
+    // (owner, position_nonce) PDA derivation. The returned seed is
     // dropped — the position is already PDA-claimed.
     let _position_seed = verify_position_and_get_seed(
         &position,
         &owner,
         position_data.position_nonce,
         stablecoin_program_id,
+    );
+    // The PDA derivation above already binds the owner; this guards the stored
+    // discovery copy against silently drifting out of sync.
+    assert_eq!(
+        position_data.owner_account_id, owner.account_id,
+        "Position owner_account_id does not match the owner account"
     );
 
     assert!(
@@ -89,7 +95,7 @@ pub fn repay_debt(
         "Stablecoin holding does not match the provided stablecoin definition"
     );
 
-    // TODO(Plan 3): accrue stability fees onto position_data.normalized_debt_amount
+    // TODO(#173): accrue stability fees onto position_data.normalized_debt_amount
     // here, before the checked_sub below. Today every position has
     // normalized_debt_amount = 0 (no generate_debt yet), so the precondition is
     // trivially met.

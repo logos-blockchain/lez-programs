@@ -959,3 +959,56 @@ fn repay_debt_rejects_overrepay() {
         200,
     );
 }
+
+/// Mutates only the stored discovery copy, leaving the position address (and so
+/// the `(owner, position_nonce)` PDA derivation) valid — the state a corrupted
+/// or malformed `Position` would present.
+fn position_with_mutated_fields(mutate: impl FnOnce(&mut Position)) -> AccountWithMetadata {
+    let mut position = init_position_account(500, 0);
+    let mut data = Position::try_from(&position.account.data).expect("valid Position");
+    mutate(&mut data);
+    position.account.data = Data::from(&data);
+    position
+}
+
+#[test]
+#[should_panic(expected = "Position owner_account_id does not match the owner account")]
+fn withdraw_collateral_rejects_position_with_stale_owner_field() {
+    crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        position_with_mutated_fields(|p| p.owner_account_id = AccountId::new([0xAAu8; 32])),
+        init_vault_account(),
+        destination_holding_account(),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position vault_account_id does not match the vault account")]
+fn withdraw_collateral_rejects_position_with_stale_vault_field() {
+    crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        position_with_mutated_fields(|p| p.vault_account_id = AccountId::new([0xBBu8; 32])),
+        init_vault_account(),
+        destination_holding_account(),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position owner_account_id does not match the owner account")]
+fn repay_debt_rejects_position_with_stale_owner_field() {
+    crate::repay_debt::repay_debt(
+        owner_account(),
+        position_with_mutated_fields(|p| {
+            p.normalized_debt_amount = 300;
+            p.owner_account_id = AccountId::new([0xAAu8; 32]);
+        }),
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(1_000),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
