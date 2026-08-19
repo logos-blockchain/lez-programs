@@ -19,6 +19,9 @@ Five programs are implemented:
 # Check all workspace crates (skips expensive guest ZK builds)
 make clippy
 
+# Lint the guest crates (compiles for the riscv32im target — slow, but CI runs it)
+make clippy-guest
+
 # Run all tests (dev mode skips ZK proof generation)
 make test
 
@@ -158,5 +161,9 @@ Each program follows a layered pattern:
 **Program-Derived Addresses (PDAs)**: The AMM uses SHA-256-based PDAs (`compute_pool_pda`, `compute_vault_pda`, `compute_liquidity_token_pda` in `amm_core`) to derive deterministic account addresses for pools, vaults, and liquidity tokens.
 
 **Chained calls**: The AMM's swap and liquidity operations compose with the token program via `ChainedCall` — the AMM instructs the token program to execute transfers as part of the same atomic operation.
+
+**`Instruction` variants and guest entries must land together**: `#[lez_program]` generates an exhaustive `match` over the program's `Instruction` enum, so every variant needs a matching `#[instruction]` guest function. Adding a variant to a `*_core` crate without its guest entry fails the guest build with `error[E0004]: non-exhaustive patterns`. Split work so the variant, host function, and guest entry ship in the same PR.
+
+**Verify guest builds before pushing**: `make clippy` runs with `RISC0_SKIP_BUILD=1` and never compiles the guests, so guest-only breakage (see above) passes locally and fails CI in both `Build Guest Programs` and `Lint`. Run `make clippy-guest` as well — it is the only local check that compiles guest crates.
 
 **Testing**: Tests call program functions directly (no zkVM overhead). Set `RISC0_DEV_MODE=1` to skip ZK proof generation when running integration tests that go through the zkVM. The Rust toolchain version is pinned in `rust-toolchain.toml`.
