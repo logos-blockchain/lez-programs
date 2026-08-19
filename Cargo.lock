@@ -4165,6 +4165,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "token_ffi"
+version = "0.1.0"
+dependencies = [
+ "cbindgen",
+ "hex",
+ "lee_core",
+ "risc0-binfmt",
+ "risc0-zkvm",
+ "serde",
+ "serde_json",
+ "token_core",
+]
+
+[[package]]
 name = "token_program"
 version = "0.1.0"
 dependencies = [

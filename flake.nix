@@ -1,5 +1,5 @@
 {
-  description = "LEZ programs — AMM client FFI";
+  description = "LEZ programs — host client modules and FFIs";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -37,6 +37,7 @@
       inputs.logos-execution-zone.url =
         "github:logos-blockchain/logos-execution-zone?rev=415964d7f9043a1bfe28da8d0e8b3a6f64abb258";
     };
+
   };
 
   outputs =
@@ -53,58 +54,67 @@
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        # Whole workspace: crane needs Cargo.lock + all path deps (amm_core,
-        # twap_oracle_core, token_core, ...) to resolve `-p amm_ffi`.
-        src = ./.;
+        # Whole Cargo workspace, excluding build outputs and non-Rust assets.
+        # Crane still sees Cargo.lock and every path dependency, while local
+        # target directories cannot become multi-gigabyte Nix source snapshots.
+        src = craneLib.cleanCargoSource ./.;
 
-        commonArgs = {
-          inherit src;
-          strictDeps = true;
-          pname = "amm_ffi";
-          version = "0.1.0";
-          # CRITICAL: scope to ONLY this crate. The workspace also contains
-          # `amm/methods` etc. whose build.rs compiles the risc0 guest (which
-          # WOULD invoke Metal on darwin). `-p amm_ffi` never builds
-          # those crates or their build scripts.
-          cargoExtraArgs = "-p amm_ffi";
-          doCheck = false;
-          # NOTE: cbindgen is used here as a Cargo *build-dependency*
-          # (invoked from build.rs via its Rust library API), not as the
-          # standalone CLI package — so no nativeBuildInputs entry is
-          # needed; crane builds it as part of the normal cargo graph.
+        # Scope every build to one host FFI package. The workspace also has
+        # methods crates whose build scripts compile RISC Zero guests; package
+        # scoping keeps those target-specific builds out of host module builds.
+        mkHostFfi =
+          {
+            package,
+            sourceDir,
+            header,
+          }:
+          let
+            commonArgs = {
+              inherit src;
+              strictDeps = true;
+              pname = package;
+              version = "0.1.0";
+              cargoExtraArgs = "-p ${package}";
+              doCheck = false;
+              # cbindgen runs as a Rust build-dependency from build.rs.
+            };
+            cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+          in
+          craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              postInstall =
+                ''
+                  mkdir -p $out/include
+                  cp ${sourceDir}/include/${header} $out/include/
+                ''
+                + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+                  # Use an absolute store install-name because the module
+                  # builder does not stage external dylibs beside the plugin.
+                  if [ -f $out/lib/lib${package}.dylib ]; then
+                    install_name_tool -id "$out/lib/lib${package}.dylib" $out/lib/lib${package}.dylib
+                  fi
+                '';
+            }
+          );
+
+        ammFfi = mkHostFfi {
+          package = "amm_ffi";
+          sourceDir = "modules/amm/ffi";
+          header = "amm_ffi.h";
         };
 
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-
-        # The single AMM host FFI crate (modules/amm/ffi): swap + new-position
-        # operations behind one JSON C ABI. Its header is cbindgen-generated
-        # into include/amm_ffi.h at build time.
-        ammFfi = craneLib.buildPackage (
-          commonArgs
-          // {
-            inherit cargoArtifacts;
-            postInstall =
-              ''
-                mkdir -p $out/include
-                cp modules/amm/ffi/include/amm_ffi.h $out/include/
-              ''
-              + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-                # Set the dylib's install-name to its ABSOLUTE store path (NOT
-                # @rpath): the logos module builder links this lib into the plugin
-                # but never stages it into the plugin's runtime rpath, so an
-                # @rpath id fails to dlopen at launch. An absolute /nix/store id
-                # is recorded in the plugin's LC_LOAD_DYLIB, kept in the closure
-                # by Nix, and resolved directly at runtime — no rpath needed.
-                if [ -f $out/lib/libamm_ffi.dylib ]; then
-                  install_name_tool -id "$out/lib/libamm_ffi.dylib" $out/lib/libamm_ffi.dylib
-                fi
-              '';
-          }
-        );
+        tokenFfi = mkHostFfi {
+          package = "token_ffi";
+          sourceDir = "modules/token/ffi";
+          header = "token_ffi.h";
+        };
       in
       {
         packages.default = ammFfi;
         packages.amm_ffi = ammFfi;
+        packages.token_ffi = tokenFfi;
       }
     );
 
@@ -174,6 +184,23 @@
       };
       ammModulePkgs = ammModuleOutputs.packages or { };
 
+      # Token core module (modules/token): complete Token Program inspection
+      # and transaction planning/orchestration surface. The Qt-free universal
+      # module links token_ffi and reuses the host-loaded wallet module.
+      tokenModuleOutputs = logos-module-builder.lib.mkLogosModule {
+        src = ./modules/token;
+        configFile = ./modules/token/metadata.json;
+        flakeInputs = inputs;
+        externalLibInputs = {
+          token_ffi = { input = self; packages.default = "token_ffi"; };
+        };
+        tests = {
+          dir = ./modules/token/tests;
+          mockCLibs = [ "token_ffi" ];
+        };
+      };
+      tokenModulePkgs = tokenModuleOutputs.packages or { };
+
       # Wrap the app launcher to export DYLD_FALLBACK_LIBRARY_PATH pointing at the
       # amm_ffi lib. The logos module builder links the plugin against
       # @rpath/libamm_ffi.dylib but does NOT stage that dylib into the
@@ -202,12 +229,15 @@
         let
           appSysPkgs = appPkgs.${system} or { };
           ammModSysPkgs = ammModulePkgs.${system} or { };
+          tokenModSysPkgs = tokenModulePkgs.${system} or { };
         in
         (builtins.removeAttrs cratePkgs [ "default" ])
         // (builtins.removeAttrs appSysPkgs [ "default" ])
         // (if appSysPkgs ? default then { amm-ui = appSysPkgs.default; } else { })
         // (builtins.removeAttrs ammModSysPkgs [ "default" ])
         // (if ammModSysPkgs ? default then { amm-module = ammModSysPkgs.default; } else { })
+        // (builtins.removeAttrs tokenModSysPkgs [ "default" ])
+        // (if tokenModSysPkgs ? default then { token-module = tokenModSysPkgs.default; } else { })
       ) crateOutputs.packages;
     in
     (builtins.removeAttrs appOutputs [ "apps" "packages" ])
