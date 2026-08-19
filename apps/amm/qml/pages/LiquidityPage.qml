@@ -35,6 +35,51 @@ Item {
     property bool tokensLoading: false
     property int tokensGeneration: 0
 
+    // A pair handed over from the pool detail view. Held until resolveTokens()
+    // has answered, since the handoff can arrive before the selector's rows do.
+    property var pendingPair: null
+
+    // Preselects a pool's pair on the new-position form. Called by Main.qml when
+    // the pool detail view's "Add liquidity" button is pressed.
+    function selectPair(pool) {
+        if (!pool)
+            return
+        root.pendingPair = pool
+        root.applyPendingPair()
+    }
+
+    // Only an id the selector actually offers can be preselected: the form drops
+    // any selection that isn't in resolveTokens(), and the pool config could
+    // carry a different id encoding than the resolved rows.
+    function selectableTokenId(definitionId) {
+        if (definitionId.length === 0)
+            return ""
+        for (var i = 0; i < root.resolvedTokens.length; ++i) {
+            if (String(root.resolvedTokens[i].definitionId) === definitionId)
+                return definitionId
+        }
+        return ""
+    }
+
+    function applyPendingPair() {
+        // Guard on the list itself, not on tokensLoading: refreshTokens() assigns
+        // resolvedTokens before it clears the flag, so this runs from
+        // onResolvedTokensChanged while the load is still nominally in progress.
+        if (!root.pendingPair || root.resolvedTokens.length === 0)
+            return
+        var pair = root.pendingPair
+        // One attempt per handoff — see SwapPage.applyPendingPair().
+        root.pendingPair = null
+        var idA = root.selectableTokenId(String(pair.tokenADefinitionId || ""))
+        var idB = root.selectableTokenId(String(pair.tokenBDefinitionId || ""))
+        if (idA.length > 0)
+            form.selectToken("A", idA)
+        if (idB.length > 0)
+            form.selectToken("B", idB)
+    }
+
+    onResolvedTokensChanged: root.applyPendingPair()
+
     function refreshHoldings() {
         if (!root.backend || root.runtime === null)
             return

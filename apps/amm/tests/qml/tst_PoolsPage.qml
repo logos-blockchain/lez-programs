@@ -15,7 +15,10 @@ TestCase {
 
         QtObject {
             property var poolListResult: [
-                { "tokenA": "TKA", "tokenB": "TKB", "feeBps": 5 },
+                {
+                    "tokenA": "TKA", "tokenB": "TKB", "feeBps": 5,
+                    "tokenADefinitionId": "DEF_A", "tokenBDefinitionId": "DEF_B"
+                },
                 { "tokenA": "TKC", "tokenB": "TKA", "feeBps": 30 }
             ]
 
@@ -69,6 +72,40 @@ TestCase {
         verify(firstRow)
         compare(firstRow.pairText, "TKA / TKB")
         compare(firstRow.feeText, page.feeLabel(5))
+    }
+
+    function test_activatingARowHandsItsPoolToTheDetailView() {
+        var backend = createTemporaryObject(backendComponent, testCase)
+        var runtime = createTemporaryObject(runtimeComponent, testCase)
+        var page = createTemporaryObject(pageComponent, testCase, {
+            "backend": backend,
+            "runtime": runtime
+        })
+        verify(page)
+
+        var spy = createTemporaryObject(spyComponent, testCase, {
+            "target": page,
+            "signalName": "poolActivated"
+        })
+        verify(spy)
+
+        findChild(page, "poolRow1").activate()
+
+        // The whole row goes through, so the detail view gets the definition ids
+        // it needs to resolve the pool — not just the displayed pair.
+        compare(spy.count, 1)
+        compare(spy.signalArguments[0][0].tokenA, "TKC")
+        compare(spy.signalArguments[0][0].feeBps, 30)
+
+        findChild(page, "poolRow0").activate()
+        compare(spy.count, 2)
+        compare(spy.signalArguments[1][0].tokenADefinitionId, "DEF_A")
+    }
+
+    Component {
+        id: spyComponent
+
+        SignalSpy {}
     }
 
     function test_emptyPoolModelUsesTheEmptyState() {

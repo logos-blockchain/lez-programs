@@ -243,6 +243,17 @@ list shows its empty state. Entries missing `tokenA`, `tokenB`, or a numeric
 `feeBps` are skipped individually. The AMM testnet setup script writes this file
 for the pool(s) it seeds (see below).
 
+Clicking a row opens the pool detail view, which reads the live pool through
+`resolvePoolAccount` and shows the reserve split, spot price, fee tier, LP
+supply, an estimate of the fees accrued into the reserves, and the pool's
+account ids. Its **Swap** and **Add liquidity** buttons switch tabs with the
+pair preselected. Both the detail view and the preselection need
+`tokenADefinitionId`/`tokenBDefinitionId` on the entry, and the ids must match
+the ones in `TOKENS_CONFIG` (Swap) and in the token selector's resolved list
+(Add liquidity); an entry without them still lists, but its detail view can only
+report that the ids are missing. Volume and transaction history are not shown —
+the AMM program stores no history to read them from.
+
 Full command with the variables set (absolute paths, from the repo root):
 
 ```bash

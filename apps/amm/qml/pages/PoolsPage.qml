@@ -15,6 +15,10 @@ Item {
     property var backend: null
     property var runtime: null
 
+    // Emitted when a row is activated (click or keyboard); Main.qml opens the
+    // pool detail view with the row's pool object.
+    signal poolActivated(var pool)
+
     readonly property int pageMargin: width < 640 ? 16 : 24
     readonly property int contentMaxWidth: 760
     readonly property int poolCount: root.pools ? root.pools.length : 0
@@ -157,6 +161,13 @@ Item {
                                 objectName: "poolRow%1".arg(index)
                             }
                         }
+
+                        // Keeps the last row's hover tint off the card's rounded
+                        // bottom corners, which a square child would paint over.
+                        Item {
+                            width: parent.width
+                            height: 8
+                        }
                     }
 
                     Text {
@@ -190,6 +201,40 @@ Item {
         readonly property string feeText: root.feeLabel(pool.feeBps)
 
         height: 68
+        activeFocusOnTab: true
+
+        Accessible.role: Accessible.Button
+        Accessible.name: qsTr("%1, %2 fee").arg(row.pairText).arg(row.feeText)
+        Accessible.onPressAction: row.activate()
+
+        function activate() {
+            root.poolActivated(row.pool)
+        }
+
+        Keys.onReturnPressed: row.activate()
+        Keys.onEnterPressed: row.activate()
+        Keys.onSpacePressed: row.activate()
+
+        // Hover/focus tint sits behind the content so the row reads as clickable.
+        Rectangle {
+            anchors.fill: parent
+            color: theme.colors.panelHoverBg
+            opacity: rowMouse.containsMouse || row.activeFocus ? 1 : 0
+            visible: opacity > 0
+
+            Behavior on opacity {
+                NumberAnimation { duration: 120 }
+            }
+        }
+
+        MouseArea {
+            id: rowMouse
+
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: row.activate()
+        }
 
         RowLayout {
             anchors.fill: parent

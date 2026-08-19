@@ -25,6 +25,59 @@ Item {
     // latest, so an out-of-order tokenHoldings reply can't clobber the current wallet's list.
     property int holdingsGeneration: 0
 
+    // A pair handed over from the pool detail view. Held until tokenList() has
+    // resolved, since the handoff can arrive before the config tokens do.
+    property var pendingPair: null
+
+    // Preselects a pool's pair on the swap card. Called by Main.qml when the pool
+    // detail view's "Swap" button is pressed.
+    function selectPair(pool) {
+        if (!pool)
+            return
+        root.pendingPair = pool
+        root.applyPendingPair()
+    }
+
+    // The pool config and the token config carry the same definition ids, so that
+    // is the primary match; the symbol is a fallback for a config that only
+    // agrees on the pair's names.
+    function tokenFor(definitionId, symbol) {
+        var i
+        if (definitionId.length > 0) {
+            for (i = 0; i < root.tokens.length; ++i) {
+                if (String(root.tokens[i].definitionId) === definitionId)
+                    return root.tokens[i]
+            }
+        }
+        if (symbol.length > 0) {
+            for (i = 0; i < root.tokens.length; ++i) {
+                if (String(root.tokens[i].symbol) === symbol)
+                    return root.tokens[i]
+            }
+        }
+        return null
+    }
+
+    function applyPendingPair() {
+        if (!root.pendingPair || root.tokens.length === 0)
+            return
+        var pair = root.pendingPair
+        // One attempt per handoff: a pair the token config doesn't carry stays
+        // unselected rather than lying in wait for a later tokenList() refresh.
+        root.pendingPair = null
+        var sell = root.tokenFor(String(pair.tokenADefinitionId || ""), String(pair.tokenA || ""))
+        var buy = root.tokenFor(String(pair.tokenBDefinitionId || ""), String(pair.tokenB || ""))
+        if (!sell && !buy)
+            return
+        swapCard.resetAmounts()
+        if (sell)
+            swapCard.setToken("sell", sell)
+        if (buy)
+            swapCard.setToken("buy", buy)
+    }
+
+    onTokensChanged: root.applyPendingPair()
+
     function refreshHoldings() {
         if (!root.backend)
             return
