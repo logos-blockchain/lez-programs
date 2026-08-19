@@ -83,7 +83,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "risc0-zkvm",
  "ruint",
  "serde",
@@ -101,7 +101,7 @@ dependencies = [
  "cbindgen",
  "clock_core",
  "hex",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "pretty_assertions",
  "risc0-binfmt",
  "risc0-zkvm",
@@ -118,7 +118,7 @@ version = "0.1.0"
 dependencies = [
  "amm_core",
  "clock_core",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "token_core",
  "twap_oracle_core",
 ]
@@ -552,7 +552,7 @@ name = "ata_core"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "risc0-zkvm",
  "serde",
 ]
@@ -562,7 +562,7 @@ name = "ata_program"
 version = "0.1.0"
 dependencies = [
  "ata_core",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "token_core",
 ]
 
@@ -973,7 +973,7 @@ version = "0.1.0"
 source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4#47eba256479f6f785acbd138834340703cd03401"
 dependencies = [
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
 ]
 
 [[package]]
@@ -2124,7 +2124,7 @@ name = "idl-gen"
 version = "0.1.0"
 dependencies = [
  "serde_json",
- "spel-framework-core",
+ "spel-framework-core 0.6.0 (git+https://github.com/logos-co/spel.git?rev=1ef0500f8fc8ce3ddf95523726ae159db83f744f)",
  "toml",
 ]
 
@@ -2223,7 +2223,7 @@ dependencies = [
  "ata_core",
  "clock_core",
  "lee",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "stablecoin-methods",
  "stablecoin_core",
  "token-methods",
@@ -2452,7 +2452,7 @@ dependencies = [
  "build_utils",
  "hex",
  "k256",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "log",
  "rand 0.8.7",
  "risc0-binfmt",
@@ -2460,6 +2460,23 @@ dependencies = [
  "serde",
  "serde_with",
  "sha2",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "lee_core"
+version = "0.1.0"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
+dependencies = [
+ "base58",
+ "borsh",
+ "bytemuck",
+ "bytesize",
+ "chacha20",
+ "ml-kem",
+ "risc0-zkvm",
+ "serde",
+ "serde_with",
  "thiserror 2.0.20",
 ]
 
@@ -3951,11 +3968,25 @@ dependencies = [
 [[package]]
 name = "spel-framework-core"
 version = "0.6.0"
+source = "git+https://github.com/logos-co/spel.git?tag=v0.6.0#0cb7e0980535af619482cf1c823f4d394b3ebd61"
+dependencies = [
+ "base58",
+ "borsh",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0)",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "spel-framework-core"
+version = "0.6.0"
 source = "git+https://github.com/logos-co/spel.git?rev=1ef0500f8fc8ce3ddf95523726ae159db83f744f#1ef0500f8fc8ce3ddf95523726ae159db83f744f"
 dependencies = [
  "base58",
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "proc-macro2",
  "serde",
  "serde_json",
@@ -3974,7 +4005,7 @@ dependencies = [
  "quote",
  "serde_json",
  "sha2",
- "spel-framework-core",
+ "spel-framework-core 0.6.0 (git+https://github.com/logos-co/spel.git?rev=1ef0500f8fc8ce3ddf95523726ae159db83f744f)",
  "syn 2.0.119",
 ]
 
@@ -4035,7 +4066,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "risc0-zkvm",
  "ruint",
  "serde",
@@ -4052,7 +4083,7 @@ dependencies = [
  "cbindgen",
  "clock_core",
  "hex",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "risc0-binfmt",
  "risc0-zkvm",
  "serde",
@@ -4068,7 +4099,7 @@ name = "stablecoin_program"
 version = "0.1.0"
 dependencies = [
  "clock_core",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "stablecoin_core",
  "token_core",
  "twap_oracle_core",
@@ -4294,7 +4325,7 @@ name = "token_core"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "serde",
  "spel-framework-macros",
 ]
@@ -4305,7 +4336,7 @@ version = "0.1.0"
 dependencies = [
  "cbindgen",
  "hex",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "risc0-binfmt",
  "risc0-zkvm",
  "serde",
@@ -4317,7 +4348,7 @@ dependencies = [
 name = "token_program"
 version = "0.1.0"
 dependencies = [
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "token_core",
 ]
 
@@ -4537,7 +4568,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "risc0-zkvm",
  "ruint",
  "serde",
@@ -4550,7 +4581,7 @@ name = "twap_oracle_program"
 version = "0.1.0"
 dependencies = [
  "clock_core",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "twap_oracle_core",
 ]
 
@@ -4654,6 +4685,16 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "wallet-idl-decoder"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "spel-framework-core 0.6.0 (git+https://github.com/logos-co/spel.git?tag=v0.6.0)",
+]
 
 [[package]]
 name = "want"

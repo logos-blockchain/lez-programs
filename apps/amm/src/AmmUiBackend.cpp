@@ -1,5 +1,7 @@
 #include "AmmUiBackend.h"
 
+#include <utility>
+
 #include <QByteArray>
 #include <QDebug>
 #include <QDir>
@@ -13,10 +15,14 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QUrl>
 
 #include "LogosWalletProvider.h"
 #include "RegistryLoader.h"
+#include "SequencerIdentityProbe.h"
+#include "SequencerNetworkSettings.h"
 #include "WalletController.h"
+#include "WalletPortfolioService.h"
 #include "logos_api.h"
 #include "logos_sdk.h"
 
@@ -27,6 +33,22 @@ namespace {
 const char SETTINGS_ORG[] = "Logos";
 const char SETTINGS_APP[] = "AmmUI";
 const char REGISTRY_URL_KEY[] = "registryUrl";
+constexpr char WALLET_NETWORK_ENV[] = "LOGOS_WALLET_NETWORK";
+constexpr char LEGACY_NETWORK_ENV[] = "AMM_UI_NETWORK";
+constexpr char WALLET_DEVNET_FILE_ENV[] = "LOGOS_WALLET_DEVNET_FILE";
+constexpr char LEGACY_DEVNET_FILE_ENV[] = "AMM_UI_DEVNET_FILE";
+
+QByteArray resource(const QString& path)
+{
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+QString environmentValue(const char* primary, const char* fallback)
+{
+    const QByteArray value = qgetenv(primary);
+    return QString::fromLocal8Bit(value.isEmpty() ? qgetenv(fallback) : value).trimmed();
+}
 }
 
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
@@ -36,9 +58,23 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
       m_wallet(std::make_unique<LogosWalletProvider>(m_logosAPI)),
       m_walletController(std::make_unique<WalletController>(
           *m_wallet, QStringLiteral("AmmUI"))),
-      m_registry(std::make_unique<RegistryLoader>())
+      m_registry(std::make_unique<RegistryLoader>()),
+      m_portfolio(std::make_unique<WalletPortfolioService>()),
+      m_networkProbe(std::make_unique<SequencerIdentityProbe>(this)),
+      m_tokenIdl(resource(QStringLiteral(":/amm/idl/token-idl.json"))),
+      m_ammIdl(resource(QStringLiteral(":/amm/idl/amm-idl.json")))
 {
     setWalletStateReady(false);
+    setAssets({});
+    setAssetStatus(QStringLiteral("idle"));
+    setAssetError({});
+
+    connect(m_networkProbe.get(), &SequencerIdentityProbe::snapshotChanged,
+            this, [this]() {
+                publishNetworkState();
+                refreshPortfolio();
+            });
+    configureNetworkIdentity();
 
     // Whenever the known-tokens / known-pools snapshot refreshes: adopt the active
     // network's AMM program id on the module (empty ⇒ falls back to AMM_PROGRAM_BIN)
@@ -47,9 +83,13 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     connect(m_registry.get(), &RegistryLoader::changed, this, [this]() {
         m_logos->amm_module.setAmmProgramId(QVariantMap{
             {QStringLiteral("ammProgramId"), m_registry->activeAmmProgramId()}});
+        m_networkResolved = false;
+        m_ammProgramIdCache.clear();
+        m_tokenProgramIdCache.clear();
         setNetworks(m_registry->networks());
         setActiveNetwork(m_registry->activeNetwork());
         setRegistryRevision(m_registry->revision());
+        refreshPortfolio();
     });
 
     // Seed the configured registry URL from the persisted global setting so the
@@ -60,9 +100,12 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
 
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);
-    // Publishes an initial "loading" context (walletStateReady is still false,
-    // so it does not yet reach the module).
+    connect(m_walletController.get(), &WalletController::snapshotChanged,
+            this, [this]() {
+                refreshPortfolio();
+            });
     syncWalletState();
+    publishNetworkState();
     m_walletController->start();
     QTimer::singleShot(0, this, [this]() {
         setWalletStateReady(true);
@@ -115,6 +158,16 @@ void AmmUiBackend::disconnectWallet()
     setWalletStateReady(true);
 }
 
+bool AmmUiBackend::setAccountAlias(QString accountId, QString alias)
+{
+    return m_walletController->setAccountAlias(accountId, alias);
+}
+
+bool AmmUiBackend::setPrimaryAccount(QString accountId)
+{
+    return m_walletController->setPrimaryAccount(accountId);
+}
+
 QString AmmUiBackend::createAccountPublic()
 {
     return m_walletController->createAccount(true);
@@ -143,8 +196,19 @@ QString AmmUiBackend::getBalance(QString accountIdHex, bool isPublic)
 void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
+    const bool walletWasOpen = isWalletOpen();
+    const bool walletWasReady = walletStateReady();
+    const QString previousSyncStatus = walletSyncStatus();
+    const QString previousAddress = sequencerAddr();
+    const bool wasReachable = sequencerReachable();
+    const bool nextReady = state.syncStatus != QStringLiteral("opening")
+        && state.syncStatus != QStringLiteral("syncing");
 
     setIsWalletOpen(state.isWalletOpen);
+    setWalletStateReady(nextReady);
+    setWalletSyncStatus(state.syncStatus);
+    setWalletSyncError(state.syncError);
+    setWalletCanSubmit(state.canSubmit());
     setWalletExists(state.walletExists);
     setConfigPath(state.configPath);
     setStoragePath(state.storagePath);
@@ -153,11 +217,129 @@ void AmmUiBackend::syncWalletState()
     setCurrentBlockHeight(state.currentBlockHeight);
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
+    setPrimaryAccountAddress(state.primaryAccountAddress);
+    setPrimaryAccountName(state.primaryAccountName);
+
+    m_networkProbe->setEndpoint(QUrl(state.sequencerAddress));
+    m_networkProbe->setSequencerAvailable(!state.sequencerAddress.isEmpty());
+    m_networkProbe->setReachable(state.sequencerReachable);
+    m_networkProbe->start();
+
+    const bool lifecycleChanged = walletWasOpen != state.isWalletOpen
+        || walletWasReady != nextReady
+        || previousSyncStatus != state.syncStatus
+        || previousAddress != state.sequencerAddress
+        || wasReachable != state.sequencerReachable;
+    if (lifecycleChanged) {
+        publishNetworkState();
+        refreshPortfolio();
+    }
 }
 
 QVariantMap AmmUiBackend::resolvePoolAccount(QString defAHex, QString defBHex)
 {
     return m_logos->amm_module.resolvePoolAccount(defAHex, defBHex);
+}
+
+void AmmUiBackend::configureNetworkIdentity()
+{
+    const QString networkId = environmentValue(WALLET_NETWORK_ENV, LEGACY_NETWORK_ENV);
+    const QString devnetConfig = environmentValue(
+        WALLET_DEVNET_FILE_ENV, LEGACY_DEVNET_FILE_ENV);
+    const auto settings = SequencerNetworkSettingsLoader::load(networkId, devnetConfig);
+    if (!settings) {
+        qWarning() << "AmmUiBackend: shared network identity configuration is unavailable";
+        m_networkProbe->clearConfiguration();
+        return;
+    }
+
+    SequencerIdentityProbe::Request request;
+    if (settings->identityMethod == SequencerIdentityMethod::ChannelId) {
+        request.method = QStringLiteral("getChannelId");
+        request.identityFromResult = SequencerIdentityProbe::stringIdentity;
+    } else {
+        request.method = QStringLiteral("getBlock");
+        request.params = QJsonArray { 10 };
+        request.identityFromResult = SequencerIdentityProbe::checkpointBlockHash;
+    }
+    m_networkProbe->configure(settings->context, std::move(request));
+}
+
+bool AmmUiBackend::resolveProgramIds()
+{
+    if (m_networkResolved)
+        return true;
+    const QVariantMap config = m_logos->amm_module.configAccount();
+    if (config.value(QStringLiteral("status")).toString() == QStringLiteral("ok")) {
+        m_ammProgramIdCache = m_logos->lez_core.account_id_from_base58(
+            config.value(QStringLiteral("ammProgramId")).toString());
+        m_tokenProgramIdCache = m_logos->lez_core.account_id_from_base58(
+            config.value(QStringLiteral("tokenProgramId")).toString());
+    }
+    m_networkResolved = !m_ammProgramIdCache.isEmpty()
+        && !m_tokenProgramIdCache.isEmpty();
+    return m_networkResolved;
+}
+
+void AmmUiBackend::publishNetworkState()
+{
+    const SequencerNetworkSnapshot& network = m_networkProbe->snapshot();
+    setWalletNetwork(network.id);
+    setNetworkStatus(network.status);
+    setNetworkFingerprint(network.fingerprint);
+}
+
+void AmmUiBackend::refreshPortfolio()
+{
+    if (!m_portfolio)
+        return;
+    if (!m_walletController->state().isWalletOpen) {
+        setAssets({});
+        setAssetStatus(QStringLiteral("idle"));
+        setAssetError({});
+        return;
+    }
+
+    QString networkStatus = m_networkProbe->snapshot().status;
+    const QStringList tokenIds = knownTokenIds();
+    if (!walletStateReady())
+        networkStatus = QStringLiteral("loading");
+    else if (!resolveProgramIds() || tokenIds.isEmpty()
+             || networkStatus == QStringLiteral("config_missing"))
+        networkStatus = QStringLiteral("config_missing");
+    if (networkStatus != QStringLiteral("ready")) {
+        setAssets({});
+        setAssetStatus(QStringLiteral("blocked"));
+        setAssetError(networkStatus);
+        return;
+    }
+    if (m_tokenIdl.isEmpty()) {
+        setAssetStatus(QStringLiteral("error"));
+        setAssetError(QStringLiteral("token_idl_missing"));
+        return;
+    }
+
+    if (!m_ammProgramIdCache.isEmpty() && !m_ammIdl.isEmpty()) {
+        m_portfolio->registerProgram(
+            m_ammProgramIdCache, QStringLiteral("AMM"), m_ammIdl);
+    }
+
+    WalletPortfolioRequest request(m_walletController->snapshot());
+    request.tokenDefinitionIds = tokenIds;
+    request.tokens = resolveTokens();
+    request.tokenProgramId = m_tokenProgramIdCache;
+    request.tokenIdl = m_tokenIdl;
+    setAssetStatus(QStringLiteral("loading"));
+    setAssetError({});
+    applyPortfolio(m_portfolio->refresh(request));
+}
+
+void AmmUiBackend::applyPortfolio(WalletPortfolioResult result)
+{
+    m_walletController->applyAccountPresentations(result.presentations);
+    setAssets(std::move(result.assets));
+    setAssetStatus(result.status);
+    setAssetError(result.error);
 }
 
 QVariantMap AmmUiBackend::configAccount()
@@ -360,19 +542,9 @@ QVariantList AmmUiBackend::resolveTokens()
     // holdingId/balance for whichever of these ids the wallet does hold.
     const bool wallet_open = isWalletOpen();
 
-    QVariantList ids;
     const QVariantList configured = m_registry->tokens();
-    for (const QVariant& entry : configured) {
-        const QString id = entry.toMap().value(QStringLiteral("definitionId")).toString();
-        if (!id.isEmpty())
-            ids.append(id);
-    }
-    const QStringList custom = loadCustomTokenIds();
-    for (const QString& id : custom)
-        ids.append(id);
-
     QVariantMap request;
-    request.insert(QStringLiteral("tokenIds"), ids);
+    request.insert(QStringLiteral("tokenIds"), knownTokenIds());
     QVariantList rows = m_logos->amm_module.resolveTokens(request, wallet_open);
 
     // The module resolves on-chain fields (definitionId/name/holding/balance) but
@@ -469,6 +641,21 @@ QStringList AmmUiBackend::loadCustomTokenIds() const
     for (const QJsonValue& value : doc.array()) {
         const QString id = value.toString().trimmed();
         if (!id.isEmpty() && !ids.contains(id))
+            ids.append(id);
+    }
+    return ids;
+}
+
+QStringList AmmUiBackend::knownTokenIds() const
+{
+    QStringList ids;
+    for (const QVariant& entry : m_registry->tokens()) {
+        const QString id = entry.toMap().value(QStringLiteral("definitionId")).toString();
+        if (!id.isEmpty() && !ids.contains(id))
+            ids.append(id);
+    }
+    for (const QString& id : loadCustomTokenIds()) {
+        if (!ids.contains(id))
             ids.append(id);
     }
     return ids;

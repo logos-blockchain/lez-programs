@@ -20,6 +20,7 @@ Popup {
     x: parent ? Math.max(0, Math.round((parent.width - width) / 2)) : 0
     y: parent ? Math.max(0, Math.round((parent.height - height) / 2)) : 0
     padding: 20
+    focus: true
     closePolicy: root.busy || root.mnemonic.length > 0
         ? Popup.NoAutoClose
         : Popup.CloseOnEscape | Popup.CloseOnPressOutside

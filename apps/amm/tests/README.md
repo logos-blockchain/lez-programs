@@ -4,19 +4,19 @@ UI-driven tests for the AMM app, driving the running app through the QML
 inspector (framework from
 [`logos-co/logos-qt-mcp`](https://github.com/logos-co/logos-qt-mcp)):
 
-- `swap.mjs` selects two tokens, enters an amount, submits a swap, and verifies
+- `e2e/swap.mjs` selects two tokens, enters an amount, submits a swap, and verifies
   the **A/B** pool reserves changed **on-chain**.
-- `create-pool.mjs` selects the **A/C** pair (which the setup script leaves
+- `e2e/create-pool.mjs` selects the **A/C** pair (which the setup script leaves
   unseeded — only A/B is created), submits a pool creation, and verifies the A/C
   pool now exists **on-chain**.
-- `add-liquidity.mjs` selects the seeded **A/B** pair, asserts the CTA stays
+- `e2e/add-liquidity.mjs` selects the seeded **A/B** pair, asserts the CTA stays
   disabled until deposit amounts are entered, submits an add, and verifies the
   A/B pool reserves grew **on-chain**.
-- `remove-liquidity.mjs` opens the wallet's seeded **A/B** position from the
+- `e2e/remove-liquidity.mjs` opens the wallet's seeded **A/B** position from the
   positions view, uses the Manage dropdown to open the remove sheet, withdraws
   **50%** (the slider default), submits, and verifies the A/B pool reserves shrank
   **on-chain**.
-- `custom-token.mjs` pastes token **D**'s id (created on-chain by the setup but
+- `e2e/custom-token.mjs` pastes token **D**'s id (created on-chain by the setup but
   deliberately **absent** from the token config) into a Liquidity token slot and
   verifies the app resolves it, selects it, and **persists** it to the custom-token
   store — the "add an unlisted token by id" path. No pool / submit involved.
@@ -55,20 +55,20 @@ TEST_SEQUENCER_ADDR=http://127.0.0.1:3040 apps/amm/tests/testnet/setup-amm-testn
 #    (it clears this file before + after running). Required for custom-token.mjs to
 #    avoid touching your real custom-token store.
 LEE_WALLET_HOME_DIR=$(pwd)/apps/amm/tests/testnet/.wallet \
-  AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+  AMM_PROGRAM_BIN=$(pwd)/target/guest/amm.bin \
   TOKENS_CONFIG=$(pwd)/apps/amm/tests/testnet/amm-tokens.json \
   CUSTOM_TOKEN_CONFIG=$(pwd)/apps/amm/tests/testnet/custom-tokens.json \
   nix run .#amm-ui
 
 # 3. Terminal 2 — drive a test; watch it click through the live UI.
-node apps/amm/tests/swap.mjs          # swap against the seeded A/B pool
-node apps/amm/tests/create-pool.mjs   # create the (unseeded) A/C pool
-node apps/amm/tests/add-liquidity.mjs # add liquidity to the seeded A/B pool
-node apps/amm/tests/remove-liquidity.mjs # remove 50% from the seeded A/B pool
-node apps/amm/tests/custom-token.mjs  # add token D (unlisted) by id
+node apps/amm/tests/e2e/swap.mjs          # swap against the seeded A/B pool
+node apps/amm/tests/e2e/create-pool.mjs   # create the (unseeded) A/C pool
+node apps/amm/tests/e2e/add-liquidity.mjs # add liquidity to the seeded A/B pool
+node apps/amm/tests/e2e/remove-liquidity.mjs # remove 50% from the seeded A/B pool
+node apps/amm/tests/e2e/custom-token.mjs  # add token D (unlisted) by id
 ```
 
-Headless CI variant (no window, launches the app itself, pass/fail only):
+Hermetic headless smoke test (no wallet or sequencer required):
 
 ```bash
 nix build .#integration-test -L
@@ -88,17 +88,19 @@ nix build .#integration-test -L
   re-restores the isolated `.wallet` (rewrites only that directory).
 - **Overrides.** `TEST_WALLET_HOME`, `TEST_MNEMONIC`, `TEST_WALLET_PASSWORD`,
   `TEST_WALLET_DEPTH`, `TEST_SEQUENCER_ADDR` — see the script header.
-- **Framework location.** `swap.mjs` loads `../result-mcp` by default; override
+- **Framework location.** `e2e/swap.mjs` loads `../../result-mcp` by default; override
   with `LOGOS_QT_MCP=/abs/path/to/result-mcp`.
-- **Artifacts.** On failure `swap.mjs` prints the `SwapCard` state and saves
-  `apps/amm/tests/swap-*.png` (git-ignored) for inspection.
+- **Artifacts.** On failure `e2e/swap.mjs` prints the `SwapCard` state and saves
+  `apps/amm/tests/e2e/swap-*.png` (git-ignored) for inspection.
 
 ## Files
 
-- `swap.mjs` — the end-to-end swap UI test (A/B pool).
-- `create-pool.mjs` — the end-to-end create-pool UI test (creates the A/C pool).
-- `add-liquidity.mjs` — the end-to-end add-liquidity UI test (adds to the A/B pool).
-- `remove-liquidity.mjs` — the end-to-end remove-liquidity UI test (removes 50% from the A/B pool).
+- `ui-smoke.mjs` — the hermetic headless UI integration test.
+- `e2e/swap.mjs` — the end-to-end swap UI test (A/B pool).
+- `e2e/create-pool.mjs` — the end-to-end create-pool UI test (creates the A/C pool).
+- `e2e/add-liquidity.mjs` — the end-to-end add-liquidity UI test (adds to the A/B pool).
+- `e2e/remove-liquidity.mjs` — the end-to-end remove-liquidity UI test (removes 50% from the A/B pool).
+- `e2e/custom-token.mjs` — the custom-token persistence test.
 - `testnet/setup-amm-testnet.sh` — isolated testnet + wallet bootstrap (TKA/TKB/TKC,
   seeds the A/B pool only).
 - `qml/`, `cpp/` — the module's own QML/C++ unit tests.

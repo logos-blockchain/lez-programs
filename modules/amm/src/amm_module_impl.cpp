@@ -1463,8 +1463,11 @@ LogosList AmmModuleImpl::resolveTokens(const LogosMap& request, bool wallet_open
 
     LogosList out = LogosList::array();
     const auto it = result.value.find("tokens");
-    if (it != result.value.end() && it->is_array())
-        for (const auto& row : *it) out.push_back(row);
+    if (it != result.value.end() && it->is_array()) {
+        for (auto row : *it) {
+            row["definitionIdHex"] = normalizeAccountId(jStr(row, "definitionId"));
+            out.push_back(std::move(row));
+        }
+    }
     return out;
 }
-
