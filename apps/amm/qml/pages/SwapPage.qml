@@ -226,6 +226,7 @@ Item {
 
         TokenSelectorModal {
             id: tokenModal
+            objectName: "tokenSelectorModal"
             z: 10
             theme: pageTheme
             tokens: root.tokens

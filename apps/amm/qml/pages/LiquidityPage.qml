@@ -39,6 +39,14 @@ Item {
     // has answered, since the handoff can arrive before the selector's rows do.
     property var pendingPair: null
 
+    // Clears the form back to a first-visit state. Called by Main.qml whenever the
+    // page is navigated to, so a previous visit's pair and amounts don't linger.
+    // A pair handed over by selectPair() is applied after this, not before.
+    function resetForm() {
+        root.pendingPair = null
+        form.resetAll()
+    }
+
     // Preselects a pool's pair on the new-position form. Called by Main.qml when
     // the pool detail view's "Add liquidity" button is pressed.
     function selectPair(pool) {

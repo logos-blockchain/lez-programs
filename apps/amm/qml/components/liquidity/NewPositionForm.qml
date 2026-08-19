@@ -801,6 +801,23 @@ AmmActionCard {
         root.requestQuote(true)
     }
 
+    // Back to a first-visit form. resetPairDraft() clears only the draft and keeps
+    // the selected pair, which is right when the pair itself just changed; this
+    // also drops the pair, the fee tier, slippage and any token-resolution error,
+    // for when the form is re-entered rather than edited.
+    function resetAll() {
+        root.selectedTokenAId = ""
+        root.selectedTokenBId = ""
+        root.selectedFeeBps = 30
+        root.slippageBps = 50
+        root.resolvingTokenId = ""
+        root.resolvingTokenSide = ""
+        root.tokenResolutionError = ""
+        root.tokenResolutionErrorSide = ""
+        root.tokenResolutionMessage = ""
+        root.resetPairDraft()
+    }
+
     function resetPairDraft() {
         root.activePoolQuote = ({})
         root.amountA = ""

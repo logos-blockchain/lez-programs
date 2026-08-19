@@ -113,10 +113,12 @@ test("amm liquidity: add a custom (unlisted) token by id", async (app) => {
 
   // 1. Switch to the Liquidity tab and wait for the form + page to render.
   await app.waitFor(
-    async () => { await app.expectTexts(["Trade", "Liquidity"]); },
+    async () => { await app.expectTexts(["Trade", "Pool"]); },
     { timeout: 20000, interval: 500, description: "nav bar to load" },
   );
-  await ignore(() => app.click("Liquidity"));
+  // "Liquidity" is now "Pool > Create pool" (tab 2, sub 1); drive the navbar directly.
+  const navBarId = await idByObjectName(app, "navBar");
+  await evaluate(app, navBarId, "select(2, 1)");
   await app.waitFor(
     async () => { await idByObjectName(app, "newPositionForm"); },
     { timeout: 10000, interval: 300, description: "liquidity form to render" },

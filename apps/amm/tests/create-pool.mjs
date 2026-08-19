@@ -145,10 +145,12 @@ test("amm liquidity: create the A/C pool", async (app) => {
 
   // 1. Switch to the Liquidity tab and wait for the form to render.
   await app.waitFor(
-    async () => { await app.expectTexts(["Trade", "Liquidity"]); },
+    async () => { await app.expectTexts(["Trade", "Pool"]); },
     { timeout: 20000, interval: 500, description: "nav bar to load" },
   );
-  await ignore(() => app.click("Liquidity"));
+  // "Liquidity" is now "Pool > Create pool" (tab 2, sub 1); drive the navbar directly.
+  const navBarId = await idByObjectName(app, "navBar");
+  await evaluate(app, navBarId, "select(2, 1)");
   // waitFor resolves when the condition stops throwing — it does NOT return the
   // callback's value, so fetch the id with a direct call afterwards.
   await app.waitFor(

@@ -243,7 +243,18 @@ list shows its empty state. Entries missing `tokenA`, `tokenB`, or a numeric
 `feeBps` are skipped individually. The AMM testnet setup script writes this file
 for the pool(s) it seeds (see below).
 
-Clicking a row opens the pool detail view, which reads the live pool through
+The **Pool** tab in the nav bar is a dropdown with two entries. *Create pool*
+opens the new-position / add-liquidity form. *View positions* lists the wallet's
+liquidity positions: the program has no "list my positions" read and an LP
+definition id cannot be reversed back to its pool, so the app resolves every
+pool in this config and matches each pool's `lpDefinitionId` against the
+wallet's token holdings. A pool that is not in the config therefore cannot
+appear, however many LP tokens the wallet holds for it. Each row shows the pair,
+fee tier, the wallet's claim on both reserves (`reserve × lpBalance / lpSupply`,
+floored like the program's own payout), and its share of the pool. The list
+needs an open wallet.
+
+Clicking a row in the Pools list opens the pool detail view, which reads the live pool through
 `resolvePoolAccount` and shows the reserve split, spot price, fee tier, LP
 supply, an estimate of the fees accrued into the reserves, and the pool's
 account ids. Its **Swap** and **Add liquidity** buttons switch tabs with the

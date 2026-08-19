@@ -173,8 +173,11 @@ test("amm liquidity: add to the A/B pool", async (app) => {
   const before = await readReserveA(app);
   console.log(`    A/B reserveA before: ${before.reserveA}`);
 
-  // 1. Switch to the Liquidity tab and wait for the form.
-  await ignore(() => app.click("Liquidity"));
+  // 1. Open the create-pool view (Pool > Create pool = tab 2, sub 1). Driving the
+  //    navbar's select() fires tabChanged, which also resets the form. (The old
+  //    "Liquidity" tab is now an entry under the "Pool" dropdown.)
+  const navBarId = await idByObjectName(app, "navBar");
+  await evaluate(app, navBarId, "select(2, 1)");
   await app.waitFor(
     async () => { await idByObjectName(app, "newPositionForm"); },
     { timeout: 10000, interval: 300, description: "liquidity form to render" },

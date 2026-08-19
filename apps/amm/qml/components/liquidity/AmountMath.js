@@ -71,6 +71,23 @@ function subtract(left, right) {
     return normalize(result.join(""))
 }
 
+function add(left, right) {
+    var a = normalize(left)
+    var b = normalize(right)
+    var result = []
+    var carry = 0
+    var j = b.length - 1
+    for (var i = a.length - 1; i >= 0 || j >= 0 || carry > 0; --i) {
+        var digit = carry
+                + (i >= 0 ? Number(a.charAt(i)) : 0)
+                + (j >= 0 ? Number(b.charAt(j)) : 0)
+        carry = digit >= 10 ? 1 : 0
+        result.unshift(String(digit % 10))
+        --j
+    }
+    return normalize(result.join(""))
+}
+
 function multiply(left, right) {
     var a = normalize(left)
     var b = normalize(right)

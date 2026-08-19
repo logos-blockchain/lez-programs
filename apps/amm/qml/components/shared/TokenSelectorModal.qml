@@ -210,8 +210,12 @@ Popup {
 
                 delegate: Item {
                     id: tokenRow
+                    objectName: "tokenListItem"
 
                     required property var modelData
+                    // Exposed for UI tests to read the row's token (see swap.mjs).
+                    readonly property string tokenSymbol: root.tokenSymbol(modelData)
+                                                          || root.tokenName(modelData)
                     readonly property bool selectable: root.isSelectable(modelData)
                     readonly property string disabledReason: root.disabledReasonForCode(
                                                                  modelData.code
