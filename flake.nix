@@ -152,9 +152,20 @@
             exit 1
           fi
           walletQmlDir="$(dirname "$walletQmlDescriptor")"
+          # Stage Logos.Wallet at the plugin ROOT as PURE QML (strip every
+          # plugin/resource directive). Same rationale as tokenAppOutputs below:
+          # Basecamp rejects `prefer :/qt/qml/...` with "Invalid null URL", and
+          # keeping the module at the root (never under qml/) avoids leaking
+          # qml/NavBar.qml et al. into Basecamp's shared import path where it
+          # would collide with other plugins' identically-named types. Standalone
+          # reaches this root module via QML_IMPORT_PATH (see the amm-ui app
+          # wrapper). Keep in sync with tokenAppOutputs / apps/amm/flake.nix.
           walletQmlInstallDir="$out/lib/Logos/Wallet"
           mkdir -p "$walletQmlInstallDir"
           cp -r "$walletQmlDir/." "$walletQmlInstallDir/"
+          grep -vE '^(linktarget|optional plugin|plugin|classname|typeinfo|prefer)([[:space:]]|$)' \
+            "$walletQmlInstallDir/qmldir" > "$walletQmlInstallDir/qmldir.pureqml"
+          mv "$walletQmlInstallDir/qmldir.pureqml" "$walletQmlInstallDir/qmldir"
           test -f "$walletQmlInstallDir/qmldir"
         '';
       };
@@ -229,6 +240,16 @@
         // (if attrs ? install-portable then { token-ui-install-portable = attrs.install-portable; } else { })
       ) tokenAppPkgs;
 
+      # Same aliasing for the AMM UI's Basecamp install artifacts, so its lgx
+      # isn't shadowed by the amm core module's bare `lgx` in the merged set.
+      ammUiPackages = builtins.mapAttrs (
+        system: attrs:
+        (if attrs ? lgx then { amm-ui-lgx = attrs.lgx; } else { })
+        // (if attrs ? lgx-portable then { amm-ui-lgx-portable = attrs.lgx-portable; } else { })
+        // (if attrs ? install then { amm-ui-install = attrs.install; } else { })
+        // (if attrs ? install-portable then { amm-ui-install-portable = attrs.install-portable; } else { })
+      ) appPkgs;
+
       # AMM core module (modules/amm): the AMM business logic as a headless
       # `core` Logos module. It links the amm_ffi crate (the transport-
       # independent AMM brain, resolved via `self`) and depends on the
@@ -244,6 +265,15 @@
         };
       };
       ammModulePkgs = ammModuleOutputs.packages or { };
+
+      # Alias the AMM core module's Basecamp install artifacts (explicit
+      # `amm-module-lgx` / `amm-module-install`), same collision reason as the
+      # token module aliases below.
+      ammModuleAliases = builtins.mapAttrs (
+        system: attrs:
+        (if attrs ? lgx then { amm-module-lgx = attrs.lgx; } else { })
+        // (if attrs ? install then { amm-module-install = attrs.install; } else { })
+      ) ammModulePkgs;
 
       # Token core module (modules/token): complete Token Program inspection
       # and transaction planning/orchestration surface. The Qt-free universal
@@ -278,14 +308,21 @@
       # plugin-dir it loads at runtime, so dlopen fails with "Failed to load UI
       # plugin". Adding the crate's store lib dir to DYLD's fallback search path
       # lets the loader find it (the store path stays in the closure).
+      # Also prepend the AMM UI module's `lib` dir to QML_IMPORT_PATH so the
+      # standalone shell resolves `import Logos.Wallet` from the plugin ROOT
+      # (staged there, never under qml/, by the appOutputs postInstall — see the
+      # wrapTokenQmlImportPath rationale). logos-standalone-app appends any
+      # pre-existing QML_IMPORT_PATH to what it sets.
       wrapWithDyld = system: app:
         let
           pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
           ammFfi = crateOutputs.packages.${system}.amm_ffi;
+          moduleDir = appPkgs.${system}.default;
         in
         app // {
           program = "${pkgs.writeShellScript "run-amm-ui" ''
             export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+            export QML_IMPORT_PATH="${moduleDir}/lib''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
             exec ${app.program} "$@"
           ''}";
         };
@@ -331,20 +368,24 @@
         system: cratePkgs:
         let
           appSysPkgs = appPkgs.${system} or { };
+          ammUiSysPkgs = ammUiPackages.${system} or { };
           tokenAppSysPkgs = tokenAppPkgs.${system} or { };
           tokenUiSysPkgs = tokenUiPackages.${system} or { };
           ammModSysPkgs = ammModulePkgs.${system} or { };
+          ammModAliasPkgs = ammModuleAliases.${system} or { };
           tokenModSysPkgs = tokenModulePkgs.${system} or { };
           tokenModAliasPkgs = tokenModuleAliases.${system} or { };
         in
         (builtins.removeAttrs cratePkgs [ "default" ])
         // (builtins.removeAttrs appSysPkgs [ "default" ])
         // (if appSysPkgs ? default then { amm-ui = appSysPkgs.default; } else { })
+        // ammUiSysPkgs
         // (builtins.removeAttrs tokenAppSysPkgs [ "default" ])
         // (if tokenAppSysPkgs ? default then { token-ui = tokenAppSysPkgs.default; } else { })
         // tokenUiSysPkgs
         // (builtins.removeAttrs ammModSysPkgs [ "default" ])
         // (if ammModSysPkgs ? default then { amm-module = ammModSysPkgs.default; } else { })
+        // ammModAliasPkgs
         // (builtins.removeAttrs tokenModSysPkgs [ "default" ])
         // (if tokenModSysPkgs ? default then { token-module = tokenModSysPkgs.default; } else { })
         // tokenModAliasPkgs
