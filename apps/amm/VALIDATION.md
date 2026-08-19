@@ -11,7 +11,7 @@ Run from the repository root:
 cargo +1.94.0 test -p amm_ffi
 cargo +1.94.0 clippy -p amm_ffi --all-targets -- -D warnings
 logos_qml=$(nix build github:logos-co/logos-design-system/6176f0d7a5dfeb64a7f0f98e7ca2bf71a4804772 --no-link --print-out-paths)
-amm_qml=$(nix build ./apps/amm#packages.x86_64-linux.default --no-link --print-out-paths)
+amm_qml=$(nix build .#amm-ui --no-link --print-out-paths)
 qt_qml=$(nix-store --query --requisites "$amm_qml" | rg -m1 -- '-qtdeclarative-[0-9]')
 qt_svg=$(nix-store --query --requisites "$amm_qml" | rg -m1 -- '-qtsvg-[0-9]')
 export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_PLUGIN_PATH="$qt_svg/lib/qt-6/plugins"

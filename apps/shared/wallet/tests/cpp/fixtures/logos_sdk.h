@@ -6,6 +6,8 @@
 #include <QVariant>
 #include <QVariantList>
 
+#include <functional>
+
 class LogosAPI;
 
 class FakeExecutionZone {
@@ -51,6 +53,14 @@ public:
         return openResult;
     }
 
+    void openAsync(const QString& config,
+                   const QString& storage,
+                   const QString& statistics,
+                   std::function<void(int)> callback)
+    {
+        callback(open(config, storage, statistics));
+    }
+
     QString create_new(const QString& config,
                        const QString& storage,
                        const QString& statistics,
@@ -71,22 +81,46 @@ public:
 
     QString create_account_public() { return publicAccountId; }
     QString create_account_private() { return privateAccountId; }
+    QString account_id_to_base58(const QString& accountId) const
+    {
+        return QStringLiteral("base58-") + accountId;
+    }
 
     int get_last_synced_block() const { return lastSyncedBlock; }
     int get_current_block_height() const { return currentBlockHeight; }
+    void get_last_synced_blockAsync(std::function<void(int)> callback)
+    {
+        callback(get_last_synced_block());
+    }
+    void get_current_block_heightAsync(std::function<void(int)> callback)
+    {
+        callback(get_current_block_height());
+    }
 
     int sync_to_block(quint64)
     {
         ++syncCalls;
         return syncResult;
     }
+    void sync_to_blockAsync(int blockId, std::function<void(int)> callback)
+    {
+        callback(sync_to_block(static_cast<quint64>(blockId)));
+    }
 
     QString get_sequencer_addr() const { return sequencerAddress; }
+    void get_sequencer_addrAsync(std::function<void(QString)> callback)
+    {
+        callback(get_sequencer_addr());
+    }
 
     QVariantList list_accounts()
     {
         ++listCalls;
         return accounts;
+    }
+    void list_accountsAsync(std::function<void(QVariantList)> callback)
+    {
+        callback(list_accounts());
     }
 
     QString get_account_public(const QString& accountId)
@@ -94,10 +128,21 @@ public:
         ++publicReadCalls;
         return publicAccounts.value(accountId);
     }
+    void get_account_publicAsync(const QString& accountId,
+                                std::function<void(QString)> callback)
+    {
+        callback(get_account_public(accountId));
+    }
 
     QString get_balance(const QString& accountId, bool) const
     {
         return balances.value(accountId);
+    }
+    void get_balanceAsync(const QString& accountId,
+                         bool isPublic,
+                         std::function<void(QString)> callback)
+    {
+        callback(get_balance(accountId, isPublic));
     }
 
     QString send_generic_public_transaction(
@@ -113,6 +158,7 @@ public:
         submittedProgramId = programId;
         return transactionResponse;
     }
+
 };
 
 struct LogosModules {

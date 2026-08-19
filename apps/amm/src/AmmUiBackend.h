@@ -3,6 +3,7 @@
 
 #include <memory>
 
+#include <QByteArray>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -17,8 +18,11 @@
 class LogosAPI;
 struct LogosModules;
 class LogosWalletProvider;
-class WalletController;
 class RegistryLoader;
+class SequencerIdentityProbe;
+class WalletController;
+class WalletPortfolioService;
+struct WalletPortfolioResult;
 
 // Source-side implementation of the AmmUiBackend .rep interface.
 // Inheriting from AmmUiBackendSimpleSource gives us the generated PROPs and
@@ -53,6 +57,8 @@ public slots:
     QString createNew(QString configPath, QString storagePath, QString password) override;
     bool openExisting() override;
     void disconnectWallet() override;
+    bool setAccountAlias(QString accountId, QString alias) override;
+    bool setPrimaryAccount(QString accountId) override;
 
     // AMM — all forwarded to the amm_module core module.
     QVariantMap resolvePoolAccount(QString defAHex, QString defBHex) override;
@@ -122,6 +128,12 @@ private:
     QStringList loadCustomTokenIds() const;
     bool saveCustomTokenIds(const QStringList& ids) const;
     QString customTokenStorePath() const;
+    QStringList knownTokenIds() const;
+    bool resolveProgramIds();
+    void configureNetworkIdentity();
+    void publishNetworkState();
+    void refreshPortfolio();
+    void applyPortfolio(WalletPortfolioResult result);
 
     LogosAPI* m_logosAPI;
     // Handle for the amm_module core module (resolvePool / swapExactInput /
@@ -134,6 +146,14 @@ private:
     std::unique_ptr<WalletController> m_walletController;
     // Known-tokens / known-pools snapshot source (local files now; remote later).
     std::unique_ptr<RegistryLoader> m_registry;
+    std::unique_ptr<WalletPortfolioService> m_portfolio;
+    std::unique_ptr<SequencerIdentityProbe> m_networkProbe;
+
+    bool m_networkResolved = false;
+    QString m_ammProgramIdCache;
+    QString m_tokenProgramIdCache;
+    QByteArray m_tokenIdl;
+    QByteArray m_ammIdl;
 };
 
 #endif // AMM_UI_BACKEND_H

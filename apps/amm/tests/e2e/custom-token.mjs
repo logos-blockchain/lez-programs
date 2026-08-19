@@ -26,14 +26,14 @@ import { execFileSync } from "node:child_process";
 
 const fwRoot =
   process.env.LOGOS_QT_MCP ||
-  new URL("../result-mcp", import.meta.url).pathname;
+  new URL("../../result-mcp", import.meta.url).pathname;
 const { test, run } = await import(resolve(fwRoot, "test-framework/framework.mjs"));
 
 // The isolated test wallet home (set by the setup script) — used to resolve token
 // D's deterministic definition id via the wallet CLI, the same way the setup does.
 const WALLET_HOME =
   process.env.LEE_WALLET_HOME_DIR ||
-  new URL("./testnet/.wallet", import.meta.url).pathname;
+  new URL("../testnet/.wallet", import.meta.url).pathname;
 
 // Where the app persists custom tokens. Defaults to the isolated test store; set
 // CUSTOM_TOKEN_CONFIG to override. IMPORTANT: launch the app with the SAME path
@@ -42,7 +42,7 @@ const WALLET_HOME =
 // from a stale slate. Only used to pre-clear; persistence is verified through the app.
 const CUSTOM_TOKEN_CONFIG =
   process.env.CUSTOM_TOKEN_CONFIG ||
-  new URL("./testnet/custom-tokens.json", import.meta.url).pathname;
+  new URL("../testnet/custom-tokens.json", import.meta.url).pathname;
 
 // --- small helpers (mirror create-pool.mjs) --------------------------------
 

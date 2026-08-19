@@ -89,10 +89,10 @@ TEST_SEQ_POLL_TIMEOUT="${TEST_SEQ_POLL_TIMEOUT:-3s}"
 # Deterministic accounts, created in THIS fixed order after a fresh restore so
 # their ids are reproducible. Resolved to ids at runtime via `wallet account id`.
 # token-c-*/token-d-*/holder2-* are APPENDED (not inserted) so the pre-existing a/b/lp ids don't shift.
-# Token C has no seeded pool — the create-pool UI test (apps/amm/tests/create-pool.mjs)
+# Token C has no seeded pool — the create-pool UI test (apps/amm/tests/e2e/create-pool.mjs)
 # creates the A/C pool itself, minting its own LP holding via the app.
 # Token D is created but LEFT OUT of the token config — the custom-token UI test
-# (apps/amm/tests/custom-token.mjs) adds it by id.
+# (apps/amm/tests/e2e/custom-token.mjs) adds it by id.
 # holder2 / holder2-a-holding are the "Token A Holder 2" pair for the faucet-swap UI
 # test (apps/amm/tests/faucet-swap.mjs): holder2 is the faucet recipient/signer and
 # rate-limit subject; holder2-a-holding is its (initially empty) token A holding that
@@ -108,12 +108,11 @@ ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holdi
 ###############################################################################
 
 # --- Program binaries (docker release builds; image ids must match deployment) ---
-TOKEN_BIN="programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin"
-AMM_BIN="programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin"
-TWAP_BIN="programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin"
-# The faucet (token-mint-authority) binary. Its ImageID determines the mint-authority
-# PDA every test token is minted against, so it MUST be the exact bin deployed below.
-MINT_AUTHORITY_BIN="programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin"
+TOKEN_BIN="${TOKEN_BIN:-target/guest/token.bin}"
+AMM_BIN="${AMM_BIN:-target/guest/amm.bin}"
+TWAP_BIN="${TWAP_BIN:-target/guest/twap_oracle.bin}"
+# The faucet ImageID determines each test token mint-authority PDA.
+MINT_AUTHORITY_BIN="${MINT_AUTHORITY_BIN:-target/guest/token_mint_authority.bin}"
 
 # --- IDLs ---
 TOKEN_IDL="artifacts/token-idl.json"
@@ -762,9 +761,10 @@ log ""
 log "Token D was created ON-CHAIN but left out of the token config (the ${DIM}custom${RST}"
 log "token). Its id: ${DIM}$TOKEN_D_DEF${RST}"
 log ""
-log "Then in another terminal: ${DIM}node apps/amm/tests/swap.mjs${RST}  (swap A/B)"
-log "                   or:     ${DIM}node apps/amm/tests/create-pool.mjs${RST}  (create A/C pool)"
-log "                   or:     ${DIM}node apps/amm/tests/custom-token.mjs${RST}  (add token D by id)"
+log "Then in another terminal: ${DIM}node apps/amm/tests/e2e/swap.mjs${RST}  (swap A/B)"
+log "                   or:     ${DIM}node apps/amm/tests/e2e/create-pool.mjs${RST}  (create A/C pool)"
+log "                   or:     ${DIM}node apps/amm/tests/e2e/add-liquidity.mjs${RST}  (add A/B liquidity)"
+log "                   or:     ${DIM}node apps/amm/tests/e2e/custom-token.mjs${RST}  (add token D by id)"
 log "                   or:     ${DIM}node apps/amm/tests/faucet-swap.mjs${RST}  (faucet-mint TKA to holder2, then swap)"
 log ""
 log "The faucet-swap test reads ${DIM}$FAUCET_MANIFEST_OUT${RST} and needs ${DIM}spel${RST} +"
