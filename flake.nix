@@ -82,10 +82,15 @@
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        # Whole Cargo workspace, excluding build outputs and non-Rust assets.
-        # Crane still sees Cargo.lock and every path dependency, while local
-        # target directories cannot become multi-gigabyte Nix source snapshots.
-        src = craneLib.cleanCargoSource ./.;
+        # Whole Cargo workspace, excluding build outputs and unrelated assets.
+        # Keep public C headers because host FFI packages install them after the
+        # Rust build. Crane still sees Cargo.lock and every path dependency.
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            (pkgs.lib.hasSuffix ".h" path)
+            || (craneLib.filterCargoSources path type);
+        };
 
         # Scope every build to one host FFI package. The workspace also has
         # methods crates whose build scripts compile RISC Zero guests; package
@@ -150,6 +155,30 @@
           sourceDir = "modules/stablecoin/ffi";
           header = "stablecoin_ffi.h";
         };
+        walletDecoderArgs = {
+          inherit src;
+          strictDeps = true;
+          pname = "wallet-idl-decoder";
+          version = "0.1.0";
+          cargoExtraArgs = "-p wallet-idl-decoder";
+          doCheck = false;
+        };
+        walletDecoder = craneLib.buildPackage (
+          walletDecoderArgs
+          // {
+            cargoArtifacts = craneLib.buildDepsOnly walletDecoderArgs;
+            postInstall =
+              ''
+                mkdir -p $out/include
+                cp tools/wallet-idl-decoder/include/wallet_idl_decoder.h $out/include/
+              ''
+              + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+                if [ -f $out/lib/libwallet_idl_decoder.dylib ]; then
+                  install_name_tool -id "$out/lib/libwallet_idl_decoder.dylib" $out/lib/libwallet_idl_decoder.dylib
+                fi
+              '';
+          }
+        );
       in
       {
         packages.default = ammFfi;
@@ -157,6 +186,7 @@
         packages.oracle_ffi = oracleFfi;
         packages.stablecoin_ffi = stablecoinFfi;
         packages.token_ffi = tokenFfi;
+        packages.wallet_idl_decoder = walletDecoder;
       }
     );
 
@@ -177,15 +207,19 @@
         flakeInputs = inputs // { amm_module = ammModuleOutputs; };
         # The UI links no external lib of its own — the AMM brain (amm_ffi) is
         # linked by amm_module, which the UI reaches via modules().amm_module.
-        externalLibInputs = { };
+        externalLibInputs = {
+          wallet_idl_decoder = {
+            input = self;
+            packages.default = "wallet_idl_decoder";
+          };
+        };
         # The AMM UI links the shared C++ wallet access lib and bundles the
-        # Logos.Wallet QML module (apps/shared/wallet). apps/amm/flake.nix wires
-        # these via its `shared_wallet` input; when built from this root flake
-        # the source lives in-tree, so point CMake straight at it and stage the
-        # built QML module the same way. Keep in sync with apps/amm/flake.nix.
+        # Logos.Wallet QML module (apps/shared/wallet). Point CMake at the
+        # in-tree source and stage the built QML module with the app.
         preConfigure = ''
           cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${./apps/shared/wallet}")
           cmakeFlagsArray+=("-DLOGOS_WALLET_GENERATED_DIR=$PWD/generated_code/include")
+          cmakeFlagsArray+=("-DLEZ_IDL_ARTIFACTS_DIR=${./artifacts}")
         '';
         postInstall = ''
           walletQmlDescriptor="$(find "$PWD" -type f -path '*/shared-wallet/qml/Logos/Wallet/qmldir' -print -quit)"
@@ -432,10 +466,11 @@
           pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
           ammFfi = crateOutputs.packages.${system}.amm_ffi;
           moduleDir = appPkgs.${system}.default;
+          walletDecoder = crateOutputs.packages.${system}.wallet_idl_decoder;
         in
         app // {
           program = "${pkgs.writeShellScript "run-amm-ui" ''
-            export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+            export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib:${walletDecoder}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
             export QML_IMPORT_PATH="${moduleDir}/lib''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
             exec ${app.program} "$@"
           ''}";

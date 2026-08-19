@@ -45,6 +45,10 @@ struct WalletAccount {
     QString address;
     QString balance;
     bool isPublic = true;
+    QString readStatus;
+    QString programOwner;
+    QString dataHex;
+    QString displayAddress;
 };
 
 // The smallest fee reserve LEZ admits a wallet-built public transaction with:

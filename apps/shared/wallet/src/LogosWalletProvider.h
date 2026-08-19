@@ -2,12 +2,14 @@
 
 #include <memory>
 
+#include <QObject>
+
 #include "WalletProvider.h"
 
 class LogosAPI;
 struct LogosModules;
 
-class LogosWalletProvider final : public WalletProvider {
+class LogosWalletProvider final : public QObject, public WalletProvider {
 public:
     explicit LogosWalletProvider(LogosAPI* api);
     explicit LogosWalletProvider(LogosModules* logos);
