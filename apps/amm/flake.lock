@@ -2,22 +2,6 @@
   "nodes": {
     "crane": {
       "locked": {
-        "lastModified": 1779041105,
-        "narHash": "sha256-nnGD2f8OlAZT2i5OfwikJsw+ifWfiA4d6A8BWlgOXV0=",
-        "owner": "ipetkov",
-        "repo": "crane",
-        "rev": "10e6e3cb966f7cfcc789fe5eee7a85f3188ce08b",
-        "type": "github"
-      },
-      "original": {
-        "owner": "ipetkov",
-        "ref": "v0.23.4",
-        "repo": "crane",
-        "type": "github"
-      }
-    },
-    "crane_2": {
-      "locked": {
         "lastModified": 1780532242,
         "narHash": "sha256-D+BsdpxmtUwtqGoY0IXPhHgTlmqgcZKCEo1oMyn7ep0=",
         "owner": "ipetkov",
@@ -2241,7 +2225,7 @@
     },
     "logos-execution-zone": {
       "inputs": {
-        "crane": "crane_2",
+        "crane": "crane",
         "logos-blockchain-circuits": "logos-blockchain-circuits",
         "logos-liblogos": "logos-liblogos_4",
         "nixpkgs": [
@@ -25424,22 +25408,6 @@
         "type": "github"
       }
     },
-    "nixpkgs_399": {
-      "locked": {
-        "lastModified": 1782841183,
-        "narHash": "sha256-Ndt/5R7UN4rBdhFR1lxHZZZ42cD6vGlnuxC2VvvsKE4=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "c9bfd86ed684d27e63b0ff9ebb18699f84f27a3b",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "ref": "nixos-25.11-small",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
     "nixpkgs_4": {
       "locked": {
         "lastModified": 1759036355,
@@ -26794,10 +26762,9 @@
     },
     "root": {
       "inputs": {
-        "crane": "crane",
         "logos-module-builder": "logos-module-builder",
         "logos_execution_zone": "logos_execution_zone",
-        "nixpkgs": "nixpkgs_399"
+        "shared_wallet": "shared_wallet"
       }
     },
     "rust-overlay": {
@@ -26883,6 +26850,18 @@
         "rev": "e91187f8ccb5bbfc7bb00dac88169112428da78f",
         "type": "github"
       }
+    },
+    "shared_wallet": {
+      "flake": false,
+      "locked": {
+        "path": "../shared/wallet",
+        "type": "path"
+      },
+      "original": {
+        "path": "../shared/wallet",
+        "type": "path"
+      },
+      "parent": []
     }
   },
   "root": "root",
