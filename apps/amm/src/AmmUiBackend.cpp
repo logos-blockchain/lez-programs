@@ -348,6 +348,13 @@ QVariantMap AmmUiBackend::addLiquidityQuote(QVariantMap request)
     return m_logos->amm_module.addLiquidityQuote(request);
 }
 
+QVariantMap AmmUiBackend::removeLiquidityQuote(QVariantMap request)
+{
+    // Read-only remove-liquidity preview — no wallet guard, mirroring the add quote.
+    // The module reads the pool and runs the guest's floor(reserve*lp/supply) math.
+    return m_logos->amm_module.removeLiquidityQuote(request);
+}
+
 QVariantList AmmUiBackend::tokenHoldings()
 {
     // Read-only list of the wallet's token holdings for the account selector. Gated
@@ -550,6 +557,26 @@ QVariantMap AmmUiBackend::addLiquidity(QVariantMap request)
     // The caller supplies the fresh LP holding in the request; the backend forwards to the
     // module (it creates no wallet accounts) and refreshes balances on a successful submit.
     const QVariantMap result = m_logos->amm_module.addLiquidity(request);
+    if (result.value(QStringLiteral("status")).toString() == QStringLiteral("ok")
+        && !result.value(QStringLiteral("transactionId")).toString().isEmpty())
+        refreshBalances();
+    return result;
+}
+
+QVariantMap AmmUiBackend::removeLiquidity(QVariantMap request)
+{
+    // Same connected-state submit guard as createPool/addLiquidity — this app's lock is
+    // authoritative even though the shared wallet may remain open elsewhere.
+    if (!isWalletOpen())
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
+        };
+
+    // Every account involved already exists (the LP holding is burned from, the token
+    // holdings receive), so unlike the add path there is nothing to create first —
+    // forward and refresh balances once the withdrawal lands.
+    const QVariantMap result = m_logos->amm_module.removeLiquidity(request);
     if (result.value(QStringLiteral("status")).toString() == QStringLiteral("ok")
         && !result.value(QStringLiteral("transactionId")).toString().isEmpty())
         refreshBalances();

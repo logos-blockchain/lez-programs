@@ -5,6 +5,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 import "../components/liquidity"
+import "../components/shared"
 import "../components/liquidity/AmountMath.js" as AmountMath
 import "../components/shared/TokenVisuals.js" as TokenVisuals
 
@@ -71,6 +72,27 @@ Item {
     readonly property string poolId: root.resolvedPoolId.length > 0
                                      ? root.resolvedPoolId
                                      : (root.pool ? String(root.pool.poolId || "") : "")
+
+    // ── Wallet position (backend.tokenHoldings) ──────────────────────────────
+    // Loaded alongside the pool so the actions know whether there is anything to
+    // withdraw. Every add mints into a fresh LP account, so a pool's position can
+    // span several holdings: lpBalanceTotal is the position, lpHolding* is the one
+    // account a withdrawal can burn from.
+    property var holdings: []
+    property string lpBalanceTotal: "0"
+    property string lpHoldingId: ""
+    property string lpHoldingBalance: "0"
+    property string holdingAId: ""
+    property string holdingBId: ""
+    property int holdingsGeneration: 0
+
+    readonly property bool hasPosition: AmountMath.isUnsigned(root.lpBalanceTotal)
+                                        && AmountMath.normalize(root.lpBalanceTotal) !== "0"
+    // Withdrawing needs the LP account to burn and both receiving holdings.
+    readonly property bool canRemoveLiquidity: root.hasPosition
+                                               && root.lpHoldingId.length > 0
+                                               && root.holdingAId.length > 0
+                                               && root.holdingBId.length > 0
 
     readonly property bool hasDefinitionIds: root.definitionIdA.length > 0
                                              && root.definitionIdB.length > 0
@@ -144,9 +166,95 @@ Item {
             })
     }
 
-    onPoolChanged: root.loadPoolState()
-    onBackendChanged: root.loadPoolState()
-    onRuntimeChanged: root.loadPoolState()
+    // tokenHoldings() needs an open wallet and is independent of the pool read, so
+    // it runs on its own and just refines the actions once it lands.
+    function loadHoldings() {
+        root.holdings = []
+        root.lpBalanceTotal = "0"
+        root.lpHoldingId = ""
+        root.lpHoldingBalance = "0"
+        root.holdingAId = ""
+        root.holdingBId = ""
+
+        if (!root.backend || !root.runtime || !root.pool || !root.backend.isWalletOpen)
+            return
+
+        const generation = ++root.holdingsGeneration
+        root.runtime.watch(root.backend.tokenHoldings(),
+            function(list) {
+                if (generation !== root.holdingsGeneration)
+                    return
+                root.holdings = list || []
+                root.applyHoldings()
+            },
+            function(err) {
+                if (generation !== root.holdingsGeneration)
+                    return
+                console.warn("tokenHoldings error:", err)
+            })
+    }
+
+    // Matches a holding on whichever encoding the id uses: tokenHoldings emits a
+    // base58 definitionId and a hex definitionIdHex per row, while the configured
+    // token ids and the pool's lpDefinitionId can be either (see TokenInput).
+    function holdingsFor(definitionId) {
+        var out = []
+        if (definitionId.length === 0)
+            return out
+        var isHex = /^[0-9a-fA-F]{64}$/.test(definitionId)
+        var field = isHex ? "definitionIdHex" : "definitionId"
+        var needle = isHex ? definitionId.toLowerCase() : definitionId
+        for (var i = 0; i < root.holdings.length; ++i) {
+            var holding = root.holdings[i]
+            var value = String(holding[field] || "")
+            if ((isHex ? value.toLowerCase() : value) === needle)
+                out.push(holding)
+        }
+        return out
+    }
+
+    function applyHoldings() {
+        // The LP side: total across every holding is the position, but a burn names
+        // one account, so the largest is the one a withdrawal can draw on.
+        var lpHoldings = root.holdingsFor(root.lpDefinitionId)
+        var total = "0"
+        var best = null
+        for (var i = 0; i < lpHoldings.length; ++i) {
+            var balance = String(lpHoldings[i].balanceRaw || "0")
+            if (!AmountMath.isUnsigned(balance))
+                continue
+            total = AmountMath.add(total, balance)
+            if (!best || AmountMath.compare(balance, String(best.balanceRaw || "0")) > 0)
+                best = lpHoldings[i]
+        }
+        root.lpBalanceTotal = total
+        root.lpHoldingId = best ? String(best.accountId || "") : ""
+        root.lpHoldingBalance = best ? String(best.balanceRaw || "0") : "0"
+
+        // The receiving side: any existing holding for each token will do.
+        var holdingsA = root.holdingsFor(root.definitionIdA)
+        var holdingsB = root.holdingsFor(root.definitionIdB)
+        root.holdingAId = holdingsA.length > 0 ? String(holdingsA[0].accountId || "") : ""
+        root.holdingBId = holdingsB.length > 0 ? String(holdingsB[0].accountId || "") : ""
+    }
+
+    function refresh() {
+        root.loadPoolState()
+        root.loadHoldings()
+    }
+
+    onPoolChanged: root.refresh()
+    onBackendChanged: root.refresh()
+    onRuntimeChanged: root.refresh()
+
+    // The LP definition only arrives with the pool read, which can land after the
+    // holdings; re-match when it does.
+    onLpDefinitionIdChanged: root.applyHoldings()
+
+    Connections {
+        target: root.backend
+        function onIsWalletOpenChanged() { root.loadHoldings() }
+    }
 
     function issueText(code) {
         switch (String(code)) {
@@ -259,6 +367,20 @@ Item {
         return text.length > 0 ? text : qsTr("—")
     }
 
+    function openRemoveDialog() {
+        removeDialog.openFor({
+            "symbolA": root.symbolA,
+            "symbolB": root.symbolB,
+            "tokenAId": root.definitionIdA,
+            "tokenBId": root.definitionIdB,
+            "lpBalance": root.lpHoldingBalance,
+            "lpBalanceTotal": root.lpBalanceTotal,
+            "lpHoldingId": root.lpHoldingId,
+            "holdingAId": root.holdingAId,
+            "holdingBId": root.holdingBId
+        })
+    }
+
     AmmTheme {
         id: theme
     }
@@ -266,6 +388,34 @@ Item {
     Rectangle {
         anchors.fill: parent
         color: theme.colors.background
+    }
+
+    RemoveLiquidityDialog {
+        id: removeDialog
+
+        theme: theme
+        backend: root.backend
+        runtime: root.runtime
+
+        // The withdrawal moved the reserves and the wallet's LP, so both reads this
+        // page shows are stale the moment it lands.
+        onRemoved: function(transactionId) {
+            removeToast.show(qsTr("Liquidity removed"), transactionId)
+            root.refresh()
+        }
+    }
+
+    SuccessToast {
+        id: removeToast
+
+        objectName: "poolDetailRemoveToast"
+        width: Math.max(0, Math.min(380, parent.width - 32))
+
+        anchors {
+            bottom: parent.bottom
+            bottomMargin: 24
+            horizontalCenter: parent.horizontalCenter
+        }
     }
 
     Flickable {
@@ -433,14 +583,119 @@ Item {
                             onClicked: root.swapRequested(root.pool)
                         }
 
-                        AmmSecondaryButton {
-                            objectName: "poolDetailAddLiquidityButton"
-                            theme: theme
-                            text: qsTr("Add liquidity")
-                            enabled: root.canAddLiquidity
+                        // Plain "Add liquidity" until the wallet actually holds LP
+                        // here; then it becomes a manage menu offering both directions.
+                        Item {
+                            id: manageAction
+
                             Layout.fillWidth: !root.wideLayout
-                            Layout.preferredWidth: root.wideLayout ? 150 : -1
-                            onClicked: root.addLiquidityRequested(root.pool)
+                            Layout.preferredWidth: root.wideLayout
+                                                   ? (root.hasPosition ? 170 : 150) : -1
+                            Layout.preferredHeight: 44
+
+                            // Same hover bookkeeping as the nav bar's tab menu: the
+                            // pointer is over neither while it crosses the gap.
+                            property bool pointerOnButton: false
+                            property bool pointerInMenu: false
+
+                            function openMenu() {
+                                if (!root.hasPosition)
+                                    return
+                                manageMenuCloseTimer.stop()
+                                manageMenu.open()
+                            }
+
+                            function scheduleMenuClose() {
+                                manageMenuCloseTimer.restart()
+                            }
+
+                            Timer {
+                                id: manageMenuCloseTimer
+
+                                interval: 180
+                                onTriggered: {
+                                    if (!manageAction.pointerOnButton && !manageAction.pointerInMenu)
+                                        manageMenu.close()
+                                }
+                            }
+
+                            AmmSecondaryButton {
+                                id: manageButton
+
+                                objectName: "poolDetailAddLiquidityButton"
+                                anchors.fill: parent
+                                theme: theme
+                                text: root.hasPosition ? qsTr("Manage position")
+                                                       : qsTr("Add liquidity")
+                                enabled: root.canAddLiquidity
+
+                                onHoveredChanged: {
+                                    manageAction.pointerOnButton = hovered
+                                    if (hovered)
+                                        manageAction.openMenu()
+                                    else
+                                        manageAction.scheduleMenuClose()
+                                }
+
+                                onClicked: {
+                                    if (root.hasPosition)
+                                        manageAction.openMenu()
+                                    else
+                                        root.addLiquidityRequested(root.pool)
+                                }
+                            }
+
+                            Popup {
+                                id: manageMenu
+
+                                objectName: "poolDetailManageMenu"
+                                y: manageAction.height + 6
+                                width: 190
+                                padding: 6
+                                closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+                                background: Rectangle {
+                                    radius: 12
+                                    color: theme.colors.cardBg
+                                    border.color: theme.colors.borderStrong
+                                    border.width: 1
+                                }
+
+                                contentItem: Column {
+                                    spacing: 2
+
+                                    HoverHandler {
+                                        onHoveredChanged: {
+                                            manageAction.pointerInMenu = hovered
+                                            if (hovered)
+                                                manageMenuCloseTimer.stop()
+                                            else
+                                                manageAction.scheduleMenuClose()
+                                        }
+                                    }
+
+                                    ManageEntry {
+                                        objectName: "poolDetailManageAdd"
+                                        width: manageMenu.availableWidth
+                                        text: qsTr("Add liquidity")
+                                        onActivated: {
+                                            manageMenu.close()
+                                            root.addLiquidityRequested(root.pool)
+                                        }
+                                    }
+
+                                    ManageEntry {
+                                        objectName: "poolDetailManageRemove"
+                                        width: manageMenu.availableWidth
+                                        text: qsTr("Remove liquidity")
+                                        enabled: root.canRemoveLiquidity
+                                        onActivated: {
+                                            manageMenu.close()
+                                            root.openRemoveDialog()
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -723,6 +978,45 @@ Item {
     // Anchors rather than a RowLayout: the value is capped against the row's own
     // width, and a layout child whose maximumWidth depends on the row width can
     // feed back into the row's implicit size.
+    component ManageEntry: Rectangle {
+        id: entry
+
+        property string text: ""
+        signal activated()
+
+        height: 36
+        radius: 8
+        color: entryMouse.containsMouse && entry.enabled
+               ? theme.colors.panelHoverBg : "transparent"
+
+        Accessible.role: Accessible.MenuItem
+        Accessible.name: entry.text
+
+        Text {
+            anchors.left: parent.left
+            anchors.leftMargin: 10
+            anchors.right: parent.right
+            anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            text: entry.text
+            color: entry.enabled ? theme.colors.textPrimary : theme.colors.textPlaceholder
+            font.pixelSize: 14
+            elide: Text.ElideRight
+        }
+
+        MouseArea {
+            id: entryMouse
+
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: entry.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: {
+                if (entry.enabled)
+                    entry.activated()
+            }
+        }
+    }
+
     component StatRow: Item {
         id: statRow
 

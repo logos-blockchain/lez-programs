@@ -83,6 +83,12 @@ public slots:
     // Add-liquidity submit. Forwards to the module; the flow supplies a fresh LP
     // holding in the request (the backend creates no wallet accounts here).
     QVariantMap addLiquidity(QVariantMap request) override;
+    // Read-only remove-liquidity preview (forwards to the module).
+    QVariantMap removeLiquidityQuote(QVariantMap request) override;
+    // Remove-liquidity submit. Forwards to the module; unlike create/add nothing fresh
+    // is created — the request names the existing LP holding to burn from and the two
+    // token holdings that receive the withdrawal.
+    QVariantMap removeLiquidity(QVariantMap request) override;
     // Lists the wallet's fungible token holdings for the account selector.
     QVariantList tokenHoldings() override;
     // Reads the known-pools list from AMM_POOLS_CONFIG (app config JSON, read

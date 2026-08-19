@@ -254,6 +254,16 @@ fee tier, the wallet's claim on both reserves (`reserve × lpBalance / lpSupply`
 floored like the program's own payout), and its share of the pool. The list
 needs an open wallet.
 
+On the pool detail view, the secondary action reads *Add liquidity* until the
+wallet holds LP tokens for that pool; then it becomes *Manage position*, whose
+hover dropdown offers both *Add liquidity* and *Remove liquidity*. Removing
+opens a sheet with the usual percentage presets and a slider, previews the two
+withdrawals through `removeLiquidityQuote`, and submits through
+`removeLiquidity` with the previewed amounts as the slippage floors. Note that
+every add mints into a *fresh* LP holding, so a wallet that has added twice
+holds two LP accounts for one pool; a burn names a single account, so the sheet
+draws on the largest and says so when the position spans more than one.
+
 Clicking a row in the Pools list opens the pool detail view, which reads the live pool through
 `resolvePoolAccount` and shows the reserve split, spot price, fee tier, LP
 supply, an estimate of the fees accrued into the reserves, and the pool's

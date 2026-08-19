@@ -146,6 +146,27 @@ class AmmUiBackend
     // { status:"error", error:<code> } (wallet_unavailable, config_missing,
     // invalid_account_id, bad_amount, no_pool, wallet_submission_failed, backend_error).
     SLOT(QVariantMap addLiquidity(QVariantMap request))
+    // Server-side remove-liquidity preview: burning `lpAmountRaw` returns the
+    // proportional share of each reserve. `request` carries { tokenAId, tokenBId,
+    // lpAmountRaw, slippageBps } (ids hex or base58). Reads the pool and returns
+    // { status:"ok", error:"", amountARaw, amountBRaw (the withdrawals, display
+    // order), minimumAmountARaw, minimumAmountBRaw (the slippage floors the submit
+    // enforces), priceRaw }. On failure { status:"error", error:<code> } —
+    // no_pool, pair_mismatch, invalid_token_id, invalid_slippage,
+    // insufficient_pool_liquidity, amount_too_low, minimum_amount_zero,
+    // bad_amount, config_missing, backend_error. Read-only, no submission.
+    SLOT(QVariantMap removeLiquidityQuote(QVariantMap request))
+    // Submits a RemoveLiquidity transaction against the request's pool. `request`
+    // carries { tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId, lpAmountRaw,
+    // minAmountARaw, minAmountBRaw, deadlineMs } (ids hex or base58;
+    // amounts/deadline decimal strings). Unlike createPool/addLiquidity nothing
+    // fresh is created: lpHoldingId is the existing holding burned from, and the
+    // token a/b holdings receive the withdrawal. minAmount*Raw are the slippage
+    // floors. Returns { status:"ok", error:"", transactionId:<hex tx hash> } on
+    // success, else { status:"error", error:<code> } (wallet_unavailable,
+    // config_missing, invalid_account_id, bad_amount, no_pool,
+    // wallet_submission_failed, backend_error).
+    SLOT(QVariantMap removeLiquidity(QVariantMap request))
     // Lists the connected wallet's fungible token holdings for the account
     // selector: [{ accountId, accountType:"TokenHolding", definitionId,
     // definitionIdHex, balanceRaw }] — one row per holding account, every token,
