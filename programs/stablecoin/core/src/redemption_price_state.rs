@@ -12,7 +12,7 @@ use nssa_core::{
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
 
-const REDEMPTION_PRICE_STATE_PDA_DOMAIN: &[u8; 32] = b"STABLECOIN__REDEMPTION_PRICE____";
+const REDEMPTION_PRICE_STATE_PDA_DOMAIN: &[u8] = b"REDEMPTION_PRICE_STATE";
 
 /// Redemption-price anchor + PI controller state, lazy form.
 ///
