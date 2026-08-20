@@ -1,5 +1,7 @@
 //! Core data structures and utilities for the Stablecoin Program.
 
+pub mod controller;
+
 pub mod math;
 
 pub mod protocol_parameters;
@@ -9,6 +11,7 @@ pub mod redemption_price_state;
 pub mod stability_fee_accumulator;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+pub use controller::{run_controller_tick, ControllerOutput, INTEGRAL_CLAMP, RATE_DELTA_CLAMP};
 use nssa_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{PdaSeed, ProgramId},
