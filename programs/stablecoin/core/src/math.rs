@@ -11,6 +11,15 @@ use alloy_primitives::U256;
 /// Rate fields store `actual_value * FIXED_POINT_ONE`.
 pub const FIXED_POINT_ONE: u128 = 10u128.pow(27);
 
+/// Hard cap on the elapsed window (in milliseconds) fed to [`compound_rate`].
+///
+/// Seven days. [`compound_rate`] is not self-bounding: over an unbounded window
+/// any rate above [`FIXED_POINT_ONE`] eventually overflows `u128`, so the
+/// projection helpers clamp `Δt` to this constant before compounding (spec
+/// §5.3, §8). Seven days comfortably covers realistic keeper-poke gaps; beyond
+/// it, fee accrual and redemption drift pause until someone pokes.
+pub const MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS: u64 = 604_800_000;
+
 /// `(a * b) / c` computed via `U256` intermediates and rounded toward zero.
 ///
 /// # Panics
@@ -93,6 +102,51 @@ pub fn compound_rate(per_millisecond_rate: u128, milliseconds_elapsed: u64) -> u
         }
     }
     result
+}
+
+/// Project the stability fee accumulator from its persisted anchor to `now`.
+///
+/// `current = anchor × compound_rate(rate, min(now − last_accrued_at,
+/// MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS)) / FIXED_POINT_ONE`
+///
+/// `Δt` (milliseconds) uses `saturating_sub` so monotonic time is not assumed,
+/// then is clamped to [`MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS`]. That clamp is
+/// what prevents [`compound_rate`] from overflowing over an unbounded poke gap —
+/// the §8 rate bound alone does not (spec §5.2 / §5.3).
+#[must_use]
+pub fn compute_current_accumulated_rate(
+    accumulated_rate_at_last_accrual: u128,
+    stability_fee_per_millisecond: u128,
+    last_accrued_at: u64,
+    now: u64,
+) -> u128 {
+    let elapsed = now
+        .saturating_sub(last_accrued_at)
+        .min(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS);
+    let factor = compound_rate(stability_fee_per_millisecond, elapsed);
+    mul_div(accumulated_rate_at_last_accrual, factor, FIXED_POINT_ONE)
+}
+
+/// Project the redemption price from its persisted anchor to `now`.
+///
+/// `current = anchor × compound_rate(rate_per_millisecond, min(now − last_updated_at,
+/// MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS)) / FIXED_POINT_ONE`
+///
+/// Same `Δt` clamp rationale as [`compute_current_accumulated_rate`]:
+/// `redemption_rate_per_millisecond` can also exceed `1.0`, so the window cap is
+/// load-bearing for overflow safety.
+#[must_use]
+pub fn compute_current_redemption_price(
+    redemption_price_at_last_update: u128,
+    redemption_rate_per_millisecond: u128,
+    last_updated_at: u64,
+    now: u64,
+) -> u128 {
+    let elapsed = now
+        .saturating_sub(last_updated_at)
+        .min(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS);
+    let factor = compound_rate(redemption_rate_per_millisecond, elapsed);
+    mul_div(redemption_price_at_last_update, factor, FIXED_POINT_ONE)
 }
 
 #[cfg(test)]
@@ -209,5 +263,140 @@ mod tests {
         let result = compound_rate(rate, 100);
         assert!(result < FIXED_POINT_ONE);
         assert!(result > 0);
+    }
+
+    #[test]
+    fn maximum_compounding_window_is_seven_days() {
+        assert_eq!(
+            MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+            7 * 24 * 60 * 60 * 1_000
+        );
+    }
+
+    #[test]
+    fn current_accumulated_rate_zero_elapsed_returns_anchor() {
+        let anchor = FIXED_POINT_ONE * 12345 / 10000; // 1.2345
+        assert_eq!(
+            compute_current_accumulated_rate(anchor, FIXED_POINT_ONE + 10u128.pow(20), 100, 100),
+            anchor,
+        );
+    }
+
+    #[test]
+    fn current_accumulated_rate_no_drift_returns_anchor() {
+        let anchor = FIXED_POINT_ONE * 12345 / 10000;
+        for &(last_accrued_at, now) in &[
+            (0u64, 60u64),
+            (1_000, 86_400),
+            (1_700_000_000, 1_700_000_000 + 31_536_000),
+        ] {
+            assert_eq!(
+                compute_current_accumulated_rate(anchor, FIXED_POINT_ONE, last_accrued_at, now),
+                anchor,
+                "no-drift at (last_accrued_at={last_accrued_at}, now={now}) should return anchor",
+            );
+        }
+    }
+
+    #[test]
+    fn current_accumulated_rate_now_before_last_accrued_returns_anchor() {
+        let anchor = FIXED_POINT_ONE;
+        // `now < last_accrued_at` saturates the elapsed window to 0, so the
+        // projection collapses to the anchor.
+        assert_eq!(
+            compute_current_accumulated_rate(anchor, FIXED_POINT_ONE * 2, 1_000_000, 100),
+            anchor,
+        );
+    }
+
+    #[test]
+    fn current_accumulated_rate_one_millisecond_equals_compound_factor() {
+        let anchor = FIXED_POINT_ONE;
+        let rate = FIXED_POINT_ONE + 10u128.pow(20); // 1.0000001
+        let projected = compute_current_accumulated_rate(anchor, rate, 0, 1);
+        // With anchor = FIXED_POINT_ONE, current at 1 ms = anchor * rate / FIXED_POINT_ONE = rate.
+        assert_eq!(projected, rate);
+    }
+
+    #[test]
+    fn current_accumulated_rate_growth_is_monotonic() {
+        let anchor = FIXED_POINT_ONE;
+        let rate = FIXED_POINT_ONE + 10u128.pow(20);
+        let mut prev = anchor;
+        for millis in 0..30u64 {
+            let now = compute_current_accumulated_rate(anchor, rate, 0, millis);
+            assert!(now >= prev, "regression at millis={millis}");
+            prev = now;
+        }
+    }
+
+    #[test]
+    fn current_accumulated_rate_clamps_elapsed_to_maximum_window() {
+        let anchor = FIXED_POINT_ONE;
+        // A realistic ~5% annual rate: 1 + 1.5e-12 per millisecond.
+        let rate = FIXED_POINT_ONE + 1_500_000_000_000_000;
+        let at_window = compute_current_accumulated_rate(
+            anchor,
+            rate,
+            0,
+            MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+        );
+        // Anything past the window projects to exactly the same value — accrual
+        // pauses rather than compounding an unbounded exponent.
+        for &now in &[
+            MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS + 1,
+            MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS * 1_000,
+            u64::MAX,
+        ] {
+            assert_eq!(
+                compute_current_accumulated_rate(anchor, rate, 0, now),
+                at_window,
+                "elapsed window not clamped at now={now}",
+            );
+        }
+        assert!(at_window > anchor);
+    }
+
+    #[test]
+    fn current_redemption_price_zero_elapsed_returns_anchor() {
+        let anchor = FIXED_POINT_ONE / 2;
+        assert_eq!(
+            compute_current_redemption_price(anchor, FIXED_POINT_ONE + 10u128.pow(20), 100, 100),
+            anchor,
+        );
+    }
+
+    #[test]
+    fn current_redemption_price_decay_below_one_shrinks_anchor() {
+        let anchor = FIXED_POINT_ONE / 2;
+        let rate = FIXED_POINT_ONE - 10u128.pow(20); // < 1
+        let projected = compute_current_redemption_price(anchor, rate, 0, 100);
+        assert!(projected < anchor);
+        assert!(projected > 0);
+    }
+
+    #[test]
+    fn current_redemption_price_growth_above_one_grows_anchor() {
+        let anchor = FIXED_POINT_ONE / 2;
+        let rate = FIXED_POINT_ONE + 10u128.pow(20); // > 1
+        let projected = compute_current_redemption_price(anchor, rate, 0, 100);
+        assert!(projected > anchor);
+    }
+
+    #[test]
+    fn current_redemption_price_clamps_elapsed_to_maximum_window() {
+        let anchor = FIXED_POINT_ONE;
+        let rate = FIXED_POINT_ONE - 1_500_000_000_000_000; // < 1, decaying
+        let at_window = compute_current_redemption_price(
+            anchor,
+            rate,
+            0,
+            MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+        );
+        assert_eq!(
+            compute_current_redemption_price(anchor, rate, 0, u64::MAX),
+            at_window,
+        );
+        assert!(at_window < anchor);
     }
 }
