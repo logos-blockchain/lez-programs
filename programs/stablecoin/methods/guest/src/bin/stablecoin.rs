@@ -28,11 +28,17 @@ mod stablecoin {
     )]
     pub fn initialize_program(
         ctx: ProgramContext,
+        #[account(signer)]
         admin: AccountWithMetadata,
+        #[account(init)]
         protocol_parameters: AccountWithMetadata,
+        #[account(init)]
         stability_fee_accumulator: AccountWithMetadata,
+        #[account(init)]
         redemption_price_state: AccountWithMetadata,
+        #[account(init)]
         stablecoin_definition: AccountWithMetadata,
+        #[account(init)]
         stablecoin_master_holding: AccountWithMetadata,
         collateral_definition: AccountWithMetadata,
         market_price_oracle: AccountWithMetadata,

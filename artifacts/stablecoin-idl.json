@@ -8,38 +8,38 @@
         {
           "name": "admin",
           "writable": false,
-          "signer": false,
+          "signer": true,
           "init": false
         },
         {
           "name": "protocol_parameters",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "stability_fee_accumulator",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "redemption_price_state",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "stablecoin_definition",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "stablecoin_master_holding",
-          "writable": false,
+          "writable": true,
           "signer": false,
-          "init": false
+          "init": true
         },
         {
           "name": "collateral_definition",
