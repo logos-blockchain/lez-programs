@@ -88,6 +88,54 @@ pub enum Instruction {
         /// Name baked into the stablecoin's `TokenDefinition::Fungible`.
         stablecoin_name: String,
     },
+    /// Advance the stability-fee accumulator to the clock's timestamp.
+    /// Permissionless and idempotent — there is no minimum-interval throttle;
+    /// redundant calls are harmless no-ops, since the read-side projection keeps
+    /// every position current regardless of cadence. Allowed while frozen.
+    ///
+    /// Required accounts (4), in order:
+    /// 1. `caller` — authorized; not retained anywhere.
+    /// 2. `protocol_parameters` — initialized, read-only.
+    /// 3. `stability_fee_accumulator` — initialized, writable.
+    /// 4. `clock` — the system `CLOCK_01` account; read-only.
+    AccrueStabilityFee,
+    /// Run one tick of the redemption-rate controller and re-anchor the
+    /// redemption price. Permissionless, but strict: panics if called within
+    /// `minimum_milliseconds_between_rate_updates` of the last update, or if the
+    /// market-price oracle is stale or reports a zero price. Allowed while frozen.
+    ///
+    /// Required accounts (5), in order:
+    /// 1. `caller` — authorized; not retained anywhere.
+    /// 2. `protocol_parameters` — initialized, read-only.
+    /// 3. `redemption_price_state` — initialized, writable.
+    /// 4. `market_price_oracle` — initialized, read-only; must equal
+    ///    `protocol_parameters.market_price_oracle_id`.
+    /// 5. `clock` — the system `CLOCK_01` account; read-only.
+    UpdateRedemptionRate,
+    /// Best-effort combined poke that advances BOTH globals in one transaction.
+    /// A LEZ transaction carries exactly one instruction, so this is the only way
+    /// to refresh the fee accumulator and the redemption rate at once.
+    ///
+    /// ALWAYS performs the fee accrual (like [`Instruction::AccrueStabilityFee`]).
+    /// Performs the redemption update (like [`Instruction::UpdateRedemptionRate`])
+    /// ONLY if its interval is due AND the oracle is fresh AND the oracle price is
+    /// non-zero; otherwise it SKIPS that half without panicking. Allowed while
+    /// frozen, like the individual pokes.
+    ///
+    /// Panics ONLY on: `caller` not authorized; any of `protocol_parameters` /
+    /// `stability_fee_accumulator` / `redemption_price_state` uninitialized, wrong
+    /// owner, or at the wrong PDA; oracle id mismatch; wrong clock account. It does
+    /// NOT panic on a not-yet-due interval or a stale / zero oracle.
+    ///
+    /// Required accounts (6), in order — the union of the two standalone pokes:
+    /// 1. `caller` — authorized; not retained anywhere.
+    /// 2. `protocol_parameters` — initialized, read-only.
+    /// 3. `stability_fee_accumulator` — initialized, writable.
+    /// 4. `redemption_price_state` — initialized, writable.
+    /// 5. `market_price_oracle` — initialized, read-only; must equal
+    ///    `protocol_parameters.market_price_oracle_id`.
+    /// 6. `clock` — the system `CLOCK_01` account; read-only.
+    RefreshGlobals,
     /// Open a new collateral-only [`Position`] for the calling owner.
     ///
     /// Required accounts (5):
@@ -364,6 +412,27 @@ mod global_pda_tests {
 mod instruction_tests {
     use super::*;
     use crate::math::FIXED_POINT_ONE;
+
+    #[test]
+    fn accrue_stability_fee_json_roundtrip() {
+        let json = serde_json::to_string(&Instruction::AccrueStabilityFee).expect("serialize");
+        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(decoded, Instruction::AccrueStabilityFee));
+    }
+
+    #[test]
+    fn update_redemption_rate_json_roundtrip() {
+        let json = serde_json::to_string(&Instruction::UpdateRedemptionRate).expect("serialize");
+        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(decoded, Instruction::UpdateRedemptionRate));
+    }
+
+    #[test]
+    fn refresh_globals_json_roundtrip() {
+        let json = serde_json::to_string(&Instruction::RefreshGlobals).expect("serialize");
+        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(decoded, Instruction::RefreshGlobals));
+    }
 
     #[test]
     fn initialize_program_json_roundtrip() {
