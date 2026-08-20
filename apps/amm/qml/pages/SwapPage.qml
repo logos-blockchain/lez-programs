@@ -144,10 +144,6 @@ Item {
 
                 onRequestTokenSelect: function(side) {
                     tokenModal.targetSide = side
-                    // Disable the token already picked on the opposite side so the
-                    // two sides can't match (a same-token pool panics amm_core).
-                    var other = side === "sell" ? swapCard.buyToken : swapCard.sellToken
-                    tokenModal.disabledDefinitionId = other ? other.definitionId : ""
                     tokenModal.open()
                 }
 
@@ -177,7 +173,6 @@ Item {
 
         TokenSelectorModal {
             id: tokenModal
-            anchors.fill: parent
             z: 10
             theme: pageTheme
             tokens: root.tokens
@@ -185,6 +180,15 @@ Item {
             property string targetSide: "sell"
 
             onTokenSelected: function(tok) {
+                // Prevent picking the same token on both sides (a same-token pool
+                // panics amm_core). The consolidated modal no longer takes a
+                // disabled id, so enforce it at selection time.
+                var other = targetSide === "sell" ? swapCard.buyToken : swapCard.sellToken
+                if (other && tok
+                        && String(tok.definitionId || "") === String(other.definitionId || "")) {
+                    tokenModal.close()
+                    return
+                }
                 swapCard.setToken(targetSide, tok)
                 tokenModal.close()
             }

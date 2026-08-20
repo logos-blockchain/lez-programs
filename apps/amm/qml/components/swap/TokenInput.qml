@@ -1,7 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
 import Logos.Wallet
-import "TokenVisuals.js" as TokenVisuals
+import "../shared/TokenVisuals.js" as TokenVisuals
 
 Rectangle {
     id: root

@@ -393,7 +393,32 @@ QVariantList AmmUiBackend::resolveTokens()
 
     QVariantMap request;
     request.insert(QStringLiteral("tokenIds"), ids);
-    return m_logos->amm_module.resolveTokens(request, wallet_open);
+    QVariantList rows = m_logos->amm_module.resolveTokens(request, wallet_open);
+
+    // The module resolves on-chain fields (definitionId/name/holding/balance) but
+    // not the UI-only `symbol`, which lives in TOKENS_CONFIG. Re-attach it here so
+    // the liquidity token picker derives the same colored avatars as the swap side
+    // (TokenVisuals derives color/letter from the symbol). Custom ids not in the
+    // config keep no symbol; the picker falls back to the name for those.
+    for (QVariant& row : rows) {
+        QVariantMap token = row.toMap();
+        if (!token.value(QStringLiteral("symbol")).toString().isEmpty()) {
+            row = token;
+            continue;
+        }
+        const QString id = token.value(QStringLiteral("definitionId")).toString();
+        for (const QVariant& entry : configured) {
+            const QVariantMap cfg = entry.toMap();
+            if (cfg.value(QStringLiteral("definitionId")).toString() == id) {
+                token.insert(QStringLiteral("symbol"), cfg.value(QStringLiteral("symbol")));
+                if (token.value(QStringLiteral("name")).toString().isEmpty())
+                    token.insert(QStringLiteral("name"), cfg.value(QStringLiteral("name")));
+                break;
+            }
+        }
+        row = token;
+    }
+    return rows;
 }
 
 QVariantMap AmmUiBackend::addCustomToken(QString tokenId)

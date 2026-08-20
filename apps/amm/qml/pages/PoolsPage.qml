@@ -5,7 +5,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 import "../components/liquidity"
-import "../components/swap/TokenVisuals.js" as TokenVisuals
+import "../components/shared/TokenVisuals.js" as TokenVisuals
 
 Item {
     id: root

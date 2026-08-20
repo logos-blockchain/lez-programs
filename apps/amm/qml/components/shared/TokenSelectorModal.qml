@@ -4,6 +4,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+import "TokenVisuals.js" as TokenVisuals
+
 Popup {
     id: root
 
@@ -472,14 +474,15 @@ Popup {
     }
 
     function tokenColor(token) {
-        return token && token.color ? token.color : root.theme.colors.noTokenCircle
+        // Token config carries no color field; derive it from the symbol the
+        // same way TokenInput / PoolsPage do (see TokenVisuals.js). Fall back to
+        // the name for resolved tokens (e.g. custom ids) that carry no symbol.
+        return token ? TokenVisuals.colorFor(root.tokenSymbol(token) || root.tokenName(token))
+                     : root.theme.colors.noTokenCircle
     }
 
     function tokenLetter(token) {
-        if (token && token.letter)
-            return String(token.letter)
-        var label = root.tokenSymbol(token) || root.tokenName(token)
-        return label.length > 0 ? label.charAt(0).toUpperCase() : ""
+        return token ? TokenVisuals.letterFor(root.tokenSymbol(token) || root.tokenName(token)) : ""
     }
 
     function shortAddress(value) {
