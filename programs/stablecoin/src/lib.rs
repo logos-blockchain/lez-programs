@@ -14,6 +14,9 @@ pub mod open_position;
 /// Repay outstanding stablecoin debt against an existing position.
 pub mod repay_debt;
 
+/// Permissionless poke: run one redemption-rate controller tick.
+pub mod update_redemption_rate;
+
 /// Withdraw collateral from an existing position back to a user-controlled holding.
 pub mod withdraw_collateral;
 
