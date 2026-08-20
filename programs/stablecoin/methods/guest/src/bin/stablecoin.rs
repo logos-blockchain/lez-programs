@@ -83,6 +83,116 @@ mod stablecoin {
         ))
     }
 
+    /// Permissionless poke: advance the stability-fee accumulator (spec §10.2;
+    /// host fn `stablecoin_program::accrue_stability_fee`).
+    ///
+    /// Wall-clock time is read from the system `CLOCK_01` account passed as the
+    /// 4th input — the pinned `ProgramContext` exposes no clock.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn accrue_stability_fee(
+        ctx: ProgramContext,
+        #[account(signer)]
+        caller: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+        #[account(mut)]
+        stability_fee_accumulator: AccountWithMetadata,
+        clock: AccountWithMetadata,
+    ) -> SpelResult {
+        let (post_states, chained_calls) =
+            stablecoin_program::accrue_stability_fee::accrue_stability_fee(
+                caller,
+                protocol_parameters,
+                stability_fee_accumulator,
+                clock,
+                ctx.self_program_id,
+            );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
+    /// Permissionless poke: run one redemption-rate controller tick and
+    /// re-anchor the redemption price (spec §10.3; host fn
+    /// `stablecoin_program::update_redemption_rate`).
+    ///
+    /// Strict: panics on a not-yet-due interval or a stale / zero-price oracle.
+    /// Wall-clock time is read from the system `CLOCK_01` account passed as the
+    /// 5th input.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn update_redemption_rate(
+        ctx: ProgramContext,
+        #[account(signer)]
+        caller: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+        #[account(mut)]
+        redemption_price_state: AccountWithMetadata,
+        market_price_oracle: AccountWithMetadata,
+        clock: AccountWithMetadata,
+    ) -> SpelResult {
+        let (post_states, chained_calls) =
+            stablecoin_program::update_redemption_rate::update_redemption_rate(
+                caller,
+                protocol_parameters,
+                redemption_price_state,
+                market_price_oracle,
+                clock,
+                ctx.self_program_id,
+            );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
+    /// Permissionless combined poke: always accrue the stability fee, and run
+    /// the redemption-rate tick too when its interval is due and the oracle is
+    /// fresh — best-effort, skipping rather than panicking (spec §10.3a; host fn
+    /// `stablecoin_program::refresh_globals`).
+    ///
+    /// A LEZ transaction carries exactly one instruction, so this is the only
+    /// way to advance both globals at once. Wall-clock time is read from the
+    /// system `CLOCK_01` account passed as the 6th input.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn refresh_globals(
+        ctx: ProgramContext,
+        #[account(signer)]
+        caller: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+        #[account(mut)]
+        stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)]
+        redemption_price_state: AccountWithMetadata,
+        market_price_oracle: AccountWithMetadata,
+        clock: AccountWithMetadata,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::refresh_globals::refresh_globals(
+            caller,
+            protocol_parameters,
+            stability_fee_accumulator,
+            redemption_price_state,
+            market_price_oracle,
+            clock,
+            ctx.self_program_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
     /// Open a new collateral-only position for the calling owner.
     ///
     /// # Errors

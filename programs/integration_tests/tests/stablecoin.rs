@@ -1,5 +1,6 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use nssa::{
+    error::LeeError,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
@@ -201,14 +202,30 @@ impl Accounts {
     }
 
     fn oracle_init(base_asset: AccountId, quote_asset: AccountId) -> Account {
+        Self::oracle_with(
+            base_asset,
+            quote_asset,
+            stablecoin_core::math::FIXED_POINT_ONE / 2,
+            0,
+        )
+    }
+
+    /// An oracle observation at an explicit price and timestamp — the poke tests
+    /// need both to control the controller's error term and the freshness gate.
+    fn oracle_with(
+        base_asset: AccountId,
+        quote_asset: AccountId,
+        price: u128,
+        timestamp: u64,
+    ) -> Account {
         Account {
             program_owner: [9u32; 8],
             balance: 0_u128,
             data: Data::from(&twap_oracle_core::OraclePriceAccount {
                 base_asset,
                 quote_asset,
-                price: stablecoin_core::math::FIXED_POINT_ONE / 2,
-                timestamp: 0,
+                price,
+                timestamp,
                 source_id: Ids::oracle(),
                 confidence_interval: 0,
             }),
@@ -463,14 +480,30 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
     }
 }
 
-#[test]
-fn stablecoin_initialize_program_creates_globals_and_stablecoin_definition() {
+/// Protocol parameters the initialized-protocol helper installs. Kept as
+/// constants so the poke tests can reason about the interval / staleness gates.
+mod protocol_config {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    /// ~5% annual, expressed per millisecond.
+    pub(super) const STABILITY_FEE_PER_MILLISECOND: u128 = FIXED_POINT_ONE + 1_500_000_000_000_000;
+    pub(super) const MINIMUM_MILLISECONDS_BETWEEN_RATE_UPDATES: u64 = 300_000;
+    pub(super) const MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS: u64 = 900_000;
+    pub(super) const INITIAL_REDEMPTION_PRICE: u128 = FIXED_POINT_ONE / 2;
+}
+
+/// Deploys both programs and runs `InitializeProgram` at `now`, leaving a fully
+/// bootstrapped protocol. Shared by the init test and all three poke tests.
+///
+/// `controller_proportional_gain` is a parameter because the poke tests need a
+/// live controller (a zero gain pins the redemption rate at `FIXED_POINT_ONE`,
+/// which would make the update assertions vacuous).
+fn initialize_protocol(now: u64, controller_proportional_gain: i128) -> V03State {
     use stablecoin_core::math::FIXED_POINT_ONE;
 
     // `V03State::new()` no longer auto-creates the clock account; seed CLOCK_01 with this
     // timestamp, which initialize_program reads as `now` to anchor the accumulator and
     // redemption-price state.
-    let now: u64 = 1_700_000_000;
     let mut state = V03State::new();
     seed_clock(&mut state, now);
     deploy_programs(&mut state);
@@ -490,13 +523,15 @@ fn stablecoin_initialize_program_creates_globals_and_stablecoin_definition() {
 
     let instruction = stablecoin_core::Instruction::InitializeProgram {
         freeze_authority_account_id: Ids::freeze_authority(),
-        initial_stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000,
-        initial_controller_proportional_gain: 0,
+        initial_stability_fee_per_millisecond: protocol_config::STABILITY_FEE_PER_MILLISECOND,
+        initial_controller_proportional_gain: controller_proportional_gain,
         initial_controller_integral_gain: 0,
         initial_minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
-        minimum_milliseconds_between_rate_updates: 300_000,
-        maximum_oracle_price_age_milliseconds: 900_000,
-        initial_redemption_price: FIXED_POINT_ONE / 2,
+        minimum_milliseconds_between_rate_updates:
+            protocol_config::MINIMUM_MILLISECONDS_BETWEEN_RATE_UPDATES,
+        maximum_oracle_price_age_milliseconds:
+            protocol_config::MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS,
+        initial_redemption_price: protocol_config::INITIAL_REDEMPTION_PRICE,
         stablecoin_name: String::from("test-stable"),
     };
 
@@ -516,12 +551,67 @@ fn stablecoin_initialize_program_creates_globals_and_stablecoin_definition() {
         vec![current_nonce(&state, Ids::admin())],
         instruction,
     )
-    .unwrap();
+    .expect("valid initialize_program message");
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::admin()]);
     let tx = PublicTransaction::new(message, witness_set);
     state
         .transition_from_public_transaction(&tx, 1, now)
         .expect("initialize_program must succeed");
+
+    state
+}
+
+/// Submits a no-parameter poke signed by the admin (pokes are permissionless —
+/// the admin key is just a convenient signer) and advances the clock to `now`
+/// first, so the guest reads the intended timestamp.
+fn submit_poke(
+    state: &mut V03State,
+    now: u64,
+    block_id: u64,
+    instruction: stablecoin_core::Instruction,
+    accounts: Vec<AccountId>,
+) -> Result<(), LeeError> {
+    seed_clock(state, now);
+    let mut account_ids = vec![Ids::admin()];
+    account_ids.extend(accounts);
+    let message = public_transaction::Message::try_new(
+        Ids::stablecoin_program(),
+        account_ids,
+        vec![current_nonce(state, Ids::admin())],
+        instruction,
+    )
+    .expect("valid poke message");
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::admin()]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, block_id, now)
+}
+
+fn read_accumulator(state: &V03State) -> stablecoin_core::StabilityFeeAccumulator {
+    stablecoin_core::StabilityFeeAccumulator::try_from(
+        &state
+            .get_account_by_id(compute_stability_fee_accumulator_pda(
+                Ids::stablecoin_program(),
+            ))
+            .data,
+    )
+    .expect("valid StabilityFeeAccumulator")
+}
+
+fn read_redemption_price_state(state: &V03State) -> stablecoin_core::RedemptionPriceState {
+    stablecoin_core::RedemptionPriceState::try_from(
+        &state
+            .get_account_by_id(compute_redemption_price_state_pda(Ids::stablecoin_program()))
+            .data,
+    )
+    .expect("valid RedemptionPriceState")
+}
+
+#[test]
+fn stablecoin_initialize_program_creates_globals_and_stablecoin_definition() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let now: u64 = 1_700_000_000;
+    let state = initialize_protocol(now, 0);
 
     // ProtocolParameters claimed with the expected handles.
     let pp = stablecoin_core::ProtocolParameters::try_from(
@@ -609,4 +699,176 @@ fn stablecoin_initialize_program_creates_globals_and_stablecoin_definition() {
             panic!("expected Fungible holding")
         }
     }
+}
+
+#[test]
+fn stablecoin_accrue_stability_fee_advances_accumulator() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let start: u64 = 1_700_000_000_000;
+    let mut state = initialize_protocol(start, 0);
+
+    let before = read_accumulator(&state);
+    assert_eq!(before.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
+    assert_eq!(before.last_accrued_at, start);
+
+    // Accrual has no throttle, so any positive delta works; one hour, in ms.
+    let now = start + 3_600_000;
+    submit_poke(
+        &mut state,
+        now,
+        2,
+        stablecoin_core::Instruction::AccrueStabilityFee,
+        vec![
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+    )
+    .expect("accrue_stability_fee must succeed");
+
+    let after = read_accumulator(&state);
+    assert_eq!(
+        after.accumulated_rate_at_last_accrual,
+        stablecoin_core::math::compute_current_accumulated_rate(
+            FIXED_POINT_ONE,
+            protocol_config::STABILITY_FEE_PER_MILLISECOND,
+            start,
+            now,
+        ),
+    );
+    assert!(after.accumulated_rate_at_last_accrual > FIXED_POINT_ONE);
+    assert_eq!(after.last_accrued_at, now);
+}
+
+#[test]
+fn stablecoin_update_redemption_rate_drifts_redemption_price() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let start: u64 = 1_700_000_000_000;
+    // A live proportional gain, otherwise the rate would stay pinned at 1.0.
+    let mut state = initialize_protocol(
+        start,
+        i128::try_from(FIXED_POINT_ONE).expect("FIXED_POINT_ONE fits i128"),
+    );
+
+    // Ten minutes later — past the 300_000 ms minimum interval.
+    let now = start + 600_000;
+
+    // A fresh observation well below the 0.5 redemption target, so
+    // error = redemption − market > 0.
+    state.force_insert_account(
+        Ids::oracle(),
+        Accounts::oracle_with(
+            Ids::stablecoin_definition_pda(),
+            Ids::collateral_definition(),
+            FIXED_POINT_ONE / 4,
+            now,
+        ),
+    );
+
+    submit_poke(
+        &mut state,
+        now,
+        2,
+        stablecoin_core::Instruction::UpdateRedemptionRate,
+        vec![
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            compute_redemption_price_state_pda(Ids::stablecoin_program()),
+            Ids::oracle(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+    )
+    .expect("update_redemption_rate must succeed");
+
+    let after = read_redemption_price_state(&state);
+    // Positive error with a positive Kp drives the rate ABOVE 1.0: the redemption
+    // price rises, pulling the market up toward it (negative feedback, no negation).
+    assert!(after.redemption_rate_per_millisecond > FIXED_POINT_ONE);
+    // The rate change is capped per update by RATE_DELTA_CLAMP.
+    assert_eq!(
+        after.redemption_rate_per_millisecond,
+        FIXED_POINT_ONE
+            + u128::try_from(stablecoin_core::RATE_DELTA_CLAMP)
+                .expect("RATE_DELTA_CLAMP is positive"),
+    );
+    // Re-anchored at the price projected from the OLD rate (exactly 1.0, so the
+    // anchor is unchanged) and stamped with now.
+    assert_eq!(
+        after.redemption_price_at_last_update,
+        protocol_config::INITIAL_REDEMPTION_PRICE
+    );
+    assert_eq!(after.last_updated_at, now);
+}
+
+#[test]
+fn stablecoin_refresh_globals_advances_both_then_fee_only_when_oracle_stale() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let start: u64 = 1_700_000_000_000;
+    let mut state = initialize_protocol(
+        start,
+        i128::try_from(FIXED_POINT_ONE).expect("FIXED_POINT_ONE fits i128"),
+    );
+
+    let refresh_accounts = || {
+        vec![
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            compute_redemption_price_state_pda(Ids::stablecoin_program()),
+            Ids::oracle(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ]
+    };
+
+    // --- Pass 1: fresh oracle, interval due => BOTH halves run. ---
+    let first = start + 600_000;
+    state.force_insert_account(
+        Ids::oracle(),
+        Accounts::oracle_with(
+            Ids::stablecoin_definition_pda(),
+            Ids::collateral_definition(),
+            FIXED_POINT_ONE / 4,
+            first,
+        ),
+    );
+
+    submit_poke(
+        &mut state,
+        first,
+        2,
+        stablecoin_core::Instruction::RefreshGlobals,
+        refresh_accounts(),
+    )
+    .expect("refresh_globals must advance both halves");
+
+    let accumulator_after_first = read_accumulator(&state);
+    let redemption_after_first = read_redemption_price_state(&state);
+    assert_eq!(accumulator_after_first.last_accrued_at, first);
+    assert!(accumulator_after_first.accumulated_rate_at_last_accrual > FIXED_POINT_ONE);
+    assert!(redemption_after_first.redemption_rate_per_millisecond > FIXED_POINT_ONE);
+    assert_eq!(redemption_after_first.last_updated_at, first);
+
+    // --- Pass 2: the oracle observation is left where it was and the clock jumps
+    // well past the max age => only the fee half runs, and the call still succeeds. ---
+    let second = first + 2_000_000; // > the 900_000 ms maximum oracle age
+    submit_poke(
+        &mut state,
+        second,
+        3,
+        stablecoin_core::Instruction::RefreshGlobals,
+        refresh_accounts(),
+    )
+    .expect("refresh_globals must still succeed with a stale oracle");
+
+    let accumulator_after_second = read_accumulator(&state);
+    let redemption_after_second = read_redemption_price_state(&state);
+    // Fee half ran again.
+    assert_eq!(accumulator_after_second.last_accrued_at, second);
+    assert!(
+        accumulator_after_second.accumulated_rate_at_last_accrual
+            > accumulator_after_first.accumulated_rate_at_last_accrual
+    );
+    // Redemption half skipped without panicking — byte-identical to pass 1.
+    assert_eq!(redemption_after_second, redemption_after_first);
 }
