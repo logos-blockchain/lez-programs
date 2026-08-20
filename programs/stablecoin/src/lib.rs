@@ -2,6 +2,9 @@
 
 pub use stablecoin_core as core;
 
+/// Permissionless poke: advance the global stability-fee accumulator.
+pub mod accrue_stability_fee;
+
 /// Bootstrap the protocol: create the global PDAs and the stablecoin definition.
 pub mod initialize_program;
 
@@ -13,6 +16,9 @@ pub mod repay_debt;
 
 /// Withdraw collateral from an existing position back to a user-controlled holding.
 pub mod withdraw_collateral;
+
+#[cfg(test)]
+mod test_support;
 
 #[cfg(test)]
 mod tests;
