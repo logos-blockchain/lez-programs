@@ -11,6 +11,9 @@ pub mod initialize_program;
 /// Open a new collateral-only position for a calling owner.
 pub mod open_position;
 
+/// Permissionless combined poke: advance both globals, best-effort.
+pub mod refresh_globals;
+
 /// Repay outstanding stablecoin debt against an existing position.
 pub mod repay_debt;
 
