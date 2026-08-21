@@ -588,6 +588,7 @@ Item {
                         Item {
                             id: manageAction
 
+                            objectName: "poolDetailManageButton"
                             Layout.fillWidth: !root.wideLayout
                             Layout.preferredWidth: root.wideLayout
                                                    ? (root.hasPosition ? 170 : 150) : -1

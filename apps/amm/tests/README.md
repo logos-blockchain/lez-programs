@@ -12,6 +12,10 @@ inspector (framework from
 - `add-liquidity.mjs` selects the seeded **A/B** pair, asserts the CTA stays
   disabled until deposit amounts are entered, submits an add, and verifies the
   A/B pool reserves grew **on-chain**.
+- `remove-liquidity.mjs` opens the wallet's seeded **A/B** position from the
+  positions view, uses the Manage dropdown to open the remove sheet, withdraws
+  **50%** (the slider default), submits, and verifies the A/B pool reserves shrank
+  **on-chain**.
 - `custom-token.mjs` pastes token **D**'s id (created on-chain by the setup but
   deliberately **absent** from the token config) into a Liquidity token slot and
   verifies the app resolves it, selects it, and **persists** it to the custom-token
@@ -60,6 +64,7 @@ LEE_WALLET_HOME_DIR=$(pwd)/apps/amm/tests/testnet/.wallet \
 node apps/amm/tests/swap.mjs          # swap against the seeded A/B pool
 node apps/amm/tests/create-pool.mjs   # create the (unseeded) A/C pool
 node apps/amm/tests/add-liquidity.mjs # add liquidity to the seeded A/B pool
+node apps/amm/tests/remove-liquidity.mjs # remove 50% from the seeded A/B pool
 node apps/amm/tests/custom-token.mjs  # add token D (unlisted) by id
 ```
 
@@ -93,6 +98,7 @@ nix build .#integration-test -L
 - `swap.mjs` — the end-to-end swap UI test (A/B pool).
 - `create-pool.mjs` — the end-to-end create-pool UI test (creates the A/C pool).
 - `add-liquidity.mjs` — the end-to-end add-liquidity UI test (adds to the A/B pool).
+- `remove-liquidity.mjs` — the end-to-end remove-liquidity UI test (removes 50% from the A/B pool).
 - `testnet/setup-amm-testnet.sh` — isolated testnet + wallet bootstrap (TKA/TKB/TKC,
   seeds the A/B pool only).
 - `qml/`, `cpp/` — the module's own QML/C++ unit tests.
