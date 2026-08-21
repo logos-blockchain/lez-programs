@@ -231,22 +231,65 @@ test("amm liquidity: remove from the A/B pool", async (app) => {
 
   // The dropdown entry's synthetic click may not take; fall back to the page's
   // openRemoveDialog(), the exact handler the entry's onActivated invokes.
-  const dialogId = await idByObjectName(app, "removeLiquidityDialog");
   try {
     await app.waitFor(
-      async () => { if ((await prop(app, dialogId, "visible")) !== true) throw new Error("dialog not visible"); },
-      { timeout: 4000, interval: 300, description: "remove dialog open" },
+      async () => { if (!(await maybeIdByObjectName(app, "removeLiquidityDialog"))) throw new Error("no dialog"); },
+      { timeout: 4000, interval: 300, description: "remove dialog present" },
     );
   } catch {
     console.log("    remove-entry click didn't take — opening the dialog via evaluate");
     await ignore(() => evaluate(app, detailId, "openRemoveDialog()"));
-    await app.waitFor(
-      async () => { if ((await prop(app, dialogId, "visible")) !== true) throw new Error("dialog not visible"); },
-      { timeout: 8000, interval: 300, description: "remove dialog open (after evaluate)" },
+  }
+  const dialogId = await idByObjectName(app, "removeLiquidityDialog");
+  await app.waitFor(
+    async () => { if ((await prop(app, dialogId, "visible")) !== true) throw new Error("dialog not visible"); },
+    { timeout: 8000, interval: 300, description: "remove dialog open" },
+  );
+
+  // 5. The LP source selector must render, list the wallet's LP holding(s) for this
+  //    pool, and preselect one. A burn names exactly ONE LP account, so this is what
+  //    the % applies to and what the submit spends from — assert it points at a real
+  //    holding and that the dialog's lpHoldingId tracks the selection.
+  const selectorId = await maybeIdByObjectName(app, "lpSourceSelector");
+  if (!selectorId) {
+    await saveShot(app, "remove-liquidity-no-selector");
+    throw new Error(
+      "lpSourceSelector did not render (the LP-account selector is missing). "
+      + `Dialog state: ${JSON.stringify(await dialogState(app, dialogId))}`,
     );
   }
+  console.log(
+    `    lpSourceSelector: visible=${await prop(app, selectorId, "visible")} `
+    + `criteriaReady=${await prop(app, selectorId, "criteriaReady")} `
+    + `hasFunds=${await prop(app, selectorId, "hasFunds")} `
+    + `lpHoldings=${JSON.stringify(await prop(app, dialogId, "lpHoldings"))}`,
+  );
+  try {
+    await app.waitFor(
+      async () => {
+        if ((await prop(app, selectorId, "hasFunds")) !== true)
+          throw new Error("selector lists no LP holdings for this pool");
+        if (!(await prop(app, selectorId, "selectedAccountId")))
+          throw new Error("selector has not preselected an LP account");
+      },
+      { timeout: 15000, interval: 300, description: "LP source account preselected" },
+    );
+  } catch (e) {
+    await saveShot(app, "remove-liquidity-no-selection");
+    throw new Error(`${e.message}. Dialog state: ${JSON.stringify(await dialogState(app, dialogId))}`);
+  }
+  const sourceAccountId = await prop(app, selectorId, "selectedAccountId");
+  const dialogHoldingId = await prop(app, dialogId, "lpHoldingId");
+  if (String(sourceAccountId) !== String(dialogHoldingId))
+    throw new Error(
+      `burn account mismatch: selector=${sourceAccountId} dialog.lpHoldingId=${dialogHoldingId}`,
+    );
+  console.log(
+    `    removing from LP account ${String(sourceAccountId).slice(0, 10)}… `
+    + `(balance ${await prop(app, selectorId, "selectedBalance")})  ✓`,
+  );
 
-  // 5. The dialog opens at 50% by default. Click the 50% preset to make the choice
+  // 6. The dialog opens at 50% by default. Click the 50% preset to make the choice
   //    explicit (a no-op on the default) and confirm it registers. Then wait for the
   //    quote to settle so the Remove CTA is submittable (needs the resolved A/B/LP
   //    destination holdings, which PoolDetailPage passed into openFor()).
@@ -276,7 +319,7 @@ test("amm liquidity: remove from the A/B pool", async (app) => {
   console.log(`    removing ${REMOVE_PERCENT}%: A=${primed.amountA} B=${primed.amountB} (lp=${primed.lpAmount})`);
   await saveShot(app, "remove-liquidity-primed");
 
-  // 6. Submit the removal. On success the dialog emits removed(tx) and closes itself;
+  // 7. Submit the removal. On success the dialog emits removed(tx) and closes itself;
   //    on failure it stays open with submitError set.
   const confirmId = await idByObjectName(app, "removeConfirmButton");
   await app.inspector.send("click", { objectId: confirmId });
@@ -292,7 +335,7 @@ test("amm liquidity: remove from the A/B pool", async (app) => {
     }
   }
 
-  // 7. Wait for the submit to complete: the dialog closes on success. Surface any
+  // 8. Wait for the submit to complete: the dialog closes on success. Surface any
   //    submitError immediately rather than waiting out the timeout.
   try {
     await app.waitFor(
@@ -309,7 +352,7 @@ test("amm liquidity: remove from the A/B pool", async (app) => {
   }
   console.log("    remove submitted (dialog closed)  ✓");
 
-  // 8. Verify ON-CHAIN: the pool's reserveA must have shrunk by the withdrawal.
+  // 9. Verify ON-CHAIN: the pool's reserveA must have shrunk by the withdrawal.
   const after = await readReserveA(app);
   try {
     await app.waitFor(

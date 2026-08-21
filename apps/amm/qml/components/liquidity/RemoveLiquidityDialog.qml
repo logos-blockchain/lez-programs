@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+import Logos.Wallet
+
 import "AmountMath.js" as AmountMath
 
 // Remove-liquidity sheet: pick how much of the position to withdraw, preview what
@@ -31,6 +33,13 @@ Popup {
     // exceed what a single withdrawal reaches.
     property string lpBalanceTotal: "0"
     property string lpHoldingId: ""
+    // Every LP holding for this pool the burn can draw on (a split position spans
+    // several). The source selector lists these; picking one drives lpHoldingId +
+    // lpBalance so the preview and submit follow the chosen account.
+    property var lpHoldings: []
+    // Cleared on every open; the selector defaults to the caller's primary holding
+    // once its model settles, after which the user's pick is authoritative.
+    property bool lpSelectorPrimed: false
     readonly property bool positionIsSplit: AmountMath.isUnsigned(root.lpBalanceTotal)
                                             && AmountMath.compare(root.lpBalanceTotal,
                                                                   root.lpBalance) > 0
@@ -87,6 +96,8 @@ Popup {
         root.lpBalance = String(position.lpBalance || "0")
         root.lpBalanceTotal = String(position.lpBalanceTotal || position.lpBalance || "0")
         root.lpHoldingId = String(position.lpHoldingId || "")
+        root.lpHoldings = position.lpHoldings || []
+        root.lpSelectorPrimed = false
         root.holdingAId = String(position.holdingAId || "")
         root.holdingBId = String(position.holdingBId || "")
         root.percent = 50
@@ -103,6 +114,18 @@ Popup {
         root.minimumAmountB = "0"
         root.open()
         root.requestQuote()
+    }
+
+    // A burn names one LP account, so default the source selector to the caller's
+    // primary (largest) holding once its model has settled. Runs once per open —
+    // the selector may populate its rows over several ticks, so retry until the
+    // primary is actually selectable; thereafter the user's pick wins.
+    function primeLpSelector() {
+        if (root.lpSelectorPrimed || !lpSourceSelector.hasFunds)
+            return
+        lpSourceSelector.setSelection(root.lpHoldingId, false)
+        if (lpSourceSelector.selectionValid)
+            root.lpSelectorPrimed = true
     }
 
     onPercentChanged: root.requestQuote()
@@ -410,6 +433,54 @@ Popup {
                        ? root.theme.colors.error : root.theme.colors.textSecondary
                 font.pixelSize: 12
                 wrapMode: Text.Wrap
+            }
+        }
+
+        // ── Source account ───────────────────────────────────────────────────
+        // A withdrawal draws on one LP account. When the position spans several
+        // (each add minted a fresh one), pick which to draw down; the percentage
+        // and the preview above track the selected account's balance.
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 10
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Remove from")
+                color: root.theme.colors.textSecondary
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+            }
+
+            ProgramAccountSelector {
+                id: lpSourceSelector
+
+                objectName: "lpSourceSelector"
+                Layout.preferredWidth: Math.round(parent.width * 0.55)
+                sourceModel: root.lpHoldings
+                accountType: "TokenHolding"
+                selectionMode: ProgramAccountSelector.Input
+                showWhenSingle: true
+                textAlignment: Text.AlignRight
+                accessibleName: qsTr("LP token account to remove from")
+                backgroundColor: root.theme.colors.inputBg
+                hoverColor: root.theme.colors.panelHoverBg
+                textColor: root.theme.colors.textPrimary
+                secondaryTextColor: root.theme.colors.textSecondary
+                borderColor: root.theme.colors.borderStrong
+                focusColor: root.theme.colors.ctaBg
+
+                // A pick (or the auto-prime) is the source of truth: point the burn
+                // at that account and re-price for its balance.
+                onSelectionChanged: function(accountId, createNew) {
+                    if (String(accountId || "").length === 0)
+                        return
+                    root.lpHoldingId = String(accountId)
+                    root.lpBalance = lpSourceSelector.selectedBalance
+                    root.requestQuote()
+                }
+                onModelRevisionChanged: root.primeLpSelector()
+                Component.onCompleted: root.primeLpSelector()
             }
         }
 

@@ -376,6 +376,9 @@ Item {
             "lpBalance": root.lpHoldingBalance,
             "lpBalanceTotal": root.lpBalanceTotal,
             "lpHoldingId": root.lpHoldingId,
+            // Every LP holding for this pool, so the sheet can offer the choice of
+            // which to burn from (encoding-tolerant match, same as applyHoldings).
+            "lpHoldings": root.holdingsFor(root.lpDefinitionId),
             "holdingAId": root.holdingAId,
             "holdingBId": root.holdingBId
         })
