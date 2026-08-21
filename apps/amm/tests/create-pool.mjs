@@ -217,6 +217,20 @@ test("amm liquidity: create the A/C pool", async (app) => {
   await saveShot(app, "create-pool-filled");
   console.log(`    minimum deposit: A=${(await formState(app, formId)).amountA} C=${(await formState(app, formId)).amountB}`);
 
+  // 3b. A brand-new pool has no LP holding yet, so the LP-destination selector shows a fresh
+  //     account — no matching holdings, nothing preselected — and the create mints a new LP
+  //     account. (create-pool has no lpDefinitionId, so the selector never matches a holding.)
+  const lpSelectorId = await idByObjectName(app, "lpDestinationSelector");
+  await app.waitFor(
+    async () => {
+      if (await prop(app, lpSelectorId, "hasFunds"))
+        throw new Error("unexpected existing LP holding for a brand-new pool");
+      if (await prop(app, lpSelectorId, "selectedAccountId"))
+        throw new Error("LP destination should be unselected (fresh) for create-pool");
+    },
+    { timeout: 5000, interval: 300, description: "LP destination is a fresh account" },
+  );
+
   // 4. Submit -> confirmation dialog -> confirm.
   const dialogId = await idByObjectName(app, "liquidityConfirmDialog");
   const submitId = await idByObjectName(app, "newPositionSubmitButton");

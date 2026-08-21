@@ -120,7 +120,9 @@ class AmmUiBackend
     // carries { tokenAId, tokenBId, maxAmountA, maxAmountB, slippageBps } (ids hex or
     // base58). Reads the pool and returns { status:"ok", error:"", amountA, amountB
     // (the actual ratio-matched deposits, display order), expectedLp, minimumLp (the
-    // slippage floor on the LP minted — the submit's min_amount_liquidity), price }. On
+    // slippage floor on the LP minted — the submit's min_amount_liquidity), price,
+    // lpDefinitionId (the pool's LP token, base58 — so the UI can offer existing LP
+    // holdings as the mint destination) }. On
     // failure { status:"error", error:<code> } — no_pool, pair_mismatch, invalid_token_id,
     // invalid_slippage, amount_too_low, minimum_lp_zero, bad_amount, backend_error.
     // Read-only, no submission.

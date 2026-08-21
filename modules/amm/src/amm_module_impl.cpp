@@ -1036,7 +1036,8 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
 
-    // Success: wrap { amountA, amountB, expectedLp, minimumLp, price }.
+    // Success: wrap { amountA, amountB, expectedLp, minimumLp, price, lpDefinitionId }.
+    // (lpDefinitionId is the pool's LP token so the UI can offer existing LP holdings.)
     LogosMap out = quoteResult.value;
     out["status"] = "ok";
     out["error"] = "";

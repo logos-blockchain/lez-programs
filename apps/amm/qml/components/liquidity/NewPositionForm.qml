@@ -31,6 +31,11 @@ AmmActionCard {
     readonly property string selectedHoldingBId: tokenBInput.selectedHoldingId
     readonly property string selectedBalanceA: tokenAInput.selectedBalance
     readonly property string selectedBalanceB: tokenBInput.selectedBalance
+    // The pool's LP token definition (base58), surfaced by the active-pool add-liquidity
+    // quote, so the LP-destination selector can offer the wallet's existing LP holdings.
+    // Empty for create-pool (no pool yet) — the Output selector then shows create-new only.
+    readonly property string lpDefinitionId: root.quoteMatchesSelectedPair(root.activePoolQuote)
+                                             ? String(root.activePoolQuote.lpDefinitionId || "") : ""
     property string selectedTokenAId: ""
     property string selectedTokenBId: ""
     property int selectedFeeBps: 30
@@ -565,6 +570,44 @@ AmmActionCard {
                 value: root.rawLpText(root.activePool
                                       ? root.quotePayload.minimumLp
                                       : root.quotePayload.lockedLp)
+            }
+
+            // LP destination — grouped with the LP figures above. Same Input-mode account
+            // selector as the token funding rows: preselects the wallet's existing LP holding
+            // for this pool (consolidating rather than fragmenting), or shows "New LP account"
+            // when there's none (create-pool, or a pool you don't hold) so NewPositionFlow
+            // mints a fresh one.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+
+                Text {
+                    text: qsTr("Receive LP into")
+                    color: root.theme.colors.textSecondary
+                    font.pixelSize: 12
+                    Layout.fillWidth: true
+                }
+
+                ProgramAccountSelector {
+                    id: lpSelector
+                    objectName: "lpDestinationSelector"
+                    Layout.preferredWidth: Math.round(parent.width / 2)
+                    sourceModel: root.holdings
+                    accountType: "TokenHolding"
+                    stateField: "definitionId"
+                    stateValue: root.lpDefinitionId
+                    selectionMode: ProgramAccountSelector.Input
+                    showWhenSingle: true
+                    textAlignment: Text.AlignRight
+                    emptyInputText: qsTr("New LP account")
+                    accessibleName: qsTr("LP token destination account")
+                    backgroundColor: root.theme.colors.panelBg
+                    hoverColor: root.theme.colors.panelHoverBg
+                    textColor: root.theme.colors.textPrimary
+                    secondaryTextColor: root.theme.colors.textSecondary
+                    borderColor: root.theme.colors.borderStrong
+                    focusColor: root.theme.colors.ctaBg
+                }
             }
         }
 
@@ -1404,6 +1447,10 @@ AmmActionCard {
             // is display token A's holding, so it aligns with tokenA the same way.
             "holdingAId": String(root.displayIsCanonical ? root.selectedHoldingAId : root.selectedHoldingBId),
             "holdingBId": String(root.displayIsCanonical ? root.selectedHoldingBId : root.selectedHoldingAId),
+            // LP-token destination: an existing LP holding, or a fresh account when createLpNew.
+            // The submit flow (NewPositionFlow) only calls createAccountPublic() when createLpNew.
+            "lpHoldingId": String(lpSelector.selectedAccountId || ""),
+            "createLpNew": lpSelector.createNewSelected,
             // The add path's slippage floor on the LP minted (orientation-independent),
             // taken from the active-pool quote; ignored by the create path.
             "minLp": String(root.quotePayload.minimumLp || ""),

@@ -212,7 +212,10 @@ QtObject {
             "reserveA": String(pool.reserveA || "0"),
             "reserveB": String(pool.reserveB || "0"),
             "poolFeeBps": pool.feeBps,
-            "price": String(quote.price || "0")
+            "price": String(quote.price || "0"),
+            // The pool's LP token (base58, matching the holdings' definitionId) so the form
+            // can offer the wallet's existing LP holdings as the mint destination.
+            "lpDefinitionId": String(quote.lpDefinitionId || "")
         }
     }
 
@@ -242,6 +245,12 @@ QtObject {
     // holding, so the caller provides a fresh account: create one, then submit. No
     // confirmation poll yet (transactionStatus is pending an upstream dependency).
     function createPool(snapshot) {
+        // If the user picked an existing LP holding, mint straight into it; otherwise create a
+        // fresh account first. Create-pool has no existing LP, so it always takes the fresh path.
+        if (!snapshot.createLpNew && String(snapshot.lpHoldingId || "").length > 0) {
+            root.submitCreatePool(snapshot, String(snapshot.lpHoldingId))
+            return
+        }
         root.runtime.watch(root.backend.createAccountPublic(),
             function(lpId) {
                 if (!lpId || String(lpId).length === 0) {
@@ -289,11 +298,15 @@ QtObject {
             })
     }
 
-    // Add liquidity to an existing pool via the new addLiquidity op. Like createPool a fresh
-    // LP holding receives the minted LP, so create one then submit. The submit reuses the
-    // addLiquidityQuote result (maxAmounts + minimumLp) carried on the snapshot. No
-    // confirmation poll yet.
+    // Add liquidity to an existing pool via the addLiquidity op. The minted LP goes to the
+    // holding the user chose (createLpNew=false), consolidating an existing position — or to a
+    // fresh account when they opt to create one. The submit reuses the addLiquidityQuote result
+    // (maxAmounts + minimumLp) carried on the snapshot. No confirmation poll yet.
     function addLiquidity(snapshot) {
+        if (!snapshot.createLpNew && String(snapshot.lpHoldingId || "").length > 0) {
+            root.submitAddLiquidity(snapshot, String(snapshot.lpHoldingId))
+            return
+        }
         root.runtime.watch(root.backend.createAccountPublic(),
             function(lpId) {
                 if (!lpId || String(lpId).length === 0) {

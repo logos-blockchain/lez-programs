@@ -252,6 +252,22 @@ test("amm liquidity: add to the A/B pool", async (app) => {
   console.log(`    deposit: A=${filled.amountA} B=${filled.amountB}`);
   await saveShot(app, "add-liquidity-filled");
 
+  // 6b. This wallet seeded the A/B pool, so it already holds LP for it. The LP-destination
+  //     selector must therefore preselect that existing holding — the add CONSOLIDATES into
+  //     the position rather than minting a fresh account. Wait for the preselection.
+  const lpSelectorId = await idByObjectName(app, "lpDestinationSelector");
+  await app.waitFor(
+    async () => {
+      if ((await prop(app, lpSelectorId, "hasFunds")) !== true)
+        throw new Error("no existing LP holding matched yet");
+      if (!(await prop(app, lpSelectorId, "selectedAccountId")))
+        throw new Error("LP holding not preselected yet");
+    },
+    { timeout: 15000, interval: 300, description: "existing LP holding preselected" },
+  );
+  const lpHoldingId = await prop(app, lpSelectorId, "selectedAccountId");
+  console.log(`    LP consolidates into existing holding ${String(lpHoldingId).slice(0, 8)}…`);
+
   // 7. Submit -> confirmation dialog -> confirm.
   const dialogId = await idByObjectName(app, "liquidityConfirmDialog");
   const submitId = await idByObjectName(app, "newPositionSubmitButton");
@@ -285,9 +301,9 @@ test("amm liquidity: add to the A/B pool", async (app) => {
     await ignore(() => evaluate(app, dialogId, "confirm()"));
   }
 
-  // 8. Wait for the add to submit. Fully async — createAccountPublic (mint the fresh LP
-  //    holding) then addLiquidity then the tx submit — so transactionId lands a few
-  //    seconds after confirm().
+  // 8. Wait for the add to submit. An existing LP holding was chosen, so there is no
+  //    createAccountPublic step — addLiquidity submits straight into it — and transactionId
+  //    lands a couple seconds after confirm().
   try {
     await app.waitFor(
       async () => {

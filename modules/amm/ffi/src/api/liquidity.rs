@@ -307,6 +307,9 @@ pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<V
         "expectedLp": delta_lp.to_string(),
         "minimumLp": minimum_lp.to_string(),
         "price": price.to_string(),
+        // The pool's LP token definition (base58, matching the holdings' definitionId) so
+        // the UI can offer the wallet's existing LP holdings as the mint destination.
+        "lpDefinitionId": pool.liquidity_pool_id.to_string(),
     }))
 }
 
