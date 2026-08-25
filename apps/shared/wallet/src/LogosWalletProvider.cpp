@@ -119,7 +119,7 @@ WalletSession LogosWalletProvider::connect(const WalletPaths& paths)
     } else {
         if (!QFileInfo::exists(paths.storage))
             return failedSession(WalletFailure::WalletMissing);
-        if (m_impl->logos->logos_execution_zone.open(paths.config, paths.storage)
+        if (m_impl->logos->lez_core.open(paths.config, paths.storage, paths.statistics)
             != WALLET_FFI_SUCCESS) {
             return failedSession(WalletFailure::OpenFailed);
         }
@@ -146,8 +146,8 @@ WalletCreation LogosWalletProvider::createWallet(const WalletPaths& paths,
     }
 
     WalletCreation creation;
-    creation.mnemonic = m_impl->logos->logos_execution_zone.create_new(
-        paths.config, paths.storage, password);
+    creation.mnemonic = m_impl->logos->lez_core.create_new(
+        paths.config, paths.storage, paths.statistics, password);
     if (creation.mnemonic.isEmpty())
         return failedCreation(WalletFailure::CreateFailed);
 
@@ -196,8 +196,8 @@ WalletAccountCreation LogosWalletProvider::createAccount(bool isPublic)
     }
 
     creation.accountId = isPublic
-        ? m_impl->logos->logos_execution_zone.create_account_public()
-        : m_impl->logos->logos_execution_zone.create_account_private();
+        ? m_impl->logos->lez_core.create_account_public()
+        : m_impl->logos->lez_core.create_account_private();
     if (!isHex(creation.accountId, 64)) {
         creation.failure = WalletFailure::CreateFailed;
         return creation;
@@ -224,7 +224,7 @@ WalletAccountRead LogosWalletProvider::readPublicAccount(const QString& accountI
 
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(
-        m_impl->logos->logos_execution_zone.get_account_public(accountId).toUtf8(),
+        m_impl->logos->lez_core.get_account_public(accountId).toUtf8(),
         &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject())
         return read;
@@ -291,7 +291,7 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
     }
 
     const QString response =
-        m_impl->logos->logos_execution_zone.send_generic_public_transaction(
+        m_impl->logos->lez_core.send_generic_public_transaction(
             transaction.accountIds,
             signingRequirements,
             QVariant::fromValue(instructionBytes),
@@ -335,27 +335,27 @@ bool LogosWalletProvider::sharedWalletIsOpen() const
 {
     if (!m_impl->logos)
         return false;
-    if (!m_impl->logos->logos_execution_zone.get_sequencer_addr().isEmpty())
+    if (!m_impl->logos->lez_core.get_sequencer_addr().isEmpty())
         return true;
-    return !m_impl->logos->logos_execution_zone.list_accounts().isEmpty();
+    return !m_impl->logos->lez_core.list_accounts().isEmpty();
 }
 
 WalletSnapshot LogosWalletProvider::loadSnapshot()
 {
     WalletSnapshot result;
     result.currentBlockHeight = static_cast<quint64>(
-        qMax(0, m_impl->logos->logos_execution_zone.get_current_block_height()));
+        qMax(0, m_impl->logos->lez_core.get_current_block_height()));
     if (result.currentBlockHeight > 0
-        && m_impl->logos->logos_execution_zone.sync_to_block(result.currentBlockHeight)
+        && m_impl->logos->lez_core.sync_to_block(result.currentBlockHeight)
             != WALLET_FFI_SUCCESS) {
         result.failure = WalletFailure::ReadFailed;
         return result;
     }
     result.lastSyncedBlock = static_cast<quint64>(
-        qMax(0, m_impl->logos->logos_execution_zone.get_last_synced_block()));
-    result.sequencerAddress = m_impl->logos->logos_execution_zone.get_sequencer_addr();
+        qMax(0, m_impl->logos->lez_core.get_last_synced_block()));
+    result.sequencerAddress = m_impl->logos->lez_core.get_sequencer_addr();
 
-    const QVariantList entries = m_impl->logos->logos_execution_zone.list_accounts();
+    const QVariantList entries = m_impl->logos->lez_core.list_accounts();
     result.accounts.reserve(entries.size());
     result.publicAccountReads.reserve(entries.size());
     for (const QVariant& value : entries) {
@@ -374,9 +374,9 @@ WalletSnapshot LogosWalletProvider::loadSnapshot()
             result.publicAccountReads.append(read);
             account.balance = read.ok()
                 ? littleEndianU128ToDecimal(read.balanceHex)
-                : m_impl->logos->logos_execution_zone.get_balance(address, true);
+                : m_impl->logos->lez_core.get_balance(address, true);
         } else {
-            account.balance = m_impl->logos->logos_execution_zone.get_balance(address, false);
+            account.balance = m_impl->logos->lez_core.get_balance(address, false);
         }
         result.accounts.append(account);
     }
@@ -389,5 +389,5 @@ WalletSnapshot LogosWalletProvider::loadSnapshot()
 bool LogosWalletProvider::save() const
 {
     return m_impl->logos
-        && m_impl->logos->logos_execution_zone.save() == WALLET_FFI_SUCCESS;
+        && m_impl->logos->lez_core.save() == WALLET_FFI_SUCCESS;
 }

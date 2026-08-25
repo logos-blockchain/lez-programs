@@ -1,6 +1,19 @@
 {
   description = "LEZ programs — host client modules and FFIs";
 
+  # Fetch the prebuilt lez_core wallet-ffi (and its deps, e.g. `ring`) from the
+  # Logos Cachix instead of compiling locally — CI builds the module on macos-15 +
+  # ubuntu with its native LEZ v0.2.2 pin, so this hits for both. Building the
+  # wallet-ffi from source fails on Apple Silicon (ring's ARM asm vs the nix
+  # cc-wrapper), so the cache is effectively required on macOS. First `nix build`
+  # prompts to trust this config (or set accept-flake-config = true).
+  nixConfig = {
+    extra-substituters = [ "https://logos-co.cachix.org" ];
+    extra-trusted-public-keys = [
+      "logos-co.cachix.org-1:12K8609ho1pCt0erUQrOrs/KmOuhWq/EhVwhzQRb35E="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
@@ -21,27 +34,23 @@
     # match the metadata.json `dependencies` entry so the builder can resolve it
     # as a module dependency.
     #
-    # Fork of logos-blockchain/logos-execution-zone-module @ d70225ced with the
-    # QtRO serialization fix: send_generic_public_transaction's `instruction` uses
-    # a byte-string IPC type so the args survive the cross-process boundary (at
-    # d70225ced the API already takes program_id_hex instead of program_elf/deps).
-    # See docs/amm-swap-qtro-serialization-bug.md.
-    logos_execution_zone = {
-      url = "github:gravityblast/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr";
-
-      # Override the module's pinned LEZ monorepo (logos-execution-zone) to the
-      # SAME rev the target sequencer runs (415964d7): the wallet client and the
-      # sequencer must agree on the JSON-RPC API, or tx submission fails at
-      # runtime with `MethodNotFound`. 415964d7's wallet_ffi takes a program id
-      # for send_generic_public_transaction, matching the d70225ced module.
-      inputs.logos-execution-zone.url =
-        "github:logos-blockchain/logos-execution-zone?rev=415964d7f9043a1bfe28da8d0e8b3a6f64abb258";
-    };
+    # Upstream logos-blockchain/logos-execution-zone-module, fix/generic-tx-instruction-bstr
+    # branch: carries the QtRO serialization fix — send_generic_public_transaction's
+    # `instruction` uses a byte-string IPC type so the args survive the cross-process
+    # boundary (the fix is NOT on `main`; see docs/amm-swap-qtro-serialization-bug.md).
+    #
+    # No LEZ override: the branch natively pins logos-execution-zone v0.2.2, which is the
+    # deployed sequencer's version — the wallet-ffi and sequencer must agree on the
+    # JSON-RPC API and the wallet-config schema (v0.2.1 introduced the `sequencers` list).
+    # Keeping the native pin also means this is the exact derivation upstream CI built, so
+    # the wallet-ffi is fetched from the Logos nix binary cache instead of compiling `ring`
+    # locally (which fails under the nix cc-wrapper on Apple Silicon).
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr";
 
   };
 
   outputs =
-    inputs@{ self, nixpkgs, flake-utils, crane, rust-overlay, logos-module-builder, logos_execution_zone, ... }:
+    inputs@{ self, nixpkgs, flake-utils, crane, rust-overlay, logos-module-builder, lez_core, ... }:
     let
       crateOutputs = flake-utils.lib.eachDefaultSystem (
       system:
@@ -121,7 +130,7 @@
       # The AMM QML UI module (apps/amm). It links no amm_ffi library of its
       # own — the AMM logic lives in the amm_module core module, which the UI
       # depends on (declared in apps/amm/metadata.json, reached via
-      # modules().amm_module in the backend) alongside the logos_execution_zone
+      # modules().amm_module in the backend) alongside the lez_core
       # wallet module.
       appOutputs = logos-module-builder.lib.mkLogosQmlModule {
         src = ./apps/amm;
@@ -253,8 +262,8 @@
       # AMM core module (modules/amm): the AMM business logic as a headless
       # `core` Logos module. It links the amm_ffi crate (the transport-
       # independent AMM brain, resolved via `self`) and depends on the
-      # logos_execution_zone wallet module (declared in modules/amm/metadata.json,
-      # reached via modules().logos_execution_zone in the impl). Exposed as the
+      # lez_core wallet module (declared in modules/amm/metadata.json,
+      # reached via modules().lez_core in the impl). Exposed as the
       # `amm-module` package; no UI/app output.
       ammModuleOutputs = logos-module-builder.lib.mkLogosModule {
         src = ./modules/amm;

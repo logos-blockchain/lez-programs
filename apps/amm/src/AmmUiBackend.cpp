@@ -274,7 +274,7 @@ QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString u
                                       QString minOutDecimal, QString deadlineDecimal)
 {
     // This app's connected state is the authoritative submit guard. disconnectWallet()
-    // only locks this UI and leaves the shared logos_execution_zone wallet open (another
+    // only locks this UI and leaves the shared lez_core wallet open (another
     // app may keep it open, or this app opened-then-disconnected), and the QML submit path
     // doesn't check isWalletOpen — so without this a swap could sign/submit while the UI
     // shows "Connect".

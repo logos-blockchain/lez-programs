@@ -38,7 +38,7 @@ the UI does not assemble transaction instructions itself.
 
 This app is a `ui_qml` module with a hand-written C++ backend
 (`src/TokenUiBackend.*`, plugin in `src/TokenUiPlugin.*`) that depends on the
-core **`logos_execution_zone`** wallet module and **`token_module`** Token
+core **`lez_core`** wallet module and **`token_module`** Token
 Program API. The backend exposes an async QtRO surface
 (`src/TokenUiBackend.rep`) plus an account list model to the QML view. Wallet
 session behavior and the `Logos.Wallet` control come from

@@ -6,7 +6,7 @@
   "category": "amm",
   "description": "AMM business logic — on-chain pool resolution and swaps",
   "main": "amm_module_plugin",
-  "dependencies": ["logos_execution_zone"],
+  "dependencies": ["lez_core"],
 
   "nix": {
     "packages": {

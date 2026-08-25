@@ -19,8 +19,8 @@ string(JSON MODULE_NAME GET ${METADATA_JSON} name)
 # "interface": "universal"). EXTERNAL_LIBS links amm_ffi — the pure-Rust,
 # transport-independent AMM brain (PDA/decode/quote/plan/encode) exposed as a
 # JSON FFI (amm_ffi.h), the same library the UI links. The chain I/O
-# dependency (logos_execution_zone) is declared in metadata.json and reached via
-# modules().logos_execution_zone in the impl, so it is NOT listed here.
+# dependency (lez_core) is declared in metadata.json and reached via
+# modules().lez_core in the impl, so it is NOT listed here.
 logos_module(
     NAME ${MODULE_NAME}
     SOURCES

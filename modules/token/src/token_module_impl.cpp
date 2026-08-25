@@ -251,7 +251,7 @@ nlohmann::json TokenModuleImpl::tokenProgramInfo() {
         : derived_program_hex;
     const std::string program_id = binary_configured
         ? derived_program
-        : modules().logos_execution_zone.account_id_to_base58(program_id_hex);
+        : modules().lez_core.account_id_to_base58(program_id_hex);
     if (program_id.empty() || !isHexLength(program_id_hex, 64) || isZeroId(program_id_hex)) {
         return json();
     }
@@ -273,7 +273,7 @@ std::string TokenModuleImpl::normalizeAccountId(const std::string& id) {
     if (normalized.empty()) return {};
 
     normalized = lowercase(
-        modules().logos_execution_zone.account_id_from_base58(normalized));
+        modules().lez_core.account_id_from_base58(normalized));
     return isHexLength(normalized, 64) && !isZeroId(normalized)
         ? normalized
         : std::string();
@@ -283,9 +283,9 @@ nlohmann::json TokenModuleImpl::readPublicAccount(const std::string& account_id)
     json read = {{"id", account_id}, {"status", "not_found"}};
     logos::CallError call_error;
     const std::string raw =
-        modules().logos_execution_zone.get_account_public(account_id, &call_error);
+        modules().lez_core.get_account_public(account_id, &call_error);
     if (!call_error.ok()) {
-        TOKEN_TRACE("logos_execution_zone account read transport failure: " << call_error.code);
+        TOKEN_TRACE("lez_core account read transport failure: " << call_error.code);
         read["status"] = "backend_error";
         return read;
     }
@@ -321,9 +321,9 @@ nlohmann::json TokenModuleImpl::readPublicAccount(const std::string& account_id)
 
 nlohmann::json TokenModuleImpl::walletAccountIds() {
     logos::CallError call_error;
-    const json accounts = modules().logos_execution_zone.list_accounts(&call_error);
+    const json accounts = modules().lez_core.list_accounts(&call_error);
     if (!call_error.ok()) {
-        TOKEN_TRACE("logos_execution_zone account list transport failure: " << call_error.code);
+        TOKEN_TRACE("lez_core account list transport failure: " << call_error.code);
         return json();
     }
     if (!accounts.is_array()) return json();
@@ -509,14 +509,14 @@ LogosMap TokenModuleImpl::submitPlan(const nlohmann::json& plan) {
     }
 
     logos::CallError call_error;
-    const std::string raw = modules().logos_execution_zone.send_generic_public_transaction(
+    const std::string raw = modules().lez_core.send_generic_public_transaction(
         account_ids,
         signers,
         instruction,
         program_id,
         &call_error);
     if (!call_error.ok()) {
-        TOKEN_TRACE("logos_execution_zone submission transport failure: " << call_error.code);
+        TOKEN_TRACE("lez_core submission transport failure: " << call_error.code);
         return publicError("wallet_submission_failed");
     }
     const json reply = json::parse(raw, nullptr, false);

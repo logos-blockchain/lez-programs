@@ -21,6 +21,10 @@ QString walletFailureCode(WalletFailure failure);
 struct WalletPaths {
     QString config;
     QString storage;
+    // Sequencer-calibration statistics cache (v0.2.1 lez_core open/create_new take
+    // this path). It need not exist — the wallet starts from empty stats and
+    // recalibrates; it just lives alongside config/storage in the wallet home.
+    QString statistics;
 };
 
 struct WalletAccountRead {

@@ -14,7 +14,7 @@
 
 // Generated at build time by logos-cpp-generator. Defines `LogosModules` with
 // one std-typed accessor per metadata.json dependency — here
-// `logos_execution_zone`. Included only in the .cpp so the impl header the
+// `lez_core`. Included only in the .cpp so the impl header the
 // generator parses stays free of Qt and codegen types.
 #include "logos_sdk.h"
 
@@ -273,7 +273,7 @@ std::string AmmModuleImpl::normalizeAccountId(const std::string& id) {
     }
 
     // Try base58 -> hex via the wallet module ("" on failure).
-    std::string hex = modules().logos_execution_zone.account_id_from_base58(t);
+    std::string hex = modules().lez_core.account_id_from_base58(t);
     std::transform(hex.begin(), hex.end(), hex.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return hex;
@@ -286,7 +286,7 @@ nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
     json result = {{"id", account_id}, {"status", "read_failed"}};
 
     const std::string account_json =
-        modules().logos_execution_zone.get_account_public(account_id);
+        modules().lez_core.get_account_public(account_id);
     const auto obj = json::parse(account_json, nullptr, /*allow_exceptions=*/false);
     if (!obj.is_object()) return result;
 
@@ -315,7 +315,7 @@ nlohmann::json AmmModuleImpl::walletAccountReads(bool wallet_open) {
 
     // Normalize the wallet module's [any] return (a vector or a json array)
     // through json so we can iterate/type-check it uniformly.
-    json accounts = modules().logos_execution_zone.list_accounts();
+    json accounts = modules().lez_core.list_accounts();
     if (!accounts.is_array())
         return json::array();
 
@@ -452,7 +452,7 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
     AMM_TRACE("transferOwnership: SUBMIT programId=" << program_id
               << " accounts=" << accounts.size());
 
-    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+    const std::string reply = modules().lez_core.send_generic_public_transaction(
         accounts, signers, instruction, program_id);
     AMM_TRACE("transferOwnership: tx reply=" << reply);
 
@@ -537,7 +537,7 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
 
     AMM_TRACE("oracleSetup(" << (observations ? "observations" : "priceAccount")
               << "): SUBMIT programId=" << program_id << " accounts=" << accounts.size());
-    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+    const std::string reply = modules().lez_core.send_generic_public_transaction(
         accounts, signers, instruction, program_id);
     AMM_TRACE("oracleSetup: tx reply=" << reply);
 
@@ -742,7 +742,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
     AMM_TRACE("swapExactInput: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
-    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+    const std::string reply = modules().lez_core.send_generic_public_transaction(
         accounts, signers, instruction, program_id);
     AMM_TRACE("swapExactInput: tx reply=" << reply);
 
@@ -832,7 +832,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
     AMM_TRACE("swapExactOutput: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
-    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+    const std::string reply = modules().lez_core.send_generic_public_transaction(
         accounts, signers, instruction, program_id);
     AMM_TRACE("swapExactOutput: tx reply=" << reply);
 
@@ -967,7 +967,7 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     AMM_TRACE("createPool: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
-    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+    const std::string reply = modules().lez_core.send_generic_public_transaction(
         accounts, signers, instruction, program_id);
     AMM_TRACE("createPool: tx reply=" << reply);
 
@@ -1123,7 +1123,7 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     AMM_TRACE("addLiquidity: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
-    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+    const std::string reply = modules().lez_core.send_generic_public_transaction(
         accounts, signers, instruction, program_id);
     AMM_TRACE("addLiquidity: tx reply=" << reply);
 
@@ -1274,7 +1274,7 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     AMM_TRACE("removeLiquidity: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
-    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+    const std::string reply = modules().lez_core.send_generic_public_transaction(
         accounts, signers, instruction, program_id);
     AMM_TRACE("removeLiquidity: tx reply=" << reply);
 
@@ -1341,7 +1341,7 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     AMM_TRACE("syncReserves: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
-    const std::string reply = modules().logos_execution_zone.send_generic_public_transaction(
+    const std::string reply = modules().lez_core.send_generic_public_transaction(
         accounts, signers, instruction, program_id);
     AMM_TRACE("syncReserves: tx reply=" << reply);
 

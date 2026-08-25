@@ -8,12 +8,12 @@ use nssa::{
     },
     program::Program,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
-    public_transaction, PrivateKey, PublicKey, PublicTransaction, SharedSecretKey, V03State,
+    public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    encryption::{EphemeralPublicKey, ViewingPublicKey},
-    EncryptedAccountData, InputAccountIdentity, NullifierPublicKey, NullifierSecretKey,
+    encryption::ViewingPublicKey,
+    InputAccountIdentity, NullifierPublicKey, NullifierSecretKey,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -515,14 +515,14 @@ fn ata_create_from_private_owner() {
     let owner_npk = NullifierPublicKey::from(&owner_nsk);
     // `ViewingPublicKey::from_seed` needs two 32-byte halves `(d, z)`.
     let owner_vpk = ViewingPublicKey::from_seed(&[31u8; 32], &[32u8; 32]);
-    let owner_id = AccountId::for_regular_private_account(&owner_npk, 0);
+    let owner_id = AccountId::for_regular_private_account(&owner_npk, &owner_vpk, 0);
 
     // ATA derived from the private owner
     let seed = compute_ata_seed(Ids::token_program(), owner_id, Ids::token_definition());
     let owner_ata_id = get_associated_token_account_id(&Ids::ata_program(), &seed);
 
     // Pre-states: private uninitialized owner, public token definition, public uninitialized ATA.
-    let owner_pre = AccountWithMetadata::new(Account::default(), false, owner_id);
+    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
     let def_pre = AccountWithMetadata::new(
         Accounts::token_definition_init(),
         false,
@@ -535,8 +535,9 @@ fn ata_create_from_private_owner() {
     };
     let instruction_data = Program::serialize_instruction(instruction).unwrap();
 
-    // Encapsulate a shared secret against the owner's viewing key; the circuit fills the EPK.
-    let shared_secret = SharedSecretKey::encapsulate_deterministic(&owner_vpk, &[0u8; 32], 0).0;
+    // The private owner is a fresh account the caller does not own: PrivateForeignInit.
+    // The circuit derives the EPK from `random_seed`; the init references the current root.
+    let commitment_root = state.commitment_root();
 
     let ata_program = Program::new(ata_methods::ATA_ELF.to_vec().into()).unwrap();
     let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
@@ -550,12 +551,12 @@ fn ata_create_from_private_owner() {
         instruction_data,
         vec![
             // owner: new private account, not owned/spent by the caller (no nsk, no proof).
-            InputAccountIdentity::PrivateUnauthorized {
-                epk: EphemeralPublicKey(Vec::new()),
-                view_tag: EncryptedAccountData::compute_view_tag(&owner_npk, &owner_vpk),
+            InputAccountIdentity::PrivateForeignInit {
+                vpk: owner_vpk,
+                random_seed: [0; 32],
                 npk: owner_npk,
-                ssk: shared_secret,
                 identifier: 0,
+                commitment_root,
             },
             // token_definition: public
             InputAccountIdentity::Public,
@@ -566,12 +567,7 @@ fn ata_create_from_private_owner() {
     )
     .unwrap();
 
-    let message = Message::try_from_circuit_output(
-        vec![Ids::token_definition(), owner_ata_id],
-        vec![],
-        output,
-    )
-    .unwrap();
+    let message = Message::from_circuit_output(vec![], output);
 
     let witness_set = WitnessSet::for_message(&message, proof, &[]);
     let tx = PrivacyPreservingTransaction::new(message, witness_set);

@@ -1885,6 +1885,12 @@ fn advance_clock(state: &mut V03State, timestamp: u64) {
     }
     .to_bytes();
     let clock_account = Account {
+        // The real CLOCK_01 system account is owned by the clock program, not the
+        // default program (see lee `system_accounts::clock_account`). A default owner
+        // makes the spel-framework output filter drop the (unchanged, unclaimed)
+        // clock post-state, which v0.2.1's DeclaredAccountMissingFromOutput invariant
+        // then rejects. Use a non-default placeholder owner, as the oracle fixtures do.
+        program_owner: [8u32; 8],
         data: Data::try_from(data).expect("clock account data fits"),
         ..Account::default()
     };

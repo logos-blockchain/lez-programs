@@ -7,8 +7,8 @@ edition = "2021"
 workspace = true
 
 [dependencies]
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0", features = ["host"], package = "lee_core" }
-clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"], package = "lee_core" }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
 amm_core = { path = "core" }
 token_core = { path = "../token/core" }
 twap_oracle_core = { path = "../twap_oracle/core" }

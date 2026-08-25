@@ -11,7 +11,7 @@ name = "idl-gen"
 path = "src/main.rs"
 
 [dependencies]
-spel-framework-core = { git = "https://github.com/logos-co/spel.git", tag = "v0.6.0", package = "spel-framework-core", features = ["idl-gen"] }
+spel-framework-core = { git = "https://github.com/logos-co/spel.git", rev = "1ef0500f8fc8ce3ddf95523726ae159db83f744f", package = "spel-framework-core", features = ["idl-gen"] }
 # `preserve_order` keeps object keys in struct-declaration order when
 # round-tripping through serde_json::Value (see main.rs), so the only
 # reordering we apply is sorting the `types` array.

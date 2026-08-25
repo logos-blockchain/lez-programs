@@ -8,8 +8,8 @@ See the [Logos QML UI App Tutorial](https://github.com/logos-co/logos-tutorial/b
 
 This app is a `ui_qml` module with a hand-written C++ backend
 (`src/AmmUiBackend.*`, plugin in `src/AmmUiPlugin.*`) that depends on the core
-**`logos_execution_zone`** wallet module. The backend calls the core module's
-wallet FFI through `m_logos->logos_execution_zone.*` and exposes an async QtRO
+**`lez_core`** wallet module. The backend calls the core module's
+wallet FFI through `m_logos->lez_core.*` and exposes an async QtRO
 surface (`src/AmmUiBackend.rep`) plus an account list model to the QML view.
 
 **Onboarding is non-invasive.** The app opens straight to the Trade screen; the
@@ -28,7 +28,7 @@ Account/keystore sharing follows the runtime:
   `openOrAdoptWallet()`), surfacing **shared** accounts across apps.
 
 > Follow-up: the app reconstructs the wallet paths itself because the
-> `logos_execution_zone` module only exposes path-taking `create_new`/`open`.
+> `lez_core` module only exposes path-taking `create_new`/`open`.
 > LEZ's wallet FFI now provides path-free variants (`wallet_ffi_create_new_default`,
 > `wallet_ffi_open_default`, plus `wallet_ffi_default_config_path` /
 > `_storage_path` / `wallet_ffi_wallet_exists_default`). Once the module surfaces
@@ -70,7 +70,7 @@ default.)
 ## Running inside Logos Basecamp
 
 This app is a UI plugin that depends on the **core wallet module**
-`logos_execution_zone` (see the Wallet / chain integration section above). Both
+`lez_core` (see the Wallet / chain integration section above). Both
 have to be installed into Basecamp — the UI plugin alone will show the AMM tab
 but fail to open it with `Failed to load core dependencies for amm_ui`.
 

@@ -14,7 +14,7 @@
 // `amm_ffi` crate and is reached through its JSON FFI (amm_ffi.h — one
 // `char* op(const char*)` per operation, request and response both JSON). This
 // module sequences those ops with chain I/O delegated to the
-// `logos_execution_zone` wallet module (reached via modules().logos_execution_zone).
+// `lez_core` wallet module (reached via modules().lez_core).
 //
 // The same surface is consumed by the QML UI (via modules().amm_module) and
 // headlessly (logoscore call amm_module ...). The swap / add-liquidity

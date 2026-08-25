@@ -14,7 +14,7 @@
     # match the metadata.json `dependencies` entry so the builder can resolve
     # it as a module dependency. This revision exposes generic transaction
     # submission by deployed program ID.
-    logos_execution_zone = {
+    lez_core = {
       url = "github:logos-blockchain/logos-execution-zone-module?rev=d70225ced646934d2294fd9e8f8b03615c104b80";
 
       # The module pins the monorepo at v0.2.0-rc6 (e37876a), which owns the

@@ -7,7 +7,7 @@
   "main": "amm_ui_plugin",
   "view": "qml/Main.qml",
   "icon": "icons/amm.png",
-  "dependencies": ["logos_execution_zone", "amm_module"],
+  "dependencies": ["lez_core", "amm_module"],
 
   "nix": {
     "packages": {

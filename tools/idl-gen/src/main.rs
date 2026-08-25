@@ -15,7 +15,13 @@ fn main() {
 
     let dep_dirs = find_path_dep_dirs(&path);
 
-    match spel_framework_core::idl_gen::generate_idl_from_file_with_deps(&path, &dep_dirs) {
+    // Dependency-scan problems arrive as warnings (never errors); surface them.
+    let mut on_warning = |w: String| eprintln!("warning: {w}");
+    match spel_framework_core::idl_gen::generate_idl_from_file_with_deps(
+        &path,
+        &dep_dirs,
+        &mut on_warning,
+    ) {
         Ok(idl) => {
             // spel-framework emits the top-level `types` array in HashMap
             // iteration order, which is non-deterministic across processes.

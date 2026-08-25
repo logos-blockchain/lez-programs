@@ -67,6 +67,17 @@ TEST_WALLET_DEPTH="${TEST_WALLET_DEPTH:-3}"
 # whatever the wallet home is already configured with.
 TEST_SEQUENCER_ADDR="${TEST_SEQUENCER_ADDR:-}"
 
+# Sequencer confirmation poll. The wallet poller (lee `lez/wallet/src/poller.rs`)
+# calls get_transaction up to `seq_tx_poll_max_blocks` times, sleeping
+# `seq_poll_timeout` BETWEEN polls — despite its name that field is the inter-poll
+# DELAY, not a total timeout, so total wait ≈ blocks × delay. The wallet defaults
+# (5 × 12s ≈ 48s) can abort a tx that confirms a little later. Widen the window by
+# raising the NUMBER of polls and keeping the delay short so detection stays
+# responsive (40 × 3s ≈ 2min). Do NOT inflate the delay — a large delay just polls
+# rarely and appears to hang. Override via env.
+TEST_SEQ_TX_POLL_MAX_BLOCKS="${TEST_SEQ_TX_POLL_MAX_BLOCKS:-40}"
+TEST_SEQ_POLL_TIMEOUT="${TEST_SEQ_POLL_TIMEOUT:-3s}"
+
 # Deterministic accounts, created in THIS fixed order after a fresh restore so
 # their ids are reproducible. Resolved to ids at runtime via `wallet account id`.
 # token-c-*/token-d-* are APPENDED (not inserted) so the pre-existing a/b/lp ids don't shift.
@@ -205,17 +216,9 @@ restore_test_wallet() {
   kv "wallet home" "$TEST_WALLET_HOME"
   mkdir -p "$TEST_WALLET_HOME"
 
-  if [ -n "$TEST_SEQUENCER_ADDR" ]; then
-    log "${DIM}\$ wallet config set sequencer_addr $TEST_SEQUENCER_ADDR${RST}"
-    # On a fresh home the first wallet command triggers one-time setup, which
-    # reads a password from STDIN ("Input password:") and generates a THROWAWAY
-    # random-seed wallet. Feed the password so it never blocks; restore-keys
-    # below immediately rewrites storage from the test mnemonic and sets the real
-    # password to $TEST_WALLET_PASSWORD.
-    printf '%s\n' "$TEST_WALLET_PASSWORD" \
-      | wallet config set sequencer_addr "$TEST_SEQUENCER_ADDR" \
-      || log "${YEL}⚠ 'wallet config set sequencer_addr' failed — configure the wallet manually.${RST}"
-  fi
+  # The sequencer + poll config is written by write_wallet_config() before this
+  # runs (v0.2.1 schema; `wallet config set` can't set the sequencer). restore-keys
+  # is the first STORAGE command on a fresh home and rewrites it from the mnemonic.
 
   # restore-keys reads the mnemonic then the password from stdin (non-interactive)
   # and REWRITES storage — so the wallet's password becomes $TEST_WALLET_PASSWORD.
@@ -245,6 +248,30 @@ ensure_accounts() {
   done
 }
 
+# Write the wallet config in the v0.2.1 schema. That version replaced the old
+# `sequencer_addr` string with a `sequencers` LIST and `wallet config set` refuses
+# the sequencer field ("Unknown field"), so we write the file directly — which
+# also replaces any stale old-format config the new wallet can't deserialize
+# ("missing field `sequencers`"). The widened poll window (see TEST_SEQ_* above)
+# is baked in here. Runs on every setup, before any wallet command reads config.
+write_wallet_config() {
+  local addr="${TEST_SEQUENCER_ADDR:-http://127.0.0.1:3040}"
+  sec "Write wallet config (v0.2.1 schema)"
+  mkdir -p "$TEST_WALLET_HOME"
+  kv "sequencer_addr"         "$addr"
+  kv "seq_tx_poll_max_blocks" "$TEST_SEQ_TX_POLL_MAX_BLOCKS"
+  kv "seq_poll_timeout"       "$TEST_SEQ_POLL_TIMEOUT"
+  cat > "$TEST_WALLET_HOME/wallet_config.json" <<JSON
+{
+  "sequencers": [{ "sequencer_addr": "$addr" }],
+  "seq_poll_timeout": "$TEST_SEQ_POLL_TIMEOUT",
+  "seq_tx_poll_max_blocks": $TEST_SEQ_TX_POLL_MAX_BLOCKS,
+  "seq_poll_max_retries": 5,
+  "seq_block_poll_max_amount": 100
+}
+JSON
+}
+
 ###############################################################################
 # 0. Preflight + wallet bootstrap
 ###############################################################################
@@ -257,7 +284,20 @@ require_file "$TOKEN_IDL"; require_file "$AMM_IDL"
 kv "repo root"        "$REPO_ROOT"
 kv "token bin" "$TOKEN_BIN"; kv "amm bin" "$AMM_BIN"; kv "twap bin" "$TWAP_BIN"
 
-if [ ! -d "$TEST_WALLET_HOME" ] || [ "${FORCE_BOOTSTRAP:-0}" = "1" ]; then
+# Decide whether keys need restoring from the key material (storage.json), NOT the
+# home dir — write_wallet_config below creates the dir, so a dir check would always
+# read as "already bootstrapped".
+NEEDS_KEY_RESTORE=0
+if [ ! -f "$TEST_WALLET_HOME/storage.json" ] || [ "${FORCE_BOOTSTRAP:-0}" = "1" ]; then
+  NEEDS_KEY_RESTORE=1
+fi
+
+# Write the v0.2.1 wallet config FIRST so every wallet command below can read it
+# (and any stale old-format config is replaced). Also sets the sequencer + widened
+# poll window.
+write_wallet_config
+
+if [ "$NEEDS_KEY_RESTORE" = "1" ]; then
   restore_test_wallet
 else
   kv "test wallet" "reusing $TEST_WALLET_HOME (FORCE_BOOTSTRAP=1 to re-restore keys)"

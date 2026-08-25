@@ -20,7 +20,7 @@ overrides:
 
 - `logos-qt-mcp` test framework
 - inspector-enabled Basecamp bundle
-- `logos_execution_zone` portable core module
+- `lez_core` portable core module
 - `token_module` portable core module
 - `token_ui` portable UI plugin
 
@@ -36,7 +36,7 @@ nix build .#test-framework -o apps/token/result-mcp
 For manual runs, stage the portable install outputs into a Basecamp user
 directory: `.#install-portable` for `token_module`,
 `.#token-ui-install-portable` for `token_ui`, and the matching portable
-`logos_execution_zone` install. Launch the inspector-enabled bundle with
+`lez_core` install. Launch the inspector-enabled bundle with
 `--user-dir <path> -platform offscreen`.
 
 Run the non-mutating visual flow:

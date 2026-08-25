@@ -13,7 +13,7 @@ for the module framework.
 The impl class `AmmModuleImpl` (`src/amm_module_impl.{h,cpp}`) is a **transport
 adapter**: the AMM domain math lives in the Rust `amm_ffi` crate (a
 transport-independent JSON FFI), and this module sequences those pure ops with
-chain I/O delegated to the `logos_execution_zone` wallet module. Its public
+chain I/O delegated to the `lez_core` wallet module. Its public
 methods (the module API is generated from the header) are:
 
 **Reads**
@@ -57,9 +57,9 @@ CLI  ──logoscore call────────┤        │   PDA derivation
                              ▼        │   quote/plan math, instruction encoding
                         amm_module ───┤   — transport-independent (external_libraries)
                              │        │
-                             │        └── logos_execution_zone (dependency):
+                             │        └── lez_core (dependency):
                              ▼            chain reads + tx submit + base58,
-                                          via modules().logos_execution_zone.*
+                                          via modules().lez_core.*
 ```
 
 The `amm_ffi` crate is deliberately I/O-free — each op takes the account data
@@ -77,7 +77,7 @@ The impl is deliberately **Qt-free** (`std::string` / `LogosMap` / `LogosList` /
 ## Amount / id conventions
 
 **Account ids accept base58 or hex.** The `*Hex` args and request-map ids are
-normalized at each method's boundary (via `logos_execution_zone.account_id_from_base58`
+normalized at each method's boundary (via `lez_core.account_id_from_base58`
 for base58 inputs), so the wallet/runbook's base58 ids can be passed directly.
 
 **Amounts (`amountIn`/`minOut`, u128) and `deadline` (u64 unix-ms)** are declared
@@ -141,9 +141,9 @@ Have all of the following in place before staging the modules dir:
    nix build .#amm-module        # from the repo root; output under result/lib/
    ```
 
-4. **The wallet module it depends on, built** — `logos_execution_zone` is a
+4. **The wallet module it depends on, built** — `lez_core` is a
    *separate repo*, not part of this tree. Build the **same rev** this module
-   pins as its `logos_execution_zone` flake input (mismatched revs = ABI/ImageID
+   pins as its `lez_core` flake input (mismatched revs = ABI/ImageID
    drift), producing `logos_execution_zone_plugin.dylib` + `libwallet_ffi.dylib`:
 
    ```bash
@@ -178,7 +178,7 @@ modules/
     libamm_ffi.dylib
     variant                     # one line: darwin-arm64-dev
     manifest.json
-  logos_execution_zone/
+  lez_core/
     logos_execution_zone_plugin.dylib
     libwallet_ffi.dylib
     variant
@@ -190,7 +190,7 @@ modules/
 ```json
 {
   "name": "amm_module", "type": "core", "version": "0.1.0",
-  "manifestVersion": "0.2.0", "dependencies": ["logos_execution_zone"],
+  "manifestVersion": "0.2.0", "dependencies": ["lez_core"],
   "main": { "darwin-arm64-dev": "amm_module_plugin.dylib" }
 }
 ```
@@ -202,7 +202,7 @@ first, then the module:
 AMM_PROGRAM_BIN=/abs/path/to/amm.bin \
 logoscore -D -m ./modules --persistence-path ./data
 
-logoscore load-module logos_execution_zone     # dependency first
+logoscore load-module lez_core     # dependency first
 logoscore load-module amm_module
 ```
 
@@ -211,7 +211,7 @@ which fails on a null wallet handle (surfacing as an absent pool), so open the
 wallet first — `resolvePoolAccount` then works:
 
 ```bash
-logoscore call logos_execution_zone open ~/.lee/wallet/wallet_config.json ~/.lee/wallet/storage.json
+logoscore call lez_core open ~/.lee/wallet/wallet_config.json ~/.lee/wallet/storage.json
 logoscore call amm_module resolvePoolAccount <defA_hex> <defB_hex>
 ```
 
@@ -251,7 +251,7 @@ wallet is opened.
 `amm_module` is a **core** module (installed into `modules/`, alongside the
 wallet module), not a UI plugin. Build its `.lgx` from the root flake and
 install with `lgpm --modules-dir …` (see `apps/amm/README.md` for the full
-three-package flow: `logos_execution_zone` + `amm_module` + the `amm_ui` UI
+three-package flow: `lez_core` + `amm_module` + the `amm_ui` UI
 plugin).
 
 ## QtRO / byte-string note
@@ -260,7 +260,7 @@ plugin).
 (`std::vector<uint8_t>`). This module sends the plan's u32 words as their
 little-endian bytes and references the program by its id hex (not the raw ELF).
 It requires the wallet module built with the byte-string `instruction` param —
-the fork pinned as the `logos_execution_zone` input. See
+the fork pinned as the `lez_core` input. See
 `docs/amm-swap-qtro-serialization-bug.md`.
 
 ## Full API runbook

@@ -10,7 +10,7 @@
 // Universal Logos core module for the LEZ Token program. Public methods form
 // the generated API, so this header deliberately uses only standard C++ and
 // Logos JSON types. Rust token_ffi owns token codecs and instruction encoding;
-// logos_execution_zone owns wallet/account I/O and transaction submission.
+// lez_core owns wallet/account I/O and transaction submission.
 class TokenModuleImpl : public LogosModuleContext {
 public:
     TokenModuleImpl() = default;

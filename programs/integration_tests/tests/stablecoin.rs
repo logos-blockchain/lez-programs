@@ -243,6 +243,12 @@ fn seed_clock(state: &mut V03State, timestamp: u64) {
     }
     .to_bytes();
     let clock_account = Account {
+        // The real CLOCK_01 system account is owned by the clock program, not the
+        // default program (see lee `system_accounts::clock_account`). A default owner
+        // makes the spel-framework output filter drop the (unchanged, unclaimed)
+        // clock post-state, which v0.2.1's DeclaredAccountMissingFromOutput invariant
+        // then rejects. Use a non-default placeholder owner, as the oracle fixture does.
+        program_owner: [8u32; 8],
         data: Data::try_from(data).expect("clock account data fits"),
         ..Account::default()
     };
@@ -275,6 +281,21 @@ fn state_for_stablecoin_tests() -> V03State {
         Accounts::collateral_definition_init(),
     );
     state.force_insert_account(Ids::user_holding(), Accounts::user_holding_init());
+    // Seed the owner as a non-default-owned account. In nssa, balance-holding user
+    // accounts are owned by a system program (see lee `system_accounts` / the
+    // `time_locked_transfer` sender), not the default program. A default-owned owner
+    // works the first time it signs (its pre-state is still `Account::default()`), but
+    // once `open_position` bumps its nonce the spel-framework output filter drops the
+    // (unchanged, unclaimed, default-owned) owner post-state from the second
+    // transaction — which v0.2.1's DeclaredAccountMissingFromOutput invariant then
+    // rejects. A non-default owner keeps it in the diff across both transactions.
+    state.force_insert_account(
+        Ids::owner(),
+        Account {
+            program_owner: [7u32; 8],
+            ..Account::default()
+        },
+    );
     state
 }
 
@@ -519,6 +540,18 @@ fn initialize_protocol(now: u64, controller_proportional_gain: i128) -> V03State
             Ids::stablecoin_definition_pda(),
             Ids::collateral_definition(),
         ),
+    );
+    // Seed the admin (the initialize + poke signer) as a non-default-owned account. A
+    // default-owned signer works on its first sign (pre-state is still Account::default()),
+    // but once its nonce bumps the spel-framework output filter drops it (non-default state
+    // + default owner + no claim), tripping DeclaredAccountMissingFromOutput on the next tx
+    // (the pokes). A non-default owner keeps it in every diff. Same fix as Ids::owner().
+    state.force_insert_account(
+        Ids::admin(),
+        Account {
+            program_owner: [7u32; 8],
+            ..Account::default()
+        },
     );
 
     let instruction = stablecoin_core::Instruction::InitializeProgram {

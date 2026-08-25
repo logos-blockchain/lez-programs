@@ -83,7 +83,9 @@ void WalletController::openOnStartup()
 
     const QString config = defaultConfigPath();
     const QString storage = defaultStoragePath();
-    const WalletSession session = m_wallet.connect({ config, storage });
+    const QString statistics = QFileInfo(config).absolutePath()
+        + QStringLiteral("/statistics.json");
+    const WalletSession session = m_wallet.connect({ config, storage, statistics });
     if (session.failure == WalletFailure::WalletMissing)
         return;
     if (!session.ok()) {
@@ -110,8 +112,10 @@ QString WalletController::createWallet(const QString& configPath,
 {
     const QString config = toLocalPath(configPath);
     const QString storage = toLocalPath(storagePath);
+    const QString statistics = QFileInfo(config).absolutePath()
+        + QStringLiteral("/statistics.json");
     const WalletCreation creation = m_wallet.createWallet(
-        { config, storage }, password);
+        { config, storage, statistics }, password);
     if (creation.mnemonic.isEmpty()) {
         qWarning() << "WalletController: wallet creation failed"
                    << walletFailureCode(creation.failure);
@@ -140,7 +144,9 @@ bool WalletController::open()
         ? defaultConfigPath() : m_state.configPath;
     const QString storage = m_state.storagePath.isEmpty()
         ? defaultStoragePath() : m_state.storagePath;
-    const WalletSession session = m_wallet.connect({ config, storage });
+    const QString statistics = QFileInfo(config).absolutePath()
+        + QStringLiteral("/statistics.json");
+    const WalletSession session = m_wallet.connect({ config, storage, statistics });
     if (!session.ok()) {
         qWarning() << "WalletController: wallet open failed"
                    << walletFailureCode(session.failure);

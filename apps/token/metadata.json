@@ -8,7 +8,7 @@
   "main": "token_ui_plugin",
   "view": "qml/Main.qml",
   "icon": "icons/token.png",
-  "dependencies": ["logos_execution_zone", "token_module"],
+  "dependencies": ["lez_core", "token_module"],
 
   "nix": {
     "packages": {
