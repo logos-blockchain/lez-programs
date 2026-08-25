@@ -6,7 +6,7 @@ use amm_core::{
     AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use nssa_core::{
+use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };

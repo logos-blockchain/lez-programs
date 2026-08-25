@@ -49,8 +49,6 @@ below was exercised with the `spel` CLI **v0.5.0**; where v0.6.0 differs it is c
   ```bash
   export LEE_WALLET_HOME_DIR="$HOME/.lee/wallet"
   ```
-  Older toolchain builds read `NSSA_WALLET_HOME_DIR` instead — set whichever yours expects, and
-  use the **same** one everywhere.
 - Wallet pointed at your sequencer:
   ```bash
   wallet config set sequencer_addr https://testnet.lez.logos.co/

@@ -14,7 +14,7 @@ use amm_core::{
     AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR, FEE_TIER_BPS_1, FEE_TIER_BPS_100,
     FEE_TIER_BPS_30, FEE_TIER_BPS_5, MINIMUM_LIQUIDITY,
 };
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     program::{ChainedCall, Claim, ProgramId},
 };

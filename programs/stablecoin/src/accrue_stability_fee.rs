@@ -5,7 +5,7 @@
 //! `ProgramContext` exposes no clock.
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
@@ -141,7 +141,7 @@ pub(crate) fn read_clock(clock: &AccountWithMetadata) -> u64 {
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 mod tests {
-    use nssa_core::account::{AccountId, Nonce};
+    use lee_core::account::{AccountId, Nonce};
     use stablecoin_core::math::FIXED_POINT_ONE;
 
     use super::*;

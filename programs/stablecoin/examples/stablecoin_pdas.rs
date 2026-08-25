@@ -9,7 +9,7 @@
 
 use std::str::FromStr;
 
-use nssa_core::{account::AccountId, program::ProgramId};
+use lee_core::{account::AccountId, program::ProgramId};
 use stablecoin_core::{compute_position_pda, compute_position_vault_pda};
 
 // Accepts a ProgramId as 8 comma-separated u32 limbs, a 64-char ImageID hex, or a base58

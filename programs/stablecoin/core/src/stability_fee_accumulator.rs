@@ -6,7 +6,7 @@
 //! normalized debt.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nssa_core::{
+use lee_core::{
     account::{AccountId, Data},
     program::{PdaSeed, ProgramId},
 };

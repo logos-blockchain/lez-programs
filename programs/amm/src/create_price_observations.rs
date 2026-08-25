@@ -2,7 +2,7 @@ use amm_core::{
     compute_config_pda, compute_pool_pda, compute_pool_pda_seed, AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountWithMetadata},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
@@ -134,7 +134,7 @@ pub fn create_price_observations(
 #[cfg(test)]
 mod tests {
     use amm_core::compute_pool_pda_seed;
-    use nssa_core::account::{Account, AccountId, Data, Nonce};
+    use lee_core::account::{Account, AccountId, Data, Nonce};
     use twap_oracle_core::compute_current_tick_account_pda;
 
     use super::*;

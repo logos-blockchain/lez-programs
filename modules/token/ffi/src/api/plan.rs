@@ -1,4 +1,4 @@
-use nssa_core::account::AccountId;
+use lee_core::account::AccountId;
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
 use token_core::{Instruction, MetadataStandard, NewTokenDefinition, NewTokenMetadata};
@@ -18,7 +18,7 @@ use crate::account::{account_id_from_hex, account_id_hex, program_id_bytes};
 pub fn program_id(request: ProgramIdRequest) -> TokenResult {
     let elf = hex::decode(&request.elf).map_err(|_| TokenApiError::new("bad_request"))?;
     let binary = ProgramBinary::decode(&elf).map_err(|_| TokenApiError::new("bad_request"))?;
-    let image_id: nssa_core::program::ProgramId = binary
+    let image_id: lee_core::program::ProgramId = binary
         .compute_image_id()
         .map_err(|_| TokenApiError::new("backend_error"))?
         .into();
@@ -298,7 +298,7 @@ fn reject_zero_account_id(account_id: AccountId, code: &'static str) -> Result<(
 }
 
 fn plan_response<const N: usize>(
-    program_id: nssa_core::program::ProgramId,
+    program_id: lee_core::program::ProgramId,
     account_ids: [AccountId; N],
     signing_requirements: [bool; N],
     instruction: Instruction,

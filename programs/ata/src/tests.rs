@@ -1,13 +1,13 @@
 use ata_core::{compute_ata_seed, get_associated_token_account_id};
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{ChainedCall, Claim},
 };
 use token_core::{TokenDefinition, TokenHolding};
 
-const ATA_PROGRAM_ID: nssa_core::program::ProgramId = [1u32; 8];
-const TOKEN_PROGRAM_ID: nssa_core::program::ProgramId = [2u32; 8];
-const OTHER_TOKEN_PROGRAM_ID: nssa_core::program::ProgramId = [3u32; 8];
+const ATA_PROGRAM_ID: lee_core::program::ProgramId = [1u32; 8];
+const TOKEN_PROGRAM_ID: lee_core::program::ProgramId = [2u32; 8];
+const OTHER_TOKEN_PROGRAM_ID: lee_core::program::ProgramId = [3u32; 8];
 
 fn owner_id() -> AccountId {
     AccountId::new([0x01u8; 32])
@@ -43,7 +43,7 @@ fn definition_account() -> AccountWithMetadata {
                 metadata_id: None,
                 authority: None,
             }),
-            nonce: nssa_core::account::Nonce(0),
+            nonce: lee_core::account::Nonce(0),
         },
         is_authorized: false,
         account_id: definition_id(),
@@ -67,7 +67,7 @@ fn initialized_ata_account() -> AccountWithMetadata {
                 definition_id: definition_id(),
                 balance: 100,
             }),
-            nonce: nssa_core::account::Nonce(0),
+            nonce: lee_core::account::Nonce(0),
         },
         is_authorized: false,
         account_id: ata_id(),
@@ -248,7 +248,7 @@ fn initialized_recipient_account() -> AccountWithMetadata {
                 definition_id: definition_id(),
                 balance: 0,
             }),
-            nonce: nssa_core::account::Nonce(0),
+            nonce: lee_core::account::Nonce(0),
         },
         is_authorized: false,
         account_id: recipient_id(),

@@ -7,7 +7,7 @@ use amm_core::{
     compute_pool_pda, mul_div_ceil, mul_div_floor, price_impact_bps, swap_exact_in_amounts,
     swap_exact_out_amounts, PoolDefinition, FEE_BPS_DENOMINATOR,
 };
-use nssa_core::account::AccountId;
+use lee_core::account::AccountId;
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
 
@@ -429,7 +429,7 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
 pub(super) fn program_id(request: ProgramIdRequest) -> Result<Value, String> {
     let elf = hex::decode(&request.elf).map_err(|error| format!("invalid elf hex: {error}"))?;
     let binary = ProgramBinary::decode(&elf).map_err(|error| format!("{error:?}"))?;
-    let image_id: nssa_core::program::ProgramId = binary
+    let image_id: lee_core::program::ProgramId = binary
         .compute_image_id()
         .map_err(|error| format!("{error:?}"))?
         .into();
@@ -439,7 +439,7 @@ pub(super) fn program_id(request: ProgramIdRequest) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use amm_core::PoolDefinition;
-    use nssa_core::account::AccountId;
+    use lee_core::account::AccountId;
 
     use super::*;
     use crate::account::{AccountRead, WalletAccount};

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use ata_core::{compute_ata_seed, get_associated_token_account_id};
-use nssa::{
+use lee::{
     execute_and_prove,
     privacy_preserving_transaction::{
         circuit::ProgramWithDependencies, Message, PrivacyPreservingTransaction, WitnessSet,
@@ -10,7 +10,7 @@ use nssa::{
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     encryption::ViewingPublicKey,
     InputAccountIdentity, NullifierPublicKey, NullifierSecretKey,
@@ -36,11 +36,11 @@ impl Keys {
 }
 
 impl Ids {
-    fn token_program() -> nssa_core::program::ProgramId {
+    fn token_program() -> lee_core::program::ProgramId {
         token_methods::TOKEN_ID
     }
 
-    fn ata_program() -> nssa_core::program::ProgramId {
+    fn ata_program() -> lee_core::program::ProgramId {
         ata_methods::ATA_ID
     }
 

@@ -4,7 +4,7 @@
     reason = "test fixtures use fixed values to lock boundary behavior"
 )]
 
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     program::{Claim, ProgramId},
 };

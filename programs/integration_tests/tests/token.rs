@@ -1,11 +1,11 @@
-use nssa::{
+use lee::{
     execute_and_prove,
     privacy_preserving_transaction::{Message, PrivacyPreservingTransaction, WitnessSet},
     program::Program,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     encryption::ViewingPublicKey,
     Commitment, InputAccountIdentity, NullifierPublicKey, NullifierSecretKey,
@@ -35,11 +35,11 @@ impl Keys {
 }
 
 impl Ids {
-    fn token_program() -> nssa_core::program::ProgramId {
+    fn token_program() -> lee_core::program::ProgramId {
         token_methods::TOKEN_ID
     }
 
-    fn foreign_token_program() -> nssa_core::program::ProgramId {
+    fn foreign_token_program() -> lee_core::program::ProgramId {
         [0xfeed_u32; 8]
     }
 

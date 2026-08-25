@@ -3,7 +3,7 @@ use amm_core::{
     PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountWithMetadata},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
@@ -152,7 +152,7 @@ pub fn create_oracle_price_account(
 #[cfg(test)]
 mod tests {
     use amm_core::compute_pool_pda_seed;
-    use nssa_core::account::{Account, AccountId, Data, Nonce};
+    use lee_core::account::{Account, AccountId, Data, Nonce};
 
     use super::*;
 

@@ -1,5 +1,5 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, Claim, ProgramId},
 };
@@ -99,7 +99,7 @@ pub fn create_price_observations(
 
 #[cfg(test)]
 mod tests {
-    use nssa_core::account::{AccountId, Nonce};
+    use lee_core::account::{AccountId, Nonce};
 
     use super::*;
 

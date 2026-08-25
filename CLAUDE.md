@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This repo contains essential programs for the **Logos Execution Zone (LEZ)** — a zkVM-based execution environment built on [RISC Zero](https://risczero.com/). Programs run inside the RISC Zero zkVM (`riscv32im-risc0-zkvm-elf` target) and interact with the LEZ runtime via the `nssa_core` library from `logos-execution-zone`.
+This repo contains essential programs for the **Logos Execution Zone (LEZ)** — a zkVM-based execution environment built on [RISC Zero](https://risczero.com/). Programs run inside the RISC Zero zkVM (`riscv32im-risc0-zkvm-elf` target) and interact with the LEZ runtime via the `lee_core` library from `logos-execution-zone`.
 
 Five programs are implemented:
 - **token** — Fungible and non-fungible token program (create, mint, burn, transfer, print NFTs)
@@ -81,7 +81,7 @@ Generated IDL files live in `artifacts/`. CI checks that every program under `*/
 
 ## Deployment
 
-`wallet` and `spel` are CLI tools that ship with the [SPEL](https://github.com/logos-co/spel.git) toolchain. `wallet` requires `NSSA_WALLET_HOME_DIR` to point to a directory containing the wallet config.
+`wallet` and `spel` are CLI tools that ship with the [SPEL](https://github.com/logos-co/spel.git) toolchain. `wallet` requires `LEE_WALLET_HOME_DIR` to point to a directory containing the wallet config.
 
 **Note:** `spel` and `wallet` may use different versions of the wallet package. If `spel --idl <IDL> <PROGRAM_FUNCTION> ...` fails, ensure `seq_poll_timeout_millis` is set in the wallet config at `~/.nssa/wallet`.
 

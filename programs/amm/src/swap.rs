@@ -5,7 +5,7 @@ use amm_core::{
 };
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use nssa_core::{
+use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };

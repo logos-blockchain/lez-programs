@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use nssa_core::{account::AccountId, program::ProgramId};
+use lee_core::{account::AccountId, program::ProgramId};
 use serde_json::{json, Value};
 use token_core::TokenDefinition;
 

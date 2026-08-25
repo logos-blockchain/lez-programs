@@ -1,5 +1,5 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use nssa_core::{
+use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ProgramId},
 };
@@ -61,7 +61,7 @@ pub fn update_current_tick(
 
 #[cfg(test)]
 mod tests {
-    use nssa_core::account::{Account, AccountId, Nonce};
+    use lee_core::account::{Account, AccountId, Nonce};
     use twap_oracle_core::compute_current_tick_account_pda;
 
     use super::*;

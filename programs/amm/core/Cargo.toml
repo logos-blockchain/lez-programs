@@ -7,7 +7,7 @@ edition = "2021"
 workspace = true
 
 [dependencies]
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"], package = "lee_core" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"] }
 spel-framework-macros = { git = "https://github.com/logos-co/spel.git", rev = "1ef0500f8fc8ce3ddf95523726ae159db83f744f", package = "spel-framework-macros" }
 token_core = { path = "../../token/core" }
 borsh = { version = "1.5", features = ["derive"] }

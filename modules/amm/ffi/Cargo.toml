@@ -12,7 +12,7 @@ amm_core = { workspace = true }
 borsh = { workspace = true }
 clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
 hex = "0.4"
-nssa_core = { workspace = true }
+lee_core = { workspace = true }
 risc0-binfmt = { version = "=3.0.4", default-features = false }
 risc0-zkvm = { workspace = true }
 serde = { workspace = true }

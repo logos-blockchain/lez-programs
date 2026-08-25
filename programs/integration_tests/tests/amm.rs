@@ -8,12 +8,12 @@ use amm_core::{
     MINIMUM_LIQUIDITY,
 };
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use nssa::{
+use lee::{
     error::LeeError,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use nssa_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::account::{Account, AccountId, Data, Nonce};
 use token_core::{TokenDefinition, TokenHolding};
 
 struct Keys;
@@ -40,15 +40,15 @@ impl Keys {
 }
 
 impl Ids {
-    fn token_program() -> nssa_core::program::ProgramId {
+    fn token_program() -> lee_core::program::ProgramId {
         token_methods::TOKEN_ID
     }
 
-    fn amm_program() -> nssa_core::program::ProgramId {
+    fn amm_program() -> lee_core::program::ProgramId {
         amm_methods::AMM_ID
     }
 
-    fn twap_oracle_program() -> nssa_core::program::ProgramId {
+    fn twap_oracle_program() -> lee_core::program::ProgramId {
         twap_oracle_methods::TWAP_ORACLE_ID
     }
 
@@ -1873,7 +1873,7 @@ fn amm_create_price_observations_without_current_tick_account_fails() {
 /// state. `RecordTick` reads this account (`CLOCK_01_PROGRAM_ACCOUNT_ID`), so the TWAP tests use it
 /// to simulate the passage of time between observations.
 ///
-/// rc6 moved the clock program out of `nssa` into the separate system-programs crate (gated behind
+/// rc6 moved the clock program out of `lee` into the separate system-programs crate (gated behind
 /// the guest-building `artifacts` feature), so the clock can no longer be ticked by submitting a
 /// real clock transaction here. Instead we set the account state directly via
 /// `force_insert_account`, matching how the upstream rc6 state-machine tests seed accounts.

@@ -1,5 +1,5 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, Claim, ProgramId},
 };
@@ -119,7 +119,7 @@ pub fn create_oracle_price_account(
 
 #[cfg(test)]
 mod tests {
-    use nssa_core::account::Nonce;
+    use lee_core::account::Nonce;
 
     use super::*;
 

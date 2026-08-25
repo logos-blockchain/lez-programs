@@ -4,9 +4,9 @@
 //! with the session limit lifted, so we can measure the zkVM cycle cost of instructions that exceed
 //! the on-chain `MAX_NUM_CYCLES_PUBLIC_EXECUTION = 32 MiCycles` budget — `RecordTick` in
 //! particular, which aborts under the normal runtime and therefore can't be measured through
-//! `nssa`'s `transition_from_public_transaction`.
+//! `lee`'s `transition_from_public_transaction`.
 //!
-//! It reproduces `nssa::program::Program::execute`'s input encoding (four `env.write` calls:
+//! It reproduces `lee::program::Program::execute`'s input encoding (four `env.write` calls:
 //! program id, caller program id, pre-states, instruction words) and reports the executor's
 //! user / paging / reserved / total cycle split per scenario.
 //!
@@ -17,7 +17,7 @@
 //! ```
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::ProgramId,
 };
@@ -27,7 +27,7 @@ use twap_oracle_core::{
     Instruction, ObservationEntry, PriceObservations, OBSERVATIONS_CAPACITY,
 };
 
-/// The on-chain public-execution cycle ceiling (`MAX_NUM_CYCLES_PUBLIC_EXECUTION` in `nssa`).
+/// The on-chain public-execution cycle ceiling (`MAX_NUM_CYCLES_PUBLIC_EXECUTION` in `lee`).
 const PUBLIC_EXECUTION_CYCLE_LIMIT: u64 = 1024 * 1024 * 32;
 
 /// A 24-hour window in milliseconds; `min_interval = WINDOW / OBSERVATIONS_CAPACITY ≈ 13.5 s`.
@@ -162,7 +162,7 @@ fn run(pre_states: &[AccountWithMetadata], instruction: &Instruction) -> Cycles 
     }
 }
 
-/// Runs the guest under a hard session limit — exactly as `nssa::program::Program::execute` does on
+/// Runs the guest under a hard session limit — exactly as `lee::program::Program::execute` does on
 /// chain — and reports whether it completed or was aborted by the limit. This is the ground-truth
 /// reproduction of the on-chain behaviour.
 fn completes_under_limit(
@@ -178,7 +178,7 @@ fn completes_under_limit(
 }
 
 /// Same as [`completes_under_limit`] but via `default_executor().execute()` — the EXACT entry point
-/// `nssa::program::Program::execute` uses — to check whether the executor path (not just the input
+/// `lee::program::Program::execute` uses — to check whether the executor path (not just the input
 /// encoding) accounts for the session limit differently than [`ExecutorImpl::run`].
 fn completes_under_limit_via_default_executor(
     pre_states: &[AccountWithMetadata],
@@ -280,7 +280,7 @@ fn twap_record_tick_cycle_budget_report() {
     let write_ok = completes_under_limit(&write_pre, &write_instr, limit);
     println!("  RecordTick            (cap {cap}): {}", verdict(write_ok));
 
-    // The exact nssa entry point, to expose any executor-path accounting difference.
+    // The exact lee entry point, to expose any executor-path accounting difference.
     let create_ok_de =
         completes_under_limit_via_default_executor(&create_pre, &create_instr, limit);
     let write_ok_de = completes_under_limit_via_default_executor(&write_pre, &write_instr, limit);

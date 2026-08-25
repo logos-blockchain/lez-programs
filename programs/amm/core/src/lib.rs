@@ -1,7 +1,7 @@
 //! This crate contains core data structures and utilities for the AMM Program.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nssa_core::{
+use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{PdaSeed, ProgramId},
 };

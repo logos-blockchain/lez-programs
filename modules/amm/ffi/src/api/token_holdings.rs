@@ -40,7 +40,7 @@ pub(super) fn token_holdings(request: TokenHoldingsRequest) -> Result<Value, Str
 #[cfg(test)]
 mod tests {
     use amm_core::{compute_config_pda, AmmConfig};
-    use nssa_core::{
+    use lee_core::{
         account::{Account, AccountId, Data},
         program::ProgramId,
     };

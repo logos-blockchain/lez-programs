@@ -1,5 +1,5 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use nssa_core::{
+use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ProgramId},
 };
@@ -210,7 +210,7 @@ pub fn publish_price(
 
 #[cfg(test)]
 mod tests {
-    use nssa_core::account::{Account, AccountId, Nonce};
+    use lee_core::account::{Account, AccountId, Nonce};
     use twap_oracle_core::{
         compute_current_tick_account_pda, compute_oracle_price_account_pda,
         compute_price_observations_pda, tick_to_oracle_price, CurrentTickAccount, ObservationEntry,

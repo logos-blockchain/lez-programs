@@ -1,10 +1,10 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use nssa::{
+use lee::{
     error::LeeError,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use nssa_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::account::{Account, AccountId, Data, Nonce};
 use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
     compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
@@ -36,11 +36,11 @@ impl Keys {
 }
 
 impl Ids {
-    fn token_program() -> nssa_core::program::ProgramId {
+    fn token_program() -> lee_core::program::ProgramId {
         token_methods::TOKEN_ID
     }
 
-    fn stablecoin_program() -> nssa_core::program::ProgramId {
+    fn stablecoin_program() -> lee_core::program::ProgramId {
         stablecoin_methods::STABLECOIN_ID
     }
 
@@ -281,7 +281,7 @@ fn state_for_stablecoin_tests() -> V03State {
         Accounts::collateral_definition_init(),
     );
     state.force_insert_account(Ids::user_holding(), Accounts::user_holding_init());
-    // Seed the owner as a non-default-owned account. In nssa, balance-holding user
+    // Seed the owner as a non-default-owned account. In lee, balance-holding user
     // accounts are owned by a system program (see lee `system_accounts` / the
     // `time_locked_transfer` sender), not the default program. A default-owned owner
     // works the first time it signs (its pre-state is still `Account::default()`), but

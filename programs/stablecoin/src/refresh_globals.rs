@@ -6,7 +6,7 @@
 //! otherwise. A LEZ transaction carries exactly one instruction, so this is the
 //! only way to advance both globals in a single transaction.
 
-use nssa_core::{
+use lee_core::{
     account::AccountWithMetadata,
     program::{AccountPostState, ChainedCall, ProgramId},
 };
@@ -99,7 +99,7 @@ pub fn refresh_globals(
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 mod tests {
-    use nssa_core::account::AccountId;
+    use lee_core::account::AccountId;
     use stablecoin_core::{
         compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
         math::FIXED_POINT_ONE, RedemptionPriceState, StabilityFeeAccumulator,

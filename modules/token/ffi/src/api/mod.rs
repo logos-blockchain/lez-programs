@@ -54,6 +54,6 @@ impl fmt::Display for TokenApiError {
 
 impl Error for TokenApiError {}
 
-fn parse_token_program_id(value: &str) -> Result<nssa_core::program::ProgramId, TokenApiError> {
+fn parse_token_program_id(value: &str) -> Result<lee_core::program::ProgramId, TokenApiError> {
     parse_program_id(value).map_err(|_| TokenApiError::new("bad_request"))
 }

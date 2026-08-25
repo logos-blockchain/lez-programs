@@ -67,7 +67,6 @@ QT_FORCE_STDERR_LOGGING=1 \
 QML_DISABLE_DISK_CACHE=1 \
 QML_INSPECTOR_PORT="${inspector_port}" \
 LEE_WALLET_HOME_DIR="${wallet_home}" \
-NSSA_WALLET_HOME_DIR="${wallet_home}" \
 LD_LIBRARY_PATH="${bundle_root}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
 "${basecamp_bin}" --user-dir "${run_root}/user" -platform offscreen \
   >"${run_root}/basecamp.log" 2>&1 &

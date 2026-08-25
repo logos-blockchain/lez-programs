@@ -7,6 +7,6 @@ edition = "2021"
 workspace = true
 
 [dependencies]
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"], package = "lee_core" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"] }
 ata_core = { path = "core" }
 token_core = { path = "../token/core" }

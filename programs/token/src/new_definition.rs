@@ -1,4 +1,4 @@
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, Claim},
 };

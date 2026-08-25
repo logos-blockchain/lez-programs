@@ -5,7 +5,7 @@
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     program::{ChainedCall, Claim, ProgramId},
 };

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"], package = "lee_core" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"] }
 borsh = { version = "1.5", features = ["derive"] }
 alloy-primitives = { version = "1", default-features = false }
 # Pin ruint (transitive via alloy-primitives) below 1.18, which raised its MSRV to rustc 1.90.

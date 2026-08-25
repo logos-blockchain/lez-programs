@@ -5,7 +5,7 @@
 //! otherwise repeat the same fixtures three times.
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     program::ProgramId,
 };

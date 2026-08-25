@@ -12,7 +12,7 @@ pub mod stability_fee_accumulator;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 pub use controller::{run_controller_tick, ControllerOutput, INTEGRAL_CLAMP, RATE_DELTA_CLAMP};
-use nssa_core::{
+use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{PdaSeed, ProgramId},
 };

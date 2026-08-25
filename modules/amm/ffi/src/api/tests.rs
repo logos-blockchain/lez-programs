@@ -4,7 +4,7 @@ use amm_core::{
     compute_vault_pda, isqrt_product, AmmConfig, Instruction, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, Data, Nonce},
     program::ProgramId,
 };

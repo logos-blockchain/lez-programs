@@ -15,7 +15,7 @@ use amm_core::{
     isqrt_product, mul_div_floor, spot_price_q64_64, PoolDefinition, FEE_BPS_DENOMINATOR,
     MINIMUM_LIQUIDITY,
 };
-use nssa_core::account::AccountId;
+use lee_core::account::AccountId;
 use serde_json::{json, Value};
 
 use super::{
@@ -633,7 +633,7 @@ pub(super) fn sync_reserves_plan(request: SyncReservesPlanRequest) -> Result<Val
 #[cfg(test)]
 mod tests {
     use amm_core::{compute_config_pda, compute_pool_pda, compute_vault_pda, AmmConfig};
-    use nssa_core::account::{Account, AccountId, Data};
+    use lee_core::account::{Account, AccountId, Data};
 
     use super::*;
     use crate::account::{account_read, AccountRead};
@@ -657,7 +657,7 @@ mod tests {
     }
 
     /// A valid AMM config account read so `derive_pair` succeeds in plan tests.
-    fn valid_config(amm: nssa_core::program::ProgramId) -> AccountRead {
+    fn valid_config(amm: lee_core::program::ProgramId) -> AccountRead {
         let token_program = parse_program_id(&"01".repeat(32)).unwrap();
         let twap_program = parse_program_id(&"02".repeat(32)).unwrap();
         let account = Account {

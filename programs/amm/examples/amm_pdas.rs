@@ -13,7 +13,7 @@ use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
     compute_vault_pda,
 };
-use nssa_core::{account::AccountId, program::ProgramId};
+use lee_core::{account::AccountId, program::ProgramId};
 use twap_oracle_core::compute_current_tick_account_pda;
 
 // Accepts a ProgramId as 8 comma-separated u32 limbs, a 64-char ImageID hex, or a base58

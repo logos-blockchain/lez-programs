@@ -9,7 +9,7 @@
 use std::str::FromStr;
 
 use ata_core::{compute_ata_seed, get_associated_token_account_id};
-use nssa_core::{account::AccountId, program::ProgramId};
+use lee_core::{account::AccountId, program::ProgramId};
 
 // Accepts a ProgramId as 8 comma-separated u32 limbs, a 64-char ImageID hex, or a base58
 // ImageID. Hex/base58 are decoded as the 32 ImageID bytes read little-endian per u32 word,

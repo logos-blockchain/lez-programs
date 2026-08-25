@@ -1,5 +1,5 @@
 use amm_core::{compute_config_pda, compute_config_pda_seed, AmmConfig};
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, Claim, ProgramId},
 };
@@ -51,7 +51,7 @@ pub fn initialize(
 #[cfg(test)]
 mod tests {
     use amm_core::compute_config_pda;
-    use nssa_core::account::{AccountId, Nonce};
+    use lee_core::account::{AccountId, Nonce};
 
     use super::*;
 

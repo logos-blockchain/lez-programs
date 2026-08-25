@@ -80,7 +80,7 @@ async function saveShot(app, name) {
 function resolveTokenD() {
   const out = execFileSync("wallet", ["account", "id", "--account-id", "token-d-def"], {
     encoding: "utf8",
-    env: { ...process.env, LEE_WALLET_HOME_DIR: WALLET_HOME, NSSA_WALLET_HOME_DIR: WALLET_HOME },
+    env: { ...process.env, LEE_WALLET_HOME_DIR: WALLET_HOME },
   });
   const id = (out.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/) || [])[0];
   if (!id)

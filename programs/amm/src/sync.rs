@@ -3,7 +3,7 @@ use amm_core::{
     read_vault_fungible_balances, spot_price_q64_64, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use nssa_core::{
+use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };

@@ -3,7 +3,7 @@
 //! Wall-clock time comes from the system `CLOCK_01` account, same as the other
 //! pokes.
 
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
@@ -193,7 +193,7 @@ pub(crate) fn advance_redemption_price(
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 mod tests {
-    use nssa_core::account::AccountId;
+    use lee_core::account::AccountId;
     use stablecoin_core::math::FIXED_POINT_ONE;
 
     use super::*;

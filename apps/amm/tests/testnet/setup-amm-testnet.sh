@@ -51,12 +51,10 @@ cd "$REPO_ROOT"
 # TEST WALLET — isolated + deterministic
 ###############################################################################
 
-# Dedicated wallet home for tests. Kept out of git (see .gitignore). Exported
-# under both env var names so whichever the installed `wallet`/`spel` expects is
-# satisfied (the current wallet uses LEE_WALLET_HOME_DIR).
+# Dedicated wallet home for tests. Kept out of git (see .gitignore). The v0.2.x
+# wallet/spel read LEE_WALLET_HOME_DIR (the old NSSA_WALLET_HOME_DIR is unused).
 TEST_WALLET_HOME="${TEST_WALLET_HOME:-$SCRIPT_DIR/.wallet}"
 export LEE_WALLET_HOME_DIR="$TEST_WALLET_HOME"
-export NSSA_WALLET_HOME_DIR="$TEST_WALLET_HOME"
 
 # The deterministic test seed. A wallet restored from this mnemonic yields the
 # same account ids every time, which is why they can be shared/pinned.

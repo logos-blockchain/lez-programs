@@ -6,7 +6,7 @@
 //! millisecond timestamp from a clock account (see `clock_core`).
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId},
 };
@@ -311,7 +311,7 @@ pub fn initialize_program(
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 mod tests {
-    use nssa_core::account::Nonce;
+    use lee_core::account::Nonce;
     use stablecoin_core::compute_protocol_parameters_pda_seed;
 
     use super::*;

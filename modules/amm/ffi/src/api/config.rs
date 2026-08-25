@@ -1,5 +1,5 @@
 use amm_core::{compute_config_pda, AmmConfig};
-use nssa_core::{account::Account, program::ProgramId};
+use lee_core::{account::Account, program::ProgramId};
 use serde_json::{json, Value};
 
 use super::{ConfigAccountRequest, ConfigIdRequest};

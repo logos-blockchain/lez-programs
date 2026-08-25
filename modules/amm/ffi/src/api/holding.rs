@@ -1,4 +1,4 @@
-use nssa_core::{account::AccountId, program::ProgramId};
+use lee_core::{account::AccountId, program::ProgramId};
 use token_core::TokenHolding;
 
 use crate::account::{decode_account, AccountRead};
