@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "modules/amm/ffi",
+    "modules/stablecoin/ffi",
     "modules/token/ffi",
     "programs/token/core",
     "programs/token",

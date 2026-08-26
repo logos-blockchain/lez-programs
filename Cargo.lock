@@ -4045,6 +4045,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "stablecoin_ffi"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "cbindgen",
+ "clock_core",
+ "hex",
+ "lee_core",
+ "risc0-binfmt",
+ "risc0-zkvm",
+ "serde",
+ "serde_json",
+ "stablecoin-methods",
+ "stablecoin_core",
+ "token_core",
+ "twap_oracle_core",
+]
+
+[[package]]
 name = "stablecoin_program"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,27 @@
+{
+  "name": "stablecoin_module",
+  "version": "0.1.0",
+  "type": "core",
+  "interface": "universal",
+  "category": "stablecoin",
+  "description": "Universal Logos core module for LEZ stablecoin reads and transactions",
+  "main": "stablecoin_module_plugin",
+  "dependencies": ["lez_core"],
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [
+      {
+        "name": "stablecoin_ffi"
+      }
+    ],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

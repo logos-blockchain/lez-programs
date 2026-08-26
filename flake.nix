@@ -119,10 +119,17 @@
           sourceDir = "modules/token/ffi";
           header = "token_ffi.h";
         };
+
+        stablecoinFfi = mkHostFfi {
+          package = "stablecoin_ffi";
+          sourceDir = "modules/stablecoin/ffi";
+          header = "stablecoin_ffi.h";
+        };
       in
       {
         packages.default = ammFfi;
         packages.amm_ffi = ammFfi;
+        packages.stablecoin_ffi = stablecoinFfi;
         packages.token_ffi = tokenFfi;
       }
     );
@@ -311,6 +318,33 @@
         // (if attrs ? install then { token-module-install = attrs.install; } else { })
       ) tokenModulePkgs;
 
+      # Stablecoin core module (modules/stablecoin): singleton discovery,
+      # ProtocolParameters decoding, and InitializeProgram orchestration. Rust
+      # owns the exact codecs and plan; the module reuses logos_execution_zone
+      # for live reads and submission.
+      stablecoinModuleOutputs = logos-module-builder.lib.mkLogosModule {
+        src = ./modules/stablecoin;
+        configFile = ./modules/stablecoin/metadata.json;
+        flakeInputs = inputs;
+        externalLibInputs = {
+          stablecoin_ffi = { input = self; packages.default = "stablecoin_ffi"; };
+        };
+        tests = {
+          dir = ./modules/stablecoin/tests;
+          mockCLibs = [ "stablecoin_ffi" ];
+        };
+      };
+      stablecoinModulePkgs = stablecoinModuleOutputs.packages or { };
+
+      # Preserve module-specific names for install artifacts and tests; bare
+      # builder names collide when several core modules share one root flake.
+      stablecoinModuleAliases = builtins.mapAttrs (
+        system: attrs:
+        (if attrs ? lgx then { stablecoin-module-lgx = attrs.lgx; } else { })
+        // (if attrs ? install then { stablecoin-module-install = attrs.install; } else { })
+        // (if attrs ? unit-tests then { stablecoin-module-tests = attrs.unit-tests; } else { })
+      ) stablecoinModulePkgs;
+
       # Wrap the app launcher to export DYLD_FALLBACK_LIBRARY_PATH pointing at the
       # amm_ffi lib. The logos module builder links the plugin against
       # @rpath/libamm_ffi.dylib but does NOT stage that dylib into the
@@ -384,6 +418,8 @@
           ammModAliasPkgs = ammModuleAliases.${system} or { };
           tokenModSysPkgs = tokenModulePkgs.${system} or { };
           tokenModAliasPkgs = tokenModuleAliases.${system} or { };
+          stablecoinModSysPkgs = stablecoinModulePkgs.${system} or { };
+          stablecoinModAliasPkgs = stablecoinModuleAliases.${system} or { };
         in
         (builtins.removeAttrs cratePkgs [ "default" ])
         // (builtins.removeAttrs appSysPkgs [ "default" ])
@@ -398,6 +434,9 @@
         // (builtins.removeAttrs tokenModSysPkgs [ "default" ])
         // (if tokenModSysPkgs ? default then { token-module = tokenModSysPkgs.default; } else { })
         // tokenModAliasPkgs
+        // (builtins.removeAttrs stablecoinModSysPkgs [ "default" ])
+        // (if stablecoinModSysPkgs ? default then { stablecoin-module = stablecoinModSysPkgs.default; } else { })
+        // stablecoinModAliasPkgs
       ) crateOutputs.packages;
     in
     (builtins.removeAttrs appOutputs [ "apps" "packages" ])
