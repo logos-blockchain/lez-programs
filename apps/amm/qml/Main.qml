@@ -119,6 +119,9 @@ Item {
 
         SwapPage {
             id: swapPage
+            // Lets UI tests reach refreshHoldings() to re-pull the account list after
+            // an out-of-band balance change (e.g. faucet-swap.mjs mints then refreshes).
+            objectName: "swapPage"
 
             anchors.fill: parent
             visible: navbar.currentIndex === 0

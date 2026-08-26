@@ -18,6 +18,9 @@ members = [
     "programs/stablecoin/core",
     "programs/stablecoin",
     "programs/stablecoin/methods",
+    "programs/token_mint_authority/core",
+    "programs/token_mint_authority",
+    "programs/token_mint_authority/methods",
     "programs/integration_tests",
     "tools/idl-gen",
     "tools/risc0-packager",
@@ -27,6 +30,7 @@ exclude = [
     "programs/amm/methods/guest",
     "programs/ata/methods/guest",
     "programs/stablecoin/methods/guest",
+    "programs/token_mint_authority/methods/guest",
     "programs/twap_oracle/methods/guest",
     # Cycle benchmarks: standalone crate, kept out of --workspace builds/tests/CI. Run on demand
     # with `cargo test --manifest-path programs/benchmark/Cargo.toml -- --ignored --nocapture`.
@@ -47,6 +51,8 @@ twap_oracle_core = { path = "programs/twap_oracle/core" }
 twap_oracle_program = { path = "programs/twap_oracle" }
 stablecoin_core = { path = "programs/stablecoin/core" }
 stablecoin_program = { path = "programs/stablecoin" }
+token_mint_authority_core = { path = "programs/token_mint_authority/core" }
+token_mint_authority_program = { path = "programs/token_mint_authority" }
 serde = { version = "1.0", features = ["derive"] }
 borsh = { version = "1.5", features = ["derive"] }
 risc0-zkvm = { version = "=3.0.5" }

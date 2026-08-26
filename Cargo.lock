@@ -2227,7 +2227,9 @@ dependencies = [
  "stablecoin-methods",
  "stablecoin_core",
  "token-methods",
+ "token-mint-authority-methods",
  "token_core",
+ "token_mint_authority_core",
  "twap-oracle-methods",
  "twap_oracle_core",
 ]
@@ -4290,6 +4292,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "token-mint-authority-methods"
+version = "0.1.0"
+dependencies = [
+ "risc0-build",
+ "risc0-zkvm",
+ "token_mint_authority_core",
+]
+
+[[package]]
 name = "token_core"
 version = "0.1.0"
 dependencies = [
@@ -4311,6 +4322,31 @@ dependencies = [
  "serde",
  "serde_json",
  "token_core",
+]
+
+[[package]]
+name = "token_mint_authority_core"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-zkvm",
+ "serde",
+ "serde_json",
+ "spel-framework-macros",
+]
+
+[[package]]
+name = "token_mint_authority_program"
+version = "0.1.0"
+dependencies = [
+ "clock_core",
+ "hex",
+ "lee_core",
+ "risc0-binfmt",
+ "risc0-zkvm",
+ "token_core",
+ "token_mint_authority_core",
 ]
 
 [[package]]

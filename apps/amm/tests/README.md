@@ -20,6 +20,15 @@ inspector (framework from
   deliberately **absent** from the token config) into a Liquidity token slot and
   verifies the app resolves it, selects it, and **persists** it to the custom-token
   store — the "add an unlisted token by id" path. No pool / submit involved.
+- `faucet-swap.mjs` funds a **brand-new** account ("Token A Holder 2") that starts
+  with no token A: it `initialize_account`s the account's token A holding, then
+  submits a **FaucetMint** through the token-mint-authority program (both via `spel`,
+  out of band from the UI) to mint token A into it — the faucet only mints into an
+  **existing** holding, so the init must come first — then **refreshes** the UI so
+  the newly-funded holding appears in the sell picker, selects it, and swaps **A→B**,
+  verifying the pool reserves changed **on-chain**. Reads `testnet/faucet.json`
+  (written by the setup) and needs `spel` on `PATH` plus `LEE_WALLET_HOME_DIR`
+  pointing at the isolated test wallet.
 
 ## Isolation
 
@@ -66,6 +75,10 @@ node apps/amm/tests/create-pool.mjs   # create the (unseeded) A/C pool
 node apps/amm/tests/add-liquidity.mjs # add liquidity to the seeded A/B pool
 node apps/amm/tests/remove-liquidity.mjs # remove 50% from the seeded A/B pool
 node apps/amm/tests/custom-token.mjs  # add token D (unlisted) by id
+
+# faucet-swap needs spel on PATH + the isolated wallet home (so it can sign the mint)
+LEE_WALLET_HOME_DIR=$(pwd)/apps/amm/tests/testnet/.wallet \
+  node apps/amm/tests/faucet-swap.mjs # faucet-mint TKA to holder2, refresh, then swap
 ```
 
 Headless CI variant (no window, launches the app itself, pass/fail only):
@@ -99,6 +112,8 @@ nix build .#integration-test -L
 - `create-pool.mjs` — the end-to-end create-pool UI test (creates the A/C pool).
 - `add-liquidity.mjs` — the end-to-end add-liquidity UI test (adds to the A/B pool).
 - `remove-liquidity.mjs` — the end-to-end remove-liquidity UI test (removes 50% from the A/B pool).
+- `faucet-swap.mjs` — faucet-mint token A to a fresh account, refresh the UI, then swap A→B.
 - `testnet/setup-amm-testnet.sh` — isolated testnet + wallet bootstrap (TKA/TKB/TKC,
-  seeds the A/B pool only).
+  seeds the A/B pool only; also deploys the faucet, sets every token's mint authority
+  to the faucet PDA, and writes `testnet/faucet.json` for faucet-swap.mjs).
 - `qml/`, `cpp/` — the module's own QML/C++ unit tests.
