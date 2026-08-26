@@ -28,7 +28,7 @@ out_dir="${repo_root}/target/guest"
 rm -rf "${out_dir}"
 mkdir -p "${out_dir}"
 
-for program in amm ata stablecoin token twap_oracle; do
+for program in amm ata stablecoin token token_mint_authority twap_oracle; do
   rm -rf "${repo_root}/programs/${program}/methods/guest/target"
   install -m 0644 "${staging_dir}/${program}.bin" "${out_dir}/${program}.bin"
 done

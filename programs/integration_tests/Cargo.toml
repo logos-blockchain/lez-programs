@@ -15,8 +15,10 @@ token_core = { workspace = true }
 ata_core = { workspace = true }
 stablecoin_core = { workspace = true }
 twap_oracle_core = { workspace = true }
+token_mint_authority_core = { workspace = true }
 token-methods = { path = "../token/methods" }
 amm-methods = { path = "../amm/methods" }
 ata-methods = { path = "../ata/methods" }
 stablecoin-methods = { path = "../stablecoin/methods" }
 twap-oracle-methods = { path = "../twap_oracle/methods" }
+token-mint-authority-methods = { path = "../token_mint_authority/methods" }

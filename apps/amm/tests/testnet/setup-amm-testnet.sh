@@ -2,12 +2,22 @@
 #
 # setup-amm-testnet.sh
 # --------------------
-# Deploy the token/amm/twap programs, mint four fungible tokens, initialize the
-# AMM, and create the A/B pool — from scratch — against whatever sequencer your
-# `wallet` / `spel` config points at. This is the prerequisite state the AMM UI
-# tests exercise: swap.mjs swaps against the seeded A/B pool, create-pool.mjs
-# creates the (deliberately unseeded) A/C pool, and custom-token.mjs adds token D
-# by id. Run it once, then launch the UI / run the tests.
+# Deploy the token/amm/twap/token-mint-authority programs, mint four fungible
+# tokens, initialize the AMM, and create the A/B pool — from scratch — against
+# whatever sequencer your `wallet` / `spel` config points at. This is the
+# prerequisite state the AMM UI tests exercise: swap.mjs swaps against the seeded
+# A/B pool, create-pool.mjs creates the (deliberately unseeded) A/C pool, and
+# custom-token.mjs adds token D by id. Run it once, then launch the UI / run the
+# tests.
+#
+# FAUCET MINT AUTHORITY: every test token's `mint_authority` is set — at
+# NewFungibleDefinition time — to the token-mint-authority (faucet) program's
+# singleton mint-authority PDA, derived from the deployed faucet binary's ImageID.
+# The initial supply is still minted to the holding accounts at creation (that's
+# independent of mint_authority), so the pool still seeds normally; but AFTER that
+# the only way to mint more of these tokens is through the faucet. That's what
+# lets a brand-new account fund itself before swapping — the follow-up faucet e2e
+# test relies on this wiring.
 #
 # Token D is created ON-CHAIN but deliberately LEFT OUT of the written token config
 # (amm-tokens.json) — it is the "custom" token the custom-token.mjs test pastes by
@@ -78,12 +88,18 @@ TEST_SEQ_POLL_TIMEOUT="${TEST_SEQ_POLL_TIMEOUT:-3s}"
 
 # Deterministic accounts, created in THIS fixed order after a fresh restore so
 # their ids are reproducible. Resolved to ids at runtime via `wallet account id`.
-# token-c-*/token-d-* are APPENDED (not inserted) so the pre-existing a/b/lp ids don't shift.
+# token-c-*/token-d-*/holder2-* are APPENDED (not inserted) so the pre-existing a/b/lp ids don't shift.
 # Token C has no seeded pool — the create-pool UI test (apps/amm/tests/create-pool.mjs)
 # creates the A/C pool itself, minting its own LP holding via the app.
 # Token D is created but LEFT OUT of the token config — the custom-token UI test
 # (apps/amm/tests/custom-token.mjs) adds it by id.
-ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding token-d-def token-d-holding)
+# holder2 / holder2-a-holding are the "Token A Holder 2" pair for the faucet-swap UI
+# test (apps/amm/tests/faucet-swap.mjs): holder2 is the faucet recipient/signer and
+# rate-limit subject; holder2-a-holding is its (initially empty) token A holding that
+# the faucet mints into. They deliberately start with NO token A so the test can prove
+# the account only appears in the swap picker after a faucet mint + UI refresh. The
+# faucet requires recipient != user_holding, hence two accounts.
+ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding token-d-def token-d-holding holder2 holder2-a-holding)
 
 ###############################################################################
 # CONFIG — non-account parameters (edit freely)
@@ -93,10 +109,15 @@ ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holdi
 TOKEN_BIN="programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin"
 AMM_BIN="programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin"
 TWAP_BIN="programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin"
+# The faucet (token-mint-authority) binary. Its ImageID determines the mint-authority
+# PDA every test token is minted against, so it MUST be the exact bin deployed below.
+MINT_AUTHORITY_BIN="programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin"
 
 # --- IDLs ---
 TOKEN_IDL="artifacts/token-idl.json"
 AMM_IDL="artifacts/amm-idl.json"
+# The faucet IDL — not used by this setup, but the follow-up faucet e2e test reads it.
+MINT_AUTHORITY_IDL="artifacts/token_mint_authority-idl.json"
 
 # --- Token metadata ---
 TOKEN_A_NAME="TOKEN A"; TOKEN_A_SYMBOL="TKA"; TOKEN_A_SUPPLY="1000000000000000000000"; TOKEN_A_DECIMALS=18
@@ -133,6 +154,13 @@ REGISTRY_CONFIG_OUT="apps/amm/tests/testnet/amm-registry.json"
 # CUSTOM_TOKEN_CONFIG when launching the UI so custom-token.mjs controls it instead of
 # the app's default per-user store. Initialized empty so a test run starts clean.
 CUSTOM_TOKEN_CONFIG_OUT="apps/amm/tests/testnet/custom-tokens.json"
+
+# Faucet manifest for the faucet-swap UI test (git-ignored, tests only). Everything
+# apps/amm/tests/faucet-swap.mjs needs to (a) submit a FaucetMint via spel and (b)
+# drive the swap from the freshly-funded holder2 account: bin/IDL paths, the six
+# FaucetMint account ids (recipient/allowance/holding/definition/authority/clock),
+# and the token A definition id. Written at the end from the derived values.
+FAUCET_MANIFEST_OUT="apps/amm/tests/testnet/faucet.json"
 
 ###############################################################################
 # Helpers
@@ -201,6 +229,38 @@ program_id() {
   pid="$(printf '%s' "$out" | grep -oiE '[0-9a-f]{64}' | head -n1 || true)"
   [ -n "$pid" ] || { echo "$out" >&2; die "could not parse a 64-char program id from spel output for $bin"; }
   printf '%s' "$pid"
+}
+
+# Compute the faucet's singleton mint-authority PDA (base58) for a faucet binary.
+# Delegates to the token_mint_authority `mint_authority` example, which decodes the
+# bin, computes its ImageID, and derives compute_mint_authority_pda(). Must be run
+# against the exact bin being deployed — the PDA is ImageID-dependent.
+mint_authority_pda() {
+  local bin="$1" out pda
+  out="$(RISC0_DEV_MODE=1 RISC0_SKIP_BUILD=1 cargo run -q -p token_mint_authority_program \
+           --example mint_authority -- "$bin" 2>&1)" \
+    || { echo "$out" >&2; die "mint_authority example failed for $bin"; }
+  # The example prints a line like:  base58: <account id>
+  pda="$(printf '%s' "$out" | awk -F'base58:[[:space:]]*' 'NF>1 {print $2; exit}' \
+           | grep -oE '[1-9A-HJ-NP-Za-km-z]{32,44}' | head -n1 || true)"
+  [ -n "$pda" ] || { echo "$out" >&2; die "could not parse base58 mint-authority PDA from example output"; }
+  printf '%s' "$pda"
+}
+
+# Compute the faucet's per-(recipient, definition) mint-allowance PDA (base58).
+# Delegates to the token_mint_authority `faucet_allowance` example. This is the
+# rate-limit account FaucetMint claims/reads, and a required instruction input, so
+# it must be derived up front. ImageID-dependent — run against the deployed bin.
+#   mint_allowance_pda <faucet_bin> <recipient_base58> <definition_base58>
+mint_allowance_pda() {
+  local bin="$1" recipient="$2" definition="$3" out pda
+  out="$(RISC0_DEV_MODE=1 RISC0_SKIP_BUILD=1 cargo run -q -p token_mint_authority_program \
+           --example faucet_allowance -- "$bin" "$recipient" "$definition" 2>&1)" \
+    || { echo "$out" >&2; die "faucet_allowance example failed for $bin"; }
+  pda="$(printf '%s' "$out" | awk -F'base58:[[:space:]]*' 'NF>1 {print $2; exit}' \
+           | grep -oE '[1-9A-HJ-NP-Za-km-z]{32,44}' | head -n1 || true)"
+  [ -n "$pda" ] || { echo "$out" >&2; die "could not parse base58 mint-allowance PDA from example output"; }
+  printf '%s' "$pda"
 }
 
 # Resolve a wallet account id (bare base58) from its label. Deterministic under
@@ -292,10 +352,11 @@ sec "Preflight"
 require_cmd wallet
 require_cmd spel
 require_cmd cargo
-require_file "$TOKEN_BIN"; require_file "$AMM_BIN"; require_file "$TWAP_BIN"
-require_file "$TOKEN_IDL"; require_file "$AMM_IDL"
+require_file "$TOKEN_BIN"; require_file "$AMM_BIN"; require_file "$TWAP_BIN"; require_file "$MINT_AUTHORITY_BIN"
+require_file "$TOKEN_IDL"; require_file "$AMM_IDL"; require_file "$MINT_AUTHORITY_IDL"
 kv "repo root"        "$REPO_ROOT"
 kv "token bin" "$TOKEN_BIN"; kv "amm bin" "$AMM_BIN"; kv "twap bin" "$TWAP_BIN"
+kv "mint-authority bin" "$MINT_AUTHORITY_BIN"
 
 # Decide whether keys need restoring from the key material (storage.json), NOT the
 # home dir — write_wallet_config below creates the dir, so a dir check would always
@@ -332,12 +393,17 @@ TOKEN_C_DEF="$(acct_id token-c-def)"        || die "token-c-def not registered"
 TOKEN_C_HOLDING="$(acct_id token-c-holding)" || die "token-c-holding not registered"
 TOKEN_D_DEF="$(acct_id token-d-def)"        || die "token-d-def not registered"
 TOKEN_D_HOLDING="$(acct_id token-d-holding)" || die "token-d-holding not registered"
-for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP TOKEN_C_DEF TOKEN_C_HOLDING TOKEN_D_DEF TOKEN_D_HOLDING; do
+# "Token A Holder 2" — the faucet recipient/signer and its (initially empty) token A holding.
+HOLDER2="$(acct_id holder2)"                 || die "holder2 not registered — run with FORCE_BOOTSTRAP=1"
+HOLDER2_A_HOLDING="$(acct_id holder2-a-holding)" || die "holder2-a-holding not registered"
+for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP TOKEN_C_DEF TOKEN_C_HOLDING TOKEN_D_DEF TOKEN_D_HOLDING HOLDER2 HOLDER2_A_HOLDING; do
   [ -n "${!v}" ] || die "failed to resolve account id for $v"
 done
 
-# Derived roles (the input holding signs; mint authority == holding; authority is the A holding).
-TOKEN_A_MINT_AUTH="$TOKEN_A_HOLDING"; TOKEN_B_MINT_AUTH="$TOKEN_B_HOLDING"; TOKEN_C_MINT_AUTH="$TOKEN_C_HOLDING"; TOKEN_D_MINT_AUTH="$TOKEN_D_HOLDING"
+# Derived roles: the holding accounts sign creation and seed the pool; the AMM
+# authority is the A holding. Mint authority is deliberately NOT the holding — it's
+# the faucet PDA, set in step 3 once the faucet binary is deployed and its ImageID
+# (hence the PDA) is known.
 AMM_AUTHORITY="$TOKEN_A_HOLDING"
 USER_HOLDING_A="$TOKEN_A_HOLDING"; USER_HOLDING_B="$TOKEN_B_HOLDING"
 
@@ -350,21 +416,40 @@ kv "token-c-def"     "$TOKEN_C_DEF"
 kv "token-c-holding" "$TOKEN_C_HOLDING"
 kv "token-d-def"     "$TOKEN_D_DEF"
 kv "token-d-holding" "$TOKEN_D_HOLDING"
+kv "holder2"         "$HOLDER2"
+kv "holder2-a-holding" "$HOLDER2_A_HOLDING"
 
 ###############################################################################
 # 2. Deploy programs
 ###############################################################################
-run_tx soft "deploy token program"       -- wallet deploy-program "$TOKEN_BIN"
-run_tx soft "deploy amm program"         -- wallet deploy-program "$AMM_BIN"
-run_tx soft "deploy twap_oracle program" -- wallet deploy-program "$TWAP_BIN"
+run_tx soft "deploy token program"                -- wallet deploy-program "$TOKEN_BIN"
+run_tx soft "deploy amm program"                  -- wallet deploy-program "$AMM_BIN"
+run_tx soft "deploy twap_oracle program"          -- wallet deploy-program "$TWAP_BIN"
+run_tx soft "deploy token-mint-authority program" -- wallet deploy-program "$MINT_AUTHORITY_BIN"
 
 ###############################################################################
 # 3. Derive program IDs
 ###############################################################################
 sec "Program IDs (derived from the deployed binaries)"
-TOKEN_PID="$(program_id "$TOKEN_BIN")"; kv "token program id" "$TOKEN_PID"
-AMM_PID="$(program_id "$AMM_BIN")";     kv "amm program id"   "$AMM_PID"
-TWAP_PID="$(program_id "$TWAP_BIN")";   kv "twap program id"  "$TWAP_PID"
+TOKEN_PID="$(program_id "$TOKEN_BIN")";          kv "token program id"          "$TOKEN_PID"
+AMM_PID="$(program_id "$AMM_BIN")";              kv "amm program id"            "$AMM_PID"
+TWAP_PID="$(program_id "$TWAP_BIN")";            kv "twap program id"           "$TWAP_PID"
+MINT_AUTHORITY_PID="$(program_id "$MINT_AUTHORITY_BIN")"; kv "mint-authority program id" "$MINT_AUTHORITY_PID"
+
+# The faucet's singleton mint-authority PDA is derived from the DEPLOYED faucet
+# binary's ImageID. Every faucet token's definition sets its mint_authority to this
+# PDA, so afterwards only the faucet — via its program seed — can mint more. Derived
+# from the exact bin deployed above, so it stays correct across guest rebuilds.
+MINT_AUTHORITY_PDA="$(mint_authority_pda "$MINT_AUTHORITY_BIN")"
+kv "faucet mint-authority PDA" "$MINT_AUTHORITY_PDA"
+TOKEN_A_MINT_AUTH="$MINT_AUTHORITY_PDA"; TOKEN_B_MINT_AUTH="$MINT_AUTHORITY_PDA"
+TOKEN_C_MINT_AUTH="$MINT_AUTHORITY_PDA"; TOKEN_D_MINT_AUTH="$MINT_AUTHORITY_PDA"
+
+# The faucet-swap test's FaucetMint needs holder2's per-(recipient, token A) allowance
+# PDA — the rate-limit account it claims on first mint. Derived here (recipient=holder2,
+# definition=token A) so the test can pass it straight to spel without touching cargo.
+HOLDER2_ALLOWANCE_PDA="$(mint_allowance_pda "$MINT_AUTHORITY_BIN" "$HOLDER2" "$TOKEN_A_DEF")"
+kv "holder2 allowance PDA" "$HOLDER2_ALLOWANCE_PDA"
 
 ###############################################################################
 # 4. Create token definitions (mint supply to the holding accounts)
@@ -563,7 +648,7 @@ sec "Write UI registry config -> $REGISTRY_CONFIG_OUT"
   "name": "AMM local registry",
   "version": "0.1.0",
   "networks": [
-    { "id": "local", "name": "Local", "programIds": { "amm": "$AMM_PID", "token": "$TOKEN_PID" } }
+    { "id": "local", "name": "Local", "programIds": { "amm": "$AMM_PID", "token": "$TOKEN_PID", "tokenMintAuthority": "$MINT_AUTHORITY_PID" } }
   ],
   "tokens": [
     { "network": "local", "symbol": "$TOKEN_A_SYMBOL", "name": "$TOKEN_A_NAME", "definitionId": "$TOKEN_A_DEF" },
@@ -596,11 +681,46 @@ sec "Write custom-token store -> $CUSTOM_TOKEN_CONFIG_OUT"
 printf '%s\n' "[]" > "$CUSTOM_TOKEN_CONFIG_OUT"
 kv "wrote" "$CUSTOM_TOKEN_CONFIG_OUT (empty)"
 
+###############################################################################
+# 13. Write the faucet manifest for the faucet-swap UI test
+###############################################################################
+sec "Write faucet manifest -> $FAUCET_MANIFEST_OUT"
+# Everything apps/amm/tests/faucet-swap.mjs needs. The six faucet accounts are the
+# exact, ordered FaucetMint inputs (recipient, mint_allowance, user_holding,
+# token_definition, mint_authority, clock). tokenBin/tokenIdl let the test first
+# `initialize_account` holder2's token A holding (the faucet only mints into an
+# EXISTING holding — it doesn't sign user_holding, so it can't create a fresh one),
+# then FaucetMint into it. Paths are repo-relative (resolved against the repo root).
+cat > "$FAUCET_MANIFEST_OUT" <<JSON
+{
+  "tokenBin": "$TOKEN_BIN",
+  "tokenIdl": "$TOKEN_IDL",
+  "faucetBin": "$MINT_AUTHORITY_BIN",
+  "faucetIdl": "$MINT_AUTHORITY_IDL",
+  "faucetProgramId": "$MINT_AUTHORITY_PID",
+  "recipient": "$HOLDER2",
+  "mintAllowance": "$HOLDER2_ALLOWANCE_PDA",
+  "userHolding": "$HOLDER2_A_HOLDING",
+  "tokenDefinition": "$TOKEN_A_DEF",
+  "mintAuthority": "$MINT_AUTHORITY_PDA",
+  "clock": "$CLOCK_ACCOUNT",
+  "tokenASymbol": "$TOKEN_A_SYMBOL",
+  "tokenBSymbol": "$TOKEN_B_SYMBOL"
+}
+JSON
+kv "wrote" "$FAUCET_MANIFEST_OUT"
+
 sec "Done"
 log "${GRN}✅ Setup complete.${RST}"
-kv "AMM program id"  "$AMM_PID"
-kv "TWAP program id" "$TWAP_PID"
-kv "pool"            "$POOL"
+kv "AMM program id"            "$AMM_PID"
+kv "TWAP program id"           "$TWAP_PID"
+kv "mint-authority program id" "$MINT_AUTHORITY_PID"
+kv "faucet mint-authority PDA" "$MINT_AUTHORITY_PDA"
+kv "pool"                      "$POOL"
+log ""
+log "All test tokens' mint_authority is the faucet PDA above — mint more of any of"
+log "them through the token-mint-authority program (${DIM}FaucetMint${RST}). A brand-new account"
+log "can fund itself this way before swapping."
 log ""
 log "Launch the UI against the ISOLATED test wallet + test token config:"
 log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
@@ -624,3 +744,7 @@ log ""
 log "Then in another terminal: ${DIM}node apps/amm/tests/swap.mjs${RST}  (swap A/B)"
 log "                   or:     ${DIM}node apps/amm/tests/create-pool.mjs${RST}  (create A/C pool)"
 log "                   or:     ${DIM}node apps/amm/tests/custom-token.mjs${RST}  (add token D by id)"
+log "                   or:     ${DIM}node apps/amm/tests/faucet-swap.mjs${RST}  (faucet-mint TKA to holder2, then swap)"
+log ""
+log "The faucet-swap test reads ${DIM}$FAUCET_MANIFEST_OUT${RST} and needs ${DIM}spel${RST} +"
+log "${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME${RST} in its environment (same isolated wallet)."

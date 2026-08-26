@@ -18,7 +18,7 @@ RUN --mount=type=cache,id=${RISC0_BUILD_CACHE_ID}-cargo-git,sharing=locked,targe
 set -eu
 
 target_triple="riscv32im-risc0-zkvm-elf"
-programs="amm ata stablecoin token twap_oracle"
+programs="amm ata stablecoin token token_mint_authority twap_oracle"
 unit_separator="$(printf '\037')"
 guest_rustflags="-C${unit_separator}passes=lower-atomic${unit_separator}-C${unit_separator}link-arg=-Ttext=0x00200800${unit_separator}-C${unit_separator}link-arg=--fatal-warnings${unit_separator}-C${unit_separator}panic=abort${unit_separator}--cfg${unit_separator}getrandom_backend=\"custom\""
 export CARGO_ENCODED_RUSTFLAGS="${guest_rustflags}"
