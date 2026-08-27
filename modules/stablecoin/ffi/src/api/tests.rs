@@ -8,15 +8,16 @@ use serde_json::{json, Value};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
     compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda,
-    compute_stablecoin_master_holding_pda, Instruction, ProtocolParameters,
+    compute_stablecoin_master_holding_pda, Instruction, ProtocolParameters, RedemptionPriceState,
     StabilityFeeAccumulator,
 };
 use token_core::TokenDefinition;
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
-    decode_protocol_parameters, decode_stability_fee_accumulator, initialize_program_plan,
-    program_info, DecodeProtocolParametersRequest, DecodeStabilityFeeAccumulatorRequest,
+    decode_protocol_parameters, decode_redemption_price_state, decode_stability_fee_accumulator,
+    initialize_program_plan, program_info, DecodeProtocolParametersRequest,
+    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
     InitializeProgramPlanRequest, ProgramInfoRequest, StablecoinResult,
 };
 use crate::account::{account_id_hex, account_read, program_id_bytes};
@@ -108,6 +109,28 @@ fn accumulator_request(
         stability_fee_accumulator: account_read(
             account_id,
             &account(STABLECOIN_PROGRAM_ID, Data::from(accumulator)),
+        ),
+    }
+}
+
+fn redemption_price_state(controller_integral_term: i128) -> RedemptionPriceState {
+    RedemptionPriceState {
+        redemption_price_at_last_update: u128::MAX,
+        redemption_rate_per_millisecond: u128::MAX,
+        controller_integral_term,
+        last_updated_at: u64::MAX,
+    }
+}
+
+fn redemption_price_state_request(
+    state: &RedemptionPriceState,
+) -> DecodeRedemptionPriceStateRequest {
+    let account_id = compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID);
+    DecodeRedemptionPriceStateRequest {
+        stablecoin_program_id: program_id_hex(),
+        redemption_price_state: account_read(
+            account_id,
+            &account(STABLECOIN_PROGRAM_ID, Data::from(state)),
         ),
     }
 }
@@ -382,6 +405,89 @@ fn stability_fee_accumulator_decode_rejects_truncated_and_trailing_data() {
         assert_error(
             decode_stability_fee_accumulator(request),
             "invalid_stability_fee_accumulator_data",
+        );
+    }
+}
+
+#[test]
+fn redemption_price_state_decode_preserves_fixed_id_and_boundary_values() {
+    let expected_id = compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID);
+    assert_eq!(
+        account_id_hex(expected_id),
+        "8ec72eaff1c70ac76ed0c139026671fc9991cae1466749dffb3280a5a5aed533"
+    );
+    assert_eq!(
+        expected_id.to_string(),
+        "AcM3xWAMKUEPPzCjT1EHssertgGhvDhLe8KGP1uvbRjp"
+    );
+
+    for controller_integral_term in [1, 0, -1, i128::MIN, i128::MAX] {
+        let state = redemption_price_state(controller_integral_term);
+        let value = ok(decode_redemption_price_state(
+            redemption_price_state_request(&state),
+        ));
+
+        assert_eq!(value["accountId"], expected_id.to_string());
+        assert_eq!(value["accountIdHex"], account_id_hex(expected_id));
+        assert_eq!(value["redemptionPriceAtLastUpdate"], u128::MAX.to_string());
+        assert_eq!(value["redemptionRatePerMillisecond"], u128::MAX.to_string());
+        assert_eq!(
+            value["controllerIntegralTerm"],
+            controller_integral_term.to_string()
+        );
+        assert_eq!(value["lastUpdatedAt"], u64::MAX.to_string());
+    }
+}
+
+#[test]
+fn redemption_price_state_decode_rejects_failed_reads_and_wrong_identity() {
+    let state = redemption_price_state(0);
+
+    for status in ["not_found", "backend_error"] {
+        let mut failed = redemption_price_state_request(&state);
+        failed.redemption_price_state.status = String::from(status);
+        failed.redemption_price_state.account = None;
+        assert_error(decode_redemption_price_state(failed), "account_read_failed");
+    }
+
+    let mut wrong_pda = redemption_price_state_request(&state);
+    wrong_pda.redemption_price_state.id = account_id_hex(id(20));
+    assert_error(
+        decode_redemption_price_state(wrong_pda),
+        "redemption_price_state_pda_mismatch",
+    );
+
+    let mut wrong_owner = redemption_price_state_request(&state);
+    if let Some(account) = &mut wrong_owner.redemption_price_state.account {
+        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+    }
+    assert_error(
+        decode_redemption_price_state(wrong_owner),
+        "stablecoin_program_mismatch",
+    );
+}
+
+#[test]
+fn redemption_price_state_decode_rejects_truncated_and_trailing_data() {
+    let state = redemption_price_state(i128::MIN);
+    let account_id = compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID);
+    let encoded = Data::from(&state).as_ref().to_vec();
+
+    for malformed in [encoded[..encoded.len() - 1].to_vec(), {
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        trailing
+    }] {
+        let request = DecodeRedemptionPriceStateRequest {
+            stablecoin_program_id: program_id_hex(),
+            redemption_price_state: account_read(
+                account_id,
+                &account(STABLECOIN_PROGRAM_ID, ok(Data::try_from(malformed))),
+            ),
+        };
+        assert_error(
+            decode_redemption_price_state(request),
+            "invalid_redemption_price_state_data",
         );
     }
 }
