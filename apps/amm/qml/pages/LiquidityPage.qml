@@ -156,6 +156,8 @@ onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers(); root.refresh
     Connections {
         target: root.backend
         function onIsWalletOpenChanged() { root.refreshHoldings(); root.refreshTokens() }
+        // Re-fetch when the registry snapshot refreshes (e.g. a remote list lands).
+        function onRegistryRevisionChanged() { root.refreshTokens() }
     }
 
     readonly property int pageMargin: width < 640 ? 16 : 24

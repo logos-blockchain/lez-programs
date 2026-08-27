@@ -42,6 +42,7 @@ logos_module(
         Qt6Gui
     LINK_LIBRARIES
         Qt6::Gui
+        Qt6::Network
     LINK_TARGETS
         logos_wallet_access
 )
