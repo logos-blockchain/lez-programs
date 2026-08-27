@@ -49,7 +49,7 @@ pub fn current_global_state(request: CurrentGlobalStateRequest) -> StablecoinRes
     }))
 }
 
-fn clock_timestamp(read: &crate::AccountRead) -> Result<u64, StablecoinApiError> {
+pub(super) fn clock_timestamp(read: &crate::AccountRead) -> Result<u64, StablecoinApiError> {
     let (account_id, account) =
         decode_account(read).map_err(|_| StablecoinApiError::new("account_read_failed"))?;
     if account_id != CLOCK_01_PROGRAM_ACCOUNT_ID {
