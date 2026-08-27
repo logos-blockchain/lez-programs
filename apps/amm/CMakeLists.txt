@@ -36,6 +36,8 @@ logos_module(
         src/AmmUiPlugin.cpp
         src/AmmUiBackend.h
         src/AmmUiBackend.cpp
+        src/RegistryLoader.h
+        src/RegistryLoader.cpp
     FIND_PACKAGES
         Qt6Gui
     LINK_LIBRARIES

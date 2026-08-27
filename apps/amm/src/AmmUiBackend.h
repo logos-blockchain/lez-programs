@@ -18,6 +18,7 @@ class LogosAPI;
 struct LogosModules;
 class LogosWalletProvider;
 class WalletController;
+class RegistryLoader;
 
 // Source-side implementation of the AmmUiBackend .rep interface.
 // Inheriting from AmmUiBackendSimpleSource gives us the generated PROPs and
@@ -101,6 +102,8 @@ public slots:
     QVariantList resolveTokens() override;
     // Validates + persists a user-pasted custom token id (see the .rep).
     QVariantMap addCustomToken(QString tokenId) override;
+    // Re-loads the known-tokens / known-pools registry (bumps registryRevision).
+    void refreshRegistry() override;
 
 private:
     void syncWalletState();
@@ -120,6 +123,8 @@ private:
     std::unique_ptr<LogosModules> m_logos;
     std::unique_ptr<LogosWalletProvider> m_wallet;
     std::unique_ptr<WalletController> m_walletController;
+    // Known-tokens / known-pools snapshot source (local files now; remote later).
+    std::unique_ptr<RegistryLoader> m_registry;
 };
 
 #endif // AMM_UI_BACKEND_H
