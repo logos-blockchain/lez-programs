@@ -33,8 +33,8 @@ namespace {
     // which carry no network tag). Fail-soft: one malformed entry is skipped.
     // symbol/name are display; definitionId is the token's account id and passes
     // through as configured (base58 or hex). `holding` is per-wallet and absent
-    // from a shared registry — the app resolves it — so only definitionId and a
-    // valid decimals are required.
+    // from a shared registry — the app resolves it — so only definitionId is
+    // required. `decimals` is optional (the app doesn't use it yet); absent ⇒ 0.
     QVariantList parseTokens(const QJsonArray& arr, const QString& networkFilter)
     {
         QVariantList out;
@@ -48,7 +48,7 @@ namespace {
 
             const QString definitionId = obj.value(QStringLiteral("definitionId")).toString();
             const QJsonValue decimals = obj.value(QStringLiteral("decimals"));
-            if (definitionId.isEmpty() || !decimals.isDouble())
+            if (definitionId.isEmpty())
                 continue;
 
             QVariantMap token;
