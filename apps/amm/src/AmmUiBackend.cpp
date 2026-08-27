@@ -52,7 +52,7 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
         if (!RegistryLoader::hasLocalSource()) {
             const QVariantMap cfg = m_logos->amm_module.configAccount();
             if (cfg.value(QStringLiteral("status")).toString() == QStringLiteral("ok")) {
-                m_registry->setExpectedProgramIds(
+                m_registry->setConnectedProgramIds(
                     cfg.value(QStringLiteral("ammProgramId")).toString(),
                     cfg.value(QStringLiteral("tokenProgramId")).toString());
             }
