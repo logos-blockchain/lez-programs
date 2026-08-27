@@ -32,6 +32,10 @@ public:
     /// Returns stored controller state without projecting the current price.
     LogosMap redemptionPriceState();
 
+    /// Reads all global state and projects the accumulator and redemption price
+    /// at the canonical CLOCK_01 timestamp.
+    LogosMap currentGlobalState();
+
     /// Initializes the stablecoin protocol. Request fields are `adminId`,
     /// `freezeAuthorityId`, `collateralDefinitionId`, `marketPriceOracleId`,
     /// `initialStabilityFeePerMillisecond`,
