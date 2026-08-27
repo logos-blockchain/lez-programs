@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"] }
 clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+alloy-primitives = { version = "1", default-features = false }
 stablecoin_core = { path = "core" }
 token_core = { path = "../token/core" }
 twap_oracle_core = { path = "../twap_oracle/core" }
