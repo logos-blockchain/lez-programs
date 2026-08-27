@@ -98,11 +98,17 @@ Item {
             })
     }
 
+    function loadTokens() {
+        if (!root.backend)
+            return
+        logos.watch(root.backend.tokenList(),
+            function(list) { root.tokens = list },
+            function(err) { console.warn("tokenList error:", err) })
+    }
+
     onBackendChanged: {
         if (root.backend) {
-            logos.watch(root.backend.tokenList(),
-                function(list) { root.tokens = list },
-                function(err) { console.warn("tokenList error:", err) })
+            root.loadTokens()
             root.refreshHoldings()
         }
     }
@@ -110,6 +116,8 @@ Item {
     Connections {
         target: root.backend
         function onIsWalletOpenChanged() { root.refreshHoldings() }
+        // Re-fetch when the registry snapshot refreshes (e.g. a remote list lands).
+        function onRegistryRevisionChanged() { root.loadTokens() }
     }
 
     QtObject {
