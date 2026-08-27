@@ -1,0 +1,49 @@
+{
+  "name": "Logos AMM registry",
+  "version": "0.1.0",
+  "timestamp": "2026-08-27T00:00:00Z",
+  "networks": [
+    {
+      "id": "testnet",
+      "name": "Testnet",
+      "programIds": {
+        "amm": "",
+        "token": ""
+      }
+    }
+  ],
+  "tokens": [
+    {
+      "network": "testnet",
+      "symbol": "TKA",
+      "name": "TOKEN A",
+      "definitionId": "Eiw5zDP1BKukkxMY8dj7Hkw9NfCTh6iU5av5F7FT8ExC",
+      "decimals": 18
+    },
+    {
+      "network": "testnet",
+      "symbol": "TKB",
+      "name": "TOKEN B",
+      "definitionId": "HGcyQfm45BQ39iWXZND5ZPBKCenrhfGyhjcLE2t63RKi",
+      "decimals": 18
+    },
+    {
+      "network": "testnet",
+      "symbol": "TKC",
+      "name": "TOKEN C",
+      "definitionId": "G7bFoYceBmFtsCNWL89nm86aigvybuo5Jm9v5xGkD73c",
+      "decimals": 18
+    }
+  ],
+  "pools": [
+    {
+      "network": "testnet",
+      "tokenA": "TKA",
+      "tokenB": "TKB",
+      "feeBps": 1,
+      "poolId": "2imc6PrWbLnnuWgNpw6QUp6YkH8xbfLtWG57RxUBxEkS",
+      "tokenADefinitionId": "Eiw5zDP1BKukkxMY8dj7Hkw9NfCTh6iU5av5F7FT8ExC",
+      "tokenBDefinitionId": "HGcyQfm45BQ39iWXZND5ZPBKCenrhfGyhjcLE2t63RKi"
+    }
+  ]
+}
