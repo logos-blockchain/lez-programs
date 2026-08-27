@@ -47,6 +47,18 @@ extern "C" char* stablecoin_redemption_rate_update_quote(const char*) {
     return copyMockResponse("stablecoin_redemption_rate_update_quote");
 }
 
+extern "C" char* stablecoin_accrue_stability_fee_plan(const char*) {
+    return copyMockResponse("stablecoin_accrue_stability_fee_plan");
+}
+
+extern "C" char* stablecoin_update_redemption_rate_plan(const char*) {
+    return copyMockResponse("stablecoin_update_redemption_rate_plan");
+}
+
+extern "C" char* stablecoin_refresh_globals_plan(const char*) {
+    return copyMockResponse("stablecoin_refresh_globals_plan");
+}
+
 extern "C" char* stablecoin_initialize_program_plan(const char*) {
     return copyMockResponse("stablecoin_initialize_program_plan");
 }
