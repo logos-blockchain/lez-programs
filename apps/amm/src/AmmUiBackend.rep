@@ -18,6 +18,10 @@ class AmmUiBackend
     // Whether the configured sequencer answered the last reachability probe.
     // Defaults true so the UI doesn't flash a warning before the first check.
     PROP(bool sequencerReachable READONLY)
+    // Bumps on every known-tokens / known-pools registry refresh so QML replicas
+    // re-fetch tokenList()/poolList()/resolveTokens(). Starts at 0; the backend
+    // sets it once the initial snapshot has loaded (and again on each refresh).
+    PROP(int registryRevision READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
@@ -201,4 +205,9 @@ class AmmUiBackend
     // and returns { ok: true, token: <row> } with the resolved row; on an unresolvable /
     // non-fungible id returns { ok: false, error: "unresolved" } and persists nothing.
     SLOT(QVariantMap addCustomToken(QString tokenId))
+
+    // Re-loads the known-tokens / known-pools source (the local files, or later
+    // a remote registry). Bumps registryRevision when the snapshot updates so
+    // QML re-fetches the lists.
+    SLOT(void refreshRegistry())
 }
