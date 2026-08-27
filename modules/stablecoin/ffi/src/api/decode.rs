@@ -1,9 +1,12 @@
 use serde_json::{json, Value};
-use stablecoin_core::{compute_protocol_parameters_pda, ProtocolParameters};
+use stablecoin_core::{
+    compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda, ProtocolParameters,
+    StabilityFeeAccumulator,
+};
 
 use super::{
-    parse_stablecoin_program_id, DecodeProtocolParametersRequest, StablecoinApiError,
-    StablecoinResult,
+    parse_stablecoin_program_id, DecodeProtocolParametersRequest,
+    DecodeStabilityFeeAccumulatorRequest, StablecoinApiError, StablecoinResult,
 };
 use crate::account::{account_id_hex, decode_account};
 
@@ -22,6 +25,27 @@ pub fn decode_protocol_parameters(request: DecodeProtocolParametersRequest) -> S
     let parameters = ProtocolParameters::try_from(&account.data)
         .map_err(|_| StablecoinApiError::new("invalid_protocol_parameters_data"))?;
     Ok(parameters_value(account_id, &parameters))
+}
+
+pub fn decode_stability_fee_accumulator(
+    request: DecodeStabilityFeeAccumulatorRequest,
+) -> StablecoinResult {
+    let stablecoin_program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
+    let (account_id, account) = decode_account(&request.stability_fee_accumulator)
+        .map_err(|_| StablecoinApiError::new("account_read_failed"))?;
+
+    if account_id != compute_stability_fee_accumulator_pda(stablecoin_program_id) {
+        return Err(StablecoinApiError::new(
+            "stability_fee_accumulator_pda_mismatch",
+        ));
+    }
+    if account.program_owner != stablecoin_program_id {
+        return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
+    }
+
+    let accumulator = StabilityFeeAccumulator::try_from(&account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_stability_fee_accumulator_data"))?;
+    Ok(stability_fee_accumulator_value(account_id, &accumulator))
 }
 
 fn parameters_value(
@@ -50,5 +74,18 @@ fn parameters_value(
         "maximumOraclePriceAgeMilliseconds":
             parameters.maximum_oracle_price_age_milliseconds.to_string(),
         "isFrozen": parameters.is_frozen,
+    })
+}
+
+fn stability_fee_accumulator_value(
+    account_id: lee_core::account::AccountId,
+    accumulator: &StabilityFeeAccumulator,
+) -> Value {
+    json!({
+        "accountId": account_id.to_string(),
+        "accountIdHex": account_id_hex(account_id),
+        "accumulatedRateAtLastAccrual":
+            accumulator.accumulated_rate_at_last_accrual.to_string(),
+        "lastAccruedAt": accumulator.last_accrued_at.to_string(),
     })
 }
