@@ -9,14 +9,15 @@ use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
     compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda,
     compute_stablecoin_master_holding_pda, Instruction, ProtocolParameters,
+    StabilityFeeAccumulator,
 };
 use token_core::TokenDefinition;
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
-    decode_protocol_parameters, initialize_program_plan, program_info,
-    DecodeProtocolParametersRequest, InitializeProgramPlanRequest, ProgramInfoRequest,
-    StablecoinResult,
+    decode_protocol_parameters, decode_stability_fee_accumulator, initialize_program_plan,
+    program_info, DecodeProtocolParametersRequest, DecodeStabilityFeeAccumulatorRequest,
+    InitializeProgramPlanRequest, ProgramInfoRequest, StablecoinResult,
 };
 use crate::account::{account_id_hex, account_read, program_id_bytes};
 
@@ -87,6 +88,26 @@ fn protocol_request(parameters: &ProtocolParameters) -> DecodeProtocolParameters
         protocol_parameters: account_read(
             account_id,
             &account(STABLECOIN_PROGRAM_ID, Data::from(parameters)),
+        ),
+    }
+}
+
+fn stability_fee_accumulator() -> StabilityFeeAccumulator {
+    StabilityFeeAccumulator {
+        accumulated_rate_at_last_accrual: u128::MAX,
+        last_accrued_at: u64::MAX,
+    }
+}
+
+fn accumulator_request(
+    accumulator: &StabilityFeeAccumulator,
+) -> DecodeStabilityFeeAccumulatorRequest {
+    let account_id = compute_stability_fee_accumulator_pda(STABLECOIN_PROGRAM_ID);
+    DecodeStabilityFeeAccumulatorRequest {
+        stablecoin_program_id: program_id_hex(),
+        stability_fee_accumulator: account_read(
+            account_id,
+            &account(STABLECOIN_PROGRAM_ID, Data::from(accumulator)),
         ),
     }
 }
@@ -290,6 +311,79 @@ fn protocol_parameters_decode_rejects_wrong_pda_owner_and_non_exact_data() {
         decode_protocol_parameters(malformed),
         "invalid_protocol_parameters_data",
     );
+}
+
+#[test]
+fn stability_fee_accumulator_decode_preserves_fixed_id_and_boundary_values() {
+    let accumulator = stability_fee_accumulator();
+    let value = ok(decode_stability_fee_accumulator(accumulator_request(
+        &accumulator,
+    )));
+
+    assert_eq!(
+        value["accountId"],
+        "E4tfkjjkPz2g1G3bpgkXQx4M7e7g4Lr2Mr8bxvAsSmzE"
+    );
+    assert_eq!(
+        value["accountIdHex"],
+        "c22718073968c322725e4ba774b270036c294663a547f43285a214614c1c258f"
+    );
+    assert_eq!(value["accumulatedRateAtLastAccrual"], u128::MAX.to_string());
+    assert_eq!(value["lastAccruedAt"], u64::MAX.to_string());
+}
+
+#[test]
+fn stability_fee_accumulator_decode_rejects_failed_reads_and_wrong_identity() {
+    let accumulator = stability_fee_accumulator();
+
+    let mut missing = accumulator_request(&accumulator);
+    missing.stability_fee_accumulator.status = String::from("not_found");
+    missing.stability_fee_accumulator.account = None;
+    assert_error(
+        decode_stability_fee_accumulator(missing),
+        "account_read_failed",
+    );
+
+    let mut wrong_pda = accumulator_request(&accumulator);
+    wrong_pda.stability_fee_accumulator.id = account_id_hex(id(20));
+    assert_error(
+        decode_stability_fee_accumulator(wrong_pda),
+        "stability_fee_accumulator_pda_mismatch",
+    );
+
+    let mut wrong_owner = accumulator_request(&accumulator);
+    if let Some(account) = &mut wrong_owner.stability_fee_accumulator.account {
+        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+    }
+    assert_error(
+        decode_stability_fee_accumulator(wrong_owner),
+        "stablecoin_program_mismatch",
+    );
+}
+
+#[test]
+fn stability_fee_accumulator_decode_rejects_truncated_and_trailing_data() {
+    let accumulator = stability_fee_accumulator();
+    let account_id = compute_stability_fee_accumulator_pda(STABLECOIN_PROGRAM_ID);
+    let encoded = Data::from(&accumulator).as_ref().to_vec();
+
+    for malformed in [encoded[..encoded.len() - 1].to_vec(), {
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        trailing
+    }] {
+        let request = DecodeStabilityFeeAccumulatorRequest {
+            stablecoin_program_id: program_id_hex(),
+            stability_fee_accumulator: account_read(
+                account_id,
+                &account(STABLECOIN_PROGRAM_ID, ok(Data::try_from(malformed))),
+            ),
+        };
+        assert_error(
+            decode_stability_fee_accumulator(request),
+            "invalid_stability_fee_accumulator_data",
+        );
+    }
 }
 
 #[test]
