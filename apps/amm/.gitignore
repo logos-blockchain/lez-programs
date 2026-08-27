@@ -21,6 +21,9 @@ tests/testnet/amm-tokens.json
 # Isolated known-pools config written by tests/testnet/setup-amm-testnet.sh
 tests/testnet/amm-pools.json
 
+# Isolated single-file registry (AMM_REGISTRY_URL path) written by the setup script
+tests/testnet/amm-registry.json
+
 # Isolated custom-token store (CUSTOM_TOKEN_CONFIG) — initialized by the setup script
 # and written by the app during tests/custom-token.mjs
 tests/testnet/custom-tokens.json
