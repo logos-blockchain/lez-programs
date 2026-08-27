@@ -14,115 +14,10 @@
 #include <QTimer>
 
 #include "LogosWalletProvider.h"
+#include "RegistryLoader.h"
 #include "WalletController.h"
 #include "logos_api.h"
 #include "logos_sdk.h"
-
-namespace {
-    // Absolute path to the JSON known-pools config consumed by poolList().
-    // Mirrors TOKENS_CONFIG for the token list; produced by the AMM testnet
-    // setup script (apps/amm/tests/testnet/setup-amm-testnet.sh).
-    constexpr char POOLS_CONFIG_ENV[] = "AMM_POOLS_CONFIG";
-
-    // Parses the AMM_POOLS_CONFIG JSON file into the QVariantList the Pools UI
-    // renders. Fails soft (empty list) when the env var is unset, the file is
-    // unreadable, or the payload is not a JSON array — one malformed entry is
-    // skipped rather than dropping the whole list. tokenA/tokenB (display
-    // symbols) and a numeric feeBps are required; the id fields pass through
-    // when present so the entry can later be resolved on-chain.
-    QVariantList parsePoolsJson(const QByteArray& bytes)
-    {
-        QVariantList out;
-
-        const QJsonDocument doc = QJsonDocument::fromJson(bytes);
-        if (!doc.isArray())
-            return out;
-
-        for (const QJsonValue& entry : doc.array()) {
-            if (!entry.isObject())
-                continue;
-            const QJsonObject obj = entry.toObject();
-
-            const QString tokenA = obj.value(QStringLiteral("tokenA")).toString();
-            const QString tokenB = obj.value(QStringLiteral("tokenB")).toString();
-            const QJsonValue feeBps = obj.value(QStringLiteral("feeBps"));
-            if (tokenA.isEmpty() || tokenB.isEmpty() || !feeBps.isDouble())
-                continue;
-
-            QVariantMap pool;
-            pool.insert(QStringLiteral("tokenA"), tokenA);
-            pool.insert(QStringLiteral("tokenB"), tokenB);
-            pool.insert(QStringLiteral("feeBps"), feeBps.toInt());
-            pool.insert(QStringLiteral("poolId"),
-                        obj.value(QStringLiteral("poolId")).toString());
-            pool.insert(QStringLiteral("tokenADefinitionId"),
-                        obj.value(QStringLiteral("tokenADefinitionId")).toString());
-            pool.insert(QStringLiteral("tokenBDefinitionId"),
-                        obj.value(QStringLiteral("tokenBDefinitionId")).toString());
-            out.append(pool);
-        }
-        return out;
-    }
-
-    // Absolute path to the JSON token-list config consumed by tokenList().
-    constexpr char TOKENS_CONFIG_ENV[] = "TOKENS_CONFIG";
-
-    // Parses the TOKENS_CONFIG JSON file into the QVariantList the Swap token
-    // picker renders. Same fail-soft, skip-malformed-entry behavior as
-    // readPoolsConfig(). symbol/name are display; definitionId/holding are the
-    // token's account ids and pass through as configured (base58 or hex) — the
-    // module methods normalize to hex at their boundary. decimals must be a
-    // non-negative integer (a wrong value would misrender amounts).
-    QVariantList parseTokensJson(const QByteArray& bytes)
-    {
-        QVariantList out;
-
-        const QJsonDocument doc = QJsonDocument::fromJson(bytes);
-        if (!doc.isArray())
-            return out;
-
-        for (const QJsonValue& entry : doc.array()) {
-            if (!entry.isObject())
-                continue;
-            const QJsonObject obj = entry.toObject();
-
-            const QString definitionId = obj.value(QStringLiteral("definitionId")).toString();
-            const QString holding = obj.value(QStringLiteral("holding")).toString();
-            const QJsonValue decimals = obj.value(QStringLiteral("decimals"));
-            if (definitionId.isEmpty() || holding.isEmpty() || !decimals.isDouble())
-                continue;
-
-            QVariantMap token;
-            token.insert(QStringLiteral("symbol"), obj.value(QStringLiteral("symbol")).toString());
-            token.insert(QStringLiteral("name"), obj.value(QStringLiteral("name")).toString());
-            token.insert(QStringLiteral("definitionId"), definitionId);
-            token.insert(QStringLiteral("holding"), holding);
-            token.insert(QStringLiteral("decimals"), decimals.toInt());
-            out.append(token);
-        }
-        return out;
-    }
-
-    // v1 registry source: a local JSON file at an env-var path. Returns empty on
-    // unset/unreadable — callers fail soft. Phase 2 will add a remote source
-    // (AMM_REGISTRY_URL) whose fetched payload feeds the same parsers above.
-    QByteArray readConfigFileBytes(const char* envVar)
-    {
-        const QString path = qEnvironmentVariable(envVar);
-        if (path.isEmpty())
-            return {};
-
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-            return {};
-
-        return file.readAll();
-    }
-
-    QVariantList readTokensConfig() { return parseTokensJson(readConfigFileBytes(TOKENS_CONFIG_ENV)); }
-    QVariantList readPoolsConfig() { return parsePoolsJson(readConfigFileBytes(POOLS_CONFIG_ENV)); }
-}
-
 
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     : AmmUiBackendSimpleSource(parent),
@@ -130,9 +25,17 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
       m_logos(std::make_unique<LogosModules>(m_logosAPI)),
       m_wallet(std::make_unique<LogosWalletProvider>(m_logosAPI)),
       m_walletController(std::make_unique<WalletController>(
-          *m_wallet, QStringLiteral("AmmUI")))
+          *m_wallet, QStringLiteral("AmmUI"))),
+      m_registry(std::make_unique<RegistryLoader>())
 {
     setWalletStateReady(false);
+
+    // Load the known-tokens / known-pools registry, and bump registryRevision on
+    // every refresh so QML replicas re-fetch tokenList()/poolList()/resolveTokens().
+    connect(m_registry.get(), &RegistryLoader::changed, this, [this]() {
+        setRegistryRevision(m_registry->revision());
+    });
+    m_registry->refresh();
 
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);
@@ -333,8 +236,16 @@ QVariantList AmmUiBackend::tokenList()
     // Config-driven token list, read straight from TOKENS_CONFIG (like poolList
     // reads AMM_POOLS_CONFIG). Token discovery is an app concern, so this stays
     // in the backend rather than the amm_module; the swap/quote module methods
-    // normalize the ids (base58 or hex) at their boundary.
-    return readTokensConfig();
+    // normalize the ids (base58 or hex) at their boundary. Served from the
+    // RegistryLoader snapshot (re-fetched when registryRevision changes).
+    return m_registry->tokens();
+}
+
+void AmmUiBackend::refreshRegistry()
+{
+    // Manual re-load of the known-tokens/known-pools source. The loader bumps
+    // registryRevision and the UI re-fetches the lists.
+    m_registry->refresh();
 }
 
 QVariantMap AmmUiBackend::createPoolQuote(QVariantMap request)
@@ -370,8 +281,8 @@ QVariantList AmmUiBackend::poolList()
     // Config-driven known pools. Read straight from AMM_POOLS_CONFIG on every
     // call (the UI fetches this once on load); adding more pairs is a config
     // edit, no app change. Pool discovery is an app concern, so this stays in
-    // the backend rather than the amm_module.
-    return readPoolsConfig();
+    // the backend rather than the amm_module. Served from the RegistryLoader snapshot.
+    return m_registry->pools();
 }
 
 QVariantList AmmUiBackend::feeTiers()
@@ -391,7 +302,7 @@ QVariantList AmmUiBackend::resolveTokens()
     const bool wallet_open = isWalletOpen();
 
     QVariantList ids;
-    const QVariantList configured = readTokensConfig();
+    const QVariantList configured = m_registry->tokens();
     for (const QVariant& entry : configured) {
         const QString id = entry.toMap().value(QStringLiteral("definitionId")).toString();
         if (!id.isEmpty())
