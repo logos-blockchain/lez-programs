@@ -30,19 +30,11 @@ namespace {
     // skipped rather than dropping the whole list. tokenA/tokenB (display
     // symbols) and a numeric feeBps are required; the id fields pass through
     // when present so the entry can later be resolved on-chain.
-    QVariantList readPoolsConfig()
+    QVariantList parsePoolsJson(const QByteArray& bytes)
     {
         QVariantList out;
 
-        const QString path = qEnvironmentVariable(POOLS_CONFIG_ENV);
-        if (path.isEmpty())
-            return out;
-
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-            return out;
-
-        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        const QJsonDocument doc = QJsonDocument::fromJson(bytes);
         if (!doc.isArray())
             return out;
 
@@ -81,19 +73,11 @@ namespace {
     // token's account ids and pass through as configured (base58 or hex) — the
     // module methods normalize to hex at their boundary. decimals must be a
     // non-negative integer (a wrong value would misrender amounts).
-    QVariantList readTokensConfig()
+    QVariantList parseTokensJson(const QByteArray& bytes)
     {
         QVariantList out;
 
-        const QString path = qEnvironmentVariable(TOKENS_CONFIG_ENV);
-        if (path.isEmpty())
-            return out;
-
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-            return out;
-
-        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        const QJsonDocument doc = QJsonDocument::fromJson(bytes);
         if (!doc.isArray())
             return out;
 
@@ -118,6 +102,25 @@ namespace {
         }
         return out;
     }
+
+    // v1 registry source: a local JSON file at an env-var path. Returns empty on
+    // unset/unreadable — callers fail soft. Phase 2 will add a remote source
+    // (AMM_REGISTRY_URL) whose fetched payload feeds the same parsers above.
+    QByteArray readConfigFileBytes(const char* envVar)
+    {
+        const QString path = qEnvironmentVariable(envVar);
+        if (path.isEmpty())
+            return {};
+
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            return {};
+
+        return file.readAll();
+    }
+
+    QVariantList readTokensConfig() { return parseTokensJson(readConfigFileBytes(TOKENS_CONFIG_ENV)); }
+    QVariantList readPoolsConfig() { return parsePoolsJson(readConfigFileBytes(POOLS_CONFIG_ENV)); }
 }
 
 
