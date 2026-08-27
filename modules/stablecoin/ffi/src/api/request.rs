@@ -43,6 +43,16 @@ pub struct CurrentGlobalStateRequest {
     pub clock: AccountRead,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RedemptionRateUpdateQuoteRequest {
+    pub stablecoin_program_id: String,
+    pub protocol_parameters: AccountRead,
+    pub redemption_price_state: AccountRead,
+    pub market_price_oracle: AccountRead,
+    pub clock: AccountRead,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeProgramPlanRequest {

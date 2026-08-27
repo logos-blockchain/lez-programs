@@ -8,7 +8,8 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::api::{
     self, CurrentGlobalStateRequest, DecodeProtocolParametersRequest,
     DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
-    InitializeProgramPlanRequest, ProgramInfoRequest, StablecoinResult,
+    InitializeProgramPlanRequest, ProgramInfoRequest, RedemptionRateUpdateQuoteRequest,
+    StablecoinResult,
 };
 
 #[derive(Serialize)]
@@ -154,6 +155,20 @@ pub unsafe extern "C" fn stablecoin_current_global_state(
 }
 
 #[unsafe(no_mangle)]
+/// Quotes the next redemption-rate controller update without submitting it.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_redemption_rate_update_quote(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<RedemptionRateUpdateQuoteRequest>(request_json, api::redemption_rate_update_quote)
+    }
+}
+
+#[unsafe(no_mangle)]
 /// Builds the exact wallet submission plan for `InitializeProgram`.
 ///
 /// # Safety
@@ -234,6 +249,20 @@ mod tests {
         let response = unsafe { stablecoin_current_global_state(request.as_ptr()) };
         // SAFETY: response was returned by stablecoin_current_global_state and remains live.
         unsafe { assert_failure_response(response, "bad_request") };
+    }
+
+    #[test]
+    fn redemption_rate_quote_rejects_malformed_and_float_requests_at_the_boundary() {
+        for input in ["{", r#"{"stablecoinProgramId":1.5}"#] {
+            let request = match CString::new(input) {
+                Ok(value) => value,
+                Err(error) => panic!("{error}"),
+            };
+            // SAFETY: request is a live NUL-terminated CString for this call.
+            let response = unsafe { stablecoin_redemption_rate_update_quote(request.as_ptr()) };
+            // SAFETY: response came from the quote operation and remains live.
+            unsafe { assert_failure_response(response, "bad_request") };
+        }
     }
 
     #[test]
