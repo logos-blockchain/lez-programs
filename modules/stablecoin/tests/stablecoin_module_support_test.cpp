@@ -101,6 +101,14 @@ LOGOS_TEST(ffi_error_mapping_preserves_only_public_codes) {
         stablecoin_module::detail::stableFfiError("invalid_numeric_value"),
         std::string("invalid_numeric_value"));
     LOGOS_ASSERT_EQ(
+        stablecoin_module::detail::stableFfiError(
+            "invalid_stability_fee_accumulator_data"),
+        std::string("invalid_stability_fee_accumulator_data"));
+    LOGOS_ASSERT_EQ(
+        stablecoin_module::detail::stableFfiError(
+            "stability_fee_accumulator_pda_mismatch"),
+        std::string("stability_fee_accumulator_pda_mismatch"));
+    LOGOS_ASSERT_EQ(
         stablecoin_module::detail::stableFfiError("internal parse detail"),
         std::string("backend_error"));
     LOGOS_ASSERT_EQ(
