@@ -123,6 +123,12 @@ TOKENS_CONFIG_OUT="apps/amm/tests/testnet/amm-tokens.json"
 # per entry. More seeded pools = more entries here, no app change.
 POOLS_CONFIG_OUT="apps/amm/tests/testnet/amm-pools.json"
 
+# Single-file multi-network registry (git-ignored, tests only) — the same tokens
+# and pools in the remote-registry shape (see docs/amm-registry-plan.md), so the
+# AMM_REGISTRY_URL path can be exercised against this local sequencer without
+# hosting anything (point AMM_REGISTRY_URL at this file via a file:// URL).
+REGISTRY_CONFIG_OUT="apps/amm/tests/testnet/amm-registry.json"
+
 # Isolated custom-token store for TESTS ONLY (git-ignored). Pass this path as
 # CUSTOM_TOKEN_CONFIG when launching the UI so custom-token.mjs controls it instead of
 # the app's default per-user store. Initialized empty so a test run starts clean.
@@ -535,6 +541,45 @@ JSON
 kv "wrote" "$POOLS_CONFIG_OUT"
 
 ###############################################################################
+# 11b. Write the single-file registry (for testing the AMM_REGISTRY_URL path)
+###############################################################################
+sec "Write UI registry config -> $REGISTRY_CONFIG_OUT"
+# Same tokens/pools in the remote-registry shape: one "local" network, holding-
+# agnostic tokens (the app resolves holdings from the wallet). programIds are left
+# empty so the lone-network rule auto-selects "local"; the fresh timestamp forces
+# a re-fetch each run (ids change per deployment).
+{
+  cat <<JSON
+{
+  "name": "AMM local registry",
+  "version": "0.1.0",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "networks": [
+    { "id": "local", "name": "Local", "programIds": { "amm": "", "token": "" } }
+  ],
+  "tokens": [
+    { "network": "local", "symbol": "$TOKEN_A_SYMBOL", "name": "$TOKEN_A_NAME", "definitionId": "$TOKEN_A_DEF" },
+    { "network": "local", "symbol": "$TOKEN_B_SYMBOL", "name": "$TOKEN_B_NAME", "definitionId": "$TOKEN_B_DEF" },
+    { "network": "local", "symbol": "$TOKEN_C_SYMBOL", "name": "$TOKEN_C_NAME", "definitionId": "$TOKEN_C_DEF" }
+  ],
+  "pools": [
+JSON
+  for i in "${!POOL_SPECS[@]}"; do
+    [ "$i" -gt 0 ] && echo "    ,"
+    # shellcheck disable=SC2086 # deliberate word-split of the spec into fields
+    set -- ${POOL_SPECS[$i]}
+    cat <<JSON
+    { "network": "local", "tokenA": "$1", "tokenB": "$2", "feeBps": $3, "poolId": "$4", "tokenADefinitionId": "$5", "tokenBDefinitionId": "$6" }
+JSON
+  done
+  cat <<JSON
+  ]
+}
+JSON
+} > "$REGISTRY_CONFIG_OUT"
+kv "wrote" "$REGISTRY_CONFIG_OUT"
+
+###############################################################################
 # 12. Initialize the isolated custom-token store (empty)
 ###############################################################################
 sec "Write custom-token store -> $CUSTOM_TOKEN_CONFIG_OUT"
@@ -554,6 +599,14 @@ log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
 log "  ${DIM}  AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
 log "  ${DIM}  TOKENS_CONFIG=$REPO_ROOT/$TOKENS_CONFIG_OUT \\${RST}"
 log "  ${DIM}  AMM_POOLS_CONFIG=$REPO_ROOT/$POOLS_CONFIG_OUT \\${RST}"
+log "  ${DIM}  CUSTOM_TOKEN_CONFIG=$REPO_ROOT/$CUSTOM_TOKEN_CONFIG_OUT \\${RST}"
+log "  ${DIM}  nix run .#amm-ui${RST}"
+log ""
+log "Or exercise the remote-registry path against the same sequencer — omit"
+log "TOKENS_CONFIG/AMM_POOLS_CONFIG so the local files don't take precedence:"
+log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
+log "  ${DIM}  AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
+log "  ${DIM}  AMM_REGISTRY_URL=file://$REPO_ROOT/$REGISTRY_CONFIG_OUT \\${RST}"
 log "  ${DIM}  CUSTOM_TOKEN_CONFIG=$REPO_ROOT/$CUSTOM_TOKEN_CONFIG_OUT \\${RST}"
 log "  ${DIM}  nix run .#amm-ui${RST}"
 log ""
