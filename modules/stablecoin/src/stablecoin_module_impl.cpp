@@ -332,6 +332,49 @@ LogosMap StablecoinModuleImpl::redemptionPriceState() {
     });
 }
 
+LogosMap StablecoinModuleImpl::currentGlobalState() {
+    return guarded([&]() -> LogosMap {
+        std::string error;
+        const json info = stablecoinProgramInfo(error);
+        if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+
+        const json parameters = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
+        const json accumulator =
+            readPublicAccount(jsonString(info, "stabilityFeeAccumulatorIdHex"));
+        const json redemption = readPublicAccount(jsonString(info, "redemptionPriceStateIdHex"));
+        const json clock = readPublicAccount(jsonString(info, "clockIdHex"));
+
+        if (jsonString(parameters, "status") == "not_found"
+            || jsonString(accumulator, "status") == "not_found"
+            || jsonString(redemption, "status") == "not_found") {
+            return publicError("not_initialized");
+        }
+        if (jsonString(parameters, "status") != "ok"
+            || jsonString(accumulator, "status") != "ok"
+            || jsonString(redemption, "status") != "ok"
+            || jsonString(clock, "status") != "ok") {
+            return publicError("account_read_failed");
+        }
+
+        const FfiResult projected = callStablecoin(
+            stablecoin_current_global_state,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"protocolParameters", parameters},
+                {"stabilityFeeAccumulator", accumulator},
+                {"redemptionPriceState", redemption},
+                {"clock", clock},
+            });
+        if (!projected.ok) {
+            return publicError(stablecoin_module::detail::stableFfiError(projected.error));
+        }
+
+        LogosMap result = publicOk();
+        result["currentGlobalState"] = projected.value;
+        return result;
+    });
+}
+
 LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
     const auto accounts_field = plan.find("accountIds");
     const auto signers_field = plan.find("signingRequirements");
