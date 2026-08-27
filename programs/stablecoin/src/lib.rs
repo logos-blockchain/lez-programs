@@ -5,6 +5,9 @@ pub use stablecoin_core as core;
 /// Permissionless poke: advance the global stability-fee accumulator.
 pub mod accrue_stability_fee;
 
+/// Shared validation helpers reused across the position-lifecycle instructions.
+pub mod checks;
+
 /// Bootstrap the protocol: create the global PDAs and the stablecoin definition.
 pub mod initialize_program;
 
