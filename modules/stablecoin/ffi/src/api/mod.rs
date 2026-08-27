@@ -3,6 +3,7 @@
 mod decode;
 mod plan;
 mod program;
+mod projection;
 mod request;
 
 #[cfg(test)]
@@ -15,8 +16,9 @@ pub use decode::{
 };
 pub use plan::initialize_program_plan;
 pub use program::program_info;
+pub use projection::current_global_state;
 pub use request::{
-    DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
+    CurrentGlobalStateRequest, DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
     DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, ProgramInfoRequest,
 };
 use serde_json::Value;
