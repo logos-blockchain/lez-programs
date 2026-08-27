@@ -53,6 +53,39 @@ pub struct RedemptionRateUpdateQuoteRequest {
     pub clock: AccountRead,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccrueStabilityFeePlanRequest {
+    pub stablecoin_program_id: String,
+    pub caller_id: String,
+    pub protocol_parameters: AccountRead,
+    pub stability_fee_accumulator: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRedemptionRatePlanRequest {
+    pub stablecoin_program_id: String,
+    pub caller_id: String,
+    pub protocol_parameters: AccountRead,
+    pub redemption_price_state: AccountRead,
+    pub market_price_oracle: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshGlobalsPlanRequest {
+    pub stablecoin_program_id: String,
+    pub caller_id: String,
+    pub protocol_parameters: AccountRead,
+    pub stability_fee_accumulator: AccountRead,
+    pub redemption_price_state: AccountRead,
+    pub market_price_oracle: AccountRead,
+    pub clock: AccountRead,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeProgramPlanRequest {

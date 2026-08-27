@@ -6,10 +6,11 @@ use std::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
-    self, CurrentGlobalStateRequest, DecodeProtocolParametersRequest,
-    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
-    InitializeProgramPlanRequest, ProgramInfoRequest, RedemptionRateUpdateQuoteRequest,
-    StablecoinResult,
+    self, AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest,
+    DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
+    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, ProgramInfoRequest,
+    RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, StablecoinResult,
+    UpdateRedemptionRatePlanRequest,
 };
 
 #[derive(Serialize)]
@@ -169,6 +170,44 @@ pub unsafe extern "C" fn stablecoin_redemption_rate_update_quote(
 }
 
 #[unsafe(no_mangle)]
+/// Builds the exact wallet submission plan for `AccrueStabilityFee`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_accrue_stability_fee_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<AccrueStabilityFeePlanRequest>(request_json, api::accrue_stability_fee_plan) }
+}
+
+#[unsafe(no_mangle)]
+/// Builds a preflighted wallet submission plan for `UpdateRedemptionRate`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_update_redemption_rate_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<UpdateRedemptionRatePlanRequest>(request_json, api::update_redemption_rate_plan)
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Builds the best-effort wallet submission plan for `RefreshGlobals`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_refresh_globals_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<RefreshGlobalsPlanRequest>(request_json, api::refresh_globals_plan) }
+}
+
+#[unsafe(no_mangle)]
 /// Builds the exact wallet submission plan for `InitializeProgram`.
 ///
 /// # Safety
@@ -261,6 +300,25 @@ mod tests {
             // SAFETY: request is a live NUL-terminated CString for this call.
             let response = unsafe { stablecoin_redemption_rate_update_quote(request.as_ptr()) };
             // SAFETY: response came from the quote operation and remains live.
+            unsafe { assert_failure_response(response, "bad_request") };
+        }
+    }
+
+    #[test]
+    fn poke_plans_reject_malformed_requests_at_the_boundary() {
+        let operations: [unsafe extern "C" fn(*const c_char) -> *mut c_char; 3] = [
+            stablecoin_accrue_stability_fee_plan,
+            stablecoin_update_redemption_rate_plan,
+            stablecoin_refresh_globals_plan,
+        ];
+        for operation in operations {
+            let request = match CString::new("{") {
+                Ok(value) => value,
+                Err(error) => panic!("{error}"),
+            };
+            // SAFETY: request is a live NUL-terminated CString for this call.
+            let response = unsafe { operation(request.as_ptr()) };
+            // SAFETY: response came from the selected poke-plan operation and remains live.
             unsafe { assert_failure_response(response, "bad_request") };
         }
     }

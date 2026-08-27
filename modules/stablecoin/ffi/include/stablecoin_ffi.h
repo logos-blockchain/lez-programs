@@ -63,6 +63,30 @@ char *stablecoin_current_global_state(const char *request_json);
 char *stablecoin_redemption_rate_update_quote(const char *request_json);
 
 /**
+ * Builds the exact wallet submission plan for `AccrueStabilityFee`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_accrue_stability_fee_plan(const char *request_json);
+
+/**
+ * Builds a preflighted wallet submission plan for `UpdateRedemptionRate`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_update_redemption_rate_plan(const char *request_json);
+
+/**
+ * Builds the best-effort wallet submission plan for `RefreshGlobals`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_refresh_globals_plan(const char *request_json);
+
+/**
  * Builds the exact wallet submission plan for `InitializeProgram`.
  *
  * # Safety
