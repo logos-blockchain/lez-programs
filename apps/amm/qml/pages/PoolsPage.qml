@@ -41,6 +41,12 @@ Item {
     onBackendChanged: root.loadPools()
     onRuntimeChanged: root.loadPools()
 
+    Connections {
+        target: root.backend
+        // Re-fetch when the registry snapshot refreshes (e.g. a remote list lands).
+        function onRegistryRevisionChanged() { root.loadPools() }
+    }
+
     AmmTheme {
         id: theme
     }
