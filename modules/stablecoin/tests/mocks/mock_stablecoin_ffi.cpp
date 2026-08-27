@@ -35,6 +35,14 @@ extern "C" char* stablecoin_decode_stability_fee_accumulator(const char*) {
     return copyMockResponse("stablecoin_decode_stability_fee_accumulator");
 }
 
+extern "C" char* stablecoin_position_info(const char*) {
+    return copyMockResponse("stablecoin_position_info");
+}
+
+extern "C" char* stablecoin_decode_position(const char*) {
+    return copyMockResponse("stablecoin_decode_position");
+}
+
 extern "C" char* stablecoin_initialize_program_plan(const char*) {
     return copyMockResponse("stablecoin_initialize_program_plan");
 }

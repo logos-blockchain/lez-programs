@@ -109,6 +109,9 @@ LOGOS_TEST(ffi_error_mapping_preserves_only_public_codes) {
             "stability_fee_accumulator_pda_mismatch"),
         std::string("stability_fee_accumulator_pda_mismatch"));
     LOGOS_ASSERT_EQ(
+        stablecoin_module::detail::stableFfiError("position_vault_mismatch"),
+        std::string("position_vault_mismatch"));
+    LOGOS_ASSERT_EQ(
         stablecoin_module::detail::stableFfiError("internal parse detail"),
         std::string("backend_error"));
     LOGOS_ASSERT_EQ(
