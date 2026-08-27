@@ -6,8 +6,8 @@ use std::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
-    self, DecodeProtocolParametersRequest, InitializeProgramPlanRequest, ProgramInfoRequest,
-    StablecoinResult,
+    self, DecodeProtocolParametersRequest, DecodeStabilityFeeAccumulatorRequest,
+    InitializeProgramPlanRequest, ProgramInfoRequest, StablecoinResult,
 };
 
 #[derive(Serialize)]
@@ -106,6 +106,23 @@ pub unsafe extern "C" fn stablecoin_decode_protocol_parameters(
     // SAFETY: Forwarded from this function's caller contract.
     unsafe {
         call::<DecodeProtocolParametersRequest>(request_json, api::decode_protocol_parameters)
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Decodes and validates the singleton `StabilityFeeAccumulator` account.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_decode_stability_fee_accumulator(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<DecodeStabilityFeeAccumulatorRequest>(
+            request_json,
+            api::decode_stability_fee_accumulator,
+        )
     }
 }
 
