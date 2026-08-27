@@ -7,9 +7,9 @@ pub mod api;
 
 pub use account::{AccountRead, WalletAccount};
 pub use api::{
-    decode_protocol_parameters, decode_redemption_price_state, decode_stability_fee_accumulator,
-    initialize_program_plan, program_info, DecodeProtocolParametersRequest,
-    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
-    InitializeProgramPlanRequest, ProgramInfoRequest, StablecoinApiError, StablecoinResponse,
-    StablecoinResult,
+    current_global_state, decode_protocol_parameters, decode_redemption_price_state,
+    decode_stability_fee_accumulator, initialize_program_plan, program_info,
+    CurrentGlobalStateRequest, DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
+    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, ProgramInfoRequest,
+    StablecoinApiError, StablecoinResponse, StablecoinResult,
 };
