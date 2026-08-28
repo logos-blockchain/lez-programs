@@ -6,8 +6,8 @@ use std::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
-    self, DecodeProtocolParametersRequest, InitializeProgramPlanRequest, ProgramInfoRequest,
-    StablecoinResult,
+    self, DecodePositionRequest, DecodeProtocolParametersRequest, InitializeProgramPlanRequest,
+    PositionInfoRequest, ProgramInfoRequest, StablecoinResult,
 };
 
 #[derive(Serialize)]
@@ -110,6 +110,26 @@ pub unsafe extern "C" fn stablecoin_decode_protocol_parameters(
 }
 
 #[unsafe(no_mangle)]
+/// Derives the position and collateral-vault account IDs for an owner and nonce.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_position_info(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<PositionInfoRequest>(request_json, api::position_info) }
+}
+
+#[unsafe(no_mangle)]
+/// Decodes and validates a stablecoin `Position` account.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_decode_position(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<DecodePositionRequest>(request_json, api::decode_position) }
+}
+
+#[unsafe(no_mangle)]
 /// Builds the exact wallet submission plan for `InitializeProgram`.
 ///
 /// # Safety
@@ -142,22 +162,29 @@ mod tests {
 
     /// # Safety
     /// `response` must be a live pointer returned by a `stablecoin_*` operation.
-    unsafe fn assert_failure_response(response: *mut c_char, expected: &str) {
+    unsafe fn take_response(response: *mut c_char) -> serde_json::Value {
         assert!(!response.is_null());
         // SAFETY: Forwarded from this helper's caller contract.
         let text = unsafe { CStr::from_ptr(response) };
         let text = match text.to_str() {
-            Ok(value) => value,
+            Ok(value) => String::from(value),
             Err(error) => panic!("{error}"),
         };
-        let value: serde_json::Value = match serde_json::from_str(text) {
-            Ok(value) => value,
-            Err(error) => panic!("{error}"),
-        };
-        assert_eq!(value["ok"], false);
-        assert_eq!(value["error"], expected);
         // SAFETY: response came from this library and has not been freed.
         unsafe { stablecoin_free(response) };
+        match serde_json::from_str(&text) {
+            Ok(value) => value,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    /// # Safety
+    /// `response` must be a live pointer returned by a `stablecoin_*` operation.
+    unsafe fn assert_failure_response(response: *mut c_char, expected: &str) {
+        // SAFETY: Forwarded from this helper's caller contract.
+        let value = unsafe { take_response(response) };
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"], expected);
     }
 
     #[test]
@@ -178,6 +205,46 @@ mod tests {
         let response = unsafe { stablecoin_program_info(std::ptr::null()) };
         // SAFETY: response was returned by stablecoin_program_info and remains live.
         unsafe { assert_failure_response(response, "bad_request") };
+    }
+
+    #[test]
+    fn position_nonce_requires_a_json_string_at_the_c_boundary() {
+        let request = match CString::new(format!(
+            r#"{{"stablecoinProgramId":"{}","ownerId":"{}","positionNonce":1}}"#,
+            "11".repeat(32),
+            "22".repeat(32),
+        )) {
+            Ok(value) => value,
+            Err(error) => panic!("{error}"),
+        };
+        // SAFETY: request is a live NUL-terminated CString for this call.
+        let response = unsafe { stablecoin_position_info(request.as_ptr()) };
+        // SAFETY: response was returned by stablecoin_position_info and remains live.
+        unsafe { assert_failure_response(response, "bad_request") };
+    }
+
+    #[test]
+    fn position_info_preserves_max_nonce_through_the_c_boundary() {
+        let request = match CString::new(format!(
+            r#"{{"stablecoinProgramId":"{}","ownerId":"{}","positionNonce":"{}"}}"#,
+            "11".repeat(32),
+            "2a".repeat(32),
+            u64::MAX,
+        )) {
+            Ok(value) => value,
+            Err(error) => panic!("{error}"),
+        };
+        // SAFETY: request is a live NUL-terminated CString for this call.
+        let response = unsafe { stablecoin_position_info(request.as_ptr()) };
+        // SAFETY: response was returned by stablecoin_position_info and remains live.
+        let document = unsafe { take_response(response) };
+
+        assert_eq!(document["ok"], true);
+        assert_eq!(document["value"]["positionNonce"], u64::MAX.to_string());
+        assert!(document["value"]["positionId"].is_string());
+        assert!(document["value"]["positionIdHex"].is_string());
+        assert!(document["value"]["vaultId"].is_string());
+        assert!(document["value"]["vaultIdHex"].is_string());
     }
 
     #[test]

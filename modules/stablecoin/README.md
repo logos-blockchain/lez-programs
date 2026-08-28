@@ -1,9 +1,9 @@
 # Stablecoin core module
 
 `stablecoin_module` is a headless Logos `core` module for the LEZ Stablecoin
-Program. It exposes deployment discovery, protocol-parameter reads, and
-protocol initialization through the same universal API used by `logoscore` and
-UI modules.
+Program. It exposes deployment discovery, protocol-parameter and position
+reads, and protocol initialization through the same universal API used by
+`logoscore` and UI modules.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
 `stablecoin_ffi` owns exact account decoding, PDA derivation, request
@@ -35,6 +35,30 @@ ID is returned in base58 and lowercase hexadecimal form.
 Reads the singleton Protocol Parameters account through
 `lez_core`, verifies its PDA and owner, and exactly decodes its
 data. All `u128`, `i128`, and `u64` values are returned as decimal strings.
+
+### `positionAccount(request)`
+
+Required request fields:
+
+| Field | Type |
+| --- | --- |
+| `ownerId` | base58 or 64-character hexadecimal account ID |
+| `positionNonce` | exact `u64` decimal string |
+
+The module derives the position PDA from `(ownerId, positionNonce)`, derives
+the position's collateral-vault PDA, and performs one direct public-account
+read. It does not enumerate wallet or global accounts.
+
+On success, the response adds a `position` object containing the owner,
+position, and vault IDs in base58 and lowercase hexadecimal form. It also
+returns `positionNonce`, `collateralAmount`, `normalizedDebtAmount`, and
+`openedAt` as exact decimal strings. The account owner, address, stored owner,
+stored nonce, and stored vault must all match the derived identity.
+
+When the derived position account does not exist, the method returns
+`{ "status": "error", "error": "not_found" }` and still adds `position` with
+the derived owner, position, and vault IDs. No account decoder runs for this
+ordinary absence case.
 
 ### `initializeProgram(request)`
 
