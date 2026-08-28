@@ -23,6 +23,7 @@
     - [5.1 Fixed point](#51-fixed-point)
     - [5.2 `compound_rate`](#52-compound_rate)
     - [5.3 Current value projections](#53-current-value-projections-read-on-the-hot-path)
+    - [5.4 Wall-clock time](#54-wall-clock-time)
 6. [Math](#6-math)
     - [6.1 Nominal debt](#61-nominal-debt)
     - [6.2 Collateralization invariant](#62-collateralization-invariant)
@@ -391,6 +392,35 @@ Where `mul_div(a, b, c) = (a * b) / c` computed via u256 to avoid intermediate o
 
 **In plain English:** instead of writing "current_accumulator = X" to disk on every block (which would require touching every position's account on every fee tick), we store an **anchor** plus the **per-millisecond rate**, and compute the current value on the fly by rolling the anchor forward via `compound_rate`. Reads are slightly more expensive (one `compound_rate` call); writes happen only on real anchor updates (the pokes in §10.2 / §10.3).
 
+### 5.4 Wall-clock time
+
+Every `now` in this document is a Unix **millisecond** timestamp read from the
+system clock account, `CLOCK_01`.
+
+There is no clock on the program context. The pinned `spel-framework`
+`ProgramContext` exposes only `self_program_id` and `caller_program_id`, and
+LEE's `ProgramInput` carries no timestamp. A program that needs the time must
+therefore take the clock as an **account input**, exactly as `twap_oracle` and
+`amm` already do:
+
+1. The guest entry declares a trailing `clock: AccountWithMetadata` input.
+2. The host function asserts `clock.account_id == CLOCK_01_PROGRAM_ACCOUNT_ID`
+   and that the account is initialized.
+3. It decodes `ClockAccountData` and reads `timestamp`.
+4. It echoes the clock account **unchanged** in its post-state.
+
+Two consequences worth stating explicitly, because both are easy to get wrong:
+
+- The clock counts toward an instruction's account total. Each per-instruction
+  input list in §10 includes it, and it is always listed **last**.
+- Because the post-state echoes it, the clock also counts toward the post-state
+  total an implementation returns.
+
+Instructions that do **not** reference time omit the account entirely:
+`deposit_collateral` (§10.5), `close_position` (§10.9), `freeze` / `unfreeze`
+(§10.17–10.18), and every admin setter except
+`set_stability_fee_per_millisecond` (§10.10), which auto-accrues to `now`.
+
 ## 6. Math
 
 ### 6.1 Nominal debt
@@ -679,7 +709,7 @@ fn initialize_program(
 );
 ```
 
-**Inputs (8 accounts):**
+**Inputs (9 accounts):**
 
 1. `admin` — authorized, becomes `ProtocolParameters.admin_account_id`. Pre-state unchanged.
 2. `protocol_parameters` — uninitialized, PDA-to-claim (`hash(program_id, "PROTOCOL_PARAMETERS")`).
@@ -689,6 +719,7 @@ fn initialize_program(
 6. `stablecoin_master_holding` — uninitialized, PDA-to-claim via the same chained call (Token Program API artifact; receives `total_supply = 0`, never used again).
 7. `collateral_definition` — initialized, read-only; persisted into `ProtocolParameters.collateral_definition_id`. Validated as `TokenDefinition::Fungible`.
 8. `market_price_oracle` — initialized, read-only. Validated: `OraclePriceAccount`, `base_asset = stablecoin_definition.account_id` (PDA derivation predicted), `quote_asset = collateral_definition.account_id`.
+9. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Outputs:**
 
@@ -706,9 +737,9 @@ fn initialize_program(
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (8)"]
+    subgraph In["Inputs (9)"]
         a1[admin<br/>auth] ~~~ a2[protocol_parameters<br/>uninit] ~~~ a3[stability_fee_accumulator<br/>uninit] ~~~ a4[redemption_price_state<br/>uninit]
-        a5[stablecoin_definition<br/>uninit] ~~~ a6[stablecoin_master_holding<br/>uninit] ~~~ a7[collateral_definition<br/>init, read] ~~~ a8[market_price_oracle<br/>init, read]
+        a5[stablecoin_definition<br/>uninit] ~~~ a6[stablecoin_master_holding<br/>uninit] ~~~ a7[collateral_definition<br/>init, read] ~~~ a8[market_price_oracle<br/>init, read] ~~~ a9[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[protocol_parameters<br/>CLAIMED, all fields set] ~~~ p2[stability_fee_accumulator<br/>CLAIMED<br/>rate = FIXED_POINT_ONE] ~~~ p3[redemption_price_state<br/>CLAIMED<br/>price = initial]
@@ -723,11 +754,12 @@ flowchart TD
 
 **Signature:** `fn accrue_stability_fee();`
 
-**Inputs (3 accounts):**
+**Inputs (4 accounts):**
 
 1. `caller` — authorized; satisfies runtime's ≥1-authorized requirement. Not retained.
 2. `protocol_parameters` — initialized, read-only.
 3. `stability_fee_accumulator` — initialized, writable.
+4. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Output state changes:**
 
@@ -742,8 +774,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (3)"]
-        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[stability_fee_accumulator<br/>write]
+    subgraph In["Inputs (4)"]
+        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[stability_fee_accumulator<br/>write] ~~~ a4[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[stability_fee_accumulator<br/>anchor x compound_rate<br/>last_accrued_at = now]
@@ -756,12 +788,13 @@ flowchart TD
 
 **Signature:** `fn update_redemption_rate();`
 
-**Inputs (4 accounts):**
+**Inputs (5 accounts):**
 
 1. `caller` — authorized.
 2. `protocol_parameters` — initialized, read-only.
 3. `redemption_price_state` — initialized, writable.
 4. `market_price_oracle` — initialized, read-only. Must equal `protocol_parameters.market_price_oracle_id`.
+5. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Output state changes (`redemption_price_state` only):** per § 6.4.
 
@@ -771,8 +804,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (4)"]
-        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[redemption_price_state<br/>write] ~~~ a4[market_price_oracle<br/>read, freshness gate]
+    subgraph In["Inputs (5)"]
+        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[redemption_price_state<br/>write] ~~~ a4[market_price_oracle<br/>read, freshness gate] ~~~ a5[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[redemption_price_state<br/>new anchor, new rate,<br/>new integral, last_updated_at]
@@ -787,13 +820,14 @@ flowchart TD
 
 A convenience poke that advances **both** globals in one instruction. Because a LEZ transaction carries a single instruction, this is the only way to refresh the fee accumulator and the redemption rate in one transaction. It is **best-effort**: it always performs the fee accrual, performs the redemption update only if its interval is due and the oracle is fresh, and **skips rather than panics** otherwise. The standalone `accrue_stability_fee` (§10.2) and `update_redemption_rate` (§10.3) remain for callers that want to touch just one global — and, for `update_redemption_rate`, strict loud-failing semantics on a stale oracle (see "Why keep all three" below).
 
-**Inputs (5 accounts)** — the union of §10.2 and §10.3:
+**Inputs (6 accounts)** — the union of §10.2 and §10.3:
 
 1. `caller` — authorized.
 2. `protocol_parameters` — initialized, read-only.
 3. `stability_fee_accumulator` — initialized, writable.
 4. `redemption_price_state` — initialized, writable.
 5. `market_price_oracle` — initialized, read-only. Must equal `protocol_parameters.market_price_oracle_id`.
+6. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Behavior:**
 
@@ -813,8 +847,8 @@ A convenience poke that advances **both** globals in one instruction. Because a 
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (5)"]
-        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[stability_fee_accumulator<br/>write] ~~~ a4[redemption_price_state<br/>write] ~~~ a5[market_price_oracle<br/>read]
+    subgraph In["Inputs (6)"]
+        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[stability_fee_accumulator<br/>write] ~~~ a4[redemption_price_state<br/>write] ~~~ a5[market_price_oracle<br/>read] ~~~ a6[clock<br/>CLOCK_01]
     end
     In --> Ins((refresh_globals<br/>best-effort))
     Ins -->|fee interval due| F[accrue — as §10.2]
@@ -826,7 +860,7 @@ flowchart TD
 
 **Signature:** `fn open_position(position_nonce: u64, initial_collateral_amount: u128);`
 
-**Inputs (6 accounts):**
+**Inputs (7 accounts):**
 
 1. `owner` — authorized; becomes `position.owner_account_id`.
 2. `position` — uninitialized; PDA `hash(program_id, hash(owner.account_id, position_nonce))`.
@@ -834,6 +868,7 @@ flowchart TD
 4. `user_collateral_holding` — authorized, initialized; `TokenHolding::Fungible` with `definition_id = collateral_definition.account_id` and `balance ≥ initial_collateral_amount`.
 5. `collateral_definition` — initialized, read-only; must equal `protocol_parameters.collateral_definition_id`. Required by the chained `Token::InitializeAccount`.
 6. `protocol_parameters` — initialized, read-only. Reads `collateral_definition_id` + `is_frozen`.
+7. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Outputs:**
 
@@ -850,9 +885,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (6)"]
+    subgraph In["Inputs (7)"]
         a1[owner<br/>auth] ~~~ a2[position<br/>uninit] ~~~ a3[vault<br/>uninit]
-        a4[user_collateral_holding<br/>auth + init] ~~~ a5[collateral_definition<br/>read] ~~~ a6[protocol_parameters<br/>read]
+        a4[user_collateral_holding<br/>auth + init] ~~~ a5[collateral_definition<br/>read] ~~~ a6[protocol_parameters<br/>read] ~~~ a7[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[position<br/>CLAIMED PDA<br/>collateral_amount = initial<br/>normalized_debt = 0] ~~~ p2[vault<br/>CLAIMED via chained<br/>balance = initial] ~~~ p3[user_collateral_holding<br/>balance -= initial]
@@ -903,7 +938,7 @@ flowchart TD
 
 **Signature:** `fn withdraw_collateral(amount: u128);`
 
-**Inputs (7 accounts):**
+**Inputs (8 accounts):**
 
 1. `owner` — authorized.
 2. `position` — initialized, writable; PDA verified.
@@ -912,6 +947,7 @@ flowchart TD
 5. `stability_fee_accumulator` — initialized, read-only; for current accumulator → nominal debt.
 6. `redemption_price_state` — initialized, read-only; for current redemption price.
 7. `protocol_parameters` — initialized, read-only.
+8. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Outputs:**
 
@@ -925,9 +961,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (7)"]
+    subgraph In["Inputs (8)"]
         a1[owner<br/>auth] ~~~ a2[position<br/>write] ~~~ a3[vault<br/>write] ~~~ a4[user_collateral_holding<br/>init, destination]
-        a5[stability_fee_accumulator<br/>read] ~~~ a6[redemption_price_state<br/>read] ~~~ a7[protocol_parameters<br/>read]
+        a5[stability_fee_accumulator<br/>read] ~~~ a6[redemption_price_state<br/>read] ~~~ a7[protocol_parameters<br/>read] ~~~ a8[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[position<br/>collateral_amount -= amount<br/>collateralization check] ~~~ p2[vault<br/>balance -= amount] ~~~ p3[user_collateral_holding<br/>balance += amount]
@@ -941,7 +977,7 @@ flowchart TD
 
 **Signature:** `fn generate_debt(amount: u128);`
 
-**Inputs (8 accounts):**
+**Inputs (9 accounts):**
 
 1. `owner` — authorized.
 2. `position` — initialized, writable; PDA verified.
@@ -951,6 +987,7 @@ flowchart TD
 6. `redemption_price_state` — initialized, read-only.
 7. `market_price_oracle` — initialized, read-only; for staleness gate only. Must equal `protocol_parameters.market_price_oracle_id`.
 8. `protocol_parameters` — initialized, read-only.
+9. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Outputs:**
 
@@ -964,9 +1001,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (8)"]
+    subgraph In["Inputs (9)"]
         a1[owner<br/>auth] ~~~ a2[position<br/>write] ~~~ a3[stablecoin_definition<br/>write, chained] ~~~ a4[user_stablecoin_holding<br/>init]
-        a5[stability_fee_accumulator<br/>read] ~~~ a6[redemption_price_state<br/>read] ~~~ a7[market_price_oracle<br/>read, staleness gate] ~~~ a8[protocol_parameters<br/>read]
+        a5[stability_fee_accumulator<br/>read] ~~~ a6[redemption_price_state<br/>read] ~~~ a7[market_price_oracle<br/>read, staleness gate] ~~~ a8[protocol_parameters<br/>read] ~~~ a9[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[position<br/>normalized_debt += ceil amt/acc<br/>collateralization check] ~~~ p2[stablecoin_definition<br/>total_supply += amount] ~~~ p3[user_stablecoin_holding<br/>balance += amount]
@@ -980,7 +1017,7 @@ flowchart TD
 
 **Signature:** `fn repay_debt(amount: u128);`
 
-**Inputs (6 accounts):**
+**Inputs (7 accounts):**
 
 1. `owner` — authorized.
 2. `position` — initialized, writable; PDA verified.
@@ -988,6 +1025,7 @@ flowchart TD
 4. `user_stablecoin_holding` — authorized, initialized; `definition_id = stablecoin_definition.account_id`; same Token Program.
 5. `stability_fee_accumulator` — initialized, read-only.
 6. `protocol_parameters` — initialized, read-only.
+7. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Outputs:**
 
@@ -1001,9 +1039,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (6)"]
+    subgraph In["Inputs (7)"]
         a1[owner<br/>auth] ~~~ a2[position<br/>write] ~~~ a3[stablecoin_definition<br/>write, chained]
-        a4[user_stablecoin_holding<br/>auth + init] ~~~ a5[stability_fee_accumulator<br/>read] ~~~ a6[protocol_parameters<br/>read]
+        a4[user_stablecoin_holding<br/>auth + init] ~~~ a5[stability_fee_accumulator<br/>read] ~~~ a6[protocol_parameters<br/>read] ~~~ a7[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[position<br/>normalized_debt -= floor amt/acc] ~~~ p2[stablecoin_definition<br/>total_supply -= amount] ~~~ p3[user_stablecoin_holding<br/>balance -= amount]
@@ -1098,10 +1136,14 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 
 All seven share the same skeleton:
 
-**Inputs (2 base + 0-1 extras):**
+**Inputs (2 base + 0-2 extras):**
 
 - `admin` — authorized; `admin.account_id == protocol_parameters.admin_account_id`.
 - `protocol_parameters` — initialized, writable.
+
+Extras are per-instruction, listed in the table below. Only
+`set_stability_fee_per_millisecond` references time, so it is the only setter
+that takes the `clock` account (§ 5.4); the other six omit it.
 
 **Output:** exactly the field(s) listed below are overwritten on `protocol_parameters`; everything else unchanged.
 
@@ -1109,7 +1151,7 @@ All seven share the same skeleton:
 
 | # | Instruction | Param(s) | Fields rewritten | Extra accounts | Special note |
 |---|---|---|---|---|---|
-| 10 | `set_stability_fee_per_millisecond` | `new_rate: u128` | `stability_fee_per_millisecond` | `stability_fee_accumulator` (writable) | Auto-accrues forward at the OLD rate up to `now` first. |
+| 10 | `set_stability_fee_per_millisecond` | `new_rate: u128` | `stability_fee_per_millisecond` | `stability_fee_accumulator` (writable), `clock` | Auto-accrues forward at the OLD rate up to `now` first — hence the clock. |
 | 11 | `set_minimum_collateralization_ratio` | `new_ratio: u128` | `minimum_collateralization_ratio` | — | Tightening leaves existing positions retroactively under-collateralized; they cannot increase debt or withdraw collateral until back above. No mass-liquidation here (RFP-014 out of scope). |
 | 12 | `set_controller_gains` | `new_proportional_gain: i128, new_integral_gain: i128` | `controller_proportional_gain`, `controller_integral_gain` | — | Does NOT reset `controller_integral_term`. |
 | 13 | `set_market_price_oracle` | (no scalar) | `market_price_oracle_id` | `new_oracle` (read-only) | Validates `OraclePriceAccount` shape, base/quote ids. `program_owner` not pinned. |
@@ -1119,7 +1161,7 @@ All seven share the same skeleton:
 
 ```mermaid
 flowchart TD
-    subgraph In["Base inputs (2 + 0..1)"]
+    subgraph In["Base inputs (2 + 0..2)"]
         a1[admin<br/>auth, == admin_account_id] ~~~ a2[protocol_parameters<br/>write] ~~~ ax[stability_fee_accumulator<br/>write — only set_stability_fee] ~~~ ay[new_oracle<br/>read — only set_market_price_oracle]
     end
     subgraph Post["Post-state"]
