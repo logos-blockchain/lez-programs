@@ -11,13 +11,17 @@ use lee_core::{
 };
 use stablecoin_core::{
     compute_position_pda, compute_position_pda_seed, compute_position_vault_pda,
-    compute_position_vault_pda_seed, Position,
+    compute_position_vault_pda_seed, math::FIXED_POINT_ONE, Position, ProtocolParameters,
 };
 use token_core::{TokenDefinition, TokenHolding};
+
+use crate::test_support::clock_account;
 
 const STABLECOIN_PROGRAM_ID: ProgramId = [3u32; 8];
 const TOKEN_PROGRAM_ID: ProgramId = [2u32; 8];
 const TEST_POSITION_NONCE: u64 = 0;
+/// Unix milliseconds, matching the `CLOCK_01` account the guest passes in.
+const NOW: u64 = 1_700_000_000_000;
 
 fn owner_id() -> AccountId {
     AccountId::new([0x10u8; 32])
@@ -57,6 +61,43 @@ fn position_id() -> AccountId {
 
 fn vault_id() -> AccountId {
     compute_position_vault_pda(STABLECOIN_PROGRAM_ID, position_id())
+}
+
+fn protocol_parameters_id() -> AccountId {
+    AccountId::new([0xC0u8; 32])
+}
+
+fn protocol_parameters_account(is_frozen: bool) -> AccountWithMetadata {
+    protocol_parameters_account_for(collateral_definition_id(), is_frozen)
+}
+
+fn protocol_parameters_account_for(
+    collateral_definition_id: AccountId,
+    is_frozen: bool,
+) -> AccountWithMetadata {
+    AccountWithMetadata {
+        account: Account {
+            program_owner: STABLECOIN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&ProtocolParameters {
+                admin_account_id: AccountId::new([0xA0u8; 32]),
+                freeze_authority_account_id: AccountId::new([0xFEu8; 32]),
+                stablecoin_definition_id: stablecoin_definition_id(),
+                collateral_definition_id,
+                market_price_oracle_id: AccountId::new([0xB0u8; 32]),
+                stability_fee_per_millisecond: FIXED_POINT_ONE,
+                controller_proportional_gain: 0,
+                controller_integral_gain: 0,
+                minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
+                minimum_milliseconds_between_rate_updates: 1,
+                maximum_oracle_price_age_milliseconds: 86_400_000,
+                is_frozen,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: false,
+        account_id: protocol_parameters_id(),
+    }
 }
 
 fn owner_account() -> AccountWithMetadata {
@@ -187,12 +228,14 @@ fn open_position_claims_pda_and_emits_chained_calls() {
         uninit_vault_account(),
         user_holding_account(1_000),
         collateral_definition_account(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         TEST_POSITION_NONCE,
         collateral_amount,
     );
 
-    assert_eq!(post_states.len(), 5);
+    assert_eq!(post_states.len(), 7);
 
     // Position is PDA-claimed and carries the encoded Position state.
     let position_post = &post_states[1];
@@ -212,7 +255,7 @@ fn open_position_claims_pda_and_emits_chained_calls() {
             vault_account_id: vault_id(),
             collateral_amount,
             normalized_debt_amount: 0,
-            opened_at: 0,
+            opened_at: NOW,
         }
     );
     // The runtime sets the program_owner on the claimed account after validating Claim::Pda.
@@ -265,6 +308,8 @@ fn open_position_requires_owner_authorization() {
         uninit_vault_account(),
         user_holding_account(1_000),
         collateral_definition_account(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         TEST_POSITION_NONCE,
         500,
@@ -283,6 +328,8 @@ fn open_position_requires_user_holding_authorization() {
         uninit_vault_account(),
         holding,
         collateral_definition_account(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         TEST_POSITION_NONCE,
         500,
@@ -316,6 +363,8 @@ fn open_position_rejects_initialized_position() {
         uninit_vault_account(),
         user_holding_account(1_000),
         collateral_definition_account(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         TEST_POSITION_NONCE,
         500,
@@ -345,6 +394,8 @@ fn open_position_rejects_initialized_vault() {
         vault,
         user_holding_account(1_000),
         collateral_definition_account(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         TEST_POSITION_NONCE,
         500,
@@ -366,6 +417,8 @@ fn open_position_rejects_wrong_position_address() {
         uninit_vault_account(),
         user_holding_account(1_000),
         collateral_definition_account(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         TEST_POSITION_NONCE,
         500,
@@ -387,6 +440,8 @@ fn open_position_rejects_wrong_vault_address() {
         bad_vault,
         user_holding_account(1_000),
         collateral_definition_account(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         TEST_POSITION_NONCE,
         500,
@@ -418,6 +473,10 @@ fn open_position_rejects_mismatched_token_definition() {
         uninit_vault_account(),
         user_holding_account(1_000),
         other_definition,
+        // Bind the protocol to the definition under test so the check being
+        // exercised here is the user-holding mismatch, not the params gate.
+        protocol_parameters_account_for(AccountId::new([0x21u8; 32]), false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         TEST_POSITION_NONCE,
         500,
@@ -438,10 +497,111 @@ fn open_position_rejects_definition_with_wrong_token_program() {
         uninit_vault_account(),
         user_holding_account(1_000),
         definition,
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         TEST_POSITION_NONCE,
         500,
     );
+}
+
+#[test]
+#[should_panic(expected = "Protocol is frozen")]
+fn open_position_rejects_frozen_protocol() {
+    crate::open_position::open_position(
+        owner_account(),
+        uninit_position_account(),
+        uninit_vault_account(),
+        user_holding_account(1_000),
+        collateral_definition_account(),
+        protocol_parameters_account(true),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
+        500,
+    );
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account must be initialized")]
+fn open_position_rejects_uninitialized_protocol_parameters() {
+    crate::open_position::open_position(
+        owner_account(),
+        uninit_position_account(),
+        uninit_vault_account(),
+        user_holding_account(1_000),
+        collateral_definition_account(),
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: protocol_parameters_id(),
+        },
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
+        500,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Collateral definition does not match")]
+fn open_position_rejects_collateral_definition_not_bound_at_init() {
+    // The protocol was bootstrapped against a different collateral definition, so
+    // the one the caller passed must be refused even though it is internally
+    // consistent with the user's holding.
+    crate::open_position::open_position(
+        owner_account(),
+        uninit_position_account(),
+        uninit_vault_account(),
+        user_holding_account(1_000),
+        collateral_definition_account(),
+        protocol_parameters_account_for(AccountId::new([0x99u8; 32]), false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
+        500,
+    );
+}
+
+#[test]
+fn open_position_stamps_opened_at_from_the_clock() {
+    let (post_states, _) = crate::open_position::open_position(
+        owner_account(),
+        uninit_position_account(),
+        uninit_vault_account(),
+        user_holding_account(1_000),
+        collateral_definition_account(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
+        500,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.opened_at, NOW);
+}
+
+#[test]
+fn open_position_echoes_protocol_parameters_and_clock_unchanged() {
+    let parameters = protocol_parameters_account(false);
+    let clock = clock_account(NOW);
+    let (post_states, _) = crate::open_position::open_position(
+        owner_account(),
+        uninit_position_account(),
+        uninit_vault_account(),
+        user_holding_account(1_000),
+        collateral_definition_account(),
+        parameters.clone(),
+        clock.clone(),
+        STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
+        500,
+    );
+
+    assert_eq!(post_states.len(), 7);
+    assert_eq!(*post_states[5].account(), parameters.account);
+    assert_eq!(*post_states[6].account(), clock.account);
 }
 
 #[test]
