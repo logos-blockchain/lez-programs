@@ -2,7 +2,9 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId},
 };
-use stablecoin_core::{verify_position_and_get_seed, verify_position_vault_and_get_seed, Position};
+use stablecoin_core::{
+    verify_position_and_get_seed, verify_position_vault_and_get_seed, Position, ProtocolParameters,
+};
 use token_core::TokenHolding;
 
 /// Open a new collateral-only position for `owner`.
@@ -17,12 +19,12 @@ use token_core::TokenHolding;
 /// not parameterized here.
 ///
 /// # Panics
-/// - `owner` or `user_holding` is not authorized.
+/// - `owner` or `user_collateral_holding` is not authorized.
 /// - `position` or `vault` is already initialized.
 /// - `position.account_id` / `vault.account_id` do not match their PDA derivations.
-/// - `user_holding` cannot be decoded as a [`TokenHolding`].
-/// - `user_holding`'s definition does not match `token_definition`.
-/// - `token_definition.program_owner` does not match `user_holding.program_owner`.
+/// - `user_collateral_holding` cannot be decoded as a [`TokenHolding`].
+/// - `user_collateral_holding`'s definition does not match `collateral_definition`.
+/// - `collateral_definition.program_owner` does not match `user_collateral_holding.program_owner`.
 #[allow(
     clippy::too_many_arguments,
     reason = "account inputs + program id + nonce + amount are all required; a param struct would obscure the host-call ABI"
@@ -31,15 +33,17 @@ pub fn open_position(
     owner: AccountWithMetadata,
     position: AccountWithMetadata,
     vault: AccountWithMetadata,
-    user_holding: AccountWithMetadata,
-    token_definition: AccountWithMetadata,
+    user_collateral_holding: AccountWithMetadata,
+    collateral_definition: AccountWithMetadata,
+    protocol_parameters: AccountWithMetadata,
+    clock: AccountWithMetadata,
     stablecoin_program_id: ProgramId,
     position_nonce: u64,
-    collateral_amount: u128,
+    initial_collateral_amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     assert!(owner.is_authorized, "Owner authorization is missing");
     assert!(
-        user_holding.is_authorized,
+        user_collateral_holding.is_authorized,
         "User collateral holding authorization is missing"
     );
     assert_eq!(
@@ -53,16 +57,36 @@ pub fn open_position(
         "Position vault account must be uninitialized"
     );
 
-    let user_holding_definition_id = TokenHolding::try_from(&user_holding.account.data)
-        .expect("User holding must be a valid Token Holding")
-        .definition_id();
+    assert_ne!(
+        protocol_parameters.account,
+        Account::default(),
+        "ProtocolParameters account must be initialized"
+    );
     assert_eq!(
-        user_holding_definition_id, token_definition.account_id,
+        protocol_parameters.account.program_owner, stablecoin_program_id,
+        "ProtocolParameters account must be owned by the stablecoin program"
+    );
+    let parameters = ProtocolParameters::try_from(&protocol_parameters.account.data)
+        .expect("ProtocolParameters must decode");
+    assert!(!parameters.is_frozen, "Protocol is frozen");
+    assert_eq!(
+        collateral_definition.account_id, parameters.collateral_definition_id,
+        "Collateral definition does not match the one bound at initialize_program"
+    );
+
+    let now = crate::accrue_stability_fee::read_clock(&clock);
+
+    let user_collateral_holding_definition_id =
+        TokenHolding::try_from(&user_collateral_holding.account.data)
+            .expect("User holding must be a valid Token Holding")
+            .definition_id();
+    assert_eq!(
+        user_collateral_holding_definition_id, collateral_definition.account_id,
         "User collateral holding does not match the provided token definition"
     );
-    let token_program_id = user_holding.account.program_owner;
+    let token_program_id = user_collateral_holding.account.program_owner;
     assert_eq!(
-        token_definition.account.program_owner, token_program_id,
+        collateral_definition.account.program_owner, token_program_id,
         "Collateral token definition is not owned by the user holding's Token Program"
     );
 
@@ -76,19 +100,19 @@ pub fn open_position(
         owner_account_id: owner.account_id,
         position_nonce,
         vault_account_id: vault.account_id,
-        collateral_amount,
+        collateral_amount: initial_collateral_amount,
         normalized_debt_amount: 0,
-        // TODO(#173): read from ctx clock once `open_position` is rebuilt with
-        // the fee-aware flow. Setting 0 keeps #156 a pure refactor.
-        opened_at: 0,
+        opened_at: now,
     });
 
     let post_states = vec![
         AccountPostState::new(owner.account),
         AccountPostState::new_claimed(position_post, Claim::Pda(position_seed)),
         AccountPostState::new(vault.account.clone()),
-        AccountPostState::new(user_holding.account.clone()),
-        AccountPostState::new(token_definition.account.clone()),
+        AccountPostState::new(user_collateral_holding.account.clone()),
+        AccountPostState::new(collateral_definition.account.clone()),
+        AccountPostState::new(protocol_parameters.account),
+        AccountPostState::new(clock.account),
     ];
 
     // Chained Token::InitializeAccount owns the vault as a Token holding. The Stablecoin
@@ -97,7 +121,7 @@ pub fn open_position(
     vault_authorized.is_authorized = true;
     let initialize_call = ChainedCall::new(
         token_program_id,
-        vec![token_definition.clone(), vault_authorized],
+        vec![collateral_definition.clone(), vault_authorized],
         &token_core::Instruction::InitializeAccount,
     )
     .with_pda_seeds(vec![vault_seed]);
@@ -110,7 +134,7 @@ pub fn open_position(
             program_owner: token_program_id,
             balance: 0,
             data: Data::from(&TokenHolding::Fungible {
-                definition_id: token_definition.account_id,
+                definition_id: collateral_definition.account_id,
                 balance: 0,
             }),
             nonce: vault.account.nonce,
@@ -120,9 +144,9 @@ pub fn open_position(
     };
     let transfer_call = ChainedCall::new(
         token_program_id,
-        vec![user_holding, post_init_vault],
+        vec![user_collateral_holding, post_init_vault],
         &token_core::Instruction::Transfer {
-            amount_to_transfer: collateral_amount,
+            amount_to_transfer: initial_collateral_amount,
         },
     );
 
