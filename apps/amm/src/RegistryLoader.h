@@ -22,10 +22,13 @@ class QJsonObject;
 //     (QNetworkAccessManager) with an on-disk cache served meanwhile
 //     (stale-while-revalidate). Entries are filtered to the active network.
 //
-// Active network = AMM_NETWORK if set, else the registry network whose programIds
-// match the deployment the app is connected to (see setConnectedProgramIds), else
-// the lone network when the registry declares exactly one. A registry that names a
-// network whose programIds contradict the app's deployment is rejected.
+// Active network = AMM_NETWORK if it names a declared network, else the lone
+// network when the registry declares exactly one. Network identity can't be
+// detected from the connection (program ids and account ids are deterministic and
+// can be identical across networks), so a multi-network registry needs AMM_NETWORK
+// to disambiguate; otherwise nothing is applied. Selecting a network also exposes
+// its AMM program id via activeAmmProgramId() so the backend can adopt it (no
+// AMM_PROGRAM_BIN needed).
 //
 // refresh() bumps revision() and emits changed() whenever the snapshot updates,
 // so the backend re-publishes registryRevision and the UI re-fetches.
@@ -42,16 +45,13 @@ public:
     QString source() const { return m_source; }
     // The network id the snapshot was filtered to (empty for local / none).
     QString activeNetwork() const { return m_activeNetwork; }
+    // The active network's declared AMM program id (empty for local / none / a
+    // network that declares none). The backend adopts it via setAmmProgramId so ops
+    // target this network without an AMM_PROGRAM_BIN.
+    QString activeAmmProgramId() const { return m_activeAmmProgramId; }
 
-    // The deployment the app is connected to (base58 program ids, from
-    // configAccount()): used to pick the matching network in a multi-network
-    // registry and to reject a registry whose active network contradicts it.
-    // Empty ⇒ selection falls back to AMM_NETWORK / a lone network.
-    void setConnectedProgramIds(const QString& ammProgramId, const QString& tokenProgramId);
-
-    // Whether a local-file source (TOKENS_CONFIG / AMM_POOLS_CONFIG) is
-    // configured — it takes precedence over the remote registry. The backend uses
-    // this to skip the sequencer-touching configAccount read for local dev.
+    // Whether a local-file source (TOKENS_CONFIG / AMM_POOLS_CONFIG) is configured —
+    // it takes precedence over the remote registry (local-replaces-remote).
     static bool hasLocalSource();
 
 public slots:
@@ -67,7 +67,6 @@ private:
     // publish. Returns true when a snapshot was applied.
     bool applyRegistry(const QByteArray& body, const QString& source);
     QString selectActiveNetwork(const QJsonArray& networks) const;
-    bool deploymentOk(const QJsonObject& network) const;
 
     void publish(const QVariantList& tokens, const QVariantList& pools,
                  const QString& source, const QString& network);
@@ -83,9 +82,7 @@ private:
     int m_revision = 0;
     QString m_source = QStringLiteral("none");
     QString m_activeNetwork;
-
-    QString m_connectedAmm;
-    QString m_connectedToken;
+    QString m_activeAmmProgramId;
 
     // Registry `timestamp` reflected in the snapshot — lets a revalidation skip
     // re-applying an unchanged document.

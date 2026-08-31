@@ -545,8 +545,9 @@ kv "wrote" "$POOLS_CONFIG_OUT"
 ###############################################################################
 sec "Write UI registry config -> $REGISTRY_CONFIG_OUT"
 # Same tokens/pools in the remote-registry shape: one "local" network, holding-
-# agnostic tokens (the app resolves holdings from the wallet). programIds are left
-# empty so the lone-network rule auto-selects "local"; the fresh timestamp forces
+# agnostic tokens (the app resolves holdings from the wallet). programIds carry the
+# freshly deployed ids so the lone-network rule auto-selects "local" and the app
+# adopts its amm program id — no AMM_PROGRAM_BIN needed. The fresh timestamp forces
 # a re-fetch each run (ids change per deployment).
 {
   cat <<JSON
@@ -555,7 +556,7 @@ sec "Write UI registry config -> $REGISTRY_CONFIG_OUT"
   "version": "0.1.0",
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "networks": [
-    { "id": "local", "name": "Local", "programIds": { "amm": "", "token": "" } }
+    { "id": "local", "name": "Local", "programIds": { "amm": "$AMM_PID", "token": "$TOKEN_PID" } }
   ],
   "tokens": [
     { "network": "local", "symbol": "$TOKEN_A_SYMBOL", "name": "$TOKEN_A_NAME", "definitionId": "$TOKEN_A_DEF" },
@@ -603,9 +604,9 @@ log "  ${DIM}  CUSTOM_TOKEN_CONFIG=$REPO_ROOT/$CUSTOM_TOKEN_CONFIG_OUT \\${RST}"
 log "  ${DIM}  nix run .#amm-ui${RST}"
 log ""
 log "Or exercise the remote-registry path against the same sequencer — omit"
-log "TOKENS_CONFIG/AMM_POOLS_CONFIG so the local files don't take precedence:"
+log "TOKENS_CONFIG/AMM_POOLS_CONFIG so the local files don't take precedence. No"
+log "AMM_PROGRAM_BIN: the registry carries the program ids and the app adopts them."
 log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
-log "  ${DIM}  AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
 log "  ${DIM}  AMM_REGISTRY_URL=file://$REPO_ROOT/$REGISTRY_CONFIG_OUT \\${RST}"
 log "  ${DIM}  CUSTOM_TOKEN_CONFIG=$REPO_ROOT/$CUSTOM_TOKEN_CONFIG_OUT \\${RST}"
 log "  ${DIM}  nix run .#amm-ui${RST}"
