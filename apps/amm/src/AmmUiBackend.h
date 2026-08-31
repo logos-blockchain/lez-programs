@@ -104,9 +104,16 @@ public slots:
     QVariantMap addCustomToken(QString tokenId) override;
     // Re-loads the known-tokens / known-pools registry (bumps registryRevision).
     void refreshRegistry() override;
+    // Persists the registry URL (global setting) and reloads the registry from it.
+    void saveRegistryUrl(QString url) override;
 
 private:
     void syncWalletState();
+    // The registry URL persisted as a global (per-user) QSettings value — the
+    // source RegistryLoader falls back to when AMM_REGISTRY_URL is unset. The
+    // getter returns "" when none is set.
+    QString loadRegistryUrlSetting() const;
+    void storeRegistryUrlSetting(const QString& url) const;
     // Persisted custom (user-pasted) token ids. Stored as a JSON array of id
     // strings at customTokenStorePath(); missing/unreadable ⇒ empty. The path is
     // CUSTOM_TOKEN_CONFIG if set, else a per-user app-data fallback.
