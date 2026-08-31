@@ -375,6 +375,13 @@ Item {
                         }
                     }
                 }
+
+                Button {
+                    objectName: "walletRegistrySettingsButton"
+                    Layout.fillWidth: true
+                    text: qsTr("Registry settings")
+                    onClicked: walletStack.push(registrySettings)
+                }
             }
         }
 
@@ -430,6 +437,60 @@ Item {
                     text: qsTr("Add account")
                     enabled: !root.busy
                     onClicked: createAccountDialog.open()
+                }
+            }
+        }
+
+        Component {
+            id: registrySettings
+
+            ColumnLayout {
+                spacing: 12
+
+                RowLayout {
+                    Layout.fillWidth: true
+
+                    WalletIconButton {
+                        iconSource: Qt.resolvedUrl("icons/back.svg")
+                        accessibleName: qsTr("Back")
+                        onClicked: walletStack.pop()
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Registry")
+                        color: "#f4f4f5"
+                        font.bold: true
+                    }
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("URL of the known-tokens / known-pools registry the app loads. Leave empty to load none.")
+                    color: "#a1a1aa"
+                    font.pixelSize: 11
+                    wrapMode: Text.WordWrap
+                }
+
+                TextField {
+                    id: registryUrlField
+                    objectName: "walletRegistryUrlField"
+                    Layout.fillWidth: true
+                    // Seeded once from the synced PROP when the page is created; the
+                    // user edits freely and Save persists it.
+                    text: root.wallet ? root.wallet.registryUrl : ""
+                    placeholderText: qsTr("https://…/amm-registry.json")
+                }
+
+                Button {
+                    objectName: "walletRegistrySaveButton"
+                    Layout.fillWidth: true
+                    text: qsTr("Save")
+                    onClicked: {
+                        if (root.wallet)
+                            root.wallet.saveRegistryUrl(registryUrlField.text)
+                        walletStack.pop()
+                    }
                 }
             }
         }
