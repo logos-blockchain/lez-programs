@@ -106,6 +106,8 @@ public slots:
     void refreshRegistry() override;
     // Persists the registry URL (global setting) and reloads the registry from it.
     void saveRegistryUrl(QString url) override;
+    // Switches the active network (re-filters the loaded registry, no re-fetch).
+    void selectNetwork(QString id) override;
 
 private:
     void syncWalletState();

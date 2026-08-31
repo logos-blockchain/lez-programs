@@ -147,6 +147,7 @@ void RegistryLoader::refresh()
     if (url.isEmpty())
         url = m_configuredUrl;
     if (url.isEmpty()) {
+        m_registryObj = {};  // no registry ⇒ no networks to pick
         publish({}, {}, QStringLiteral("none"), {});
         return;
     }
@@ -161,6 +162,7 @@ void RegistryLoader::refresh()
 
 void RegistryLoader::loadLocal()
 {
+    m_registryObj = {};  // local files carry no networks to pick
     // Local files are bare arrays with no network tag — no filtering.
     publish(parseTokens(jsonArrayFromBytes(readConfigFileBytes(TOKENS_CONFIG_ENV)), {}),
             parsePools(jsonArrayFromBytes(readConfigFileBytes(POOLS_CONFIG_ENV)), {}),
@@ -196,13 +198,19 @@ bool RegistryLoader::applyRegistry(const QByteArray& body, const QString& source
         qWarning() << "AMM registry: document is not a JSON object";
         return false;
     }
-    const QJsonObject registry = doc.object();
-    const QJsonArray networks = registry.value(QStringLiteral("networks")).toArray();
+    m_registryObj = doc.object();
+    m_lastSource = source;
+    return applySelection();
+}
 
+bool RegistryLoader::applySelection()
+{
+    const QJsonArray networks = m_registryObj.value(QStringLiteral("networks")).toArray();
     const QString activeId = selectActiveNetwork(networks);
     if (activeId.isEmpty()) {
-        qWarning() << "AMM registry: cannot determine the active network"
-                      " (set AMM_NETWORK for a multi-network registry); not applied";
+        qWarning() << "AMM registry: no networks declared; nothing applied";
+        m_activeAmmProgramId.clear();
+        publish({}, {}, m_lastSource, {});
         return false;
     }
 
@@ -220,31 +228,64 @@ bool RegistryLoader::applyRegistry(const QByteArray& body, const QString& source
         }
     }
 
-    publish(parseTokens(registry.value(QStringLiteral("tokens")).toArray(), activeId),
-            parsePools(registry.value(QStringLiteral("pools")).toArray(), activeId),
-            source, activeId);
+    publish(parseTokens(m_registryObj.value(QStringLiteral("tokens")).toArray(), activeId),
+            parsePools(m_registryObj.value(QStringLiteral("pools")).toArray(), activeId),
+            m_lastSource, activeId);
     return true;
+}
+
+void RegistryLoader::selectNetwork(const QString& id)
+{
+    if (id == m_selectedNetwork)
+        return;
+    m_selectedNetwork = id;
+    // Re-filter the already-loaded registry to the new pick (no re-fetch). If none
+    // is loaded yet, the pick is remembered and applied when one loads.
+    if (!m_registryObj.isEmpty())
+        applySelection();
+}
+
+QVariantList RegistryLoader::networks() const
+{
+    QVariantList out;
+    const QJsonArray nets = m_registryObj.value(QStringLiteral("networks")).toArray();
+    for (const QJsonValue& entry : nets) {
+        const QJsonObject net = entry.toObject();
+        const QString id = net.value(QStringLiteral("id")).toString();
+        if (id.isEmpty())
+            continue;
+        out.append(QVariantMap{
+            {QStringLiteral("id"), id},
+            {QStringLiteral("name"), net.value(QStringLiteral("name")).toString()},
+        });
+    }
+    return out;
 }
 
 QString RegistryLoader::selectActiveNetwork(const QJsonArray& networks) const
 {
-    // Explicit override wins if it names a declared network.
-    const QString forced = qEnvironmentVariable(NETWORK_ENV);
-    if (!forced.isEmpty()) {
-        for (const QJsonValue& entry : networks) {
-            if (entry.toObject().value(QStringLiteral("id")).toString() == forced)
-                return forced;
-        }
+    if (networks.isEmpty())
         return {};
-    }
 
-    // A single declared network is unambiguous. Multiple networks can't be told
-    // apart from the connection (program ids and account ids are deterministic and
-    // may be identical across networks), so AMM_NETWORK is required to pick one.
-    if (networks.size() == 1)
-        return networks.at(0).toObject().value(QStringLiteral("id")).toString();
+    const auto declares = [&networks](const QString& id) {
+        for (const QJsonValue& entry : networks) {
+            if (entry.toObject().value(QStringLiteral("id")).toString() == id)
+                return true;
+        }
+        return false;
+    };
 
-    return {};
+    // The user's explicit pick, if it's still a declared network.
+    if (!m_selectedNetwork.isEmpty() && declares(m_selectedNetwork))
+        return m_selectedNetwork;
+
+    // AMM_NETWORK sets the initial default (e2e / dev), if it names one.
+    const QString forced = qEnvironmentVariable(NETWORK_ENV);
+    if (!forced.isEmpty() && declares(forced))
+        return forced;
+
+    // Otherwise default to the first declared network.
+    return networks.at(0).toObject().value(QStringLiteral("id")).toString();
 }
 
 void RegistryLoader::publish(const QVariantList& tokens, const QVariantList& pools,
