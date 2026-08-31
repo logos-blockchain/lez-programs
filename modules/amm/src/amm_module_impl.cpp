@@ -246,6 +246,10 @@ std::vector<uint8_t> AmmModuleImpl::loadAmmElf() {
 }
 
 std::string AmmModuleImpl::ammProgramId() {
+    // An app-selected program id (setAmmProgramId) takes precedence; AMM_PROGRAM_BIN
+    // is the fallback for local / headless / no-registry use.
+    if (!m_activeProgramId.empty()) return m_activeProgramId;
+
     const std::vector<uint8_t> elf = loadAmmElf();
     if (elf.empty()) return {};
     // Hand the deployed binary to the amm_ffi program_id op, which decodes it
@@ -257,6 +261,17 @@ std::string AmmModuleImpl::ammProgramId() {
         return {};
     }
     return jStr(r.value, "programId");
+}
+
+LogosMap AmmModuleImpl::setAmmProgramId(const LogosMap& request) {
+    const std::string raw = jStr(request, "ammProgramId");
+    const std::string normalized = normalizeAccountId(raw);
+    if (!raw.empty() && normalized.empty())
+        return LogosMap{{"status", "error"}, {"error", "invalid_account_id"}};
+
+    // Adopt the caller's chosen id (normalized to hex; empty reverts to the bin).
+    m_activeProgramId = normalized;
+    return LogosMap{{"status", "ok"}, {"error", ""}};
 }
 
 std::string AmmModuleImpl::normalizeAccountId(const std::string& id) {
