@@ -47,6 +47,13 @@ public:
     /// `backend_error` when the backend FFI call fails.
     LogosMap configAccount();
 
+    /// Sets the AMM program id every op derives from (base58 or hex; empty clears
+    /// it, reverting to `AMM_PROGRAM_BIN`). The app calls this to adopt the program
+    /// id of the network it selected (from its configured registry) so no
+    /// `AMM_PROGRAM_BIN` is needed. Not selection logic — the module just adopts the
+    /// caller's choice. Headless callers never touch it. Returns `{ status:"ok" }`.
+    LogosMap setAmmProgramId(const LogosMap& request);
+
     /// Submits an `UpdateConfig` transferring admin authority to `request.newAuthorityId`
     /// (base58 or hex). Only the current admin can sign, so the connected wallet must control it.
     /// On success `{ status:"ok", error:"", transactionId:<hex> }`; on failure:
@@ -280,4 +287,8 @@ private:
     // Shared body for createPriceObservations / createOraclePriceAccount: reads the config,
     // builds the window-seeded oracle plan (observations vs price account), and submits it.
     LogosMap oracleSetupSubmit(const LogosMap& request, bool observations);
+
+    // The AMM program id the app selected (via setAmmProgramId). Empty ⇒
+    // ammProgramId() falls back to deriving it from AMM_PROGRAM_BIN.
+    std::string m_activeProgramId;
 };
