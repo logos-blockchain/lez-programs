@@ -142,7 +142,10 @@ void RegistryLoader::refresh()
         return;
     }
 
-    const QString url = qEnvironmentVariable(REGISTRY_URL_ENV);
+    // AMM_REGISTRY_URL (e2e / dev) overrides the UI-configured URL.
+    QString url = qEnvironmentVariable(REGISTRY_URL_ENV);
+    if (url.isEmpty())
+        url = m_configuredUrl;
     if (url.isEmpty()) {
         publish({}, {}, QStringLiteral("none"), {});
         return;
@@ -190,7 +193,9 @@ void RegistryLoader::startRemote(const QUrl& url)
 
         if (applyRegistry(body, QStringLiteral("remote"))) {
             m_stamp = stamp;
-            saveDiskCache(qEnvironmentVariable(REGISTRY_URL_ENV), stamp, body);
+            // Key the cache by the effective URL (env or UI-configured), matching
+            // what loadDiskCache() looks up.
+            saveDiskCache(reply->url().toString(), stamp, body);
         }
     });
 }

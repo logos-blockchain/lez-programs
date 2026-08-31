@@ -54,6 +54,11 @@ public:
     // it takes precedence over the remote registry (local-replaces-remote).
     static bool hasLocalSource();
 
+    // The registry URL to fetch when AMM_REGISTRY_URL is unset — the value the user
+    // configured in the wallet config UI (persisted by the backend). Empty ⇒ no
+    // remote source. Takes effect on the next refresh().
+    void setConfiguredUrl(const QString& url) { m_configuredUrl = url; }
+
 public slots:
     void refresh();
 
@@ -83,6 +88,7 @@ private:
     QString m_source = QStringLiteral("none");
     QString m_activeNetwork;
     QString m_activeAmmProgramId;
+    QString m_configuredUrl;  // UI-configured registry URL (env overrides)
 
     // Registry `timestamp` reflected in the snapshot — lets a revalidation skip
     // re-applying an unchanged document.
