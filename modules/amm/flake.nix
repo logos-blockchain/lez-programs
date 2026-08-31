@@ -7,24 +7,25 @@
     # Core wallet module dependency. The input name must match the
     # metadata.json `dependencies` entry so the builder resolves it as a module
     # dependency. Same upstream branch the repo-root flake pins (the QtRO byte-string
-    # `instruction` fix for send_generic_public_transaction). This flake is not built
-    # standalone (see NOTE below), so the repo-root flake's v0.2.1 LEZ override wins.
+    # `instruction` fix for send_generic_public_transaction).
     lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr";
+
+    # The repo-root flake supplies the amm_ffi crate. amm_ffi is a Cargo
+    # workspace member (it path-depends on amm_core / token_core /
+    # twap_oracle_core under programs/*), so it can only be built with the whole
+    # workspace as source — which the root flake does via `self`. Reference the
+    # root flake here and pull amm_ffi from it, so this module builds standalone
+    # (module_path=modules/amm) under the release CI's `nix build .#lgx-portable`.
+    lez_programs.url = "path:../..";
   };
 
-  # NOTE: like apps/amm, this flake is NOT built standalone. The amm_ffi
-  # crate this module links (the Rust JSON-FFI brain) lives in the repo-root
-  # flake, and referencing it from here would require a hardcoded `git+file://`
-  # path or a `path:../..` input — the latter fails flake evaluation because this
-  # dir is copied into the Nix store as its own flake root, so `../..` can't
-  # escape it. Instead, the repo-root flake.nix builds this module directly
-  # (src = ./modules/amm) and resolves amm_ffi via `self`. Build it from
-  # the repo root:
-  #   nix build .#amm-module
-  outputs = inputs@{ logos-module-builder, ... }:
+  outputs = inputs@{ logos-module-builder, lez_programs, ... }:
     logos-module-builder.lib.mkLogosModule {
       src = ./.;
       configFile = ./metadata.json;
       flakeInputs = inputs;
+      externalLibInputs = {
+        amm_ffi = { input = lez_programs; packages.default = "amm_ffi"; };
+      };
     };
 }
