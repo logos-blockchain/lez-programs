@@ -181,21 +181,10 @@ void RegistryLoader::startRemote(const QUrl& url)
         }
 
         const QByteArray body = reply->readAll();
-        const QString stamp = QJsonDocument::fromJson(body)
-                                  .object()
-                                  .value(QStringLiteral("timestamp"))
-                                  .toVariant()
-                                  .toString();
-        // Revalidation: an unchanged registry with a non-empty snapshot is
-        // already current.
-        if (!stamp.isEmpty() && stamp == m_stamp && !m_tokens.isEmpty())
-            return;
-
         if (applyRegistry(body, QStringLiteral("remote"))) {
-            m_stamp = stamp;
             // Key the cache by the effective URL (env or UI-configured), matching
             // what loadDiskCache() looks up.
-            saveDiskCache(reply->url().toString(), stamp, body);
+            saveDiskCache(reply->url().toString(), body);
         }
     });
 }
@@ -279,23 +268,20 @@ void RegistryLoader::loadDiskCache(const QString& url)
     if (obj.value(QStringLiteral("url")).toString() != url)
         return;
 
-    m_stamp = obj.value(QStringLiteral("stamp")).toVariant().toString();
-    // Re-apply the cached registry against the current connection (the active
+    // Re-apply the cached registry against the current selection (the active
     // network may resolve differently than when it was written).
     const QByteArray body =
         QJsonDocument(obj.value(QStringLiteral("registry")).toObject()).toJson(QJsonDocument::Compact);
     applyRegistry(body, QStringLiteral("cache"));
 }
 
-void RegistryLoader::saveDiskCache(const QString& url, const QString& stamp,
-                                   const QByteArray& body) const
+void RegistryLoader::saveDiskCache(const QString& url, const QByteArray& body) const
 {
     const QString path = cachePath();
     QDir().mkpath(QFileInfo(path).absolutePath());
 
     QJsonObject obj;
     obj.insert(QStringLiteral("url"), url);
-    obj.insert(QStringLiteral("stamp"), stamp);
     obj.insert(QStringLiteral("registry"), QJsonDocument::fromJson(body).object());
 
     QFile file(path);

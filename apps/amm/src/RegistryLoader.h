@@ -77,7 +77,7 @@ private:
                  const QString& source, const QString& network);
 
     void loadDiskCache(const QString& url);
-    void saveDiskCache(const QString& url, const QString& stamp, const QByteArray& body) const;
+    void saveDiskCache(const QString& url, const QByteArray& body) const;
     static QString cachePath();
 
     QNetworkAccessManager* nam();
@@ -90,9 +90,6 @@ private:
     QString m_activeAmmProgramId;
     QString m_configuredUrl;  // UI-configured registry URL (env overrides)
 
-    // Registry `timestamp` reflected in the snapshot — lets a revalidation skip
-    // re-applying an unchanged document.
-    QString m_stamp;
     // Guards against overlapping refreshes: a reply from an older refresh is
     // dropped once a newer refresh has started.
     quint64 m_generation = 0;
