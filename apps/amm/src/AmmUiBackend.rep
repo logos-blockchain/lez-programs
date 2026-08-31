@@ -27,6 +27,13 @@ class AmmUiBackend
     // set (e2e / dev); empty means no registry is configured. Bound by the config
     // field; saveRegistryUrl() writes it.
     PROP(QString registryUrl READONLY)
+    // The id of the network the registry data is currently filtered to (see
+    // networks/selectNetwork()). Empty for local / none sources. Lets the network
+    // picker mark the current selection; updates on each registry refresh / pick.
+    PROP(QString activeNetwork READONLY)
+    // The registry's declared networks as [{ id, name }] for the network picker
+    // (empty for local / none sources). Auto-syncs on each registry refresh / pick.
+    PROP(QVariantList networks READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
@@ -220,4 +227,9 @@ class AmmUiBackend
     // registry from it (unless AMM_REGISTRY_URL overrides). Updates the registryUrl
     // PROP. An empty url clears the setting (no registry). Called by the config field.
     SLOT(void saveRegistryUrl(QString url))
+
+    // Switches the active network to `id` (from the networks list): re-filters the
+    // loaded registry's tokens/pools and re-adopts its program id with no re-fetch,
+    // then bumps registryRevision and updates activeNetwork.
+    SLOT(void selectNetwork(QString id))
 }

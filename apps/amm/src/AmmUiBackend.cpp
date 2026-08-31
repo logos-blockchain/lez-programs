@@ -47,6 +47,8 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     connect(m_registry.get(), &RegistryLoader::changed, this, [this]() {
         m_logos->amm_module.setAmmProgramId(QVariantMap{
             {QStringLiteral("ammProgramId"), m_registry->activeAmmProgramId()}});
+        setNetworks(m_registry->networks());
+        setActiveNetwork(m_registry->activeNetwork());
         setRegistryRevision(m_registry->revision());
     });
 
@@ -269,6 +271,13 @@ void AmmUiBackend::refreshRegistry()
     // Manual re-load of the known-tokens/known-pools source. The loader bumps
     // registryRevision and the UI re-fetches the lists.
     m_registry->refresh();
+}
+
+void AmmUiBackend::selectNetwork(QString id)
+{
+    // The loader re-filters the loaded registry and emits changed(), which adopts
+    // the new program id, updates activeNetwork, and bumps registryRevision.
+    m_registry->selectNetwork(id);
 }
 
 void AmmUiBackend::saveRegistryUrl(QString url)
