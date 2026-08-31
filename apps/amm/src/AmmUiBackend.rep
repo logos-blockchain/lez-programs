@@ -22,6 +22,11 @@ class AmmUiBackend
     // re-fetch tokenList()/poolList()/resolveTokens(). Starts at 0; the backend
     // sets it once the initial snapshot has loaded (and again on each refresh).
     PROP(int registryRevision READONLY)
+    // The user-configured registry URL, persisted as a global (per-user) setting
+    // and edited in the wallet config UI. The env AMM_REGISTRY_URL overrides it when
+    // set (e2e / dev); empty means no registry is configured. Bound by the config
+    // field; saveRegistryUrl() writes it.
+    PROP(QString registryUrl READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
@@ -210,4 +215,9 @@ class AmmUiBackend
     // a remote registry). Bumps registryRevision when the snapshot updates so
     // QML re-fetches the lists.
     SLOT(void refreshRegistry())
+
+    // Persists the registry URL as a global (per-user) setting and re-loads the
+    // registry from it (unless AMM_REGISTRY_URL overrides). Updates the registryUrl
+    // PROP. An empty url clears the setting (no registry). Called by the config field.
+    SLOT(void saveRegistryUrl(QString url))
 }

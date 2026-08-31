@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QJsonValue>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
 
@@ -18,6 +19,15 @@
 #include "WalletController.h"
 #include "logos_api.h"
 #include "logos_sdk.h"
+
+namespace {
+// Global (per-user) settings store, shared with WalletController's scope
+// (QSettings("Logos", "AmmUI")). The registry URL is a per-user setting, not
+// per-wallet, so it lives here rather than in the wallet home.
+const char SETTINGS_ORG[] = "Logos";
+const char SETTINGS_APP[] = "AmmUI";
+const char REGISTRY_URL_KEY[] = "registryUrl";
+}
 
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     : AmmUiBackendSimpleSource(parent),
@@ -39,6 +49,12 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
             {QStringLiteral("ammProgramId"), m_registry->activeAmmProgramId()}});
         setRegistryRevision(m_registry->revision());
     });
+
+    // Seed the configured registry URL from the persisted global setting so the
+    // first refresh() and the config field both see it (AMM_REGISTRY_URL overrides).
+    const QString configuredUrl = loadRegistryUrlSetting();
+    setRegistryUrl(configuredUrl);
+    m_registry->setConfiguredUrl(configuredUrl);
 
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);
@@ -253,6 +269,33 @@ void AmmUiBackend::refreshRegistry()
     // Manual re-load of the known-tokens/known-pools source. The loader bumps
     // registryRevision and the UI re-fetches the lists.
     m_registry->refresh();
+}
+
+void AmmUiBackend::saveRegistryUrl(QString url)
+{
+    // Persist the user's registry URL (global setting), publish it to the config
+    // field, and re-load from it. AMM_REGISTRY_URL still overrides on refresh().
+    const QString trimmed = url.trimmed();
+    storeRegistryUrlSetting(trimmed);
+    setRegistryUrl(trimmed);
+    m_registry->setConfiguredUrl(trimmed);
+    m_registry->refresh();
+}
+
+QString AmmUiBackend::loadRegistryUrlSetting() const
+{
+    return QSettings(QString::fromLatin1(SETTINGS_ORG), QString::fromLatin1(SETTINGS_APP))
+        .value(QString::fromLatin1(REGISTRY_URL_KEY))
+        .toString();
+}
+
+void AmmUiBackend::storeRegistryUrlSetting(const QString& url) const
+{
+    QSettings settings(QString::fromLatin1(SETTINGS_ORG), QString::fromLatin1(SETTINGS_APP));
+    if (url.isEmpty())
+        settings.remove(QString::fromLatin1(REGISTRY_URL_KEY));
+    else
+        settings.setValue(QString::fromLatin1(REGISTRY_URL_KEY), url);
 }
 
 QVariantMap AmmUiBackend::createPoolQuote(QVariantMap request)
