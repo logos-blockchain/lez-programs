@@ -30,9 +30,13 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
 {
     setWalletStateReady(false);
 
-    // Bump registryRevision whenever the known-tokens / known-pools snapshot
-    // refreshes so QML replicas re-fetch tokenList()/poolList()/resolveTokens().
+    // Whenever the known-tokens / known-pools snapshot refreshes: adopt the active
+    // network's AMM program id on the module (empty ⇒ falls back to AMM_PROGRAM_BIN)
+    // so ops target that network without a bin, then bump registryRevision so QML
+    // replicas re-fetch tokenList()/poolList()/resolveTokens().
     connect(m_registry.get(), &RegistryLoader::changed, this, [this]() {
+        m_logos->amm_module.setAmmProgramId(QVariantMap{
+            {QStringLiteral("ammProgramId"), m_registry->activeAmmProgramId()}});
         setRegistryRevision(m_registry->revision());
     });
 
@@ -46,17 +50,8 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
         setWalletStateReady(true);
         syncWalletState();
         // Load the registry once the event loop is running (the remote source
-        // fetches asynchronously). Only the remote source needs the deployment
-        // guard, so skip the sequencer-touching configAccount read when local
-        // files are configured (they take precedence anyway).
-        if (!RegistryLoader::hasLocalSource()) {
-            const QVariantMap cfg = m_logos->amm_module.configAccount();
-            if (cfg.value(QStringLiteral("status")).toString() == QStringLiteral("ok")) {
-                m_registry->setConnectedProgramIds(
-                    cfg.value(QStringLiteral("ammProgramId")).toString(),
-                    cfg.value(QStringLiteral("tokenProgramId")).toString());
-            }
-        }
+        // fetches asynchronously). The changed() handler adopts the selected
+        // network's program id on the module.
         m_registry->refresh();
     });
 }

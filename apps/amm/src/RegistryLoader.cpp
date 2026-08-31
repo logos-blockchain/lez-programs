@@ -127,17 +127,14 @@ bool RegistryLoader::hasLocalSource()
         || !qEnvironmentVariableIsEmpty(POOLS_CONFIG_ENV);
 }
 
-void RegistryLoader::setConnectedProgramIds(const QString& ammProgramId,
-                                            const QString& tokenProgramId)
-{
-    m_connectedAmm = ammProgramId;
-    m_connectedToken = tokenProgramId;
-}
-
 void RegistryLoader::refresh()
 {
     // Supersede any in-flight remote fetch.
     ++m_generation;
+
+    // No adopted network id until applyRegistry selects one; the local / none paths
+    // below carry none, so ops fall back to AMM_PROGRAM_BIN.
+    m_activeAmmProgramId.clear();
 
     // local-replaces-remote: a configured local file wins outright.
     if (hasLocalSource()) {
@@ -210,21 +207,23 @@ bool RegistryLoader::applyRegistry(const QByteArray& body, const QString& source
 
     const QString activeId = selectActiveNetwork(networks);
     if (activeId.isEmpty()) {
-        qWarning() << "AMM registry: cannot determine the active network; not applied";
+        qWarning() << "AMM registry: cannot determine the active network"
+                      " (set AMM_NETWORK for a multi-network registry); not applied";
         return false;
     }
 
-    QJsonObject activeNetwork;
+    // Adopt the active network's declared AMM program id so the backend can point
+    // ops at it (setAmmProgramId) without an AMM_PROGRAM_BIN.
+    m_activeAmmProgramId.clear();
     for (const QJsonValue& entry : networks) {
-        if (entry.toObject().value(QStringLiteral("id")).toString() == activeId) {
-            activeNetwork = entry.toObject();
+        const QJsonObject net = entry.toObject();
+        if (net.value(QStringLiteral("id")).toString() == activeId) {
+            m_activeAmmProgramId = net.value(QStringLiteral("programIds"))
+                                       .toObject()
+                                       .value(QStringLiteral("amm"))
+                                       .toString();
             break;
         }
-    }
-    if (!deploymentOk(activeNetwork)) {
-        qWarning() << "AMM registry: network" << activeId
-                   << "targets a different deployment; ignoring";
-        return false;
     }
 
     publish(parseTokens(registry.value(QStringLiteral("tokens")).toArray(), activeId),
@@ -235,7 +234,7 @@ bool RegistryLoader::applyRegistry(const QByteArray& body, const QString& source
 
 QString RegistryLoader::selectActiveNetwork(const QJsonArray& networks) const
 {
-    // 1. Explicit override, if it names a network the registry declares.
+    // Explicit override wins if it names a declared network.
     const QString forced = qEnvironmentVariable(NETWORK_ENV);
     if (!forced.isEmpty()) {
         for (const QJsonValue& entry : networks) {
@@ -245,36 +244,13 @@ QString RegistryLoader::selectActiveNetwork(const QJsonArray& networks) const
         return {};
     }
 
-    // 2. The network whose programIds match the deployment we're connected to.
-    if (!m_connectedAmm.isEmpty() || !m_connectedToken.isEmpty()) {
-        for (const QJsonValue& entry : networks) {
-            const QJsonObject ids =
-                entry.toObject().value(QStringLiteral("programIds")).toObject();
-            if (ids.value(QStringLiteral("amm")).toString() == m_connectedAmm
-                && ids.value(QStringLiteral("token")).toString() == m_connectedToken)
-                return entry.toObject().value(QStringLiteral("id")).toString();
-        }
-    }
-
-    // 3. A registry that declares exactly one network is unambiguous.
+    // A single declared network is unambiguous. Multiple networks can't be told
+    // apart from the connection (program ids and account ids are deterministic and
+    // may be identical across networks), so AMM_NETWORK is required to pick one.
     if (networks.size() == 1)
         return networks.at(0).toObject().value(QStringLiteral("id")).toString();
 
     return {};
-}
-
-bool RegistryLoader::deploymentOk(const QJsonObject& network) const
-{
-    const QJsonObject ids = network.value(QStringLiteral("programIds")).toObject();
-    const QString amm = ids.value(QStringLiteral("amm")).toString();
-    const QString token = ids.value(QStringLiteral("token")).toString();
-    // A network that doesn't declare its deployment is trusted (the operator
-    // chose the URL); and with no connection info we cannot check.
-    if (amm.isEmpty() && token.isEmpty())
-        return true;
-    if (m_connectedAmm.isEmpty() && m_connectedToken.isEmpty())
-        return true;
-    return amm == m_connectedAmm && token == m_connectedToken;
 }
 
 void RegistryLoader::publish(const QVariantList& tokens, const QVariantList& pools,
