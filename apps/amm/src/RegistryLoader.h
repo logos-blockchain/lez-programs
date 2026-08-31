@@ -6,9 +6,10 @@
 #include <QUrl>
 #include <QVariantList>
 
+#include <QJsonObject>
+
 class QNetworkAccessManager;
 class QJsonArray;
-class QJsonObject;
 
 // Loads the AMM app's "known tokens" and "known pools" and serves them as an
 // in-memory snapshot the backend's QtRO slots read synchronously.
@@ -22,13 +23,13 @@ class QJsonObject;
 //     (QNetworkAccessManager) with an on-disk cache served meanwhile
 //     (stale-while-revalidate). Entries are filtered to the active network.
 //
-// Active network = AMM_NETWORK if it names a declared network, else the lone
-// network when the registry declares exactly one. Network identity can't be
-// detected from the connection (program ids and account ids are deterministic and
-// can be identical across networks), so a multi-network registry needs AMM_NETWORK
-// to disambiguate; otherwise nothing is applied. Selecting a network also exposes
-// its AMM program id via activeAmmProgramId() so the backend can adopt it (no
-// AMM_PROGRAM_BIN needed).
+// Active network = the user's selection (selectNetwork), else AMM_NETWORK if it
+// names a declared network, else the first declared network. Network identity can't
+// be detected from the connection (program ids and account ids are deterministic and
+// can be identical across networks), so the user picks; networks() lists them for
+// the picker. selectNetwork() re-filters the last-loaded registry with no re-fetch.
+// The active network's AMM program id is exposed via activeAmmProgramId() so the
+// backend can adopt it (no AMM_PROGRAM_BIN needed).
 //
 // refresh() bumps revision() and emits changed() whenever the snapshot updates,
 // so the backend re-publishes registryRevision and the UI re-fetches.
@@ -45,6 +46,9 @@ public:
     QString source() const { return m_source; }
     // The network id the snapshot was filtered to (empty for local / none).
     QString activeNetwork() const { return m_activeNetwork; }
+    // The registry's declared networks as [{ id, name }] for the picker (empty for
+    // local / none). The active one is activeNetwork().
+    QVariantList networks() const;
     // The active network's declared AMM program id (empty for local / none / a
     // network that declares none). The backend adopts it via setAmmProgramId so ops
     // target this network without an AMM_PROGRAM_BIN.
@@ -61,6 +65,10 @@ public:
 
 public slots:
     void refresh();
+    // Pick a network by id (from networks()). Re-filters the last-loaded registry
+    // and re-adopts its program id with no re-fetch; ignored if no registry is
+    // loaded yet (the pick is remembered and applied when one loads).
+    void selectNetwork(const QString& id);
 
 signals:
     void changed();
@@ -68,9 +76,12 @@ signals:
 private:
     void loadLocal();
     void startRemote(const QUrl& url);
-    // Parse the registry body, select + guard the active network, filter, and
-    // publish. Returns true when a snapshot was applied.
+    // Parse the registry body into m_registryObj, then applySelection(). Returns
+    // true when a snapshot was applied.
     bool applyRegistry(const QByteArray& body, const QString& source);
+    // Select the active network from the stored registry, filter its tokens/pools,
+    // adopt its program id, and publish. Returns true when a network was applied.
+    bool applySelection();
     QString selectActiveNetwork(const QJsonArray& networks) const;
 
     void publish(const QVariantList& tokens, const QVariantList& pools,
@@ -89,6 +100,12 @@ private:
     QString m_activeNetwork;
     QString m_activeAmmProgramId;
     QString m_configuredUrl;  // UI-configured registry URL (env overrides)
+
+    // The last-loaded registry document, kept so selectNetwork() can re-filter to a
+    // different network without re-fetching. Empty for local / none sources.
+    QJsonObject m_registryObj;
+    QString m_lastSource;       // source label of m_registryObj ("remote"/"cache")
+    QString m_selectedNetwork;  // the user's picked network id (empty ⇒ default)
 
     // Guards against overlapping refreshes: a reply from an older refresh is
     // dropped once a newer refresh has started.

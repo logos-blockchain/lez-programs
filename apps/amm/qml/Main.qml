@@ -167,4 +167,43 @@ Item {
             visible: navbar.currentIndex === 2 && navbar.currentSubIndex === 1
         }
     }
+
+    // App settings: a cogwheel in the bottom-right corner opens the settings modal
+    // (registry URL + network picker). App-specific, so it lives here rather than
+    // in the shared wallet UI.
+    Rectangle {
+        id: settingsButton
+        objectName: "appSettingsButton"
+        anchors.right:  parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin:  20
+        anchors.bottomMargin: 20
+        z: 200
+        width: 44
+        height: 44
+        radius: 22
+        color: settingsMouse.pressed ? Theme.palette.borderSecondary
+                                     : Theme.palette.backgroundSecondary
+        border.color: Theme.palette.borderSecondary
+        border.width: 1
+
+        Text {
+            anchors.centerIn: parent
+            text: "⚙"  // gear
+            font.pixelSize: 20
+            color: Theme.palette.textSecondary
+        }
+
+        MouseArea {
+            id: settingsMouse
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: settingsModal.open()
+        }
+    }
+
+    SettingsModal {
+        id: settingsModal
+        backend: root.ready ? root.backend : null
+    }
 }
