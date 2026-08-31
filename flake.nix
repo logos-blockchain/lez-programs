@@ -276,12 +276,15 @@
       ammModulePkgs = ammModuleOutputs.packages or { };
 
       # Alias the AMM core module's Basecamp install artifacts (explicit
-      # `amm-module-lgx` / `amm-module-install`), same collision reason as the
-      # token module aliases below.
+      # `amm-module-lgx{,-portable}` / `amm-module-install{,-portable}`), same
+      # collision reason as the token module aliases below. The portable variants
+      # are the ones you distribute (self-contained, no /nix/store refs).
       ammModuleAliases = builtins.mapAttrs (
         system: attrs:
         (if attrs ? lgx then { amm-module-lgx = attrs.lgx; } else { })
+        // (if attrs ? lgx-portable then { amm-module-lgx-portable = attrs.lgx-portable; } else { })
         // (if attrs ? install then { amm-module-install = attrs.install; } else { })
+        // (if attrs ? install-portable then { amm-module-install-portable = attrs.install-portable; } else { })
       ) ammModulePkgs;
 
       # Token core module (modules/token): complete Token Program inspection
@@ -303,12 +306,15 @@
 
       # Alias the token core module's Basecamp install artifacts. The bare
       # `lgx` / `install` attrs collide across builders in the merged package
-      # set (last write wins), so expose an explicit `token-module-lgx` /
-      # `token-module-install` that resolves unambiguously.
+      # set (last write wins), so expose an explicit `token-module-lgx{,-portable}`
+      # / `token-module-install{,-portable}` that resolves unambiguously. The
+      # portable variants are the ones you distribute.
       tokenModuleAliases = builtins.mapAttrs (
         system: attrs:
         (if attrs ? lgx then { token-module-lgx = attrs.lgx; } else { })
+        // (if attrs ? lgx-portable then { token-module-lgx-portable = attrs.lgx-portable; } else { })
         // (if attrs ? install then { token-module-install = attrs.install; } else { })
+        // (if attrs ? install-portable then { token-module-install-portable = attrs.install-portable; } else { })
       ) tokenModulePkgs;
 
       # Wrap the app launcher to export DYLD_FALLBACK_LIBRARY_PATH pointing at the
