@@ -547,14 +547,12 @@ sec "Write UI registry config -> $REGISTRY_CONFIG_OUT"
 # Same tokens/pools in the remote-registry shape: one "local" network, holding-
 # agnostic tokens (the app resolves holdings from the wallet). programIds carry the
 # freshly deployed ids so the lone-network rule auto-selects "local" and the app
-# adopts its amm program id — no AMM_PROGRAM_BIN needed. The fresh timestamp forces
-# a re-fetch each run (ids change per deployment).
+# adopts its amm program id — no AMM_PROGRAM_BIN needed.
 {
   cat <<JSON
 {
   "name": "AMM local registry",
   "version": "0.1.0",
-  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "networks": [
     { "id": "local", "name": "Local", "programIds": { "amm": "$AMM_PID", "token": "$TOKEN_PID" } }
   ],
