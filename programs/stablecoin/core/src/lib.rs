@@ -164,6 +164,26 @@ pub enum Instruction {
         /// Collateral tokens to move into the position vault at open time.
         initial_collateral_amount: u128,
     },
+    /// Deposit additional collateral into an existing position.
+    ///
+    /// Allowed while the protocol is frozen — a deposit can only improve the
+    /// position's collateralization, so §7 keeps it available in emergencies.
+    /// No collateralization check for the same reason.
+    ///
+    /// Required accounts (5), in order:
+    /// 1. `owner` — authorized; must match `Position.owner_account_id`.
+    /// 2. `position` — initialized, writable, owned by this program; address must match
+    ///    `compute_position_pda(self_program_id, owner, position_nonce)`.
+    /// 3. `vault` — initialized, writable; must equal `Position.vault_account_id`.
+    /// 4. `user_collateral_holding` — authorized, initialized; owned by the same Token Program as
+    ///    the vault, with `TokenHolding.definition_id` equal to
+    ///    `ProtocolParameters.collateral_definition_id`.
+    /// 5. `protocol_parameters` — initialized, read-only; supplies the collateral definition id.
+    ///    `is_frozen` is deliberately not read.
+    DepositCollateral {
+        /// Collateral tokens to move from the user's holding into the vault.
+        amount: u128,
+    },
     /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
     ///
     /// Required accounts (4):

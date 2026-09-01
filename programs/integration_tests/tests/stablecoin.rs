@@ -111,6 +111,10 @@ impl Balances {
         500_000
     }
 
+    fn collateral_top_up() -> u128 {
+        100_000
+    }
+
     fn collateral_withdraw() -> u128 {
         200_000
     }
@@ -425,6 +429,44 @@ fn stablecoin_open_position_then_withdraw_collateral() {
         Balances::user_holding_init() - Balances::collateral_deposit(),
     );
 
+    // Top the position up with more collateral from the same user holding.
+    let deposit = stablecoin_core::Instruction::DepositCollateral {
+        amount: Balances::collateral_top_up(),
+    };
+    let message = public_transaction::Message::try_new(
+        Ids::stablecoin_program(),
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+        ],
+        vec![
+            current_nonce(&state, Ids::owner()),
+            current_nonce(&state, Ids::user_holding()),
+        ],
+        deposit,
+    )
+    .expect("valid deposit_collateral message");
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::owner(), &Keys::user_holding()],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .expect("deposit_collateral must succeed");
+
+    let after_top_up = Balances::collateral_deposit() + Balances::collateral_top_up();
+    assert_position(&state, after_top_up);
+    assert_fungible_balance(&state, Ids::vault(), after_top_up);
+    assert_fungible_balance(
+        &state,
+        Ids::user_holding(),
+        Balances::user_holding_init() - after_top_up,
+    );
+
     // Withdraw part of the collateral back to the same user holding.
     let withdraw = stablecoin_core::Instruction::WithdrawCollateral {
         amount: Balances::collateral_withdraw(),
@@ -447,20 +489,13 @@ fn stablecoin_open_position_then_withdraw_collateral() {
         .transition_from_public_transaction(&tx, 0, 0)
         .expect("withdraw_collateral must succeed");
 
-    assert_position(
-        &state,
-        Balances::collateral_deposit() - Balances::collateral_withdraw(),
-    );
-    assert_fungible_balance(
-        &state,
-        Ids::vault(),
-        Balances::collateral_deposit() - Balances::collateral_withdraw(),
-    );
+    let after_withdraw = after_top_up - Balances::collateral_withdraw();
+    assert_position(&state, after_withdraw);
+    assert_fungible_balance(&state, Ids::vault(), after_withdraw);
     assert_fungible_balance(
         &state,
         Ids::user_holding(),
-        Balances::user_holding_init() - Balances::collateral_deposit()
-            + Balances::collateral_withdraw(),
+        Balances::user_holding_init() - after_withdraw,
     );
 }
 
