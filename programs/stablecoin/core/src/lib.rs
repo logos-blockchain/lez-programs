@@ -178,8 +178,9 @@ pub enum Instruction {
     /// 4. `user_collateral_holding` — authorized, initialized; owned by the same Token Program as
     ///    the vault, with `TokenHolding.definition_id` equal to
     ///    `ProtocolParameters.collateral_definition_id`.
-    /// 5. `protocol_parameters` — initialized, read-only; supplies the collateral definition id.
-    ///    `is_frozen` is deliberately not read.
+    /// 5. `protocol_parameters` — initialized, read-only; must sit at
+    ///    `compute_protocol_parameters_pda(self_program_id)`. Supplies the collateral definition
+    ///    id. `is_frozen` is deliberately not read.
     DepositCollateral {
         /// Collateral tokens to move from the user's holding into the vault.
         amount: u128,
