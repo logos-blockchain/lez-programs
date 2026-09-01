@@ -11,7 +11,8 @@ use lee_core::{
 };
 use stablecoin_core::{
     compute_position_pda, compute_position_pda_seed, compute_position_vault_pda,
-    compute_position_vault_pda_seed, math::FIXED_POINT_ONE, Position, ProtocolParameters,
+    compute_position_vault_pda_seed, compute_protocol_parameters_pda, math::FIXED_POINT_ONE,
+    Position, ProtocolParameters,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -64,7 +65,7 @@ fn vault_id() -> AccountId {
 }
 
 fn protocol_parameters_id() -> AccountId {
-    AccountId::new([0xC0u8; 32])
+    compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID)
 }
 
 fn protocol_parameters_account(is_frozen: bool) -> AccountWithMetadata {
@@ -449,7 +450,7 @@ fn open_position_rejects_wrong_vault_address() {
 }
 
 #[test]
-#[should_panic(expected = "User collateral holding does not match the provided token definition")]
+#[should_panic(expected = "User collateral holding does not match the collateral definition")]
 fn open_position_rejects_mismatched_token_definition() {
     let other_definition = AccountWithMetadata {
         account: Account {
@@ -485,7 +486,7 @@ fn open_position_rejects_mismatched_token_definition() {
 
 #[test]
 #[should_panic(
-    expected = "Collateral token definition is not owned by the user holding's Token Program"
+    expected = "Collateral definition is not owned by the user collateral holding's Token Program"
 )]
 fn open_position_rejects_definition_with_wrong_token_program() {
     let mut definition = collateral_definition_account();
@@ -498,6 +499,28 @@ fn open_position_rejects_definition_with_wrong_token_program() {
         user_holding_account(1_000),
         definition,
         protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        TEST_POSITION_NONCE,
+        500,
+    );
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account ID does not match expected PDA derivation")]
+fn open_position_rejects_protocol_parameters_at_wrong_address() {
+    // Owned by the stablecoin program and decodes fine, but is not the canonical
+    // PDA — accepting it would let a caller substitute the global config.
+    let mut parameters = protocol_parameters_account(false);
+    parameters.account_id = AccountId::new([0xC0u8; 32]);
+
+    crate::open_position::open_position(
+        owner_account(),
+        uninit_position_account(),
+        uninit_vault_account(),
+        user_holding_account(1_000),
+        collateral_definition_account(),
+        parameters,
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         TEST_POSITION_NONCE,
