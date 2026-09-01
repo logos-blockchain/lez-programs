@@ -1164,7 +1164,8 @@ mod tests {
         .unwrap();
         assert_eq!(ab["amountA"], "100000"); // floor(1_000_000 * 100_000 / 1_000_000)
         assert_eq!(ab["amountB"], "200000"); // floor(2_000_000 * 100_000 / 1_000_000)
-                                             // minimum = floor(withdraw * (10000 - 50) / 10000) — the slippage floor per side.
+                                             // minimum = floor(withdraw * (10000 - 50) / 10000) —
+                                             // the slippage floor per side.
         assert_eq!(ab["minimumAmountA"], "99500");
         assert_eq!(ab["minimumAmountB"], "199000");
         assert_eq!(
