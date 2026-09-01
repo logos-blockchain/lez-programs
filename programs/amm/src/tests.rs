@@ -3687,7 +3687,8 @@ fn add_liquidity_overflow_protection() {
 fn remove_liquidity_overflow_protection() {
     let large_reserve: u128 = u128::MAX / 2 + 1; // 2^127
     let reserve_b: u128 = 1_000;
-    let lp_supply: u128 = 1_002; // must exceed MINIMUM_LIQUIDITY so remove_amount=2 passes the lock check
+    let lp_supply: u128 = 1_002; // must exceed MINIMUM_LIQUIDITY so remove_amount=2 passes the lock
+                                 // check
 
     let pool = AccountWithMetadata {
         account: Account {

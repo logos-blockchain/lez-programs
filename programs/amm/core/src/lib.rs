@@ -874,7 +874,8 @@ mod tests {
         // 1e20 * 2e20 = 2e40 overflows u128 (max ~3.4e38); the U256 intermediate keeps it exact.
         let a = 100_000_000_000_000_000_000u128; // 1e20
         let b = 200_000_000_000_000_000_000u128; // 2e20
-                                                 // floor(sqrt(2e40)) computed independently in U256.
+                                                 // floor(sqrt(2e40)) computed independently in
+                                                 // U256.
         let expected = {
             use alloy_primitives::U256;
             let product = U256::from(a).checked_mul(U256::from(b)).unwrap();
