@@ -243,6 +243,44 @@ mod stablecoin {
         ))
     }
 
+    /// Deposit additional collateral into an existing position (spec §10.5;
+    /// host fn `stablecoin_program::deposit_collateral`).
+    ///
+    /// Allowed while the protocol is frozen, and runs no collateralization
+    /// check — a deposit can only improve the position.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn deposit_collateral(
+        ctx: ProgramContext,
+        #[account(signer)]
+        owner: AccountWithMetadata,
+        #[account(mut)]
+        position: AccountWithMetadata,
+        #[account(mut)]
+        vault: AccountWithMetadata,
+        #[account(mut, signer)]
+        user_collateral_holding: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+        amount: u128,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::deposit_collateral::deposit_collateral(
+            owner,
+            position,
+            vault,
+            user_collateral_holding,
+            protocol_parameters,
+            ctx.self_program_id,
+            amount,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
     /// Withdraw `amount` collateral tokens from an existing position back to a
     /// user-controlled holding.
     ///
