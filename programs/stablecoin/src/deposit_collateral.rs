@@ -2,7 +2,9 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
-use stablecoin_core::{verify_position_and_get_seed, Position, ProtocolParameters};
+use stablecoin_core::{
+    compute_protocol_parameters_pda, verify_position_and_get_seed, Position, ProtocolParameters,
+};
 use token_core::TokenHolding;
 
 /// Deposit `amount` additional collateral tokens into an existing `position`'s vault.
@@ -79,6 +81,14 @@ pub fn deposit_collateral(
     assert_eq!(
         protocol_parameters.account.program_owner, stablecoin_program_id,
         "ProtocolParameters account must be owned by the stablecoin program"
+    );
+    // Pin the address: ownership plus a successful decode would otherwise let
+    // any stablecoin-owned account that decodes as ProtocolParameters stand in
+    // for the global config and redirect the collateral-definition binding.
+    assert_eq!(
+        protocol_parameters.account_id,
+        compute_protocol_parameters_pda(stablecoin_program_id),
+        "ProtocolParameters account ID does not match expected PDA derivation"
     );
     let parameters = ProtocolParameters::try_from(&protocol_parameters.account.data)
         .expect("ProtocolParameters must decode");

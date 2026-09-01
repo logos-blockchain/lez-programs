@@ -830,6 +830,21 @@ fn deposit_collateral_rejects_uninitialized_protocol_parameters() {
 }
 
 #[test]
+#[should_panic(expected = "ProtocolParameters account ID does not match expected PDA derivation")]
+fn deposit_collateral_rejects_protocol_parameters_at_wrong_address() {
+    let mut parameters = protocol_parameters_account(false);
+    parameters.account_id = AccountId::new([0xC0u8; 32]);
+    deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        user_holding_account(1_000),
+        parameters,
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
 #[should_panic(expected = "Position vault_account_id does not match the vault account")]
 fn deposit_collateral_rejects_wrong_vault() {
     let mut vault = init_vault_account();
