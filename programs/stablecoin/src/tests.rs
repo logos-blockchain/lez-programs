@@ -627,6 +627,277 @@ fn open_position_echoes_protocol_parameters_and_clock_unchanged() {
     assert_eq!(*post_states[6].account(), clock.account);
 }
 
+// --- deposit_collateral (spec §10.5) ---
+
+const DEPOSIT_AMOUNT: u128 = 250;
+
+fn deposit(
+    owner: AccountWithMetadata,
+    position: AccountWithMetadata,
+    vault: AccountWithMetadata,
+    holding: AccountWithMetadata,
+    parameters: AccountWithMetadata,
+    amount: u128,
+) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
+    crate::deposit_collateral::deposit_collateral(
+        owner,
+        position,
+        vault,
+        holding,
+        parameters,
+        STABLECOIN_PROGRAM_ID,
+        amount,
+    )
+}
+
+#[test]
+fn deposit_collateral_adds_to_position_and_emits_transfer() {
+    let starting_collateral = 500;
+    let (post_states, chained_calls) = deposit(
+        owner_account(),
+        init_position_account(starting_collateral, 0),
+        init_vault_account(),
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+
+    assert_eq!(post_states.len(), 5);
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(
+        position.collateral_amount,
+        starting_collateral + DEPOSIT_AMOUNT
+    );
+    // Everything except the collateral is untouched.
+    assert_eq!(position.normalized_debt_amount, 0);
+    assert_eq!(position.owner_account_id, owner_id());
+    assert_eq!(position.vault_account_id, vault_id());
+
+    assert_eq!(chained_calls.len(), 1);
+    let expected = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![user_holding_account(1_000), init_vault_account()],
+        &token_core::Instruction::Transfer {
+            amount_to_transfer: DEPOSIT_AMOUNT,
+        },
+    );
+    assert_eq!(chained_calls[0], expected);
+}
+
+#[test]
+fn deposit_collateral_works_when_frozen() {
+    // Opposite of open_position: a deposit only improves collateralization, so
+    // spec §7 keeps it available while frozen.
+    let (post_states, chained_calls) = deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        user_holding_account(1_000),
+        protocol_parameters_account(true),
+        DEPOSIT_AMOUNT,
+    );
+
+    assert_eq!(post_states.len(), 5);
+    assert_eq!(chained_calls.len(), 1);
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.collateral_amount, 500 + DEPOSIT_AMOUNT);
+}
+
+#[test]
+fn deposit_collateral_allows_zero_amount() {
+    let (post_states, chained_calls) = deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        0,
+    );
+
+    assert_eq!(post_states.len(), 5);
+    assert_eq!(chained_calls.len(), 1);
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.collateral_amount, 500);
+}
+
+#[test]
+fn deposit_collateral_leaves_debt_untouched() {
+    // Deposits never touch normalized_debt_amount — accrual is a read-side
+    // projection, so no accumulator is consulted here.
+    let (post_states, _) = deposit(
+        owner_account(),
+        init_position_account(500, 42),
+        init_vault_account(),
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.normalized_debt_amount, 42);
+    assert_eq!(position.collateral_amount, 500 + DEPOSIT_AMOUNT);
+}
+
+#[test]
+#[should_panic(expected = "Owner authorization is missing")]
+fn deposit_collateral_requires_owner_authorization() {
+    let mut owner = owner_account();
+    owner.is_authorized = false;
+    deposit(
+        owner,
+        init_position_account(500, 0),
+        init_vault_account(),
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "User collateral holding authorization is missing")]
+fn deposit_collateral_requires_user_holding_authorization() {
+    let mut holding = user_holding_account(1_000);
+    holding.is_authorized = false;
+    deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        holding,
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position account must be initialized")]
+fn deposit_collateral_rejects_uninitialized_position() {
+    deposit(
+        owner_account(),
+        uninit_position_account(),
+        init_vault_account(),
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position is not owned by this stablecoin program")]
+fn deposit_collateral_rejects_position_owned_by_other_program() {
+    let mut position = init_position_account(500, 0);
+    position.account.program_owner = [9u32; 8];
+    deposit(
+        owner_account(),
+        position,
+        init_vault_account(),
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position account ID does not match expected derivation")]
+fn deposit_collateral_rejects_wrong_position_address() {
+    let mut position = init_position_account(500, 0);
+    position.account_id = AccountId::new([0x77u8; 32]);
+    deposit(
+        owner_account(),
+        position,
+        init_vault_account(),
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account must be initialized")]
+fn deposit_collateral_rejects_uninitialized_protocol_parameters() {
+    deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        user_holding_account(1_000),
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: protocol_parameters_id(),
+        },
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position vault_account_id does not match the vault account")]
+fn deposit_collateral_rejects_wrong_vault() {
+    let mut vault = init_vault_account();
+    vault.account_id = AccountId::new([0x88u8; 32]);
+    deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        vault,
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "same Token Program as the vault")]
+fn deposit_collateral_rejects_holding_with_wrong_token_program() {
+    let mut holding = user_holding_account(1_000);
+    holding.account.program_owner = [9u32; 8];
+    deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        holding,
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "does not match the protocol's collateral definition")]
+fn deposit_collateral_rejects_holding_for_other_definition() {
+    let holding = AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: AccountId::new([0x21u8; 32]),
+                balance: 1_000,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: true,
+        account_id: user_holding_id(),
+    };
+    deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        init_vault_account(),
+        holding,
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position collateral_amount overflow")]
+fn deposit_collateral_rejects_overflow() {
+    deposit(
+        owner_account(),
+        init_position_account(u128::MAX, 0),
+        init_vault_account(),
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        1,
+    );
+}
+
 #[test]
 fn position_pda_is_deterministic_and_owner_and_nonce_specific() {
     let id_a = compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), TEST_POSITION_NONCE);
