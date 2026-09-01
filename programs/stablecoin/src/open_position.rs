@@ -3,7 +3,8 @@ use lee_core::{
     program::{AccountPostState, ChainedCall, Claim, ProgramId},
 };
 use stablecoin_core::{
-    verify_position_and_get_seed, verify_position_vault_and_get_seed, Position, ProtocolParameters,
+    compute_protocol_parameters_pda, verify_position_and_get_seed,
+    verify_position_vault_and_get_seed, Position, ProtocolParameters,
 };
 use token_core::TokenHolding;
 
@@ -66,6 +67,15 @@ pub fn open_position(
         protocol_parameters.account.program_owner, stablecoin_program_id,
         "ProtocolParameters account must be owned by the stablecoin program"
     );
+    // Ownership and a successful decode are not enough: without pinning the
+    // address, any stablecoin-owned account that happens to decode as
+    // ProtocolParameters could stand in for the global config and bypass both
+    // the freeze flag and the collateral binding below.
+    assert_eq!(
+        protocol_parameters.account_id,
+        compute_protocol_parameters_pda(stablecoin_program_id),
+        "ProtocolParameters account ID does not match expected PDA derivation"
+    );
     let parameters = ProtocolParameters::try_from(&protocol_parameters.account.data)
         .expect("ProtocolParameters must decode");
     assert!(!parameters.is_frozen, "Protocol is frozen");
@@ -78,16 +88,16 @@ pub fn open_position(
 
     let user_collateral_holding_definition_id =
         TokenHolding::try_from(&user_collateral_holding.account.data)
-            .expect("User holding must be a valid Token Holding")
+            .expect("User collateral holding must be a valid TokenHolding")
             .definition_id();
     assert_eq!(
         user_collateral_holding_definition_id, collateral_definition.account_id,
-        "User collateral holding does not match the provided token definition"
+        "User collateral holding does not match the collateral definition"
     );
     let token_program_id = user_collateral_holding.account.program_owner;
     assert_eq!(
         collateral_definition.account.program_owner, token_program_id,
-        "Collateral token definition is not owned by the user holding's Token Program"
+        "Collateral definition is not owned by the user collateral holding's Token Program"
     );
 
     let position_seed =

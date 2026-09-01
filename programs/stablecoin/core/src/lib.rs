@@ -153,8 +153,9 @@ pub enum Instruction {
     /// 5. `collateral_definition` — initialized; must equal
     ///    `protocol_parameters.collateral_definition_id`. Its `program_owner` determines the Token
     ///    Program used by the chained `InitializeAccount` and `Transfer` calls.
-    /// 6. `protocol_parameters` — initialized, read-only; supplies the single global collateral
-    ///    definition id and the freeze flag.
+    /// 6. `protocol_parameters` — initialized, read-only; must sit at
+    ///    `compute_protocol_parameters_pda(self_program_id)`. Supplies the single global
+    ///    collateral definition id and the freeze flag.
     /// 7. `clock` — the system `CLOCK_01` account; read-only. Stamps `opened_at`.
     OpenPosition {
         /// Caller-chosen nonce that, with the owner's account id, forms the
