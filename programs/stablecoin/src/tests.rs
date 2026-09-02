@@ -845,6 +845,35 @@ fn deposit_collateral_rejects_protocol_parameters_at_wrong_address() {
 }
 
 #[test]
+#[should_panic(expected = "Vault account must be initialized")]
+fn deposit_collateral_rejects_uninitialized_vault() {
+    deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        uninit_vault_account(),
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Vault holding does not match the protocol's collateral definition")]
+fn deposit_collateral_rejects_vault_holding_for_other_definition() {
+    // The vault is at the right address but holds a different token, so moving
+    // the user's collateral into it would silently mis-bank the deposit.
+    let vault = token_holding_account(vault_id(), AccountId::new([0x21u8; 32]), 0);
+    deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        vault,
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        DEPOSIT_AMOUNT,
+    );
+}
+
+#[test]
 #[should_panic(expected = "Position vault_account_id does not match the vault account")]
 fn deposit_collateral_rejects_wrong_vault() {
     let mut vault = init_vault_account();
