@@ -8,6 +8,9 @@ pub mod accrue_stability_fee;
 /// Shared validation helpers reused across the position-lifecycle instructions.
 pub mod checks;
 
+/// Deposit additional collateral into an existing position.
+pub mod deposit_collateral;
+
 /// Bootstrap the protocol: create the global PDAs and the stablecoin definition.
 pub mod initialize_program;
 
