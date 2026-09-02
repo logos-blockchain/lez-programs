@@ -221,13 +221,22 @@ restore_test_wallet() {
   mkdir -p "$TEST_WALLET_HOME"
 
   # The sequencer + poll config is written by write_wallet_config() before this
-  # runs (v0.2.1 schema; `wallet config set` can't set the sequencer). restore-keys
-  # is the first STORAGE command on a fresh home and rewrites it from the mnemonic.
+  # runs (v0.2.1 schema; `wallet config set` can't set the sequencer).
 
-  # restore-keys reads the mnemonic then the password from stdin (non-interactive)
-  # and REWRITES storage — so the wallet's password becomes $TEST_WALLET_PASSWORD.
-  log "${DIM}\$ printf '<mnemonic>\\n<password>\\n' | wallet restore-keys --depth $TEST_WALLET_DEPTH${RST}"
-  printf '%s\n%s\n' "$TEST_MNEMONIC" "$TEST_WALLET_PASSWORD" \
+  # On a FRESH home (no storage.json) `wallet` runs a first-run setup BEFORE the
+  # subcommand: main.rs reads a password (`Input password:`), auto-generates a
+  # throwaway wallet, stores it, and only THEN runs `restore-keys`, which reads the
+  # recovery phrase (`Input recovery phrase:`) and its own password. So a fresh home
+  # consumes THREE stdin lines in this order — setup-password, recovery-phrase,
+  # restore-password — not two. (An already-initialised home skips the setup read
+  # and takes only two, which is why re-running a failed bootstrap "worked".)
+  #
+  # Force the deterministic fresh-home path by clearing storage, then feed all three
+  # lines. restore-keys REWRITES storage, so the final wallet is the deterministic
+  # $TEST_MNEMONIC one with password $TEST_WALLET_PASSWORD.
+  rm -f "$TEST_WALLET_HOME/storage.json" "$TEST_WALLET_HOME/statistics.json"
+  log "${DIM}\$ printf '<password>\\n<mnemonic>\\n<password>\\n' | wallet restore-keys --depth $TEST_WALLET_DEPTH${RST}"
+  printf '%s\n%s\n%s\n' "$TEST_WALLET_PASSWORD" "$TEST_MNEMONIC" "$TEST_WALLET_PASSWORD" \
     | wallet restore-keys --depth "$TEST_WALLET_DEPTH" \
     || die "wallet restore-keys failed"
 }
