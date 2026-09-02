@@ -14,7 +14,7 @@
     # match the metadata.json `dependencies` entry so the builder can resolve it
     # as a module dependency. Same ref the repo-root flake and the amm_module
     # flake pin (the QtRO byte-string `instruction` fix).
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr";
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=byte-string-fix";
 
     # The AMM core module, resolved as the metadata.json `amm_module` dependency
     # (the builder reads its .lidl to generate modules().amm_module). Built from
