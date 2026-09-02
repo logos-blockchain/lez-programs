@@ -24,7 +24,8 @@ use token_core::TokenHolding;
 ///   [`Position`], or sits at an address that does not match
 ///   `compute_position_pda(stablecoin_program_id, owner, Position.position_nonce)`.
 /// - `Position.owner_account_id` does not match `owner`.
-/// - `vault` does not match `Position.vault_account_id`.
+/// - `vault` does not match `Position.vault_account_id`, is uninitialized, does not decode as a
+///   [`TokenHolding`], or holds a token other than the protocol's collateral definition.
 /// - `protocol_parameters` is uninitialized, not owned by `stablecoin_program_id`, or does not
 ///   decode.
 /// - `user_collateral_holding` is owned by a different Token Program than the vault, or its
@@ -94,6 +95,23 @@ pub fn deposit_collateral(
         .expect("ProtocolParameters must decode");
     // `is_frozen` is deliberately not read: a deposit only improves the
     // position's collateralization, so spec §7 keeps it available when frozen.
+
+    // Validate the vault before trusting its `program_owner` to route the chained
+    // call. Without this the transfer would be aimed at whatever program owns the
+    // account and left to fail downstream, and a vault holding some other token
+    // would silently mis-bank the deposit.
+    assert_ne!(
+        vault.account,
+        Account::default(),
+        "Vault account must be initialized"
+    );
+    let vault_holding = TokenHolding::try_from(&vault.account.data)
+        .expect("Vault account must hold a valid TokenHolding");
+    assert_eq!(
+        vault_holding.definition_id(),
+        parameters.collateral_definition_id,
+        "Vault holding does not match the protocol's collateral definition"
+    );
 
     let token_program_id = vault.account.program_owner;
     assert_eq!(
