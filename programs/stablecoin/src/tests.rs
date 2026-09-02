@@ -969,6 +969,143 @@ fn position_pda_and_vault_pda_do_not_collide() {
     assert_ne!(position, vault);
 }
 
+// --- withdraw_collateral: fee-aware rebuild (spec §10.6) ---
+//
+// Fixtures pin accumulator = 1.0 and redemption price = 0.5 with no drift, and
+// the ratio is 1.5x, so required collateral = normalized_debt * 0.5 * 1.5.
+
+fn withdraw(
+    position: AccountWithMetadata,
+    parameters: AccountWithMetadata,
+    amount: u128,
+) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
+    crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        position,
+        init_vault_account(),
+        destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        parameters,
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        amount,
+    )
+}
+
+#[test]
+fn withdraw_collateral_echoes_the_four_read_only_globals() {
+    let (post_states, chained_calls) = withdraw(
+        init_position_account(1_000, 0),
+        protocol_parameters_account(false),
+        100,
+    );
+
+    assert_eq!(post_states.len(), 8);
+    assert_eq!(chained_calls.len(), 1);
+    assert_eq!(
+        *post_states[7].account(),
+        clock_account(NOW).account,
+        "clock must be echoed unchanged"
+    );
+}
+
+#[test]
+fn withdraw_collateral_with_debt_succeeds_when_collateralization_holds() {
+    // debt 100 needs 75 collateral; 900 remain after the withdrawal.
+    let (post_states, _) = withdraw(
+        init_position_account(1_000, 100),
+        protocol_parameters_account(false),
+        100,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.collateral_amount, 900);
+    assert_eq!(position.normalized_debt_amount, 100);
+}
+
+#[test]
+fn withdraw_collateral_at_exact_ratio_boundary_succeeds() {
+    // debt 100 → required exactly 75; withdrawing 25 from 100 leaves exactly 75.
+    let (post_states, _) = withdraw(
+        init_position_account(100, 100),
+        protocol_parameters_account(false),
+        25,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.collateral_amount, 75);
+}
+
+#[test]
+#[should_panic(expected = "Position is undercollateralized")]
+fn withdraw_collateral_fails_one_unit_below_the_ratio() {
+    // One more unit than the boundary case leaves 74 against a 75 requirement.
+    withdraw(
+        init_position_account(100, 100),
+        protocol_parameters_account(false),
+        26,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Protocol is frozen")]
+fn withdraw_collateral_rejects_when_frozen() {
+    withdraw(
+        init_position_account(1_000, 0),
+        protocol_parameters_account(true),
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account must be initialized")]
+fn withdraw_collateral_rejects_uninitialized_protocol_parameters() {
+    withdraw(
+        init_position_account(1_000, 0),
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: protocol_parameters_id(),
+        },
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "StabilityFeeAccumulator account must be initialized")]
+fn withdraw_collateral_rejects_uninitialized_accumulator() {
+    crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        init_position_account(1_000, 0),
+        init_vault_account(),
+        destination_holding_account(),
+        crate::test_support::uninitialized(crate::test_support::accumulator_id()),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "RedemptionPriceState account must be initialized")]
+fn withdraw_collateral_rejects_uninitialized_redemption_price_state() {
+    crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        init_position_account(1_000, 0),
+        init_vault_account(),
+        destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::uninitialized(crate::test_support::redemption_price_state_id()),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
 #[test]
 fn withdraw_collateral_updates_position_and_emits_transfer() {
     let initial_collateral: u128 = 500;
@@ -978,11 +1115,15 @@ fn withdraw_collateral_updates_position_and_emits_transfer() {
         init_position_account(initial_collateral, 0),
         init_vault_account(),
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         amount,
     );
 
-    assert_eq!(post_states.len(), 4);
+    assert_eq!(post_states.len(), 8);
 
     // Position post-state: plain `new`, holds the decremented Position.
     let position_post = &post_states[1];
@@ -1031,6 +1172,10 @@ fn withdraw_collateral_allows_full_drain() {
         init_position_account(amount, 0),
         init_vault_account(),
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         amount,
     );
@@ -1047,6 +1192,10 @@ fn withdraw_collateral_allows_zero_amount() {
         init_position_account(initial, 0),
         init_vault_account(),
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         0,
     );
@@ -1076,6 +1225,10 @@ fn withdraw_collateral_requires_owner_authorization() {
         init_position_account(500, 0),
         init_vault_account(),
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1089,6 +1242,10 @@ fn withdraw_collateral_rejects_uninitialized_position() {
         uninit_position_account(),
         init_vault_account(),
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1104,6 +1261,10 @@ fn withdraw_collateral_rejects_position_owned_by_other_program() {
         position,
         init_vault_account(),
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1119,6 +1280,10 @@ fn withdraw_collateral_rejects_wrong_position_address() {
         position,
         init_vault_account(),
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1134,6 +1299,10 @@ fn withdraw_collateral_rejects_wrong_vault_address() {
         init_position_account(500, 0),
         vault,
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1141,7 +1310,7 @@ fn withdraw_collateral_rejects_wrong_vault_address() {
 
 #[test]
 #[should_panic(
-    expected = "Destination token definition does not match the position's collateral definition"
+    expected = "User collateral holding definition does not match the position's collateral definition"
 )]
 fn withdraw_collateral_rejects_destination_for_other_definition() {
     let mut destination = destination_holding_account();
@@ -1154,13 +1323,17 @@ fn withdraw_collateral_rejects_destination_for_other_definition() {
         init_position_account(500, 0),
         init_vault_account(),
         destination,
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
 }
 
 #[test]
-#[should_panic(expected = "Destination must be initialized")]
+#[should_panic(expected = "User collateral holding must be initialized")]
 fn withdraw_collateral_rejects_uninitialized_destination() {
     let destination = AccountWithMetadata {
         account: Account::default(),
@@ -1172,13 +1345,19 @@ fn withdraw_collateral_rejects_uninitialized_destination() {
         init_position_account(500, 0),
         init_vault_account(),
         destination,
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
 }
 
 #[test]
-#[should_panic(expected = "Destination must be owned by the same Token Program as the vault")]
+#[should_panic(
+    expected = "User collateral holding must be owned by the same Token Program as the vault"
+)]
 fn withdraw_collateral_rejects_destination_with_wrong_token_program() {
     let mut destination = destination_holding_account();
     destination.account.program_owner = [9u32; 8];
@@ -1187,19 +1366,10 @@ fn withdraw_collateral_rejects_destination_with_wrong_token_program() {
         init_position_account(500, 0),
         init_vault_account(),
         destination,
-        STABLECOIN_PROGRAM_ID,
-        100,
-    );
-}
-
-#[test]
-#[should_panic(expected = "withdraw_collateral with debt is not supported yet")]
-fn withdraw_collateral_rejects_withdrawal_with_outstanding_debt() {
-    crate::withdraw_collateral::withdraw_collateral(
-        owner_account(),
-        init_position_account(500, 1),
-        init_vault_account(),
-        destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1213,6 +1383,10 @@ fn withdraw_collateral_rejects_overdraw() {
         init_position_account(100, 0),
         init_vault_account(),
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         200,
     );
@@ -1477,6 +1651,10 @@ fn withdraw_collateral_rejects_position_with_stale_owner_field() {
         position_with_mutated_fields(|p| p.owner_account_id = AccountId::new([0xAAu8; 32])),
         init_vault_account(),
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1490,6 +1668,10 @@ fn withdraw_collateral_rejects_position_with_stale_vault_field() {
         position_with_mutated_fields(|p| p.vault_account_id = AccountId::new([0xBBu8; 32])),
         init_vault_account(),
         destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );

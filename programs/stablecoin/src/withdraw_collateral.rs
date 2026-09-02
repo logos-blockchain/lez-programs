@@ -2,13 +2,19 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
-use stablecoin_core::{verify_position_and_get_seed, verify_position_vault_and_get_seed, Position};
+use stablecoin_core::{
+    compute_protocol_parameters_pda, compute_redemption_price_state_pda,
+    compute_stability_fee_accumulator_pda,
+    math::{compute_current_accumulated_rate, compute_current_redemption_price},
+    verify_position_and_get_seed, verify_position_vault_and_get_seed, Position, ProtocolParameters,
+    RedemptionPriceState, StabilityFeeAccumulator,
+};
 use token_core::TokenHolding;
 
-/// Withdraw `amount` collateral tokens from `position`'s vault back to `destination`.
+/// Withdraw `amount` collateral tokens from `position`'s vault back to `user_collateral_holding`.
 ///
 /// Decreases `Position.collateral_amount` by `amount` and emits a single chained
-/// `Token::Transfer` from the vault to `destination`, authorized by the vault
+/// `Token::Transfer` from the vault to `user_collateral_holding`, authorized by the vault
 /// PDA seed. The position post-state uses plain [`AccountPostState::new`] —
 /// the initial PDA claim already happened in
 /// [`crate::open_position::open_position`].
@@ -25,19 +31,56 @@ use token_core::TokenHolding;
 ///   `compute_position_pda(stablecoin_program_id, owner, Position.position_nonce)`.
 /// - `vault` sits at an address that does not match
 ///   `compute_position_vault_pda(stablecoin_program_id, position_id)`.
-/// - `destination` is uninitialized, owned by a different Token Program than the vault, or holds a
-///   [`TokenHolding`] whose `definition_id` does not match the vault holding's collateral
-///   definition.
+/// - `user_collateral_holding` is uninitialized, owned by a different Token Program than the vault,
+///   or holds a [`TokenHolding`] whose `definition_id` does not match the vault holding's
+///   collateral definition.
 /// - `Position.normalized_debt_amount` is non-zero.
 /// - `amount > Position.collateral_amount`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the eight account inputs mirror the spec §10.6 ABI; a param struct would obscure it"
+)]
 pub fn withdraw_collateral(
     owner: AccountWithMetadata,
     position: AccountWithMetadata,
     vault: AccountWithMetadata,
-    destination: AccountWithMetadata,
+    user_collateral_holding: AccountWithMetadata,
+    stability_fee_accumulator: AccountWithMetadata,
+    redemption_price_state: AccountWithMetadata,
+    protocol_parameters: AccountWithMetadata,
+    clock: AccountWithMetadata,
     stablecoin_program_id: ProgramId,
     amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    let parameters = decode_global(
+        &protocol_parameters,
+        compute_protocol_parameters_pda(stablecoin_program_id),
+        stablecoin_program_id,
+        "ProtocolParameters",
+    );
+    let parameters =
+        ProtocolParameters::try_from(&parameters).expect("ProtocolParameters must decode");
+    assert!(!parameters.is_frozen, "Protocol is frozen");
+
+    let accumulator_data = decode_global(
+        &stability_fee_accumulator,
+        compute_stability_fee_accumulator_pda(stablecoin_program_id),
+        stablecoin_program_id,
+        "StabilityFeeAccumulator",
+    );
+    let accumulator = StabilityFeeAccumulator::try_from(&accumulator_data)
+        .expect("StabilityFeeAccumulator must decode");
+
+    let redemption_data = decode_global(
+        &redemption_price_state,
+        compute_redemption_price_state_pda(stablecoin_program_id),
+        stablecoin_program_id,
+        "RedemptionPriceState",
+    );
+    let redemption =
+        RedemptionPriceState::try_from(&redemption_data).expect("RedemptionPriceState must decode");
+
+    let now = crate::accrue_stability_fee::read_clock(&clock);
     assert!(owner.is_authorized, "Owner authorization is missing");
     assert_ne!(
         position.account,
@@ -83,26 +126,22 @@ pub fn withdraw_collateral(
 
     let token_program_id = vault.account.program_owner;
     assert_ne!(
-        destination.account,
+        user_collateral_holding.account,
         Account::default(),
-        "Destination must be initialized"
+        "User collateral holding must be initialized"
     );
     assert_eq!(
-        destination.account.program_owner, token_program_id,
-        "Destination must be owned by the same Token Program as the vault"
+        user_collateral_holding.account.program_owner, token_program_id,
+        "User collateral holding must be owned by the same Token Program as the vault"
     );
-    let destination_holding = TokenHolding::try_from(&destination.account.data)
-        .expect("Destination account must hold a valid TokenHolding");
+    let user_holding = TokenHolding::try_from(&user_collateral_holding.account.data)
+        .expect("User collateral holding must hold a valid TokenHolding");
     assert_eq!(
-        destination_holding.definition_id(),
+        user_holding.definition_id(),
         collateral_definition_id,
-        "Destination token definition does not match the position's collateral definition"
+        "User collateral holding definition does not match the position's collateral definition"
     );
 
-    assert_eq!(
-        position_data.normalized_debt_amount, 0,
-        "withdraw_collateral with debt is not supported yet — fee accrual + collateralization check land in #173"
-    );
     let new_collateral = position_data
         .collateral_amount
         .checked_sub(amount)
@@ -116,6 +155,25 @@ pub fn withdraw_collateral(
         normalized_debt_amount: position_data.normalized_debt_amount,
         opened_at: position_data.opened_at,
     };
+    // Spec §6.2 is enforced *after* the decrement, against debt and redemption
+    // price both projected forward to `now` (§5.3).
+    crate::checks::assert_position_is_collateralized(
+        &updated_position,
+        compute_current_accumulated_rate(
+            accumulator.accumulated_rate_at_last_accrual,
+            parameters.stability_fee_per_millisecond,
+            accumulator.last_accrued_at,
+            now,
+        ),
+        compute_current_redemption_price(
+            redemption.redemption_price_at_last_update,
+            redemption.redemption_rate_per_millisecond,
+            redemption.last_updated_at,
+            now,
+        ),
+        parameters.minimum_collateralization_ratio,
+    );
+
     let mut position_post = position.account.clone();
     position_post.data = Data::from(&updated_position);
 
@@ -123,14 +181,18 @@ pub fn withdraw_collateral(
         AccountPostState::new(owner.account),
         AccountPostState::new(position_post),
         AccountPostState::new(vault.account.clone()),
-        AccountPostState::new(destination.account.clone()),
+        AccountPostState::new(user_collateral_holding.account.clone()),
+        AccountPostState::new(stability_fee_accumulator.account),
+        AccountPostState::new(redemption_price_state.account),
+        AccountPostState::new(protocol_parameters.account),
+        AccountPostState::new(clock.account),
     ];
 
     let mut vault_authorized = vault.clone();
     vault_authorized.is_authorized = true;
     let transfer_call = ChainedCall::new(
         token_program_id,
-        vec![vault_authorized, destination],
+        vec![vault_authorized, user_collateral_holding],
         &token_core::Instruction::Transfer {
             amount_to_transfer: amount,
         },
@@ -138,4 +200,28 @@ pub fn withdraw_collateral(
     .with_pda_seeds(vec![vault_seed]);
 
     (post_states, vec![transfer_call])
+}
+
+/// Validate a read-only global: initialized, program-owned, and at its canonical
+/// PDA. Returns its `Data` for the caller to decode.
+fn decode_global(
+    account: &AccountWithMetadata,
+    expected_id: lee_core::account::AccountId,
+    stablecoin_program_id: ProgramId,
+    label: &str,
+) -> Data {
+    assert_ne!(
+        account.account,
+        Account::default(),
+        "{label} account must be initialized"
+    );
+    assert_eq!(
+        account.account.program_owner, stablecoin_program_id,
+        "{label} account must be owned by the stablecoin program"
+    );
+    assert_eq!(
+        account.account_id, expected_id,
+        "{label} account ID does not match expected PDA derivation"
+    );
+    account.account.data.clone()
 }

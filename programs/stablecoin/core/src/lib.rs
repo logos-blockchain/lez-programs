@@ -187,20 +187,28 @@ pub enum Instruction {
     },
     /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
     ///
-    /// Required accounts (4):
-    /// - Owner account (authorized)
-    /// - Position account (initialized, owned by `self_program_id`)
-    /// - Position vault token holding (address must match
-    ///   `compute_position_vault_pda(self_program_id, position_id)`)
-    /// - Destination user collateral holding (initialized, owned by the vault's Token Program,
-    ///   `TokenHolding.definition_id` matches the vault holding's definition)
+    /// Blocked while the protocol is frozen. The §6.2 collateralization
+    /// invariant is checked *after* the decrement, against debt and redemption
+    /// price both projected forward to the clock timestamp (§5.3).
+    ///
+    /// Required accounts (8), in order:
+    /// 1. `owner` — authorized.
+    /// 2. `position` — initialized, writable, owned by `self_program_id`; address must match
+    ///    `compute_position_pda(self_program_id, owner, position_nonce)`.
+    /// 3. `vault` — initialized, writable; must equal `Position.vault_account_id`. Authorized in
+    ///    the chained call via its PDA seed.
+    /// 4. `user_collateral_holding` — initialized destination; NOT required to be authorized. Same
+    ///    Token Program and definition as the vault holding.
+    /// 5. `stability_fee_accumulator` — initialized, read-only; at its canonical PDA. Projected to
+    ///    `now` for the position's nominal debt.
+    /// 6. `redemption_price_state` — initialized, read-only; at its canonical PDA. Projected to
+    ///    `now` for the current redemption price.
+    /// 7. `protocol_parameters` — initialized, read-only; at its canonical PDA. Supplies the
+    ///    minimum collateralization ratio and the freeze flag.
+    /// 8. `clock` — the system `CLOCK_01` account; read-only.
     ///
     /// `token_program_id` is derived from `vault.account.program_owner`;
     /// the collateral definition is read from the PDA-verified vault holding.
-    ///
-    /// **Note:** until issues #97/#95 land, this instruction hard-asserts
-    /// `Position.normalized_debt_amount == 0` instead of accruing fees and
-    /// checking the collateralization ratio.
     WithdrawCollateral {
         /// Amount of collateral tokens to move from the vault back to `destination`.
         amount: u128,
