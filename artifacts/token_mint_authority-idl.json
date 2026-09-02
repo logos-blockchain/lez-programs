@@ -1,0 +1,71 @@
+{
+  "version": "0.1.0",
+  "name": "token_mint_authority",
+  "instructions": [
+    {
+      "name": "faucet_mint",
+      "accounts": [
+        {
+          "name": "recipient",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "mint_allowance",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_holding",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "token_definition",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "mint_authority",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "MintAllowance",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "recipient_id",
+            "type": "account_id"
+          },
+          {
+            "name": "definition_id",
+            "type": "account_id"
+          },
+          {
+            "name": "last_mint_ms",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ],
+  "instruction_type": "token_mint_authority_core::Instruction"
+}

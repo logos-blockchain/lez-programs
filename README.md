@@ -11,6 +11,7 @@ Essential programs for the **Logos Execution Zone (LEZ)** — a zkVM-based execu
 | **ata** | Associated Token Account program — derives and initializes deterministic token holding accounts for a given owner and token definition |
 | **stablecoin** | Collateral-backed position program — open collateral positions as a foundation for stablecoin debt issuance |
 | **twap_oracle** | TWAP oracle — provides canonical on-chain price accounts consumed by other programs (e.g. stablecoin) |
+| **token-mint-authority** | Testnet faucet mint authority — holds the mint authority for faucet token definitions and lets any account self-mint a fixed amount, rate-limited to once per day per account and token, via a chained call to the token program |
 
 ## Apps
 
@@ -76,7 +77,7 @@ make clippy
 make fmt
 
 # Run unit tests for all programs (no zkVM, no ZK proof generation)
-RISC0_DEV_MODE=1 cargo test -p token_program -p amm_program -p ata_program -p stablecoin_program -p twap_oracle_program
+RISC0_DEV_MODE=1 cargo test -p token_program -p amm_program -p ata_program -p stablecoin_program -p twap_oracle_program -p token_mint_authority_program
 
 # Run integration tests (dev mode skips ZK proof generation)
 RISC0_DEV_MODE=1 cargo test -p integration_tests
@@ -85,13 +86,15 @@ RISC0_DEV_MODE=1 cargo test -p integration_tests
 make test
 ```
 
-Integration tests live in `programs/integration_tests/tests/` and cover `token`, `amm`, and `ata` programs end-to-end through the zkVM using `RISC0_DEV_MODE=1` to skip proof generation. Each test file corresponds to a program:
+Integration tests live in `programs/integration_tests/tests/` and cover `token`, `amm`, `ata`, `stablecoin`, and `token-mint-authority` programs end-to-end through the zkVM using `RISC0_DEV_MODE=1` to skip proof generation. Each test file corresponds to a program:
 
 - `programs/integration_tests/tests/token.rs`
 - `programs/integration_tests/tests/amm.rs`
 - `programs/integration_tests/tests/ata.rs`
+- `programs/integration_tests/tests/stablecoin.rs`
+- `programs/integration_tests/tests/token_mint_authority.rs`
 
-`stablecoin` and `twap_oracle` are tested via their own unit tests (`cargo test -p stablecoin_program -p twap_oracle_program`).
+`twap_oracle` is tested via its own unit tests (`cargo test -p twap_oracle_program`).
 
 ## Compile Guest Binaries
 
@@ -119,6 +122,7 @@ wallet deploy-program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf
 wallet deploy-program programs/ata/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/ata.bin
 wallet deploy-program programs/stablecoin/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/stablecoin.bin
 wallet deploy-program programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin
+wallet deploy-program programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin
 ```
 
 To inspect the `ProgramId` of a built binary:
@@ -147,6 +151,7 @@ spel generate-idl programs/amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.
 spel generate-idl programs/ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
 spel generate-idl programs/stablecoin/methods/guest/src/bin/stablecoin.rs > artifacts/stablecoin-idl.json
 spel generate-idl programs/twap_oracle/methods/guest/src/bin/twap_oracle.rs > artifacts/twap_oracle-idl.json
+spel generate-idl programs/token_mint_authority/methods/guest/src/bin/token_mint_authority.rs > artifacts/token_mint_authority-idl.json
 ```
 
 Generated IDL files are committed under `artifacts/`. CI will fail if a program's IDL is missing or out of date.
@@ -161,4 +166,5 @@ spel --idl artifacts/amm-idl.json <instruction> [args...]
 spel --idl artifacts/ata-idl.json <instruction> [args...]
 spel --idl artifacts/stablecoin-idl.json <instruction> [args...]
 spel --idl artifacts/twap_oracle-idl.json <instruction> [args...]
+spel --idl artifacts/token_mint_authority-idl.json <instruction> [args...]
 ```
