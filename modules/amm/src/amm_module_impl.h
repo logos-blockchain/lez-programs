@@ -248,7 +248,8 @@ public:
     /// normalized to hex here) — the app owns the set: its configured tokens plus any
     /// custom/pasted ids it remembers (held-but-unlisted tokens are not auto-added by
     /// the app). Reads each definition and (when `wallet_open`) the wallet, then returns
-    /// `[{ definitionId (base58), name, totalSupply, holdingId, balance }]`. Every
+    /// `[{ definitionId (base58), definitionIdHex, name, totalSupply, holdingId,
+    /// balance }]`. Every
     /// row has the same fields — a token the wallet doesn't hold gets `holdingId:""`
     /// and `balance:"0"` — held tokens first. A requested id whose definition is
     /// unreadable / non-fungible is omitted (the app treats a missing row as

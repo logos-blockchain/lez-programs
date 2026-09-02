@@ -152,6 +152,23 @@ nix run .#amm-ui
 Without `AMM_PROGRAM_BIN` the Swap and Liquidity views stay disabled; without
 `TOKENS_CONFIG` the token picker is empty. Each is detailed below.
 
+### Network identity
+
+The shared wallet verifies the sequencer before it enables network-dependent
+portfolio data or AMM quotes. Testnet uses the bundled checkpoint identity. For
+devnet, provide the channel identity emitted by the local sequencer:
+
+```bash
+LOGOS_WALLET_NETWORK=devnet \
+LOGOS_WALLET_DEVNET_FILE=/abs/path/to/devnet.json \
+nix run .#amm-ui
+```
+
+`devnet.json` must contain a 64-character lowercase-hex `channelId`. The
+legacy `AMM_UI_NETWORK` and `AMM_UI_DEVNET_FILE` names remain accepted. AMM
+deployment and token selection stay app-specific through `AMM_PROGRAM_BIN` and
+`TOKENS_CONFIG`.
+
 ### AMM program binary (required for swaps and liquidity)
 
 To execute a swap, the app must submit a transaction against the **exact AMM
@@ -291,7 +308,7 @@ New Position validation commands and acceptance criteria live in
 
 ## Running the UI tests
 
-The UI tests live in `apps/amm/tests/` (e.g. `swap.mjs`). They drive the running
+The live-chain UI tests live in `apps/amm/tests/e2e/`. They drive the running
 app through a QML inspector: each test connects to the inspector's TCP server,
 finds elements, clicks them, and asserts on the resulting state. `swap.mjs`
 selects two tokens, enters a sell amount, submits a swap end-to-end, and then
@@ -309,8 +326,7 @@ import from `test-framework/framework.mjs` — comes from the
 It isn't vendored here; the `nix build .#test-framework` step below materializes
 it (Nix resolves it via this app's flake inputs, pinned in `flake.lock`).
 
-Run everything **from the repository root** (the `apps/amm` flake can't resolve
-`amm_client_ffi` on its own).
+Run everything **from the repository root**.
 
 **Prerequisites** for the swap test to complete:
 
@@ -324,23 +340,23 @@ Run everything **from the repository root** (the `apps/amm` flake can't resolve
 
 ```bash
 # 1. Build the JS test framework once. The -o path is where the tests expect it
-#    (apps/amm/tests/swap.mjs imports ../result-mcp); or set LOGOS_QT_MCP instead.
+#    (apps/amm/tests/e2e/swap.mjs imports ../../result-mcp); or set LOGOS_QT_MCP.
 nix build .#test-framework -o apps/amm/result-mcp
 
 # 2. Terminal 1 — launch the AMM UI with a real, visible window. The inspector
 #    listens on localhost:3768. Absolute paths ($(pwd)/…) because nix run may
 #    not preserve the working directory.
 AMM_DEBUG=1 \
-  AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+  AMM_PROGRAM_BIN=$(pwd)/target/guest/amm.bin \
   TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
   nix run .#amm-ui
 
 # 3. Terminal 2 — run a test against the running app; watch it drive the UI.
-node apps/amm/tests/swap.mjs
+node apps/amm/tests/e2e/swap.mjs
 ```
 
 On failure the test prints the relevant `SwapCard` state and saves screenshot
-PNGs next to the test (`apps/amm/tests/swap-*.png`, git-ignored) for inspection.
+PNGs next to the test (`apps/amm/tests/e2e/swap-*.png`, git-ignored) for inspection.
 
 **Headless CI variant** (no window, launches the app itself, pass/fail only):
 
@@ -348,7 +364,8 @@ PNGs next to the test (`apps/amm/tests/swap-*.png`, git-ignored) for inspection.
 nix build .#integration-test -L
 ```
 
-It runs every `*.mjs` under `apps/amm/tests/` with `QT_QPA_PLATFORM=offscreen`.
+It runs the hermetic UI smoke test with `QT_QPA_PLATFORM=offscreen`. The
+live-chain tests remain in `apps/amm/tests/e2e/` and use the isolated setup above.
 
 ## Updating Dependencies
 
