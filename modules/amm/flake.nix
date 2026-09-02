@@ -8,7 +8,7 @@
     # metadata.json `dependencies` entry so the builder resolves it as a module
     # dependency. Same upstream branch the repo-root flake pins (the QtRO byte-string
     # `instruction` fix for send_generic_public_transaction).
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr";
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=byte-string-fix";
 
     # The repo-root flake supplies the amm_ffi crate. amm_ffi is a Cargo
     # workspace member (it path-depends on amm_core / token_core /

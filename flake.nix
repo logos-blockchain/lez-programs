@@ -34,18 +34,20 @@
     # match the metadata.json `dependencies` entry so the builder can resolve it
     # as a module dependency.
     #
-    # Upstream logos-blockchain/logos-execution-zone-module, fix/generic-tx-instruction-bstr
+    # Upstream logos-blockchain/logos-execution-zone-module, `byte-string-fix`
     # branch: carries the QtRO serialization fix — send_generic_public_transaction's
     # `instruction` uses a byte-string IPC type so the args survive the cross-process
-    # boundary (the fix is NOT on `main`; see docs/amm-swap-qtro-serialization-bug.md).
+    # boundary (see docs/amm-swap-qtro-serialization-bug.md).
     #
-    # No LEZ override: the branch natively pins logos-execution-zone v0.2.2, which is the
-    # deployed sequencer's version — the wallet-ffi and sequencer must agree on the
-    # JSON-RPC API and the wallet-config schema (v0.2.1 introduced the `sequencers` list).
-    # Keeping the native pin also means this is the exact derivation upstream CI built, so
-    # the wallet-ffi is fetched from the Logos nix binary cache instead of compiling `ring`
-    # locally (which fails under the nix cc-wrapper on Apple Silicon).
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr";
+    # Deliberately NOT on `main`: main's transitive logos-execution-zone (the
+    # wallet-ffi) has moved ahead of the deployed sequencer + the local `wallet`/
+    # `spel` CLI (v0.2.4), and its wallet-storage/config format no longer matches
+    # them — the app opens but can't load a wallet the v0.2.4 CLI wrote. This branch
+    # stays on the compatible LEZ version. The wallet-ffi and sequencer must agree on
+    # the JSON-RPC API and wallet-config schema, so keep this in sync with the
+    # deployed sequencer's version. (Also builds from the Logos nix cache, so `ring`
+    # isn't compiled locally — it fails under the nix cc-wrapper on Apple Silicon.)
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=byte-string-fix";
 
   };
 

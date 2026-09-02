@@ -631,7 +631,7 @@
       },
       "original": {
         "owner": "logos-blockchain",
-        "ref": "fix/generic-tx-instruction-bstr",
+        "ref": "byte-string-fix",
         "repo": "logos-execution-zone-module",
         "type": "github"
       }
@@ -652,7 +652,7 @@
       },
       "original": {
         "owner": "logos-blockchain",
-        "ref": "fix/generic-tx-instruction-bstr",
+        "ref": "byte-string-fix",
         "repo": "logos-execution-zone-module",
         "type": "github"
       }
