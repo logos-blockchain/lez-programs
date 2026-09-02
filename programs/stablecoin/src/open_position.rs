@@ -23,6 +23,12 @@ use token_core::TokenHolding;
 /// - `owner` or `user_collateral_holding` is not authorized.
 /// - `position` or `vault` is already initialized.
 /// - `position.account_id` / `vault.account_id` do not match their PDA derivations.
+/// - `protocol_parameters` is uninitialized, not owned by `stablecoin_program_id`, not at
+///   `compute_protocol_parameters_pda(stablecoin_program_id)`, or does not decode.
+/// - `protocol_parameters.is_frozen` is set.
+/// - `collateral_definition.account_id` does not match
+///   `protocol_parameters.collateral_definition_id`.
+/// - `clock` is not the system `CLOCK_01` account, or is uninitialized.
 /// - `user_collateral_holding` cannot be decoded as a [`TokenHolding`].
 /// - `user_collateral_holding`'s definition does not match `collateral_definition`.
 /// - `collateral_definition.program_owner` does not match `user_collateral_holding.program_owner`.
