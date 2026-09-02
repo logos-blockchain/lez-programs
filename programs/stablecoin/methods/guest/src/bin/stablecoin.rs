@@ -193,7 +193,13 @@ mod stablecoin {
         ))
     }
 
-    /// Open a new collateral-only position for the calling owner.
+    /// Open a new collateral-only position for the calling owner (spec §10.4;
+    /// host fn `stablecoin_program::open_position`).
+    ///
+    /// Reads the single global collateral definition id and the freeze flag from
+    /// `protocol_parameters`. Wall-clock time for `opened_at` comes from the
+    /// system `CLOCK_01` account passed as the 7th input — the pinned
+    /// `ProgramContext` exposes no clock.
     ///
     /// # Errors
     /// Returns the host program's panic-converted error if any precondition fails (see
@@ -212,20 +218,24 @@ mod stablecoin {
         #[account(init)]
         vault: AccountWithMetadata,
         #[account(mut, signer)]
-        user_holding: AccountWithMetadata,
-        token_definition: AccountWithMetadata,
+        user_collateral_holding: AccountWithMetadata,
+        collateral_definition: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+        clock: AccountWithMetadata,
         position_nonce: u64,
-        collateral_amount: u128,
+        initial_collateral_amount: u128,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::open_position::open_position(
             owner,
             position,
             vault,
-            user_holding,
-            token_definition,
+            user_collateral_holding,
+            collateral_definition,
+            protocol_parameters,
+            clock,
             ctx.self_program_id,
             position_nonce,
-            collateral_amount,
+            initial_collateral_amount,
         );
         Ok(spel_framework::SpelOutput::execute(
             post_states,

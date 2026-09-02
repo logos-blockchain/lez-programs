@@ -229,13 +229,25 @@
           "init": true
         },
         {
-          "name": "user_holding",
+          "name": "user_collateral_holding",
           "writable": true,
           "signer": true,
           "init": false
         },
         {
-          "name": "token_definition",
+          "name": "collateral_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
           "writable": false,
           "signer": false,
           "init": false
@@ -247,7 +259,7 @@
           "type": "u64"
         },
         {
-          "name": "collateral_amount",
+          "name": "initial_collateral_amount",
           "type": "u128"
         }
       ]
