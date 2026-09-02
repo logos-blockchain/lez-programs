@@ -327,8 +327,32 @@
           "init": false
         },
         {
-          "name": "destination",
+          "name": "user_collateral_holding",
           "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "redemption_price_state",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
           "signer": false,
           "init": false
         }
