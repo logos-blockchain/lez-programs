@@ -290,6 +290,10 @@ mod stablecoin {
     /// [`stablecoin_program::withdraw_collateral::withdraw_collateral`] for the
     /// full list).
     #[instruction]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the eight account inputs mirror the spec §10.6 ABI"
+    )]
     pub fn withdraw_collateral(
         ctx: ProgramContext,
         #[account(signer)]
@@ -299,7 +303,11 @@ mod stablecoin {
         #[account(mut)]
         vault: AccountWithMetadata,
         #[account(mut)]
-        destination: AccountWithMetadata,
+        user_collateral_holding: AccountWithMetadata,
+        stability_fee_accumulator: AccountWithMetadata,
+        redemption_price_state: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+        clock: AccountWithMetadata,
         amount: u128,
     ) -> SpelResult {
         let (post_states, chained_calls) =
@@ -307,7 +315,11 @@ mod stablecoin {
                 owner,
                 position,
                 vault,
-                destination,
+                user_collateral_holding,
+                stability_fee_accumulator,
+                redemption_price_state,
+                protocol_parameters,
+                clock,
                 ctx.self_program_id,
                 amount,
             );
