@@ -1,9 +1,11 @@
 {
   "name": "amm_ui",
+  "display_name": "Logos DEX App",
   "version": "0.1.0",
   "type": "ui_qml",
   "category": "amm",
-  "description": "UI module for the AMM program",
+  "description": "Trade tokens and provide liquidity on the Logos DEX.",
+  "author": "Logos Core Team",
   "main": "amm_ui_plugin",
   "view": "qml/Main.qml",
   "icon": "icons/amm.png",

@@ -1,10 +1,12 @@
 {
   "name": "amm_module",
+  "display_name": "Logos DEX Core",
   "version": "0.1.0",
   "type": "core",
   "interface": "universal",
   "category": "amm",
-  "description": "AMM business logic — on-chain pool resolution and swaps",
+  "description": "Core module for the Logos DEX (AMM) — on-chain pool resolution, swaps, and liquidity.",
+  "author": "Logos Core Team",
   "main": "amm_module_plugin",
   "dependencies": ["lez_core"],
 
