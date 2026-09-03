@@ -218,6 +218,31 @@ std::string StablecoinModuleImpl::normalizeAccountId(const std::string& id) {
         });
 }
 
+bool StablecoinModuleImpl::requireWalletCaller(const std::string& caller_id,
+                                               std::string& error) {
+    logos::CallError call_error;
+    const json accounts = modules().lez_core.list_accounts(&call_error);
+    if (!call_error.ok() || !accounts.is_array()) {
+        STABLECOIN_TRACE(
+            "lez_core account inventory failure: " << call_error.code);
+        error = "backend_error";
+        return false;
+    }
+
+    for (const auto& account : accounts) {
+        if (!account.is_object()) continue;
+        const auto public_field = account.find("is_public");
+        if (public_field == account.end() || !public_field->is_boolean()
+            || !public_field->get<bool>()) {
+            continue;
+        }
+        if (normalizeAccountId(jsonString(account, "account_id")) == caller_id) return true;
+    }
+
+    error = "account_read_failed";
+    return false;
+}
+
 nlohmann::json StablecoinModuleImpl::readPublicAccount(const std::string& account_id) {
     logos::CallError call_error;
     const std::string raw =
@@ -435,7 +460,182 @@ LogosMap StablecoinModuleImpl::redemptionRateUpdateQuote() {
     });
 }
 
-LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
+LogosMap StablecoinModuleImpl::accrueStabilityFee(const std::string& caller_id) {
+    return guarded([&]() -> LogosMap {
+        std::string error;
+        const json info = stablecoinProgramInfo(error);
+        if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+
+        const std::string caller = normalizeAccountId(caller_id);
+        if (caller.empty()) return publicError("invalid_account_id");
+        if (!requireWalletCaller(caller, error)) return publicError(error);
+
+        const json parameters = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
+        const json accumulator =
+            readPublicAccount(jsonString(info, "stabilityFeeAccumulatorIdHex"));
+        const json clock = readPublicAccount(jsonString(info, "clockIdHex"));
+        if (jsonString(parameters, "status") == "not_found"
+            || jsonString(accumulator, "status") == "not_found") {
+            return publicError("not_initialized");
+        }
+        if (jsonString(parameters, "status") != "ok"
+            || jsonString(accumulator, "status") != "ok"
+            || jsonString(clock, "status") != "ok") {
+            return publicError("account_read_failed");
+        }
+
+        return planAndSubmit(
+            stablecoin_accrue_stability_fee_plan,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"callerId", caller},
+                {"protocolParameters", parameters},
+                {"stabilityFeeAccumulator", accumulator},
+                {"clock", clock},
+            },
+            jsonString(info, "programIdHex"),
+            4);
+    });
+}
+
+LogosMap StablecoinModuleImpl::updateRedemptionRate(const std::string& caller_id) {
+    return guarded([&]() -> LogosMap {
+        std::string error;
+        const json info = stablecoinProgramInfo(error);
+        if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+
+        const std::string caller = normalizeAccountId(caller_id);
+        if (caller.empty()) return publicError("invalid_account_id");
+        if (!requireWalletCaller(caller, error)) return publicError(error);
+
+        const json parameters = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
+        const std::string parameters_status = jsonString(parameters, "status");
+        if (parameters_status == "not_found") return publicError("not_initialized");
+        if (parameters_status != "ok") return publicError("account_read_failed");
+
+        const FfiResult decoded_parameters = callStablecoin(
+            stablecoin_decode_protocol_parameters,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"protocolParameters", parameters},
+            });
+        if (!decoded_parameters.ok) {
+            return publicError(
+                stablecoin_module::detail::stableFfiError(decoded_parameters.error));
+        }
+        const std::string oracle_id =
+            jsonString(decoded_parameters.value, "marketPriceOracleIdHex");
+        if (!stablecoin_module::detail::isValidAccountIdHex(oracle_id)) {
+            return publicError("backend_error");
+        }
+
+        const json redemption = readPublicAccount(jsonString(info, "redemptionPriceStateIdHex"));
+        const json oracle = readPublicAccount(oracle_id);
+        const json clock = readPublicAccount(jsonString(info, "clockIdHex"));
+        if (jsonString(redemption, "status") == "not_found") {
+            return publicError("not_initialized");
+        }
+        if (jsonString(redemption, "status") != "ok"
+            || jsonString(oracle, "status") != "ok"
+            || jsonString(clock, "status") != "ok") {
+            return publicError("account_read_failed");
+        }
+
+        return planAndSubmit(
+            stablecoin_update_redemption_rate_plan,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"callerId", caller},
+                {"protocolParameters", parameters},
+                {"redemptionPriceState", redemption},
+                {"marketPriceOracle", oracle},
+                {"clock", clock},
+            },
+            jsonString(info, "programIdHex"),
+            5);
+    });
+}
+
+LogosMap StablecoinModuleImpl::refreshGlobals(const std::string& caller_id) {
+    return guarded([&]() -> LogosMap {
+        std::string error;
+        const json info = stablecoinProgramInfo(error);
+        if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+
+        const std::string caller = normalizeAccountId(caller_id);
+        if (caller.empty()) return publicError("invalid_account_id");
+        if (!requireWalletCaller(caller, error)) return publicError(error);
+
+        const json parameters = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
+        const std::string parameters_status = jsonString(parameters, "status");
+        if (parameters_status == "not_found") return publicError("not_initialized");
+        if (parameters_status != "ok") return publicError("account_read_failed");
+
+        const FfiResult decoded_parameters = callStablecoin(
+            stablecoin_decode_protocol_parameters,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"protocolParameters", parameters},
+            });
+        if (!decoded_parameters.ok) {
+            return publicError(
+                stablecoin_module::detail::stableFfiError(decoded_parameters.error));
+        }
+        const std::string oracle_id =
+            jsonString(decoded_parameters.value, "marketPriceOracleIdHex");
+        if (!stablecoin_module::detail::isValidAccountIdHex(oracle_id)) {
+            return publicError("backend_error");
+        }
+
+        const json accumulator =
+            readPublicAccount(jsonString(info, "stabilityFeeAccumulatorIdHex"));
+        const json redemption = readPublicAccount(jsonString(info, "redemptionPriceStateIdHex"));
+        const json oracle = readPublicAccount(oracle_id);
+        const json clock = readPublicAccount(jsonString(info, "clockIdHex"));
+        if (jsonString(accumulator, "status") == "not_found"
+            || jsonString(redemption, "status") == "not_found") {
+            return publicError("not_initialized");
+        }
+        if (jsonString(accumulator, "status") != "ok"
+            || jsonString(redemption, "status") != "ok"
+            || jsonString(oracle, "status") != "ok"
+            || jsonString(clock, "status") != "ok") {
+            return publicError("account_read_failed");
+        }
+
+        return planAndSubmit(
+            stablecoin_refresh_globals_plan,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"callerId", caller},
+                {"protocolParameters", parameters},
+                {"stabilityFeeAccumulator", accumulator},
+                {"redemptionPriceState", redemption},
+                {"marketPriceOracle", oracle},
+                {"clock", clock},
+            },
+            jsonString(info, "programIdHex"),
+            6);
+    });
+}
+
+LogosMap StablecoinModuleImpl::planAndSubmit(
+    StablecoinOperation planner,
+    const nlohmann::json& request,
+    const std::string& expected_program_id,
+    std::size_t expected_account_count) {
+    const FfiResult planned = callStablecoin(planner, request);
+    if (!planned.ok) {
+        return publicError(stablecoin_module::detail::stableFfiError(planned.error));
+    }
+    if (jsonString(planned.value, "programId") != expected_program_id) {
+        return publicError("backend_error");
+    }
+    return submitPlan(planned.value, expected_account_count);
+}
+
+LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan,
+                                          std::size_t expected_account_count) {
     const auto accounts_field = plan.find("accountIds");
     const auto signers_field = plan.find("signingRequirements");
     const auto instruction_field = plan.find("instruction");
@@ -453,11 +653,14 @@ LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
         signers_field->get<std::vector<bool>>();
     const std::vector<std::uint8_t> instruction =
         stablecoin_module::detail::jsonInstructionLeBytes(*instruction_field);
-    if (account_ids.size() != 9 || signing_requirements.size() != 9
+    if (expected_account_count == 0 || account_ids.size() != expected_account_count
+        || signing_requirements.size() != expected_account_count
         || !std::all_of(account_ids.begin(), account_ids.end(),
                         stablecoin_module::detail::isValidAccountIdHex)
-        || signing_requirements != std::vector<bool>({true, false, false, false, false,
-                                                      false, false, false, false})
+        || !signing_requirements.front()
+        || !std::all_of(std::next(signing_requirements.begin()),
+                        signing_requirements.end(),
+                        [](bool required) { return !required; })
         || instruction.empty()) {
         return publicError("backend_error");
     }
@@ -540,7 +743,7 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
             return publicError("account_read_failed");
         }
 
-        const FfiResult planned = callStablecoin(stablecoin_initialize_program_plan, {
+        return planAndSubmit(stablecoin_initialize_program_plan, {
             {"stablecoinProgramId", info["programIdHex"]},
             {"adminId", admin},
             {"freezeAuthorityId", freeze_authority},
@@ -560,13 +763,6 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
              request["maximumOraclePriceAgeMilliseconds"]},
             {"initialRedemptionPrice", request["initialRedemptionPrice"]},
             {"stablecoinName", request["stablecoinName"]},
-        });
-        if (!planned.ok) {
-            return publicError(stablecoin_module::detail::stableFfiError(planned.error));
-        }
-        if (jsonString(planned.value, "programId") != jsonString(info, "programIdHex")) {
-            return publicError("backend_error");
-        }
-        return submitPlan(planned.value);
+        }, jsonString(info, "programIdHex"), 9);
     });
 }

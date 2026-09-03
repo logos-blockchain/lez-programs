@@ -8,17 +8,19 @@ use serde_json::{json, Value};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
     compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda,
-    compute_stablecoin_master_holding_pda, Instruction, ProtocolParameters, RedemptionPriceState,
-    StabilityFeeAccumulator,
+    compute_stablecoin_master_holding_pda, math::FIXED_POINT_ONE, Instruction, ProtocolParameters,
+    RedemptionPriceState, StabilityFeeAccumulator,
 };
 use token_core::TokenDefinition;
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
-    decode_protocol_parameters, decode_redemption_price_state, decode_stability_fee_accumulator,
-    initialize_program_plan, program_info, DecodeProtocolParametersRequest,
+    accrue_stability_fee_plan, decode_protocol_parameters, decode_redemption_price_state,
+    decode_stability_fee_accumulator, initialize_program_plan, program_info, refresh_globals_plan,
+    update_redemption_rate_plan, AccrueStabilityFeePlanRequest, DecodeProtocolParametersRequest,
     DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
-    InitializeProgramPlanRequest, ProgramInfoRequest, StablecoinResult,
+    InitializeProgramPlanRequest, ProgramInfoRequest, RefreshGlobalsPlanRequest, StablecoinResult,
+    UpdateRedemptionRatePlanRequest,
 };
 use crate::account::{account_id_hex, account_read, program_id_bytes};
 
@@ -182,6 +184,122 @@ fn initialize_request() -> InitializeProgramPlanRequest {
         maximum_oracle_price_age_milliseconds: json!(u64::MAX.to_string()),
         initial_redemption_price: json!("\"340282366920938463463374607431768211455\""),
         stablecoin_name: String::from("Exact Stablecoin"),
+    }
+}
+
+const POKE_NOW: u64 = 1_000;
+const POKE_LAST_UPDATE: u64 = 900;
+
+fn poke_parameters(is_frozen: bool) -> ProtocolParameters {
+    ProtocolParameters {
+        admin_account_id: id(1),
+        freeze_authority_account_id: id(2),
+        stablecoin_definition_id: id(3),
+        collateral_definition_id: id(4),
+        market_price_oracle_id: id(5),
+        stability_fee_per_millisecond: FIXED_POINT_ONE,
+        controller_proportional_gain: FIXED_POINT_ONE as i128,
+        controller_integral_gain: 0,
+        minimum_collateralization_ratio: FIXED_POINT_ONE,
+        minimum_milliseconds_between_rate_updates: 50,
+        maximum_oracle_price_age_milliseconds: 50,
+        is_frozen,
+    }
+}
+
+fn poke_parameters_read(parameters: &ProtocolParameters) -> crate::AccountRead {
+    account_read(
+        compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID),
+        &account(STABLECOIN_PROGRAM_ID, Data::from(parameters)),
+    )
+}
+
+fn poke_accumulator_read() -> crate::AccountRead {
+    account_read(
+        compute_stability_fee_accumulator_pda(STABLECOIN_PROGRAM_ID),
+        &account(
+            STABLECOIN_PROGRAM_ID,
+            Data::from(&StabilityFeeAccumulator {
+                accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
+                last_accrued_at: POKE_LAST_UPDATE,
+            }),
+        ),
+    )
+}
+
+fn poke_redemption_read(last_updated_at: u64) -> crate::AccountRead {
+    account_read(
+        compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID),
+        &account(
+            STABLECOIN_PROGRAM_ID,
+            Data::from(&RedemptionPriceState {
+                redemption_price_at_last_update: FIXED_POINT_ONE,
+                redemption_rate_per_millisecond: FIXED_POINT_ONE,
+                controller_integral_term: 0,
+                last_updated_at,
+            }),
+        ),
+    )
+}
+
+fn poke_oracle_read(price: u128, timestamp: u64) -> crate::AccountRead {
+    account_read(
+        id(5),
+        &account(
+            ORACLE_PROGRAM_ID,
+            Data::from(&OraclePriceAccount {
+                base_asset: id(3),
+                quote_asset: id(4),
+                price,
+                timestamp,
+                source_id: id(6),
+                confidence_interval: 0,
+            }),
+        ),
+    )
+}
+
+fn poke_clock_read(timestamp: u64) -> crate::AccountRead {
+    let clock = ClockAccountData {
+        block_id: 1,
+        timestamp,
+    };
+    account_read(
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+        &account(CLOCK_PROGRAM_ID, ok(Data::try_from(clock.to_bytes()))),
+    )
+}
+
+fn accrue_request(is_frozen: bool) -> AccrueStabilityFeePlanRequest {
+    AccrueStabilityFeePlanRequest {
+        stablecoin_program_id: program_id_hex(),
+        caller_id: account_id_hex(id(15)),
+        protocol_parameters: poke_parameters_read(&poke_parameters(is_frozen)),
+        stability_fee_accumulator: poke_accumulator_read(),
+        clock: poke_clock_read(POKE_NOW),
+    }
+}
+
+fn update_request(is_frozen: bool) -> UpdateRedemptionRatePlanRequest {
+    UpdateRedemptionRatePlanRequest {
+        stablecoin_program_id: program_id_hex(),
+        caller_id: account_id_hex(id(15)),
+        protocol_parameters: poke_parameters_read(&poke_parameters(is_frozen)),
+        redemption_price_state: poke_redemption_read(POKE_LAST_UPDATE),
+        market_price_oracle: poke_oracle_read(FIXED_POINT_ONE, POKE_NOW),
+        clock: poke_clock_read(POKE_NOW),
+    }
+}
+
+fn refresh_request(is_frozen: bool) -> RefreshGlobalsPlanRequest {
+    RefreshGlobalsPlanRequest {
+        stablecoin_program_id: program_id_hex(),
+        caller_id: account_id_hex(id(15)),
+        protocol_parameters: poke_parameters_read(&poke_parameters(is_frozen)),
+        stability_fee_accumulator: poke_accumulator_read(),
+        redemption_price_state: poke_redemption_read(POKE_LAST_UPDATE),
+        market_price_oracle: poke_oracle_read(FIXED_POINT_ONE, POKE_NOW),
+        clock: poke_clock_read(POKE_NOW),
     }
 }
 
@@ -622,4 +740,142 @@ fn initialize_plan_validates_required_account_shapes_and_assets() {
     failed_read.collateral_definition.status = String::from("read_failed");
     failed_read.collateral_definition.account = None;
     assert_error(initialize_program_plan(failed_read), "account_read_failed");
+}
+
+#[test]
+fn poke_plans_pin_instruction_words_accounts_and_caller_only_signing() {
+    let caller = account_id_hex(id(15));
+    let parameters = account_id_hex(compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID));
+    let accumulator = account_id_hex(compute_stability_fee_accumulator_pda(STABLECOIN_PROGRAM_ID));
+    let redemption = account_id_hex(compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID));
+    let oracle = account_id_hex(id(5));
+    let clock = account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID);
+
+    let accrue = ok(accrue_stability_fee_plan(accrue_request(false)));
+    assert_eq!(accrue["programId"], program_id_hex());
+    assert_eq!(
+        accrue["accountIds"],
+        json!([caller, parameters, accumulator, clock])
+    );
+    assert_eq!(
+        accrue["signingRequirements"],
+        json!([true, false, false, false])
+    );
+    assert_eq!(accrue["instruction"], json!([1]));
+    assert!(matches!(
+        decode_instruction(&accrue["instruction"]),
+        Instruction::AccrueStabilityFee
+    ));
+
+    let update = ok(update_redemption_rate_plan(update_request(false)));
+    assert_eq!(update["programId"], program_id_hex());
+    assert_eq!(
+        update["accountIds"],
+        json!([caller, parameters, redemption, oracle, clock])
+    );
+    assert_eq!(
+        update["signingRequirements"],
+        json!([true, false, false, false, false])
+    );
+    assert_eq!(update["instruction"], json!([2]));
+    assert!(matches!(
+        decode_instruction(&update["instruction"]),
+        Instruction::UpdateRedemptionRate
+    ));
+
+    let refresh = ok(refresh_globals_plan(refresh_request(false)));
+    assert_eq!(refresh["programId"], program_id_hex());
+    assert_eq!(
+        refresh["accountIds"],
+        json!([caller, parameters, accumulator, redemption, oracle, clock])
+    );
+    assert_eq!(
+        refresh["signingRequirements"],
+        json!([true, false, false, false, false, false])
+    );
+    assert_eq!(refresh["instruction"], json!([3]));
+    assert!(matches!(
+        decode_instruction(&refresh["instruction"]),
+        Instruction::RefreshGlobals
+    ));
+}
+
+#[test]
+fn strict_update_plan_reuses_quote_gate_order() {
+    let mut stale = update_request(false);
+    stale.market_price_oracle = poke_oracle_read(FIXED_POINT_ONE, POKE_NOW - 51);
+    assert_error(update_redemption_rate_plan(stale), "oracle_stale");
+
+    let mut zero = update_request(false);
+    zero.market_price_oracle = poke_oracle_read(0, POKE_NOW);
+    assert_error(update_redemption_rate_plan(zero), "oracle_price_zero");
+
+    let mut too_soon = update_request(false);
+    too_soon.redemption_price_state = poke_redemption_read(POKE_NOW - 49);
+    assert_error(
+        update_redemption_rate_plan(too_soon),
+        "rate_update_too_soon",
+    );
+
+    let mut combined = update_request(false);
+    combined.market_price_oracle = poke_oracle_read(0, POKE_NOW - 51);
+    combined.redemption_price_state = poke_redemption_read(POKE_NOW - 49);
+    assert_error(update_redemption_rate_plan(combined), "oracle_stale");
+}
+
+#[test]
+fn refresh_plan_keeps_controller_quote_gates_soft() {
+    let mut stale = refresh_request(false);
+    stale.market_price_oracle = poke_oracle_read(FIXED_POINT_ONE, POKE_NOW - 51);
+    assert!(refresh_globals_plan(stale).is_ok());
+
+    let mut zero = refresh_request(false);
+    zero.market_price_oracle = poke_oracle_read(0, POKE_NOW);
+    assert!(refresh_globals_plan(zero).is_ok());
+
+    let mut too_soon = refresh_request(false);
+    too_soon.redemption_price_state = poke_redemption_read(POKE_NOW - 49);
+    assert!(refresh_globals_plan(too_soon).is_ok());
+}
+
+#[test]
+fn all_poke_plans_submit_while_protocol_is_frozen() {
+    assert!(accrue_stability_fee_plan(accrue_request(true)).is_ok());
+    assert!(update_redemption_rate_plan(update_request(true)).is_ok());
+    assert!(refresh_globals_plan(refresh_request(true)).is_ok());
+}
+
+#[test]
+fn poke_plans_reject_invalid_callers_and_hard_account_mismatches() {
+    let mut invalid_caller = accrue_request(false);
+    invalid_caller.caller_id = String::from("not-an-account");
+    assert_error(
+        accrue_stability_fee_plan(invalid_caller),
+        "invalid_account_id",
+    );
+
+    let mut wrong_accumulator = accrue_request(false);
+    wrong_accumulator.stability_fee_accumulator.id = account_id_hex(id(30));
+    assert_error(
+        accrue_stability_fee_plan(wrong_accumulator),
+        "stability_fee_accumulator_pda_mismatch",
+    );
+
+    let mut wrong_redemption = update_request(false);
+    wrong_redemption.redemption_price_state.id = account_id_hex(id(31));
+    assert_error(
+        update_redemption_rate_plan(wrong_redemption),
+        "redemption_price_state_pda_mismatch",
+    );
+
+    let mut wrong_oracle = refresh_request(false);
+    wrong_oracle.market_price_oracle.id = account_id_hex(id(32));
+    assert_error(
+        refresh_globals_plan(wrong_oracle),
+        "market_price_oracle_mismatch",
+    );
+
+    let mut wrong_clock = refresh_request(false);
+    wrong_clock.clock.id = account_id_hex(id(33));
+    assert_error(refresh_globals_plan(wrong_clock), "invalid_clock");
 }

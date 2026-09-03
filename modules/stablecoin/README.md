@@ -83,6 +83,31 @@ read-only quote with `canSubmit: false`, `code: "blocked"`, machine-readable
 `errors`, and explicit `null` next-controller values. Multiple blockers are
 reported in on-chain gate order. The frozen flag does not block this operation.
 
+### Permissionless maintenance transactions
+
+`accrueStabilityFee(callerId)`, `updateRedemptionRate(callerId)`, and
+`refreshGlobals(callerId)` submit permissionless protocol-maintenance
+transactions. `callerId` accepts base58 or 64-character hexadecimal form, must
+be a public account controlled by the connected wallet, and is the sole signer.
+Success adds `transactionId` to the standard response envelope.
+
+The module reads live protocol state, derives every singleton account and the
+canonical `CLOCK_01` account internally, then submits these exact account
+orders:
+
+| Method | Accounts |
+| --- | --- |
+| `accrueStabilityFee` | caller, Protocol Parameters, Stability Fee Accumulator, `CLOCK_01` |
+| `updateRedemptionRate` | caller, Protocol Parameters, Redemption Price State, configured market-price oracle, `CLOCK_01` |
+| `refreshGlobals` | caller, Protocol Parameters, Stability Fee Accumulator, Redemption Price State, configured market-price oracle, `CLOCK_01` |
+
+`updateRedemptionRate` runs the live quote preflight and does not submit when
+the first on-chain gate is `oracle_stale`, `oracle_price_zero`, or
+`rate_update_too_soon`. `refreshGlobals` intentionally submits under those soft
+gates: its fee-accrual half still runs while the on-chain instruction may skip
+the controller update. A frozen protocol does not block any of the three
+maintenance methods.
+
 ### `initializeProgram(request)`
 
 Required request fields:
