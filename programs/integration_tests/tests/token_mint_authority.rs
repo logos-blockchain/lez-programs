@@ -4,12 +4,26 @@
 //! the mint-authority PDA seed, the lazily-claimed allowance PDA, and the
 //! per-day cooldown across real transactions.
 
+use std::collections::HashMap;
+
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
+use integration_tests::{
+    private_authorized_init_identity, private_authorized_update_identity, GroupOwner,
+};
 use lee::{
+    execute_and_prove,
+    privacy_preserving_transaction::{
+        circuit::ProgramWithDependencies, Message, PrivacyPreservingTransaction, WitnessSet,
+    },
+    program::Program,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use lee_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::{
+    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
+    encryption::ViewingPublicKey,
+    Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey, NullifierSecretKey,
+};
 use token_core::{TokenDefinition, TokenHolding};
 use token_mint_authority_core::{
     compute_mint_allowance_pda, compute_mint_authority_pda, MintAllowance, FAUCET_MINT_AMOUNT,
@@ -274,4 +288,337 @@ fn faucet_rejects_a_token_whose_authority_is_not_the_mint_authority_pda() {
         "minting a token not controlled by the mint-authority PDA must fail"
     );
     assert_eq!(holding_balance(&state, Ids::user_holding()), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Privacy-preserving coverage
+//
+// The faucet is a pure delegating proxy (`user -> token-mint-authority -> token`), so every
+// one of these goes through a chained `Token::MintWithAuthority` (category CHAIN). Two
+// account slots can plausibly be private: the `recipient` identity that signs and is
+// rate-limited, and the `user_holding` the grant lands in.
+// ---------------------------------------------------------------------------
+
+/// Private-account key material for the faucet's privacy tests.
+struct PrivateKeys;
+
+impl PrivateKeys {
+    fn holding_nsk() -> NullifierSecretKey {
+        [61; 32]
+    }
+
+    fn holding_npk() -> NullifierPublicKey {
+        NullifierPublicKey::from(&Self::holding_nsk())
+    }
+
+    fn holding_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[71; 32], &[72; 32])
+    }
+
+    fn holding_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::holding_npk(), &Self::holding_vpk(), 0)
+    }
+
+    fn recipient_nsk() -> NullifierSecretKey {
+        [62; 32]
+    }
+
+    fn recipient_npk() -> NullifierPublicKey {
+        NullifierPublicKey::from(&Self::recipient_nsk())
+    }
+
+    fn recipient_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[73; 32], &[74; 32])
+    }
+
+    fn recipient_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::recipient_npk(), &Self::recipient_vpk(), 0)
+    }
+}
+
+fn faucet_with_deps() -> ProgramWithDependencies {
+    ProgramWithDependencies::new(
+        Program::new(
+            token_mint_authority_methods::TOKEN_MINT_AUTHORITY_ELF
+                .to_vec()
+                .into(),
+        )
+        .expect("valid token-mint-authority ELF"),
+        HashMap::from([(
+            Ids::token_program(),
+            Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF"),
+        )]),
+    )
+}
+
+/// The faucet's mint-allowance PDA for an arbitrary recipient — the public `Ids::mint_allowance`
+/// is hard-wired to the public recipient, and these tests vary the recipient identity.
+fn mint_allowance_for(recipient: AccountId) -> AccountId {
+    compute_mint_allowance_pda(
+        Ids::token_mint_authority_program(),
+        recipient,
+        Ids::faucet_definition(),
+    )
+}
+
+/// REGULAR, CHAIN: the grant lands in an already-shielded private holding. The recipient
+/// identity (and therefore the rate-limit PDA) stays public; only the funded holding is private,
+/// so the faucet's chained `MintWithAuthority` has to credit a private account.
+#[test]
+fn faucet_mint_into_private_user_holding() {
+    let mut state = state_for_faucet_tests();
+
+    let holding_nsk = PrivateKeys::holding_nsk();
+    let holding_vpk = PrivateKeys::holding_vpk();
+    let holding_id = PrivateKeys::holding_id();
+    let holding_account = Account {
+        nonce: Nonce::private_account_nonce_init(&holding_id),
+        ..user_holding_init()
+    };
+    state = state.with_private_accounts([(
+        Commitment::new(&holding_id, &holding_account),
+        Nullifier::for_account_initialization(&holding_id),
+    )]);
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&holding_id, &holding_account))
+        .expect("the private holding's commitment must be in the set");
+
+    let recipient_account = state.get_account_by_id(Ids::recipient());
+    let recipient_nonce = recipient_account.nonce;
+    let recipient_pre = AccountWithMetadata::new(recipient_account, true, Ids::recipient());
+    let allowance_pre = AccountWithMetadata::new(Account::default(), false, Ids::mint_allowance());
+    // A `PrivateAuthorizedUpdate` pre-state must be authorized — the circuit requires it for any
+    // authenticated private account, even though the faucet itself never checks the holding.
+    let user_holding_pre = AccountWithMetadata::new(holding_account, true, holding_id);
+    let definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::faucet_definition()),
+        false,
+        Ids::faucet_definition(),
+    );
+    let mint_authority_pre =
+        AccountWithMetadata::new(Account::default(), false, Ids::mint_authority());
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            recipient_pre,
+            allowance_pre,
+            user_holding_pre,
+            definition_pre,
+            mint_authority_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(token_mint_authority_core::Instruction::FaucetMint).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(holding_nsk, &holding_vpk, membership_proof),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &faucet_with_deps(),
+    )
+    .expect("FaucetMint into an existing private holding must succeed");
+
+    let message = Message::from_circuit_output(vec![recipient_nonce], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::recipient()]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    // Public side: the supply grew and the allowance PDA was claimed at the current clock.
+    assert_eq!(
+        definition_supply(&state, Ids::faucet_definition()),
+        FAUCET_MINT_AMOUNT
+    );
+    assert_eq!(allowance_last_mint(&state, Ids::mint_allowance()), T0);
+
+    // Private side: the shielded holding carries the grant, under its incremented nonce.
+    let funded = Account {
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::faucet_definition(),
+            balance: FAUCET_MINT_AMOUNT,
+        }),
+        nonce: Nonce::private_account_nonce_init(&holding_id)
+            .private_account_nonce_increment(&holding_nsk),
+        ..user_holding_init()
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&holding_id, &funded))
+        .is_some());
+}
+
+/// REGULAR, CHAIN: the rate-limited `recipient` itself is a private account. `recipient` is the
+/// faucet's only `#[account(signer)]`, and its account id is a seed of the mint-allowance PDA —
+/// so this proves the per-account cooldown keys off a private identity just as well as a public
+/// one, with no public signer in the transaction at all.
+#[test]
+fn faucet_mint_with_private_recipient() {
+    let mut state = state_for_faucet_tests();
+
+    let recipient_id = PrivateKeys::recipient_id();
+    let allowance_id = mint_allowance_for(recipient_id);
+
+    let recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
+    let allowance_pre = AccountWithMetadata::new(Account::default(), false, allowance_id);
+    let user_holding_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::user_holding()),
+        false,
+        Ids::user_holding(),
+    );
+    let definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::faucet_definition()),
+        false,
+        Ids::faucet_definition(),
+    );
+    let mint_authority_pre =
+        AccountWithMetadata::new(Account::default(), false, Ids::mint_authority());
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            recipient_pre,
+            allowance_pre,
+            user_holding_pre,
+            definition_pre,
+            mint_authority_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(token_mint_authority_core::Instruction::FaucetMint).unwrap(),
+        vec![
+            private_authorized_init_identity(
+                PrivateKeys::recipient_nsk(),
+                &PrivateKeys::recipient_vpk(),
+                state.commitment_root(),
+            ),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &faucet_with_deps(),
+    )
+    .expect("FaucetMint signed by a private recipient must succeed");
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    // The grant landed, and the cooldown is now anchored to the *private* recipient's PDA.
+    assert_eq!(
+        holding_balance(&state, Ids::user_holding()),
+        FAUCET_MINT_AMOUNT
+    );
+    assert_eq!(allowance_last_mint(&state, allowance_id), T0);
+    assert_eq!(
+        MintAllowance::try_from(&state.get_account_by_id(allowance_id).data)
+            .expect("valid allowance")
+            .recipient_id,
+        recipient_id
+    );
+
+    // The private recipient marker survived as a commitment under its init nonce.
+    let recipient_expected = Account {
+        nonce: Nonce::private_account_nonce_init(&recipient_id),
+        ..Account::default()
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&recipient_id, &recipient_expected))
+        .is_some());
+}
+
+/// GROUP, CHAIN: same as [`faucet_mint_with_private_recipient`], but the recipient is a
+/// group-owned account — a member who received the Group Master Secret through the real
+/// seal/unseal handshake (never the key itself) signs the faucet claim.
+#[test]
+fn faucet_mint_with_group_owned_recipient() {
+    let mut state = state_for_faucet_tests();
+
+    let alice = GroupOwner::new([41_u8; 32]);
+    let bob_nsk = alice.admit_member();
+    let recipient_id = alice.id;
+    let allowance_id = mint_allowance_for(recipient_id);
+
+    let recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
+    let allowance_pre = AccountWithMetadata::new(Account::default(), false, allowance_id);
+    let user_holding_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::user_holding()),
+        false,
+        Ids::user_holding(),
+    );
+    let definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::faucet_definition()),
+        false,
+        Ids::faucet_definition(),
+    );
+    let mint_authority_pre =
+        AccountWithMetadata::new(Account::default(), false, Ids::mint_authority());
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            recipient_pre,
+            allowance_pre,
+            user_holding_pre,
+            definition_pre,
+            mint_authority_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(token_mint_authority_core::Instruction::FaucetMint).unwrap(),
+        vec![
+            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &faucet_with_deps(),
+    )
+    .expect("FaucetMint signed by a group-owned recipient must succeed");
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        holding_balance(&state, Ids::user_holding()),
+        FAUCET_MINT_AMOUNT
+    );
+    assert_eq!(
+        MintAllowance::try_from(&state.get_account_by_id(allowance_id).data)
+            .expect("valid allowance")
+            .recipient_id,
+        recipient_id
+    );
 }

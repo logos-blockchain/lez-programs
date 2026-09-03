@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
 use ata_core::{compute_ata_seed, get_associated_token_account_id};
+use integration_tests::{
+    private_authorized_init_identity, private_authorized_update_identity,
+    private_foreign_init_identity, GroupOwner,
+};
 use lee::{
     execute_and_prove,
     privacy_preserving_transaction::{
@@ -13,7 +17,7 @@ use lee::{
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     encryption::ViewingPublicKey,
-    InputAccountIdentity, NullifierPublicKey, NullifierSecretKey,
+    Commitment, InputAccountIdentity, NullifierPublicKey, NullifierSecretKey,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -573,6 +577,736 @@ fn ata_create_from_private_owner() {
     let tx = PrivacyPreservingTransaction::new(message, witness_set);
     state
         .transition_from_privacy_preserving_transaction(&tx, 0, 0)
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(owner_ata_id),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 0_u128,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+}
+
+/// ATA cannot be created as a private account.
+#[test]
+fn ata_create_private_ata_holding_is_not_expressible() {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+    state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
+
+    let owner_id = Ids::owner();
+    let owner_account = state.get_account_by_id(owner_id);
+
+    // Fresh personal npk/vpk for the ATA holding's privacy identity — distinct from the
+    // owner's plain public keypair, which only supplies the seed input.
+    let ata_nsk: NullifierSecretKey = [21u8; 32];
+    let ata_npk = NullifierPublicKey::from(&ata_nsk);
+    let ata_vpk = ViewingPublicKey::from_seed(&[41u8; 32], &[42u8; 32]);
+
+    // Address stays the *standard* public-PDA formula ATA always uses — only its state
+    // privacy is under test, not its address derivation.
+    let seed = compute_ata_seed(Ids::token_program(), owner_id, Ids::token_definition());
+    let ata_id = get_associated_token_account_id(&Ids::ata_program(), &seed);
+
+    let owner_pre = AccountWithMetadata::new(owner_account, true, owner_id);
+    let def_pre = AccountWithMetadata::new(
+        Accounts::token_definition_init(),
+        false,
+        Ids::token_definition(),
+    );
+    let ata_pre = AccountWithMetadata::new(Account::default(), false, ata_id);
+
+    let instruction = ata_core::Instruction::Create {
+        token_program_id: Ids::token_program(),
+    };
+    let instruction_data = Program::serialize_instruction(instruction).unwrap();
+
+    let commitment_root = state.commitment_root();
+
+    let ata_program = Program::new(ata_methods::ATA_ELF.to_vec().into()).unwrap();
+    let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
+    let program_with_deps = ProgramWithDependencies::new(
+        ata_program,
+        HashMap::from([(Ids::token_program(), token_program)]),
+    );
+
+    let result = execute_and_prove(
+        vec![owner_pre, def_pre, ata_pre],
+        instruction_data,
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::PrivatePdaInit {
+                vpk: ata_vpk.clone(),
+                random_seed: [0; 32],
+                npk: ata_npk,
+                identifier: 0,
+                commitment_root,
+                seed: None,
+            },
+        ],
+        &program_with_deps,
+    );
+
+    let err = result.expect_err(
+        "a private-PDA ATA holding must be rejected: its account id can never satisfy both \
+         ATA's own for_public_pda address check and PrivatePdaInit's for_private_pda binding \
+         requirement simultaneously",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("has no proven (seed, npk) binding via Claim::Pda or caller pda_seeds"),
+        "expected the private-PDA binding rejection, got a different error: {message}"
+    );
+}
+
+/// Verifies ATA account can be used to transfer to a private account.
+#[test]
+fn ata_transfer_to_existing_private_recipient() {
+    let mut state = state_for_ata_tests();
+
+    // A throwaway public holder to shield from directly via Token — bypassing ATA entirely,
+    // since ATA::Transfer cannot originate a fresh private recipient (see doc comment above).
+    let shield_source_key = PrivateKey::try_new([77u8; 32]).expect("valid private key");
+    let shield_source_id = AccountId::from(&PublicKey::new_from_private_key(&shield_source_key));
+    state.force_insert_account(
+        shield_source_id,
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 1_000_000_u128,
+            }),
+            nonce: Nonce(0),
+        },
+    );
+
+    let recipient_nsk: NullifierSecretKey = [51u8; 32];
+    let recipient_npk = NullifierPublicKey::from(&recipient_nsk);
+    let recipient_vpk = ViewingPublicKey::from_seed(&[61u8; 32], &[62u8; 32]);
+    let recipient_id = AccountId::for_regular_private_account(&recipient_npk, &recipient_vpk, 0);
+
+    let shield_amount = 500_000_u128;
+    let source_pre = AccountWithMetadata::new(
+        state.get_account_by_id(shield_source_id),
+        true,
+        shield_source_id,
+    );
+    let fresh_recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
+    let shield_commitment_root = state.commitment_root();
+
+    let token_program_for_shield = Program::new(token_methods::TOKEN_ELF.to_vec().into())
+        .expect("valid token ELF")
+        .into();
+    let (shield_output, shield_proof) = execute_and_prove(
+        vec![source_pre, fresh_recipient_pre],
+        Program::serialize_instruction(token_core::Instruction::Transfer {
+            amount_to_transfer: shield_amount,
+        })
+        .unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            private_foreign_init_identity(recipient_npk, &recipient_vpk, shield_commitment_root),
+        ],
+        &token_program_for_shield,
+    )
+    .unwrap();
+    let shield_message = Message::from_circuit_output(vec![Nonce(0)], shield_output);
+    let shield_witness =
+        WitnessSet::for_message(&shield_message, shield_proof, &[&shield_source_key]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(shield_message, shield_witness),
+            0,
+            0,
+        )
+        .unwrap();
+
+    let recipient_after_shield = Account {
+        program_owner: Ids::token_program(),
+        balance: 0_u128,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_definition(),
+            balance: shield_amount,
+        }),
+        nonce: Nonce::private_account_nonce_init(&recipient_id),
+    };
+    assert!(
+        state
+            .get_proof_for_commitment(&Commitment::new(&recipient_id, &recipient_after_shield))
+            .is_some(),
+        "shield setup must land before the ATA transfer under test"
+    );
+
+    // Now the actual test: owner's ATA sends more into that now-existing private recipient.
+    let owner_id = Ids::owner();
+    let owner_account = state.get_account_by_id(owner_id);
+    let sender_ata_id = Ids::owner_ata();
+    let sender_ata_account = state.get_account_by_id(sender_ata_id);
+
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&recipient_id, &recipient_after_shield))
+        .expect("recipient's commitment must be in the set");
+
+    let owner_pre = AccountWithMetadata::new(owner_account, true, owner_id);
+    let sender_ata_pre = AccountWithMetadata::new(sender_ata_account, false, sender_ata_id);
+    let recipient_pre =
+        AccountWithMetadata::new(recipient_after_shield.clone(), true, recipient_id);
+
+    let ata_transfer_amount = 200_000_u128;
+    let instruction = ata_core::Instruction::Transfer {
+        token_program_id: Ids::token_program(),
+        amount: ata_transfer_amount,
+    };
+    let ata_program = Program::new(ata_methods::ATA_ELF.to_vec().into()).unwrap();
+    let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
+    let program_with_deps = ProgramWithDependencies::new(
+        ata_program,
+        HashMap::from([(Ids::token_program(), token_program)]),
+    );
+
+    let (output, proof) = execute_and_prove(
+        vec![owner_pre, sender_ata_pre, recipient_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(recipient_nsk, &recipient_vpk, membership_proof),
+        ],
+        &program_with_deps,
+    )
+    .unwrap();
+
+    let message = Message::from_circuit_output(vec![Nonce(0)], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::owner_key()]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(sender_ata_id),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 1_000_000_u128 - ata_transfer_amount,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+
+    let recipient_nonce_after = Nonce::private_account_nonce_init(&recipient_id)
+        .private_account_nonce_increment(&recipient_nsk);
+    let recipient_after_ata_transfer = Account {
+        program_owner: Ids::token_program(),
+        balance: 0_u128,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_definition(),
+            balance: shield_amount + ata_transfer_amount,
+        }),
+        nonce: recipient_nonce_after,
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(
+            &recipient_id,
+            &recipient_after_ata_transfer
+        ))
+        .is_some());
+}
+
+/// Private account owner can sign transactions.
+#[test]
+fn ata_burn_with_private_owner_signing() {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+    state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
+
+    let owner_nsk: NullifierSecretKey = [91u8; 32];
+    let owner_npk = NullifierPublicKey::from(&owner_nsk);
+    let owner_vpk = ViewingPublicKey::from_seed(&[93u8; 32], &[94u8; 32]);
+    let owner_id = AccountId::for_regular_private_account(&owner_npk, &owner_vpk, 0);
+
+    // The ATA holding must stay public (per the confirmed PDA finding), so it's seeded
+    // directly rather than via a real `Create` transaction.
+    let seed = compute_ata_seed(Ids::token_program(), owner_id, Ids::token_definition());
+    let ata_id = get_associated_token_account_id(&Ids::ata_program(), &seed);
+    let ata_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0_u128,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_definition(),
+            balance: 1_000_000_u128,
+        }),
+        nonce: Nonce(0),
+    };
+    state.force_insert_account(ata_id, ata_account.clone());
+
+    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
+    let ata_pre = AccountWithMetadata::new(ata_account, false, ata_id);
+    let def_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_definition()),
+        false,
+        Ids::token_definition(),
+    );
+
+    let burn_amount = 300_000_u128;
+    let instruction = ata_core::Instruction::Burn {
+        token_program_id: Ids::token_program(),
+        amount: burn_amount,
+    };
+
+    let commitment_root = state.commitment_root();
+
+    let ata_program = Program::new(ata_methods::ATA_ELF.to_vec().into()).unwrap();
+    let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
+    let program_with_deps = ProgramWithDependencies::new(
+        ata_program,
+        HashMap::from([(Ids::token_program(), token_program)]),
+    );
+
+    let (output, proof) = execute_and_prove(
+        vec![owner_pre, ata_pre, def_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            private_authorized_init_identity(owner_nsk, &owner_vpk, commitment_root),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &program_with_deps,
+    )
+    .unwrap();
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(ata_id),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 1_000_000_u128 - burn_amount,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("Gold"),
+                total_supply: 1_000_000_u128 - burn_amount,
+                metadata_id: None,
+                authority: None,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+
+    let owner_expected = Account {
+        nonce: Nonce::private_account_nonce_init(&owner_id),
+        ..Account::default()
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&owner_id, &owner_expected))
+        .is_some());
+}
+
+/// Group-owned variant of `ata_burn_with_private_owner_signing`: the GMS is distributed through
+/// the real seal/unseal handshake, and it's Bob — not Alice, who created the group — who
+/// self-initializes and signs the owner identity in the same transaction via
+/// `PrivateAuthorizedInit`, then burns from the ATA holding through it.
+#[test]
+fn ata_group_owned_owner_signing() {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+    state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
+
+    let alice = GroupOwner::new([97_u8; 32]);
+    let owner_id = alice.id;
+    let bob_nsk = alice.admit_member();
+
+    // The ATA holding must stay public (per the confirmed PDA finding), so it's seeded
+    // directly rather than via a real `Create` transaction.
+    let seed = compute_ata_seed(Ids::token_program(), owner_id, Ids::token_definition());
+    let ata_id = get_associated_token_account_id(&Ids::ata_program(), &seed);
+    let ata_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0_u128,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_definition(),
+            balance: 1_000_000_u128,
+        }),
+        nonce: Nonce(0),
+    };
+    state.force_insert_account(ata_id, ata_account.clone());
+
+    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
+    let ata_pre = AccountWithMetadata::new(ata_account, false, ata_id);
+    let def_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_definition()),
+        false,
+        Ids::token_definition(),
+    );
+
+    let burn_amount = 300_000_u128;
+    let instruction = ata_core::Instruction::Burn {
+        token_program_id: Ids::token_program(),
+        amount: burn_amount,
+    };
+
+    let ata_program = Program::new(ata_methods::ATA_ELF.to_vec().into()).unwrap();
+    let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
+    let program_with_deps = ProgramWithDependencies::new(
+        ata_program,
+        HashMap::from([(Ids::token_program(), token_program)]),
+    );
+
+    let (output, proof) = execute_and_prove(
+        vec![owner_pre, ata_pre, def_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &program_with_deps,
+    )
+    .unwrap();
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(ata_id),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 1_000_000_u128 - burn_amount,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_definition()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("Gold"),
+                total_supply: 1_000_000_u128 - burn_amount,
+                metadata_id: None,
+                authority: None,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+
+    let owner_expected = Account {
+        nonce: Nonce::private_account_nonce_init(&owner_id),
+        ..Account::default()
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&owner_id, &owner_expected))
+        .is_some());
+}
+
+/// Private owner
+#[test]
+fn ata_transfer_with_private_owner_signing() {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+    state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
+    state.force_insert_account(Ids::recipient_ata(), Accounts::recipient_ata_init());
+
+    let owner_nsk: NullifierSecretKey = [95u8; 32];
+    let owner_npk = NullifierPublicKey::from(&owner_nsk);
+    let owner_vpk = ViewingPublicKey::from_seed(&[96u8; 32], &[97u8; 32]);
+    let owner_id = AccountId::for_regular_private_account(&owner_npk, &owner_vpk, 0);
+
+    // The ATA holding must stay public (per the confirmed PDA finding), so it's seeded
+    // directly rather than via a real `Create` transaction.
+    let seed = compute_ata_seed(Ids::token_program(), owner_id, Ids::token_definition());
+    let sender_ata_id = get_associated_token_account_id(&Ids::ata_program(), &seed);
+    let sender_ata_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0_u128,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_definition(),
+            balance: 1_000_000_u128,
+        }),
+        nonce: Nonce(0),
+    };
+    state.force_insert_account(sender_ata_id, sender_ata_account.clone());
+
+    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
+    let sender_ata_pre = AccountWithMetadata::new(sender_ata_account, false, sender_ata_id);
+    let recipient_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::recipient_ata()),
+        false,
+        Ids::recipient_ata(),
+    );
+
+    let transfer_amount = 400_000_u128;
+    let instruction = ata_core::Instruction::Transfer {
+        token_program_id: Ids::token_program(),
+        amount: transfer_amount,
+    };
+
+    let commitment_root = state.commitment_root();
+
+    let ata_program = Program::new(ata_methods::ATA_ELF.to_vec().into()).unwrap();
+    let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
+    let program_with_deps = ProgramWithDependencies::new(
+        ata_program,
+        HashMap::from([(Ids::token_program(), token_program)]),
+    );
+
+    let (output, proof) = execute_and_prove(
+        vec![owner_pre, sender_ata_pre, recipient_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            private_authorized_init_identity(owner_nsk, &owner_vpk, commitment_root),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &program_with_deps,
+    )
+    .unwrap();
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(sender_ata_id),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 1_000_000_u128 - transfer_amount,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient_ata()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: transfer_amount,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+
+    let owner_expected = Account {
+        nonce: Nonce::private_account_nonce_init(&owner_id),
+        ..Account::default()
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&owner_id, &owner_expected))
+        .is_some());
+}
+
+/// Group transfer is possible with group members added after the ATA is initialized.
+#[test]
+fn ata_transfer_with_group_owned_owner_signing() {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+    state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
+    state.force_insert_account(Ids::recipient_ata(), Accounts::recipient_ata_init());
+
+    let alice = GroupOwner::new([19_u8; 32]);
+    let owner_id = alice.id;
+
+    // The ATA holding must stay public (per the confirmed PDA finding), so it's seeded
+    // directly rather than via a real `Create` transaction.
+    let seed = compute_ata_seed(Ids::token_program(), owner_id, Ids::token_definition());
+    let sender_ata_id = get_associated_token_account_id(&Ids::ata_program(), &seed);
+    let sender_ata_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0_u128,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_definition(),
+            balance: 1_000_000_u128,
+        }),
+        nonce: Nonce(0),
+    };
+    state.force_insert_account(sender_ata_id, sender_ata_account.clone());
+
+    let bob_nsk = alice.admit_member();
+
+    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
+    let sender_ata_pre = AccountWithMetadata::new(sender_ata_account, false, sender_ata_id);
+    let recipient_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::recipient_ata()),
+        false,
+        Ids::recipient_ata(),
+    );
+
+    let transfer_amount = 400_000_u128;
+    let instruction = ata_core::Instruction::Transfer {
+        token_program_id: Ids::token_program(),
+        amount: transfer_amount,
+    };
+
+    let ata_program = Program::new(ata_methods::ATA_ELF.to_vec().into()).unwrap();
+    let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
+    let program_with_deps = ProgramWithDependencies::new(
+        ata_program,
+        HashMap::from([(Ids::token_program(), token_program)]),
+    );
+
+    let (output, proof) = execute_and_prove(
+        vec![owner_pre, sender_ata_pre, recipient_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &program_with_deps,
+    )
+    .unwrap();
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(sender_ata_id),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: 1_000_000_u128 - transfer_amount,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::recipient_ata()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_definition(),
+                balance: transfer_amount,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+
+    let owner_expected = Account {
+        nonce: Nonce::private_account_nonce_init(&owner_id),
+        ..Account::default()
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&owner_id, &owner_expected))
+        .is_some());
+}
+
+#[test]
+fn ata_create_from_group_owned_owner() {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+    state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
+
+    let alice = GroupOwner::new([23_u8; 32]);
+    let owner_id = alice.id;
+
+    let seed = compute_ata_seed(Ids::token_program(), owner_id, Ids::token_definition());
+    let owner_ata_id = get_associated_token_account_id(&Ids::ata_program(), &seed);
+
+    // Group-derived owner is a fresh private account initialized via PrivateForeignInit;
+    // since logos-execution-zone PR #621 its pre-state must be is_authorized == true.
+    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
+    let def_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_definition()),
+        false,
+        Ids::token_definition(),
+    );
+    let ata_pre = AccountWithMetadata::new(Account::default(), false, owner_ata_id);
+
+    let instruction = ata_core::Instruction::Create {
+        token_program_id: Ids::token_program(),
+    };
+
+    let ata_program = Program::new(ata_methods::ATA_ELF.to_vec().into()).unwrap();
+    let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
+    let program_with_deps = ProgramWithDependencies::new(
+        ata_program,
+        HashMap::from([(Ids::token_program(), token_program)]),
+    );
+
+    let (output, proof) = execute_and_prove(
+        vec![owner_pre, def_pre, ata_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            private_foreign_init_identity(alice.npk, &alice.vpk, state.commitment_root()),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &program_with_deps,
+    )
+    .unwrap();
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
         .unwrap();
 
     assert_eq!(
