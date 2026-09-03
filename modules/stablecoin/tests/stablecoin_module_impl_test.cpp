@@ -18,7 +18,9 @@ using json = nlohmann::json;
 
 const std::string PROGRAM_ID_HEX(64, '1');
 const std::string ACCUMULATOR_ID_HEX(64, '2');
+const std::string PROTOCOL_PARAMETERS_ID_HEX(64, '3');
 const std::string REDEMPTION_STATE_ID_HEX(64, '4');
+const std::string CLOCK_ID_HEX(64, '7');
 
 class ScopedEnvironment {
 public:
@@ -55,7 +57,7 @@ json programInfoValue() {
         {"programId", "program-id"},
         {"programIdHex", PROGRAM_ID_HEX},
         {"protocolParametersId", "protocol-parameters-id"},
-        {"protocolParametersIdHex", std::string(64, '3')},
+        {"protocolParametersIdHex", PROTOCOL_PARAMETERS_ID_HEX},
         {"stabilityFeeAccumulatorId", "stability-fee-accumulator-id"},
         {"stabilityFeeAccumulatorIdHex", ACCUMULATOR_ID_HEX},
         {"redemptionPriceStateId", "redemption-price-state-id"},
@@ -65,7 +67,7 @@ json programInfoValue() {
         {"stablecoinMasterHoldingId", "stablecoin-master-holding-id"},
         {"stablecoinMasterHoldingIdHex", std::string(64, '6')},
         {"clockId", "clock-id"},
-        {"clockIdHex", std::string(64, '7')},
+        {"clockIdHex", CLOCK_ID_HEX},
     };
 }
 
@@ -295,4 +297,106 @@ LOGOS_TEST(redemption_price_state_preserves_stable_decoder_errors) {
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 1);
     LOGOS_ASSERT_EQ(
         context.cFunctionCallCount("stablecoin_decode_redemption_price_state"), 1);
+}
+
+LOGOS_TEST(current_global_state_reads_all_sources_and_preserves_exact_projection) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const json projected = {
+        {"accumulatedRateAtLastAccrual", "340282366920938463463374607431768211455"},
+        {"lastAccruedAt", "18446744073709551611"},
+        {"redemptionPriceAtLastUpdate", "340282366920938463463374607431768211454"},
+        {"lastUpdatedAt", "18446744073709551612"},
+        {"currentAccumulatedRate", "340282366920938463463374607431768211453"},
+        {"currentRedemptionPrice", "340282366920938463463374607431768211452"},
+        {"projectedAt", "18446744073709551615"},
+    };
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::string projection_response = successEnvelope(projected);
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockCFunction("stablecoin_current_global_state").returns(projection_response);
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+
+    const LogosMap response = module.currentGlobalState();
+
+    LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(response["error"].get<std::string>(), std::string());
+    LOGOS_ASSERT_EQ(response["currentGlobalState"], projected);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 4);
+    for (const auto& account_id : {
+             PROTOCOL_PARAMETERS_ID_HEX,
+             ACCUMULATOR_ID_HEX,
+             REDEMPTION_STATE_ID_HEX,
+             CLOCK_ID_HEX,
+         }) {
+        LOGOS_ASSERT_TRUE(context.moduleCalledWith(
+            "lez_core",
+            "get_account_public",
+            QVariantList{QVariant(QString::fromStdString(account_id))}));
+    }
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_current_global_state"), 1);
+}
+
+LOGOS_TEST(current_global_state_maps_missing_globals_to_not_initialized) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockModule("lez_core", "get_account_public").returns("");
+
+    const LogosMap response = module.currentGlobalState();
+
+    assertError(response, "not_initialized");
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 4);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_current_global_state"), 0);
+}
+
+LOGOS_TEST(current_global_state_maps_malformed_reads_to_account_read_failed) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockModule("lez_core", "get_account_public").returns("not-json");
+
+    const LogosMap response = module.currentGlobalState();
+
+    assertError(response, "account_read_failed");
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 4);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_current_global_state"), 0);
+}
+
+LOGOS_TEST(current_global_state_preserves_stable_projection_errors) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::string projection_response = failureEnvelope("invalid_clock");
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockCFunction("stablecoin_current_global_state").returns(projection_response);
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+
+    const LogosMap response = module.currentGlobalState();
+
+    assertError(response, "invalid_clock");
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 4);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_current_global_state"), 1);
 }
