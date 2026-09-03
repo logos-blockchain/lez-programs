@@ -3,20 +3,86 @@
     reason = "integration fixtures use fixed balances to assert AMM state transitions"
 )]
 
+use std::collections::HashMap;
+
 use amm_core::{PoolDefinition, FEE_TIER_BPS_30, MINIMUM_LIQUIDITY};
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
+use integration_tests::{
+    private_authorized_init_identity, private_authorized_update_identity,
+    private_foreign_init_identity, GroupOwner,
+};
 use lee::{
     error::LeeError,
+    execute_and_prove,
+    privacy_preserving_transaction::{
+        circuit::ProgramWithDependencies, Message, PrivacyPreservingTransaction, WitnessSet,
+    },
+    program::Program,
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use lee_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::{
+    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
+    encryption::ViewingPublicKey,
+    Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey, NullifierSecretKey,
+};
 use token_core::{TokenDefinition, TokenHolding};
 
 struct Keys;
 struct Ids;
 struct Balances;
 struct Accounts;
+struct PrivateKeys;
+
+impl PrivateKeys {
+    fn user_a_nsk() -> NullifierSecretKey {
+        [161; 32]
+    }
+
+    fn user_a_npk() -> NullifierPublicKey {
+        NullifierPublicKey::from(&Self::user_a_nsk())
+    }
+
+    fn user_a_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[171; 32], &[172; 32])
+    }
+
+    fn user_a_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::user_a_npk(), &Self::user_a_vpk(), 0)
+    }
+
+    fn user_lp_nsk() -> NullifierSecretKey {
+        [162; 32]
+    }
+
+    fn user_lp_npk() -> NullifierPublicKey {
+        NullifierPublicKey::from(&Self::user_lp_nsk())
+    }
+
+    fn user_lp_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[173; 32], &[174; 32])
+    }
+
+    fn user_lp_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::user_lp_npk(), &Self::user_lp_vpk(), 0)
+    }
+
+    fn user_b_nsk() -> NullifierSecretKey {
+        [163; 32]
+    }
+
+    fn user_b_npk() -> NullifierPublicKey {
+        NullifierPublicKey::from(&Self::user_b_nsk())
+    }
+
+    fn user_b_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[175; 32], &[176; 32])
+    }
+
+    fn user_b_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::user_b_npk(), &Self::user_b_vpk(), 0)
+    }
+}
 
 /// Canonical test namespace nonce: the owner's default (all-zero) AMM instance.
 const TEST_NONCE: [u8; 32] = [0; 32];
@@ -2200,25 +2266,16 @@ fn amm_create_price_observations_without_current_tick_account_fails() {
 /// Advances the canonical 1-block clock to `timestamp` by writing the clock account directly into
 /// state. `RecordTick` reads this account (`CLOCK_01_PROGRAM_ACCOUNT_ID`), so the TWAP tests use it
 /// to simulate the passage of time between observations.
-///
-/// rc6 moved the clock program out of `lee` into the separate system-programs crate (gated behind
-/// the guest-building `artifacts` feature), so the clock can no longer be ticked by submitting a
-/// real clock transaction here. Instead we set the account state directly via
-/// `force_insert_account`, matching how the upstream rc6 state-machine tests seed accounts.
 #[cfg(test)]
 fn advance_clock(state: &mut V03State, timestamp: u64) {
+    let clock_id: lee_core::program::ProgramId = [42_u32; 8];
     let data = ClockAccountData {
         block_id: 0,
         timestamp,
     }
     .to_bytes();
     let clock_account = Account {
-        // The real CLOCK_01 system account is owned by the clock program, not the
-        // default program (see lee `system_accounts::clock_account`). A default owner
-        // makes the spel-framework output filter drop the (unchanged, unclaimed)
-        // clock post-state, which v0.2.1's DeclaredAccountMissingFromOutput invariant
-        // then rejects. Use a non-default placeholder owner, as the oracle fixtures do.
-        program_owner: [8u32; 8],
+        program_owner: clock_id,
         data: Data::try_from(data).expect("clock account data fits"),
         ..Account::default()
     };
@@ -3847,4 +3904,1746 @@ fn amm_add_liquidity_after_fee_accrual() {
         fungible_total_supply(&state.get_account_by_id(Ids::token_lp_definition())),
         6_437
     );
+}
+
+fn amm_program_instance() -> Program {
+    Program::new(amm_methods::AMM_ELF.to_vec().into()).expect("valid amm ELF")
+}
+
+fn token_program_instance() -> Program {
+    Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF")
+}
+
+fn twap_oracle_program_instance() -> Program {
+    Program::new(twap_oracle_methods::TWAP_ORACLE_ELF.to_vec().into())
+        .expect("valid twap oracle ELF")
+}
+
+fn amm_with_deps() -> ProgramWithDependencies {
+    ProgramWithDependencies::new(
+        amm_program_instance(),
+        HashMap::from([
+            (Ids::token_program(), token_program_instance()),
+            (Ids::twap_oracle_program(), twap_oracle_program_instance()),
+        ]),
+    )
+}
+
+#[test]
+fn amm_swap_a_to_b_private_user_holding() {
+    let mut state = state_for_amm_tests();
+
+    let user_a_nsk = PrivateKeys::user_a_nsk();
+    let user_a_vpk = PrivateKeys::user_a_vpk();
+    let user_a_id = PrivateKeys::user_a_id();
+    let user_a_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::user_a_init(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_a_id),
+    };
+    state = state.with_private_accounts([(
+        Commitment::new(&user_a_id, &user_a_account),
+        Nullifier::for_account_initialization(&user_a_id),
+    )]);
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_a_id, &user_a_account))
+        .expect("user_a's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
+    let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
+    // The output recipient only receives: `user_output_holding` is `#[account(mut)]`, not a
+    // signer. Passing it unauthorized keeps this test honest about the minimal signer set.
+    let user_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), false, Ids::user_b());
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+    // Token A is the swap input, so the Token A protocol-fee holding is the one the swap may
+    // credit. It is uninitialized here — `protocol_fee_bps` is 0 in these fixtures.
+    let protocol_fee_holding_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::protocol_fee_holding_a()),
+        false,
+        Ids::protocol_fee_holding_a(),
+    );
+
+    let instruction = amm_core::Instruction::SwapExactInput {
+        swap_amount_in: Balances::swap_amount_in(),
+        min_amount_out: Balances::swap_min_out(),
+        deadline: u64::MAX,
+    };
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            user_a_pre,
+            user_b_pre,
+            current_tick_pre,
+            clock_pre,
+            protocol_fee_holding_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(user_a_nsk, &user_a_vpk, membership_proof),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    )
+    .expect("SwapExactInput with a private user holding must succeed now that the clock account is properly owned");
+
+    // The private input holding is the only authorizing party — no public nonces, no keys.
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_swap_2()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_swap_2()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_swap_2()
+    );
+    // user_b is credited without signing, so it matches the public-swap fixture exactly —
+    // nonce included.
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding_swap_2()
+    );
+
+    let user_a_nonce_after =
+        Nonce::private_account_nonce_init(&user_a_id).private_account_nonce_increment(&user_a_nsk);
+    let new_user_a_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::user_a_swap_2(),
+        }),
+        nonce: user_a_nonce_after,
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&user_a_id, &new_user_a_account))
+        .is_some());
+}
+
+/// Swap that pays out to a brand-new `PrivateForeignInit` destination is still not expressible on
+/// v0.2.4 — but no longer for the signer reason (PR #621 authorizes foreign-init). It is now
+/// blocked by AMM's own program-level precondition that the output holding must already be owned
+/// by the configured Token Program (i.e. already initialized). **[Open — Programs]**
+#[test]
+fn amm_swap_a_to_b_private_unauthorized_destination_is_not_expressible() {
+    let state = state_for_amm_tests();
+
+    let user_b_npk = PrivateKeys::user_b_npk();
+    let user_b_vpk = PrivateKeys::user_b_vpk();
+    let user_b_id = PrivateKeys::user_b_id();
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
+    let user_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
+    // Foreign-init destination pre-state is authorized on v0.2.4 (PR #621); the swap is still
+    // rejected, but by AMM's destination-must-already-exist precondition below.
+    let user_b_pre = AccountWithMetadata::new(Account::default(), true, user_b_id);
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+    // Token A is the swap input, so the Token A protocol-fee holding is the one the swap may
+    // credit. It is uninitialized here — `protocol_fee_bps` is 0 in these fixtures.
+    let protocol_fee_holding_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::protocol_fee_holding_a()),
+        false,
+        Ids::protocol_fee_holding_a(),
+    );
+
+    let instruction = amm_core::Instruction::SwapExactInput {
+        swap_amount_in: Balances::swap_amount_in(),
+        min_amount_out: Balances::swap_min_out(),
+        deadline: u64::MAX,
+    };
+
+    let result = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            user_a_pre,
+            user_b_pre,
+            current_tick_pre,
+            clock_pre,
+            protocol_fee_holding_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_foreign_init_identity(user_b_npk, &user_b_vpk, state.commitment_root()),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    );
+
+    let err = result.expect_err(
+        "SwapExactInput paying out to a brand-new destination must be rejected: AMM requires the \
+         output holding to already be owned by the configured Token Program",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("must be owned by the configured Token Program"),
+        "expected AMM's destination-must-already-exist precondition on user_holding_b, got a \
+         different error: {message}"
+    );
+}
+
+/// Swap that pays out to `PrivateAuthorizedInit` is prohibited. Payment
+/// is only permitted to already initialized accounts.
+#[test]
+fn amm_swap_a_to_b_private_authorized_init_destination_is_not_expressible() {
+    let state = state_for_amm_tests();
+
+    let user_b_nsk = PrivateKeys::user_b_nsk();
+    let user_b_vpk = PrivateKeys::user_b_vpk();
+    let user_b_id = PrivateKeys::user_b_id();
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
+    let user_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
+    let user_b_pre = AccountWithMetadata::new(Account::default(), true, user_b_id);
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+    // Token A is the swap input, so the Token A protocol-fee holding is the one the swap may
+    // credit. It is uninitialized here — `protocol_fee_bps` is 0 in these fixtures.
+    let protocol_fee_holding_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::protocol_fee_holding_a()),
+        false,
+        Ids::protocol_fee_holding_a(),
+    );
+
+    let instruction = amm_core::Instruction::SwapExactInput {
+        swap_amount_in: Balances::swap_amount_in(),
+        min_amount_out: Balances::swap_min_out(),
+        deadline: u64::MAX,
+    };
+
+    let result = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            user_a_pre,
+            user_b_pre,
+            current_tick_pre,
+            clock_pre,
+            protocol_fee_holding_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_init_identity(user_b_nsk, &user_b_vpk, state.commitment_root()),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    );
+
+    let err = result.expect_err(
+        "SwapExactInput must be rejected by the AMM program itself: user_holding_b must already \
+         be initialized and owned by the configured Token Program before any chained call or the \
+         privacy-preserving circuit is ever reached",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("User Token B holding must be owned by the configured Token Program"),
+        "expected the AMM program's own initialized-destination precondition, got a different \
+         error: {message}"
+    );
+}
+
+#[test]
+fn amm_swap_exact_output_private_user_holding() {
+    let mut state = state_for_amm_tests();
+
+    let user_a_nsk = PrivateKeys::user_a_nsk();
+    let user_a_vpk = PrivateKeys::user_a_vpk();
+    let user_a_id = PrivateKeys::user_a_id();
+    let user_a_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::user_a_init(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_a_id),
+    };
+    state = state.with_private_accounts([(
+        Commitment::new(&user_a_id, &user_a_account),
+        Nullifier::for_account_initialization(&user_a_id),
+    )]);
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_a_id, &user_a_account))
+        .expect("user_a's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
+    let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
+    // The output recipient only receives: `user_output_holding` is `#[account(mut)]`, not a
+    // signer. Passing it unauthorized keeps this test honest about the minimal signer set.
+    let user_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), false, Ids::user_b());
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+    // Token A is the swap input, so the Token A protocol-fee holding is the one the swap may
+    // credit. It is uninitialized here — `protocol_fee_bps` is 0 in these fixtures.
+    let protocol_fee_holding_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::protocol_fee_holding_a()),
+        false,
+        Ids::protocol_fee_holding_a(),
+    );
+
+    let instruction = amm_core::Instruction::SwapExactOutput {
+        exact_amount_out: Balances::swap_min_out(),
+        max_amount_in: Balances::swap_amount_in(),
+        deadline: u64::MAX,
+    };
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            user_a_pre,
+            user_b_pre,
+            current_tick_pre,
+            clock_pre,
+            protocol_fee_holding_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(user_a_nsk, &user_a_vpk, membership_proof),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    )
+    .expect("SwapExactOutput with a private user holding must succeed now that the clock account is properly owned");
+
+    // The private input holding is the only authorizing party — no public nonces, no keys.
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    // exact_amount_out = 200 (token B), max_amount_in = 1_000 (token A cap), 30 bps fee, against
+    // the fresh pool's initial reserves (5_000 A / 2_500 B):
+    //   effective_in_min = ceil(5_000 * 200 / (2_500 - 200))     = ceil(1_000_000 / 2_300) = 435
+    //   deposit_amount   = ceil(435 * 10_000 / (10_000 - 30))    = ceil(4_350_000 / 9_970)  = 437
+    let deposit_amount = 437_u128;
+    let withdraw_amount = Balances::swap_min_out();
+
+    let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    assert_eq!(pool.reserve_a, Balances::vault_a_init() + deposit_amount);
+    assert_eq!(pool.reserve_b, Balances::vault_b_init() - withdraw_amount);
+    match TokenHolding::try_from(&state.get_account_by_id(Ids::vault_a()).data)
+        .expect("valid holding")
+    {
+        TokenHolding::Fungible { balance, .. } => {
+            assert_eq!(balance, Balances::vault_a_init() + deposit_amount);
+        }
+        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
+            panic!("expected Fungible vault holding")
+        }
+    }
+    match TokenHolding::try_from(&state.get_account_by_id(Ids::vault_b()).data)
+        .expect("valid holding")
+    {
+        TokenHolding::Fungible { balance, .. } => {
+            assert_eq!(balance, Balances::vault_b_init() - withdraw_amount);
+        }
+        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
+            panic!("expected Fungible vault holding")
+        }
+    }
+    // Credited without signing, so the nonce is untouched.
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_b_definition(),
+                balance: Balances::user_b_init() + withdraw_amount,
+            }),
+            nonce: Nonce(0),
+        }
+    );
+
+    let user_a_nonce_after =
+        Nonce::private_account_nonce_init(&user_a_id).private_account_nonce_increment(&user_a_nsk);
+    let new_user_a_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::user_a_init() - deposit_amount,
+        }),
+        nonce: user_a_nonce_after,
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&user_a_id, &new_user_a_account))
+        .is_some());
+}
+
+#[test]
+fn amm_add_liquidity_private_lp_holding() {
+    let mut state = state_for_amm_tests();
+
+    let user_lp_nsk = PrivateKeys::user_lp_nsk();
+    let user_lp_vpk = PrivateKeys::user_lp_vpk();
+    let user_lp_id = PrivateKeys::user_lp_id();
+    let user_lp_initial_balance = 500_u128;
+    let user_lp_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_lp_definition(),
+            balance: user_lp_initial_balance,
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_lp_id),
+    };
+    state = state.with_private_accounts([(
+        Commitment::new(&user_lp_id, &user_lp_account),
+        Nullifier::for_account_initialization(&user_lp_id),
+    )]);
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_lp_id, &user_lp_account))
+        .expect("user_lp's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
+    let token_lp_definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        false,
+        Ids::token_lp_definition(),
+    );
+    let user_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
+    let user_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
+    let user_lp_pre = AccountWithMetadata::new(user_lp_account, true, user_lp_id);
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::AddLiquidity {
+        min_amount_liquidity: Balances::add_min_lp(),
+        max_amount_to_add_token_a: Balances::add_max_a(),
+        max_amount_to_add_token_b: Balances::add_max_b(),
+        deadline: u64::MAX,
+    };
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            token_lp_definition_pre,
+            user_a_pre,
+            user_b_pre,
+            user_lp_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(user_lp_nsk, &user_lp_vpk, membership_proof),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    )
+    .expect("AddLiquidity with a private LP holding must succeed now that the clock account is properly owned");
+
+    let message = Message::from_circuit_output(
+        vec![
+            current_nonce(&state, Ids::user_a()),
+            current_nonce(&state, Ids::user_b()),
+        ],
+        output,
+    );
+    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::user_a(), &Keys::user_b()]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_add()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_add()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_add()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        Accounts::token_lp_definition_add()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_a()),
+        Accounts::user_a_holding_add()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding_add()
+    );
+
+    // Minted LP = post-add total supply - pre-add total supply, independent of who holds it.
+    let minted_lp = Balances::token_lp_supply_add() - Balances::pool_lp_supply_init();
+    let user_lp_nonce_after = Nonce::private_account_nonce_init(&user_lp_id)
+        .private_account_nonce_increment(&user_lp_nsk);
+    let new_user_lp_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_lp_definition(),
+            balance: user_lp_initial_balance + minted_lp,
+        }),
+        nonce: user_lp_nonce_after,
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&user_lp_id, &new_user_lp_account))
+        .is_some());
+}
+
+#[test]
+fn amm_remove_liquidity_private_lp_holding() {
+    let mut state = state_for_amm_tests();
+
+    let user_lp_nsk = PrivateKeys::user_lp_nsk();
+    let user_lp_vpk = PrivateKeys::user_lp_vpk();
+    let user_lp_id = PrivateKeys::user_lp_id();
+    let user_lp_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_lp_definition(),
+            balance: Balances::remove_lp(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_lp_id),
+    };
+    state = state.with_private_accounts([(
+        Commitment::new(&user_lp_id, &user_lp_account),
+        Nullifier::for_account_initialization(&user_lp_id),
+    )]);
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_lp_id, &user_lp_account))
+        .expect("user_lp's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
+    let token_lp_definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        false,
+        Ids::token_lp_definition(),
+    );
+    let user_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), false, Ids::user_a());
+    let user_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), false, Ids::user_b());
+    let user_lp_pre = AccountWithMetadata::new(user_lp_account, true, user_lp_id);
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::RemoveLiquidity {
+        remove_liquidity_amount: Balances::remove_lp(),
+        min_amount_to_remove_token_a: Balances::remove_min_a(),
+        min_amount_to_remove_token_b: Balances::remove_min_b(),
+        deadline: u64::MAX,
+    };
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            token_lp_definition_pre,
+            user_a_pre,
+            user_b_pre,
+            user_lp_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(user_lp_nsk, &user_lp_vpk, membership_proof),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    )
+    .expect("RemoveLiquidity with a private LP holding must succeed now that the clock account is properly owned");
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_remove()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_remove()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_remove()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        Accounts::token_lp_definition_remove()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_a()),
+        Accounts::user_a_holding_remove()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding_remove()
+    );
+
+    // user_lp burned its entire private balance (remove_liquidity_amount == its full holding).
+    let user_lp_nonce_after = Nonce::private_account_nonce_init(&user_lp_id)
+        .private_account_nonce_increment(&user_lp_nsk);
+    let new_user_lp_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_lp_definition(),
+            balance: 0,
+        }),
+        nonce: user_lp_nonce_after,
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&user_lp_id, &new_user_lp_account))
+        .is_some());
+}
+
+#[test]
+fn amm_remove_liquidity_private_new_user_holdings_is_not_expressible() {
+    let state = state_for_amm_tests();
+
+    let user_a_npk = PrivateKeys::user_a_npk();
+    let user_a_vpk = PrivateKeys::user_a_vpk();
+    let user_a_id = PrivateKeys::user_a_id();
+    let user_b_npk = PrivateKeys::user_b_npk();
+    let user_b_vpk = PrivateKeys::user_b_vpk();
+    let user_b_id = PrivateKeys::user_b_id();
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
+    let token_lp_definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        false,
+        Ids::token_lp_definition(),
+    );
+    // Foreign-init destination pre-states are authorized on v0.2.4 (PR #621), matching the swap
+    // test above. Passing them unauthorized would make the circuit reject the transaction on its
+    // own, so removing AMM's guard below would leave this test negative for the wrong reason.
+    let user_a_pre = AccountWithMetadata::new(Account::default(), true, user_a_id);
+    let user_b_pre = AccountWithMetadata::new(Account::default(), true, user_b_id);
+    let user_lp_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::user_lp()),
+        true,
+        Ids::user_lp(),
+    );
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::RemoveLiquidity {
+        remove_liquidity_amount: Balances::remove_lp(),
+        min_amount_to_remove_token_a: Balances::remove_min_a(),
+        min_amount_to_remove_token_b: Balances::remove_min_b(),
+        deadline: u64::MAX,
+    };
+
+    let result = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            token_lp_definition_pre,
+            user_a_pre,
+            user_b_pre,
+            user_lp_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_foreign_init_identity(user_a_npk, &user_a_vpk, state.commitment_root()),
+            private_foreign_init_identity(user_b_npk, &user_b_vpk, state.commitment_root()),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    );
+
+    let err = result.expect_err(
+        "RemoveLiquidity must be rejected by the AMM program itself: user_holding_a/b must \
+         already be initialized and owned by the configured Token Program before any chained \
+         call or the privacy-preserving circuit is ever reached",
+    );
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("User Token A holding must be owned by the configured Token Program"),
+        "expected the AMM program's own initialized-destination precondition, got a different \
+         error: {message}"
+    );
+}
+
+#[test]
+fn amm_add_liquidity_private_user_holdings() {
+    let mut state = state_for_amm_tests();
+
+    let user_a_nsk = PrivateKeys::user_a_nsk();
+    let user_a_vpk = PrivateKeys::user_a_vpk();
+    let user_a_id = PrivateKeys::user_a_id();
+    let user_a_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::user_a_init(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_a_id),
+    };
+
+    let user_b_nsk = PrivateKeys::user_b_nsk();
+    let user_b_vpk = PrivateKeys::user_b_vpk();
+    let user_b_id = PrivateKeys::user_b_id();
+    let user_b_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_b_definition(),
+            balance: Balances::user_b_init(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_b_id),
+    };
+
+    state = state.with_private_accounts([
+        (
+            Commitment::new(&user_a_id, &user_a_account),
+            Nullifier::for_account_initialization(&user_a_id),
+        ),
+        (
+            Commitment::new(&user_b_id, &user_b_account),
+            Nullifier::for_account_initialization(&user_b_id),
+        ),
+    ]);
+    let user_a_membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_a_id, &user_a_account))
+        .expect("user_a's commitment must be in the set");
+    let user_b_membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&user_b_id, &user_b_account))
+        .expect("user_b's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
+    let token_lp_definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        false,
+        Ids::token_lp_definition(),
+    );
+    let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
+    let user_b_pre = AccountWithMetadata::new(user_b_account, true, user_b_id);
+    let user_lp_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::user_lp()),
+        false,
+        Ids::user_lp(),
+    );
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::AddLiquidity {
+        min_amount_liquidity: Balances::add_min_lp(),
+        max_amount_to_add_token_a: Balances::add_max_a(),
+        max_amount_to_add_token_b: Balances::add_max_b(),
+        deadline: u64::MAX,
+    };
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            token_lp_definition_pre,
+            user_a_pre,
+            user_b_pre,
+            user_lp_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(user_a_nsk, &user_a_vpk, user_a_membership_proof),
+            private_authorized_update_identity(user_b_nsk, &user_b_vpk, user_b_membership_proof),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    )
+    .expect("AddLiquidity with private deposit holdings must succeed now that the clock account is properly owned");
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_add()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_add()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_add()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        Accounts::token_lp_definition_add()
+    );
+    // user_lp is public and already seeded by state_for_amm_tests() (Accounts::user_lp_holding(),
+    // balance Balances::user_lp_init()); it just receives the same minted LP as the all-public
+    // amm_add_liquidity test, landing on the same post-state.
+    assert_eq!(
+        state.get_account_by_id(Ids::user_lp()),
+        Accounts::user_lp_holding_add()
+    );
+
+    let user_a_nonce_after =
+        Nonce::private_account_nonce_init(&user_a_id).private_account_nonce_increment(&user_a_nsk);
+    let new_user_a_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::user_a_init() - Balances::add_max_a(),
+        }),
+        nonce: user_a_nonce_after,
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&user_a_id, &new_user_a_account))
+        .is_some());
+
+    let user_b_nonce_after =
+        Nonce::private_account_nonce_init(&user_b_id).private_account_nonce_increment(&user_b_nsk);
+    let new_user_b_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_b_definition(),
+            balance: Balances::user_b_init() - Balances::add_max_b(),
+        }),
+        nonce: user_b_nonce_after,
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&user_b_id, &new_user_b_account))
+        .is_some());
+}
+
+/// Initialized pool mints LP tokens to `PrivateAuthorizedInit`.
+#[test]
+fn amm_new_definition_private_initial_lp_holder() {
+    let mut state = state_for_amm_tests_with_new_def();
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
+
+    let user_lp_nsk = PrivateKeys::user_lp_nsk();
+    let user_lp_vpk = PrivateKeys::user_lp_vpk();
+    let user_lp_id = PrivateKeys::user_lp_id();
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
+    let token_lp_definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        false,
+        Ids::token_lp_definition(),
+    );
+    let lp_lock_holding_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::lp_lock_holding()),
+        false,
+        Ids::lp_lock_holding(),
+    );
+    let user_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
+    let user_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
+    let user_lp_pre = AccountWithMetadata::new(Account::default(), true, user_lp_id);
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::NewDefinition {
+        token_a_amount: Balances::vault_a_init(),
+        token_b_amount: Balances::vault_b_init(),
+        deadline: u64::MAX,
+    };
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            token_lp_definition_pre,
+            lp_lock_holding_pre,
+            user_a_pre,
+            user_b_pre,
+            user_lp_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_init_identity(user_lp_nsk, &user_lp_vpk, state.commitment_root()),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    )
+    .expect("NewDefinition with a private initial LP holder must succeed: the program's own precondition allows a fresh, authorized user_holding_lp");
+
+    let message = Message::from_circuit_output(
+        vec![
+            current_nonce(&state, Ids::user_a()),
+            current_nonce(&state, Ids::user_b()),
+        ],
+        output,
+    );
+    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::user_a(), &Keys::user_b()]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.get_account_by_id(Ids::pool_definition()),
+        Accounts::pool_definition_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_a()),
+        Accounts::vault_a_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::vault_b()),
+        Accounts::vault_b_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        Accounts::token_lp_definition_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::lp_lock_holding()),
+        Accounts::lp_lock_holding_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_a()),
+        Accounts::user_a_holding_new_init()
+    );
+    assert_eq!(
+        state.get_account_by_id(Ids::user_b()),
+        Accounts::user_b_holding_new_init()
+    );
+
+    let current_tick = state.get_account_by_id(Ids::current_tick_account());
+    assert_eq!(current_tick.program_owner, Ids::twap_oracle_program());
+    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(&current_tick.data)
+        .expect("current tick account must hold a valid CurrentTickAccount");
+    let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
+        Balances::vault_a_init(),
+        Balances::vault_b_init(),
+    ));
+    assert_eq!(tick_account.tick, expected_tick);
+
+    // A fresh PrivateAuthorizedInit account's nonce starts at private_account_nonce_init, not
+    // incremented — this is its first-ever commitment, not an update to an existing one.
+    let new_user_lp_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_lp_definition(),
+            balance: Balances::lp_user_init(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_lp_id),
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&user_lp_id, &new_user_lp_account))
+        .is_some());
+}
+
+/// Since logos-execution-zone PR #621, pool creation CAN mint the initial LP tokens to a
+/// `PrivateForeignInit` holder (only the holder's `npk`, no `nsk`): its fresh pre-state is now
+/// `is_authorized == true`, satisfying the guest's signer requirement on `user_holding_lp`.
+/// (Previously not expressible.)
+#[test]
+fn amm_new_definition_foreign_init_lp_holder() {
+    let mut state = state_for_amm_tests_with_new_def();
+    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
+    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
+
+    let user_lp_npk = PrivateKeys::user_lp_npk();
+    let user_lp_vpk = PrivateKeys::user_lp_vpk();
+    let user_lp_id = PrivateKeys::user_lp_id();
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let pool_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::pool_definition()),
+        false,
+        Ids::pool_definition(),
+    );
+    let vault_a_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_a()),
+        false,
+        Ids::vault_a(),
+    );
+    let vault_b_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::vault_b()),
+        false,
+        Ids::vault_b(),
+    );
+    let token_lp_definition_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::token_lp_definition()),
+        false,
+        Ids::token_lp_definition(),
+    );
+    let lp_lock_holding_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::lp_lock_holding()),
+        false,
+        Ids::lp_lock_holding(),
+    );
+    let user_a_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
+    let user_b_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
+    let user_lp_pre = AccountWithMetadata::new(Account::default(), true, user_lp_id);
+    let current_tick_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::current_tick_account()),
+        false,
+        Ids::current_tick_account(),
+    );
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
+    let instruction = amm_core::Instruction::NewDefinition {
+        token_a_amount: Balances::vault_a_init(),
+        token_b_amount: Balances::vault_b_init(),
+        deadline: u64::MAX,
+    };
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            config_pre,
+            pool_pre,
+            vault_a_pre,
+            vault_b_pre,
+            token_lp_definition_pre,
+            lp_lock_holding_pre,
+            user_a_pre,
+            user_b_pre,
+            user_lp_pre,
+            current_tick_pre,
+            clock_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_foreign_init_identity(user_lp_npk, &user_lp_vpk, state.commitment_root()),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    )
+    .expect(
+        "NewDefinition minting the initial LP tokens to a fresh, authorized PrivateForeignInit \
+         user_holding_lp must succeed",
+    );
+
+    let message = Message::from_circuit_output(
+        vec![
+            current_nonce(&state, Ids::user_a()),
+            current_nonce(&state, Ids::user_b()),
+        ],
+        output,
+    );
+    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::user_a(), &Keys::user_b()]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    // The foreign-init LP holder is created as a fresh private account: its first-ever commitment
+    // (nonce at private_account_nonce_init) must land in the commitment set.
+    let new_user_lp_account = Account {
+        program_owner: Ids::token_program(),
+        balance: 0,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_lp_definition(),
+            balance: Balances::lp_user_init(),
+        }),
+        nonce: Nonce::private_account_nonce_init(&user_lp_id),
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&user_lp_id, &new_user_lp_account))
+        .is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Privacy coverage for the AMM's namespace/admin surface
+//
+// `Initialize`, `UpdateConfig` and `WithdrawProtocolFees` all gate on a caller-controlled
+// signer account (the namespace `owner`, the config's admin `authority`) that is never
+// dereferenced for data — only its account id and `is_authorized` matter. That is exactly the
+// shape a private identity can fill, so these check that an AMM instance can be owned and
+// administered without a public account.
+// ---------------------------------------------------------------------------
+
+/// The private namespace owner / admin identities used below. Kept separate from
+/// [`PrivateKeys`] (which models token holdings) because these are bare signing identities
+/// with no token data at all.
+struct PrivateAdmins;
+
+impl PrivateAdmins {
+    fn owner_nsk() -> NullifierSecretKey {
+        [164; 32]
+    }
+
+    fn owner_npk() -> NullifierPublicKey {
+        NullifierPublicKey::from(&Self::owner_nsk())
+    }
+
+    fn owner_vpk() -> ViewingPublicKey {
+        ViewingPublicKey::from_seed(&[177; 32], &[178; 32])
+    }
+
+    fn owner_id() -> AccountId {
+        AccountId::for_regular_private_account(&Self::owner_npk(), &Self::owner_vpk(), 0)
+    }
+}
+
+/// An [`Accounts::config`] variant whose admin `authority` is `authority` (and whose protocol fee
+/// is `protocol_fee_bps`), so the admin-gated instructions can be driven by a private identity.
+fn config_with_authority(authority: AccountId, protocol_fee_bps: u128) -> Account {
+    Account {
+        program_owner: Ids::amm_program(),
+        balance: 0_u128,
+        data: Data::from(&amm_core::AmmConfig {
+            token_program_id: Ids::token_program(),
+            twap_oracle_program_id: Ids::twap_oracle_program(),
+            authority,
+            swap_fee_bps: Balances::fee_tier(),
+            protocol_fee_bps,
+        }),
+        nonce: Nonce(0),
+    }
+}
+
+/// REGULAR: a private account claims an AMM namespace. `Initialize`'s `owner` is the account
+/// whose signature squat-proofs the namespace and whose id seeds the config PDA — so this is the
+/// case of an AMM instance whose owner is never revealed on chain. The config PDA itself stays
+/// public (it is derived with the public-PDA formula), which is what makes this expressible at
+/// all.
+#[test]
+fn amm_initialize_private_namespace_owner() {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+
+    let owner_id = PrivateAdmins::owner_id();
+    let config_id = amm_core::compute_config_pda(Ids::amm_program(), owner_id, TEST_NONCE);
+
+    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
+    let config_pre = AccountWithMetadata::new(Account::default(), false, config_id);
+
+    let instruction = amm_core::Instruction::Initialize {
+        nonce: TEST_NONCE,
+        token_program_id: Ids::token_program(),
+        twap_oracle_program_id: Ids::twap_oracle_program(),
+        authority: Ids::admin(),
+        swap_fee_bps: Balances::fee_tier(),
+        protocol_fee_bps: 0,
+    };
+
+    let (output, proof) = execute_and_prove(
+        vec![owner_pre, config_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            private_authorized_init_identity(
+                PrivateAdmins::owner_nsk(),
+                &PrivateAdmins::owner_vpk(),
+                state.commitment_root(),
+            ),
+            InputAccountIdentity::Public,
+        ],
+        &amm_program_instance().into(),
+    )
+    .expect("Initialize signed by a private namespace owner must succeed");
+
+    // No public account signs: the only authorizing party is the private owner.
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    let config = amm_core::AmmConfig::try_from(&state.get_account_by_id(config_id).data)
+        .expect("config account must hold a valid AmmConfig");
+    assert_eq!(config.token_program_id, Ids::token_program());
+    assert_eq!(config.twap_oracle_program_id, Ids::twap_oracle_program());
+    assert_eq!(config.authority, Ids::admin());
+    assert_eq!(config.swap_fee_bps, Balances::fee_tier());
+
+    // The namespace-owner marker is claimed into the AMM and lives on as a private commitment,
+    // so the owner never appears in public state.
+    let owner_expected = Account {
+        program_owner: Ids::amm_program(),
+        nonce: Nonce::private_account_nonce_init(&owner_id),
+        ..Account::default()
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&owner_id, &owner_expected))
+        .is_some());
+    assert_eq!(state.get_account_by_id(owner_id), Account::default());
+}
+
+/// GROUP: the config's admin `authority` is a group-owned account, so rotating the AMM's admin
+/// requires a member holding the Group Master Secret (obtained through the real seal/unseal
+/// handshake) rather than any single key.
+#[test]
+fn amm_update_config_group_owned_admin_authority() {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+
+    let alice = GroupOwner::new([51_u8; 32]);
+    let bob_nsk = alice.admit_member();
+    state.force_insert_account(Ids::config(), config_with_authority(alice.id, 0));
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let authority_pre = AccountWithMetadata::new(Account::default(), true, alice.id);
+
+    let new_authority = Ids::admin();
+    let instruction = amm_core::Instruction::UpdateConfig { new_authority };
+
+    let (output, proof) = execute_and_prove(
+        vec![config_pre, authority_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+        ],
+        &amm_program_instance().into(),
+    )
+    .expect("UpdateConfig signed by a group-owned admin must succeed");
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    // The handoff went through, and the group admin left no public trace.
+    assert_eq!(config_data(&state).authority, new_authority);
+    assert_eq!(state.get_account_by_id(alice.id), Account::default());
+}
+
+/// REGULAR, CHAIN: accrued protocol fees are withdrawn into an already-shielded private holding,
+/// through the chained `Token::Transfer` under the protocol-fee PDA's seed. The destination must
+/// already exist (the same precondition the swap path enforces), which an existing private
+/// holding satisfies.
+#[test]
+fn amm_withdraw_protocol_fees_to_private_destination() {
+    let mut state = state_for_amm_tests();
+    state.force_insert_account(Ids::config(), Accounts::config_with_protocol_fee(5_000));
+
+    // Accrue a protocol fee (6 Token A) via a public swap.
+    execute_swap_a_to_b(&mut state, 4_000, 200);
+    let accrued = fungible_balance(&state.get_account_by_id(Ids::protocol_fee_holding_a()));
+    assert_eq!(accrued, 6);
+
+    // An existing, already-shielded Token A holding is the withdrawal destination.
+    let dest_nsk = PrivateKeys::user_a_nsk();
+    let dest_vpk = PrivateKeys::user_a_vpk();
+    let dest_id = PrivateKeys::user_a_id();
+    let dest_account = Account {
+        nonce: Nonce::private_account_nonce_init(&dest_id),
+        ..Accounts::user_a_holding()
+    };
+    state = state.with_private_accounts([(
+        Commitment::new(&dest_id, &dest_account),
+        Nullifier::for_account_initialization(&dest_id),
+    )]);
+    let membership_proof = state
+        .get_proof_for_commitment(&Commitment::new(&dest_id, &dest_account))
+        .expect("the private destination's commitment must be in the set");
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let protocol_holding_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::protocol_fee_holding_a()),
+        false,
+        Ids::protocol_fee_holding_a(),
+    );
+    let destination_pre = AccountWithMetadata::new(dest_account, true, dest_id);
+    let admin_account = state.get_account_by_id(Ids::admin());
+    let admin_nonce = admin_account.nonce;
+    let admin_pre = AccountWithMetadata::new(admin_account, true, Ids::admin());
+
+    let instruction = amm_core::Instruction::WithdrawProtocolFees { amount: accrued };
+
+    let (output, proof) = execute_and_prove(
+        vec![config_pre, protocol_holding_pre, destination_pre, admin_pre],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_update_identity(dest_nsk, &dest_vpk, membership_proof),
+            InputAccountIdentity::Public,
+        ],
+        &amm_with_deps(),
+    )
+    .expect("WithdrawProtocolFees into an existing private destination must succeed");
+
+    let message = Message::from_circuit_output(vec![admin_nonce], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::admin()]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    // The public protocol-fee holding is drained; the credit is only visible as a commitment.
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::protocol_fee_holding_a())),
+        0
+    );
+    let funded = Account {
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::user_a_init() + accrued,
+        }),
+        nonce: Nonce::private_account_nonce_init(&dest_id)
+            .private_account_nonce_increment(&dest_nsk),
+        ..Accounts::user_a_holding()
+    };
+    assert!(state
+        .get_proof_for_commitment(&Commitment::new(&dest_id, &funded))
+        .is_some());
+}
+
+/// GROUP, CHAIN: the admin gate on `WithdrawProtocolFees` is satisfied by a group-owned
+/// authority — protocol revenue is controlled jointly, with no single admin key and no public
+/// admin account.
+#[test]
+fn amm_withdraw_protocol_fees_group_owned_admin_authority() {
+    let mut state = state_for_amm_tests();
+    let alice = GroupOwner::new([52_u8; 32]);
+    let bob_nsk = alice.admit_member();
+    state.force_insert_account(Ids::config(), config_with_authority(alice.id, 5_000));
+
+    execute_swap_a_to_b(&mut state, 4_000, 200);
+    let accrued = fungible_balance(&state.get_account_by_id(Ids::protocol_fee_holding_a()));
+    assert_eq!(accrued, 6);
+
+    let user_a_before = fungible_balance(&state.get_account_by_id(Ids::user_a()));
+
+    let config_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
+    let protocol_holding_pre = AccountWithMetadata::new(
+        state.get_account_by_id(Ids::protocol_fee_holding_a()),
+        false,
+        Ids::protocol_fee_holding_a(),
+    );
+    let destination_pre =
+        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), false, Ids::user_a());
+    let authority_pre = AccountWithMetadata::new(Account::default(), true, alice.id);
+
+    let instruction = amm_core::Instruction::WithdrawProtocolFees { amount: accrued };
+
+    let (output, proof) = execute_and_prove(
+        vec![
+            config_pre,
+            protocol_holding_pre,
+            destination_pre,
+            authority_pre,
+        ],
+        Program::serialize_instruction(instruction).unwrap(),
+        vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+        ],
+        &amm_with_deps(),
+    )
+    .expect("WithdrawProtocolFees signed by a group-owned admin must succeed");
+
+    let message = Message::from_circuit_output(vec![], output);
+    let witness_set = WitnessSet::for_message(&message, proof, &[]);
+    state
+        .transition_from_privacy_preserving_transaction(
+            &PrivacyPreservingTransaction::new(message, witness_set),
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::protocol_fee_holding_a())),
+        0
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::user_a())),
+        user_a_before + accrued
+    );
+    assert_eq!(state.get_account_by_id(alice.id), Account::default());
 }
