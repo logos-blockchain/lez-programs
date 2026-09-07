@@ -656,6 +656,13 @@ mod tests {
         }
     }
 
+    /// The namespace root (config PDA id) the plan tests derive pools under. A fixed
+    /// `(owner, nonce)` instance is enough — the tests only need it to be consistent between
+    /// `valid_config` and the expected `compute_pool_pda`.
+    fn config_id(amm: lee_core::program::ProgramId) -> AccountId {
+        compute_config_pda(amm, AccountId::new([0x07; 32]), [0; 32])
+    }
+
     /// A valid AMM config account read so `derive_pair` succeeds in plan tests.
     fn valid_config(amm: lee_core::program::ProgramId) -> AccountRead {
         let token_program = parse_program_id(&"01".repeat(32)).unwrap();
@@ -669,7 +676,7 @@ mod tests {
             }),
             ..Account::default()
         };
-        account_read(compute_config_pda(amm), &account)
+        account_read(config_id(amm), &account)
     }
 
     #[test]
@@ -797,8 +804,8 @@ mod tests {
             .map(|value| value.as_bool().unwrap())
             .collect();
 
-        let pool = compute_pool_pda(amm, canonical_a, canonical_b);
-        assert_eq!(ids[0], account_id_hex(compute_config_pda(amm)));
+        let pool = compute_pool_pda(amm, config_id(amm), canonical_a, canonical_b);
+        assert_eq!(ids[0], account_id_hex(config_id(amm)));
         assert_eq!(ids[1], account_id_hex(pool));
         // Canonical vaults, in canonical order.
         assert_eq!(
@@ -1062,10 +1069,10 @@ mod tests {
             serde_json::json!(words.iter().map(|w| u64::from(*w)).collect::<Vec<u64>>())
         };
         let assert_aligned = |ids: &[String], instruction: &serde_json::Value| {
-            assert_eq!(ids[0], account_id_hex(compute_config_pda(amm)));
+            assert_eq!(ids[0], account_id_hex(config_id(amm)));
             assert_eq!(
                 ids[1],
-                account_id_hex(compute_pool_pda(amm, token_a, token_b))
+                account_id_hex(compute_pool_pda(amm, config_id(amm), token_a, token_b))
             );
             assert_eq!(ids[2], account_id_hex(vault_a));
             assert_eq!(ids[3], account_id_hex(vault_b));
@@ -1363,10 +1370,10 @@ mod tests {
         ]);
         let assert_aligned =
             |ids: &[String], instruction: &serde_json::Value, signers: &serde_json::Value| {
-                assert_eq!(ids[0], account_id_hex(compute_config_pda(amm)));
+                assert_eq!(ids[0], account_id_hex(config_id(amm)));
                 assert_eq!(
                     ids[1],
-                    account_id_hex(compute_pool_pda(amm, token_a, token_b))
+                    account_id_hex(compute_pool_pda(amm, config_id(amm), token_a, token_b))
                 );
                 assert_eq!(ids[2], account_id_hex(vault_a));
                 assert_eq!(ids[3], account_id_hex(vault_b));
@@ -1475,10 +1482,10 @@ mod tests {
             .map(|v| v.as_str().unwrap().to_string())
             .collect::<Vec<String>>();
         assert_eq!(ids.len(), 6);
-        assert_eq!(ids[0], account_id_hex(compute_config_pda(amm)));
+        assert_eq!(ids[0], account_id_hex(config_id(amm)));
         assert_eq!(
             ids[1],
-            account_id_hex(compute_pool_pda(amm, token_a, token_b))
+            account_id_hex(compute_pool_pda(amm, config_id(amm), token_a, token_b))
         );
         assert_eq!(ids[2], account_id_hex(vault_a)); // pool's stored vaults
         assert_eq!(ids[3], account_id_hex(vault_b));

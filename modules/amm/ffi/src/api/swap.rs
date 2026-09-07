@@ -114,10 +114,10 @@ pub(super) fn resolve_pool(request: ResolvePoolRequest) -> Result<Value, String>
     }))
 }
 
-/// Derives the pool PDA for a swap pair (tokens in either order). Config-free —
-/// the pool address depends only on the AMM program id and the two token ids, so
-/// a caller that just needs to read the pool doesn't have to load the config
-/// first (unlike `swap_pair`, which also derives the config-dependent tick PDA).
+/// Derives the pool PDA for a swap pair (tokens in either order). The pool is now namespaced by
+/// its AMM instance, so the caller supplies the instance's `config` account: its id is the
+/// namespace root the pool PDA is derived under (only the config account is decoded — unlike
+/// `swap_pair`, no config-dependent tick PDA is derived, so `AmmConfig` need not be valid).
 pub(super) fn pool_id(request: PoolIdRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
@@ -125,8 +125,11 @@ pub(super) fn pool_id(request: PoolIdRequest) -> Result<Value, String> {
     if token_in == token_out {
         return Err(String::from("same_token_pair"));
     }
+    let (config_id, _) = decode_account(&request.config)?;
     let (token_a, token_b) = canonical_pair(token_in, token_out);
-    Ok(json!({ "poolId": account_id_hex(compute_pool_pda(amm_program, token_a, token_b)) }))
+    Ok(json!({
+        "poolId": account_id_hex(compute_pool_pda(amm_program, config_id, token_a, token_b))
+    }))
 }
 
 /// Prices a `SwapExactInput`: orients the pool's reserves to the requested in/out
@@ -827,9 +830,25 @@ mod tests {
         );
     }
 
+    /// A config account read whose id is `config_id` (the namespace root pool derivation uses).
+    /// `pool_id` only decodes the account for its id, so the config bytes/owner are irrelevant.
+    fn config_read(config_id: AccountId) -> AccountRead {
+        AccountRead {
+            id: account_id_hex(config_id),
+            status: String::from("ok"),
+            account: Some(WalletAccount {
+                program_owner: "00".repeat(32),
+                balance: "0".repeat(32),
+                nonce: "0".repeat(32),
+                data: String::new(),
+            }),
+        }
+    }
+
     #[test]
     fn pool_id_is_order_independent_and_matches_core() {
         let program = "00".repeat(32);
+        let config_id = AccountId::new([0xEE; 32]);
         let a = AccountId::new([0xCC; 32]);
         let b = AccountId::new([0xDD; 32]);
 
@@ -837,31 +856,37 @@ mod tests {
             amm_program_id: program.clone(),
             token_in_id: account_id_hex(a),
             token_out_id: account_id_hex(b),
+            config: config_read(config_id),
         })
         .unwrap();
         let ba = pool_id(PoolIdRequest {
             amm_program_id: program.clone(),
             token_in_id: account_id_hex(b),
             token_out_id: account_id_hex(a),
+            config: config_read(config_id),
         })
         .unwrap();
         // Canonical ordering makes the pool id independent of swap direction.
         assert_eq!(ab, ba);
 
-        // And it matches amm_core's PDA for the canonical pair.
+        // And it matches amm_core's PDA for the canonical pair under this config namespace.
         let amm = parse_program_id(&program).unwrap();
         let (ca, cb) = if is_canonical_pair(a, b) {
             (a, b)
         } else {
             (b, a)
         };
-        assert_eq!(ab["poolId"], account_id_hex(compute_pool_pda(amm, ca, cb)));
+        assert_eq!(
+            ab["poolId"],
+            account_id_hex(compute_pool_pda(amm, config_id, ca, cb))
+        );
 
         // Same token in/out is rejected.
         assert!(pool_id(PoolIdRequest {
             amm_program_id: program,
             token_in_id: account_id_hex(a),
             token_out_id: account_id_hex(a),
+            config: config_read(config_id),
         })
         .is_err());
     }

@@ -24,7 +24,7 @@ use crate::account::{account_id_from_hex, decode_account, parse_program_id, Acco
 /// requested id with no returned row as unresolved/unavailable.
 pub(super) fn resolve_tokens(request: ResolveTokensRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
-    let Ok(config) = load_config(amm_program, &request.config) else {
+    let Ok((_, config)) = load_config(amm_program, &request.config) else {
         return Ok(json!({ "status": "error", "code": "config_unavailable", "tokens": [] }));
     };
 

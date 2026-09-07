@@ -1,5 +1,5 @@
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed,
+    assert_supported_fee_tier, compute_pool_pda, compute_pool_pda_seed,
     read_vault_fungible_balances, spot_price_q64_64, swap_exact_in_amounts, swap_exact_out_amounts,
     AmmConfig, MINIMUM_LIQUIDITY,
 };
@@ -47,6 +47,29 @@ fn validate_swap_setup(
     );
 
     pool_def_data
+}
+
+/// The pool must be derived under THIS config's namespace. config.account_id is the
+/// namespace root, so a pool belonging to another instance — even a valid AMM-owned pool
+/// with the same token pair — derives a different PDA and is rejected here. This stops a
+/// caller from pairing a config from one instance with a pool from another (matching the
+/// check new_definition makes when it creates the pool).
+fn assert_pool_in_config_namespace(
+    pool: &AccountWithMetadata,
+    config: &AccountWithMetadata,
+    pool_def_data: &PoolDefinition,
+    amm_program_id: ProgramId,
+) {
+    assert_eq!(
+        pool.account_id,
+        compute_pool_pda(
+            amm_program_id,
+            config.account_id,
+            pool_def_data.definition_token_a_id,
+            pool_def_data.definition_token_b_id,
+        ),
+        "Swap: pool account is not derived under this config's namespace"
+    );
 }
 
 /// Assembles the swap post-states (including the echoed current-tick and clock accounts) and the
@@ -117,6 +140,7 @@ fn finalize_swap(
         &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
+        config.account_id,
         pool_def_data.definition_token_a_id,
         pool_def_data.definition_token_b_id,
     )]);
@@ -158,14 +182,14 @@ pub fn swap_exact_input(
     // The program IDs are taken from the config account, not trusted from a caller-supplied
     // account. Validating the config PDA is also the Program's initialization gate.
     assert_eq!(
-        config.account_id,
-        compute_config_pda(amm_program_id),
-        "Swap exact input: AMM config Account ID does not match PDA"
+        config.account.program_owner, amm_program_id,
+        "Swap exact input: AMM config account must be owned by the AMM Program"
     );
     let config_data = AmmConfig::try_from(&config.account.data)
         .expect("Swap exact input: AMM Program must be initialized before use");
     let token_program_id = config_data.token_program_id;
     let twap_oracle_program_id = config_data.twap_oracle_program_id;
+    assert_pool_in_config_namespace(&pool, &config, &pool_def_data, amm_program_id);
     assert_eq!(
         vault_a.account.program_owner, token_program_id,
         "Vault A must be owned by the configured Token Program"
@@ -372,14 +396,14 @@ pub fn swap_exact_output(
     // The program IDs are taken from the config account, not trusted from a caller-supplied
     // account. Validating the config PDA is also the Program's initialization gate.
     assert_eq!(
-        config.account_id,
-        compute_config_pda(amm_program_id),
-        "Swap exact output: AMM config Account ID does not match PDA"
+        config.account.program_owner, amm_program_id,
+        "Swap exact output: AMM config account must be owned by the AMM Program"
     );
     let config_data = AmmConfig::try_from(&config.account.data)
         .expect("Swap exact output: AMM Program must be initialized before use");
     let token_program_id = config_data.token_program_id;
     let twap_oracle_program_id = config_data.twap_oracle_program_id;
+    assert_pool_in_config_namespace(&pool, &config, &pool_def_data, amm_program_id);
     assert_eq!(
         vault_a.account.program_owner, token_program_id,
         "Vault A must be owned by the configured Token Program"

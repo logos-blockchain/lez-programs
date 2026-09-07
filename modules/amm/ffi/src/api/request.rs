@@ -2,10 +2,17 @@ use serde::Deserialize;
 
 use crate::account::AccountRead;
 
+/// Derives a namespaced AMM instance's config PDA. `owner` (base58 account id) and `nonce`
+/// (64-char hex; omitted / empty ⇒ the all-zero default, i.e. the owner's default instance)
+/// select the instance. This is the one op that supplies the namespace directly — every other
+/// op derives it from the config account it is passed.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigIdRequest {
     pub amm_program_id: String,
+    pub owner: String,
+    #[serde(default)]
+    pub nonce: String,
 }
 
 /// Decodes the singleton AMM config account. `config` is the read of the config PDA the module
@@ -124,6 +131,9 @@ pub struct PoolIdRequest {
     pub amm_program_id: String,
     pub token_in_id: String,
     pub token_out_id: String,
+    /// AMM config account read — its id is the namespace root the pool PDA is derived under
+    /// (pools are namespaced by config since the namespacing change).
+    pub config: AccountRead,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

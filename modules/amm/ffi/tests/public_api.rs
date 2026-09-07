@@ -7,6 +7,9 @@ use amm_ffi::{
 fn direct_rust_api_does_not_require_ffi() {
     let response = config_id(ConfigIdRequest {
         amm_program_id: "0000000000000000000000000000000000000000000000000000000000000000".into(),
+        // Base58 account id of the instance owner; an omitted nonce ⇒ the owner's default instance.
+        owner: lee_core::account::AccountId::new([0x07; 32]).to_string(),
+        nonce: String::new(),
     })
     .expect("valid program ID should produce a response");
 

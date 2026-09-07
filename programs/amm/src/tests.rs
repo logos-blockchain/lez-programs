@@ -32,6 +32,10 @@ const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
 const AMM_PROGRAM_ID: ProgramId = [42; 8];
 const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
 const MALICIOUS_TOKEN_PROGRAM_ID: ProgramId = [99; 8];
+/// Canonical test namespace: the owner that signs Initialize and the default (all-zero) nonce.
+/// Every pool/vault/config fixture derives from `IdForTests::config_id()`, the config PDA of this
+/// `(owner, nonce)` instance.
+const TEST_NONCE: [u8; 32] = [0; 32];
 
 struct BalanceForTests;
 struct ChainedCallForTests;
@@ -589,6 +593,7 @@ impl ChainedCallForTests {
             &twap_oracle_core::Instruction::CreateCurrentTickAccount { initial_price },
         )
         .with_pda_seeds(vec![compute_pool_pda_seed(
+            IdForTests::config_id(),
             IdForTests::token_a_definition_id(),
             IdForTests::token_b_definition_id(),
         )])
@@ -596,6 +601,14 @@ impl ChainedCallForTests {
 }
 
 impl IdForTests {
+    fn amm_owner() -> AccountId {
+        AccountId::new([200; 32])
+    }
+
+    fn config_id() -> AccountId {
+        compute_config_pda(AMM_PROGRAM_ID, IdForTests::amm_owner(), TEST_NONCE)
+    }
+
     fn token_a_definition_id() -> AccountId {
         AccountId::new([42; 32])
     }
@@ -627,6 +640,7 @@ impl IdForTests {
     fn pool_definition_id() -> AccountId {
         compute_pool_pda(
             AMM_PROGRAM_ID,
+            IdForTests::config_id(),
             IdForTests::token_a_definition_id(),
             IdForTests::token_b_definition_id(),
         )
@@ -663,23 +677,28 @@ impl AccountWithMetadataForTests {
                 nonce: Nonce(0),
             },
             is_authorized: false,
-            account_id: compute_config_pda(AMM_PROGRAM_ID),
+            account_id: IdForTests::config_id(),
         }
     }
 
-    /// Config PDA that has never been initialized (default, empty data).
+    /// Config PDA owned by the AMM Program but never initialized (empty data), so it fails to parse
+    /// as an `AmmConfig` — the "AMM Program must be initialized before use" case.
     fn config_uninit() -> AccountWithMetadata {
         AccountWithMetadata {
-            account: Account::default(),
+            account: Account {
+                program_owner: AMM_PROGRAM_ID,
+                ..Account::default()
+            },
             is_authorized: false,
-            account_id: compute_config_pda(AMM_PROGRAM_ID),
+            account_id: IdForTests::config_id(),
         }
     }
 
-    /// An initialized config carrying valid data but stored at the wrong account ID.
-    fn config_with_wrong_id() -> AccountWithMetadata {
+    /// An otherwise-valid config account that is not owned by the AMM Program, exercising the
+    /// program-owner gate (`must be owned by the AMM Program`).
+    fn config_not_owned_by_amm() -> AccountWithMetadata {
         let mut config = AccountWithMetadataForTests::config_init();
-        config.account_id = AccountId::new([7; 32]);
+        config.account.program_owner = [0; 8];
         config
     }
 
@@ -1502,10 +1521,12 @@ fn test_pool_pda_produces_unique_id_for_token_pair() {
     assert!(
         amm_core::compute_pool_pda(
             AMM_PROGRAM_ID,
+            IdForTests::config_id(),
             IdForTests::token_a_definition_id(),
             IdForTests::token_b_definition_id()
         ) == compute_pool_pda(
             AMM_PROGRAM_ID,
+            IdForTests::config_id(),
             IdForTests::token_b_definition_id(),
             IdForTests::token_a_definition_id()
         )
@@ -1563,6 +1584,30 @@ fn test_call_add_liquidity_lp_definition_mismatch() {
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_with_wrong_id(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::add_max_amount_b(),
+        AMM_PROGRAM_ID,
+    );
+}
+
+// A pool with the right token pair but an id NOT derived under config_init's namespace
+// (pool_definition_with_wrong_id uses a bogus account id) must be rejected, so a config
+// from one instance can't be paired with a pool from another.
+#[should_panic(expected = "pool account is not derived under this config's namespace")]
+#[test]
+fn test_call_add_liquidity_pool_outside_config_namespace() {
+    let _post_states = add_liquidity(
+        AccountWithMetadataForTests::config_init(),
+        AccountWithMetadataForTests::pool_definition_with_wrong_id(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::user_holding_lp_init(),
@@ -1872,11 +1917,11 @@ fn test_call_add_liquidity_uninitialized_config_panics() {
     );
 }
 
-#[should_panic(expected = "AMM config Account ID does not match PDA")]
+#[should_panic(expected = "must be owned by the AMM Program")]
 #[test]
-fn test_call_add_liquidity_wrong_config_pda_panics() {
+fn test_call_add_liquidity_config_not_owned_by_amm_panics() {
     let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_with_wrong_id(),
+        AccountWithMetadataForTests::config_not_owned_by_amm(),
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
@@ -1900,6 +1945,29 @@ fn test_call_remove_liquidity_vault_a_omitted() {
         AccountWithMetadataForTests::config_init(),
         AccountWithMetadataForTests::pool_definition_init(),
         AccountWithMetadataForTests::vault_a_with_wrong_id(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::pool_lp_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::user_holding_lp_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
+        BalanceForTests::remove_min_amount_a(),
+        BalanceForTests::remove_min_amount_b(),
+        AMM_PROGRAM_ID,
+    );
+}
+
+// A pool with the right token pair but an id NOT derived under config_init's namespace
+// must be rejected, so a config from one instance can't be paired with a pool from another.
+#[should_panic(expected = "pool account is not derived under this config's namespace")]
+#[test]
+fn test_call_remove_liquidity_pool_outside_config_namespace() {
+    let _post_states = remove_liquidity(
+        AccountWithMetadataForTests::config_init(),
+        AccountWithMetadataForTests::pool_definition_with_wrong_id(),
+        AccountWithMetadataForTests::vault_a_init(),
         AccountWithMetadataForTests::vault_b_init(),
         AccountWithMetadataForTests::pool_lp_init(),
         AccountWithMetadataForTests::user_holding_a(),
@@ -2400,6 +2468,7 @@ fn test_call_new_definition_chained_call_successful() {
     assert_eq!(
         pool_post.required_claim(),
         Some(Claim::Pda(compute_pool_pda_seed(
+            IdForTests::config_id(),
             IdForTests::token_a_definition_id(),
             IdForTests::token_b_definition_id(),
         )))
@@ -2422,6 +2491,26 @@ fn test_call_new_definition_chained_call_successful() {
 
     // Two extra post-states (current-tick + clock) are echoed back unchanged.
     assert_eq!(post_states.len(), 11);
+}
+
+// A pool with the right token pair but an id NOT derived under config_init's namespace
+// must be rejected, so a config from one instance can't be paired with a pool from another.
+#[should_panic(expected = "pool account is not derived under this config's namespace")]
+#[test]
+fn test_call_swap_pool_outside_config_namespace() {
+    let _post_states = swap_exact_input(
+        AccountWithMetadataForTests::config_init(),
+        AccountWithMetadataForTests::pool_definition_with_wrong_id(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::min_amount_out(),
+        AMM_PROGRAM_ID,
+    );
 }
 
 #[should_panic(expected = "Swap exact input: input holding token is not part of the pool")]
@@ -2685,6 +2774,7 @@ fn assert_update_tick_call(chained_calls: &[ChainedCall], pool_post_account: &Ac
         },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
+        IdForTests::config_id(),
         IdForTests::token_a_definition_id(),
         IdForTests::token_b_definition_id(),
     )]);
@@ -3430,6 +3520,22 @@ fn test_sync_reserves_with_donation() {
     // price, with the synced pool authorized as the price source.
     assert_eq!(chained_calls.len(), 1);
     assert_update_tick_call(&chained_calls, post_states[1].account());
+}
+
+// A pool with the right token pair but an id NOT derived under config_init's namespace
+// must be rejected, so any AMM-owned config can't be paired with an arbitrary pool.
+#[should_panic(expected = "pool account is not derived under this config's namespace")]
+#[test]
+fn test_sync_reserves_pool_outside_config_namespace() {
+    let _ = sync_reserves(
+        AccountWithMetadataForTests::config_init(),
+        AccountWithMetadataForTests::pool_definition_with_wrong_id(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        AMM_PROGRAM_ID,
+    );
 }
 
 #[should_panic(expected = "Sync reserves: vault A balance is less than its reserve")]

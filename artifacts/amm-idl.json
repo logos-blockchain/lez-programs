@@ -6,6 +6,12 @@
       "name": "initialize",
       "accounts": [
         {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "init": false
+        },
+        {
           "name": "config",
           "writable": true,
           "signer": false,
@@ -13,6 +19,15 @@
         }
       ],
       "args": [
+        {
+          "name": "nonce",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
         {
           "name": "token_program_id",
           "type": "program_id"

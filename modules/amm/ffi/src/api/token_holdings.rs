@@ -18,7 +18,7 @@ use crate::account::{account_id_hex, parse_program_id};
 
 pub(super) fn token_holdings(request: TokenHoldingsRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
-    let config = load_config(amm_program, &request.config)?;
+    let (_, config) = load_config(amm_program, &request.config)?;
     let holdings = wallet_holdings(&request.wallet_accounts, config.token_program_id);
     let rows = holdings
         .into_iter()
@@ -76,7 +76,10 @@ mod tests {
             }),
             ..Account::default()
         };
-        account_read(compute_config_pda(amm), &account)
+        account_read(
+            compute_config_pda(amm, AccountId::new([0x07; 32]), [0; 32]),
+            &account,
+        )
     }
 
     #[test]

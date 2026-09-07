@@ -1,4 +1,4 @@
-use amm_core::{compute_config_pda, Instruction};
+use amm_core::Instruction;
 use serde_json::{json, Value};
 
 use super::{config::load_config, TransferOwnershipPlanRequest};
@@ -13,7 +13,7 @@ pub(super) fn transfer_ownership_plan(
 ) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let new_authority = account_id_from_hex(&request.new_authority_id, "new authority id")?;
-    let Ok(config) = load_config(amm_program, &request.config) else {
+    let Ok((config_id, config)) = load_config(amm_program, &request.config) else {
         return Err(String::from("config_unavailable"));
     };
 
@@ -23,7 +23,7 @@ pub(super) fn transfer_ownership_plan(
     // Fixed IDL account order for UpdateConfig: the config account (mut, updated in place, not a
     // signer) and the current admin authority (signs). `new_authority` is instruction data, not
     // an account.
-    let account_ids = [compute_config_pda(amm_program), config.authority];
+    let account_ids = [config_id, config.authority];
     let signing_requirements = [false, true];
 
     Ok(json!({

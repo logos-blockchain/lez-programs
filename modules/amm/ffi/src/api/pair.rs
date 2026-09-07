@@ -1,6 +1,5 @@
 use amm_core::{
-    compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
-    compute_vault_pda,
+    compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda, compute_vault_pda,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{account::AccountId, program::ProgramId};
@@ -57,9 +56,8 @@ pub(super) fn derive_pair(
     token_b: AccountId,
     config_read: &AccountRead,
 ) -> Result<PairIds, String> {
-    let config_id = compute_config_pda(amm_program);
-    let config = load_config(amm_program, config_read)?;
-    let pool = compute_pool_pda(amm_program, token_a, token_b);
+    let (config_id, config) = load_config(amm_program, config_read)?;
+    let pool = compute_pool_pda(amm_program, config_id, token_a, token_b);
     Ok(PairIds {
         token_a,
         token_b,
