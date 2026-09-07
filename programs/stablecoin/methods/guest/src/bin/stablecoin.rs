@@ -281,6 +281,56 @@ mod stablecoin {
         ))
     }
 
+    /// Mint stablecoins against an existing position (spec §10.7; host fn
+    /// `stablecoin_program::generate_debt`).
+    ///
+    /// Blocked while frozen. The oracle is a liveness gate only. Wall-clock time
+    /// comes from the system `CLOCK_01` account passed as the 9th input.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the nine account inputs mirror the spec §10.7 ABI"
+    )]
+    pub fn generate_debt(
+        ctx: ProgramContext,
+        #[account(signer)]
+        owner: AccountWithMetadata,
+        #[account(mut)]
+        position: AccountWithMetadata,
+        #[account(mut)]
+        stablecoin_definition: AccountWithMetadata,
+        #[account(mut)]
+        user_stablecoin_holding: AccountWithMetadata,
+        stability_fee_accumulator: AccountWithMetadata,
+        redemption_price_state: AccountWithMetadata,
+        market_price_oracle: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        amount: u128,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::generate_debt::generate_debt(
+            owner,
+            position,
+            stablecoin_definition,
+            user_stablecoin_holding,
+            stability_fee_accumulator,
+            redemption_price_state,
+            market_price_oracle,
+            protocol_parameters,
+            clock,
+            ctx.self_program_id,
+            amount,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
     /// Withdraw `amount` collateral tokens from an existing position back to a
     /// user-controlled holding.
     ///
