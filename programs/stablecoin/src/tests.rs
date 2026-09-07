@@ -1313,6 +1313,135 @@ fn repay_debt_rejects_uninitialized_accumulator() {
     );
 }
 
+// --- close_position (spec §10.9) ---
+
+fn close(
+    position: AccountWithMetadata,
+    vault: AccountWithMetadata,
+    parameters: AccountWithMetadata,
+) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
+    crate::close_position::close_position(
+        owner_account(),
+        position,
+        vault,
+        parameters,
+        STABLECOIN_PROGRAM_ID,
+    )
+}
+
+#[test]
+fn close_position_clears_the_position_and_emits_no_chained_calls() {
+    let (post_states, chained_calls) = close(
+        init_position_account(0, 0),
+        init_vault_account(),
+        protocol_parameters_account(false),
+    );
+
+    assert_eq!(post_states.len(), 4);
+    assert!(chained_calls.is_empty());
+    // Data is zeroed, but program_owner and nonce must survive — the runtime
+    // rejects a program changing either, so the PDA cannot be released.
+    let cleared = post_states[1].account();
+    assert_eq!(cleared.data, Data::default());
+    assert_eq!(cleared.program_owner, STABLECOIN_PROGRAM_ID);
+    assert_eq!(cleared.nonce, init_position_account(0, 0).account.nonce);
+    // The vault lingers untouched — the Token Program has no CloseHolding.
+    assert_eq!(*post_states[2].account(), init_vault_account().account);
+}
+
+#[test]
+fn close_position_is_allowed_while_frozen() {
+    let (post_states, _) = close(
+        init_position_account(0, 0),
+        init_vault_account(),
+        protocol_parameters_account(true),
+    );
+    assert_eq!(post_states[1].account().data, Data::default());
+}
+
+#[test]
+#[should_panic(expected = "Owner authorization is missing")]
+fn close_position_requires_owner_authorization() {
+    let mut owner = owner_account();
+    owner.is_authorized = false;
+    crate::close_position::close_position(
+        owner,
+        init_position_account(0, 0),
+        init_vault_account(),
+        protocol_parameters_account(false),
+        STABLECOIN_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position still has outstanding debt")]
+fn close_position_rejects_outstanding_debt() {
+    close(
+        init_position_account(0, 1),
+        init_vault_account(),
+        protocol_parameters_account(false),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position still holds collateral")]
+fn close_position_rejects_remaining_collateral() {
+    close(
+        init_position_account(1, 0),
+        init_vault_account(),
+        protocol_parameters_account(false),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Vault still holds a balance")]
+fn close_position_rejects_a_non_empty_vault() {
+    // Position accounting says empty but the vault disagrees — refuse rather
+    // than strand the tokens behind a released PDA.
+    let vault = token_holding_account(vault_id(), collateral_definition_id(), 1);
+    close(
+        init_position_account(0, 0),
+        vault,
+        protocol_parameters_account(false),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position vault_account_id does not match the vault account")]
+fn close_position_rejects_wrong_vault() {
+    let mut vault = init_vault_account();
+    vault.account_id = AccountId::new([0x88u8; 32]);
+    close(
+        init_position_account(0, 0),
+        vault,
+        protocol_parameters_account(false),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position account must be initialized")]
+fn close_position_rejects_uninitialized_position() {
+    close(
+        uninit_position_account(),
+        init_vault_account(),
+        protocol_parameters_account(false),
+    );
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account must be initialized")]
+fn close_position_rejects_uninitialized_protocol_parameters() {
+    close(
+        init_position_account(0, 0),
+        init_vault_account(),
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: protocol_parameters_id(),
+        },
+    );
+}
+
 #[test]
 fn position_pda_is_deterministic_and_owner_and_nonce_specific() {
     let id_a = compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), TEST_POSITION_NONCE);
