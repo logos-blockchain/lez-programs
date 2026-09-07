@@ -52,7 +52,7 @@ pub fn withdraw_collateral(
     stablecoin_program_id: ProgramId,
     amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    let parameters = decode_global(
+    let parameters = crate::checks::decode_global(
         &protocol_parameters,
         compute_protocol_parameters_pda(stablecoin_program_id),
         stablecoin_program_id,
@@ -62,7 +62,7 @@ pub fn withdraw_collateral(
         ProtocolParameters::try_from(&parameters).expect("ProtocolParameters must decode");
     assert!(!parameters.is_frozen, "Protocol is frozen");
 
-    let accumulator_data = decode_global(
+    let accumulator_data = crate::checks::decode_global(
         &stability_fee_accumulator,
         compute_stability_fee_accumulator_pda(stablecoin_program_id),
         stablecoin_program_id,
@@ -71,7 +71,7 @@ pub fn withdraw_collateral(
     let accumulator = StabilityFeeAccumulator::try_from(&accumulator_data)
         .expect("StabilityFeeAccumulator must decode");
 
-    let redemption_data = decode_global(
+    let redemption_data = crate::checks::decode_global(
         &redemption_price_state,
         compute_redemption_price_state_pda(stablecoin_program_id),
         stablecoin_program_id,
@@ -200,28 +200,4 @@ pub fn withdraw_collateral(
     .with_pda_seeds(vec![vault_seed]);
 
     (post_states, vec![transfer_call])
-}
-
-/// Validate a read-only global: initialized, program-owned, and at its canonical
-/// PDA. Returns its `Data` for the caller to decode.
-fn decode_global(
-    account: &AccountWithMetadata,
-    expected_id: lee_core::account::AccountId,
-    stablecoin_program_id: ProgramId,
-    label: &str,
-) -> Data {
-    assert_ne!(
-        account.account,
-        Account::default(),
-        "{label} account must be initialized"
-    );
-    assert_eq!(
-        account.account.program_owner, stablecoin_program_id,
-        "{label} account must be owned by the stablecoin program"
-    );
-    assert_eq!(
-        account.account_id, expected_id,
-        "{label} account ID does not match expected PDA derivation"
-    );
-    account.account.data.clone()
 }

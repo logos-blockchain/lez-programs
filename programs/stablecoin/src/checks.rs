@@ -1,6 +1,10 @@
 //! Shared validation helpers reused across the position-lifecycle instructions.
 
 use alloy_primitives::U512;
+use lee_core::{
+    account::{Account, AccountId, AccountWithMetadata, Data},
+    program::ProgramId,
+};
 use stablecoin_core::{math::FIXED_POINT_ONE, Position};
 
 /// Assert that `position` satisfies the collateralization invariant from spec §6.2:
@@ -64,6 +68,30 @@ pub fn assert_position_is_collateralized(
         collateral_value >= required_collateral_value,
         "Position is undercollateralized"
     );
+}
+
+/// Validate a read-only global: initialized, program-owned, and at its canonical
+/// PDA. Returns its `Data` for the caller to decode.
+pub(crate) fn decode_global(
+    account: &AccountWithMetadata,
+    expected_id: AccountId,
+    stablecoin_program_id: ProgramId,
+    label: &str,
+) -> Data {
+    assert_ne!(
+        account.account,
+        Account::default(),
+        "{label} account must be initialized"
+    );
+    assert_eq!(
+        account.account.program_owner, stablecoin_program_id,
+        "{label} account must be owned by the stablecoin program"
+    );
+    assert_eq!(
+        account.account_id, expected_id,
+        "{label} account ID does not match expected PDA derivation"
+    );
+    account.account.data.clone()
 }
 
 #[cfg(test)]

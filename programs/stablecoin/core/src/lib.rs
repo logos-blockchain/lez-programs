@@ -185,6 +185,30 @@ pub enum Instruction {
         /// Collateral tokens to move from the user's holding into the vault.
         amount: u128,
     },
+    /// Mint stablecoins against an existing position, increasing its debt.
+    ///
+    /// Blocked while frozen. The §6.2 collateralization invariant is checked
+    /// after the mint, and the normalized-debt delta is rounded **up** (§6.3).
+    ///
+    /// Required accounts (9), in order:
+    /// 1. `owner` — authorized.
+    /// 2. `position` — initialized, writable, owned by `self_program_id`; at its `(owner,
+    ///    position_nonce)` PDA.
+    /// 3. `stablecoin_definition` — initialized, writable via the chained `Token::Mint`; must
+    ///    equal `protocol_parameters.stablecoin_definition_id`.
+    /// 4. `user_stablecoin_holding` — initialized mint destination; NOT required to be authorized.
+    ///    Same Token Program and definition as `stablecoin_definition`.
+    /// 5. `stability_fee_accumulator` — initialized, read-only; at its canonical PDA.
+    /// 6. `redemption_price_state` — initialized, read-only; at its canonical PDA.
+    /// 7. `market_price_oracle` — initialized, read-only; must equal
+    ///    `protocol_parameters.market_price_oracle_id`. Liveness gate only — its price is not
+    ///    consumed.
+    /// 8. `protocol_parameters` — initialized, read-only; at its canonical PDA.
+    /// 9. `clock` — the system `CLOCK_01` account; read-only.
+    GenerateDebt {
+        /// Stablecoin atomic units to mint to `user_stablecoin_holding`.
+        amount: u128,
+    },
     /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
     ///
     /// Blocked while the protocol is frozen. The §6.2 collateralization
