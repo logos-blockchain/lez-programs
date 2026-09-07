@@ -2,7 +2,8 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
-use stablecoin_core::{verify_position_and_get_seed, Position};
+use program_revert::UnwrapOrRevert as _;
+use stablecoin_core::{error, verify_position_and_get_seed, Position};
 use token_core::TokenHolding;
 
 /// Repay `amount` of outstanding stablecoin debt against an existing position.
@@ -22,7 +23,9 @@ use token_core::TokenHolding;
 /// `Position`, this instruction cannot validate that `stablecoin_definition`
 /// is the correct one for the position's debt. The caller is trusted.
 ///
-/// # Panics
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
 /// - `owner` is not authorized.
 /// - `position` is uninitialized, not owned by `stablecoin_program_id`, holds data that does not
 ///   decode as a [`Position`], or sits at an address that does not match
@@ -40,19 +43,28 @@ pub fn repay_debt(
     stablecoin_program_id: ProgramId,
     amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    assert!(owner.is_authorized, "Owner authorization is missing");
-    assert_ne!(
+    program_revert::require!(
+        error::INVALID_INPUT,
+        owner.is_authorized,
+        "Owner authorization is missing"
+    );
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         position.account,
         Account::default(),
         "Position account must be initialized"
     );
-    assert_eq!(
-        position.account.program_owner, stablecoin_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        position.account.program_owner,
+        stablecoin_program_id,
         "Position is not owned by this stablecoin program"
     );
 
-    let position_data = Position::try_from(&position.account.data)
-        .expect("Position account must hold valid Position state");
+    let position_data = Position::try_from(&position.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Position account must hold valid Position state",
+    );
     // `verify_position_and_get_seed` asserts the position address matches the
     // (owner, position_nonce) PDA derivation. The returned seed is
     // dropped — the position is already PDA-claimed.
@@ -64,32 +76,43 @@ pub fn repay_debt(
     );
     // The PDA derivation above already binds the owner; this guards the stored
     // discovery copy against silently drifting out of sync.
-    assert_eq!(
-        position_data.owner_account_id, owner.account_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        position_data.owner_account_id,
+        owner.account_id,
         "Position owner_account_id does not match the owner account"
     );
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         user_stablecoin_holding.is_authorized,
         "User stablecoin holding authorization is missing"
     );
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         user_stablecoin_holding.account,
         Account::default(),
         "User stablecoin holding must be initialized"
     );
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         stablecoin_definition.account,
         Account::default(),
         "Stablecoin definition account must be initialized"
     );
-    assert_eq!(
-        user_stablecoin_holding.account.program_owner, stablecoin_definition.account.program_owner,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_stablecoin_holding.account.program_owner,
+        stablecoin_definition.account.program_owner,
         "Stablecoin holding and definition must be owned by the same Token Program"
     );
     let user_holding_data = TokenHolding::try_from(&user_stablecoin_holding.account.data)
-        .expect("User stablecoin holding must hold a valid TokenHolding");
-    assert_eq!(
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "User stablecoin holding must hold a valid TokenHolding",
+        );
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         user_holding_data.definition_id(),
         stablecoin_definition.account_id,
         "Stablecoin holding does not match the provided stablecoin definition"
@@ -102,7 +125,10 @@ pub fn repay_debt(
     let new_debt = position_data
         .normalized_debt_amount
         .checked_sub(amount)
-        .expect("Repay amount exceeds outstanding debt");
+        .unwrap_or_revert(
+            error::INSUFFICIENT_BALANCE,
+            "Repay amount exceeds outstanding debt",
+        );
 
     let updated_position = Position {
         owner_account_id: position_data.owner_account_id,

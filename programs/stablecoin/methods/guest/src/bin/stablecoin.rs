@@ -5,8 +5,9 @@ use spel_framework::context::ProgramContext;
 use spel_framework::prelude::*;
 
 #[cfg(not(test))]
-risc0_zkvm::guest::entry!(main);
+risc0_zkvm::guest::entry!(metered_main);
 
+#[program_revert_macros::metered_entry(stablecoin_core::error::INVALID_INPUT)]
 #[lez_program(instruction = "stablecoin_core::Instruction")]
 mod stablecoin {
     #[allow(unused_imports)]
@@ -19,7 +20,7 @@ mod stablecoin {
     /// 9th input — the pinned `ProgramContext` exposes no clock.
     ///
     /// # Errors
-    /// Returns the host program's panic-converted error if any precondition
+    /// Halts with a nonzero exit code if any precondition
     /// fails — see the host fn for the full list.
     #[instruction]
     #[allow(
@@ -90,7 +91,7 @@ mod stablecoin {
     /// 4th input — the pinned `ProgramContext` exposes no clock.
     ///
     /// # Errors
-    /// Returns the host program's panic-converted error if any precondition
+    /// Halts with a nonzero exit code if any precondition
     /// fails — see the host fn for the full list.
     #[instruction]
     pub fn accrue_stability_fee(
@@ -120,12 +121,12 @@ mod stablecoin {
     /// re-anchor the redemption price (spec §10.3; host fn
     /// `stablecoin_program::update_redemption_rate`).
     ///
-    /// Strict: panics on a not-yet-due interval or a stale / zero-price oracle.
+    /// Strict: reverts on a not-yet-due interval or a stale / zero-price oracle.
     /// Wall-clock time is read from the system `CLOCK_01` account passed as the
     /// 5th input.
     ///
     /// # Errors
-    /// Returns the host program's panic-converted error if any precondition
+    /// Halts with a nonzero exit code if any precondition
     /// fails — see the host fn for the full list.
     #[instruction]
     pub fn update_redemption_rate(
@@ -163,7 +164,7 @@ mod stablecoin {
     /// system `CLOCK_01` account passed as the 6th input.
     ///
     /// # Errors
-    /// Returns the host program's panic-converted error if any precondition
+    /// Halts with a nonzero exit code if any precondition
     /// fails — see the host fn for the full list.
     #[instruction]
     pub fn refresh_globals(
@@ -196,7 +197,7 @@ mod stablecoin {
     /// Open a new collateral-only position for the calling owner.
     ///
     /// # Errors
-    /// Returns the host program's panic-converted error if any precondition fails (see
+    /// Halts with a nonzero exit code if any precondition fails (see
     /// [`stablecoin_program::open_position::open_position`] for the full list).
     #[instruction]
     #[allow(
@@ -237,7 +238,7 @@ mod stablecoin {
     /// user-controlled holding.
     ///
     /// # Errors
-    /// Returns the host program's panic-converted error if any precondition
+    /// Halts with a nonzero exit code if any precondition
     /// fails (see
     /// [`stablecoin_program::withdraw_collateral::withdraw_collateral`] for the
     /// full list).
@@ -272,7 +273,7 @@ mod stablecoin {
     /// Repay `amount` of outstanding stablecoin debt against an existing position.
     ///
     /// # Errors
-    /// Returns the host program's panic-converted error if any precondition
+    /// Halts with a nonzero exit code if any precondition
     /// fails (see [`stablecoin_program::repay_debt::repay_debt`] for the
     /// full list).
     #[instruction]

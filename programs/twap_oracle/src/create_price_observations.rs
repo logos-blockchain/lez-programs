@@ -4,7 +4,7 @@ use lee_core::{
     program::{AccountPostState, Claim, ProgramId},
 };
 use twap_oracle_core::{
-    compute_price_observations_pda, compute_price_observations_pda_seed, ObservationEntry,
+    compute_price_observations_pda, compute_price_observations_pda_seed, error, ObservationEntry,
     PriceObservations, OBSERVATIONS_CAPACITY,
 };
 
@@ -18,8 +18,8 @@ use twap_oracle_core::{
 /// LEZ system clock ([`CLOCK_01_PROGRAM_ACCOUNT_ID`]). Enforcing this prevents a caller from
 /// supplying an account they control to seed the TWAP with a forged base timestamp.
 ///
-/// # Panics
-/// Panics if:
+/// # Failures
+/// Reverts in the zkVM (panics on native targets) if:
 /// - `price_observations.account_id` does not match
 ///   `compute_price_observations_pda(oracle_program_id, price_source.account_id, window_duration)`.
 /// - `price_observations.account` is not the default (already initialised).
@@ -37,25 +37,29 @@ pub fn create_price_observations(
     oracle_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     let price_source_id = price_source.account_id;
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         price_observations.account_id,
         compute_price_observations_pda(oracle_program_id, price_source_id, window_duration),
         "CreatePriceObservations: price observations account ID does not match expected PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         price_observations.account,
         Account::default(),
         "CreatePriceObservations: price observations account must be uninitialized"
     );
-    assert!(
+    program_revert::require!(error::INVALID_INPUT,
         price_source.is_authorized,
         "CreatePriceObservations: price source account must be authorized (caller must control it via a PDA)"
     );
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "CreatePriceObservations: clock account must be the canonical 1-block LEZ clock account"
     );
-    assert!(
+    program_revert::require!(error::INVALID_INPUT,
         window_duration >= u64::from(OBSERVATIONS_CAPACITY),
         "CreatePriceObservations: window_duration must be >= OBSERVATIONS_CAPACITY so the RecordTick \
          sampling interval (window_duration / OBSERVATIONS_CAPACITY) is at least one millisecond"

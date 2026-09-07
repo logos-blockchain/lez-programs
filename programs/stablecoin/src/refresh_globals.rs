@@ -10,6 +10,7 @@ use lee_core::{
     account::AccountWithMetadata,
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use stablecoin_core::error;
 
 use crate::{
     accrue_stability_fee::{advance_fee_accumulator, decode_fee_accrual_inputs, read_clock},
@@ -21,8 +22,8 @@ use crate::{
 /// Every piece of math here is the shared helper the standalone pokes call, so
 /// the combined path can never drift from them.
 ///
-/// Panics ONLY on caller authorization, an uninitialized / foreign-owned /
-/// wrong-PDA global, an oracle id mismatch, or a wrong clock account. A
+/// Reverts in the zkVM (panics on native targets) on caller authorization, an uninitialized /
+/// foreign-owned / wrong-PDA global, an oracle id mismatch, or a wrong clock account. A
 /// not-yet-due interval and a stale or zero-price oracle are SOFT — they skip
 /// the redemption half instead of failing the transaction. Never blocked by the
 /// frozen flag.
@@ -38,7 +39,11 @@ pub fn refresh_globals(
     clock: AccountWithMetadata,
     stablecoin_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    assert!(caller.is_authorized, "Caller authorization is missing");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        caller.is_authorized,
+        "Caller authorization is missing"
+    );
 
     let (params, accumulator) = decode_fee_accrual_inputs(
         &protocol_parameters,

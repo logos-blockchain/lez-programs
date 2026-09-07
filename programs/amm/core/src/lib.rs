@@ -1,5 +1,8 @@
 //! This crate contains core data structures and utilities for the AMM Program.
 
+use program_revert::UnwrapOrRevert as _;
+pub mod error;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
@@ -276,7 +279,8 @@ pub fn is_supported_fee_tier(fees: u128) -> bool {
 }
 
 pub fn assert_supported_fee_tier(fees: u128) {
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         is_supported_fee_tier(fees),
         "Fee tier must be one of 1, 5, 30, or 100 basis points"
     );
@@ -290,13 +294,16 @@ pub fn assert_supported_fee_tier(fees: u128) {
 /// oracle consumes exactly this representation (it converts the `Q64.64` price to a tick), so the
 /// AMM owns the reserves → price mapping and the oracle stays agnostic to how the price is formed.
 ///
-/// # Panics
-/// Panics if `reserve_base` is zero.
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
+/// Reverts in the zkVM (panics on native targets) if `reserve_base` is zero.
 #[must_use]
 pub fn spot_price_q64_64(reserve_base: u128, reserve_quote: u128) -> u128 {
     use alloy_primitives::U256;
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         reserve_base != 0,
         "spot_price_q64_64: reserve_base must be non-zero"
     );
@@ -314,35 +321,47 @@ pub fn spot_price_q64_64(reserve_base: u128, reserve_quote: u128) -> u128 {
 /// `floor(a * b / c)` computed in U256 so the `a * b` product can't overflow u128.
 /// (Storage stays u128; only the intermediate widens.)
 ///
-/// # Panics
-/// Panics if `c` is zero, or if the result exceeds u128.
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
+/// Reverts in the zkVM (panics on native targets) if `c` is zero, or if the result exceeds u128.
 #[must_use]
 pub fn mul_div_floor(a: u128, b: u128, c: u128) -> u128 {
     use alloy_primitives::U256;
-    assert!(c != 0, "mul_div_floor: divisor must be non-zero");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        c != 0,
+        "mul_div_floor: divisor must be non-zero"
+    );
     let product = U256::from(a)
         .checked_mul(U256::from(b))
         .expect("u128 * u128 always fits in U256");
     let result = product
         .checked_div(U256::from(c))
         .expect("mul_div_floor: divisor is non-zero after the assertion above");
-    u128::try_from(result).expect("mul_div_floor result exceeds u128")
+    u128::try_from(result).unwrap_or_revert(error::ARITHMETIC, "mul_div_floor result exceeds u128")
 }
 
 /// `ceil(a * b / c)` computed in U256 so the `a * b` product can't overflow u128.
 /// (Storage stays u128; only the intermediate widens.)
 ///
-/// # Panics
-/// Panics if `c` is zero, or if the result exceeds u128.
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
+/// Reverts in the zkVM (panics on native targets) if `c` is zero, or if the result exceeds u128.
 #[must_use]
 pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
     use alloy_primitives::U256;
-    assert!(c != 0, "mul_div_ceil: divisor must be non-zero");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        c != 0,
+        "mul_div_ceil: divisor must be non-zero"
+    );
     let product = U256::from(a)
         .checked_mul(U256::from(b))
         .expect("u128 * u128 always fits in U256");
     let result = product.div_ceil(U256::from(c));
-    u128::try_from(result).expect("mul_div_ceil result exceeds u128")
+    u128::try_from(result).unwrap_or_revert(error::ARITHMETIC, "mul_div_ceil result exceeds u128")
 }
 
 /// Adverse price impact of a swap in basis points: how far `amount_out` falls
@@ -458,8 +477,10 @@ pub fn swap_exact_out_amounts(
 
 /// `floor(sqrt(a * b))` computed in U256 so the `a * b` product can't overflow u128.
 ///
-/// # Panics
-/// Panics if the result exceeds u128.
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
+/// Reverts in the zkVM (panics on native targets) if the result exceeds u128.
 #[must_use]
 pub fn isqrt_product(a: u128, b: u128) -> u128 {
     use alloy_primitives::U256;
@@ -572,7 +593,9 @@ pub fn compute_pool_pda_seed(
     {
         std::cmp::Ordering::Less => (definition_token_b_id, definition_token_a_id),
         std::cmp::Ordering::Greater => (definition_token_a_id, definition_token_b_id),
-        std::cmp::Ordering::Equal => panic!("Definitions match"),
+        std::cmp::Ordering::Equal => {
+            program_revert::revert!(error::INVALID_INPUT, "Definitions match")
+        }
     };
 
     let mut bytes = [0; 64];
@@ -654,15 +677,23 @@ pub fn compute_lp_lock_holding_pda_seed(pool_id: AccountId) -> PdaSeed {
 }
 
 fn read_fungible_holding(account: &AccountWithMetadata, context: &str) -> (AccountId, u128) {
-    let token_holding = token_core::TokenHolding::try_from(&account.account.data)
-        .unwrap_or_else(|_| panic!("{context}: AMM Program expects a valid Token Holding Account"));
+    let token_holding =
+        token_core::TokenHolding::try_from(&account.account.data).unwrap_or_else(|_| {
+            program_revert::revert!(
+                error::INVALID_INPUT,
+                "{context}: AMM Program expects a valid Token Holding Account"
+            )
+        });
 
     let token_core::TokenHolding::Fungible {
         definition_id,
         balance,
     } = token_holding
     else {
-        panic!("{context}: AMM Program expects a valid Fungible Token Holding Account");
+        program_revert::revert!(
+            error::INVALID_INPUT,
+            "{context}: AMM Program expects a valid Fungible Token Holding Account"
+        );
     };
 
     (definition_id, balance)

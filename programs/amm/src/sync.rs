@@ -1,5 +1,5 @@
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed,
+    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed, error,
     read_vault_fungible_balances, spot_price_q64_64, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
@@ -7,6 +7,7 @@ use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use twap_oracle_core::compute_current_tick_account_pda;
 
 pub fn sync_reserves(
@@ -18,40 +19,54 @@ pub fn sync_reserves(
     clock: AccountWithMetadata,
     amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    let pool_def_data = PoolDefinition::try_from(&pool.account.data)
-        .expect("Sync reserves: AMM Program expects a valid Pool Definition Account");
+    let pool_def_data = PoolDefinition::try_from(&pool.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Sync reserves: AMM Program expects a valid Pool Definition Account",
+    );
     assert_supported_fee_tier(pool_def_data.fees);
 
     // The TWAP oracle program ID is taken from the config account. Validating the config PDA is
     // also the Program's initialization gate.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account_id,
         compute_config_pda(amm_program_id),
         "Sync reserves: AMM config Account ID does not match PDA"
     );
     let twap_oracle_program_id = AmmConfig::try_from(&config.account.data)
-        .expect("Sync reserves: AMM Program must be initialized before use")
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Sync reserves: AMM Program must be initialized before use",
+        )
         .twap_oracle_program_id;
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
         "Pool liquidity supply is below minimum liquidity"
     );
-    assert_eq!(
-        vault_a.account_id, pool_def_data.vault_a_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_a.account_id,
+        pool_def_data.vault_a_id,
         "Vault A was not provided"
     );
-    assert_eq!(
-        vault_b.account_id, pool_def_data.vault_b_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_b.account_id,
+        pool_def_data.vault_b_id,
         "Vault B was not provided"
     );
     // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
     // clock here so the sync is rejected early with an AMM-level error.
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "Sync reserves: clock account must be the canonical 1-block LEZ clock account"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
         "Sync reserves: current tick Account ID does not match PDA"
@@ -59,11 +74,13 @@ pub fn sync_reserves(
 
     let (vault_a_balance, vault_b_balance) =
         read_vault_fungible_balances("Sync reserves", &vault_a, &vault_b);
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         vault_a_balance >= pool_def_data.reserve_a,
         "Sync reserves: vault A balance is less than its reserve"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         vault_b_balance >= pool_def_data.reserve_b,
         "Sync reserves: vault B balance is less than its reserve"
     );

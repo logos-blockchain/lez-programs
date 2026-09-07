@@ -2,7 +2,10 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId},
 };
-use stablecoin_core::{verify_position_and_get_seed, verify_position_vault_and_get_seed, Position};
+use program_revert::UnwrapOrRevert as _;
+use stablecoin_core::{
+    error, verify_position_and_get_seed, verify_position_vault_and_get_seed, Position,
+};
 use token_core::TokenHolding;
 
 /// Open a new collateral-only position for `owner`.
@@ -16,7 +19,9 @@ use token_core::TokenHolding;
 /// `debt_amount` is deferred to a future `generate_debt` instruction and is intentionally
 /// not parameterized here.
 ///
-/// # Panics
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
 /// - `owner` or `user_holding` is not authorized.
 /// - `position` or `vault` is already initialized.
 /// - `position.account_id` / `vault.account_id` do not match their PDA derivations.
@@ -37,32 +42,46 @@ pub fn open_position(
     position_nonce: u64,
     collateral_amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    assert!(owner.is_authorized, "Owner authorization is missing");
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
+        owner.is_authorized,
+        "Owner authorization is missing"
+    );
+    program_revert::require!(
+        error::INVALID_INPUT,
         user_holding.is_authorized,
         "User collateral holding authorization is missing"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         position.account,
         Account::default(),
         "Position account must be uninitialized"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         vault.account,
         Account::default(),
         "Position vault account must be uninitialized"
     );
 
     let user_holding_definition_id = TokenHolding::try_from(&user_holding.account.data)
-        .expect("User holding must be a valid Token Holding")
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "User holding must be a valid Token Holding",
+        )
         .definition_id();
-    assert_eq!(
-        user_holding_definition_id, token_definition.account_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_definition_id,
+        token_definition.account_id,
         "User collateral holding does not match the provided token definition"
     );
     let token_program_id = user_holding.account.program_owner;
-    assert_eq!(
-        token_definition.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        token_definition.account.program_owner,
+        token_program_id,
         "Collateral token definition is not owned by the user holding's Token Program"
     );
 

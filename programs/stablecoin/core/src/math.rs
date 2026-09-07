@@ -5,6 +5,9 @@
 //! `10^27`. Multiplications use `U256` intermediates to avoid overflow.
 
 use alloy_primitives::U256;
+use program_revert::UnwrapOrRevert as _;
+
+use crate::error;
 
 /// The value `1.0` in our 27-decimal fixed-point representation.
 ///
@@ -22,29 +25,39 @@ pub const MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS: u64 = 604_800_000;
 
 /// `(a * b) / c` computed via `U256` intermediates and rounded toward zero.
 ///
-/// # Panics
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
 /// - `c == 0` (division by zero).
 /// - The result exceeds `u128::MAX`.
 #[must_use]
 pub fn mul_div(a: u128, b: u128, c: u128) -> u128 {
-    assert!(c != 0, "mul_div: division by zero");
+    program_revert::require!(error::INVALID_INPUT, c != 0, "mul_div: division by zero");
     let product = U256::from(a)
         .checked_mul(U256::from(b))
         .expect("mul_div: intermediate product overflows U256");
     let quotient = product
         .checked_div(U256::from(c))
         .expect("mul_div: division by zero");
-    quotient.try_into().expect("mul_div: result exceeds u128")
+    quotient
+        .try_into()
+        .unwrap_or_revert(error::ARITHMETIC, "mul_div: result exceeds u128")
 }
 
 /// `ceil((a * b) / c)` via `U256` intermediates.
 ///
-/// # Panics
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
 /// - `c == 0`.
 /// - Result exceeds `u128::MAX`.
 #[must_use]
 pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
-    assert!(c != 0, "mul_div_ceil: division by zero");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        c != 0,
+        "mul_div_ceil: division by zero"
+    );
     let product = U256::from(a)
         .checked_mul(U256::from(b))
         .expect("mul_div_ceil: intermediate product overflows U256");
@@ -64,7 +77,7 @@ pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
     };
     ceiled
         .try_into()
-        .expect("mul_div_ceil: result exceeds u128")
+        .unwrap_or_revert(error::ARITHMETIC, "mul_div_ceil: result exceeds u128")
 }
 
 /// Compute `per_millisecond_rate^milliseconds_elapsed` in fixed-point semantics, where

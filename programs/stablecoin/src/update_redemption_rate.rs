@@ -7,8 +7,9 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use stablecoin_core::{
-    compute_redemption_price_state_pda, controller::run_controller_tick,
+    compute_redemption_price_state_pda, controller::run_controller_tick, error,
     math::compute_current_redemption_price, ControllerOutput, ProtocolParameters,
     RedemptionPriceState,
 };
@@ -20,12 +21,12 @@ use crate::accrue_stability_fee::read_clock;
 /// price.
 ///
 /// Permissionless but strict: unlike [`crate::refresh_globals`], every gate here
-/// is hard. It panics when called before
+/// is hard. It reverts when called before
 /// `minimum_milliseconds_between_rate_updates` has elapsed, and when the oracle
 /// is stale or reports a zero price — a keeper may want that as an explicit
 /// failure signal rather than a silent skip. Never blocked by the frozen flag.
 ///
-/// See spec §10.3 for the full account contract and panic conditions.
+/// See spec §10.3 for the full account contract and rejection conditions.
 #[allow(clippy::needless_pass_by_value)]
 pub fn update_redemption_rate(
     caller: AccountWithMetadata,
@@ -35,7 +36,11 @@ pub fn update_redemption_rate(
     clock: AccountWithMetadata,
     stablecoin_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    assert!(caller.is_authorized, "Caller authorization is missing");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        caller.is_authorized,
+        "Caller authorization is missing"
+    );
 
     let (params, redemption) = decode_redemption_inputs(
         &protocol_parameters,
@@ -47,12 +52,18 @@ pub fn update_redemption_rate(
 
     // Hard gates. `refresh_globals` treats these same three conditions as soft
     // skips; here they are failures (spec §10.3 vs §10.3a).
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         now.saturating_sub(oracle.timestamp) <= params.maximum_oracle_price_age_milliseconds,
         "Market price oracle observation is stale"
     );
-    assert!(oracle.price > 0, "Market price oracle reports zero price");
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
+        oracle.price > 0,
+        "Market price oracle reports zero price"
+    );
+    program_revert::require!(
+        error::INVALID_INPUT,
         now.saturating_sub(redemption.last_updated_at)
             >= params.minimum_milliseconds_between_rate_updates,
         "update_redemption_rate called too soon since last update"
@@ -86,34 +97,41 @@ pub(crate) fn decode_redemption_inputs(
     redemption_price_state: &AccountWithMetadata,
     stablecoin_program_id: ProgramId,
 ) -> (ProtocolParameters, RedemptionPriceState) {
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         protocol_parameters.account,
         Account::default(),
         "ProtocolParameters account must be initialized"
     );
-    assert_eq!(
-        protocol_parameters.account.program_owner, stablecoin_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        protocol_parameters.account.program_owner,
+        stablecoin_program_id,
         "ProtocolParameters not owned by this stablecoin program"
     );
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         redemption_price_state.account,
         Account::default(),
         "RedemptionPriceState account must be initialized"
     );
-    assert_eq!(
-        redemption_price_state.account.program_owner, stablecoin_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        redemption_price_state.account.program_owner,
+        stablecoin_program_id,
         "RedemptionPriceState not owned by this stablecoin program"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         redemption_price_state.account_id,
         compute_redemption_price_state_pda(stablecoin_program_id),
         "RedemptionPriceState account ID does not match expected PDA derivation"
     );
 
     let params = ProtocolParameters::try_from(&protocol_parameters.account.data)
-        .expect("ProtocolParameters must decode");
+        .unwrap_or_revert(error::INVALID_INPUT, "ProtocolParameters must decode");
     let redemption = RedemptionPriceState::try_from(&redemption_price_state.account.data)
-        .expect("RedemptionPriceState must decode");
+        .unwrap_or_revert(error::INVALID_INPUT, "RedemptionPriceState must decode");
 
     (params, redemption)
 }
@@ -124,22 +142,27 @@ pub(crate) fn decode_redemption_inputs(
 /// `ProtocolParameters.market_price_oracle_id`. Its `program_owner` is
 /// deliberately NOT pinned, so a future aggregator or an alternative producer
 /// can replace the TWAP oracle without a code change here. Shared with
-/// [`crate::refresh_globals`], where the id mismatch is likewise a hard panic.
+/// [`crate::refresh_globals`], where the id mismatch is likewise a hard rejection.
 pub(crate) fn decode_oracle(
     market_price_oracle: &AccountWithMetadata,
     params: &ProtocolParameters,
 ) -> OraclePriceAccount {
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         market_price_oracle.account,
         Account::default(),
         "Market price oracle account must be initialized"
     );
-    assert_eq!(
-        market_price_oracle.account_id, params.market_price_oracle_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        market_price_oracle.account_id,
+        params.market_price_oracle_id,
         "Market price oracle account_id does not match ProtocolParameters.market_price_oracle_id"
     );
-    OraclePriceAccount::try_from(&market_price_oracle.account.data)
-        .expect("Market price oracle must decode as OraclePriceAccount")
+    OraclePriceAccount::try_from(&market_price_oracle.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Market price oracle must decode as OraclePriceAccount",
+    )
 }
 
 /// Project the redemption price to `now`, run one controller tick against

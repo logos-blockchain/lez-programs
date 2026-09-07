@@ -1,5 +1,7 @@
 //! Core data structures and utilities for the Stablecoin Program.
 
+pub mod error;
+
 pub mod controller;
 
 pub mod math;
@@ -122,10 +124,10 @@ pub enum Instruction {
     /// non-zero; otherwise it SKIPS that half without panicking. Allowed while
     /// frozen, like the individual pokes.
     ///
-    /// Panics ONLY on: `caller` not authorized; any of `protocol_parameters` /
-    /// `stability_fee_accumulator` / `redemption_price_state` uninitialized, wrong
-    /// owner, or at the wrong PDA; oracle id mismatch; wrong clock account. It does
-    /// NOT panic on a not-yet-due interval or a stale / zero oracle.
+    /// Reverts in the zkVM (panics on native targets) on: `caller` not authorized; any of
+    /// `protocol_parameters` / `stability_fee_accumulator` / `redemption_price_state`
+    /// uninitialized, wrong owner, or at the wrong PDA; oracle id mismatch; wrong clock
+    /// account. It does NOT panic on a not-yet-due interval or a stale / zero oracle.
     ///
     /// Required accounts (6), in order — the union of the two standalone pokes:
     /// 1. `caller` — authorized; not retained anywhere.
@@ -315,7 +317,9 @@ pub fn compute_position_vault_pda(
 /// owner, position_nonce)` and return the [`PdaSeed`] for use in post-state
 /// claims.
 ///
-/// # Panics
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
 /// If `position.account_id` does not match the derived PDA.
 pub fn verify_position_and_get_seed(
     position: &AccountWithMetadata,
@@ -325,8 +329,10 @@ pub fn verify_position_and_get_seed(
 ) -> PdaSeed {
     let seed = compute_position_pda_seed(owner.account_id, position_nonce);
     let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
-    assert_eq!(
-        position.account_id, expected_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        position.account_id,
+        expected_id,
         "Position account ID does not match expected derivation"
     );
     seed
@@ -335,7 +341,9 @@ pub fn verify_position_and_get_seed(
 /// Verify the vault account's address matches `(stablecoin_program_id, position)` and
 /// return the [`PdaSeed`] for use in chained calls.
 ///
-/// # Panics
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
 /// If `vault.account_id` does not match the address derived from `position_id` and
 /// `stablecoin_program_id`.
 pub fn verify_position_vault_and_get_seed(
@@ -345,8 +353,10 @@ pub fn verify_position_vault_and_get_seed(
 ) -> PdaSeed {
     let seed = compute_position_vault_pda_seed(position_id);
     let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
-    assert_eq!(
-        vault.account_id, expected_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault.account_id,
+        expected_id,
         "Position vault account ID does not match expected derivation"
     );
     seed

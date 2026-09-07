@@ -5,8 +5,9 @@ use spel_framework::context::ProgramContext;
 use nssa_core::{account::AccountWithMetadata, program::ProgramId};
 
 #[cfg(not(test))]
-risc0_zkvm::guest::entry!(main);
+risc0_zkvm::guest::entry!(metered_main);
 
+#[program_revert_macros::metered_entry(ata_core::error::INVALID_INPUT)]
 #[lez_program(instruction = "ata_core::Instruction")]
 mod ata {
     #[expect(

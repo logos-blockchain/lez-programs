@@ -2,7 +2,8 @@ use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ProgramId},
 };
-use token_core::TokenDefinition;
+use program_revert::UnwrapOrRevert as _;
+use token_core::{error, TokenDefinition};
 
 /// Rotate or revoke the mint authority under **self/PDA authority**: the definition
 /// account itself is the current authority and proves it by being authorized in this
@@ -44,13 +45,18 @@ fn set_authority_inner(
     new_authority: Option<AccountId>,
     token_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
-    assert_eq!(
-        definition_account.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        definition_account.account.program_owner,
+        token_program_id,
         "Token definition must be owned by token program"
     );
 
     let mut definition = TokenDefinition::try_from(&definition_account.account.data)
-        .expect("Token Definition account must be valid");
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Token Definition account must be valid",
+        );
 
     match &mut definition {
         TokenDefinition::Fungible { authority, .. } => {
@@ -58,19 +64,26 @@ fn set_authority_inner(
             // match the stored authority. That account is the explicit external
             // authority when present, otherwise the definition account itself.
             // `None` means the authority was renounced and can no longer be set.
-            let current = authority.expect("SetAuthority failed: authority already revoked");
+            let current = authority.unwrap_or_revert(
+                error::INVALID_INPUT,
+                "SetAuthority failed: authority already revoked",
+            );
             let authority_ref = authority_account.as_ref().unwrap_or(&definition_account);
-            assert!(
+            program_revert::require!(
+                error::INVALID_INPUT,
                 authority_ref.is_authorized,
                 "Mint authority must authorize the transaction"
             );
-            assert_eq!(
-                authority_ref.account_id, current,
+            program_revert::require_eq!(
+                error::INVALID_INPUT,
+                authority_ref.account_id,
+                current,
                 "SetAuthority failed: signer is not the current authority"
             );
 
             if let Some(new) = &new_authority {
-                assert!(
+                program_revert::require!(
+                    error::INVALID_INPUT,
                     new.value() != &[0u8; 32],
                     "New mint authority must be a valid non-zero account ID"
                 );
@@ -79,7 +92,10 @@ fn set_authority_inner(
             *authority = new_authority;
         }
         TokenDefinition::NonFungible { .. } => {
-            panic!("SetAuthority is not supported for Non-Fungible Tokens");
+            program_revert::revert!(
+                error::INVALID_INPUT,
+                "SetAuthority is not supported for Non-Fungible Tokens"
+            );
         }
     }
 

@@ -9,8 +9,9 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use stablecoin_core::{
-    compute_stability_fee_accumulator_pda, math::compute_current_accumulated_rate,
+    compute_stability_fee_accumulator_pda, error, math::compute_current_accumulated_rate,
     ProtocolParameters, StabilityFeeAccumulator,
 };
 
@@ -21,7 +22,7 @@ use stablecoin_core::{
 /// regardless of cadence, so a redundant call is a harmless no-op that just
 /// re-stamps `last_accrued_at`. Never blocked by the frozen flag.
 ///
-/// See spec §10.2 for the full account contract and panic conditions.
+/// See spec §10.2 for the full account contract and rejection conditions.
 #[allow(clippy::needless_pass_by_value)]
 pub fn accrue_stability_fee(
     caller: AccountWithMetadata,
@@ -30,7 +31,11 @@ pub fn accrue_stability_fee(
     clock: AccountWithMetadata,
     stablecoin_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    assert!(caller.is_authorized, "Caller authorization is missing");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        caller.is_authorized,
+        "Caller authorization is missing"
+    );
 
     let (params, accumulator) = decode_fee_accrual_inputs(
         &protocol_parameters,
@@ -61,34 +66,41 @@ pub(crate) fn decode_fee_accrual_inputs(
     stability_fee_accumulator: &AccountWithMetadata,
     stablecoin_program_id: ProgramId,
 ) -> (ProtocolParameters, StabilityFeeAccumulator) {
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         protocol_parameters.account,
         Account::default(),
         "ProtocolParameters account must be initialized"
     );
-    assert_eq!(
-        protocol_parameters.account.program_owner, stablecoin_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        protocol_parameters.account.program_owner,
+        stablecoin_program_id,
         "ProtocolParameters not owned by this stablecoin program"
     );
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         stability_fee_accumulator.account,
         Account::default(),
         "StabilityFeeAccumulator account must be initialized"
     );
-    assert_eq!(
-        stability_fee_accumulator.account.program_owner, stablecoin_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        stability_fee_accumulator.account.program_owner,
+        stablecoin_program_id,
         "StabilityFeeAccumulator not owned by this stablecoin program"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         stability_fee_accumulator.account_id,
         compute_stability_fee_accumulator_pda(stablecoin_program_id),
         "StabilityFeeAccumulator account ID does not match expected PDA derivation"
     );
 
     let params = ProtocolParameters::try_from(&protocol_parameters.account.data)
-        .expect("ProtocolParameters must decode");
+        .unwrap_or_revert(error::INVALID_INPUT, "ProtocolParameters must decode");
     let accumulator = StabilityFeeAccumulator::try_from(&stability_fee_accumulator.account.data)
-        .expect("StabilityFeeAccumulator must decode");
+        .unwrap_or_revert(error::INVALID_INPUT, "StabilityFeeAccumulator must decode");
 
     (params, accumulator)
 }
@@ -121,11 +133,14 @@ pub(crate) fn advance_fee_accumulator(
 ///
 /// Shared by all three pokes.
 pub(crate) fn read_clock(clock: &AccountWithMetadata) -> u64 {
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "Clock account must be the system CLOCK_01 account"
     );
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         clock.account,
         Account::default(),
         "Clock account must be initialized"

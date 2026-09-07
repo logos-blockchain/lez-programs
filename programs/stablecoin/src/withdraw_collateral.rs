@@ -2,7 +2,10 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
-use stablecoin_core::{verify_position_and_get_seed, verify_position_vault_and_get_seed, Position};
+use program_revert::UnwrapOrRevert as _;
+use stablecoin_core::{
+    error, verify_position_and_get_seed, verify_position_vault_and_get_seed, Position,
+};
 use token_core::TokenHolding;
 
 /// Withdraw `amount` collateral tokens from `position`'s vault back to `destination`.
@@ -18,7 +21,9 @@ use token_core::TokenHolding;
 /// When that lands, this guard is replaced by real fee accrual + a
 /// collateralization-ratio check against the post-withdrawal collateral.
 ///
-/// # Panics
+/// # Failures
+/// Reverts in the zkVM; panics on native targets.
+///
 /// - `owner` is not authorized.
 /// - `position` is uninitialized, not owned by `stablecoin_program_id`, holds data that does not
 ///   decode as a [`Position`], or sits at an address that does not match
@@ -38,19 +43,28 @@ pub fn withdraw_collateral(
     stablecoin_program_id: ProgramId,
     amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    assert!(owner.is_authorized, "Owner authorization is missing");
-    assert_ne!(
+    program_revert::require!(
+        error::INVALID_INPUT,
+        owner.is_authorized,
+        "Owner authorization is missing"
+    );
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         position.account,
         Account::default(),
         "Position account must be initialized"
     );
-    assert_eq!(
-        position.account.program_owner, stablecoin_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        position.account.program_owner,
+        stablecoin_program_id,
         "Position is not owned by this stablecoin program"
     );
 
-    let position_data = Position::try_from(&position.account.data)
-        .expect("Position account must hold valid Position state");
+    let position_data = Position::try_from(&position.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Position account must hold valid Position state",
+    );
     // `verify_position_and_get_seed` asserts the position address matches the
     // (owner, position_nonce) PDA derivation. We do not use the seed
     // downstream — the position is already PDA-claimed.
@@ -62,19 +76,25 @@ pub fn withdraw_collateral(
     );
     // The PDA derivation above already binds the owner; this guards the stored
     // discovery copy against silently drifting out of sync.
-    assert_eq!(
-        position_data.owner_account_id, owner.account_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        position_data.owner_account_id,
+        owner.account_id,
         "Position owner_account_id does not match the owner account"
     );
     let vault_seed =
         verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
-    assert_eq!(
-        position_data.vault_account_id, vault.account_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        position_data.vault_account_id,
+        vault.account_id,
         "Position vault_account_id does not match the vault account"
     );
 
-    let vault_holding = TokenHolding::try_from(&vault.account.data)
-        .expect("Vault account must hold a valid TokenHolding");
+    let vault_holding = TokenHolding::try_from(&vault.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Vault account must hold a valid TokenHolding",
+    );
     // The vault PDA is verified to belong to this position, so its holding's
     // definition is the authoritative collateral definition. #161 dropped the
     // redundant copy from `Position`; `ProtocolParameters` owns the global
@@ -82,31 +102,40 @@ pub fn withdraw_collateral(
     let collateral_definition_id = vault_holding.definition_id();
 
     let token_program_id = vault.account.program_owner;
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         destination.account,
         Account::default(),
         "Destination must be initialized"
     );
-    assert_eq!(
-        destination.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        destination.account.program_owner,
+        token_program_id,
         "Destination must be owned by the same Token Program as the vault"
     );
-    let destination_holding = TokenHolding::try_from(&destination.account.data)
-        .expect("Destination account must hold a valid TokenHolding");
-    assert_eq!(
+    let destination_holding = TokenHolding::try_from(&destination.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Destination account must hold a valid TokenHolding",
+    );
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         destination_holding.definition_id(),
         collateral_definition_id,
         "Destination token definition does not match the position's collateral definition"
     );
 
-    assert_eq!(
+    program_revert::require_eq!(error::INVALID_INPUT,
         position_data.normalized_debt_amount, 0,
         "withdraw_collateral with debt is not supported yet — fee accrual + collateralization check land in #173"
     );
     let new_collateral = position_data
         .collateral_amount
         .checked_sub(amount)
-        .expect("Withdrawal amount exceeds position collateral");
+        .unwrap_or_revert(
+            error::INSUFFICIENT_BALANCE,
+            "Withdrawal amount exceeds position collateral",
+        );
 
     let updated_position = Position {
         owner_account_id: position_data.owner_account_id,

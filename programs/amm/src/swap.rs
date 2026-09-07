@@ -1,5 +1,5 @@
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed,
+    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed, error,
     read_vault_fungible_balances, spot_price_q64_64, swap_exact_in_amounts, swap_exact_out_amounts,
     AmmConfig, MINIMUM_LIQUIDITY,
 };
@@ -9,6 +9,7 @@ use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use twap_oracle_core::compute_current_tick_account_pda;
 
 /// Validates swap setup: checks pool liquidity is ready, vaults match, and reserves are sufficient.
@@ -17,31 +18,40 @@ fn validate_swap_setup(
     vault_a: &AccountWithMetadata,
     vault_b: &AccountWithMetadata,
 ) -> PoolDefinition {
-    let pool_def_data = PoolDefinition::try_from(&pool.account.data)
-        .expect("AMM Program expects a valid Pool Definition Account");
+    let pool_def_data = PoolDefinition::try_from(&pool.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "AMM Program expects a valid Pool Definition Account",
+    );
     assert_supported_fee_tier(pool_def_data.fees);
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
         "Pool liquidity supply is below minimum liquidity"
     );
-    assert_eq!(
-        vault_a.account_id, pool_def_data.vault_a_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_a.account_id,
+        pool_def_data.vault_a_id,
         "Vault A was not provided"
     );
-    assert_eq!(
-        vault_b.account_id, pool_def_data.vault_b_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_b.account_id,
+        pool_def_data.vault_b_id,
         "Vault B was not provided"
     );
 
     let (vault_a_balance, vault_b_balance) =
         read_vault_fungible_balances("Validate swap setup", vault_a, vault_b);
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         vault_a_balance >= pool_def_data.reserve_a,
         "Reserve for Token A exceeds vault balance"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         vault_b_balance >= pool_def_data.reserve_b,
         "Reserve for Token B exceeds vault balance"
     );
@@ -81,15 +91,21 @@ fn finalize_swap(
         reserve_a: pool_def_data
             .reserve_a
             .checked_add(deposit_a)
-            .expect("reserve_a + deposit_a overflows u128")
+            .unwrap_or_revert(error::ARITHMETIC, "reserve_a + deposit_a overflows u128")
             .checked_sub(withdraw_a)
-            .expect("reserve_a + deposit_a - withdraw_a underflows"),
+            .unwrap_or_revert(
+                error::ARITHMETIC,
+                "reserve_a + deposit_a - withdraw_a underflows",
+            ),
         reserve_b: pool_def_data
             .reserve_b
             .checked_add(deposit_b)
-            .expect("reserve_b + deposit_b overflows u128")
+            .unwrap_or_revert(error::ARITHMETIC, "reserve_b + deposit_b overflows u128")
             .checked_sub(withdraw_b)
-            .expect("reserve_b + deposit_b - withdraw_b underflows"),
+            .unwrap_or_revert(
+                error::ARITHMETIC,
+                "reserve_b + deposit_b - withdraw_b underflows",
+            ),
         ..pool_def_data
     };
 
@@ -157,21 +173,28 @@ pub fn swap_exact_input(
 
     // The program IDs are taken from the config account, not trusted from a caller-supplied
     // account. Validating the config PDA is also the Program's initialization gate.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account_id,
         compute_config_pda(amm_program_id),
         "Swap exact input: AMM config Account ID does not match PDA"
     );
-    let config_data = AmmConfig::try_from(&config.account.data)
-        .expect("Swap exact input: AMM Program must be initialized before use");
+    let config_data = AmmConfig::try_from(&config.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Swap exact input: AMM Program must be initialized before use",
+    );
     let token_program_id = config_data.token_program_id;
     let twap_oracle_program_id = config_data.twap_oracle_program_id;
-    assert_eq!(
-        vault_a.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_a.account.program_owner,
+        token_program_id,
         "Vault A must be owned by the configured Token Program"
     );
-    assert_eq!(
-        vault_b.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_b.account.program_owner,
+        token_program_id,
         "Vault B must be owned by the configured Token Program"
     );
 
@@ -179,30 +202,43 @@ pub fn swap_exact_input(
     // role-based holdings are mapped back to the pool's stored A/B order so the rest of the
     // routine — reserve bookkeeping and finalize — stays keyed to token A/B.
     let token_in_id = token_core::TokenHolding::try_from(&user_input_holding.account.data)
-        .expect("Swap exact input: input holding must be a valid token holding")
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Swap exact input: input holding must be a valid token holding",
+        )
         .definition_id();
     let (user_holding_a, user_holding_b) = if token_in_id == pool_def_data.definition_token_a_id {
         (user_input_holding, user_output_holding)
     } else if token_in_id == pool_def_data.definition_token_b_id {
         (user_output_holding, user_input_holding)
     } else {
-        panic!("Swap exact input: input holding token is not part of the pool");
+        program_revert::revert!(
+            error::INVALID_INPUT,
+            "Swap exact input: input holding token is not part of the pool"
+        );
     };
-    assert_eq!(
-        user_holding_a.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_a.account.program_owner,
+        token_program_id,
         "User Token A holding must be owned by the configured Token Program"
     );
-    assert_eq!(
-        user_holding_b.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_b.account.program_owner,
+        token_program_id,
         "User Token B holding must be owned by the configured Token Program"
     );
     // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
     // clock here so the swap is rejected early with an AMM-level error.
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "Swap exact input: clock account must be the canonical 1-block LEZ clock account"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
         "Swap exact input: current tick Account ID does not match PDA"
@@ -240,7 +276,10 @@ pub fn swap_exact_input(
 
             (chained_calls, [0, withdraw_a], [deposit_b, 0])
         } else {
-            panic!("AccountId is not a token type for the pool");
+            program_revert::revert!(
+                error::INVALID_INPUT,
+                "AccountId is not a token type for the pool"
+            );
         };
 
     // Echo the two user holdings in the guest's declared slot order (input, then output) so the
@@ -302,17 +341,23 @@ fn swap_logic(
         reserve_withdraw_vault_amount,
         fee_bps,
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         effective_amount_in != 0,
         "Effective swap amount should be nonzero"
     );
 
     // Slippage check
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         min_amount_out <= withdraw_amount,
         "Withdraw amount is less than minimal amount out"
     );
-    assert!(withdraw_amount != 0, "Withdraw amount should be nonzero");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        withdraw_amount != 0,
+        "Withdraw amount should be nonzero"
+    );
 
     let token_program_id = user_deposit.account.program_owner;
 
@@ -331,7 +376,10 @@ fn swap_logic(
     let pda_seed = compute_vault_pda_seed(
         pool_id,
         token_core::TokenHolding::try_from(&vault_withdraw.account.data)
-            .expect("Swap Logic: AMM Program expects valid token data")
+            .unwrap_or_revert(
+                error::INVALID_INPUT,
+                "Swap Logic: AMM Program expects valid token data",
+            )
             .definition_id(),
     );
 
@@ -371,21 +419,28 @@ pub fn swap_exact_output(
 
     // The program IDs are taken from the config account, not trusted from a caller-supplied
     // account. Validating the config PDA is also the Program's initialization gate.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account_id,
         compute_config_pda(amm_program_id),
         "Swap exact output: AMM config Account ID does not match PDA"
     );
-    let config_data = AmmConfig::try_from(&config.account.data)
-        .expect("Swap exact output: AMM Program must be initialized before use");
+    let config_data = AmmConfig::try_from(&config.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Swap exact output: AMM Program must be initialized before use",
+    );
     let token_program_id = config_data.token_program_id;
     let twap_oracle_program_id = config_data.twap_oracle_program_id;
-    assert_eq!(
-        vault_a.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_a.account.program_owner,
+        token_program_id,
         "Vault A must be owned by the configured Token Program"
     );
-    assert_eq!(
-        vault_b.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_b.account.program_owner,
+        token_program_id,
         "Vault B must be owned by the configured Token Program"
     );
 
@@ -393,30 +448,43 @@ pub fn swap_exact_output(
     // role-based holdings are mapped back to the pool's stored A/B order so the rest of the
     // routine — reserve bookkeeping and finalize — stays keyed to token A/B.
     let token_in_id = token_core::TokenHolding::try_from(&user_input_holding.account.data)
-        .expect("Swap exact output: input holding must be a valid token holding")
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Swap exact output: input holding must be a valid token holding",
+        )
         .definition_id();
     let (user_holding_a, user_holding_b) = if token_in_id == pool_def_data.definition_token_a_id {
         (user_input_holding, user_output_holding)
     } else if token_in_id == pool_def_data.definition_token_b_id {
         (user_output_holding, user_input_holding)
     } else {
-        panic!("Swap exact output: input holding token is not part of the pool");
+        program_revert::revert!(
+            error::INVALID_INPUT,
+            "Swap exact output: input holding token is not part of the pool"
+        );
     };
-    assert_eq!(
-        user_holding_a.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_a.account.program_owner,
+        token_program_id,
         "User Token A holding must be owned by the configured Token Program"
     );
-    assert_eq!(
-        user_holding_b.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_b.account.program_owner,
+        token_program_id,
         "User Token B holding must be owned by the configured Token Program"
     );
     // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
     // clock here so the swap is rejected early with an AMM-level error.
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "Swap exact output: clock account must be the canonical 1-block LEZ clock account"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
         "Swap exact output: current tick Account ID does not match PDA"
@@ -454,7 +522,10 @@ pub fn swap_exact_output(
 
             (chained_calls, [0, withdraw_a], [deposit_b, 0])
         } else {
-            panic!("AccountId is not a token type for the pool");
+            program_revert::revert!(
+                error::INVALID_INPUT,
+                "AccountId is not a token type for the pool"
+            );
         };
 
     // Echo the two user holdings in the guest's declared slot order (input, then output) so the
@@ -506,10 +577,16 @@ fn exact_output_swap_logic(
     pool_id: AccountId,
 ) -> (Vec<ChainedCall>, u128, u128) {
     // Guard: exact_amount_out must be nonzero
-    assert_ne!(exact_amount_out, 0, "Exact amount out must be nonzero");
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
+        exact_amount_out,
+        0,
+        "Exact amount out must be nonzero"
+    );
 
     // Guard: exact_amount_out must be less than reserve_withdraw_vault_amount
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         exact_amount_out < reserve_withdraw_vault_amount,
         "Exact amount out exceeds reserve"
     );
@@ -523,10 +600,14 @@ fn exact_output_swap_logic(
         reserve_withdraw_vault_amount,
         fee_bps,
     )
-    .expect("swap exact output: reserves and fee must yield a valid input");
+    .unwrap_or_revert(
+        error::INVALID_INPUT,
+        "swap exact output: reserves and fee must yield a valid input",
+    );
 
     // Slippage check
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         deposit_amount <= max_amount_in,
         "Required input exceeds maximum amount in"
     );
@@ -548,7 +629,10 @@ fn exact_output_swap_logic(
     let pda_seed = compute_vault_pda_seed(
         pool_id,
         token_core::TokenHolding::try_from(&vault_withdraw.account.data)
-            .expect("Exact Output Swap Logic: AMM Program expects valid token data")
+            .unwrap_or_revert(
+                error::INVALID_INPUT,
+                "Exact Output Swap Logic: AMM Program expects valid token data",
+            )
             .definition_id(),
     );
 

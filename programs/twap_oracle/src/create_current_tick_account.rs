@@ -4,7 +4,7 @@ use lee_core::{
     program::{AccountPostState, Claim, ProgramId},
 };
 use twap_oracle_core::{
-    compute_current_tick_account_pda, compute_current_tick_account_pda_seed, price_to_tick,
+    compute_current_tick_account_pda, compute_current_tick_account_pda_seed, error, price_to_tick,
     CurrentTickAccount,
 };
 
@@ -19,8 +19,8 @@ use twap_oracle_core::{
 /// The timestamp is taken from `clock`, which must be [`CLOCK_01_PROGRAM_ACCOUNT_ID`]; it is never
 /// caller-supplied, so it cannot be forged.
 ///
-/// # Panics
-/// Panics if:
+/// # Failures
+/// Reverts in the zkVM (panics on native targets) if:
 /// - `current_tick_account.account_id` does not match
 ///   `compute_current_tick_account_pda(oracle_program_id, price_source.account_id)`.
 /// - `current_tick_account.account` is not the default (already initialised).
@@ -34,22 +34,27 @@ pub fn create_current_tick_account(
     oracle_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     let price_source_id = price_source.account_id;
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(oracle_program_id, price_source_id),
         "CreateCurrentTickAccount: current tick account ID does not match expected PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account,
         Account::default(),
         "CreateCurrentTickAccount: current tick account must be uninitialized"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         price_source.is_authorized,
         "CreateCurrentTickAccount: price source account must be authorized"
     );
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "CreateCurrentTickAccount: clock account must be the canonical 1-block LEZ clock account"
     );
 

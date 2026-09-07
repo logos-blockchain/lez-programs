@@ -1,11 +1,12 @@
 use amm_core::{
-    compute_config_pda, compute_pool_pda, compute_pool_pda_seed, AmmConfig, PoolDefinition,
+    compute_config_pda, compute_pool_pda, compute_pool_pda_seed, error, AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
     account::{Account, AccountWithMetadata},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use twap_oracle_core::{
     compute_current_tick_account_pda, compute_price_observations_pda, CurrentTickAccount,
 };
@@ -27,8 +28,8 @@ use twap_oracle_core::{
 /// exist — both are checked here so the call is rejected early with an AMM-level error, in
 /// addition to the oracle's own checks.
 ///
-/// # Panics
-/// Panics if:
+/// # Failures
+/// Reverts in the zkVM (panics on native targets) if:
 /// - `config.account_id` does not match `compute_config_pda(amm_program_id)`, or the config is
 ///   uninitialized (the AMM Program has not been initialized).
 /// - `clock.account_id` is not [`CLOCK_01_PROGRAM_ACCOUNT_ID`].
@@ -48,27 +49,36 @@ pub fn create_price_observations(
     amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     // Config gate: validate the config PDA and read the TWAP oracle program ID from it.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account_id,
         compute_config_pda(amm_program_id),
         "Create price observations: AMM config Account ID does not match PDA"
     );
     let twap_oracle_program_id = AmmConfig::try_from(&config.account.data)
-        .expect("Create price observations: AMM Program must be initialized before use")
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Create price observations: AMM Program must be initialized before use",
+        )
         .twap_oracle_program_id;
 
     // The clock must be the canonical 1-block LEZ system clock; otherwise a caller could seed the
     // feed with a forged base timestamp.
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "Create price observations: clock account must be the canonical 1-block LEZ clock account"
     );
 
     // The pool is the price source. Verify it is a genuine AMM pool PDA so we only ever authorize
     // a real pool as the source.
-    let pool_def = PoolDefinition::try_from(&pool.account.data)
-        .expect("Create price observations: AMM Program expects a valid Pool Definition Account");
-    assert_eq!(
+    let pool_def = PoolDefinition::try_from(&pool.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Create price observations: AMM Program expects a valid Pool Definition Account",
+    );
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         pool.account_id,
         compute_pool_pda(
             amm_program_id,
@@ -80,23 +90,29 @@ pub fn create_price_observations(
 
     // The initial tick comes from the pool's authoritative CurrentTickAccount, not from the
     // caller. Verifying its PDA ties it to this exact pool, so the seed tick cannot be forged.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
         "Create price observations: current tick Account ID does not match PDA"
     );
     let initial_tick = CurrentTickAccount::try_from(&current_tick_account.account.data)
-        .expect("Create price observations: AMM Program expects a valid CurrentTickAccount")
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Create price observations: AMM Program expects a valid CurrentTickAccount",
+        )
         .tick;
 
     // Verify the observations account is the expected TWAP PDA for this (pool, window) pair and
     // reject if it already exists.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         price_observations.account_id,
         compute_price_observations_pda(twap_oracle_program_id, pool.account_id, window_duration),
         "Create price observations: price observations Account ID does not match PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         price_observations.account,
         Account::default(),
         "Create price observations: price observations account already exists"

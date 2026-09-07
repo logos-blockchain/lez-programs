@@ -1,7 +1,10 @@
 //! This crate contains core data structures and utilities for the Token Program.
 
+pub mod error;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::account::{AccountId, Data};
+use program_revert::UnwrapOrRevert as _;
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
 
@@ -160,7 +163,10 @@ impl From<&TokenDefinition> for Data {
         BorshSerialize::serialize(definition, &mut data)
             .expect("Serialization to Vec should not fail");
 
-        Data::try_from(data).expect("Token definition encoded data should fit into Data")
+        Data::try_from(data).unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Token definition encoded data exceeds Data capacity",
+        )
     }
 }
 
@@ -294,6 +300,9 @@ impl From<&TokenMetadata> for Data {
         BorshSerialize::serialize(metadata, &mut data)
             .expect("Serialization to Vec should not fail");
 
-        Data::try_from(data).expect("Token metadata encoded data should fit into Data")
+        Data::try_from(data).unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Token metadata encoded data exceeds Data capacity",
+        )
     }
 }

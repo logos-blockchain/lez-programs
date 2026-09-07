@@ -1,4 +1,4 @@
-use amm_core::{compute_config_pda, compute_config_pda_seed, AmmConfig};
+use amm_core::{compute_config_pda, compute_config_pda_seed, error, AmmConfig};
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, Claim, ProgramId},
@@ -13,8 +13,8 @@ use lee_core::{
 /// existence is the Program's "initialized" flag: the chained-call instructions read these
 /// program IDs from it and reject calls until it exists.
 ///
-/// # Panics
-/// Panics if:
+/// # Failures
+/// Reverts in the zkVM (panics on native targets) if:
 /// - `config.account_id` does not match `compute_config_pda(amm_program_id)`.
 /// - `config.account` is not the default (the Program is already initialized).
 pub fn initialize(
@@ -24,12 +24,14 @@ pub fn initialize(
     authority: AccountId,
     amm_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account_id,
         compute_config_pda(amm_program_id),
         "Initialize: AMM config Account ID does not match PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account,
         Account::default(),
         "Initialize: AMM config account must be uninitialized"

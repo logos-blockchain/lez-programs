@@ -2,14 +2,15 @@ use std::num::NonZeroU128;
 
 use amm_core::{
     assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda_seed,
-    compute_pool_pda_seed, compute_vault_pda_seed, mul_div_floor, spot_price_q64_64, AmmConfig,
-    PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_pool_pda_seed, compute_vault_pda_seed, error, mul_div_floor, spot_price_q64_64,
+    AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use twap_oracle_core::compute_current_tick_account_pda;
 
 #[expect(
@@ -36,61 +37,84 @@ pub fn remove_liquidity(
 
     // The program IDs are taken from the config account, not trusted from a caller-supplied
     // holding. Validating the config PDA is also the Program's initialization gate.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account_id,
         compute_config_pda(amm_program_id),
         "Remove liquidity: AMM config Account ID does not match PDA"
     );
-    let config_data = AmmConfig::try_from(&config.account.data)
-        .expect("Remove liquidity: AMM Program must be initialized before use");
+    let config_data = AmmConfig::try_from(&config.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Remove liquidity: AMM Program must be initialized before use",
+    );
     let token_program_id = config_data.token_program_id;
     let twap_oracle_program_id = config_data.twap_oracle_program_id;
 
     // 1. Fetch Pool state
-    let pool_def_data = PoolDefinition::try_from(&pool.account.data)
-        .expect("Remove liquidity: AMM Program expects a valid Pool Definition Account");
+    let pool_def_data = PoolDefinition::try_from(&pool.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Remove liquidity: AMM Program expects a valid Pool Definition Account",
+    );
     assert_supported_fee_tier(pool_def_data.fees);
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
         "Pool liquidity supply is below minimum liquidity"
     );
-    assert_eq!(
-        pool_def_data.liquidity_pool_id, pool_definition_lp.account_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        pool_def_data.liquidity_pool_id,
+        pool_definition_lp.account_id,
         "LP definition mismatch"
     );
-    assert_eq!(
-        vault_a.account_id, pool_def_data.vault_a_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_a.account_id,
+        pool_def_data.vault_a_id,
         "Vault A was not provided"
     );
-    assert_eq!(
-        vault_b.account_id, pool_def_data.vault_b_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_b.account_id,
+        pool_def_data.vault_b_id,
         "Vault B was not provided"
     );
 
-    assert_eq!(
-        vault_a.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_a.account.program_owner,
+        token_program_id,
         "Vault A must be owned by the configured Token Program"
     );
-    assert_eq!(
-        vault_b.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_b.account.program_owner,
+        token_program_id,
         "Vault B must be owned by the configured Token Program"
     );
-    assert_eq!(
-        user_holding_a.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_a.account.program_owner,
+        token_program_id,
         "User Token A holding must be owned by the configured Token Program"
     );
-    assert_eq!(
-        user_holding_b.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_b.account.program_owner,
+        token_program_id,
         "User Token B holding must be owned by the configured Token Program"
     );
     // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
     // clock here so the removal is rejected early with an AMM-level error.
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "Remove liquidity: clock account must be the canonical 1-block LEZ clock account"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
         "Remove liquidity: current tick Account ID does not match PDA"
@@ -104,44 +128,53 @@ pub fn remove_liquidity(
     running_vault_a.is_authorized = true;
     running_vault_b.is_authorized = true;
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         min_amount_to_remove_token_a != 0,
         "Minimum withdraw amount must be nonzero"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         min_amount_to_remove_token_b != 0,
         "Minimum withdraw amount must be nonzero"
     );
 
     // 2. Compute withdrawal amounts
     let user_holding_lp_data = token_core::TokenHolding::try_from(&user_holding_lp.account.data)
-        .expect("Remove liquidity: AMM Program expects a valid Token Account for liquidity token");
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Remove liquidity: AMM Program expects a valid Token Account for liquidity token",
+        );
     let token_core::TokenHolding::Fungible {
         definition_id: _,
         balance: user_lp_balance,
     } = user_holding_lp_data
     else {
-        panic!(
+        program_revert::revert!(error::INVALID_INPUT,
             "Remove liquidity: AMM Program expects a valid Fungible Token Holding Account for liquidity token"
         );
     };
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         user_lp_balance <= pool_def_data.liquidity_pool_supply,
         "Invalid liquidity account provided"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         user_holding_lp_data.definition_id(),
         pool_def_data.liquidity_pool_id,
         "Invalid liquidity account provided"
     );
     // Honest flows should never reach the permanent lock through a valid remove instruction, but
     // we still reject legacy or corrupted states that are already at the locked floor.
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         pool_def_data.liquidity_pool_supply > MINIMUM_LIQUIDITY,
         "Pool only contains locked liquidity"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         remove_liquidity_amount <= user_lp_balance,
         "Remove amount exceeds user LP balance"
     );
@@ -151,7 +184,8 @@ pub fn remove_liquidity(
         .expect("liquidity supply must be at least the locked minimum after validation");
     // The remove instruction never sees the LP lock account directly, so we must still refuse any
     // request that would burn through the permanent floor even if ownership is already corrupted.
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         remove_liquidity_amount <= unlocked_liquidity,
         "Cannot remove locked minimum liquidity"
     );
@@ -170,11 +204,13 @@ pub fn remove_liquidity(
     );
 
     // 3. Validate and slippage check
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         withdraw_amount_a >= min_amount_to_remove_token_a,
         "Insufficient minimal withdraw amount (Token A) provided for liquidity amount"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         withdraw_amount_b >= min_amount_to_remove_token_b,
         "Insufficient minimal withdraw amount (Token B) provided for liquidity amount"
     );
@@ -188,15 +224,24 @@ pub fn remove_liquidity(
         liquidity_pool_supply: pool_def_data
             .liquidity_pool_supply
             .checked_sub(delta_lp)
-            .expect("liquidity_pool_supply - delta_lp underflows"),
+            .unwrap_or_revert(
+                error::ARITHMETIC,
+                "liquidity_pool_supply - delta_lp underflows",
+            ),
         reserve_a: pool_def_data
             .reserve_a
             .checked_sub(withdraw_amount_a)
-            .expect("reserve_a - withdraw_amount_a underflows"),
+            .unwrap_or_revert(
+                error::ARITHMETIC,
+                "reserve_a - withdraw_amount_a underflows",
+            ),
         reserve_b: pool_def_data
             .reserve_b
             .checked_sub(withdraw_amount_b)
-            .expect("reserve_b - withdraw_amount_b underflows"),
+            .unwrap_or_revert(
+                error::ARITHMETIC,
+                "reserve_b - withdraw_amount_b underflows",
+            ),
         ..pool_def_data.clone()
     };
 

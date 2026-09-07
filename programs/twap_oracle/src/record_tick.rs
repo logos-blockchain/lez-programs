@@ -3,8 +3,9 @@ use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use twap_oracle_core::{
-    compute_current_tick_account_pda, compute_price_observations_pda, CurrentTickAccount,
+    compute_current_tick_account_pda, compute_price_observations_pda, error, CurrentTickAccount,
     ObservationEntry, PriceObservations, MAX_TICK_DELTA, OBSERVATIONS_CAPACITY,
 };
 
@@ -25,8 +26,8 @@ use twap_oracle_core::{
 /// advancing the accumulator. `last_recorded_tick` is updated to the raw (untruncated) tick so
 /// the next delta is computed from the true price position.
 ///
-/// # Panics
-/// Panics if:
+/// # Failures
+/// Reverts in the zkVM (panics on native targets) if:
 /// - `current_tick_account.account_id` does not match
 ///   `compute_current_tick_account_pda(oracle_program_id, price_source_id)`.
 /// - `price_observations.account_id` does not match
@@ -41,18 +42,22 @@ pub fn record_tick(
     window_duration: u64,
     oracle_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(oracle_program_id, price_source_id),
         "RecordTick: current tick account ID does not match expected PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         price_observations.account_id,
         compute_price_observations_pda(oracle_program_id, price_source_id, window_duration),
         "RecordTick: price observations account ID does not match expected PDA"
     );
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "RecordTick: clock account must be the canonical 1-block LEZ clock account"
     );
 
@@ -60,10 +65,16 @@ pub fn record_tick(
     let now = clock_data.timestamp;
 
     let current_tick_data = CurrentTickAccount::try_from(&current_tick_account.account.data)
-        .expect("RecordTick: current tick account must be initialized");
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "RecordTick: current tick account must be initialized",
+        );
 
     let mut observations = PriceObservations::try_from(&price_observations.account.data)
-        .expect("RecordTick: price observations account must be initialized");
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "RecordTick: price observations account must be initialized",
+        );
 
     let capacity =
         usize::try_from(OBSERVATIONS_CAPACITY).expect("OBSERVATIONS_CAPACITY fits in usize");
@@ -114,11 +125,12 @@ pub fn record_tick(
         .saturating_add(clamped_delta);
 
     // Advance cumulative (tick × elapsed milliseconds).
-    let elapsed_ms_i64 = i64::try_from(elapsed_ms).expect("elapsed_ms fits in i64");
+    let elapsed_ms_i64 =
+        i64::try_from(elapsed_ms).unwrap_or_revert(error::ARITHMETIC, "elapsed_ms fits in i64");
     let new_cumulative = i64::from(clamped_tick)
         .checked_mul(elapsed_ms_i64)
         .and_then(|product| last_cumulative.checked_add(product))
-        .expect("tick_cumulative fits in i64");
+        .unwrap_or_revert(error::ARITHMETIC, "tick_cumulative fits in i64");
 
     // Write new entry and advance the ring buffer.
     let write_index = usize::try_from(observations.write_index).expect("write_index fits in usize");
@@ -138,7 +150,7 @@ pub fn record_tick(
     observations.total_entries = observations
         .total_entries
         .checked_add(1)
-        .expect("total_entries does not overflow");
+        .unwrap_or_revert(error::ARITHMETIC, "total_entries does not overflow");
     observations.last_recorded_tick = current_tick;
 
     let mut price_observations_post = price_observations.account.clone();

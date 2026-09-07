@@ -2,41 +2,49 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, Claim},
 };
-use token_core::TokenHolding;
+use program_revert::UnwrapOrRevert as _;
+use token_core::{error, TokenHolding};
 
 pub fn print_nft(
     master_account: AccountWithMetadata,
     printed_account: AccountWithMetadata,
 ) -> Vec<AccountPostState> {
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         master_account.is_authorized,
         "Master NFT Account must be authorized"
     );
 
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         printed_account.account,
         Account::default(),
         "Printed Account must be uninitialized"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         printed_account.is_authorized,
         "Printed Account must be authorized"
     );
 
-    let mut master_account_data =
-        TokenHolding::try_from(&master_account.account.data).expect("Invalid Token Holding data");
+    let mut master_account_data = TokenHolding::try_from(&master_account.account.data)
+        .unwrap_or_revert(error::INVALID_INPUT, "Invalid Token Holding data");
 
     let TokenHolding::NftMaster {
         definition_id,
         print_balance,
     } = &mut master_account_data
     else {
-        panic!("Invalid Token Holding provided as NFT Master Account");
+        program_revert::revert!(
+            error::INVALID_INPUT,
+            "Invalid Token Holding provided as NFT Master Account"
+        );
     };
 
     let definition_id = *definition_id;
 
-    assert!(
+    program_revert::require!(
+        error::INSUFFICIENT_BALANCE,
         *print_balance > 1,
         "Insufficient balance to print another NFT copy"
     );

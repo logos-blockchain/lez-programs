@@ -1,7 +1,9 @@
+use ata_core::error;
 use lee_core::{
     account::AccountWithMetadata,
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use token_core::TokenHolding;
 
 pub fn burn_from_associated_token_account(
@@ -12,20 +14,30 @@ pub fn burn_from_associated_token_account(
     token_program_id: ProgramId,
     amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    assert!(owner.is_authorized, "Owner authorization is missing");
-    assert_eq!(
-        holder_ata.account.program_owner, token_program_id,
+    program_revert::require!(
+        error::INVALID_INPUT,
+        owner.is_authorized,
+        "Owner authorization is missing"
+    );
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        holder_ata.account.program_owner,
+        token_program_id,
         "Holder ATA must be owned by expected token program"
     );
-    assert_eq!(
-        token_definition.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        token_definition.account.program_owner,
+        token_program_id,
         "Token definition must be owned by expected token program"
     );
     let definition_id = TokenHolding::try_from(&holder_ata.account.data)
-        .expect("Holder ATA must hold a valid token")
+        .unwrap_or_revert(error::INVALID_INPUT, "Holder ATA must hold a valid token")
         .definition_id();
-    assert_eq!(
-        definition_id, token_definition.account_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        definition_id,
+        token_definition.account_id,
         "Holder ATA token definition does not match"
     );
     let seed = ata_core::verify_ata_and_get_seed(

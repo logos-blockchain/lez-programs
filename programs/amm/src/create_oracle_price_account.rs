@@ -1,12 +1,13 @@
 use amm_core::{
-    compute_config_pda, compute_pool_pda, compute_pool_pda_seed, spot_price_q64_64, AmmConfig,
-    PoolDefinition,
+    compute_config_pda, compute_pool_pda, compute_pool_pda_seed, error, spot_price_q64_64,
+    AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
     account::{Account, AccountWithMetadata},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use twap_oracle_core::{compute_oracle_price_account_pda, OBSERVATIONS_CAPACITY};
 
 /// Creates a TWAP oracle price account for `pool` over a time window, on behalf of the AMM.
@@ -26,8 +27,8 @@ use twap_oracle_core::{compute_oracle_price_account_pda, OBSERVATIONS_CAPACITY};
 /// both are checked here so the call is rejected early with an AMM-level error, in addition to the
 /// oracle's own checks.
 ///
-/// # Panics
-/// Panics if:
+/// # Failures
+/// Reverts in the zkVM (panics on native targets) if:
 /// - `config.account_id` does not match `compute_config_pda(amm_program_id)`, or the config is
 ///   uninitialized (the AMM Program has not been initialized).
 /// - `clock.account_id` is not [`CLOCK_01_PROGRAM_ACCOUNT_ID`].
@@ -51,18 +52,22 @@ pub fn create_oracle_price_account(
     amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     // Config gate: validate the config PDA and read the TWAP oracle program ID from it.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account_id,
         compute_config_pda(amm_program_id),
         "Create oracle price account: AMM config Account ID does not match PDA"
     );
     let twap_oracle_program_id = AmmConfig::try_from(&config.account.data)
-        .expect("Create oracle price account: AMM Program must be initialized before use")
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Create oracle price account: AMM Program must be initialized before use",
+        )
         .twap_oracle_program_id;
 
     // The clock must be the canonical 1-block LEZ system clock; otherwise a caller could seed the
     // price account with a forged base timestamp.
-    assert_eq!(
+    program_revert::require_eq!(error::INVALID_INPUT,
         clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
         "Create oracle price account: clock account must be the canonical 1-block LEZ clock account"
     );
@@ -70,7 +75,7 @@ pub fn create_oracle_price_account(
     // A window smaller than the observations capacity can never have a matching PriceObservations
     // account, so PublishPrice could never update the price account. Reject early with an AMM-level
     // error; the oracle enforces the same bound.
-    assert!(
+    program_revert::require!(error::INVALID_INPUT,
         window_duration >= u64::from(OBSERVATIONS_CAPACITY),
         "Create oracle price account: window_duration must be >= OBSERVATIONS_CAPACITY so a matching \
          PriceObservations account can exist and PublishPrice can update this price account"
@@ -79,9 +84,12 @@ pub fn create_oracle_price_account(
     // The pool is the price source. Verify it is a genuine AMM pool PDA so we only ever authorize a
     // real pool as the source, and derive the asset pair and initial price from its validated
     // state.
-    let pool_def = PoolDefinition::try_from(&pool.account.data)
-        .expect("Create oracle price account: AMM Program expects a valid Pool Definition Account");
-    assert_eq!(
+    let pool_def = PoolDefinition::try_from(&pool.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Create oracle price account: AMM Program expects a valid Pool Definition Account",
+    );
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         pool.account_id,
         compute_pool_pda(
             amm_program_id,
@@ -96,7 +104,8 @@ pub fn create_oracle_price_account(
     // A zero spot price is the sentinel consumers treat as "no valid price", so the account must
     // never be seeded with it. This happens when `reserve_b` is zero or so small relative to
     // `reserve_a` that the Q64.64 division floors to zero. The oracle enforces the same bound.
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         initial_price != 0,
         "Create oracle price account: pool spot price must be non-zero (zero is the no-price \
          sentinel; pool reserve_b is zero or negligible relative to reserve_a)"
@@ -104,12 +113,14 @@ pub fn create_oracle_price_account(
 
     // Verify the price account is the expected TWAP PDA for this (pool, window) pair and reject if
     // it already exists.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         oracle_price_account.account_id,
         compute_oracle_price_account_pda(twap_oracle_program_id, pool.account_id, window_duration),
         "Create oracle price account: oracle price Account ID does not match PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         oracle_price_account.account,
         Account::default(),
         "Create oracle price account: oracle price account already exists"

@@ -3,10 +3,11 @@ use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use twap_oracle_core::{
     compute_current_tick_account_pda, compute_oracle_price_account_pda,
-    compute_price_observations_pda, tick_to_oracle_price, CurrentTickAccount, OraclePriceAccount,
-    PriceObservations, MAX_TICK_DELTA, OBSERVATIONS_CAPACITY,
+    compute_price_observations_pda, error, tick_to_oracle_price, CurrentTickAccount,
+    OraclePriceAccount, PriceObservations, MAX_TICK_DELTA, OBSERVATIONS_CAPACITY,
 };
 
 /// Computes the TWAP over the span from the oldest stored observation up to `now` and writes the
@@ -43,8 +44,8 @@ use twap_oracle_core::{
 /// It becomes the consumer-facing freshness signal on the [`OraclePriceAccount`], so a forged or
 /// caller-controlled clock could make a stale price look current; it must never be caller-supplied.
 ///
-/// # Panics
-/// Panics if:
+/// # Failures
+/// Reverts in the zkVM (panics on native targets) if:
 /// - `price_observations.account_id` does not match
 ///   `compute_price_observations_pda(oracle_program_id, price_source_id, window_duration)`.
 /// - `oracle_price_account.account_id` does not match
@@ -62,23 +63,28 @@ pub fn publish_price(
     window_duration: u64,
     oracle_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         price_observations.account_id,
         compute_price_observations_pda(oracle_program_id, price_source_id, window_duration),
         "PublishPrice: price observations account ID does not match expected PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         oracle_price_account.account_id,
         compute_oracle_price_account_pda(oracle_program_id, price_source_id, window_duration),
         "PublishPrice: oracle price account ID does not match expected PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(oracle_program_id, price_source_id),
         "PublishPrice: current tick account ID does not match expected PDA"
     );
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "PublishPrice: clock account must be the canonical 1-block LEZ clock account"
     );
 
@@ -86,11 +92,20 @@ pub fn publish_price(
     let now = clock_data.timestamp;
 
     let observations = PriceObservations::try_from(&price_observations.account.data)
-        .expect("PublishPrice: price observations account must be initialized");
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "PublishPrice: price observations account must be initialized",
+        );
     let mut price_account = OraclePriceAccount::try_from(&oracle_price_account.account.data)
-        .expect("PublishPrice: oracle price account must be initialized");
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "PublishPrice: oracle price account must be initialized",
+        );
     let current_tick_data = CurrentTickAccount::try_from(&current_tick_account.account.data)
-        .expect("PublishPrice: current tick account must be initialized");
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "PublishPrice: current tick account must be initialized",
+        );
 
     // No-op: need at least two observations to compute a TWAP.
     if observations.total_entries < 2 {
@@ -162,30 +177,42 @@ pub fn publish_price(
     let boundary = current_tick_data.last_updated.clamp(t2.timestamp, now);
     let pre_ms = boundary.saturating_sub(t2.timestamp);
     let post_ms = now.saturating_sub(boundary);
-    let pre_ms_i64 = i64::try_from(pre_ms).expect("pre_ms fits in i64");
-    let post_ms_i64 = i64::try_from(post_ms).expect("post_ms fits in i64");
+    let pre_ms_i64 =
+        i64::try_from(pre_ms).unwrap_or_revert(error::ARITHMETIC, "pre_ms fits in i64");
+    let post_ms_i64 =
+        i64::try_from(post_ms).unwrap_or_revert(error::ARITHMETIC, "post_ms fits in i64");
 
     // Pre-boundary segment carries `last_recorded_tick` (the tick at t2); post-boundary segment
     // carries the clamped live tick.
     let pre_cumulative = i64::from(observations.last_recorded_tick)
         .checked_mul(pre_ms_i64)
-        .expect("pre-boundary tail cumulative fits in i64");
+        .unwrap_or_revert(
+            error::ARITHMETIC,
+            "pre-boundary tail cumulative fits in i64",
+        );
     let post_cumulative = i64::from(clamped_tick)
         .checked_mul(post_ms_i64)
-        .expect("post-boundary tail cumulative fits in i64");
+        .unwrap_or_revert(
+            error::ARITHMETIC,
+            "post-boundary tail cumulative fits in i64",
+        );
     let cum_now = t2
         .tick_cumulative
         .checked_add(pre_cumulative)
         .and_then(|acc| acc.checked_add(post_cumulative))
-        .expect("extrapolated tick_cumulative fits in i64");
+        .unwrap_or_revert(
+            error::ARITHMETIC,
+            "extrapolated tick_cumulative fits in i64",
+        );
 
     // Average over [t1, now]. `now > t1.timestamp` because `now >= t2.timestamp > t1.timestamp`
     // (the sampling guard makes stored timestamps strictly increasing), so the divisor is positive.
     let elapsed_ms = now.checked_sub(t1.timestamp).expect("now >= t1.timestamp");
-    let elapsed_ms_i64 = i64::try_from(elapsed_ms).expect("elapsed_ms fits in i64");
+    let elapsed_ms_i64 =
+        i64::try_from(elapsed_ms).unwrap_or_revert(error::ARITHMETIC, "elapsed_ms fits in i64");
     let cumulative_diff = cum_now
         .checked_sub(t1.tick_cumulative)
-        .expect("tick_cumulative difference fits in i64");
+        .unwrap_or_revert(error::ARITHMETIC, "tick_cumulative difference fits in i64");
     // Floor division (round toward −∞), matching Uniswap's `OracleLibrary.consult`. The divisor is
     // always positive, so `div_euclid` is exactly the floor. Plain truncating division would round
     // toward zero, biasing negative TWAPs upward by one tick.

@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "programs/common/revert",
+    "programs/common/revert-macros",
     "modules/amm/ffi",
     "modules/stablecoin/ffi",
     "modules/token/ffi",

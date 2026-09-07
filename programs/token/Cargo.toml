@@ -7,5 +7,6 @@ edition = "2021"
 workspace = true
 
 [dependencies]
+program-revert = { path = "../common/revert" }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"] }
 token_core = { path = "core" }

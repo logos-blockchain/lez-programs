@@ -10,12 +10,13 @@ use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_protocol_parameters_pda_seed,
     compute_redemption_price_state_pda, compute_redemption_price_state_pda_seed,
     compute_stability_fee_accumulator_pda, compute_stability_fee_accumulator_pda_seed,
     compute_stablecoin_definition_pda, compute_stablecoin_definition_pda_seed,
-    compute_stablecoin_master_holding_pda, compute_stablecoin_master_holding_pda_seed,
+    compute_stablecoin_master_holding_pda, compute_stablecoin_master_holding_pda_seed, error,
     math::FIXED_POINT_ONE, ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator,
 };
 use token_core::TokenDefinition;
@@ -53,7 +54,7 @@ pub struct InitializeProgramParams<'a> {
 
 /// Bootstrap a fresh stablecoin protocol instance.
 ///
-/// See spec §10.1 for the full account contract and panic conditions. `now` is
+/// See spec §10.1 for the full account contract and rejection conditions. `now` is
 /// read from the `clock` input (the system `CLOCK_01` account); it anchors the
 /// stability-fee accumulator and the redemption-price state.
 #[allow(
@@ -74,68 +75,85 @@ pub fn initialize_program(
     params: InitializeProgramParams<'_>,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     // 1. Authorization
-    assert!(admin.is_authorized, "Admin authorization is missing");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        admin.is_authorized,
+        "Admin authorization is missing"
+    );
 
     // 2. Target PDAs must be uninitialized
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         protocol_parameters.account,
         Account::default(),
         "ProtocolParameters account must be uninitialized"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         stability_fee_accumulator.account,
         Account::default(),
         "StabilityFeeAccumulator account must be uninitialized"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         redemption_price_state.account,
         Account::default(),
         "RedemptionPriceState account must be uninitialized"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         stablecoin_definition.account,
         Account::default(),
         "StablecoinDefinition account must be uninitialized"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         stablecoin_master_holding.account,
         Account::default(),
         "StablecoinMasterHolding account must be uninitialized"
     );
 
     // 3. PDA address checks
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         protocol_parameters.account_id,
         compute_protocol_parameters_pda(stablecoin_program_id),
         "ProtocolParameters account ID does not match expected PDA derivation"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         stability_fee_accumulator.account_id,
         compute_stability_fee_accumulator_pda(stablecoin_program_id),
         "StabilityFeeAccumulator account ID does not match expected PDA derivation"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         redemption_price_state.account_id,
         compute_redemption_price_state_pda(stablecoin_program_id),
         "RedemptionPriceState account ID does not match expected PDA derivation"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         stablecoin_definition.account_id,
         compute_stablecoin_definition_pda(stablecoin_program_id),
         "StablecoinDefinition account ID does not match expected PDA derivation"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         stablecoin_master_holding.account_id,
         compute_stablecoin_master_holding_pda(stablecoin_program_id),
         "StablecoinMasterHolding account ID does not match expected PDA derivation"
     );
 
     // 4. Clock account: read the millisecond wall-clock timestamp.
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "Clock account must be the system CLOCK_01 account"
     );
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         clock.account,
         Account::default(),
         "Clock account must be initialized"
@@ -143,58 +161,76 @@ pub fn initialize_program(
     let now = ClockAccountData::from_bytes(clock.account.data.as_ref()).timestamp;
 
     // 5. Collateral definition must be an initialized Fungible TokenDefinition
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         collateral_definition.account,
         Account::default(),
         "Collateral definition account must be initialized"
     );
     let collateral_def = TokenDefinition::try_from(&collateral_definition.account.data)
-        .expect("Collateral definition must be a valid TokenDefinition");
-    assert!(
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Collateral definition must be a valid TokenDefinition",
+        );
+    program_revert::require!(
+        error::INVALID_INPUT,
         matches!(collateral_def, TokenDefinition::Fungible { .. }),
         "Collateral definition must be Fungible"
     );
 
     // 6. Market price oracle must be initialized + base/quote match
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         market_price_oracle.account,
         Account::default(),
         "Market price oracle account must be initialized"
     );
-    let oracle = OraclePriceAccount::try_from(&market_price_oracle.account.data)
-        .expect("Market price oracle must decode as OraclePriceAccount");
-    assert_eq!(
-        oracle.base_asset, stablecoin_definition.account_id,
+    let oracle = OraclePriceAccount::try_from(&market_price_oracle.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Market price oracle must decode as OraclePriceAccount",
+    );
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        oracle.base_asset,
+        stablecoin_definition.account_id,
         "Oracle base_asset must equal the stablecoin definition's account_id"
     );
-    assert_eq!(
-        oracle.quote_asset, collateral_definition.account_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        oracle.quote_asset,
+        collateral_definition.account_id,
         "Oracle quote_asset must equal the collateral definition's account_id"
     );
 
     // 7. Numerical param bounds (spec §8)
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         params.initial_stability_fee_per_millisecond >= FIXED_POINT_ONE,
         "initial_stability_fee_per_millisecond below FIXED_POINT_ONE"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         params.initial_stability_fee_per_millisecond <= MAX_STABILITY_FEE_PER_MILLISECOND,
         "initial_stability_fee_per_millisecond above sane upper bound"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         params.initial_minimum_collateralization_ratio >= MIN_COLLATERALIZATION_RATIO,
         "initial_minimum_collateralization_ratio below 1.1x"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         params.initial_minimum_collateralization_ratio <= MAX_COLLATERALIZATION_RATIO,
         "initial_minimum_collateralization_ratio above 10x"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         params.initial_controller_proportional_gain.unsigned_abs()
             <= MAX_PROPORTIONAL_GAIN_MAGNITUDE,
         "controller_proportional_gain out of band"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         params.initial_controller_integral_gain.unsigned_abs() <= MAX_INTEGRAL_GAIN_MAGNITUDE,
         "controller_integral_gain out of band"
     );
@@ -208,17 +244,24 @@ pub fn initialize_program(
             "maximum_oracle_price_age_milliseconds",
         ),
     ] {
-        assert!(milliseconds >= 1, "{label} below minimum 1ms");
-        assert!(
+        program_revert::require!(
+            error::INVALID_INPUT,
+            milliseconds >= 1,
+            "{label} below minimum 1ms"
+        );
+        program_revert::require!(
+            error::INVALID_INPUT,
             milliseconds <= MAX_TIMING_MILLISECONDS,
             "{label} above maximum 86_400_000ms"
         );
     }
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         params.initial_redemption_price > 0,
         "initial_redemption_price must be positive"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         !params.stablecoin_name.is_empty(),
         "stablecoin_name must be non-empty"
     );
