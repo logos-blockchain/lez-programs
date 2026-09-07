@@ -1,11 +1,10 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda,
-    compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
-    compute_lp_lock_holding_pda_seed, compute_pool_pda, compute_pool_pda_seed, compute_vault_pda,
-    compute_vault_pda_seed, isqrt_product, spot_price_q64_64, AmmConfig, PoolDefinition,
-    MINIMUM_LIQUIDITY,
+    assert_supported_fee_tier, compute_liquidity_token_pda, compute_liquidity_token_pda_seed,
+    compute_lp_lock_holding_pda, compute_lp_lock_holding_pda_seed, compute_pool_pda,
+    compute_pool_pda_seed, compute_vault_pda, compute_vault_pda_seed, isqrt_product,
+    spot_price_q64_64, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
@@ -46,9 +45,8 @@ pub fn new_definition(
     // The Token Program is taken from the config account, not trusted from a caller-supplied
     // holding. Validating the config PDA is also the Program's initialization gate.
     assert_eq!(
-        config.account_id,
-        compute_config_pda(amm_program_id),
-        "New definition: AMM config Account ID does not match PDA"
+        config.account.program_owner, amm_program_id,
+        "New definition: AMM config account must be owned by the AMM Program"
     );
     let config_data = AmmConfig::try_from(&config.account.data)
         .expect("New definition: AMM Program must be initialized before use");
@@ -70,7 +68,12 @@ pub fn new_definition(
     );
     assert_eq!(
         pool.account_id,
-        compute_pool_pda(amm_program_id, definition_token_a_id, definition_token_b_id),
+        compute_pool_pda(
+            amm_program_id,
+            config.account_id,
+            definition_token_a_id,
+            definition_token_b_id
+        ),
         "Pool Definition Account ID does not match PDA"
     );
     assert_eq!(
@@ -147,6 +150,7 @@ pub fn new_definition(
     let pool_post: AccountPostState = AccountPostState::new_claimed(
         pool_initialized.clone(),
         Claim::Pda(compute_pool_pda_seed(
+            config.account_id,
             definition_token_a_id,
             definition_token_b_id,
         )),
@@ -245,6 +249,7 @@ pub fn new_definition(
         &twap_oracle_core::Instruction::CreateCurrentTickAccount { initial_price },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
+        config.account_id,
         definition_token_a_id,
         definition_token_b_id,
     )]);

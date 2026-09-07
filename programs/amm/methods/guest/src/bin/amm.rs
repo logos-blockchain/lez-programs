@@ -24,21 +24,35 @@ mod amm {
     )]
     use super::*;
 
-    /// Initializes the AMM Program by creating its singleton config account.
+    /// Initializes a namespaced AMM instance by creating its config account.
+    ///
+    /// A single deployed AMM Program hosts many independent instances, each keyed by a
+    /// namespace `(owner, nonce)`. The owner signs to squat-proof the namespace; the config
+    /// PDA's account id is the namespace root every pool and downstream PDA derives from.
+    /// (See `amm_program::initialize::initialize` for the full semantics.)
     ///
     /// Expected accounts:
-    /// 1. `config` — uninitialized config PDA derived from `compute_config_pda(self_program_id)`.
+    /// 1. `owner` — signs this instruction (the namespace owner). A fresh owner is claimed by
+    ///    the AMM on first use (hence writable); on later instances under the same owner it is
+    ///    already AMM-owned and echoed unchanged.
+    /// 2. `config` — uninitialized config PDA at
+    ///    `compute_config_pda(self_program_id, owner.account_id, nonce)`.
     #[instruction]
     pub fn initialize(
         ctx: ProgramContext,
+        #[account(mut, signer)]
+        owner: AccountWithMetadata,
         #[account(init)]
         config: AccountWithMetadata,
+        nonce: [u8; 32],
         token_program_id: ProgramId,
         twap_oracle_program_id: ProgramId,
         authority: AccountId,
     ) -> SpelResult {
         let post_states = amm_program::initialize::initialize(
+            owner,
             config,
+            nonce,
             token_program_id,
             twap_oracle_program_id,
             authority,

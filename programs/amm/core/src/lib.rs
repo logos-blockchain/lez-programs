@@ -16,19 +16,29 @@ const LP_LOCK_HOLDING_PDA_SEED: &[u8] = b"LP_LOCK_HOLDING";
 /// AMM Program Instruction.
 #[derive(Serialize, Deserialize)]
 pub enum Instruction {
-    /// Initializes the AMM Program by creating its singleton configuration account.
+    /// Initializes a **namespaced** AMM instance by creating its configuration account.
     ///
-    /// The configuration account is a PDA derived from the constant `"CONFIG"` seed
-    /// (`compute_config_pda(self_program_id)`). It stores the program IDs the AMM issues chained
-    /// calls to (the Token Program and the TWAP oracle program), plus the admin `authority`
-    /// allowed to transfer admin control later via `UpdateConfig`. The Program must be initialized
-    /// via this instruction before any pool can be created or interacted with — the other
-    /// instructions read these program IDs from this account and reject calls when it does not
-    /// yet exist.
+    /// A single deployed AMM Program hosts many independent instances, each identified by a
+    /// namespace `(owner, nonce)`. The configuration account is a PDA derived from that namespace
+    /// (`compute_config_pda(self_program_id, owner, nonce)`), where `owner` is the account that
+    /// signs this instruction. Signing squat-proofs the namespace: nobody can initialize an
+    /// instance (and set its program IDs) under an account they do not control. The `nonce`
+    /// discriminates multiple instances under the same owner; the all-zero nonce is the owner's
+    /// default instance.
+    ///
+    /// The config stores the program IDs the AMM issues chained calls to (the Token Program and
+    /// the TWAP oracle program) — so each namespace can point at its own deployments — plus the
+    /// admin `authority` allowed to transfer admin control later via `UpdateConfig`. Every pool
+    /// and downstream PDA is derived from this config's account id, so instances are fully
+    /// isolated even for the same token pair. Rejects if the config already exists.
     ///
     /// Required accounts:
-    /// - AMM Config Account, uninitialized, derived as `compute_config_pda(self_program_id)`
+    /// - Owner Account — signs this instruction; its account id is the namespace owner.
+    /// - AMM Config Account, uninitialized, derived as `compute_config_pda(self_program_id,
+    ///   owner.account_id, nonce)`
     Initialize {
+        /// Namespace discriminator under `owner`. `[0; 32]` is the owner's default instance.
+        nonce: [u8; 32],
         /// Program ID of the Token Program the AMM will issue chained calls to.
         token_program_id: ProgramId,
         /// Program ID of the TWAP oracle program the AMM will issue chained calls to.
@@ -526,41 +536,58 @@ impl From<&AmmConfig> for Data {
     }
 }
 
-// Stable seed marker for the singleton config PDA. The literal `"CONFIG"` bytes are hashed into
-// the 32-byte seed; this must stay unchanged for address compatibility.
+// Stable domain-separation marker for the config PDA. Hashed together with the namespace
+// `(owner, nonce)` into the 32-byte seed; must stay unchanged for address compatibility.
 const CONFIG_PDA_SEED: &[u8] = b"CONFIG";
 
-/// Derives the [`AccountId`] of the AMM Program's singleton config PDA.
+/// Derives the [`AccountId`] of a namespaced AMM instance's config PDA from its `(owner, nonce)`
+/// namespace. Each `(owner, nonce)` pair is an independent AMM instance.
 #[must_use]
-pub fn compute_config_pda(amm_program_id: ProgramId) -> AccountId {
-    AccountId::for_public_pda(&amm_program_id, &compute_config_pda_seed())
+pub fn compute_config_pda(
+    amm_program_id: ProgramId,
+    owner: AccountId,
+    nonce: [u8; 32],
+) -> AccountId {
+    AccountId::for_public_pda(&amm_program_id, &compute_config_pda_seed(owner, nonce))
 }
 
-/// Derives the [`PdaSeed`] of the AMM Program's singleton config PDA from the `"CONFIG"` bytes.
+/// Derives the [`PdaSeed`] of a namespaced config PDA as `hash("CONFIG" || owner || nonce)`.
+/// The all-zero `nonce` yields the owner's default instance.
 #[must_use]
-pub fn compute_config_pda_seed() -> PdaSeed {
+pub fn compute_config_pda_seed(owner: AccountId, nonce: [u8; 32]) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256};
 
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(CONFIG_PDA_SEED);
+    bytes.extend_from_slice(&owner.to_bytes());
+    bytes.extend_from_slice(&nonce);
+
     PdaSeed::new(
-        Impl::hash_bytes(CONFIG_PDA_SEED)
+        Impl::hash_bytes(&bytes)
             .as_bytes()
             .try_into()
             .expect("Hash output must be exactly 32 bytes long"),
     )
 }
 
+/// Derives the [`AccountId`] of a pool PDA. The pool is namespaced by `config_id` (the account id
+/// of the owning instance's config PDA), so the same token pair in different instances yields
+/// different, fully isolated pools.
 pub fn compute_pool_pda(
     amm_program_id: ProgramId,
+    config_id: AccountId,
     definition_token_a_id: AccountId,
     definition_token_b_id: AccountId,
 ) -> AccountId {
     AccountId::for_public_pda(
         &amm_program_id,
-        &compute_pool_pda_seed(definition_token_a_id, definition_token_b_id),
+        &compute_pool_pda_seed(config_id, definition_token_a_id, definition_token_b_id),
     )
 }
 
+/// Derives the [`PdaSeed`] of a pool PDA as `hash(config_id || sorted(token_a, token_b))`.
 pub fn compute_pool_pda_seed(
+    config_id: AccountId,
     definition_token_a_id: AccountId,
     definition_token_b_id: AccountId,
 ) -> PdaSeed {
@@ -575,10 +602,10 @@ pub fn compute_pool_pda_seed(
         std::cmp::Ordering::Equal => panic!("Definitions match"),
     };
 
-    let mut bytes = [0; 64];
-    let (token_1_bytes, token_2_bytes) = bytes.split_at_mut(32);
-    token_1_bytes.copy_from_slice(&token_1.to_bytes());
-    token_2_bytes.copy_from_slice(&token_2.to_bytes());
+    let mut bytes = [0; 96];
+    bytes[0..32].copy_from_slice(&config_id.to_bytes());
+    bytes[32..64].copy_from_slice(&token_1.to_bytes());
+    bytes[64..96].copy_from_slice(&token_2.to_bytes());
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)

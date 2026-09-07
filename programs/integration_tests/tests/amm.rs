@@ -21,7 +21,20 @@ struct Ids;
 struct Balances;
 struct Accounts;
 
+/// Canonical test namespace nonce: the owner's default (all-zero) AMM instance.
+const TEST_NONCE: [u8; 32] = [0; 32];
+
 impl Keys {
+    /// Signing key for the account that owns the canonical test AMM instance's namespace.
+    fn amm_owner() -> PrivateKey {
+        PrivateKey::try_new([30; 32]).expect("valid private key")
+    }
+
+    /// Signing key for a second, independent AMM instance owner (namespace isolation test).
+    fn amm_owner_b() -> PrivateKey {
+        PrivateKey::try_new([35; 32]).expect("valid private key")
+    }
+
     fn user_a() -> PrivateKey {
         PrivateKey::try_new([31; 32]).expect("valid private key")
     }
@@ -52,8 +65,18 @@ impl Ids {
         twap_oracle_methods::TWAP_ORACLE_ID
     }
 
+    /// The account that owns (and signs for) the canonical test AMM instance's namespace.
+    fn amm_owner() -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(&Keys::amm_owner()))
+    }
+
+    /// A second, independent AMM instance owner (namespace isolation test).
+    fn amm_owner_b() -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(&Keys::amm_owner_b()))
+    }
+
     fn config() -> AccountId {
-        amm_core::compute_config_pda(Self::amm_program())
+        amm_core::compute_config_pda(Self::amm_program(), Self::amm_owner(), TEST_NONCE)
     }
 
     fn price_observations(window_duration: u64) -> AccountId {
@@ -90,6 +113,7 @@ impl Ids {
     fn pool_definition() -> AccountId {
         amm_core::compute_pool_pda(
             Self::amm_program(),
+            Self::config(),
             Self::token_a_definition(),
             Self::token_b_definition(),
         )
@@ -1428,7 +1452,28 @@ fn execute_remove_liquidity(
 
 #[cfg(test)]
 fn execute_initialize(state: &mut V03State) {
+    execute_initialize_for(
+        state,
+        &Keys::amm_owner(),
+        TEST_NONCE,
+        amm_core::compute_config_pda(Ids::amm_program(), Ids::amm_owner(), TEST_NONCE),
+    )
+    .unwrap();
+}
+
+/// Initializes a namespaced AMM instance keyed by `(owner, nonce)`. The owner is the first,
+/// signing account (its key squat-proofs the namespace); `config_id` is the instance's config PDA
+/// derived from that namespace. Matches the guest account order `[owner (signer), config (init)]`.
+#[cfg(test)]
+fn execute_initialize_for(
+    state: &mut V03State,
+    owner_key: &PrivateKey,
+    nonce: [u8; 32],
+    config_id: AccountId,
+) -> Result<(), LeeError> {
+    let owner_id = AccountId::from(&PublicKey::new_from_private_key(owner_key));
     let instruction = amm_core::Instruction::Initialize {
+        nonce,
         token_program_id: Ids::token_program(),
         twap_oracle_program_id: Ids::twap_oracle_program(),
         authority: Ids::admin(),
@@ -1436,16 +1481,116 @@ fn execute_initialize(state: &mut V03State) {
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
-        vec![Ids::config()],
-        vec![],
+        vec![owner_id, config_id],
+        vec![current_nonce(state, owner_id)],
         instruction,
     )
     .unwrap();
 
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[owner_key]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+    state.transition_from_public_transaction(&tx, 0, 0)
+}
+
+/// The full set of PDAs an AMM instance (`(owner, nonce)` namespace) derives for the canonical
+/// A/B token pair. Only `config` and `pool` carry the namespace directly; everything downstream
+/// inherits it through `pool`.
+#[cfg(test)]
+struct Namespace {
+    config: AccountId,
+    pool: AccountId,
+    vault_a: AccountId,
+    vault_b: AccountId,
+    lp_def: AccountId,
+    lp_lock: AccountId,
+    current_tick: AccountId,
+}
+
+#[cfg(test)]
+fn namespace_for(owner: AccountId, nonce: [u8; 32]) -> Namespace {
+    let config = amm_core::compute_config_pda(Ids::amm_program(), owner, nonce);
+    let pool = amm_core::compute_pool_pda(
+        Ids::amm_program(),
+        config,
+        Ids::token_a_definition(),
+        Ids::token_b_definition(),
+    );
+    Namespace {
+        config,
+        pool,
+        vault_a: amm_core::compute_vault_pda(Ids::amm_program(), pool, Ids::token_a_definition()),
+        vault_b: amm_core::compute_vault_pda(Ids::amm_program(), pool, Ids::token_b_definition()),
+        lp_def: amm_core::compute_liquidity_token_pda(Ids::amm_program(), pool),
+        lp_lock: amm_core::compute_lp_lock_holding_pda(Ids::amm_program(), pool),
+        current_tick: twap_oracle_core::compute_current_tick_account_pda(
+            Ids::twap_oracle_program(),
+            pool,
+        ),
+    }
+}
+
+/// Creates the A/B pool of a specific namespace via `NewDefinition`, minting the initial LP to
+/// `lp_key`'s account. Mirrors [`try_execute_new_definition`] but targets an arbitrary instance's
+/// PDAs so the isolation test can populate two instances independently.
+#[cfg(test)]
+fn execute_new_definition_in(
+    state: &mut V03State,
+    ns: &Namespace,
+    lp_key: &PrivateKey,
+) -> Result<(), LeeError> {
+    let lp_id = AccountId::from(&PublicKey::new_from_private_key(lp_key));
+    let instruction = amm_core::Instruction::NewDefinition {
+        token_a_amount: Balances::vault_a_init(),
+        token_b_amount: Balances::vault_b_init(),
+        fees: Balances::fee_tier(),
+        deadline: u64::MAX,
+    };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![
+            ns.config,
+            ns.pool,
+            ns.vault_a,
+            ns.vault_b,
+            ns.lp_def,
+            ns.lp_lock,
+            Ids::user_a(),
+            Ids::user_b(),
+            lp_id,
+            ns.current_tick,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![
+            current_nonce(state, Ids::user_a()),
+            current_nonce(state, Ids::user_b()),
+            current_nonce(state, lp_id),
+        ],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&Keys::user_a(), &Keys::user_b(), lp_key],
+    );
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0)
+}
+
+/// Builds a fungible token holding account for `definition_id` with the given balance.
+#[cfg(test)]
+fn fungible_holding(definition_id: AccountId, balance: u128) -> Account {
+    Account {
+        program_owner: Ids::token_program(),
+        balance: 0_u128,
+        data: Data::from(&TokenHolding::Fungible {
+            definition_id,
+            balance,
+        }),
+        nonce: Nonce(0),
+    }
 }
 
 #[cfg(test)]
@@ -1633,6 +1778,166 @@ fn amm_initialize_creates_config_account() {
         .expect("config account must hold a valid AmmConfig");
     assert_eq!(config.token_program_id, Ids::token_program());
     assert_eq!(config.authority, Ids::admin());
+}
+
+/// One owner opens multiple isolated instances via distinct `nonce`s. The first initialize claims
+/// the fresh owner into the AMM; the second, under the same (now AMM-owned) owner, echoes it
+/// unchanged — both must succeed end-to-end through the guest.
+#[test]
+fn amm_same_owner_multiple_instances_via_nonce() {
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+
+    let owner_key = Keys::amm_owner();
+    let owner_id = Ids::amm_owner();
+    let amm = Ids::amm_program();
+
+    let cfg0 = amm_core::compute_config_pda(amm, owner_id, [0; 32]);
+    let cfg1 = amm_core::compute_config_pda(amm, owner_id, [1; 32]);
+    assert_ne!(
+        cfg0, cfg1,
+        "different nonces must yield different config PDAs"
+    );
+
+    // First instance: owner is a fresh EOA → initialize claims it into the AMM.
+    execute_initialize_for(&mut state, &owner_key, [0; 32], cfg0)
+        .expect("first initialize (fresh owner) must succeed");
+    assert_eq!(
+        state.get_account_by_id(owner_id).program_owner,
+        amm,
+        "owner should be owned by the AMM after the first initialize"
+    );
+
+    // Second instance under the SAME owner, different nonce: the owner is now AMM-owned and is
+    // echoed unchanged. This is the case that previously failed and must now pass.
+    execute_initialize_for(&mut state, &owner_key, [1; 32], cfg1)
+        .expect("second initialize (same owner, new nonce) must succeed");
+
+    // Both instances exist, are AMM-owned, and are independent.
+    assert_eq!(state.get_account_by_id(cfg0).program_owner, amm);
+    assert_eq!(state.get_account_by_id(cfg1).program_owner, amm);
+    let c0 = amm_core::AmmConfig::try_from(&state.get_account_by_id(cfg0).data)
+        .expect("instance 0 config must decode");
+    let c1 = amm_core::AmmConfig::try_from(&state.get_account_by_id(cfg1).data)
+        .expect("instance 1 config must decode");
+    assert_eq!(c0.token_program_id, Ids::token_program());
+    assert_eq!(c1.token_program_id, Ids::token_program());
+}
+
+#[test]
+fn amm_initialize_requires_owner_signature() {
+    // Squat-resistance: nobody can claim a namespace (and set its program IDs) under an owner
+    // account they do not control. Declaring the owner without signing for it must be rejected.
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+
+    let owner_id = Ids::amm_owner();
+    let config_id = amm_core::compute_config_pda(Ids::amm_program(), owner_id, TEST_NONCE);
+    let instruction = amm_core::Instruction::Initialize {
+        nonce: TEST_NONCE,
+        token_program_id: Ids::token_program(),
+        twap_oracle_program_id: Ids::twap_oracle_program(),
+        authority: Ids::admin(),
+    };
+
+    // The owner account is declared, but no signature (and no nonce) is supplied for it.
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![owner_id, config_id],
+        vec![],
+        instruction,
+    )
+    .unwrap();
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+
+    assert!(matches!(
+        state.transition_from_public_transaction(&tx, 0, 0),
+        Err(LeeError::ProgramExecutionFailed(_))
+    ));
+
+    // The config PDA was not created.
+    assert_eq!(state.get_account_by_id(config_id), Account::default());
+}
+
+#[test]
+fn amm_two_namespaces_same_token_pair_are_isolated() {
+    // One deployment, one token pair, two different owners → two fully independent AMM instances.
+    let mut state = V03State::new();
+    deploy_programs(&mut state);
+    state.force_insert_account(
+        Ids::token_a_definition(),
+        Accounts::token_a_definition_account(),
+    );
+    state.force_insert_account(
+        Ids::token_b_definition(),
+        Accounts::token_b_definition_account(),
+    );
+    // Fund the shared depositors generously enough to seed both pools and still swap afterwards.
+    state.force_insert_account(
+        Ids::user_a(),
+        fungible_holding(Ids::token_a_definition(), 30_000),
+    );
+    state.force_insert_account(
+        Ids::user_b(),
+        fungible_holding(Ids::token_b_definition(), 30_000),
+    );
+    advance_clock(&mut state, 0);
+
+    let ns0 = namespace_for(Ids::amm_owner(), TEST_NONCE);
+    let ns1 = namespace_for(Ids::amm_owner_b(), TEST_NONCE);
+
+    // Every root and derived PDA differs between the two instances.
+    assert_ne!(ns0.config, ns1.config);
+    assert_ne!(ns0.pool, ns1.pool);
+    assert_ne!(ns0.vault_a, ns1.vault_a);
+    assert_ne!(ns0.vault_b, ns1.vault_b);
+    assert_ne!(ns0.lp_def, ns1.lp_def);
+    assert_ne!(ns0.current_tick, ns1.current_tick);
+    // Instance 0 is the canonical namespace the standard helpers target.
+    assert_eq!(ns0.config, Ids::config());
+    assert_eq!(ns0.pool, Ids::pool_definition());
+
+    execute_initialize_for(&mut state, &Keys::amm_owner(), TEST_NONCE, ns0.config).unwrap();
+    execute_initialize_for(&mut state, &Keys::amm_owner_b(), TEST_NONCE, ns1.config).unwrap();
+
+    // Both configs exist as distinct AMM-owned accounts.
+    assert_eq!(
+        state.get_account_by_id(ns0.config).program_owner,
+        Ids::amm_program()
+    );
+    assert_eq!(
+        state.get_account_by_id(ns1.config).program_owner,
+        Ids::amm_program()
+    );
+    assert_ne!(state.get_account_by_id(ns0.config), Account::default());
+
+    // Create the same A/B pool in each instance (distinct LP recipients: they hold distinct LP
+    // definitions).
+    execute_new_definition_in(&mut state, &ns0, &Keys::user_lp()).unwrap();
+    execute_new_definition_in(&mut state, &ns1, &Keys::admin()).unwrap();
+
+    // Both pools now exist and are separate accounts holding the same opening reserves.
+    let ns0_pool_created = pool_definition(&state.get_account_by_id(ns0.pool));
+    let ns1_pool_created = pool_definition(&state.get_account_by_id(ns1.pool));
+    assert_eq!(ns0_pool_created.reserve_a, Balances::vault_a_init());
+    assert_eq!(ns1_pool_created.reserve_a, Balances::vault_a_init());
+
+    // Snapshot instance 1 before operating on instance 0.
+    let ns1_pool_before = state.get_account_by_id(ns1.pool);
+    let ns1_vault_a_before = state.get_account_by_id(ns1.vault_a);
+    let ns1_vault_b_before = state.get_account_by_id(ns1.vault_b);
+
+    // Swap in instance 0 only.
+    execute_swap_a_to_b(&mut state, 1_000, 1);
+
+    // Instance 0's reserves moved…
+    let ns0_pool_after = pool_definition(&state.get_account_by_id(ns0.pool));
+    assert_ne!(ns0_pool_after.reserve_a, ns0_pool_created.reserve_a);
+    // …while instance 1's pool and vaults are byte-for-byte untouched.
+    assert_eq!(state.get_account_by_id(ns1.pool), ns1_pool_before);
+    assert_eq!(state.get_account_by_id(ns1.vault_a), ns1_vault_a_before);
+    assert_eq!(state.get_account_by_id(ns1.vault_b), ns1_vault_b_before);
 }
 
 #[cfg(test)]

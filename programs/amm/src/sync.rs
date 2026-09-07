@@ -1,5 +1,5 @@
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_pool_pda_seed,
+    assert_supported_fee_tier, compute_pool_pda, compute_pool_pda_seed,
     read_vault_fungible_balances, spot_price_q64_64, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
@@ -25,13 +25,28 @@ pub fn sync_reserves(
     // The TWAP oracle program ID is taken from the config account. Validating the config PDA is
     // also the Program's initialization gate.
     assert_eq!(
-        config.account_id,
-        compute_config_pda(amm_program_id),
-        "Sync reserves: AMM config Account ID does not match PDA"
+        config.account.program_owner, amm_program_id,
+        "Sync reserves: AMM config account must be owned by the AMM Program"
     );
     let twap_oracle_program_id = AmmConfig::try_from(&config.account.data)
         .expect("Sync reserves: AMM Program must be initialized before use")
         .twap_oracle_program_id;
+
+    // The pool must be derived under THIS config's namespace. config.account_id is the
+    // namespace root, so a pool belonging to another instance — even a valid AMM-owned
+    // pool with the same token pair — derives a different PDA and is rejected here. This
+    // stops a caller from pairing any AMM-owned config with an arbitrary pool (matching
+    // the check new_definition makes when it creates the pool).
+    assert_eq!(
+        pool.account_id,
+        compute_pool_pda(
+            amm_program_id,
+            config.account_id,
+            pool_def_data.definition_token_a_id,
+            pool_def_data.definition_token_b_id,
+        ),
+        "Sync reserves: pool account is not derived under this config's namespace"
+    );
 
     assert!(
         pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
@@ -94,6 +109,7 @@ pub fn sync_reserves(
         &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
+        config.account_id,
         pool_def_data.definition_token_a_id,
         pool_def_data.definition_token_b_id,
     )]);

@@ -1,11 +1,12 @@
-//! Print the AMM PDAs for a deployment (and, given a token pair, a pool's PDAs).
+//! Print the AMM PDAs for a namespaced instance (and, given a token pair, a pool's PDAs).
 //!
 //! Usage:
-//!   cargo run -q -p amm_program --example amm_pdas -- <amm_pid> [<twap_pid> <defA> <defB>]
+//!   cargo run -q -p amm_program --example amm_pdas -- <amm_pid> <owner> [<twap_pid> <defA> <defB>]
 //!
 //! `*_pid` are ProgramIds as 8 comma-separated u32 limbs (as printed by `spel program-id`);
-//! `defA`/`defB` are base58 token-definition account ids. With only `<amm_pid>` it prints the
-//! singleton config PDA; with all four args it also prints the pool/vault/LP/lock/tick PDAs.
+//! `owner`/`defA`/`defB` are base58 account ids. AMM instances are namespaced by `(owner, nonce)`;
+//! this prints the owner's default instance (all-zero nonce). With `<amm_pid> <owner>` it prints
+//! the instance's config PDA; with all args it also prints the pool/vault/LP/lock/tick PDAs.
 
 use std::str::FromStr;
 
@@ -52,19 +53,22 @@ fn parse_pid(s: &str) -> ProgramId {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some((amm_s, rest)) = args.split_first() else {
-        eprintln!("usage: amm_pdas <amm_pid> [<twap_pid> <defA> <defB>]");
+    let [amm_s, owner_s, rest @ ..] = args.as_slice() else {
+        eprintln!("usage: amm_pdas <amm_pid> <owner> [<twap_pid> <defA> <defB>]");
         std::process::exit(1);
     };
     let amm = parse_pid(amm_s);
-    let config = compute_config_pda(amm);
+    let owner = AccountId::from_str(owner_s).expect("owner must be base58");
+    // The owner's default instance uses the all-zero nonce.
+    let nonce = [0u8; 32];
+    let config = compute_config_pda(amm, owner, nonce);
     println!("config               {config}");
 
     if let [twap_s, def_a_s, def_b_s] = rest {
         let twap = parse_pid(twap_s);
         let def_a = AccountId::from_str(def_a_s).expect("defA must be base58");
         let def_b = AccountId::from_str(def_b_s).expect("defB must be base58");
-        let pool = compute_pool_pda(amm, def_a, def_b);
+        let pool = compute_pool_pda(amm, config, def_a, def_b);
         println!("pool                 {pool}");
         println!(
             "vault_a              {}",

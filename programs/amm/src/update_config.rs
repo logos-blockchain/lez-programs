@@ -1,4 +1,4 @@
-use amm_core::{compute_config_pda, AmmConfig};
+use amm_core::AmmConfig;
 use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ProgramId},
@@ -27,9 +27,8 @@ pub fn update_config(
     amm_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     assert_eq!(
-        config.account_id,
-        compute_config_pda(amm_program_id),
-        "Update config: AMM config Account ID does not match PDA"
+        config.account.program_owner, amm_program_id,
+        "Update config: AMM config account must be owned by the AMM Program"
     );
     let mut config_data = AmmConfig::try_from(&config.account.data)
         .expect("Update config: AMM Program must be initialized before use");
@@ -57,6 +56,7 @@ pub fn update_config(
 
 #[cfg(test)]
 mod tests {
+    use amm_core::compute_config_pda;
     use lee_core::account::{Account, Nonce};
 
     use super::*;
@@ -64,6 +64,16 @@ mod tests {
     const AMM_PROGRAM_ID: ProgramId = [42; 8];
     const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
     const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
+    /// Canonical test namespace: the owner that signs Initialize and the default (all-zero) nonce.
+    const TEST_NONCE: [u8; 32] = [0; 32];
+
+    fn amm_owner() -> AccountId {
+        AccountId::new([200; 32])
+    }
+
+    fn config_id() -> AccountId {
+        compute_config_pda(AMM_PROGRAM_ID, amm_owner(), TEST_NONCE)
+    }
 
     fn admin_id() -> AccountId {
         AccountId::new([9; 32])
@@ -86,7 +96,7 @@ mod tests {
                 nonce: Nonce(0),
             },
             is_authorized: false,
-            account_id: compute_config_pda(AMM_PROGRAM_ID),
+            account_id: config_id(),
         }
     }
 
@@ -138,20 +148,25 @@ mod tests {
     // ── precondition violations ───────────────────────────────────────────────
 
     #[test]
-    #[should_panic(expected = "AMM config Account ID does not match PDA")]
-    fn wrong_config_pda_panics() {
+    #[should_panic(expected = "must be owned by the AMM Program")]
+    fn config_not_owned_by_amm_panics() {
         let mut config = config_init();
-        config.account_id = AccountId::new([0; 32]);
+        config.account.program_owner = [0; 8];
         update_config(config, admin_authorized(), new_admin_id(), AMM_PROGRAM_ID);
     }
 
     #[test]
     #[should_panic(expected = "AMM Program must be initialized before use")]
     fn uninitialized_config_panics() {
+        // Owned by the AMM Program (passes the ownership gate) but carrying no AmmConfig data, so
+        // the config parse is what fails.
         let config = AccountWithMetadata {
-            account: Account::default(),
+            account: Account {
+                program_owner: AMM_PROGRAM_ID,
+                ..Account::default()
+            },
             is_authorized: false,
-            account_id: compute_config_pda(AMM_PROGRAM_ID),
+            account_id: config_id(),
         };
         update_config(config, admin_authorized(), new_admin_id(), AMM_PROGRAM_ID);
     }

@@ -1,6 +1,4 @@
-use amm_core::{
-    compute_config_pda, compute_pool_pda, compute_pool_pda_seed, AmmConfig, PoolDefinition,
-};
+use amm_core::{compute_pool_pda, compute_pool_pda_seed, AmmConfig, PoolDefinition};
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
     account::{Account, AccountWithMetadata},
@@ -49,9 +47,8 @@ pub fn create_price_observations(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     // Config gate: validate the config PDA and read the TWAP oracle program ID from it.
     assert_eq!(
-        config.account_id,
-        compute_config_pda(amm_program_id),
-        "Create price observations: AMM config Account ID does not match PDA"
+        config.account.program_owner, amm_program_id,
+        "Create price observations: AMM config account must be owned by the AMM Program"
     );
     let twap_oracle_program_id = AmmConfig::try_from(&config.account.data)
         .expect("Create price observations: AMM Program must be initialized before use")
@@ -72,6 +69,7 @@ pub fn create_price_observations(
         pool.account_id,
         compute_pool_pda(
             amm_program_id,
+            config.account_id,
             pool_def.definition_token_a_id,
             pool_def.definition_token_b_id,
         ),
@@ -116,6 +114,7 @@ pub fn create_price_observations(
         },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
+        config.account_id,
         pool_def.definition_token_a_id,
         pool_def.definition_token_b_id,
     )]);
@@ -133,7 +132,7 @@ pub fn create_price_observations(
 
 #[cfg(test)]
 mod tests {
-    use amm_core::compute_pool_pda_seed;
+    use amm_core::{compute_config_pda, compute_pool_pda_seed};
     use lee_core::account::{Account, AccountId, Data, Nonce};
     use twap_oracle_core::compute_current_tick_account_pda;
 
@@ -146,6 +145,16 @@ mod tests {
     const WINDOW_24H: u64 = 24 * 60 * 60 * 1_000;
     /// The authoritative tick stored in the pool's `CurrentTickAccount`.
     const CURRENT_TICK: i32 = -1_234;
+    /// Canonical test namespace: the owner that signs Initialize and the default (all-zero) nonce.
+    const TEST_NONCE: [u8; 32] = [0; 32];
+
+    fn amm_owner() -> AccountId {
+        AccountId::new([200; 32])
+    }
+
+    fn config_id() -> AccountId {
+        compute_config_pda(AMM_PROGRAM_ID, amm_owner(), TEST_NONCE)
+    }
 
     fn token_a_id() -> AccountId {
         AccountId::new([3; 32])
@@ -156,7 +165,7 @@ mod tests {
     }
 
     fn pool_id() -> AccountId {
-        compute_pool_pda(AMM_PROGRAM_ID, token_a_id(), token_b_id())
+        compute_pool_pda(AMM_PROGRAM_ID, config_id(), token_a_id(), token_b_id())
     }
 
     fn config_init() -> AccountWithMetadata {
@@ -172,7 +181,7 @@ mod tests {
                 nonce: Nonce(0),
             },
             is_authorized: false,
-            account_id: compute_config_pda(AMM_PROGRAM_ID),
+            account_id: config_id(),
         }
     }
 
@@ -280,7 +289,11 @@ mod tests {
                 window_duration: WINDOW_24H,
             },
         )
-        .with_pda_seeds(vec![compute_pool_pda_seed(token_a_id(), token_b_id())]);
+        .with_pda_seeds(vec![compute_pool_pda_seed(
+            config_id(),
+            token_a_id(),
+            token_b_id(),
+        )]);
 
         assert_eq!(chained_calls[0], expected);
     }
@@ -288,10 +301,10 @@ mod tests {
     // ── precondition violations ───────────────────────────────────────────────
 
     #[test]
-    #[should_panic(expected = "AMM config Account ID does not match PDA")]
-    fn wrong_config_pda_panics() {
+    #[should_panic(expected = "must be owned by the AMM Program")]
+    fn config_not_owned_by_amm_panics() {
         let mut config = config_init();
-        config.account_id = AccountId::new([0; 32]);
+        config.account.program_owner = [0; 8];
         create_price_observations(
             config,
             pool(),
@@ -306,10 +319,15 @@ mod tests {
     #[test]
     #[should_panic(expected = "AMM Program must be initialized before use")]
     fn uninitialized_config_panics() {
+        // Owned by the AMM Program (passes the ownership gate) but carrying no AmmConfig data, so
+        // the config parse is what fails.
         let config = AccountWithMetadata {
-            account: Account::default(),
+            account: Account {
+                program_owner: AMM_PROGRAM_ID,
+                ..Account::default()
+            },
             is_authorized: false,
-            account_id: compute_config_pda(AMM_PROGRAM_ID),
+            account_id: config_id(),
         };
         create_price_observations(
             config,

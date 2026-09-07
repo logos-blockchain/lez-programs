@@ -51,6 +51,13 @@ fn default_read(id: AccountId) -> AccountRead {
     account_read(id, &Account::default())
 }
 
+/// The namespace root (config PDA id) the tests derive pools under. A fixed `(owner, nonce)`
+/// instance under `AMM_PROGRAM`; the pool derivations and the config `account_read` id must both
+/// use this so `derive_pair` (which reads the config's id back) lines up with the expected pools.
+fn config_id() -> AccountId {
+    compute_config_pda(AMM_PROGRAM, AccountId::new([0x50; 32]), [0; 32])
+}
+
 fn config_account() -> Account {
     account(
         AMM_PROGRAM,
@@ -87,8 +94,8 @@ fn token_holding(definition_id: AccountId, balance: u128) -> Account {
 fn ids() -> PairIds {
     let token_a = AccountId::new([2; 32]);
     let token_b = AccountId::new([1; 32]);
-    let config = compute_config_pda(AMM_PROGRAM);
-    let pool = compute_pool_pda(AMM_PROGRAM, token_a, token_b);
+    let config = config_id();
+    let pool = compute_pool_pda(AMM_PROGRAM, config, token_a, token_b);
     PairIds {
         token_a,
         token_b,
@@ -151,7 +158,7 @@ fn highest_balance_holding_wins_then_lowest_id() {
 fn pair_manifest_uses_canonical_ids_and_current_program_types() {
     let token_a = AccountId::new([2; 32]);
     let token_b = AccountId::new([1; 32]);
-    let config_id = compute_config_pda(AMM_PROGRAM);
+    let config_id = config_id();
     let result = pair_ids(PairIdsRequest {
         amm_program_id: amm_program_id(),
         config: account_read(config_id, &config_account()),
@@ -164,7 +171,7 @@ fn pair_manifest_uses_canonical_ids_and_current_program_types() {
     assert_eq!(result["tokenBId"], account_id_hex(token_b));
     assert_eq!(
         result["poolId"],
-        account_id_hex(compute_pool_pda(AMM_PROGRAM, token_a, token_b))
+        account_id_hex(compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b))
     );
 }
 
@@ -203,7 +210,7 @@ fn resolve_tokens_returns_lean_rows_held_first_and_omits_unresolvable() {
     let held = AccountId::new([2; 32]);
     let listed = AccountId::new([5; 32]);
     let missing = AccountId::new([9; 32]); // requested but no definition read supplied
-    let config_id = compute_config_pda(AMM_PROGRAM);
+    let config_id = config_id();
 
     let value = resolve_tokens(ResolveTokensRequest {
         amm_program_id: amm_program_id(),
@@ -249,7 +256,7 @@ fn resolve_tokens_returns_lean_rows_held_first_and_omits_unresolvable() {
 
 #[test]
 fn transfer_ownership_plan_targets_config_and_current_admin() {
-    let config_id = compute_config_pda(AMM_PROGRAM);
+    let config_id = config_id();
     let new_authority = AccountId::new([5; 32]);
     let plan = transfer_ownership_plan(TransferOwnershipPlanRequest {
         amm_program_id: amm_program_id(),
@@ -289,8 +296,8 @@ fn transfer_ownership_plan_targets_config_and_current_admin() {
 fn create_price_observations_plan_targets_the_window_feed_accounts() {
     let token_a = AccountId::new([2; 32]);
     let token_b = AccountId::new([1; 32]);
-    let config_id = compute_config_pda(AMM_PROGRAM);
-    let pool = compute_pool_pda(AMM_PROGRAM, token_a, token_b);
+    let config_id = config_id();
+    let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
     let window = 3_600_000_u64;
 
     let plan = create_price_observations_plan(CreatePriceObservationsPlanRequest {
@@ -336,8 +343,8 @@ fn create_price_observations_plan_targets_the_window_feed_accounts() {
 fn create_oracle_price_account_plan_targets_the_window_price_account() {
     let token_a = AccountId::new([2; 32]);
     let token_b = AccountId::new([1; 32]);
-    let config_id = compute_config_pda(AMM_PROGRAM);
-    let pool = compute_pool_pda(AMM_PROGRAM, token_a, token_b);
+    let config_id = config_id();
+    let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
     let window = 900_000_u64;
 
     let plan = create_oracle_price_account_plan(CreateOraclePriceAccountPlanRequest {
@@ -380,7 +387,7 @@ fn create_oracle_price_account_plan_targets_the_window_price_account() {
 
 #[test]
 fn config_account_decodes_authority_and_program_ids() {
-    let config_id = compute_config_pda(AMM_PROGRAM);
+    let config_id = config_id();
     let value = decode_config_account(ConfigAccountRequest {
         amm_program_id: amm_program_id(),
         config: account_read(config_id, &config_account()),
@@ -400,7 +407,7 @@ fn config_account_decodes_authority_and_program_ids() {
 
 #[test]
 fn config_account_is_unavailable_when_not_on_chain() {
-    let config_id = compute_config_pda(AMM_PROGRAM);
+    let config_id = config_id();
     let value = decode_config_account(ConfigAccountRequest {
         amm_program_id: amm_program_id(),
         config: default_read(config_id),
@@ -430,7 +437,7 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
     let token_large = AccountId::new([2; 32]);
     assert!(is_canonical_pair(token_large, token_small)); // large is canonical token_a
 
-    let pool_id = compute_pool_pda(AMM_PROGRAM, token_small, token_large);
+    let pool_id = compute_pool_pda(AMM_PROGRAM, config_id(), token_small, token_large);
     let pool = PoolDefinition {
         definition_token_a_id: token_small, // stored non-canonically (small first)
         definition_token_b_id: token_large,
@@ -448,7 +455,7 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         amm_program_id: amm_program_id(),
         token_in_id: account_id_hex(token_small),
         token_out_id: account_id_hex(token_large),
-        config: account_read(compute_config_pda(AMM_PROGRAM), &config_account()),
+        config: account_read(config_id(), &config_account()),
         user_input_holding_id: account_id_hex(holding),
         user_output_holding_id: account_id_hex(holding),
         amount_in: String::from("100"),
@@ -485,7 +492,7 @@ fn swap_exact_in_plan_missing_pool_fails_closed_with_err() {
         amm_program_id: amm_program_id(),
         token_in_id: account_id_hex(token_a),
         token_out_id: account_id_hex(token_b),
-        config: account_read(compute_config_pda(AMM_PROGRAM), &config_account()),
+        config: account_read(config_id(), &config_account()),
         user_input_holding_id: account_id_hex(holding),
         user_output_holding_id: account_id_hex(holding),
         amount_in: String::from("100"),
@@ -505,7 +512,7 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
     let token_large = AccountId::new([2; 32]);
     assert!(is_canonical_pair(token_large, token_small)); // large is canonical token_a
 
-    let pool_id = compute_pool_pda(AMM_PROGRAM, token_small, token_large);
+    let pool_id = compute_pool_pda(AMM_PROGRAM, config_id(), token_small, token_large);
     let pool = PoolDefinition {
         definition_token_a_id: token_small, // stored non-canonically (small first)
         definition_token_b_id: token_large,
@@ -523,7 +530,7 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         amm_program_id: amm_program_id(),
         token_in_id: account_id_hex(token_small),
         token_out_id: account_id_hex(token_large),
-        config: account_read(compute_config_pda(AMM_PROGRAM), &config_account()),
+        config: account_read(config_id(), &config_account()),
         user_input_holding_id: account_id_hex(holding),
         user_output_holding_id: account_id_hex(holding),
         amount_out: String::from("100"),

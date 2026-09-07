@@ -1,7 +1,7 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda_seed,
+    assert_supported_fee_tier, compute_liquidity_token_pda_seed, compute_pool_pda,
     compute_pool_pda_seed, compute_vault_pda_seed, mul_div_floor, spot_price_q64_64, AmmConfig,
     PoolDefinition, MINIMUM_LIQUIDITY,
 };
@@ -37,9 +37,8 @@ pub fn remove_liquidity(
     // The program IDs are taken from the config account, not trusted from a caller-supplied
     // holding. Validating the config PDA is also the Program's initialization gate.
     assert_eq!(
-        config.account_id,
-        compute_config_pda(amm_program_id),
-        "Remove liquidity: AMM config Account ID does not match PDA"
+        config.account.program_owner, amm_program_id,
+        "Remove liquidity: AMM config account must be owned by the AMM Program"
     );
     let config_data = AmmConfig::try_from(&config.account.data)
         .expect("Remove liquidity: AMM Program must be initialized before use");
@@ -49,6 +48,23 @@ pub fn remove_liquidity(
     // 1. Fetch Pool state
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("Remove liquidity: AMM Program expects a valid Pool Definition Account");
+
+    // The pool must be derived under THIS config's namespace. config.account_id is the
+    // namespace root, so a pool belonging to another instance — even a valid AMM-owned
+    // pool with the same token pair — derives a different PDA and is rejected here. This
+    // stops a caller from pairing a config from one instance with a pool from another
+    // (matching the check new_definition makes when it creates the pool).
+    assert_eq!(
+        pool.account_id,
+        compute_pool_pda(
+            amm_program_id,
+            config.account_id,
+            pool_def_data.definition_token_a_id,
+            pool_def_data.definition_token_b_id,
+        ),
+        "Remove liquidity: pool account is not derived under this config's namespace"
+    );
+
     assert_supported_fee_tier(pool_def_data.fees);
 
     assert!(
@@ -260,6 +276,7 @@ pub fn remove_liquidity(
         &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
+        config.account_id,
         pool_def_data.definition_token_a_id,
         pool_def_data.definition_token_b_id,
     )]);
