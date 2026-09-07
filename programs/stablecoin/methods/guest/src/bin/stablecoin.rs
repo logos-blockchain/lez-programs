@@ -386,6 +386,10 @@ mod stablecoin {
     /// fails (see [`stablecoin_program::repay_debt::repay_debt`] for the
     /// full list).
     #[instruction]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the seven account inputs mirror the spec §10.8 ABI"
+    )]
     pub fn repay_debt(
         ctx: ProgramContext,
         #[account(signer)]
@@ -396,6 +400,9 @@ mod stablecoin {
         stablecoin_definition: AccountWithMetadata,
         #[account(mut, signer)]
         user_stablecoin_holding: AccountWithMetadata,
+        stability_fee_accumulator: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+        clock: AccountWithMetadata,
         amount: u128,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::repay_debt::repay_debt(
@@ -403,6 +410,9 @@ mod stablecoin {
             position,
             stablecoin_definition,
             user_stablecoin_holding,
+            stability_fee_accumulator,
+            protocol_parameters,
+            clock,
             ctx.self_program_id,
             amount,
         );
