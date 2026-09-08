@@ -39,6 +39,10 @@
         {
           "name": "authority",
           "type": "account_id"
+        },
+        {
+          "name": "swap_fee_bps",
+          "type": "u128"
         }
       ]
     },
@@ -218,10 +222,6 @@
         },
         {
           "name": "token_b_amount",
-          "type": "u128"
-        },
-        {
-          "name": "fees",
           "type": "u128"
         },
         {
@@ -610,10 +610,6 @@
           {
             "name": "reserve_b",
             "type": "u128"
-          },
-          {
-            "name": "fees",
-            "type": "u128"
           }
         ]
       }
@@ -634,6 +630,10 @@
           {
             "name": "authority",
             "type": "account_id"
+          },
+          {
+            "name": "swap_fee_bps",
+            "type": "u128"
           }
         ]
       }

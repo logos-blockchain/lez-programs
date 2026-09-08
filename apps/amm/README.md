@@ -215,16 +215,16 @@ wallet/runbook display them) or hex — the app normalizes both to hex.
 
 The Pools view is config-driven the same way: it reads a flat JSON list from the
 `AMM_POOLS_CONFIG` environment variable (absolute path) and renders one row per
-entry. `tokenA`/`tokenB` are the display symbols and `feeBps` the fee tier;
+entry. `tokenA`/`tokenB` are the display symbols;
 `poolId`/`tokenADefinitionId`/`tokenBDefinitionId` identify the pool on-chain.
-Adding more pairs is purely a config edit — no app change:
+The swap fee is not a pool field — it is instance-wide (`AmmConfig.swapFeeBps`),
+read from the config. Adding more pairs is purely a config edit — no app change:
 
 ```json
 [
   {
     "tokenA": "TKA",
     "tokenB": "TKB",
-    "feeBps": 1,
     "poolId": "9qbX…",
     "tokenADefinitionId": "4T69…",
     "tokenBDefinitionId": "7Zc2…"
@@ -239,9 +239,9 @@ cp apps/amm/amm-pools.json.example apps/amm/amm-pools.json   # then replace the 
 ```
 
 If `AMM_POOLS_CONFIG` is unset, unreadable, or not a valid JSON array, the Pools
-list shows its empty state. Entries missing `tokenA`, `tokenB`, or a numeric
-`feeBps` are skipped individually. The AMM testnet setup script writes this file
-for the pool(s) it seeds (see below).
+list shows its empty state. Entries missing `tokenA` or `tokenB` are skipped
+individually. The AMM testnet setup script writes this file for the pool(s) it
+seeds (see below).
 
 The **Pool** tab in the nav bar is a dropdown with two entries. *Create pool*
 opens the new-position / add-liquidity form. *View positions* lists the wallet's
@@ -250,7 +250,7 @@ definition id cannot be reversed back to its pool, so the app resolves every
 pool in this config and matches each pool's `lpDefinitionId` against the
 wallet's token holdings. A pool that is not in the config therefore cannot
 appear, however many LP tokens the wallet holds for it. Each row shows the pair,
-fee tier, the wallet's claim on both reserves (`reserve × lpBalance / lpSupply`,
+the instance swap fee, the wallet's claim on both reserves (`reserve × lpBalance / lpSupply`,
 floored like the program's own payout), and its share of the pool. The list
 needs an open wallet.
 
@@ -265,7 +265,7 @@ holds two LP accounts for one pool; a burn names a single account, so the sheet
 draws on the largest and says so when the position spans more than one.
 
 Clicking a row in the Pools list opens the pool detail view, which reads the live pool through
-`resolvePoolAccount` and shows the reserve split, spot price, fee tier, LP
+`resolvePoolAccount` and shows the reserve split, spot price, the instance swap fee, LP
 supply, an estimate of the fees accrued into the reserves, and the pool's
 account ids. Its **Swap** and **Add liquidity** buttons switch tabs with the
 pair preselected. Both the detail view and the preselection need

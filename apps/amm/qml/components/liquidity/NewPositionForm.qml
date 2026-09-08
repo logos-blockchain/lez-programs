@@ -38,7 +38,6 @@ AmmActionCard {
                                              ? String(root.activePoolQuote.lpDefinitionId || "") : ""
     property string selectedTokenAId: ""
     property string selectedTokenBId: ""
-    property int selectedFeeBps: 30
     property int slippageBps: 50
     property string amountA: ""
     property string amountB: ""
@@ -85,13 +84,6 @@ AmmActionCard {
     // Whether the wallet session is ready (from the flow); gates funding/selection like the
     // old context "ready"/"no_wallet" status did, minus the network envelope.
     property bool walletReady: false
-    // Supported fee tiers as raw bps, injected from backend.feeTiers() (amm_core's
-    // SUPPORTED_FEE_TIERS). The selector's delegate wants { feeBps } rows, so wrap
-    // each int; labels are derived locally via feeLabel().
-    property var feeTiers: []
-    readonly property var feeTierModel: (root.feeTiers || []).map(function(bps) {
-        return { "feeBps": Number(bps) }
-    })
     readonly property var tokenA: root.tokenById(root.selectedTokenAId)
     readonly property var tokenB: root.tokenById(root.selectedTokenBId)
     readonly property int decimalsA: 0
@@ -111,7 +103,6 @@ AmmActionCard {
     // undefined ⇒ not resolved yet (neither branch shown).
     readonly property bool activePool: root.flowState.poolExists === true
     readonly property bool missingPool: root.flowState.poolExists === false
-    readonly property int poolFeeBps: root.knownPoolFeeBps()
     readonly property bool compact: root.width < 420
     readonly property bool hasPair: root.selectedTokenAId.length > 0
                                     && root.selectedTokenBId.length > 0
@@ -386,87 +377,6 @@ AmmActionCard {
             Layout.fillWidth: true
             implicitHeight: 1
             color: root.theme.colors.divider
-        }
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 8
-            visible: !root.contextLoading
-
-            Text {
-                text: qsTr("Fee tier")
-                color: root.theme.colors.textPrimary
-                font.pixelSize: 13
-                font.weight: Font.Medium
-            }
-
-            GridLayout {
-                Layout.fillWidth: true
-                columns: root.compact ? 2 : 4
-                columnSpacing: 8
-                rowSpacing: 8
-
-                Repeater {
-                    model: root.feeTierModel
-
-                    Item {
-                        id: feeTierOption
-
-                        required property var modelData
-                        readonly property string disabledReason: root.feeDisabledReason(modelData)
-                        readonly property bool invalid: root.fieldHasError("feeBps")
-                                                        && feeTierButton.checked
-                        Layout.fillWidth: true
-                        implicitHeight: 40
-
-                        Button {
-                            id: feeTierButton
-
-                            anchors.fill: parent
-                            text: parent.modelData.label || root.feeLabel(parent.modelData.feeBps)
-                            checkable: true
-                            checked: root.selectedFeeBps === parent.modelData.feeBps
-                            enabled: parent.disabledReason.length === 0 && !root.submitting
-                            onClicked: root.selectFee(parent.modelData.feeBps)
-
-                            contentItem: Text {
-                                text: feeTierButton.text
-                                color: feeTierButton.enabled
-                                       ? root.theme.colors.textPrimary
-                                       : root.theme.colors.textPlaceholder
-                                font.pixelSize: 12
-                                font.weight: Font.Medium
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-
-                            background: Rectangle {
-                                radius: 6
-                                color: feeTierButton.checked
-                                       ? root.theme.colors.selection
-                                       : root.theme.colors.inputBg
-                                border.color: feeTierOption.invalid
-                                              ? root.theme.colors.error
-                                              : feeTierButton.checked
-                                                ? root.theme.colors.ctaBg
-                                                : root.theme.colors.borderStrong
-                                border.width: 1
-                            }
-                        }
-
-                        MouseArea {
-                            id: disabledFeeHover
-                            anchors.fill: parent
-                            enabled: parent.disabledReason.length > 0
-                            hoverEnabled: true
-                            acceptedButtons: Qt.NoButton
-                        }
-
-                        ToolTip.visible: disabledFeeHover.containsMouse
-                        ToolTip.text: disabledReason
-                    }
-                }
-            }
         }
 
         RowLayout {
@@ -851,7 +761,6 @@ AmmActionCard {
     function resetAll() {
         root.selectedTokenAId = ""
         root.selectedTokenBId = ""
-        root.selectedFeeBps = 30
         root.slippageBps = 50
         root.resolvingTokenId = ""
         root.resolvingTokenSide = ""
@@ -896,30 +805,6 @@ AmmActionCard {
         }
     }
 
-    function knownPoolFeeBps() {
-        var direct = root.feeBpsFromQuote(root.quotePayload)
-        if (direct > 0)
-            return direct
-        if (root.quoteMatchesSelectedPair(root.activePoolQuote))
-            return Number(root.activePoolQuote.poolFeeBps || 0)
-        return 0
-    }
-
-    function feeBpsFromQuote(quote) {
-        if (!root.quoteMatchesSelectedPair(quote))
-            return 0
-        var direct = Number(quote.poolFeeBps || 0)
-        if (direct > 0)
-            return direct
-        var errors = quote.errors || []
-        for (var i = 0; i < errors.length; ++i) {
-            var value = Number(errors[i].details ? errors[i].details.poolFeeBps : 0)
-            if (value > 0)
-                return value
-        }
-        return 0
-    }
-
     function quoteMatchesPair() {
         return root.quoteMatchesSelectedPair(root.quotePayload)
     }
@@ -930,33 +815,6 @@ AmmActionCard {
         return root.hasPair
                 && ((tokenAId === root.selectedTokenAId && tokenBId === root.selectedTokenBId)
                     || (tokenAId === root.selectedTokenBId && tokenBId === root.selectedTokenAId))
-    }
-
-    function selectFee(feeBps) {
-        root.selectedFeeBps = feeBps
-        root.noteDraftChanged()
-        root.requestQuote(true)
-    }
-
-    function feeDisabledReason(tier) {
-        if (tier.enabled === false)
-            return tier.disabledReason || qsTr("This fee tier is unavailable.")
-        if (root.poolFeeBps > 0 && Number(tier.feeBps) !== root.poolFeeBps)
-            return qsTr("Existing pool uses %1. Fee tier is fixed for this pair.")
-                    .arg(root.feeLabel(root.poolFeeBps))
-        return ""
-    }
-
-    function feeLabel(feeBps) {
-        if (feeBps === 1)
-            return "0.01%"
-        if (feeBps === 5)
-            return "0.05%"
-        if (feeBps === 30)
-            return "0.30%"
-        if (feeBps === 100)
-            return "1.00%"
-        return root.formatBps(feeBps)
     }
 
     function buildQuoteRequest() {
@@ -1063,8 +921,7 @@ AmmActionCard {
             "tokenAId": root.displayIsCanonical
                         ? root.selectedTokenAId : root.selectedTokenBId,
             "tokenBId": root.displayIsCanonical
-                        ? root.selectedTokenBId : root.selectedTokenAId,
-            "feeBps": root.selectedFeeBps
+                        ? root.selectedTokenBId : root.selectedTokenAId
         }
     }
 
@@ -1205,7 +1062,6 @@ AmmActionCard {
             "deposit_ratio_mismatch": qsTr("Deposit amounts must match the initial price."),
             "minimum_lp_zero": qsTr("Slippage leaves no minimum LP output."),
             "invalid_slippage": qsTr("Slippage must be between 0% and 50%."),
-            "fee_tier_mismatch": qsTr("Select the existing pool fee tier."),
             "no_wallet": qsTr("Connect a wallet to submit this position."),
             "wallet_unavailable": qsTr("Wallet is unavailable."),
             "wallet_submission_failed": qsTr("Wallet submission failed. Review and retry manually."),
@@ -1327,16 +1183,6 @@ AmmActionCard {
     function applyQuoteSideEffects() {
         if (root.quoteStale)
             return
-        if (root.poolFeeBps > 0 && root.selectedFeeBps !== root.poolFeeBps) {
-            root.selectedFeeBps = root.poolFeeBps
-            root.localErrors = []
-            root.quoteRequested(true, {
-                "ok": true,
-                "errors": [],
-                "request": root.poolProbeRequest(root.pairRequest())
-            })
-            return
-        }
 
         if (root.quotePayload.status !== "ok")
             return
@@ -1455,7 +1301,6 @@ AmmActionCard {
             // taken from the active-pool quote; ignored by the create path.
             "minLp": String(root.quotePayload.minimumLp || ""),
             "pairText": qsTr("%1 / %2").arg(root.shortTokenName(root.tokenA)).arg(root.shortTokenName(root.tokenB)),
-            "feeText": root.feeLabel(root.selectedFeeBps),
             "depositAText": root.quoteAmount("actualAmountA", "actualAmountB", "A"),
             "depositBText": root.quoteAmount("actualAmountA", "actualAmountB", "B"),
             "expectedLpText": root.rawLpText(root.quotePayload.expectedLp),

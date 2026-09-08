@@ -26,10 +26,11 @@ pub(super) fn config_id(request: ConfigIdRequest) -> Result<Value, String> {
     }))
 }
 
-/// Decodes the singleton config account: authority + the token/twap program ids the AMM chains
-/// into. Ids are base58 (app-facing). `config_unavailable` when the config PDA isn't on-chain
-/// yet / undecodable; `configId` / `ammProgramId` are still derivable from `amm_program_id` via
-/// `config_id` for address derivation.
+/// Decodes the AMM config account: authority, the token/twap program ids the AMM chains into, and
+/// the instance-wide `swapFeeBps` (the swap fee charged on every swap in this namespace — fees are
+/// not per-pool). Ids are base58 (app-facing). `config_unavailable` when the config PDA isn't
+/// on-chain yet / undecodable; `configId` / `ammProgramId` are still derivable from
+/// `amm_program_id` via `config_id` for address derivation.
 pub(super) fn config_account(request: ConfigAccountRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let Ok((config_id, config)) = load_config(amm_program, &request.config) else {
@@ -43,6 +44,7 @@ pub(super) fn config_account(request: ConfigAccountRequest) -> Result<Value, Str
         "authority": config.authority.to_string(),
         "tokenProgramId": program_id_base58(config.token_program_id),
         "twapOracleProgramId": program_id_base58(config.twap_oracle_program_id),
+        "swapFeeBps": u32::try_from(config.swap_fee_bps).unwrap_or(u32::MAX),
     }))
 }
 

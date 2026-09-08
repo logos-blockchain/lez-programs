@@ -1,4 +1,4 @@
-use amm_core::{compute_config_pda, compute_config_pda_seed, AmmConfig};
+use amm_core::{assert_valid_swap_fee_bps, compute_config_pda, compute_config_pda_seed, AmmConfig};
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, Claim, ProgramId},
@@ -18,12 +18,20 @@ use lee_core::{
 /// `update_config`). Its existence is the instance's "initialized" flag, and its account id is the
 /// namespace root every pool and downstream PDA derives from.
 ///
+/// `swap_fee_bps` is the instance-wide swap fee (basis points) every pool in this namespace
+/// charges; it is stored in the config and read by each swap. Fees are no longer per-pool.
+///
 /// # Panics
 /// Panics if:
 /// - `owner.is_authorized` is false (the owner did not sign).
 /// - `config.account_id` does not match `compute_config_pda(amm_program_id, owner.account_id,
 ///   nonce)`.
 /// - `config.account` is not the default (the instance is already initialized).
+/// - `swap_fee_bps` is not below `FEE_BPS_DENOMINATOR` (100%).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "instruction surface passes explicit owner, config, namespace, program ids, and fee"
+)]
 pub fn initialize(
     owner: AccountWithMetadata,
     config: AccountWithMetadata,
@@ -31,6 +39,7 @@ pub fn initialize(
     token_program_id: ProgramId,
     twap_oracle_program_id: ProgramId,
     authority: AccountId,
+    swap_fee_bps: u128,
     amm_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     assert!(
@@ -48,12 +57,14 @@ pub fn initialize(
         Account::default(),
         "Initialize: AMM config account must be uninitialized"
     );
+    assert_valid_swap_fee_bps(swap_fee_bps);
 
     let mut config_post = config.account.clone();
     config_post.data = Data::from(&AmmConfig {
         token_program_id,
         twap_oracle_program_id,
         authority,
+        swap_fee_bps,
     });
 
     // On first use the owner is a fresh EOA; the program claims it (the owner authorizes this by
@@ -92,6 +103,7 @@ mod tests {
     const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
     const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
     const NONCE: [u8; 32] = [3; 32];
+    const SWAP_FEE_BPS: u128 = 30;
 
     fn authority() -> AccountId {
         AccountId::new([9; 32])
@@ -125,6 +137,7 @@ mod tests {
             TOKEN_PROGRAM_ID,
             TWAP_ORACLE_PROGRAM_ID,
             authority(),
+            SWAP_FEE_BPS,
             AMM_PROGRAM_ID,
         )
     }
@@ -159,6 +172,7 @@ mod tests {
             TOKEN_PROGRAM_ID,
             TWAP_ORACLE_PROGRAM_ID,
             authority(),
+            SWAP_FEE_BPS,
             AMM_PROGRAM_ID,
         );
         assert_eq!(post_states[0].required_claim(), None);
@@ -173,6 +187,25 @@ mod tests {
         assert_eq!(config.token_program_id, TOKEN_PROGRAM_ID);
         assert_eq!(config.twap_oracle_program_id, TWAP_ORACLE_PROGRAM_ID);
         assert_eq!(config.authority, authority());
+        // The instance-wide swap fee is stored in the config (no longer per-pool).
+        assert_eq!(config.swap_fee_bps, SWAP_FEE_BPS);
+    }
+
+    /// A swap fee at or above 100% would leave a trade with zero effective input, so it is
+    /// rejected — the only validation on the otherwise free-form per-namespace fee.
+    #[test]
+    #[should_panic(expected = "Swap fee must be below")]
+    fn swap_fee_at_or_above_100_percent_panics() {
+        initialize(
+            owner_signed(),
+            config_uninit(),
+            NONCE,
+            TOKEN_PROGRAM_ID,
+            TWAP_ORACLE_PROGRAM_ID,
+            authority(),
+            amm_core::FEE_BPS_DENOMINATOR,
+            AMM_PROGRAM_ID,
+        );
     }
 
     /// A different nonce is a different instance: same owner, distinct config PDA.
@@ -196,6 +229,7 @@ mod tests {
             TOKEN_PROGRAM_ID,
             TWAP_ORACLE_PROGRAM_ID,
             authority(),
+            SWAP_FEE_BPS,
             AMM_PROGRAM_ID,
         );
     }
@@ -212,6 +246,7 @@ mod tests {
             TOKEN_PROGRAM_ID,
             TWAP_ORACLE_PROGRAM_ID,
             authority(),
+            SWAP_FEE_BPS,
             AMM_PROGRAM_ID,
         );
     }
@@ -224,6 +259,7 @@ mod tests {
             token_program_id: TOKEN_PROGRAM_ID,
             twap_oracle_program_id: TWAP_ORACLE_PROGRAM_ID,
             authority: authority(),
+            swap_fee_bps: SWAP_FEE_BPS,
         });
         initialized.account.nonce = Nonce(0);
         initialize(
@@ -233,6 +269,7 @@ mod tests {
             TOKEN_PROGRAM_ID,
             TWAP_ORACLE_PROGRAM_ID,
             authority(),
+            SWAP_FEE_BPS,
             AMM_PROGRAM_ID,
         );
     }

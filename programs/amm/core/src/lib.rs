@@ -32,6 +32,10 @@ pub enum Instruction {
     /// and downstream PDA is derived from this config's account id, so instances are fully
     /// isolated even for the same token pair. Rejects if the config already exists.
     ///
+    /// The config also stores the instance-wide `swap_fee_bps` — the swap fee (in basis points)
+    /// every pool in this namespace charges. Fees are no longer per-pool: whoever initializes the
+    /// instance sets the fee here once, and every swap reads it from the config.
+    ///
     /// Required accounts:
     /// - Owner Account — signs this instruction; its account id is the namespace owner.
     /// - AMM Config Account, uninitialized, derived as `compute_config_pda(self_program_id,
@@ -45,6 +49,9 @@ pub enum Instruction {
         twap_oracle_program_id: ProgramId,
         /// Admin authority allowed to transfer admin control via `UpdateConfig`.
         authority: AccountId,
+        /// Instance-wide swap fee in basis points, applied to every swap in this namespace.
+        /// Must be below `FEE_BPS_DENOMINATOR` (100%).
+        swap_fee_bps: u128,
     },
 
     /// Transfers the AMM Program's admin authority to a new account. Only the configured admin
@@ -133,7 +140,6 @@ pub enum Instruction {
     NewDefinition {
         token_a_amount: u128,
         token_b_amount: u128,
-        fees: u128,
         /// Unix timestamp (milliseconds) after which this transaction is invalid.
         deadline: u64,
     },
@@ -257,8 +263,6 @@ pub struct PoolDefinition {
     pub liquidity_pool_supply: u128,
     pub reserve_a: u128,
     pub reserve_b: u128,
-    /// Fee tier in basis points.
-    pub fees: u128,
 }
 
 pub const FEE_BPS_DENOMINATOR: u128 = 10_000;
@@ -289,6 +293,17 @@ pub fn assert_supported_fee_tier(fees: u128) {
     assert!(
         is_supported_fee_tier(fees),
         "Fee tier must be one of 1, 5, 30, or 100 basis points"
+    );
+}
+
+/// Validates the instance-wide swap fee stored in [`AmmConfig`]. Any value below
+/// `FEE_BPS_DENOMINATOR` (100%) is allowed — a namespace sets its own fee at `Initialize`, no
+/// longer restricted to the fixed tiers. A fee at or above 100% would leave a trade with zero
+/// effective input (the fee multiplier saturates to 0), so it is rejected.
+pub fn assert_valid_swap_fee_bps(swap_fee_bps: u128) {
+    assert!(
+        swap_fee_bps < FEE_BPS_DENOMINATOR,
+        "Swap fee must be below FEE_BPS_DENOMINATOR (100%) basis points"
     );
 }
 
@@ -516,6 +531,9 @@ pub struct AmmConfig {
     pub twap_oracle_program_id: ProgramId,
     /// Admin authority allowed to transfer admin control via `UpdateConfig`.
     pub authority: AccountId,
+    /// Instance-wide swap fee in basis points, applied to every swap in this namespace.
+    /// Set at `Initialize`; always below `FEE_BPS_DENOMINATOR` (100%). Fees are not per-pool.
+    pub swap_fee_bps: u128,
 }
 
 impl TryFrom<&Data> for AmmConfig {

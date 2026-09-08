@@ -159,17 +159,18 @@ public:
 
     /// Submits a `NewDefinition` transaction creating the pool for the request's pair.
     /// `request` carries `{ tokenAId, tokenBId, holdingAId, holdingBId, lpHoldingId,
-    /// amountA, amountB, feeBps, deadlineMs }` (ids hex or base58, normalized to
+    /// amountA, amountB, deadlineMs }` (ids hex or base58, normalized to
     /// hex; amounts/deadline a JSON integer or decimal string, deadline a u64 unix-ms).
+    /// The swap fee is instance-wide (set at `initialize`, stored in the config), so pool
+    /// creation no longer takes a `feeBps`.
     /// The caller provides `lpHoldingId` — a fresh (empty) account the guest initializes
     /// and mints the creator's LP tokens into; a new pool has no pre-existing LP holding,
     /// and the module never creates wallet accounts. On success:
     /// `{ status:"ok", error:"", transactionId:<hex tx hash> }`. On failure:
     /// `{ status:"error", error:<code> }` — `config_missing`, `backend_error`,
-    /// `invalid_account_id`, `bad_amount` (malformed amount/deadline), `bad_fee_bps_amount`
-    /// (`feeBps` not a JSON integer), `wallet_submission_failed`, or a plan code (e.g.
-    /// `invalid_fee_tier`, `config_unavailable`). Unlike the swaps, a submit failure carries
-    /// a code so the create-pool UI can tell the user why.
+    /// `invalid_account_id`, `bad_amount` (malformed amount/deadline),
+    /// `wallet_submission_failed`, or a plan code (e.g. `config_unavailable`). Unlike the
+    /// swaps, a submit failure carries a code so the create-pool UI can tell the user why.
     LogosMap createPool(const LogosMap& request);
 
     /// Prices an `AddLiquidity` into the existing pool for (tokenAId, tokenBId) from the

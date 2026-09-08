@@ -99,6 +99,9 @@ pub struct SwapPairRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ResolvePoolRequest {
     pub pool: AccountRead,
+    /// AMM config account read — the fee shown for the pool is the instance-wide
+    /// `AmmConfig::swap_fee_bps`, no longer a per-pool field.
+    pub config: AccountRead,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -108,6 +111,9 @@ pub struct SwapExactInQuoteRequest {
     pub token_out_id: String,
     pub amount_in: String,
     pub slippage_bps: u32,
+    /// AMM config account read — the swap fee is instance-wide (`AmmConfig::swap_fee_bps`),
+    /// no longer stored per pool, so the quote reads it here.
+    pub config: AccountRead,
     /// Pool account data (hex Borsh `PoolDefinition`). Empty / undecodable ⇒ the
     /// op returns the `no_pool` error.
     pub pool_data: String,
@@ -120,6 +126,9 @@ pub struct SwapExactOutQuoteRequest {
     pub token_out_id: String,
     pub amount_out: String,
     pub slippage_bps: u32,
+    /// AMM config account read — the swap fee is instance-wide (`AmmConfig::swap_fee_bps`),
+    /// no longer stored per pool, so the quote reads it here.
+    pub config: AccountRead,
     /// Pool account data (hex Borsh `PoolDefinition`). Empty / undecodable ⇒ the
     /// op returns the `no_pool` error.
     pub pool_data: String,
@@ -203,7 +212,6 @@ pub struct CreatePoolPlanRequest {
     pub amount_a: Option<String>,
     #[serde(default)]
     pub amount_b: Option<String>,
-    pub fee_bps: u32,
     pub deadline_ms: String,
     pub user_holding_a_id: String,
     pub user_holding_b_id: String,

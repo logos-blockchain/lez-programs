@@ -1,10 +1,10 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_liquidity_token_pda, compute_liquidity_token_pda_seed,
-    compute_lp_lock_holding_pda, compute_lp_lock_holding_pda_seed, compute_pool_pda,
-    compute_pool_pda_seed, compute_vault_pda, compute_vault_pda_seed, isqrt_product,
-    spot_price_q64_64, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
+    compute_lp_lock_holding_pda_seed, compute_pool_pda, compute_pool_pda_seed, compute_vault_pda,
+    compute_vault_pda_seed, isqrt_product, spot_price_q64_64, AmmConfig, PoolDefinition,
+    MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
@@ -32,7 +32,6 @@ pub fn new_definition(
     clock: AccountWithMetadata,
     token_a_amount: NonZeroU128,
     token_b_amount: NonZeroU128,
-    fees: u128,
     amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let definition_token_a_id = token_core::TokenHolding::try_from(&user_holding_a.account.data)
@@ -96,7 +95,6 @@ pub fn new_definition(
         compute_lp_lock_holding_pda(amm_program_id, pool.account_id),
         "LP lock holding Account ID does not match PDA"
     );
-    assert_supported_fee_tier(fees);
 
     // Assert that pool is uninitialized (hard precondition)
     assert_eq!(
@@ -142,7 +140,6 @@ pub fn new_definition(
         liquidity_pool_supply: initial_lp,
         reserve_a: token_a_amount.into(),
         reserve_b: token_b_amount.into(),
-        fees,
     };
 
     let mut pool_initialized = pool.account.clone();

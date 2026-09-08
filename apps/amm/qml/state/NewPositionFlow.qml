@@ -211,7 +211,6 @@ QtObject {
             "minimumLp": String(quote.minimumLp || "0"),
             "reserveA": String(pool.reserveA || "0"),
             "reserveB": String(pool.reserveB || "0"),
-            "poolFeeBps": pool.feeBps,
             "price": String(quote.price || "0"),
             // The pool's LP token (base58, matching the holdings' definitionId) so the form
             // can offer the wallet's existing LP holdings as the mint destination.
@@ -273,7 +272,6 @@ QtObject {
             "lpHoldingId": lpHoldingId,
             "amountA": snapshot.request.amountA,
             "amountB": snapshot.request.amountB,
-            "feeBps": snapshot.request.feeBps,
             // u64-max sentinel = no deadline, same as the swap submits.
             "deadlineMs": "18446744073709551615"
         }

@@ -79,14 +79,14 @@ namespace {
 
             const QString tokenA = obj.value(QStringLiteral("tokenA")).toString();
             const QString tokenB = obj.value(QStringLiteral("tokenB")).toString();
-            const QJsonValue feeBps = obj.value(QStringLiteral("feeBps"));
-            if (tokenA.isEmpty() || tokenB.isEmpty() || !feeBps.isDouble())
+            // The swap fee is instance-wide (AMM config), no longer a pool field, so it is
+            // not required here. Only the pair + on-chain ids identify the pool.
+            if (tokenA.isEmpty() || tokenB.isEmpty())
                 continue;
 
             QVariantMap pool;
             pool.insert(QStringLiteral("tokenA"), tokenA);
             pool.insert(QStringLiteral("tokenB"), tokenB);
-            pool.insert(QStringLiteral("feeBps"), feeBps.toInt());
             pool.insert(QStringLiteral("poolId"),
                         obj.value(QStringLiteral("poolId")).toString());
             pool.insert(QStringLiteral("tokenADefinitionId"),

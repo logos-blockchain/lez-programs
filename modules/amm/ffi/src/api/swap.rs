@@ -5,7 +5,7 @@
 
 use amm_core::{
     compute_pool_pda, mul_div_ceil, mul_div_floor, price_impact_bps, swap_exact_in_amounts,
-    swap_exact_out_amounts, PoolDefinition, FEE_BPS_DENOMINATOR,
+    swap_exact_out_amounts, AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR,
 };
 use lee_core::account::AccountId;
 use risc0_binfmt::ProgramBinary;
@@ -18,7 +18,18 @@ use super::{
 };
 use crate::account::{
     account_id_from_hex, account_id_hex, decode_account, parse_program_id, program_id_bytes,
+    AccountRead,
 };
+
+/// Reads the instance-wide swap fee (basis points) from an AMM config account read. Fees moved
+/// from `PoolDefinition` to `AmmConfig::swap_fee_bps`, so quotes and pool resolution source the
+/// fee here. Returns `invalid_config` if the read can't be decoded as an `AmmConfig`.
+fn swap_fee_bps_from_config(config: &AccountRead) -> Result<u128, String> {
+    let (_, account) = decode_account(config)?;
+    AmmConfig::try_from(&account.data)
+        .map(|cfg| cfg.swap_fee_bps)
+        .map_err(|_| String::from("invalid_config"))
+}
 
 /// Orders `(token_in, token_out)` into the pool's canonical `(token_a, token_b)`
 /// so derived vault PDAs line up with the pool's stored `vault_a`/`vault_b`.
@@ -97,7 +108,9 @@ pub(super) fn resolve_pool(request: ResolvePoolRequest) -> Result<Value, String>
     if pool.liquidity_pool_supply == 0 {
         return Ok(missing());
     }
-    let fee_bps = u32::try_from(pool.fees).map_err(|_| String::from("invalid_fee_tier"))?;
+    // The fee is instance-wide (AmmConfig::swap_fee_bps), not a pool field.
+    let fee_bps = u32::try_from(swap_fee_bps_from_config(&request.config)?)
+        .map_err(|_| String::from("invalid_fee_tier"))?;
     Ok(json!({
         "status": "ok",
         "error": "",
@@ -154,6 +167,9 @@ pub(super) fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> Result<Va
         return Err(String::from("invalid_slippage"));
     }
 
+    // The swap fee is instance-wide (AmmConfig::swap_fee_bps), read from the config.
+    let swap_fee_bps = swap_fee_bps_from_config(&request.config)?;
+
     // Decode the pool; absent / undecodable / empty ⇒ nothing to swap against.
     let pool = hex::decode(&request.pool_data)
         .ok()
@@ -178,7 +194,7 @@ pub(super) fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> Result<Va
 
     // Exact on-chain pricing (shared with amm_program::swap), then the slippage floor.
     let (effective_in, expected_out) =
-        swap_exact_in_amounts(amount_in, reserve_in, reserve_out, pool.fees);
+        swap_exact_in_amounts(amount_in, reserve_in, reserve_out, swap_fee_bps);
     // Mirror the guest's swap_logic guards: an input that fee-rounds to zero
     // effective input (e.g. "0", or "1" at 30 bps) or yields zero output would be
     // rejected on submit before any transfer, so it must not preview as a valid
@@ -228,6 +244,9 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
         return Err(String::from("invalid_slippage"));
     }
 
+    // The swap fee is instance-wide (AmmConfig::swap_fee_bps), read from the config.
+    let swap_fee_bps = swap_fee_bps_from_config(&request.config)?;
+
     // Decode the pool; absent / undecodable / empty ⇒ nothing to swap against.
     let pool = hex::decode(&request.pool_data)
         .ok()
@@ -256,7 +275,7 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
     // Required input for the desired output (shared with amm_program::swap). None
     // when the pool can't deliver that much (amount_out >= reserve_out).
     let Some((_, required_in)) =
-        swap_exact_out_amounts(amount_out, reserve_in, reserve_out, pool.fees)
+        swap_exact_out_amounts(amount_out, reserve_in, reserve_out, swap_fee_bps)
     else {
         return Err(String::from("output_exceeds_liquidity"));
     };
@@ -442,10 +461,27 @@ pub(super) fn program_id(request: ProgramIdRequest) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use amm_core::PoolDefinition;
-    use lee_core::account::AccountId;
+    use lee_core::account::{Account, AccountId, Data};
 
     use super::*;
-    use crate::account::{AccountRead, WalletAccount};
+    use crate::account::{account_read, AccountRead, WalletAccount};
+
+    /// A decodable AMM config read carrying `swap_fee_bps = 30` — the quotes/resolve read the
+    /// instance-wide fee from here now that it is no longer a pool field. 30 bps matches the fee
+    /// the pricing assertions were computed against.
+    fn valid_config() -> AccountRead {
+        let account = Account {
+            program_owner: parse_program_id(&"00".repeat(32)).unwrap(),
+            data: Data::from(&AmmConfig {
+                token_program_id: parse_program_id(&"01".repeat(32)).unwrap(),
+                twap_oracle_program_id: parse_program_id(&"02".repeat(32)).unwrap(),
+                authority: AccountId::new([0x09; 32]),
+                swap_fee_bps: 30,
+            }),
+            ..Account::default()
+        };
+        account_read(AccountId::new([0xEE; 32]), &account)
+    }
 
     fn pool_read(pool: &PoolDefinition) -> AccountRead {
         AccountRead {
@@ -476,10 +512,10 @@ mod tests {
             liquidity_pool_supply: 1_000,
             reserve_a: 111,
             reserve_b: 222,
-            fees: 30,
         };
 
         let value = resolve_pool(ResolvePoolRequest {
+            config: valid_config(),
             pool: pool_read(&pool),
         })
         .unwrap();
@@ -507,6 +543,7 @@ mod tests {
             ..Default::default()
         };
         let value = resolve_pool(ResolvePoolRequest {
+            config: valid_config(),
             pool: pool_read(&pool),
         })
         .unwrap();
@@ -625,12 +662,12 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            fees: 30,
             ..Default::default()
         };
 
         // Sell A → receive B: reserveIn = reserve_a, reserveOut = reserve_b.
         let ab = swap_exact_in_quote(SwapExactInQuoteRequest {
+            config: valid_config(),
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
             amount_in: "10000".into(),
@@ -653,6 +690,7 @@ mod tests {
 
         // Reverse direction orients reserves the other way.
         let ba = swap_exact_in_quote(SwapExactInQuoteRequest {
+            config: valid_config(),
             token_in_id: account_id_hex(def_b),
             token_out_id: account_id_hex(def_a),
             amount_in: "10000".into(),
@@ -669,6 +707,7 @@ mod tests {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let req = |pool_data: String| SwapExactInQuoteRequest {
+            config: valid_config(),
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
             amount_in: "10000".into(),
@@ -703,10 +742,10 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            fees: 30,
             ..Default::default()
         };
         let req = |amount: &str| SwapExactInQuoteRequest {
+            config: valid_config(),
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
             amount_in: amount.into(),
@@ -741,10 +780,10 @@ mod tests {
             liquidity_pool_supply: 1,
             reserve_a: 1,
             reserve_b: u128::MAX,
-            fees: 30,
             ..Default::default()
         };
         let quote = swap_exact_in_quote(SwapExactInQuoteRequest {
+            config: valid_config(),
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
             amount_in: "2".into(),
@@ -769,10 +808,10 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            fees: 30,
             ..Default::default()
         };
         let req = |amount_out: &str| SwapExactOutQuoteRequest {
+            config: valid_config(),
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
             amount_out: amount_out.into(),
@@ -815,11 +854,11 @@ mod tests {
             liquidity_pool_supply: 1,
             reserve_a: 0,
             reserve_b: 2_000_000,
-            fees: 30,
             ..Default::default()
         };
         assert_eq!(
             swap_exact_out_quote(SwapExactOutQuoteRequest {
+                config: valid_config(),
                 token_in_id: account_id_hex(def_a),
                 token_out_id: account_id_hex(def_b),
                 amount_out: "10000".into(),

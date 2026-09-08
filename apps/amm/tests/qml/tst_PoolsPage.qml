@@ -16,14 +16,19 @@ TestCase {
         QtObject {
             property var poolListResult: [
                 {
-                    "tokenA": "TKA", "tokenB": "TKB", "feeBps": 5,
+                    "tokenA": "TKA", "tokenB": "TKB",
                     "tokenADefinitionId": "DEF_A", "tokenBDefinitionId": "DEF_B"
                 },
-                { "tokenA": "TKC", "tokenB": "TKA", "feeBps": 30 }
+                { "tokenA": "TKC", "tokenB": "TKA" }
             ]
 
             function poolList() {
                 return poolListResult
+            }
+
+            // The swap fee is instance-wide, read from the config (no longer per pool).
+            function configAccount() {
+                return { "status": "ok", "error": "", "swapFeeBps": 5 }
             }
         }
     }
@@ -65,6 +70,8 @@ TestCase {
         // so adding entries to poolList() is all it takes to render more rows.
         compare(page.poolCount, 2)
         verify(page.feeLabel(5).endsWith("%"))
+        // The fee shown is the instance-wide config fee (swapFeeBps), not a per-pool value.
+        compare(page.swapFeeBps, 5)
 
         var list = findChild(page, "poolsList")
         var firstRow = findChild(page, "poolRow0")
@@ -95,7 +102,7 @@ TestCase {
         // it needs to resolve the pool — not just the displayed pair.
         compare(spy.count, 1)
         compare(spy.signalArguments[0][0].tokenA, "TKC")
-        compare(spy.signalArguments[0][0].feeBps, 30)
+        compare(spy.signalArguments[0][0].tokenB, "TKA")
 
         findChild(page, "poolRow0").activate()
         compare(spy.count, 2)

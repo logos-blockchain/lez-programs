@@ -92,6 +92,7 @@ mod tests {
                     token_program_id: TOKEN_PROGRAM_ID,
                     twap_oracle_program_id: TWAP_ORACLE_PROGRAM_ID,
                     authority: admin_id(),
+                    swap_fee_bps: amm_core::FEE_TIER_BPS_30,
                 }),
                 nonce: Nonce(0),
             },

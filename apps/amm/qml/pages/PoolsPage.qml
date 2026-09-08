@@ -30,6 +30,10 @@ Item {
     // backend is ready and the call resolves.
     property var pools: []
 
+    // The swap fee is instance-wide (AmmConfig.swapFeeBps), not per pool, so it is read once
+    // from the config and applied to every row. -1 until loaded / if the config is unavailable.
+    property int swapFeeBps: -1
+
     function loadPools() {
         if (!root.backend || !root.runtime)
             return
@@ -38,13 +42,24 @@ Item {
             function(err) { console.warn("poolList error:", err) })
     }
 
-    onBackendChanged: root.loadPools()
-    onRuntimeChanged: root.loadPools()
+    function loadSwapFee() {
+        if (!root.backend || !root.runtime)
+            return
+        root.runtime.watch(root.backend.configAccount(),
+            function(res) {
+                root.swapFeeBps = (res && res.status === "ok" && res.swapFeeBps !== undefined)
+                                  ? Number(res.swapFeeBps) : -1
+            },
+            function(err) { console.warn("configAccount error:", err) })
+    }
+
+    onBackendChanged: { root.loadPools(); root.loadSwapFee() }
+    onRuntimeChanged: { root.loadPools(); root.loadSwapFee() }
 
     Connections {
         target: root.backend
         // Re-fetch when the registry snapshot refreshes (e.g. a remote list lands).
-        function onRegistryRevisionChanged() { root.loadPools() }
+        function onRegistryRevisionChanged() { root.loadPools(); root.loadSwapFee() }
     }
 
     AmmTheme {
@@ -52,6 +67,8 @@ Item {
     }
 
     function feeLabel(feeBps) {
+        if (feeBps === undefined || feeBps === null || Number(feeBps) < 0)
+            return qsTr("—")
         var percentage = Number(feeBps) / 100
         return qsTr("%1%").arg(percentage.toLocaleString(Qt.locale(), "f", 2))
     }
@@ -204,7 +221,7 @@ Item {
         readonly property string pairText: qsTr("%1 / %2")
                                            .arg(String(pool.tokenA || ""))
                                            .arg(String(pool.tokenB || ""))
-        readonly property string feeText: root.feeLabel(pool.feeBps)
+        readonly property string feeText: root.feeLabel(root.swapFeeBps)
 
         height: 68
         activeFocusOnTab: true

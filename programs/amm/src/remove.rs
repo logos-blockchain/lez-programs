@@ -1,9 +1,9 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_liquidity_token_pda_seed, compute_pool_pda,
-    compute_pool_pda_seed, compute_vault_pda_seed, mul_div_floor, spot_price_q64_64, AmmConfig,
-    PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_liquidity_token_pda_seed, compute_pool_pda, compute_pool_pda_seed,
+    compute_vault_pda_seed, mul_div_floor, spot_price_q64_64, AmmConfig, PoolDefinition,
+    MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
@@ -64,8 +64,6 @@ pub fn remove_liquidity(
         ),
         "Remove liquidity: pool account is not derived under this config's namespace"
     );
-
-    assert_supported_fee_tier(pool_def_data.fees);
 
     assert!(
         pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
