@@ -26,12 +26,6 @@ ColumnLayout {
 
     SummaryRow {
         Layout.fillWidth: true
-        label: qsTr("Fee")
-        value: root.snapshot.feeText || "-"
-    }
-
-    SummaryRow {
-        Layout.fillWidth: true
         label: qsTr("Deposit")
         value: qsTr("%1 + %2")
             .arg(root.snapshot.depositAText || "-")

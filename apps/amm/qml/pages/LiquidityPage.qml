@@ -23,11 +23,6 @@ Item {
     // account selectors; refetched when the wallet opens.
     property var holdings: []
 
-    // The AMM's supported fee tiers (backend.feeTiers()) feeding the fee selector.
-    // Program-derived and wallet-independent, so it's fetched once when the backend
-    // becomes available.
-    property var feeTiers: []
-
     // The liquidity token selector rows (backend.resolveTokens()): the app-owned union of
     // configured tokens and persisted-custom tokens. Refetched when the wallet opens/closes
     // (holdingId/balance change) and after a custom token is added.
@@ -96,14 +91,6 @@ Item {
             function(err) { console.warn("tokenHoldings error:", err) })
     }
 
-    function refreshFeeTiers() {
-        if (!root.backend || root.runtime === null || root.feeTiers.length > 0)
-            return
-        root.runtime.watch(root.backend.feeTiers(),
-            function(list) { root.feeTiers = list },
-            function(err) { console.warn("feeTiers error:", err) })
-    }
-
     function refreshTokens() {
         if (!root.backend || root.runtime === null)
             return
@@ -149,9 +136,9 @@ Item {
             })
     }
 
-onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers(); root.refreshTokens() }
-    onRuntimeChanged: { root.refreshHoldings(); root.refreshFeeTiers(); root.refreshTokens() }
-    Component.onCompleted: { root.refreshHoldings(); root.refreshFeeTiers(); root.refreshTokens() }
+onBackendChanged: { root.refreshHoldings(); root.refreshTokens() }
+    onRuntimeChanged: { root.refreshHoldings(); root.refreshTokens() }
+    Component.onCompleted: { root.refreshHoldings(); root.refreshTokens() }
 
     Connections {
         target: root.backend
@@ -356,10 +343,9 @@ onBackendChanged: { root.refreshHoldings(); root.refreshFeeTiers(); root.refresh
                     headingText: form.hasPair ? qsTr("Deposit tokens") : qsTr("Select pair")
                     headingDetail: form.hasPair
                                    ? qsTr("Specify the token amounts for your liquidity contribution.")
-                                   : qsTr("Choose two tokens and a fee tier for this position.")
+                                   : qsTr("Choose two tokens for this position.")
                     showRefreshAction: false
                     holdings: root.holdings
-                    feeTiers: root.feeTiers
                     tokens: root.resolvedTokens
                     loadingTokens: root.tokensLoading
                     walletReady: newPositionFlow.walletStateReady

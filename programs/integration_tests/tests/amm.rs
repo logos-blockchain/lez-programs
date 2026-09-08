@@ -3,10 +3,7 @@
     reason = "integration fixtures use fixed balances to assert AMM state transitions"
 )]
 
-use amm_core::{
-    PoolDefinition, FEE_TIER_BPS_1, FEE_TIER_BPS_100, FEE_TIER_BPS_30, FEE_TIER_BPS_5,
-    MINIMUM_LIQUIDITY,
-};
+use amm_core::{PoolDefinition, FEE_TIER_BPS_30, MINIMUM_LIQUIDITY};
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee::{
     error::LeeError,
@@ -395,6 +392,8 @@ impl Accounts {
                 token_program_id: Ids::token_program(),
                 twap_oracle_program_id: Ids::twap_oracle_program(),
                 authority: Ids::admin(),
+                // The swap fee is now instance-wide, moved off the pool.
+                swap_fee_bps: Balances::fee_tier(),
             }),
             nonce: Nonce(0),
         }
@@ -451,7 +450,6 @@ impl Accounts {
                 liquidity_pool_supply: Balances::pool_lp_supply_init(),
                 reserve_a: Balances::vault_a_init(),
                 reserve_b: Balances::vault_b_init(),
-                fees: Balances::fee_tier(),
             }),
             nonce: Nonce(0),
         }
@@ -562,7 +560,6 @@ impl Accounts {
                 liquidity_pool_supply: Balances::pool_lp_supply_init(),
                 reserve_a: Balances::reserve_a_swap_1(),
                 reserve_b: Balances::reserve_b_swap_1(),
-                fees: Balances::fee_tier(),
             }),
             nonce: Nonce(0),
         }
@@ -629,7 +626,6 @@ impl Accounts {
                 liquidity_pool_supply: Balances::pool_lp_supply_init(),
                 reserve_a: Balances::reserve_a_swap_2(),
                 reserve_b: Balances::reserve_b_swap_2(),
-                fees: Balances::fee_tier(),
             }),
             nonce: Nonce(0),
         }
@@ -696,7 +692,6 @@ impl Accounts {
                 liquidity_pool_supply: Balances::pool_lp_supply_init(),
                 reserve_a: Balances::reserve_a_swap_exact_output_a_to_b(),
                 reserve_b: Balances::reserve_b_swap_exact_output_a_to_b(),
-                fees: Balances::fee_tier(),
             }),
             nonce: Nonce(0),
         }
@@ -763,7 +758,6 @@ impl Accounts {
                 liquidity_pool_supply: Balances::pool_lp_supply_init(),
                 reserve_a: Balances::reserve_a_swap_exact_output_b_to_a(),
                 reserve_b: Balances::reserve_b_swap_exact_output_b_to_a(),
-                fees: Balances::fee_tier(),
             }),
             nonce: Nonce(0),
         }
@@ -830,7 +824,6 @@ impl Accounts {
                 liquidity_pool_supply: Balances::token_lp_supply_add(),
                 reserve_a: Balances::vault_a_add(),
                 reserve_b: Balances::vault_b_add(),
-                fees: Balances::fee_tier(),
             }),
             nonce: Nonce(0),
         }
@@ -923,7 +916,6 @@ impl Accounts {
                 liquidity_pool_supply: Balances::token_lp_supply_remove(),
                 reserve_a: Balances::vault_a_remove(),
                 reserve_b: Balances::vault_b_remove(),
-                fees: Balances::fee_tier(),
             }),
             nonce: Nonce(0),
         }
@@ -1003,20 +995,6 @@ impl Accounts {
         }
     }
 
-    fn token_lp_definition_reinitializable() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("LP Token"),
-                total_supply: 0,
-                metadata_id: None,
-                authority: Some(Ids::token_lp_definition()),
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
     fn vault_a_reinitializable() -> Account {
         Account {
             program_owner: Ids::token_program(),
@@ -1036,25 +1014,6 @@ impl Accounts {
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: 0,
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    fn pool_definition_zero_supply_reinitializable() -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&PoolDefinition {
-                definition_token_a_id: Ids::token_a_definition(),
-                definition_token_b_id: Ids::token_b_definition(),
-                vault_a_id: Ids::vault_a(),
-                vault_b_id: Ids::vault_b(),
-                liquidity_pool_id: Ids::token_lp_definition(),
-                liquidity_pool_supply: 0,
-                reserve_a: 0,
-                reserve_b: 0,
-                fees: Balances::fee_tier(),
             }),
             nonce: Nonce(0),
         }
@@ -1135,7 +1094,6 @@ impl Accounts {
                 liquidity_pool_supply: Balances::lp_supply_init(),
                 reserve_a: Balances::vault_a_init(),
                 reserve_b: Balances::vault_b_init(),
-                fees: Balances::fee_tier(),
             }),
             nonce: Nonce(0),
         }
@@ -1246,13 +1204,11 @@ fn state_for_amm_tests_with_precreated_user_lp_for_new_def() -> V03State {
 #[cfg(test)]
 fn try_execute_new_definition(
     state: &mut V03State,
-    fees: u128,
     authorize_user_lp: bool,
 ) -> Result<(), LeeError> {
     let instruction = amm_core::Instruction::NewDefinition {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
-        fees,
         deadline: u64::MAX,
     };
 
@@ -1301,8 +1257,8 @@ fn try_execute_new_definition(
 }
 
 #[cfg(test)]
-fn execute_new_definition(state: &mut V03State, fees: u128) {
-    try_execute_new_definition(state, fees, true).unwrap();
+fn execute_new_definition(state: &mut V03State) {
+    try_execute_new_definition(state, true).unwrap();
 }
 
 #[cfg(test)]
@@ -1477,6 +1433,7 @@ fn execute_initialize_for(
         token_program_id: Ids::token_program(),
         twap_oracle_program_id: Ids::twap_oracle_program(),
         authority: Ids::admin(),
+        swap_fee_bps: Balances::fee_tier(),
     };
 
     let message = public_transaction::Message::try_new(
@@ -1543,7 +1500,6 @@ fn execute_new_definition_in(
     let instruction = amm_core::Instruction::NewDefinition {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
-        fees: Balances::fee_tier(),
         deadline: u64::MAX,
     };
 
@@ -1674,7 +1630,7 @@ fn state_with_pool_created_via_new_definition() -> V03State {
     let mut state = state_for_amm_tests_with_new_def();
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
-    execute_new_definition(&mut state, Balances::fee_tier());
+    execute_new_definition(&mut state);
     state
 }
 
@@ -1838,6 +1794,7 @@ fn amm_initialize_requires_owner_signature() {
         token_program_id: Ids::token_program(),
         twap_oracle_program_id: Ids::twap_oracle_program(),
         authority: Ids::admin(),
+        swap_fee_bps: Balances::fee_tier(),
     };
 
     // The owner account is declared, but no signature (and no nonce) is supplied for it.
@@ -2744,7 +2701,7 @@ fn amm_new_definition_uninitialized_pool() {
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
 
-    execute_new_definition(&mut state, Balances::fee_tier());
+    execute_new_definition(&mut state);
 
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
@@ -2799,7 +2756,7 @@ fn amm_new_definition_without_user_lp_authorization_fails() {
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
 
-    let result = try_execute_new_definition(&mut state, Balances::fee_tier(), false);
+    let result = try_execute_new_definition(&mut state, false);
 
     assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     assert_eq!(
@@ -2841,7 +2798,7 @@ fn amm_new_definition_precreated_user_lp_unsigned_fails() {
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
 
-    let result = try_execute_new_definition(&mut state, Balances::fee_tier(), false);
+    let result = try_execute_new_definition(&mut state, false);
 
     assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     assert_eq!(
@@ -2863,75 +2820,6 @@ fn amm_new_definition_precreated_user_lp_unsigned_fails() {
     assert_eq!(
         state.get_account_by_id(Ids::lp_lock_holding()),
         Account::default()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::user_lp()),
-        Accounts::user_lp_holding_init_zero()
-    );
-}
-
-#[test]
-fn amm_new_definition_supports_all_fee_tiers() {
-    for fees in [
-        FEE_TIER_BPS_1,
-        FEE_TIER_BPS_5,
-        FEE_TIER_BPS_30,
-        FEE_TIER_BPS_100,
-    ] {
-        let mut state = state_for_amm_tests_with_new_def();
-        state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
-        state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
-
-        execute_new_definition(&mut state, fees);
-
-        let pool_definition =
-            PoolDefinition::try_from(&state.get_account_by_id(Ids::pool_definition()).data)
-                .expect("new definition should create a valid pool");
-        assert_eq!(pool_definition.fees, fees);
-    }
-}
-
-#[test]
-fn amm_new_definition_rejects_unsupported_fee_tier_transaction() {
-    let mut state = state_for_amm_tests_with_precreated_user_lp_for_new_def();
-    state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
-    state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
-    state.force_insert_account(
-        Ids::pool_definition(),
-        Accounts::pool_definition_zero_supply_reinitializable(),
-    );
-    state.force_insert_account(
-        Ids::token_lp_definition(),
-        Accounts::token_lp_definition_reinitializable(),
-    );
-
-    // `user_holding_lp` is signed so the rejection isolates the unsupported fee tier.
-    let result = try_execute_new_definition(&mut state, 2, true);
-
-    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
-    assert_eq!(
-        state.get_account_by_id(Ids::pool_definition()),
-        Accounts::pool_definition_zero_supply_reinitializable()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::vault_a()),
-        Accounts::vault_a_reinitializable()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::vault_b()),
-        Accounts::vault_b_reinitializable()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::token_lp_definition()),
-        Accounts::token_lp_definition_reinitializable()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::user_a()),
-        Accounts::user_a_holding()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::user_b()),
-        Accounts::user_b_holding()
     );
     assert_eq!(
         state.get_account_by_id(Ids::user_lp()),
@@ -3485,7 +3373,8 @@ fn amm_fee_accumulates_across_multiple_swaps_and_pays_out_on_remove() {
     let pool_before_remove = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
     assert_eq!(pool_before_remove.reserve_a, 4_060);
     assert_eq!(pool_before_remove.reserve_b, 3_085);
-    assert_eq!(pool_before_remove.fees, Balances::fee_tier());
+    // The swap fee is instance-wide now (AmmConfig::swap_fee_bps), not stored on the pool.
+    assert_eq!(config_data(&state).swap_fee_bps, Balances::fee_tier());
 
     let vault_a_before_remove = fungible_balance(&state.get_account_by_id(Ids::vault_a()));
     let vault_b_before_remove = fungible_balance(&state.get_account_by_id(Ids::vault_b()));
@@ -3698,7 +3587,6 @@ fn amm_new_definition_rejects_expired_deadline() {
     let instruction = amm_core::Instruction::NewDefinition {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
-        fees: amm_core::FEE_TIER_BPS_30,
         deadline: deadline_ms,
     };
 

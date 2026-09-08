@@ -1,6 +1,6 @@
 use amm_core::{
-    assert_supported_fee_tier, compute_pool_pda, compute_pool_pda_seed,
-    read_vault_fungible_balances, spot_price_q64_64, AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_pool_pda, compute_pool_pda_seed, read_vault_fungible_balances, spot_price_q64_64,
+    AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
@@ -20,7 +20,6 @@ pub fn sync_reserves(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("Sync reserves: AMM Program expects a valid Pool Definition Account");
-    assert_supported_fee_tier(pool_def_data.fees);
 
     // The TWAP oracle program ID is taken from the config account. Validating the config PDA is
     // also the Program's initialization gate.

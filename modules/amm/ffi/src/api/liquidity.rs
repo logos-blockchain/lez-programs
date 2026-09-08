@@ -167,9 +167,8 @@ pub(super) fn create_pool_plan(request: CreatePoolPlanRequest) -> Result<Value, 
 
     let amount_a = positive_amount(request.amount_a.as_deref())?;
     let amount_b = positive_amount(request.amount_b.as_deref())?;
-    if !amm_core::is_supported_fee_tier(u128::from(request.fee_bps)) {
-        return Err(String::from("invalid_fee_tier"));
-    }
+    // The swap fee is set once per namespace at `initialize` (AmmConfig::swap_fee_bps); pools no
+    // longer carry a fee, so pool creation takes none.
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
     // Canonical orientation: (token, amount, holding) all move together, so user_a is
     // the canonical token-a holding and canonical_amount_a its deposit — matching the
@@ -184,7 +183,6 @@ pub(super) fn create_pool_plan(request: CreatePoolPlanRequest) -> Result<Value, 
     let instruction = risc0_zkvm::serde::to_vec(&amm_core::Instruction::NewDefinition {
         token_a_amount: canonical_amount_a,
         token_b_amount: canonical_amount_b,
-        fees: u128::from(request.fee_bps),
         deadline,
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
@@ -673,6 +671,7 @@ mod tests {
                 token_program_id: token_program,
                 twap_oracle_program_id: twap_program,
                 authority: AccountId::new([0x09; 32]),
+                swap_fee_bps: 30,
             }),
             ..Account::default()
         };
@@ -783,7 +782,6 @@ mod tests {
             token_b_id: account_id_hex(token_b),
             amount_a: Some(String::from("1000000")), // deposit for display token_a
             amount_b: Some(String::from("4000000")), // deposit for display token_b
-            fee_bps: 30,
             deadline_ms: String::from("1000"),
             user_holding_a_id: account_id_hex(holding_a),
             user_holding_b_id: account_id_hex(holding_b),
@@ -833,7 +831,6 @@ mod tests {
         let expected = risc0_zkvm::serde::to_vec(&amm_core::Instruction::NewDefinition {
             token_a_amount: 4_000_000,
             token_b_amount: 1_000_000,
-            fees: 30,
             deadline: 1_000,
         })
         .unwrap();
@@ -851,7 +848,6 @@ mod tests {
             token_b_id: account_id_hex(token),
             amount_a: Some(String::from("1")),
             amount_b: Some(String::from("1")),
-            fee_bps: 30,
             deadline_ms: String::from("1"),
             user_holding_a_id: account_id_hex(token),
             user_holding_b_id: account_id_hex(token),
@@ -874,7 +870,6 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            fees: 30,
             ..Default::default()
         };
 
@@ -930,7 +925,6 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            fees: 30,
             ..Default::default()
         };
         let req =
@@ -1023,7 +1017,6 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            fees: 30,
         };
 
         let holding_a = AccountId::new([0x0A; 32]); // token_a holding
@@ -1156,7 +1149,6 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            fees: 30,
             ..Default::default()
         };
 
@@ -1209,7 +1201,6 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            fees: 30,
             ..Default::default()
         };
         let req = |token_a: AccountId, token_b: AccountId, lp: &str, data: String| {
@@ -1271,7 +1262,6 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 1,
-            fees: 30,
             ..Default::default()
         };
         assert_eq!(
@@ -1310,7 +1300,6 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            fees: 30,
         };
 
         let holding_a = AccountId::new([0x0A; 32]); // token_a holding (receives)
@@ -1464,7 +1453,6 @@ mod tests {
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            fees: 30,
         };
         let value = sync_reserves_plan(SyncReservesPlanRequest {
             amm_program_id: program.clone(),

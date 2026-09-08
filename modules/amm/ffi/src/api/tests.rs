@@ -65,6 +65,7 @@ fn config_account() -> Account {
             token_program_id: TOKEN_PROGRAM,
             twap_oracle_program_id: TWAP_PROGRAM,
             authority: AccountId::new([7; 32]),
+            swap_fee_bps: 30,
         }),
     )
 }
@@ -403,6 +404,8 @@ fn config_account_decodes_authority_and_program_ids() {
         value["twapOracleProgramId"],
         program_id_base58(TWAP_PROGRAM)
     );
+    // The instance-wide swap fee is surfaced from the config (the fixture sets 30 bps).
+    assert_eq!(value["swapFeeBps"], 30);
 }
 
 #[test]
@@ -447,7 +450,6 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         liquidity_pool_supply: 1_000,
         reserve_a: 1_000,
         reserve_b: 1_000,
-        fees: 30,
     };
 
     let holding = AccountId::new([9; 32]);
@@ -522,7 +524,6 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         liquidity_pool_supply: 1_000,
         reserve_a: 1_000,
         reserve_b: 1_000,
-        fees: 30,
     };
 
     let holding = AccountId::new([9; 32]);

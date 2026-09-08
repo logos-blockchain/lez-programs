@@ -1,9 +1,8 @@
 use std::num::NonZeroU128;
 
 use amm_core::{
-    assert_supported_fee_tier, compute_liquidity_token_pda_seed, compute_pool_pda,
-    compute_pool_pda_seed, mul_div_floor, read_vault_fungible_balances, spot_price_q64_64,
-    AmmConfig, PoolDefinition,
+    compute_liquidity_token_pda_seed, compute_pool_pda, compute_pool_pda_seed, mul_div_floor,
+    read_vault_fungible_balances, spot_price_q64_64, AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
@@ -62,8 +61,6 @@ pub fn add_liquidity(
         ),
         "Add liquidity: pool account is not derived under this config's namespace"
     );
-
-    assert_supported_fee_tier(pool_def_data.fees);
 
     assert_eq!(
         vault_a.account_id, pool_def_data.vault_a_id,

@@ -40,8 +40,8 @@ transaction ID is displayed.
 ## Acceptance Checklist
 
 - Context exposes Wallet-Scoped Holdings and configured token definitions.
-- Unsupported fee tiers are disabled and explain why.
-- Active pool fee tier is fixed to the stored pool fee.
+- No fee selection in the form — the swap fee is instance-wide (set at
+  `initialize`, stored in the AMM config) and applies to every pool.
 - Missing pool flow accepts an editable `X Token A = Y Token B` ratio and
   scales either deposit from the minimum that mints more than
   `MINIMUM_LIQUIDITY`.

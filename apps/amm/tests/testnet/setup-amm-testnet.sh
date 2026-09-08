@@ -132,7 +132,9 @@ TOKEN_D_NAME="TOKEN D"; TOKEN_D_SYMBOL="TKD"; TOKEN_D_SUPPLY="100000000000000000
 CLOCK_ACCOUNT="4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU"  # canonical LEZ system clock
 POOL_TOKEN_A_AMOUNT="10000"
 POOL_TOKEN_B_AMOUNT="10000"
-POOL_FEES="1"
+# Instance-wide swap fee (basis points), set once at `initialize` and stored in the AMM
+# config — no longer a per-pool value. Every swap in this namespace uses it.
+SWAP_FEE_BPS="1"
 POOL_DEADLINE="18446744073709551615"
 
 # Where the UI token config is written for TESTS ONLY (git-ignored). This is
@@ -547,7 +549,8 @@ run_tx strict "initialize AMM config" -- \
     --nonce "$AMM_NONCE" \
     --token-program-id "$TOKEN_PID" \
     --twap-oracle-program-id "$TWAP_PID" \
-    --authority "$AMM_AUTHORITY"
+    --authority "$AMM_AUTHORITY" \
+    --swap-fee-bps "$SWAP_FEE_BPS"
 
 ###############################################################################
 # 8. Create the pool (seed initial liquidity)
@@ -567,7 +570,6 @@ run_tx strict "create pool + seed liquidity" -- \
     --clock "$CLOCK_ACCOUNT" \
     --token-a-amount "$POOL_TOKEN_A_AMOUNT" \
     --token-b-amount "$POOL_TOKEN_B_AMOUNT" \
-    --fees "$POOL_FEES" \
     --deadline "$POOL_DEADLINE"
 
 ###############################################################################
@@ -612,11 +614,12 @@ kv "wrote" "$TOKENS_CONFIG_OUT"
 # 11. Write the UI known-pools config from the seeded pool(s)
 ###############################################################################
 sec "Write UI pools config -> $POOLS_CONFIG_OUT"
-# One row per seeded pool: "SYMBOL_A SYMBOL_B FEE_BPS POOL_ID DEF_A DEF_B".
+# One row per seeded pool: "SYMBOL_A SYMBOL_B POOL_ID DEF_A DEF_B". The swap fee is
+# instance-wide (AMM config), not per pool, so it is no longer part of a pool entry.
 # Add a line here for each new seeded pool — nothing else (script or app) needs
 # to change; the Pools page renders one row per entry generically.
 POOL_SPECS=(
-  "$TOKEN_A_SYMBOL $TOKEN_B_SYMBOL $POOL_FEES $POOL $TOKEN_A_DEF $TOKEN_B_DEF"
+  "$TOKEN_A_SYMBOL $TOKEN_B_SYMBOL $POOL $TOKEN_A_DEF $TOKEN_B_DEF"
 )
 
 pool_entry() {
@@ -624,10 +627,9 @@ pool_entry() {
   {
     "tokenA": "$1",
     "tokenB": "$2",
-    "feeBps": $3,
-    "poolId": "$4",
-    "tokenADefinitionId": "$5",
-    "tokenBDefinitionId": "$6"
+    "poolId": "$3",
+    "tokenADefinitionId": "$4",
+    "tokenBDefinitionId": "$5"
   }
 JSON
 }
@@ -638,7 +640,7 @@ JSON
     [ "$i" -gt 0 ] && echo "  ,"
     # shellcheck disable=SC2086 # deliberate word-split of the spec into fields
     set -- ${POOL_SPECS[$i]}
-    pool_entry "$1" "$2" "$3" "$4" "$5" "$6"
+    pool_entry "$1" "$2" "$3" "$4" "$5"
   done
   echo "]"
 } > "$POOLS_CONFIG_OUT"
@@ -672,7 +674,7 @@ JSON
     # shellcheck disable=SC2086 # deliberate word-split of the spec into fields
     set -- ${POOL_SPECS[$i]}
     cat <<JSON
-    { "network": "local", "tokenA": "$1", "tokenB": "$2", "feeBps": $3, "poolId": "$4", "tokenADefinitionId": "$5", "tokenBDefinitionId": "$6" }
+    { "network": "local", "tokenA": "$1", "tokenB": "$2", "poolId": "$3", "tokenADefinitionId": "$4", "tokenBDefinitionId": "$5" }
 JSON
   done
   cat <<JSON

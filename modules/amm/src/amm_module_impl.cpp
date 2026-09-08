@@ -423,7 +423,9 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
     }
 
     const json pool = readPublicAccount(jStr(pairResult.value, "poolId"));
-    const FfiResult resolveResult = call(amm_resolve_pool, json{{"pool", pool}});
+    // The fee shown for the pool is the instance-wide AmmConfig::swap_fee_bps, so resolve_pool
+    // needs the config account to read it (it is no longer a pool field).
+    const FfiResult resolveResult = call(amm_resolve_pool, json{{"pool", pool}, {"config", config}});
     if (!resolveResult.ok)
         return failed("bad_config");  // amm_resolve_pool op failed
     // resolve_pool returns status:"error"/no_pool for a missing pool (pass through) or
@@ -647,6 +649,8 @@ LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
         {"tokenOutId", token_out},
         {"amountIn", amount_in_decimal},
         {"slippageBps", slippage_bps},
+        // The swap fee is instance-wide (AmmConfig::swap_fee_bps); the quote reads it from config.
+        {"config", config},
         {"poolData", pool_data},
     });
     if (!quoteResult.ok)
@@ -706,6 +710,8 @@ LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
         {"tokenOutId", token_out},
         {"amountOut", amount_out_decimal},
         {"slippageBps", slippage_bps},
+        // The swap fee is instance-wide (AmmConfig::swap_fee_bps); the quote reads it from config.
+        {"config", config},
         {"poolData", pool_data},
     });
     if (!quoteResult.ok)
@@ -991,15 +997,11 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
         || !jsonAmountToDecimal(request.value("deadlineMs", json()), deadline_decimal))
         return error("bad_amount");
 
-    // feeBps deserializes into a u32 in the plan request, so a missing / null / float / string
-    // value would fail the FFI's serde parse and leak an "invalid request JSON" error instead of
-    // a stable code. Require a JSON integer here; fee-tier support is validated in the plan op.
-    const json fee_val = request.value("feeBps", json());
-    if (!fee_val.is_number_integer())
-        return error("bad_fee_bps_amount");
-
+    // The swap fee is set once per namespace at initialize (AmmConfig::swap_fee_bps); pools no
+    // longer carry a fee, so pool creation takes none.
+    //
     // amm_create_pool_plan resolves the pool accounts (canonicalizing the pair),
-    // encodes NewDefinition (with the fee), and returns a ready-to-submit plan.
+    // encodes NewDefinition, and returns a ready-to-submit plan.
     const FfiResult planResult = call(amm_create_pool_plan, json{
         {"ammProgramId", amm_program_id},
         {"config", config},
@@ -1007,7 +1009,6 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
         {"tokenBId", token_b},
         {"amountA", amount_a_decimal},
         {"amountB", amount_b_decimal},
-        {"feeBps", fee_val},
         {"deadlineMs", deadline_decimal},
         {"userHoldingAId", holding_a},
         {"userHoldingBId", holding_b},

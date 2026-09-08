@@ -1,9 +1,8 @@
-use amm_core::{
-    assert_supported_fee_tier, compute_pool_pda, compute_pool_pda_seed,
-    read_vault_fungible_balances, spot_price_q64_64, swap_exact_in_amounts, swap_exact_out_amounts,
-    AmmConfig, MINIMUM_LIQUIDITY,
-};
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
+use amm_core::{
+    compute_pool_pda, compute_pool_pda_seed, read_vault_fungible_balances, spot_price_q64_64,
+    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, MINIMUM_LIQUIDITY,
+};
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
@@ -19,7 +18,6 @@ fn validate_swap_setup(
 ) -> PoolDefinition {
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("AMM Program expects a valid Pool Definition Account");
-    assert_supported_fee_tier(pool_def_data.fees);
 
     assert!(
         pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
@@ -241,7 +239,7 @@ pub fn swap_exact_input(
                 user_holding_b.clone(),
                 swap_amount_in,
                 min_amount_out,
-                pool_def_data.fees,
+                config_data.swap_fee_bps,
                 pool_def_data.reserve_a,
                 pool_def_data.reserve_b,
                 pool.account_id,
@@ -256,7 +254,7 @@ pub fn swap_exact_input(
                 user_holding_a.clone(),
                 swap_amount_in,
                 min_amount_out,
-                pool_def_data.fees,
+                config_data.swap_fee_bps,
                 pool_def_data.reserve_b,
                 pool_def_data.reserve_a,
                 pool.account_id,
@@ -457,7 +455,7 @@ pub fn swap_exact_output(
                 max_amount_in,
                 pool_def_data.reserve_a,
                 pool_def_data.reserve_b,
-                pool_def_data.fees,
+                config_data.swap_fee_bps,
                 pool.account_id,
             );
 
@@ -472,7 +470,7 @@ pub fn swap_exact_output(
                 max_amount_in,
                 pool_def_data.reserve_b,
                 pool_def_data.reserve_a,
-                pool_def_data.fees,
+                config_data.swap_fee_bps,
                 pool.account_id,
             );
 

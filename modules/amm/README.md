@@ -18,15 +18,18 @@ methods (the module API is generated from the header) are:
 
 **Reads**
 - `resolvePoolAccount(defAHex, defBHex)` — derives the pool PDA and reads/decodes
-  the pool account (reserves in canonical `a`/`b` order, fee tier). On success
+  the pool account (reserves in canonical `a`/`b` order). On success
   `{ status: "ok", error: "", poolId, defAHex, defBHex, vaultAId, vaultBId,
-  lpDefinitionId, reserveA, reserveB, liquiditySupply, feeBps }`; an absent /
+  lpDefinitionId, reserveA, reserveB, liquiditySupply, feeBps }` — `feeBps` is the
+  instance-wide swap fee read from the config, not a pool field; an absent /
   uninitialized pool or one with no liquidity is `{ status: "error", error:
   "no_pool", poolId }` (other codes: `no_program_bin`, `amm_not_initialized`,
   `bad_config`).
-- `configAccount()` — decodes the singleton AMM config (authority + the
-  token/oracle program ids it was initialized with).
-- `feeTiers()` — the AMM's supported fee tiers as raw basis points `[1, 5, 30, 100]`.
+- `configAccount()` — decodes the AMM instance's config (authority, the
+  token/oracle program ids it was initialized with, and `swapFeeBps` — the
+  instance-wide swap fee).
+- `feeTiers()` — **legacy.** Historical fee tiers `[1, 5, 30, 100]`; fees are now
+  instance-wide (set at `initialize`, any value below 100%), so this is unused.
 - `tokenHoldings(walletOpen)` — the connected wallet's fungible token holdings.
 - `resolveTokens(request, walletOpen)` — resolves an app-provided set of token
   ids into selector rows (definition + wallet holding per id). The app owns the
