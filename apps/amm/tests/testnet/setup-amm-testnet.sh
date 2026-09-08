@@ -99,7 +99,9 @@ TEST_SEQ_POLL_TIMEOUT="${TEST_SEQ_POLL_TIMEOUT:-3s}"
 # the faucet mints into. They deliberately start with NO token A so the test can prove
 # the account only appears in the swap picker after a faucet mint + UI refresh. The
 # faucet requires recipient != user_holding, hence two accounts.
-ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding token-d-def token-d-holding holder2 holder2-a-holding)
+# `amm-owner` is a dedicated account that signs `initialize` — the AMM instance's
+# namespace owner. All three are appended last so the existing accounts keep their ids.
+ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding token-d-def token-d-holding holder2 holder2-a-holding amm-owner)
 
 ###############################################################################
 # CONFIG — non-account parameters (edit freely)
@@ -396,7 +398,9 @@ TOKEN_D_HOLDING="$(acct_id token-d-holding)" || die "token-d-holding not registe
 # "Token A Holder 2" — the faucet recipient/signer and its (initially empty) token A holding.
 HOLDER2="$(acct_id holder2)"                 || die "holder2 not registered — run with FORCE_BOOTSTRAP=1"
 HOLDER2_A_HOLDING="$(acct_id holder2-a-holding)" || die "holder2-a-holding not registered"
-for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP TOKEN_C_DEF TOKEN_C_HOLDING TOKEN_D_DEF TOKEN_D_HOLDING HOLDER2 HOLDER2_A_HOLDING; do
+# `amm-owner` signs initialize — the AMM instance's namespace owner.
+AMM_OWNER="$(acct_id amm-owner)"            || die "amm-owner not registered"
+for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP TOKEN_C_DEF TOKEN_C_HOLDING TOKEN_D_DEF TOKEN_D_HOLDING HOLDER2 HOLDER2_A_HOLDING AMM_OWNER; do
   [ -n "${!v}" ] || die "failed to resolve account id for $v"
 done
 
@@ -405,6 +409,9 @@ done
 # the faucet PDA, set in step 3 once the faucet binary is deployed and its ImageID
 # (hence the PDA) is known.
 AMM_AUTHORITY="$TOKEN_A_HOLDING"
+# Namespace of the AMM instance: `amm-owner` signs initialize; the all-zero nonce is
+# its default instance. The config PDA (below) is derived from (AMM_OWNER, AMM_NONCE).
+AMM_NONCE="0000000000000000000000000000000000000000000000000000000000000000"
 USER_HOLDING_A="$TOKEN_A_HOLDING"; USER_HOLDING_B="$TOKEN_B_HOLDING"
 
 kv "token-a-def"     "$TOKEN_A_DEF"
@@ -418,6 +425,7 @@ kv "token-d-def"     "$TOKEN_D_DEF"
 kv "token-d-holding" "$TOKEN_D_HOLDING"
 kv "holder2"         "$HOLDER2"
 kv "holder2-a-holding" "$HOLDER2_A_HOLDING"
+kv "amm-owner"       "$AMM_OWNER"
 
 ###############################################################################
 # 2. Deploy programs
@@ -502,9 +510,9 @@ inspect "$TOKEN_IDL" "$TOKEN_D_HOLDING" "TokenHolding"
 # 6. Derive AMM PDAs from the program ids + token pair
 ###############################################################################
 sec "Deriving AMM PDAs (amm_pdas example)"
-log "${DIM}\$ cargo run -q -p amm_program --example amm_pdas -- $AMM_PID $TWAP_PID $TOKEN_A_DEF $TOKEN_B_DEF${RST}"
+log "${DIM}\$ cargo run -q -p amm_program --example amm_pdas -- $AMM_PID $AMM_OWNER $TWAP_PID $TOKEN_A_DEF $TOKEN_B_DEF${RST}"
 PDAS="$(RISC0_DEV_MODE=1 RISC0_SKIP_BUILD=1 cargo run -q -p amm_program --example amm_pdas -- \
-          "$AMM_PID" "$TWAP_PID" "$TOKEN_A_DEF" "$TOKEN_B_DEF")"
+          "$AMM_PID" "$AMM_OWNER" "$TWAP_PID" "$TOKEN_A_DEF" "$TOKEN_B_DEF")"
 printf '%s\n' "$PDAS"
 
 pda() { printf '%s' "$PDAS" | awk -v k="$1" '$1==k {print $2; exit}'; }
@@ -534,7 +542,9 @@ kv "current_tick_account" "$TICK"
 ###############################################################################
 run_tx strict "initialize AMM config" -- \
   spel --idl "$AMM_IDL" --program "$AMM_BIN" -- initialize \
+    --owner "$AMM_OWNER" \
     --config "$CONFIG" \
+    --nonce "$AMM_NONCE" \
     --token-program-id "$TOKEN_PID" \
     --twap-oracle-program-id "$TWAP_PID" \
     --authority "$AMM_AUTHORITY"
@@ -648,7 +658,7 @@ sec "Write UI registry config -> $REGISTRY_CONFIG_OUT"
   "name": "AMM local registry",
   "version": "0.1.0",
   "networks": [
-    { "id": "local", "name": "Local", "programIds": { "amm": "$AMM_PID", "token": "$TOKEN_PID", "tokenMintAuthority": "$MINT_AUTHORITY_PID" } }
+    { "id": "local", "name": "Local", "programIds": { "amm": "$AMM_PID", "token": "$TOKEN_PID", "tokenMintAuthority": "$MINT_AUTHORITY_PID" }, "ammConfigId": "$CONFIG" }
   ],
   "tokens": [
     { "network": "local", "symbol": "$TOKEN_A_SYMBOL", "name": "$TOKEN_A_NAME", "definitionId": "$TOKEN_A_DEF" },
