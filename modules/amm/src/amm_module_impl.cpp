@@ -43,6 +43,10 @@ bool ammDebug() {
 // what determine the program id (and every PDA derived from it).
 constexpr char AMM_PROGRAM_BIN_ENV[] = "AMM_PROGRAM_BIN";
 
+// Account id (base58 or hex) of the active instance's config PDA, for local /
+// headless use when no registry (setConfigId) supplies one.
+constexpr char AMM_CONFIG_ID_ENV[] = "AMM_CONFIG_ID";
+
 int hexVal(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -346,11 +350,34 @@ nlohmann::json AmmModuleImpl::walletAccountReads(bool wallet_open) {
     return out;
 }
 
-nlohmann::json AmmModuleImpl::readConfig(const std::string& amm_program_id) {
-    const FfiResult configResult =
-        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
-    if (!configResult.ok) return json();  // null: config_id op failed
-    return readPublicAccount(jStr(configResult.value, "configId"));
+std::string AmmModuleImpl::ammConfigId() {
+    // An app-selected id (setConfigId) takes precedence; AMM_CONFIG_ID is the
+    // fallback for local / headless use.
+    if (!m_activeConfigId.empty()) return m_activeConfigId;
+
+    const char* env = std::getenv(AMM_CONFIG_ID_ENV);
+    if (env == nullptr || *env == '\0') return {};
+    return normalizeAccountId(env);
+}
+
+nlohmann::json AmmModuleImpl::readConfig() {
+    // The active instance is identified by its config PDA's account id, resolved
+    // from the app's registry (or AMM_CONFIG_ID). We just read that account —
+    // owner/nonce derivation lives in the deploy tooling that emits the registry.
+    const std::string config_id = ammConfigId();
+    if (config_id.empty()) return json();  // null: no config id configured
+    return readPublicAccount(config_id);
+}
+
+LogosMap AmmModuleImpl::setConfigId(const LogosMap& request) {
+    const std::string raw = jStr(request, "configId");
+    const std::string normalized = normalizeAccountId(raw);
+    if (!raw.empty() && normalized.empty())
+        return LogosMap{{"status", "error"}, {"error", "invalid_account_id"}};
+
+    // Adopt the caller's chosen config id (normalized to hex; empty reverts to env).
+    m_activeConfigId = normalized;
+    return LogosMap{{"status", "ok"}, {"error", ""}};
 }
 
 LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
@@ -369,9 +396,9 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
         // no program id from AMM_PROGRAM_BIN (unset/unreadable/bad).
         return failed("no_program_bin");
 
-    const json config = readConfig(amm_program_id);
+    const json config = readConfig();
     if (config.is_null())
-        return failed("bad_config");  // amm_config_id op failed (malformed program id)
+        return failed("bad_config");  // no config id configured (setConfigId / AMM_CONFIG_ID unset)
 
     // The liquidity view passes base58 ids; the swap card passes hex. Normalize both to hex
     // (idempotent for hex) so the FFI id derivation works either way.
@@ -418,7 +445,7 @@ LogosMap AmmModuleImpl::configAccount() {
     if (amm_program_id.empty())
         return LogosMap{{"status", "error"}, {"error", "config_missing"}};
 
-    const json config = readConfig(amm_program_id);
+    const json config = readConfig();
     if (config.is_null())
         return LogosMap{{"status", "error"}, {"error", "backend_error"}};
 
@@ -442,7 +469,7 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
         return error("config_missing");
 
     // The plan needs the config account to decode the CURRENT admin (the sole signer).
-    const json config = readConfig(amm_program_id);
+    const json config = readConfig();
     if (config.is_null())
         return error("config_missing");
 
@@ -496,7 +523,7 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
         return error("config_missing");
 
     // The plan derives the feed PDAs from the config's twap_oracle_program_id + the pool.
-    const json config = readConfig(amm_program_id);
+    const json config = readConfig();
     if (config.is_null())
         return error("config_missing");
 
@@ -595,10 +622,18 @@ LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
     if (token_in.empty() || token_out.empty())
         return error("invalid_token_id");
 
+    // A configured program id but no config id is still an unconfigured instance. Read
+    // and null-check the config here so we return a stable config_missing rather than
+    // letting a null `config` fail PoolIdRequest deserialization as opaque backend_error.
+    const json config = readConfig();
+    if (config.is_null())
+        return error("config_missing");
+
     // Derive the pool id (config-free) and read the pool account; its raw data is
     // handed to the pricing op. An absent account has no data → `no_pool`.
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
+        {"config", config},
         {"tokenInId", token_in},
         {"tokenOutId", token_out},
     });
@@ -646,10 +681,18 @@ LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
     const std::string token_in = normalizeAccountId(token_in_hex);
     const std::string token_out = normalizeAccountId(token_out_hex);
 
+    // A configured program id but no config id is still an unconfigured instance. Read
+    // and null-check the config here so we return a stable config_missing rather than
+    // letting a null `config` fail PoolIdRequest deserialization as opaque backend_error.
+    const json config = readConfig();
+    if (config.is_null())
+        return error("config_missing");
+
     // Derive the pool id (config-free) and read the pool account; its raw data is
     // handed to the pricing op. An absent account has no data → `no_pool`.
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
+        {"config", config},
         {"tokenInId", token_in},
         {"tokenOutId", token_out},
     });
@@ -698,7 +741,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         return {};
     }
 
-    const json config = readConfig(amm_program_id);
+    const json config = readConfig();
     if (config.is_null()) {
         AMM_TRACE("swapExactInput: FAIL config_id op failed");
         return {};
@@ -719,6 +762,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
     // the vaults in the pool's creation order — see amm_swap_exact_in_plan).
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
+        {"config", readConfig()},
         {"tokenInId", def_a},
         {"tokenOutId", def_b},
     });
@@ -792,7 +836,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
         return {};
     }
 
-    const json config = readConfig(amm_program_id);
+    const json config = readConfig();
     if (config.is_null()) {
         AMM_TRACE("swapExactOutput: FAIL config_id op failed");
         return {};
@@ -809,6 +853,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
     // the vaults in the pool's creation order — see amm_swap_exact_out_plan).
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
+        {"config", readConfig()},
         {"tokenInId", def_a},
         {"tokenOutId", def_b},
     });
@@ -922,11 +967,9 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     // amm_create_pool_plan needs the config account for the twap program id the
     // current-tick PDA derives from; a bad/absent config surfaces from the plan as
     // config_unavailable (no bespoke check here — same as the swap plans).
-    const FfiResult configResult =
-        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
-    if (!configResult.ok)
+    const json config = readConfig();
+    if (config.is_null())
         return error("backend_error");
-    const json config = readPublicAccount(jStr(configResult.value, "configId"));
 
     // Normalize the pair + user holdings (incl. the caller-provided LP holding) to hex
     // (base58 tolerated — transitional). A new pool has no pre-existing LP holding, so
@@ -1015,10 +1058,18 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
         || !jsonAmountToDecimal(request.value("maxAmountB", json()), max_b_decimal))
         return error("bad_amount");
 
+    // A configured program id but no config id is still an unconfigured instance. Read
+    // and null-check the config here so we return a stable config_missing rather than
+    // letting a null `config` fail PoolIdRequest deserialization as opaque backend_error.
+    const json config = readConfig();
+    if (config.is_null())
+        return error("config_missing");
+
     // Derive the pool id (config-free) and read the pool account; its raw data is handed
     // to the pricing op. An absent account has no data → `no_pool`.
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
+        {"config", config},
         {"tokenInId", token_a},
         {"tokenOutId", token_b},
     });
@@ -1071,11 +1122,9 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
 
     // amm_add_liquidity_plan needs the config account for the twap program id the
     // current-tick PDA derives from; a bad/absent config surfaces from the plan.
-    const FfiResult configResult =
-        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
-    if (!configResult.ok)
+    const json config = readConfig();
+    if (config.is_null())
         return error("backend_error");
-    const json config = readPublicAccount(jStr(configResult.value, "configId"));
 
     // Normalize the pair + user holdings (incl. the LP holding that receives the minted LP)
     // to hex (base58 tolerated — transitional).
@@ -1102,6 +1151,7 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     // asserts the provided vaults/LP against them — see amm_add_liquidity_plan).
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
+        {"config", readConfig()},
         {"tokenInId", token_a},
         {"tokenOutId", token_b},
     });
@@ -1168,10 +1218,18 @@ LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
     if (!jsonAmountToDecimal(request.value("lpAmount", json()), lp_amount_decimal))
         return error("bad_amount");
 
+    // A configured program id but no config id is still an unconfigured instance. Read
+    // and null-check the config here so we return a stable config_missing rather than
+    // letting a null `config` fail PoolIdRequest deserialization as opaque backend_error.
+    const json config = readConfig();
+    if (config.is_null())
+        return error("config_missing");
+
     // Derive the pool id (config-free) and read the pool account; its raw data is handed to
     // the pricing op. An absent account has no data → `no_pool`.
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
+        {"config", config},
         {"tokenInId", token_a},
         {"tokenOutId", token_b},
     });
@@ -1222,11 +1280,9 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
 
     // amm_remove_liquidity_plan needs the config account for the twap program id the
     // current-tick PDA derives from; a bad/absent config surfaces from the plan.
-    const FfiResult configResult =
-        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
-    if (!configResult.ok)
+    const json config = readConfig();
+    if (config.is_null())
         return error("backend_error");
-    const json config = readPublicAccount(jStr(configResult.value, "configId"));
 
     // Normalize the pair + user holdings. Unlike add/create there is no fresh account: the LP
     // holding already exists (it is burned) and the token a/b holdings receive the withdrawal.
@@ -1253,6 +1309,7 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     // asserts the provided vaults/LP against them — see amm_remove_liquidity_plan).
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
+        {"config", readConfig()},
         {"tokenInId", token_a},
         {"tokenOutId", token_b},
     });
@@ -1312,11 +1369,9 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
 
     // amm_sync_reserves_plan needs the config account for the twap program id the current-tick
     // PDA derives from; a bad/absent config surfaces from the plan.
-    const FfiResult configResult =
-        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
-    if (!configResult.ok)
+    const json config = readConfig();
+    if (config.is_null())
         return error("backend_error");
-    const json config = readPublicAccount(jStr(configResult.value, "configId"));
 
     // Normalize the pair to hex (transitional). Sync has no user inputs beyond the pair — no
     // holdings, amounts, or deadline, and nothing signs.
@@ -1329,6 +1384,7 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     // vaults against them — see amm_sync_reserves_plan).
     const FfiResult poolId = call(amm_pool_id, json{
         {"ammProgramId", amm_program_id},
+        {"config", readConfig()},
         {"tokenInId", token_a},
         {"tokenOutId", token_b},
     });
@@ -1374,11 +1430,9 @@ LogosList AmmModuleImpl::tokenHoldings(bool wallet_open) {
 
     // The config gives the token_program_id that identifies which wallet accounts
     // are token holdings (decoded by the FFI op).
-    const FfiResult configResult =
-        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
-    if (!configResult.ok)
+    const json config = readConfig();
+    if (config.is_null())
         return LogosList::array();
-    const json config = readPublicAccount(jStr(configResult.value, "configId"));
 
     // Fresh wallet read each call — the selector wants current holdings/balances.
     const json wallet_accounts = walletAccountReads(wallet_open);
@@ -1418,11 +1472,9 @@ LogosList AmmModuleImpl::resolveTokens(const LogosMap& request, bool wallet_open
         return LogosList::array();
 
     // The config gives the token_program_id the FFI needs to decode definitions/holdings.
-    const FfiResult configResult =
-        call(amm_config_id, json{{"ammProgramId", amm_program_id}});
-    if (!configResult.ok)
+    const json config = readConfig();
+    if (config.is_null())
         return LogosList::array();
-    const json config = readPublicAccount(jStr(configResult.value, "configId"));
 
     // Normalize the app-provided ids (base58 or hex) → hex, de-dup, and read each
     // definition account. The FFI is stateless, so it gets the reads pre-fetched.

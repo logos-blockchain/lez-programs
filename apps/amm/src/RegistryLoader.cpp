@@ -210,13 +210,16 @@ bool RegistryLoader::applySelection()
     if (activeId.isEmpty()) {
         qWarning() << "AMM registry: no networks declared; nothing applied";
         m_activeAmmProgramId.clear();
+        m_activeAmmConfigId.clear();
         publish({}, {}, m_lastSource, {});
         return false;
     }
 
-    // Adopt the active network's declared AMM program id so the backend can point
-    // ops at it (setAmmProgramId) without an AMM_PROGRAM_BIN.
+    // Adopt the active network's declared AMM program id and config-PDA id so the
+    // backend can point ops at that instance (setAmmProgramId / setConfigId) without
+    // an AMM_PROGRAM_BIN / AMM_CONFIG_ID.
     m_activeAmmProgramId.clear();
+    m_activeAmmConfigId.clear();
     for (const QJsonValue& entry : networks) {
         const QJsonObject net = entry.toObject();
         if (net.value(QStringLiteral("id")).toString() == activeId) {
@@ -224,6 +227,7 @@ bool RegistryLoader::applySelection()
                                        .toObject()
                                        .value(QStringLiteral("amm"))
                                        .toString();
+            m_activeAmmConfigId = net.value(QStringLiteral("ammConfigId")).toString();
             break;
         }
     }

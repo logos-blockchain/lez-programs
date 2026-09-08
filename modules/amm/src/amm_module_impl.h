@@ -54,6 +54,12 @@ public:
     /// caller's choice. Headless callers never touch it. Returns `{ status:"ok" }`.
     LogosMap setAmmProgramId(const LogosMap& request);
 
+    /// Selects which namespaced AMM instance the module talks to, by the account id of its config
+    /// PDA (`request.configId`, base58 or hex). The app resolves this from its registry (the
+    /// active network's `ammConfigId`) — the same way it publishes `poolId`s — so no owner/nonce
+    /// derivation happens here. Empty reverts to the `AMM_CONFIG_ID` env fallback. `{ status:"ok" }`.
+    LogosMap setConfigId(const LogosMap& request);
+
     /// Submits an `UpdateConfig` transferring admin authority to `request.newAuthorityId`
     /// (base58 or hex). Only the current admin can sign, so the connected wallet must control it.
     /// On success `{ status:"ok", error:"", transactionId:<hex> }`; on failure:
@@ -262,6 +268,11 @@ private:
     // over the AMM_PROGRAM_BIN bytes (empty if unset/unreadable/bad).
     std::string ammProgramId();
 
+    // 64-char lowercase-hex account id of the active instance's config PDA. An
+    // app-selected id (setConfigId) takes precedence; AMM_CONFIG_ID is the
+    // env fallback for local / headless use. Empty when neither is set.
+    std::string ammConfigId();
+
     // Reads AMM_PROGRAM_BIN into a byte vector (empty on unset/unreadable/empty).
     std::vector<uint8_t> loadAmmElf();
 
@@ -269,10 +280,10 @@ private:
     // (base58 via the wallet module). Empty string if it is neither.
     std::string normalizeAccountId(const std::string& id);
 
-    // Derives the config account id (amm_config_id) and reads it, returning the
-    // account-read shape the amm_ffi ops embed. Null json when the config_id
-    // op itself fails (readPublicAccount always yields at least {id,status}).
-    nlohmann::json readConfig(const std::string& amm_program_id);
+    // Reads the active instance's config account (at ammConfigId()) and returns the
+    // account-read shape the amm_ffi ops embed. Null json when no config id is
+    // configured (readPublicAccount always yields at least {id,status}).
+    nlohmann::json readConfig();
 
     // Reads a public account through the wallet module and returns the
     // { id, status, account:{ program_owner, balance, nonce, data } } shape the
@@ -291,4 +302,8 @@ private:
     // The AMM program id the app selected (via setAmmProgramId). Empty ⇒
     // ammProgramId() falls back to deriving it from AMM_PROGRAM_BIN.
     std::string m_activeProgramId;
+
+    // The config-PDA account id the app selected (via setConfigId), 64-char
+    // lowercase hex. Empty ⇒ ammConfigId() falls back to AMM_CONFIG_ID.
+    std::string m_activeConfigId;
 };

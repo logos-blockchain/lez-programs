@@ -47,6 +47,10 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     connect(m_registry.get(), &RegistryLoader::changed, this, [this]() {
         m_logos->amm_module.setAmmProgramId(QVariantMap{
             {QStringLiteral("ammProgramId"), m_registry->activeAmmProgramId()}});
+        // Point ops at the active network's AMM instance by its config-PDA id
+        // (empty ⇒ the module falls back to AMM_CONFIG_ID).
+        m_logos->amm_module.setConfigId(QVariantMap{
+            {QStringLiteral("configId"), m_registry->activeAmmConfigId()}});
         setNetworks(m_registry->networks());
         setActiveNetwork(m_registry->activeNetwork());
         setRegistryRevision(m_registry->revision());

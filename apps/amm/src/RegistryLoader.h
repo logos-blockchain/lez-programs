@@ -54,6 +54,11 @@ public:
     // target this network without an AMM_PROGRAM_BIN.
     QString activeAmmProgramId() const { return m_activeAmmProgramId; }
 
+    // The active network's AMM instance, identified by the account id of its config
+    // PDA (registry field `ammConfigId`). The backend hands it to the module
+    // (setConfigId) so ops target that instance. Empty when the network omits it.
+    QString activeAmmConfigId() const { return m_activeAmmConfigId; }
+
     // Whether a local-file source (TOKENS_CONFIG / AMM_POOLS_CONFIG) is configured —
     // it takes precedence over the remote registry (local-replaces-remote).
     static bool hasLocalSource();
@@ -99,6 +104,7 @@ private:
     QString m_source = QStringLiteral("none");
     QString m_activeNetwork;
     QString m_activeAmmProgramId;
+    QString m_activeAmmConfigId;
     QString m_configuredUrl;  // UI-configured registry URL (env overrides)
 
     // The last-loaded registry document, kept so selectNetwork() can re-filter to a
