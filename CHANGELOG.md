@@ -3,6 +3,218 @@
 All notable changes to the LEZ programs in this repository are documented here.
 This file is generated from Conventional Commit messages by [git-cliff](https://git-cliff.org).
 
+## [2.0.0] - 2026-09-09
+
+### ⚠️ Breaking Changes
+
+- **amm:** The AMM guest changes, so its ProgramId (ImageID) changes — re-derive every value that depends on it (deployed program IDs, PDA-derived addresses, client/config files) before submitting. Specifically: - `AmmConfig` gains a `protocol_fee_bps` field: its on-chain (Borsh) layout   changes and existing config accounts are incompatible. - `Instruction::Initialize` gains a required `protocol_fee_bps` argument. - `SwapExactInput` / `SwapExactOutput` require an additional account — the input   token's protocol-fee holding PDA, appended after the clock. Clients building   swap transactions must supply it (the FFI swap plans do this automatically). - New `Instruction::WithdrawProtocolFees` variant. ([eae125a](https://github.com/logos-blockchain/lez-programs/commit/eae125a439956c776eeb52af315efba897280182))
+- **amm:** The AMM swap fee is now instance-wide, not per-pool.  * Account layouts change (Borsh): AmmConfig gains `swap_fee_bps`; PoolDefinition   drops `fees`. Existing on-chain config and pool accounts are incompatible and   must be recreated. * Instruction ABI: `Initialize` requires `swap_fee_bps`; `NewDefinition` no longer   accepts `fees`. Regenerate IDL-based clients (artifacts/amm-idl.json is updated). * The fee is any value in `[0, FEE_BPS_DENOMINATOR)` set at `Initialize` — it is no   longer restricted to the 1/5/30/100 bps tiers, and there is no per-pool fee. * amm_core API: `PoolDefinition.fees` removed, `AmmConfig.swap_fee_bps` added;   `initialize()` gains a `swap_fee_bps` parameter and `new_definition()` drops its   `fees` parameter; new `assert_valid_swap_fee_bps` (the tier helpers are now unused   on-chain). * AMM module / FFI: `createPool` takes no `feeBps` (errors `bad_fee_bps_amount` /   `invalid_fee_tier` removed); swap-quote and resolve-pool FFI requests require the   `config` account; `configAccount` returns `swapFeeBps`. `AMM_POOLS_CONFIG` and the   registry pool schema no longer include `feeBps`. ([f2fcbcf](https://github.com/logos-blockchain/lez-programs/commit/f2fcbcfc209ac17c35afadee71c09ad08ec96d5f))
+- **amm:** Namespace all PDAs to host many AMM instances per deployment ([c74b13e](https://github.com/logos-blockchain/lez-programs/commit/c74b13edfe0efa412f1cb552c48d847a5910c774))
+- **stablecoin:** Migrate Position to spec §4.4 shape ([2d33923](https://github.com/logos-blockchain/lez-programs/commit/2d3392393a4981c4c7bb00be77d94cc33da6e245))
+- **amm:** The UpdateConfig instruction ABI changed — the token_program_id and twap_oracle_program_id fields are removed and new_authority is now required (was Option). Any client constructing UpdateConfig must be updated. The instruction enum change also alters the program ImageID: redeploy and update every ImageID-derived value (deployed program ids, client/config files, PDA-derived addresses, AMM/ATA program-id inputs) before submitting ([de9a3d5](https://github.com/logos-blockchain/lez-programs/commit/de9a3d532018733a7e8bceaf54d7a37a6f4141bd))
+- **amm:** The AMM swap instruction interface changed and the guest ImageID/ProgramId changes as a result. ([cca063c](https://github.com/logos-blockchain/lez-programs/commit/cca063ce2d315229d7c802fd7a0fd6bad74557ae))
+
+### Features
+
+- **amm:**
+  - Add configurable protocol fees on swaps **[breaking]** ([eae125a](https://github.com/logos-blockchain/lez-programs/commit/eae125a439956c776eeb52af315efba897280182))
+  - Make the swap fee instance-wide in the AMM config, not per-pool **[breaking]** ([f2fcbcf](https://github.com/logos-blockchain/lez-programs/commit/f2fcbcfc209ac17c35afadee71c09ad08ec96d5f))
+  - Point the module, UI app, and testnet setup at namespaced instances ([75aa9bc](https://github.com/logos-blockchain/lez-programs/commit/75aa9bca9a52f028862c25a9067ef18f772866d9))
+  - Namespace all PDAs to host many AMM instances per deployment **[breaking]** ([c74b13e](https://github.com/logos-blockchain/lez-programs/commit/c74b13edfe0efa412f1cb552c48d847a5910c774))
+  - Add display_name/author to amm module + app metadata ([fb76bec](https://github.com/logos-blockchain/lez-programs/commit/fb76bec03c661e3de2a0bab20fe1a719686a7199))
+  - Let LPs choose the LP-token destination account ([62d133e](https://github.com/logos-blockchain/lez-programs/commit/62d133e909e8da8e668be6c4e551a11c5ffde44b))
+  - Add oracle setup ops (createPriceObservations / createOraclePriceAccount) ([7e45e44](https://github.com/logos-blockchain/lez-programs/commit/7e45e44eac74a1e5358f738a0b2943446d6fe10b))
+  - Add transferOwnership (UpdateConfig admin transfer) ([ca8adfc](https://github.com/logos-blockchain/lez-programs/commit/ca8adfc4af82950f181342d1d2847a5c6200e9e1))
+  - Add configAccount read (decode the singleton config) ([56c80ce](https://github.com/logos-blockchain/lez-programs/commit/56c80ce29dcc63a0b06e3043fddecdd819515224))
+  - Source liquidity tokens app-side + add custom tokens by id ([7a7ebfd](https://github.com/logos-blockchain/lez-programs/commit/7a7ebfdbafd0f596d9b6009ef29dc02ff5a93655))
+  - Expose supported fee tiers via feeTiers() op ([cb1b457](https://github.com/logos-blockchain/lez-programs/commit/cb1b457ad39c22aa5627a90e173878a89ab318f2))
+  - Drive the create-pool liquidity preview from liquidityQuote ([eb98aac](https://github.com/logos-blockchain/lez-programs/commit/eb98aac31f055500611c741e3865b1e27ae78de2))
+  - Move all AMM logic into the amm_module core module; flip UI to consume it ([72b3301](https://github.com/logos-blockchain/lez-programs/commit/72b330122dfab9583d8b2bb4ac2e608148ea9d7f))
+  - Swap via d70225ced program_id_hex API; pin wallet-module core to sequencer rev 415964d7 ([9b7a3dc](https://github.com/logos-blockchain/lez-programs/commit/9b7a3dcaaced295175c67d306ea0f0fabe915a6b))
+  - Byte-encode swap instruction for QtRO + AMM_DEBUG tracing + token config ([c0568e3](https://github.com/logos-blockchain/lez-programs/commit/c0568e3a88da7030763db9858e80cac4bd4f65e3))
+  - Config-driven token picker wired to on-chain swaps ([906aa65](https://github.com/logos-blockchain/lez-programs/commit/906aa65b4f4ce2e43ae6efdb9630ec98fa45acd2))
+  - Wire Swap UI to on-chain resolvePool + swapExactInput ([a0c8983](https://github.com/logos-blockchain/lez-programs/commit/a0c8983302aa339be137989a67972f08f954c602))
+  - ResolvePool + swapExactInput backend slots for on-chain swaps ([b51a71d](https://github.com/logos-blockchain/lez-programs/commit/b51a71ddf29de27c80d5dfbd4f087c96301af34f))
+  - Decode_config in amm_client_ffi (reads token/twap program ids from AMM config) ([f3a14f0](https://github.com/logos-blockchain/lez-programs/commit/f3a14f051ab22402483a12e036050ddbdeda2ac2))
+  - Metal-safe amm_client_ffi crate + root flake for on-chain swap calls ([3b9ca24](https://github.com/logos-blockchain/lez-programs/commit/3b9ca241c2301ccffd2d0b06116b7ef0c44d7d34))
+- **apps/amm:**
+  - Add an app settings modal for the registry ([6956b23](https://github.com/logos-blockchain/lez-programs/commit/6956b23f1bf64339a36e23472505de5479db484b))
+  - Add a Registry settings field to the wallet menu ([90bd86c](https://github.com/logos-blockchain/lez-programs/commit/90bd86c701cd03236834a8701fc8a3c15951b31f))
+  - Persist a configurable registry URL setting ([c5030f3](https://github.com/logos-blockchain/lez-programs/commit/c5030f3aaafc9dbf1a245f4ae27e3d3e40200eb5))
+  - Select the registry network without a program bin ([8a3a372](https://github.com/logos-blockchain/lez-programs/commit/8a3a372a33e339edd034168f687ae7cb09a8bccb))
+  - Multi-network single-file registry ([f306d84](https://github.com/logos-blockchain/lez-programs/commit/f306d843ea2a84febad8e6e9df94faccaef8f535))
+  - Load known tokens/pools from a remote registry ([5e18135](https://github.com/logos-blockchain/lez-programs/commit/5e181353b401edb6d81c77acda61fd8c94384af6))
+  - Let users pick which LP account to remove from ([3994ba3](https://github.com/logos-blockchain/lez-programs/commit/3994ba3055289e689ccf05baabd22b0676ae190d))
+  - Remove liquidity from the pool detail view ([78edd23](https://github.com/logos-blockchain/lez-programs/commit/78edd23b5b663939162e108a587e106dd54bb789))
+  - Introduce positions view ([99ea680](https://github.com/logos-blockchain/lez-programs/commit/99ea6805dfb6868fffd51733c47966225ba6d22b))
+  - Add a pool detail view reached from the Pools list ([06d7119](https://github.com/logos-blockchain/lez-programs/commit/06d7119a97dcf2ca0201bbd4e912a87e819cf2a4))
+  - Drive the Pools list from AMM_POOLS_CONFIG ([4cfc03a](https://github.com/logos-blockchain/lez-programs/commit/4cfc03a81574ea5d84cce1d7c40d05cdae09d3d7))
+  - Drive add-liquidity quoting from addLiquidityQuote in the UI ([60e38f4](https://github.com/logos-blockchain/lez-programs/commit/60e38f4e5f2a0b7623684b37307b8e1363231e22))
+  - Wire the add-liquidity submit end-to-end ([71fb18c](https://github.com/logos-blockchain/lez-programs/commit/71fb18c50f0370b56bca4684bd6cb66f8ef1ad45))
+  - Pick the token account per side when creating a pool ([b1b4631](https://github.com/logos-blockchain/lez-programs/commit/b1b4631234e2802a1e12967589ab7cf049479514))
+  - Pick the token account per swap side ([9680010](https://github.com/logos-blockchain/lez-programs/commit/968001066cf7fabdeea81127f5a8657328f263f1))
+  - Create pools via the new createPool op; drop the pool-watch poll ([e1398ff](https://github.com/logos-blockchain/lez-programs/commit/e1398ffcad22bffe1ef85eeb2ac1c594e1a07d80))
+  - Submit exact-output swaps and drop client-side swap math ([4363f13](https://github.com/logos-blockchain/lez-programs/commit/4363f13912e0ba8627e70575161862ab337c1169))
+  - Drive the exact-output swap preview from swapExactOutQuote ([d9876d0](https://github.com/logos-blockchain/lez-programs/commit/d9876d08ca0df7ade9dabaa8c7d35f74b303e82f))
+  - Drive the exact-input swap preview from swapExactInQuote ([37c2f29](https://github.com/logos-blockchain/lez-programs/commit/37c2f294ac65f1b866f52ef2ba5f74b653c80c43))
+  - Add create-pool / new liquidity position flow ([01829a2](https://github.com/logos-blockchain/lez-programs/commit/01829a280ca9bf601dbd1b6293a0acf997cb6d53))
+- **modules/amm:**
+  - Add setAmmProgramId to select the program id at runtime ([b167052](https://github.com/logos-blockchain/lez-programs/commit/b167052e0a3078520b1a7598fb56e49deeb94a7f))
+  - Add sync-reserves module op ([62dc451](https://github.com/logos-blockchain/lez-programs/commit/62dc45177da2ecfc66348fbff34f0fc59efa9b46))
+  - Add remove-liquidity module ops ([44b70e4](https://github.com/logos-blockchain/lez-programs/commit/44b70e4333b14c6d4e7adab647da50c2160bfd8e))
+  - Add_liquidity_quote takes slippage, returns minimumLpRaw ([37f28fe](https://github.com/logos-blockchain/lez-programs/commit/37f28fe66391d3227ca5692cb01f54aecec5cb13))
+  - Add the add-liquidity API and quoting ([0eaf514](https://github.com/logos-blockchain/lez-programs/commit/0eaf51476bb7164e2c839674ce8e5d8a7cedd092))
+  - Add tokenHoldings — list the wallet's token holdings ([2a3be12](https://github.com/logos-blockchain/lez-programs/commit/2a3be1278aea89d6167c44baf4114e11177fea97))
+  - Add createPool quote + plan ops and module methods ([526d50b](https://github.com/logos-blockchain/lez-programs/commit/526d50bff1d6534c6f684655f79822c45e092cc6))
+  - Add swap_exact_out_plan op and module swapExactOutput ([56b2d3a](https://github.com/logos-blockchain/lez-programs/commit/56b2d3a282d37c91644a516d5f9f76b529c283d9))
+  - Add swap_exact_out_quote op and module swapExactOutQuote ([d038b3d](https://github.com/logos-blockchain/lez-programs/commit/d038b3d060b775c71b5c92af102091d845e9ded8))
+  - Add swap_exact_in_quote op and module swapExactInQuote ([abc6d27](https://github.com/logos-blockchain/lez-programs/commit/abc6d27a9fc6e79a0cb453be128a7b4b7dd72b8b))
+  - Add pool_id operation ([6a951f3](https://github.com/logos-blockchain/lez-programs/commit/6a951f3cadc15d402e8f42ee5bc4442e1abe1edc))
+- **stablecoin:**
+  - Add Logos API module ([a7faa92](https://github.com/logos-blockchain/lez-programs/commit/a7faa92b48e5d46cbb23bcf261393f3f51cbb9af))
+  - Wire poke guest entries + e2e tests ([2ccf90e](https://github.com/logos-blockchain/lez-programs/commit/2ccf90ef3d9b8e573592b2c4be7adf3f8f5d3936))
+  - Implement refresh_globals host function ([bc2544f](https://github.com/logos-blockchain/lez-programs/commit/bc2544f69dc2ecee404d96cf83c189f1592ce6d3))
+  - Implement update_redemption_rate host function ([bc8d422](https://github.com/logos-blockchain/lez-programs/commit/bc8d4222ef08ac2692579fbf0ca6db798e3505c1))
+  - Implement accrue_stability_fee host function ([bf3e393](https://github.com/logos-blockchain/lez-programs/commit/bf3e393d32f40287dd5f7e34970f5c2c362a8b9b))
+  - Add poke instruction variants ([3b427cf](https://github.com/logos-blockchain/lez-programs/commit/3b427cf1191f653fa8693e2c17e685d525754ee7))
+  - Add redemption rate controller + clamp constants ([bdf3e27](https://github.com/logos-blockchain/lez-programs/commit/bdf3e275ffc4cb26768014f830dd8913dc1b2f1e))
+  - Add current value projection helpers ([91f0794](https://github.com/logos-blockchain/lez-programs/commit/91f07949af0c485a90314c87cd3a8d445bec68df))
+  - Expose initialize_program guest entry + e2e test ([ebc9b4b](https://github.com/logos-blockchain/lez-programs/commit/ebc9b4b9fef50456e9aa3cb4735f388cdfa4b7b5))
+  - Implement initialize_program host function ([0410d83](https://github.com/logos-blockchain/lez-programs/commit/0410d83ae40bb1c4fdda6884d5b226e0d21d585e))
+  - Add Instruction::InitializeProgram variant ([5b67d8d](https://github.com/logos-blockchain/lez-programs/commit/5b67d8d886a339b607255f46de621a055bf5906d))
+  - Add RedemptionPriceState account type ([4e087e6](https://github.com/logos-blockchain/lez-programs/commit/4e087e6ff60032f25901c8b7aa12e523471f88e2))
+  - Add StabilityFeeAccumulator account type ([0a44380](https://github.com/logos-blockchain/lez-programs/commit/0a44380a701120f8849d588384c61a060b7c87da))
+- **token:**
+  - Add token definition app ([24b66f4](https://github.com/logos-blockchain/lez-programs/commit/24b66f4c7790febc0e17419be0e1b21a26a8a844))
+  - Add Logos token API module ([741e72a](https://github.com/logos-blockchain/lez-programs/commit/741e72add94475658d2261aca4325526f0a2ca2d))
+- **token-mint-authority:**
+  - Add testnet faucet mint-authority program ([95a6dff](https://github.com/logos-blockchain/lez-programs/commit/95a6dff56f462e97929d025ce1547af94c73bde2))
+- **token-ui:**
+  - Integrate Basecamp token module ([470e06c](https://github.com/logos-blockchain/lez-programs/commit/470e06c6c365982dc3db226276e8ee1b2ee2a3bb))
+  - Connect Basecamp UI to token module ([dc386de](https://github.com/logos-blockchain/lez-programs/commit/dc386dee177dff46dbd1e71b44aae4326c10421c))
+- **wallet:**
+  - Add reusable ProgramAccountSelector component ([e0ae320](https://github.com/logos-blockchain/lez-programs/commit/e0ae3208a188bfa9a7893c1d97cc562d31218399))
+  - Add reusable wallet modules ([64ce091](https://github.com/logos-blockchain/lez-programs/commit/64ce0910453121102c200c78bc47417861bab69e))
+
+### Bug Fixes
+
+- **amm:**
+  - Restore liquidity controls after refresh ([574d814](https://github.com/logos-blockchain/lez-programs/commit/574d814f48dec1d63edec4f5da8f40141402c1ac))
+  - Restrict UpdateConfig to authority transfer only **[breaking]** ([de9a3d5](https://github.com/logos-blockchain/lez-programs/commit/de9a3d532018733a7e8bceaf54d7a37a6f4141bd))
+  - Align execution zone dependencies ([54afb26](https://github.com/logos-blockchain/lez-programs/commit/54afb26087d1b36ea3778ed2502e1f3ca1b7dbd3))
+  - LE-serialize instruction words; correct ELF→ProgramBinary docs; clarify sharedWalletIsOpen ([e03164b](https://github.com/logos-blockchain/lez-programs/commit/e03164baf33b6638d16580b1c6fcd99adb887b67))
+  - Guard resolvePool against stale callbacks; clarify deadline-ms and program-binary docs ([cf92e5d](https://github.com/logos-blockchain/lez-programs/commit/cf92e5d111060d0a86b69a7b18d551fcc23bf6c9))
+  - Address Copilot review — exact BigInt min_out, fail on oversized pool fee, sync flake run docs ([fe41baf](https://github.com/logos-blockchain/lez-programs/commit/fe41baf21098f54759c58a3720fc89e1711e4428))
+  - Order swap holdings/reserves by pool token order; accept base58 ids ([caf53d0](https://github.com/logos-blockchain/lez-programs/commit/caf53d0409b84bbf9987389614a7bc03bd1b502f))
+- **amm-ui:**
+  - Cache network snapshot to avoid remote calls on the hot path ([8358cfa](https://github.com/logos-blockchain/lez-programs/commit/8358cfa2f1dff14b68585c2f6e5252976d7da910))
+  - Require explicit liquidity inputs ([aafe5e9](https://github.com/logos-blockchain/lez-programs/commit/aafe5e900b8faab83d3146053fdaf0a67d7369ad))
+- **apps/amm:**
+  - Feed wallet restore-keys the fresh-home 3-input order ([9921571](https://github.com/logos-blockchain/lez-programs/commit/99215716290c1237d9ce9f2c7e2fd8d0cea1d9c4))
+  - One token list and one token picker for both views ([4651f28](https://github.com/logos-blockchain/lez-programs/commit/4651f28a053515ff2e4f0dad97c19f15a8739788))
+  - Make the AMM UI load in Basecamp ([627fcfa](https://github.com/logos-blockchain/lez-programs/commit/627fcfa4e26540654509f9a225420546ad0295d6))
+  - Match swap holdings on the configured id encoding ([72a3e74](https://github.com/logos-blockchain/lez-programs/commit/72a3e741a04289f4f57b81ef5a0d318cd4287855))
+  - Repair addCustomToken — restore token resolution and closing brace ([10b52ea](https://github.com/logos-blockchain/lez-programs/commit/10b52ea2f6da5f418c406766398d45fcd58b6906))
+  - Disable the already-selected token in the swap token picker ([bf63070](https://github.com/logos-blockchain/lez-programs/commit/bf63070a9e55888c94add9aa5ef035b0a1b33148))
+  - Ensure changing endpoint works ([266c20a](https://github.com/logos-blockchain/lez-programs/commit/266c20a90e8f4f402bc2eefbd1721ce4758c952e))
+- **apps/wallet:**
+  - Use @loader_path rpath for the QML plugin on macOS ([1dcfb78](https://github.com/logos-blockchain/lez-programs/commit/1dcfb784f8588f8fd86dd647a8b089e4b2d8858c))
+- **modules/amm:**
+  - Swap plan must use the pool's stored vault ids ([bf1f76b](https://github.com/logos-blockchain/lez-programs/commit/bf1f76b051ad4254b7a0810b22db80b79403bc27))
+- **stablecoin:**
+  - Annotate initialize_program guest accounts ([092aa4a](https://github.com/logos-blockchain/lez-programs/commit/092aa4ac9800e7ad6a1c28c342a6361f5ccef913))
+- **wallet:**
+  - Send tx instruction as a byte string, not QVariantList<u32> ([f9bd853](https://github.com/logos-blockchain/lez-programs/commit/f9bd85336f9c571a108d630afb9f9bde29fba856))
+
+### Refactor
+
+- **amm:**
+  - Drop the `Raw` suffix from amount/value field names ([4cb7c7e](https://github.com/logos-blockchain/lez-programs/commit/4cb7c7e51c940ad25631f0fde1b32b9df0510543))
+  - Move tokenList off the module; app reads TOKENS_CONFIG ([09f3d59](https://github.com/logos-blockchain/lez-programs/commit/09f3d594a7505907e4114cbd5e05f1415fdc08ba))
+  - Enrich resolvePool into resolvePoolAccount ([92f5565](https://github.com/logos-blockchain/lez-programs/commit/92f55652a87f02ae877931620502e77f4502280a))
+  - Remove the dead Network/context machinery ([cbb75c3](https://github.com/logos-blockchain/lez-programs/commit/cbb75c38fd4a21a9d2d8f3c60b1df7042e1b809b))
+  - Rename the create-pool quote surface for symmetry ([c47f387](https://github.com/logos-blockchain/lez-programs/commit/c47f387ad4f105f203631ac39fbd21a583930678))
+  - Remove the dead newPosition quote path ([64e7614](https://github.com/logos-blockchain/lez-programs/commit/64e7614e742483f8f99cf567fc3e7c50bcc50ad7))
+  - Remove the dead submitNewPosition path ([b1b6ec8](https://github.com/logos-blockchain/lez-programs/commit/b1b6ec851746731b856a3e4b053469b6c49da59d))
+  - Extract swap-input formula into amm_core ([cd8a843](https://github.com/logos-blockchain/lez-programs/commit/cd8a84374b2cb019e8edcbd5386e9f20d0f9d180))
+  - Extract swap-output formula into amm_core ([c3dc9dd](https://github.com/logos-blockchain/lez-programs/commit/c3dc9dd94fe73e8a1a9314490cbedb270b2d3c82))
+  - Drop the new-position schema version tag ([afeba56](https://github.com/logos-blockchain/lez-programs/commit/afeba568d8d0758b4ac9f547248197c8617a1613))
+  - Consolidate the two client FFIs into one JSON crate ([737b2f6](https://github.com/logos-blockchain/lez-programs/commit/737b2f674a72bcfd8480c149bf1c9e81aec1ead3))
+  - Select swap direction by input holding, sign only the input **[breaking]** ([cca063c](https://github.com/logos-blockchain/lez-programs/commit/cca063ce2d315229d7c802fd7a0fd6bad74557ae))
+- **apps/amm:**
+  - Drop the registry timestamp field ([ce8c157](https://github.com/logos-blockchain/lez-programs/commit/ce8c157ccf4a5b0ec105aa77801f07a1c0d70435))
+  - Extract RegistryLoader + registry-refresh plumbing ([5229928](https://github.com/logos-blockchain/lez-programs/commit/522992897cf9f6c72ce8d2dd30a534f9e93d6a12))
+  - Decouple token/pool loading from its byte source ([01b4a36](https://github.com/logos-blockchain/lez-programs/commit/01b4a365b0a78d0f8ffaaa85c258c24bc1aa3057))
+  - Drop dead liquidity-form leftovers from the quote migration ([037e0a1](https://github.com/logos-blockchain/lez-programs/commit/037e0a192c55721c9a7a7da0c27cf4fd5922931e))
+  - Move the amm_client crate into modules/amm/ffi as amm_ffi ([f5ff9b8](https://github.com/logos-blockchain/lez-programs/commit/f5ff9b829f2a5bbba0d9a90134eeaa30a7b6d35a))
+- **modules/amm:**
+  - ResolvePool accepts base58 ids and orients reserves ([c95322c](https://github.com/logos-blockchain/lez-programs/commit/c95322c033fe9342b6a35254d4c9cfdd807424bd))
+  - Drop status/code from swap_exact_in_plan ([b2f0e4b](https://github.com/logos-blockchain/lez-programs/commit/b2f0e4b85144b41bfa78383d23ffbdda4e4eabc4))
+  - Rename swap_plan to swap_exact_in_plan ([a389dc6](https://github.com/logos-blockchain/lez-programs/commit/a389dc6056de3502f4610582a915801c3aa9149b))
+- **stablecoin:**
+  - Address review on Position migration ([f62444f](https://github.com/logos-blockchain/lez-programs/commit/f62444ffa2bcdef16c6fc0c6c6b682be454ef449))
+  - Migrate Position to spec §4.4 shape **[breaking]** ([2d33923](https://github.com/logos-blockchain/lez-programs/commit/2d3392393a4981c4c7bb00be77d94cc33da6e245))
+  - Simplify RedemptionPriceState PDA domain ([ed6e20e](https://github.com/logos-blockchain/lez-programs/commit/ed6e20e11cb715dd4a0a4aff695445dc51db1938))
+  - Simplify StabilityFeeAccumulator PDA domain ([d9b7366](https://github.com/logos-blockchain/lez-programs/commit/d9b7366990b3233d248f7149de6e490f4abbca26))
+- Rename nssa/nssa_core → lee/lee_core ([154b41b](https://github.com/logos-blockchain/lez-programs/commit/154b41ba5c7df88a01da77c726cfe8a4d58bd0bc))
+
+### Documentation
+
+- **amm-ui:**
+  - Clarify test wallet password (throwaway setup vs restore-keys) ([c5b9508](https://github.com/logos-blockchain/lez-programs/commit/c5b9508e4d9347b963213ab0ecce3392c2d06bb4))
+  - Document isolated UI test flow in tests/README.md ([191942f](https://github.com/logos-blockchain/lez-programs/commit/191942f2a85be66d96fe3d9ee98334196ebb1ea5))
+- **apps/amm:**
+  - Remove stale BIN reference ([96dc69c](https://github.com/logos-blockchain/lez-programs/commit/96dc69c39f5e199176186c264bbd1a9ca70780a8))
+- **stablecoin:**
+  - Document the CLOCK_01 clock account ([0a1f30a](https://github.com/logos-blockchain/lez-programs/commit/0a1f30a7d536e516686afe07791da433f3f91cfd))
+  - Reference issues instead of plan names ([3204a37](https://github.com/logos-blockchain/lez-programs/commit/3204a3758846e9f781f4f2fef33201910e8f36e7))
+- **token:**
+  - Add token program usage runbook" ([ad020b1](https://github.com/logos-blockchain/lez-programs/commit/ad020b1c7fe99c4a676d49c42a93f55a6b3ad64d))
+- Note that Instruction variants need guest entries, run make clippy-guest ([a338de4](https://github.com/logos-blockchain/lez-programs/commit/a338de44c342e3c3a032ebb020f7de1179b8c246))
+
+### Testing
+
+- **amm-ui:**
+  - Feed setup password via stdin so bootstrap never blocks ([200f429](https://github.com/logos-blockchain/lez-programs/commit/200f429ec61c83254222eb2b9499285cea5ad996))
+  - Feed wallet setup password non-interactively ([0576b10](https://github.com/logos-blockchain/lez-programs/commit/0576b10dcba039c39590ebb61820c4e882a555a2))
+  - Isolate test token config, fix repo-root resolution ([2ed1350](https://github.com/logos-blockchain/lez-programs/commit/2ed13506d1e5c69dace84665c43ac10134ad3340))
+  - Bootstrap deterministic test wallet in testnet setup ([9a1f76f](https://github.com/logos-blockchain/lez-programs/commit/9a1f76ff6b1e456e13c9a6f270d32fa73fd331f3))
+  - Add isolated AMM testnet setup script ([380bbff](https://github.com/logos-blockchain/lez-programs/commit/380bbff30876805e95723dc02366fb669a235259))
+  - Add swap UI test ([fc7b071](https://github.com/logos-blockchain/lez-programs/commit/fc7b07174cf8f52fc0faef3c870b0c8c82dc4458))
+- **apps/amm:**
+  - Emit a local registry from the AMM testnet setup script ([29e4885](https://github.com/logos-blockchain/lez-programs/commit/29e48858b9dbe7837e9ae8c16c253b9275ec795b))
+  - Add remove-liquidity e2e test ([68c0e9c](https://github.com/logos-blockchain/lez-programs/commit/68c0e9cd23227c260b0cf4b9ea3a75b7fb5194cf))
+  - Select the funding account before submitting a swap ([86575a6](https://github.com/logos-blockchain/lez-programs/commit/86575a65aad881fb3b9c34607506b7f0cc2228e0))
+  - Add create-pool UI e2e test + Token C setup ([02e7703](https://github.com/logos-blockchain/lez-programs/commit/02e77032b7fdcc487de59ccdc654af1200366604))
+- **privacy:**
+  - Add privacy-preserving coverage, ported to lez v0.2.4 ([5b54b88](https://github.com/logos-blockchain/lez-programs/commit/5b54b8868ea195659ccfeae6a3ea93ad62f02932))
+
+### Build System
+
+- **amm:**
+  - Fork logos_execution_zone for QtRO byte-string tx args + align amm_client_ffi to lee_core v0.2.0 ([69cd58d](https://github.com/logos-blockchain/lez-programs/commit/69cd58d3775e1d7ea78794181531a3da45062794))
+  - Load amm_client_ffi via absolute store-path id + DYLD fallback on macOS ([8f67c4c](https://github.com/logos-blockchain/lez-programs/commit/8f67c4c4b639c61c1bc2c141f4ce6b042ddabbc9))
+  - Link amm_client_ffi into the AMM UI module ([cfb62e4](https://github.com/logos-blockchain/lez-programs/commit/cfb62e4d2fb7dc1928b21f017295cb2aabead971))
+- **flake:**
+  - Pin lez_core to the byte-string-fix branch ([9346106](https://github.com/logos-blockchain/lez-programs/commit/9346106f44ba1c25801c066dfb93fb6d7b735c8a))
+  - Make the amm module and UI flakes self-contained ([dd0e550](https://github.com/logos-blockchain/lez-programs/commit/dd0e550b2b7d94355345303847966ce3bcb6e76b))
+  - Expose portable LGX outputs for the core modules ([235d6a4](https://github.com/logos-blockchain/lez-programs/commit/235d6a450cbd2ddab2eaf2e1902958d310a49798))
+
+### CI
+
+- Trigger gh actions on any PR ([8cc4055](https://github.com/logos-blockchain/lez-programs/commit/8cc4055f64a24fff6979393c784fe1993ae9f9fc))
+
+### Chores
+
+- Reformat three comments for current nightly rustfmt ([6b53f3a](https://github.com/logos-blockchain/lez-programs/commit/6b53f3a13f1c0846984f7f4d8e6082b15fa970b8))
+- Update to release set v0.2.1 ([1d88e6f](https://github.com/logos-blockchain/lez-programs/commit/1d88e6f3c40060eef31708125cdca1490c5e5539))
+- Remove unnecessary macos prerequisites docs ([d7017a2](https://github.com/logos-blockchain/lez-programs/commit/d7017a25159e106f5843a56a4c2426a1f118ac16))
+
+### Styling
+
+- **amm:**
+  - Cargo fmt ([f1fc061](https://github.com/logos-blockchain/lez-programs/commit/f1fc0616649f7e8c3d413542207f3ec2c78488fc))
+
 ## [1.0.0] - 2026-07-16
 
 ### ⚠️ Breaking Changes
