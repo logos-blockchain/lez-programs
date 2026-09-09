@@ -375,6 +375,66 @@ LogosMap StablecoinModuleImpl::currentGlobalState() {
     });
 }
 
+LogosMap StablecoinModuleImpl::redemptionRateUpdateQuote() {
+    return guarded([&]() -> LogosMap {
+        std::string error;
+        const json info = stablecoinProgramInfo(error);
+        if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+
+        const json parameters = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
+        const std::string parameters_status = jsonString(parameters, "status");
+        if (parameters_status == "not_found") return publicError("not_initialized");
+        if (parameters_status != "ok") return publicError("account_read_failed");
+
+        const FfiResult decoded_parameters = callStablecoin(
+            stablecoin_decode_protocol_parameters,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"protocolParameters", parameters},
+            });
+        if (!decoded_parameters.ok) {
+            return publicError(
+                stablecoin_module::detail::stableFfiError(decoded_parameters.error));
+        }
+        const std::string oracle_id =
+            jsonString(decoded_parameters.value, "marketPriceOracleIdHex");
+        if (!stablecoin_module::detail::isValidAccountIdHex(oracle_id)) {
+            return publicError("backend_error");
+        }
+
+        const json redemption = readPublicAccount(jsonString(info, "redemptionPriceStateIdHex"));
+        const json oracle = readPublicAccount(oracle_id);
+        const json clock = readPublicAccount(jsonString(info, "clockIdHex"));
+
+        if (jsonString(redemption, "status") == "not_found") {
+            return publicError("not_initialized");
+        }
+        if (jsonString(redemption, "status") != "ok"
+            || jsonString(oracle, "status") != "ok"
+            || jsonString(clock, "status") != "ok") {
+            return publicError("account_read_failed");
+        }
+
+        const FfiResult quoted = callStablecoin(
+            stablecoin_redemption_rate_update_quote,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"protocolParameters", parameters},
+                {"redemptionPriceState", redemption},
+                {"marketPriceOracle", oracle},
+                {"clock", clock},
+            });
+        if (!quoted.ok) {
+            return publicError(stablecoin_module::detail::stableFfiError(quoted.error));
+        }
+
+        LogosMap result = quoted.value;
+        result["status"] = "ok";
+        result["error"] = "";
+        return result;
+    });
+}
+
 LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
     const auto accounts_field = plan.find("accountIds");
     const auto signers_field = plan.find("signingRequirements");

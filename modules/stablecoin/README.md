@@ -66,6 +66,23 @@ The result contains `accumulatedRateAtLastAccrual`, `lastAccruedAt`,
 string. Projection uses saturating timestamp subtraction and the on-chain
 seven-day compounding-window clamp. The method accepts no caller-provided time.
 
+### `redemptionRateUpdateQuote()`
+
+Reads Protocol Parameters, Redemption Price State, the configured market-price
+oracle, and canonical `CLOCK_01` account, then quotes the next controller tick
+without submitting a transaction. It projects the current redemption price
+with the stored rate before calling the same pure controller used on-chain.
+
+Ready quotes return `canSubmit: true`, `code: "ready"`, the current redemption
+and market prices, elapsed milliseconds, next redemption rate, next controller
+integral term, and integral/rate clamp bounds. All numeric values are exact
+decimal strings.
+
+A stale oracle, zero oracle price, or not-yet-due update returns a successful
+read-only quote with `canSubmit: false`, `code: "blocked"`, machine-readable
+`errors`, and explicit `null` next-controller values. Multiple blockers are
+reported in on-chain gate order. The frozen flag does not block this operation.
+
 ### `initializeProgram(request)`
 
 Required request fields:
