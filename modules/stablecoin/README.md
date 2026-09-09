@@ -53,6 +53,19 @@ includes the account ID in base58 and lowercase hexadecimal form plus
 `controllerIntegralTerm`, and `lastUpdatedAt` as decimal strings. It does not
 project the current redemption price or simulate a controller update.
 
+### `currentGlobalState()`
+
+Reads Protocol Parameters, Stability Fee Accumulator, Redemption Price State,
+and the canonical `CLOCK_01` account through `lez_core`. It verifies each
+stablecoin singleton's PDA, owner, and data before projecting both current
+values at the clock account's Unix-millisecond timestamp.
+
+The result contains `accumulatedRateAtLastAccrual`, `lastAccruedAt`,
+`redemptionPriceAtLastUpdate`, `lastUpdatedAt`, `currentAccumulatedRate`,
+`currentRedemptionPrice`, and `projectedAt`. Every value is an exact decimal
+string. Projection uses saturating timestamp subtraction and the on-chain
+seven-day compounding-window clamp. The method accepts no caller-provided time.
+
 ### `initializeProgram(request)`
 
 Required request fields:

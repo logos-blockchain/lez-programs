@@ -39,6 +39,10 @@ extern "C" char* stablecoin_decode_redemption_price_state(const char*) {
     return copyMockResponse("stablecoin_decode_redemption_price_state");
 }
 
+extern "C" char* stablecoin_current_global_state(const char*) {
+    return copyMockResponse("stablecoin_current_global_state");
+}
+
 extern "C" char* stablecoin_initialize_program_plan(const char*) {
     return copyMockResponse("stablecoin_initialize_program_plan");
 }
