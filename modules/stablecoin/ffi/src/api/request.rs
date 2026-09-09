@@ -19,6 +19,13 @@ pub struct DecodeProtocolParametersRequest {
     pub protocol_parameters: AccountRead,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DecodeStabilityFeeAccumulatorRequest {
+    pub stablecoin_program_id: String,
+    pub stability_fee_accumulator: AccountRead,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeProgramPlanRequest {

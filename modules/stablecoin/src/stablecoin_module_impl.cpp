@@ -278,6 +278,33 @@ LogosMap StablecoinModuleImpl::protocolParameters() {
     });
 }
 
+LogosMap StablecoinModuleImpl::stabilityFeeAccumulator() {
+    return guarded([&]() -> LogosMap {
+        std::string error;
+        const json info = stablecoinProgramInfo(error);
+        if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+
+        const json read = readPublicAccount(jsonString(info, "stabilityFeeAccumulatorIdHex"));
+        const std::string status = jsonString(read, "status");
+        if (status == "not_found") return publicError("not_initialized");
+        if (status != "ok") return publicError("account_read_failed");
+
+        const FfiResult decoded = callStablecoin(
+            stablecoin_decode_stability_fee_accumulator,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"stabilityFeeAccumulator", read},
+            });
+        if (!decoded.ok) {
+            return publicError(stablecoin_module::detail::stableFfiError(decoded.error));
+        }
+
+        LogosMap result = publicOk();
+        result["stabilityFeeAccumulator"] = decoded.value;
+        return result;
+    });
+}
+
 LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
     const auto accounts_field = plan.find("accountIds");
     const auto signers_field = plan.find("signingRequirements");

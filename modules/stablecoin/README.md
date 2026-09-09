@@ -36,6 +36,14 @@ Reads the singleton Protocol Parameters account through
 `lez_core`, verifies its PDA and owner, and exactly decodes its
 data. All `u128`, `i128`, and `u64` values are returned as decimal strings.
 
+### `stabilityFeeAccumulator()`
+
+Reads the singleton Stability Fee Accumulator account through `lez_core`,
+verifies its PDA and owner, and exactly decodes its stored snapshot. The result
+includes the account ID in base58 and lowercase hexadecimal form plus
+`accumulatedRateAtLastAccrual` and `lastAccruedAt` as decimal strings. It does
+not project the accumulator to the current time.
+
 ### `initializeProgram(request)`
 
 Required request fields:
