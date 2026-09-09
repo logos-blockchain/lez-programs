@@ -52,6 +52,8 @@ char *amm_sync_reserves_plan(const char *request_json);
 
 char *amm_transfer_ownership_plan(const char *request_json);
 
+char *amm_withdraw_protocol_fees_plan(const char *request_json);
+
 char *amm_create_price_observations_plan(const char *request_json);
 
 char *amm_create_oracle_price_account_plan(const char *request_json);

@@ -1,7 +1,8 @@
 use alloy_primitives::U256;
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
-    compute_vault_pda, isqrt_product, AmmConfig, Instruction, PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_protocol_fee_pda, compute_vault_pda, isqrt_product, AmmConfig, Instruction,
+    PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
@@ -17,7 +18,7 @@ use twap_oracle_core::{
 };
 
 use super::{
-    admin::transfer_ownership_plan,
+    admin::{transfer_ownership_plan, withdraw_protocol_fees_plan},
     config::config_account as decode_config_account,
     context::resolve_tokens,
     holding::{select_holding, SelectedHolding},
@@ -27,7 +28,7 @@ use super::{
     swap::{swap_exact_in_plan, swap_exact_out_plan},
     ConfigAccountRequest, CreateOraclePriceAccountPlanRequest, CreatePriceObservationsPlanRequest,
     PairIdsRequest, ResolveTokensRequest, SwapExactInPlanRequest, SwapExactOutPlanRequest,
-    TransferOwnershipPlanRequest,
+    TransferOwnershipPlanRequest, WithdrawProtocolFeesPlanRequest,
 };
 use crate::{
     account::{account_id_hex, account_read, decode_account, program_id_base58, program_id_bytes},
@@ -66,6 +67,7 @@ fn config_account() -> Account {
             twap_oracle_program_id: TWAP_PROGRAM,
             authority: AccountId::new([7; 32]),
             swap_fee_bps: 30,
+            protocol_fee_bps: 2_000,
         }),
     )
 }
@@ -294,6 +296,52 @@ fn transfer_ownership_plan_targets_config_and_current_admin() {
 }
 
 #[test]
+fn withdraw_protocol_fees_plan_targets_protocol_pda_destination_and_admin() {
+    let config_id = config_id();
+    let token_def = AccountId::new([3; 32]);
+    let destination = AccountId::new([8; 32]);
+    let plan = withdraw_protocol_fees_plan(WithdrawProtocolFeesPlanRequest {
+        amm_program_id: amm_program_id(),
+        config: account_read(config_id, &config_account()),
+        token_definition_id: account_id_hex(token_def),
+        destination_id: account_id_hex(destination),
+        amount: "500".into(),
+    })
+    .unwrap();
+
+    // Accounts: [config, protocol-fee PDA (for token_def), destination, admin authority (signs)].
+    // The admin is [7; 32] (the config_account fixture's authority); the protocol-fee holding is
+    // the instance-wide PDA for token_def; `amount` is instruction data, not an account.
+    assert_eq!(
+        plan["accountIds"],
+        json!([
+            account_id_hex(config_id),
+            account_id_hex(compute_protocol_fee_pda(AMM_PROGRAM, config_id, token_def)),
+            account_id_hex(destination),
+            account_id_hex(AccountId::new([7; 32])),
+        ])
+    );
+    assert_eq!(
+        plan["signingRequirements"],
+        json!([false, false, false, true])
+    );
+
+    // The instruction decodes back to WithdrawProtocolFees { amount }.
+    let words: Vec<u32> = plan["instruction"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|word| word.as_u64().unwrap() as u32)
+        .collect();
+    let Instruction::WithdrawProtocolFees { amount } =
+        risc0_zkvm::serde::from_slice(&words).unwrap()
+    else {
+        panic!("expected WithdrawProtocolFees");
+    };
+    assert_eq!(amount, 500);
+}
+
+#[test]
 fn create_price_observations_plan_targets_the_window_feed_accounts() {
     let token_a = AccountId::new([2; 32]);
     let token_b = AccountId::new([1; 32]);
@@ -404,8 +452,10 @@ fn config_account_decodes_authority_and_program_ids() {
         value["twapOracleProgramId"],
         program_id_base58(TWAP_PROGRAM)
     );
-    // The instance-wide swap fee is surfaced from the config (the fixture sets 30 bps).
+    // The instance-wide swap fee and protocol-fee split are surfaced from the config (the fixture
+    // sets 30 bps swap fee, 2000 bps = 20% of it to the protocol).
     assert_eq!(value["swapFeeBps"], 30);
+    assert_eq!(value["protocolFeeBps"], 2_000);
 }
 
 #[test]
@@ -478,6 +528,21 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         pool.vault_a_id,
         compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
     );
+    // Slot 8 is the 9th account the guest now requires: the INPUT token's instance-wide
+    // protocol-fee holding PDA. Only the input holding (slot 4) signs; the protocol PDA does not.
+    assert_eq!(plan["accountIds"].as_array().unwrap().len(), 9);
+    assert_eq!(
+        plan["accountIds"][8],
+        account_id_hex(compute_protocol_fee_pda(
+            AMM_PROGRAM,
+            config_id(),
+            token_small
+        ))
+    );
+    assert_eq!(
+        plan["signingRequirements"],
+        json!([false, false, false, false, true, false, false, false, false])
+    );
 }
 
 #[test]
@@ -546,5 +611,19 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
     assert_ne!(
         pool.vault_a_id,
         compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
+    );
+    // Slot 8 is the input token's protocol-fee holding PDA (the 9th account); only slot 4 signs.
+    assert_eq!(plan["accountIds"].as_array().unwrap().len(), 9);
+    assert_eq!(
+        plan["accountIds"][8],
+        account_id_hex(compute_protocol_fee_pda(
+            AMM_PROGRAM,
+            config_id(),
+            token_small
+        ))
+    );
+    assert_eq!(
+        plan["signingRequirements"],
+        json!([false, false, false, false, true, false, false, false, false])
     );
 }

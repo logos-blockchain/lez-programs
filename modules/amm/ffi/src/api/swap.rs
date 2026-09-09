@@ -4,8 +4,8 @@
 //! `pair::derive_pair` so the swap path never re-derives seeds.
 
 use amm_core::{
-    compute_pool_pda, mul_div_ceil, mul_div_floor, price_impact_bps, swap_exact_in_amounts,
-    swap_exact_out_amounts, AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR,
+    compute_pool_pda, compute_protocol_fee_pda, mul_div_ceil, mul_div_floor, price_impact_bps,
+    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR,
 };
 use lee_core::account::AccountId;
 use risc0_binfmt::ProgramBinary;
@@ -357,6 +357,10 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
+    // The protocol fee is taken in the input token, so its holding is the input token's
+    // instance-wide protocol PDA under this config namespace (created lazily on first fee).
+    let protocol_fee_holding = compute_protocol_fee_pda(amm_program, pair.config, token_in);
+
     // Fixed IDL account order for SwapExactInput; only user_input_holding signs.
     let account_ids = [
         pair.config,
@@ -367,8 +371,9 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
         user_output_holding,
         pair.current_tick,
         pair.clock,
+        protocol_fee_holding,
     ];
-    let signing_requirements = [false, false, false, false, true, false, false, false];
+    let signing_requirements = [false, false, false, false, true, false, false, false, false];
 
     Ok(json!({
         "programId": request.amm_program_id,
@@ -424,6 +429,10 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
+    // The protocol fee is taken in the input token, so its holding is the input token's
+    // instance-wide protocol PDA under this config namespace (created lazily on first fee).
+    let protocol_fee_holding = compute_protocol_fee_pda(amm_program, pair.config, token_in);
+
     // Fixed IDL account order for SwapExactOutput; only user_input_holding signs.
     let account_ids = [
         pair.config,
@@ -434,8 +443,9 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
         user_output_holding,
         pair.current_tick,
         pair.clock,
+        protocol_fee_holding,
     ];
-    let signing_requirements = [false, false, false, false, true, false, false, false];
+    let signing_requirements = [false, false, false, false, true, false, false, false, false];
 
     Ok(json!({
         "programId": request.amm_program_id,
@@ -477,6 +487,7 @@ mod tests {
                 twap_oracle_program_id: parse_program_id(&"02".repeat(32)).unwrap(),
                 authority: AccountId::new([0x09; 32]),
                 swap_fee_bps: 30,
+                protocol_fee_bps: 0,
             }),
             ..Account::default()
         };

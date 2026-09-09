@@ -30,6 +30,7 @@ End-to-end steps to deploy the programs, initialize the AMM, and create a pool u
 - [10. Record a tick](#10-record-a-tick)
 - [11. Create the oracle price account](#11-create-the-oracle-price-account)
 - [12. Publish a price](#12-publish-a-price)
+- [13. (Admin) Withdraw protocol fees](#13-admin-withdraw-protocol-fees)
 - [Gotchas](#gotchas-we-hit-and-how-to-avoid-them)
 
 ---
@@ -235,21 +236,32 @@ The fixed **clock** account never changes: `4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4e
 
 ## 5. Initialize the AMM
 
-Pick an `<AUTHORITY>` account you control (the admin who may later `update_config`).
+Pick an `<OWNER>` account you control that **signs** `initialize` (its id + the
+`<NONCE>` form the instance namespace; `[0;32]` / 64 zero hex is the default instance),
+an `<AUTHORITY>` (the admin who may later `update_config` or withdraw protocol fees), the
+instance-wide `<SWAP_FEE_BPS>` (basis points, any value below 10000 = 100%; e.g. `1`), and
+`<PROTOCOL_FEE_BPS>` (the fraction *of that swap fee* diverted to the protocol, in bps of
+the swap fee; `0` = none, up to `10000` = 100% of the swap fee). Both fees are set **once
+here** and apply to every pool in the namespace — they are no longer per-pool values.
 `config` is the PDA from step 4; `token`/`twap` are the ProgramIds from step 1.
 
 ```bash
 spel --idl artifacts/amm-idl.json \
      --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
      -- initialize \
+     --owner <OWNER> \
      --config <CONFIG_PDA> \
+     --nonce 0000000000000000000000000000000000000000000000000000000000000000 \
      --token-program-id <TOKEN_PROGRAM_ID> \
      --twap-oracle-program-id <TWAP_PROGRAM_ID> \
-     --authority <AUTHORITY>
+     --authority <AUTHORITY> \
+     --swap-fee-bps <SWAP_FEE_BPS> \
+     --protocol-fee-bps <PROTOCOL_FEE_BPS>
 ```
 
-> `config` is `init` but **not** a signer — spel just lists it; the guest claims it as a PDA.
-> Run once per deployment. (Add `--dry-run` to preview.)
+> `owner` signs (squat-proofs the namespace) and is claimed by the AMM on first use, so
+> use a fresh dedicated account. `config` is `init` but **not** a signer — the guest claims
+> it as a PDA. Run once per `(owner, nonce)` instance. (Add `--dry-run` to preview.)
 
 ## 6. Create a pool (`new-definition`)
 
@@ -260,7 +272,8 @@ Provide three holding accounts you own:
   it must be a normal keypair account, **not** an ATA). Receives the LP tokens.
 
 Amounts must satisfy `isqrt(token_a_amount * token_b_amount) > 1000` (MINIMUM_LIQUIDITY).
-`fees` ∈ {1, 5, 30, 100} (bps). `deadline` is a future ms timestamp (or `u64::MAX` =
+`new-definition` takes **no fee argument** — the swap fee is instance-wide (set at
+`initialize`). `deadline` is a future ms timestamp (or `u64::MAX` =
 `18446744073709551615` to ignore).
 
 ```bash
@@ -280,7 +293,6 @@ spel --idl artifacts/amm-idl.json \
      --clock 4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU \
      --token-a-amount <AMOUNT_A> \
      --token-b-amount <AMOUNT_B> \
-     --fees 1 \
      --deadline 18446744073709551615
 ```
 
@@ -353,6 +365,7 @@ spel --idl artifacts/amm-idl.json \
      --user-holding-b <USER_HOLDING_B> \
      --current-tick-account <CURRENT_TICK_PDA> \
      --clock 4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU \
+     --protocol-fee-holding <PROTOCOL_FEE_PDA_FOR_INPUT_TOKEN> \
      --swap-amount-in <AMOUNT_IN> \
      --min-amount-out <MIN_OUT> \
      --token-definition-id-in <DEF_OF_INPUT_TOKEN> \
@@ -360,6 +373,10 @@ spel --idl artifacts/amm-idl.json \
 ```
 
 - **`--token-definition-id-in`**: `<DEF_A>` ⇒ A→B; `<DEF_B>` ⇒ B→A.
+- **`--protocol-fee-holding`**: the protocol-fee PDA **for the input token** — `protocol_fee_a`
+  when spending A, `protocol_fee_b` when spending B (from step 4's `amm_pdas` output). The swap
+  diverts `protocol_fee_bps` of the fee here (creating it on first use); pass it even when the
+  instance's protocol fee is `0` (the account is still required and simply left untouched).
 - **`--swap-amount-in`** must be ≤ the input holding's balance; **`--min-amount-out`** is the
   slippage floor (`1` accepts any nonzero output).
 - spel signs **both** `user_holding_a` and `user_holding_b` (both are `signer` in the IDL —
@@ -465,6 +482,41 @@ Verify (check `price` and the publication timestamp):
 ```bash
 spel --idl artifacts/twap_oracle-idl.json inspect <ORACLE_PRICE_ACCOUNT_PDA> --type OraclePriceAccount
 ```
+
+---
+
+## 13. (Admin) Withdraw protocol fees
+
+If the instance was initialized with `--protocol-fee-bps > 0`, each swap diverts that fraction
+of the swap fee (in the **input** token) into the per-`(config, token)` protocol-fee PDA
+(`protocol_fee_a` / `protocol_fee_b` from step 4). The config's **`authority`** (set at
+`initialize`) is the only account that can move them out, via `withdraw-protocol-fees`.
+
+Inspect the accrued balance first (it is an ordinary token holding):
+```bash
+spel --idl artifacts/token-idl.json inspect <PROTOCOL_FEE_PDA> --type TokenHolding
+```
+
+Withdraw `<AMOUNT>` (raw base units) of that token to `<DESTINATION>` — an **already-initialized**
+holding of the **same** token:
+```bash
+spel --idl artifacts/amm-idl.json \
+     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     -- withdraw-protocol-fees \
+     --config <CONFIG_PDA> \
+     --protocol-fee-holding <PROTOCOL_FEE_PDA> \
+     --destination <DESTINATION> \
+     --authority <AUTHORITY> \
+     --amount <AMOUNT>
+```
+
+- `authority` **signs** and must equal the config's stored `authority`; the wallet must control it.
+- `protocol-fee-holding` must be the protocol-fee PDA for the token being withdrawn (its own token
+  definition selects the token), so one call drains one token — repeat per token.
+- `destination` must already exist (a credit needs no signature, but a fresh holding's claim would);
+  initialize it first with `initialize-account` (step 3) if needed.
+
+See [AMM protocol fees](./amm-protocol-fees.md) for the full model.
 
 ---
 

@@ -25,7 +25,7 @@ pub use request::{
     ProgramIdRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest, ResolvePoolRequest,
     ResolveTokensRequest, SwapExactInPlanRequest, SwapExactInQuoteRequest, SwapExactOutPlanRequest,
     SwapExactOutQuoteRequest, SwapPairRequest, SyncReservesPlanRequest, TokenHoldingsRequest,
-    TransferOwnershipPlanRequest,
+    TransferOwnershipPlanRequest, WithdrawProtocolFeesPlanRequest,
 };
 use serde_json::Value;
 
@@ -153,6 +153,11 @@ pub fn sync_reserves_plan(request: SyncReservesPlanRequest) -> AmmResult {
 /// Builds the `UpdateConfig` submission that transfers the AMM's admin authority.
 pub fn transfer_ownership_plan(request: TransferOwnershipPlanRequest) -> AmmResult {
     admin::transfer_ownership_plan(request).map_err(Into::into)
+}
+
+/// Builds the `WithdrawProtocolFees` submission that drains one token's accrued protocol fees.
+pub fn withdraw_protocol_fees_plan(request: WithdrawProtocolFeesPlanRequest) -> AmmResult {
+    admin::withdraw_protocol_fees_plan(request).map_err(Into::into)
 }
 
 /// Builds the `CreatePriceObservations` submission — seeds a pool's TWAP observations feed.

@@ -1,7 +1,8 @@
 pub use amm_core::{compute_liquidity_token_pda_seed, compute_vault_pda_seed, PoolDefinition};
 use amm_core::{
-    compute_pool_pda, compute_pool_pda_seed, read_vault_fungible_balances, spot_price_q64_64,
-    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, MINIMUM_LIQUIDITY,
+    compute_pool_pda, compute_pool_pda_seed, compute_protocol_fee_pda,
+    compute_protocol_fee_pda_seed, protocol_fee_amount, read_vault_fungible_balances,
+    spot_price_q64_64, swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
@@ -92,6 +93,9 @@ fn finalize_swap(
     user_holding_output: AccountWithMetadata,
     current_tick_account: AccountWithMetadata,
     clock: AccountWithMetadata,
+    // The input-token protocol-fee holding — echoed here (the chained protocol-fee transfer, when
+    // any, mutates it), in the guest's declared account slot (last).
+    protocol_fee_holding: AccountWithMetadata,
     deposit_a: u128,
     withdraw_a: u128,
     deposit_b: u128,
@@ -152,6 +156,7 @@ fn finalize_swap(
         AccountPostState::new(user_holding_output.account),
         AccountPostState::new(current_tick_account.account),
         AccountPostState::new(clock.account),
+        AccountPostState::new(protocol_fee_holding.account),
     ];
 
     (post_states, update_tick_call)
@@ -171,6 +176,7 @@ pub fn swap_exact_input(
     user_output_holding: AccountWithMetadata,
     current_tick_account: AccountWithMetadata,
     clock: AccountWithMetadata,
+    protocol_fee_holding: AccountWithMetadata,
     swap_amount_in: u128,
     min_amount_out: u128,
     amm_program_id: ProgramId,
@@ -187,6 +193,9 @@ pub fn swap_exact_input(
         .expect("Swap exact input: AMM Program must be initialized before use");
     let token_program_id = config_data.token_program_id;
     let twap_oracle_program_id = config_data.twap_oracle_program_id;
+    // config.account is consumed by finalize_swap below; capture the namespace root now for the
+    // protocol-fee PDA derivation.
+    let config_id = config.account_id;
     assert_pool_in_config_namespace(&pool, &config, &pool_def_data, amm_program_id);
     assert_eq!(
         vault_a.account.program_owner, token_program_id,
@@ -218,6 +227,13 @@ pub fn swap_exact_input(
         user_holding_b.account.program_owner, token_program_id,
         "User Token B holding must be owned by the configured Token Program"
     );
+    // The protocol fee is taken in the input token, so its holding is the input token's
+    // instance-wide protocol PDA. Checked after confirming the input is part of the pool.
+    assert_eq!(
+        protocol_fee_holding.account_id,
+        compute_protocol_fee_pda(amm_program_id, config_id, token_in_id),
+        "Swap exact input: protocol-fee holding does not match the input token's protocol PDA"
+    );
     // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
     // clock here so the swap is rejected early with an AMM-level error.
     assert_eq!(
@@ -240,9 +256,12 @@ pub fn swap_exact_input(
                 swap_amount_in,
                 min_amount_out,
                 config_data.swap_fee_bps,
+                config_data.protocol_fee_bps,
+                protocol_fee_holding.clone(),
                 pool_def_data.reserve_a,
                 pool_def_data.reserve_b,
                 pool.account_id,
+                config_id,
             );
 
             (chained_calls, [deposit_a, 0], [0, withdraw_b])
@@ -255,9 +274,12 @@ pub fn swap_exact_input(
                 swap_amount_in,
                 min_amount_out,
                 config_data.swap_fee_bps,
+                config_data.protocol_fee_bps,
+                protocol_fee_holding.clone(),
                 pool_def_data.reserve_b,
                 pool_def_data.reserve_a,
                 pool.account_id,
+                config_id,
             );
 
             (chained_calls, [0, withdraw_a], [deposit_b, 0])
@@ -284,6 +306,7 @@ pub fn swap_exact_input(
         user_holding_output,
         current_tick_account,
         clock,
+        protocol_fee_holding,
         deposit_a,
         withdraw_a,
         deposit_b,
@@ -309,15 +332,20 @@ fn swap_logic(
     swap_amount_in: u128,
     min_amount_out: u128,
     fee_bps: u128,
+    protocol_fee_bps: u128,
+    // The input-token protocol-fee holding, an AMM-owned PDA per `(config, token)`. Receives the
+    // protocol's cut; created lazily on first use (like a vault) via its own PDA seed.
+    protocol_fee_holding: AccountWithMetadata,
     reserve_deposit_vault_amount: u128,
     reserve_withdraw_vault_amount: u128,
     pool_id: AccountId,
+    config_id: AccountId,
 ) -> (Vec<ChainedCall>, u128, u128) {
     // Fee-adjust the input and price via constant product. Shared with the
     // off-chain swap quote (`amm_core::swap_exact_in_amounts`) so the preview and
     // the executed trade agree exactly. The recorded pool reserves are updated
-    // later with the full `swap_amount_in`, so LP fees accrue inside `reserve_*`
-    // via invariant growth rather than as a vault-balance surplus over `reserve_*`.
+    // later with the input NET of the protocol fee, so the LP share of the fee accrues inside
+    // `reserve_*` via invariant growth while the protocol's cut leaves the vault.
     let (effective_amount_in, withdraw_amount) = swap_exact_in_amounts(
         swap_amount_in,
         reserve_deposit_vault_amount,
@@ -338,7 +366,22 @@ fn swap_logic(
 
     let token_program_id = user_deposit.account.program_owner;
 
+    // The input (deposit) token definition drives both the deposit vault seed and the protocol PDA.
+    let deposit_token_id = token_core::TokenHolding::try_from(&vault_deposit.account.data)
+        .expect("Swap Logic: AMM Program expects valid token data")
+        .definition_id();
+
+    // The protocol's cut of this swap's fee (in the input token). `swap_fee` is the input the
+    // trader forfeits to the pool; `protocol_fee` is diverted from LPs to the protocol holding.
+    let swap_fee = swap_amount_in
+        .checked_sub(effective_amount_in)
+        .expect("effective_amount_in <= swap_amount_in");
+    let protocol_fee = protocol_fee_amount(swap_fee, protocol_fee_bps);
+
     let mut chained_calls = Vec::new();
+
+    // 1. user -> deposit vault (full input).
+    let mut vault_deposit_source = vault_deposit.clone();
     chained_calls.push(ChainedCall::new(
         token_program_id,
         vec![user_deposit, vault_deposit],
@@ -347,16 +390,15 @@ fn swap_logic(
         },
     ));
 
+    // 2. withdraw vault -> user (output), under the withdraw vault's PDA seed.
     let mut vault_withdraw = vault_withdraw.clone();
     vault_withdraw.is_authorized = true;
-
-    let pda_seed = compute_vault_pda_seed(
+    let withdraw_seed = compute_vault_pda_seed(
         pool_id,
         token_core::TokenHolding::try_from(&vault_withdraw.account.data)
             .expect("Swap Logic: AMM Program expects valid token data")
             .definition_id(),
     );
-
     chained_calls.push(
         ChainedCall::new(
             token_program_id,
@@ -365,10 +407,53 @@ fn swap_logic(
                 amount_to_transfer: withdraw_amount,
             },
         )
-        .with_pda_seeds(vec![pda_seed]),
+        .with_pda_seeds(vec![withdraw_seed]),
     );
 
-    (chained_calls, swap_amount_in, withdraw_amount)
+    // 3. protocol fee: deposit vault -> protocol-fee holding (input token). Authorized by the
+    //    deposit vault's seed (to debit) and the protocol holding's seed (to create/credit it on
+    //    first use). Only when nonzero.
+    if protocol_fee != 0 {
+        vault_deposit_source.is_authorized = true;
+        // This is the deposit vault's SECOND touch (call 1 already credited it the full input), so
+        // its pre-state here must be the post-deposit balance — otherwise the runtime rejects the
+        // chained call as an inconsistent pre-state.
+        if let token_core::TokenHolding::Fungible {
+            definition_id,
+            balance,
+        } = token_core::TokenHolding::try_from(&vault_deposit_source.account.data)
+            .expect("Swap Logic: AMM Program expects valid token data")
+        {
+            vault_deposit_source.account.data = Data::from(&token_core::TokenHolding::Fungible {
+                definition_id,
+                balance: balance
+                    .checked_add(swap_amount_in)
+                    .expect("deposit vault balance + swap_amount_in overflows u128"),
+            });
+        }
+        let mut protocol_fee_holding = protocol_fee_holding;
+        protocol_fee_holding.is_authorized = true;
+        chained_calls.push(
+            ChainedCall::new(
+                token_program_id,
+                vec![vault_deposit_source, protocol_fee_holding],
+                &token_core::Instruction::Transfer {
+                    amount_to_transfer: protocol_fee,
+                },
+            )
+            .with_pda_seeds(vec![
+                compute_vault_pda_seed(pool_id, deposit_token_id),
+                compute_protocol_fee_pda_seed(config_id, deposit_token_id),
+            ]),
+        );
+    }
+
+    // Reserves grow by the input NET of the protocol fee (which left the vault), keeping
+    // `reserve == vault` — LPs keep `swap_fee - protocol_fee` via k-growth.
+    let net_deposit = swap_amount_in
+        .checked_sub(protocol_fee)
+        .expect("protocol_fee <= swap_fee <= swap_amount_in");
+    (chained_calls, net_deposit, withdraw_amount)
 }
 
 #[expect(
@@ -385,6 +470,7 @@ pub fn swap_exact_output(
     user_output_holding: AccountWithMetadata,
     current_tick_account: AccountWithMetadata,
     clock: AccountWithMetadata,
+    protocol_fee_holding: AccountWithMetadata,
     exact_amount_out: u128,
     max_amount_in: u128,
     amm_program_id: ProgramId,
@@ -401,6 +487,7 @@ pub fn swap_exact_output(
         .expect("Swap exact output: AMM Program must be initialized before use");
     let token_program_id = config_data.token_program_id;
     let twap_oracle_program_id = config_data.twap_oracle_program_id;
+    let config_id = config.account_id;
     assert_pool_in_config_namespace(&pool, &config, &pool_def_data, amm_program_id);
     assert_eq!(
         vault_a.account.program_owner, token_program_id,
@@ -432,6 +519,13 @@ pub fn swap_exact_output(
         user_holding_b.account.program_owner, token_program_id,
         "User Token B holding must be owned by the configured Token Program"
     );
+    // The protocol fee is taken in the input token, so its holding is the input token's
+    // instance-wide protocol PDA. Checked after confirming the input is part of the pool.
+    assert_eq!(
+        protocol_fee_holding.account_id,
+        compute_protocol_fee_pda(amm_program_id, config_id, token_in_id),
+        "Swap exact output: protocol-fee holding does not match the input token's protocol PDA"
+    );
     // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
     // clock here so the swap is rejected early with an AMM-level error.
     assert_eq!(
@@ -456,7 +550,10 @@ pub fn swap_exact_output(
                 pool_def_data.reserve_a,
                 pool_def_data.reserve_b,
                 config_data.swap_fee_bps,
+                config_data.protocol_fee_bps,
+                protocol_fee_holding.clone(),
                 pool.account_id,
+                config_id,
             );
 
             (chained_calls, [deposit_a, 0], [0, withdraw_b])
@@ -471,7 +568,10 @@ pub fn swap_exact_output(
                 pool_def_data.reserve_b,
                 pool_def_data.reserve_a,
                 config_data.swap_fee_bps,
+                config_data.protocol_fee_bps,
+                protocol_fee_holding.clone(),
                 pool.account_id,
+                config_id,
             );
 
             (chained_calls, [0, withdraw_a], [deposit_b, 0])
@@ -498,6 +598,7 @@ pub fn swap_exact_output(
         user_holding_output,
         current_tick_account,
         clock,
+        protocol_fee_holding,
         deposit_a,
         withdraw_a,
         deposit_b,
@@ -525,7 +626,10 @@ fn exact_output_swap_logic(
     reserve_deposit_vault_amount: u128,
     reserve_withdraw_vault_amount: u128,
     fee_bps: u128,
+    protocol_fee_bps: u128,
+    protocol_fee_holding: AccountWithMetadata,
     pool_id: AccountId,
+    config_id: AccountId,
 ) -> (Vec<ChainedCall>, u128, u128) {
     // Guard: exact_amount_out must be nonzero
     assert_ne!(exact_amount_out, 0, "Exact amount out must be nonzero");
@@ -536,10 +640,10 @@ fn exact_output_swap_logic(
         "Exact amount out exceeds reserve"
     );
 
-    // Required gross input via the shared amm_core::swap_exact_out_amounts (same
-    // pricing as the off-chain exact-output quote). The `amount_out < reserve`
-    // guard above means it always resolves.
-    let (_, deposit_amount) = swap_exact_out_amounts(
+    // Required gross input and the effective (fee-adjusted) input via the shared
+    // amm_core::swap_exact_out_amounts (same pricing as the off-chain exact-output quote). The
+    // `amount_out < reserve` guard above means it always resolves.
+    let (effective_amount_in, deposit_amount) = swap_exact_out_amounts(
         exact_amount_out,
         reserve_deposit_vault_amount,
         reserve_withdraw_vault_amount,
@@ -555,7 +659,21 @@ fn exact_output_swap_logic(
 
     let token_program_id = user_deposit.account.program_owner;
 
+    // The input (deposit) token definition drives both the deposit vault seed and the protocol PDA.
+    let deposit_token_id = token_core::TokenHolding::try_from(&vault_deposit.account.data)
+        .expect("Exact Output Swap Logic: AMM Program expects valid token data")
+        .definition_id();
+
+    // The protocol's cut of this swap's fee (in the input token).
+    let swap_fee = deposit_amount
+        .checked_sub(effective_amount_in)
+        .expect("effective_amount_in <= deposit_amount");
+    let protocol_fee = protocol_fee_amount(swap_fee, protocol_fee_bps);
+
     let mut chained_calls = Vec::new();
+
+    // 1. user -> deposit vault (full required input).
+    let mut vault_deposit_source = vault_deposit.clone();
     chained_calls.push(ChainedCall::new(
         token_program_id,
         vec![user_deposit, vault_deposit],
@@ -564,16 +682,15 @@ fn exact_output_swap_logic(
         },
     ));
 
+    // 2. withdraw vault -> user (exact output), under the withdraw vault's PDA seed.
     let mut vault_withdraw = vault_withdraw;
     vault_withdraw.is_authorized = true;
-
-    let pda_seed = compute_vault_pda_seed(
+    let withdraw_seed = compute_vault_pda_seed(
         pool_id,
         token_core::TokenHolding::try_from(&vault_withdraw.account.data)
             .expect("Exact Output Swap Logic: AMM Program expects valid token data")
             .definition_id(),
     );
-
     chained_calls.push(
         ChainedCall::new(
             token_program_id,
@@ -582,8 +699,48 @@ fn exact_output_swap_logic(
                 amount_to_transfer: exact_amount_out,
             },
         )
-        .with_pda_seeds(vec![pda_seed]),
+        .with_pda_seeds(vec![withdraw_seed]),
     );
 
-    (chained_calls, deposit_amount, exact_amount_out)
+    // 3. protocol fee: deposit vault -> protocol-fee holding (input token), same as the exact-input
+    //    path. Only when nonzero.
+    if protocol_fee != 0 {
+        vault_deposit_source.is_authorized = true;
+        // Second touch of the deposit vault (call 1 credited it the full input): its pre-state here
+        // must be the post-deposit balance, or the runtime rejects the chained call.
+        if let token_core::TokenHolding::Fungible {
+            definition_id,
+            balance,
+        } = token_core::TokenHolding::try_from(&vault_deposit_source.account.data)
+            .expect("Exact Output Swap Logic: AMM Program expects valid token data")
+        {
+            vault_deposit_source.account.data = Data::from(&token_core::TokenHolding::Fungible {
+                definition_id,
+                balance: balance
+                    .checked_add(deposit_amount)
+                    .expect("deposit vault balance + deposit_amount overflows u128"),
+            });
+        }
+        let mut protocol_fee_holding = protocol_fee_holding;
+        protocol_fee_holding.is_authorized = true;
+        chained_calls.push(
+            ChainedCall::new(
+                token_program_id,
+                vec![vault_deposit_source, protocol_fee_holding],
+                &token_core::Instruction::Transfer {
+                    amount_to_transfer: protocol_fee,
+                },
+            )
+            .with_pda_seeds(vec![
+                compute_vault_pda_seed(pool_id, deposit_token_id),
+                compute_protocol_fee_pda_seed(config_id, deposit_token_id),
+            ]),
+        );
+    }
+
+    // Reserves grow by the input NET of the protocol fee (which left the vault).
+    let net_deposit = deposit_amount
+        .checked_sub(protocol_fee)
+        .expect("protocol_fee <= swap_fee <= deposit_amount");
+    (chained_calls, net_deposit, exact_amount_out)
 }

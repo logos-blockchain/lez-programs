@@ -56,6 +56,7 @@ mod amm {
         twap_oracle_program_id: ProgramId,
         authority: AccountId,
         swap_fee_bps: u128,
+        protocol_fee_bps: u128,
     ) -> SpelResult {
         let post_states = amm_program::initialize::initialize(
             owner,
@@ -65,6 +66,7 @@ mod amm {
             twap_oracle_program_id,
             authority,
             swap_fee_bps,
+            protocol_fee_bps,
             ctx.self_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
@@ -341,6 +343,10 @@ mod amm {
         #[account(mut)]
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
+        // The input-token protocol-fee holding (created lazily on first use); mutated when a
+        // protocol fee is taken.
+        #[account(mut)]
+        protocol_fee_holding: AccountWithMetadata,
         swap_amount_in: u128,
         min_amount_out: u128,
         deadline: u64,
@@ -354,6 +360,7 @@ mod amm {
             user_output_holding,
             current_tick_account,
             clock,
+            protocol_fee_holding,
             swap_amount_in,
             min_amount_out,
             ctx.self_program_id,
@@ -387,6 +394,10 @@ mod amm {
         #[account(mut)]
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
+        // The input-token protocol-fee holding (created lazily on first use); mutated when a
+        // protocol fee is taken.
+        #[account(mut)]
+        protocol_fee_holding: AccountWithMetadata,
         exact_amount_out: u128,
         max_amount_in: u128,
         deadline: u64,
@@ -400,6 +411,7 @@ mod amm {
             user_output_holding,
             current_tick_account,
             clock,
+            protocol_fee_holding,
             exact_amount_out,
             max_amount_in,
             ctx.self_program_id,
@@ -433,6 +445,40 @@ mod amm {
             clock,
             ctx.self_program_id,
         );
+        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
+    }
+
+    /// Withdraw accrued protocol fees for one token to a destination holding. Only the config's
+    /// admin `authority` may call this (it signs). The protocol-fee holding's own token definition
+    /// selects the token withdrawn; `destination` must be an initialized holding of that token.
+    ///
+    /// Expected accounts:
+    /// 1. `config` — the AMM instance's config; its stored `authority` gates the call.
+    /// 2. `protocol_fee_holding` — the source PDA at
+    ///    `compute_protocol_fee_pda(self_program_id, config.account_id, token_definition_id)`.
+    /// 3. `destination` — an initialized Token Holding of the same token that receives the fees.
+    /// 4. `authority` — must equal `config.authority`, signed.
+    #[instruction]
+    pub fn withdraw_protocol_fees(
+        ctx: ProgramContext,
+        config: AccountWithMetadata,
+        #[account(mut)]
+        protocol_fee_holding: AccountWithMetadata,
+        #[account(mut)]
+        destination: AccountWithMetadata,
+        #[account(signer)]
+        authority: AccountWithMetadata,
+        amount: u128,
+    ) -> SpelResult {
+        let (post_states, chained_calls) =
+            amm_program::withdraw_protocol_fees::withdraw_protocol_fees(
+                config,
+                protocol_fee_holding,
+                destination,
+                authority,
+                amount,
+                ctx.self_program_id,
+            );
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
     }
 }

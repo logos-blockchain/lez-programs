@@ -196,6 +196,7 @@ mod tests {
                     twap_oracle_program_id: TWAP_ORACLE_PROGRAM_ID,
                     authority: AccountId::new([9; 32]),
                     swap_fee_bps: amm_core::FEE_TIER_BPS_30,
+                    protocol_fee_bps: 0,
                 }),
                 nonce: Nonce(0),
             },
