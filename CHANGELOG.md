@@ -3,6 +3,13 @@
 All notable changes to the LEZ programs in this repository are documented here.
 This file is generated from Conventional Commit messages by [git-cliff](https://git-cliff.org).
 
+## [2.0.1] - 2026-09-09
+
+### Bug Fixes
+
+- **modules:**
+  - Bump module versions ([3d28909](https://github.com/logos-blockchain/lez-programs/commit/3d289096513304d2fbb1c50cd35fc7de8d99cf2d))
+
 ## [2.0.0] - 2026-09-09
 
 ### ⚠️ Breaking Changes
