@@ -12,6 +12,7 @@ use spel_framework_macros::account_type;
 // unchanged for address compatibility.
 const LIQUIDITY_TOKEN_PDA_SEED: &[u8] = b"LIQUIDITY_TOKEN";
 const LP_LOCK_HOLDING_PDA_SEED: &[u8] = b"LP_LOCK_HOLDING";
+const PROTOCOL_FEE_HOLDING_PDA_SEED: &[u8] = b"PROTOCOL_FEE_HOLDING";
 
 /// AMM Program Instruction.
 #[derive(Serialize, Deserialize)]
@@ -52,6 +53,11 @@ pub enum Instruction {
         /// Instance-wide swap fee in basis points, applied to every swap in this namespace.
         /// Must be below `FEE_BPS_DENOMINATOR` (100%).
         swap_fee_bps: u128,
+        /// Protocol fee as a fraction of the swap fee, in basis points. `swap_fee *
+        /// protocol_fee_bps / FEE_BPS_DENOMINATOR` of each swap's input token goes to the
+        /// instance's protocol-fee holding; the rest accrues to LPs. Must be at most
+        /// `FEE_BPS_DENOMINATOR` (100% of the swap fee); `0` disables protocol fees.
+        protocol_fee_bps: u128,
     },
 
     /// Transfers the AMM Program's admin authority to a new account. Only the configured admin
@@ -246,6 +252,24 @@ pub enum Instruction {
     ///   with the new spot price
     /// - Clock Account (the canonical 1-block LEZ clock)
     SyncReserves,
+
+    /// Withdraw accrued protocol fees for one token to a destination holding. Only the config's
+    /// admin `authority` may call this. Protocol fees accumulate in an instance-wide, AMM-owned
+    /// PDA holding per `(config, token)` (see [`compute_protocol_fee_pda`]); this moves `amount`
+    /// of them out under the protocol-fee PDA's authority.
+    ///
+    /// Required accounts:
+    /// - AMM Config Account (initialized) — its stored `authority` gates the call.
+    /// - Protocol-fee Holding, the source PDA derived as
+    ///   `compute_protocol_fee_pda(self_program_id, config.account_id, token_definition_id)`; its
+    ///   stored token definition selects the token being withdrawn.
+    /// - Destination Holding — an initialized Token Holding of the same token that receives the
+    ///   fees.
+    /// - Authority Account — must equal `config.authority` and be passed authorized (signed).
+    WithdrawProtocolFees {
+        /// Amount of protocol fees (base units of the holding's token) to move to the destination.
+        amount: u128,
+    },
 }
 
 pub const MINIMUM_LIQUIDITY: u128 = 1_000;
@@ -305,6 +329,24 @@ pub fn assert_valid_swap_fee_bps(swap_fee_bps: u128) {
         swap_fee_bps < FEE_BPS_DENOMINATOR,
         "Swap fee must be below FEE_BPS_DENOMINATOR (100%) basis points"
     );
+}
+
+/// Validates the protocol fee stored in [`AmmConfig`]. It is a fraction OF the swap fee, so up to
+/// and including `FEE_BPS_DENOMINATOR` (100% of the swap fee → all fees to the protocol, none to
+/// LPs) is valid. `0` disables protocol fees.
+pub fn assert_valid_protocol_fee_bps(protocol_fee_bps: u128) {
+    assert!(
+        protocol_fee_bps <= FEE_BPS_DENOMINATOR,
+        "Protocol fee must be at most FEE_BPS_DENOMINATOR (100% of the swap fee) basis points"
+    );
+}
+
+/// The protocol's cut of a swap, in the input token's base units: `protocol_fee_bps` basis points
+/// of the `swap_fee` (the input the trader forfeited to the pool). Floored. The remainder of the
+/// swap fee accrues to LPs.
+#[must_use]
+pub fn protocol_fee_amount(swap_fee: u128, protocol_fee_bps: u128) -> u128 {
+    mul_div_floor(swap_fee, protocol_fee_bps, FEE_BPS_DENOMINATOR)
 }
 
 /// Computes a `Q64.64` spot price (`reserve_quote` per `reserve_base`) from raw pool reserves.
@@ -534,6 +576,12 @@ pub struct AmmConfig {
     /// Instance-wide swap fee in basis points, applied to every swap in this namespace.
     /// Set at `Initialize`; always below `FEE_BPS_DENOMINATOR` (100%). Fees are not per-pool.
     pub swap_fee_bps: u128,
+    /// Protocol fee as a fraction of the swap fee, in basis points (of `FEE_BPS_DENOMINATOR`).
+    /// On each swap, `swap_fee * protocol_fee_bps / FEE_BPS_DENOMINATOR` of the input token is
+    /// diverted from LPs to the instance's protocol-fee holding for that token; the remainder
+    /// accrues to LPs as before. Set at `Initialize`; at most `FEE_BPS_DENOMINATOR` (100% of the
+    /// swap fee). `0` disables protocol fees.
+    pub protocol_fee_bps: u128,
 }
 
 impl TryFrom<&Data> for AmmConfig {
@@ -651,6 +699,45 @@ pub fn compute_vault_pda_seed(pool_id: AccountId, definition_token_id: AccountId
     let (pool_bytes, definition_bytes) = bytes.split_at_mut(32);
     pool_bytes.copy_from_slice(&pool_id.to_bytes());
     definition_bytes.copy_from_slice(&definition_token_id.to_bytes());
+
+    PdaSeed::new(
+        Impl::hash_bytes(&bytes)
+            .as_bytes()
+            .try_into()
+            .expect("Hash output must be exactly 32 bytes long"),
+    )
+}
+
+/// Account id of the instance-wide protocol-fee holding for `(config_id, token_definition_id)`.
+/// Protocol fees for a token accumulate here across every pool in the namespace; the holding is an
+/// AMM-owned PDA created lazily on the first protocol-fee transfer (like a vault) and spent under
+/// this seed by `WithdrawProtocolFees`.
+#[must_use]
+pub fn compute_protocol_fee_pda(
+    amm_program_id: ProgramId,
+    config_id: AccountId,
+    definition_token_id: AccountId,
+) -> AccountId {
+    AccountId::for_public_pda(
+        &amm_program_id,
+        &compute_protocol_fee_pda_seed(config_id, definition_token_id),
+    )
+}
+
+/// Derives the [`PdaSeed`] of a protocol-fee holding as
+/// `hash(config_id || token_definition_id || "PROTOCOL_FEE_HOLDING")`. The domain tag keeps it
+/// disjoint from vault seeds, which hash `pool_id || token` without a tag.
+#[must_use]
+pub fn compute_protocol_fee_pda_seed(
+    config_id: AccountId,
+    definition_token_id: AccountId,
+) -> PdaSeed {
+    use risc0_zkvm::sha::{Impl, Sha256};
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&config_id.to_bytes());
+    bytes.extend_from_slice(&definition_token_id.to_bytes());
+    bytes.extend_from_slice(PROTOCOL_FEE_HOLDING_PDA_SEED);
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
@@ -929,5 +1016,67 @@ mod tests {
         assert_eq!(isqrt_product(a, b), expected);
         // Sanity: floor(sqrt(2e40)) = floor(1.4142...e20) = 141421356237309504880.
         assert_eq!(isqrt_product(a, b), 141_421_356_237_309_504_880);
+    }
+
+    #[test]
+    fn protocol_fee_amount_is_a_floored_fraction_of_the_swap_fee() {
+        // 50% of a swap fee of 7 -> floor(3.5) = 3.
+        assert_eq!(protocol_fee_amount(7, 5_000), 3);
+        // 100% of the swap fee takes all of it; 0% takes none.
+        assert_eq!(protocol_fee_amount(7, FEE_BPS_DENOMINATOR), 7);
+        assert_eq!(protocol_fee_amount(7, 0), 0);
+        // No swap fee -> nothing to divert, whatever the bps.
+        assert_eq!(protocol_fee_amount(0, 5_000), 0);
+        // Sub-unit cut floors to zero (swap_fee * bps < denominator): 1 * 5000 / 10000 = 0.
+        assert_eq!(protocol_fee_amount(1, 5_000), 0);
+        // The cut never exceeds the swap fee it is taken from.
+        for (fee, bps) in [(123u128, 9_999u128), (1, FEE_BPS_DENOMINATOR), (10_000, 1)] {
+            assert!(protocol_fee_amount(fee, bps) <= fee);
+        }
+    }
+
+    #[test]
+    fn assert_valid_protocol_fee_bps_allows_up_to_and_including_100_percent() {
+        // 0 (disabled) and every value up to exactly FEE_BPS_DENOMINATOR (100% of the swap fee)
+        // are valid — unlike the swap fee, the boundary itself is allowed.
+        assert_valid_protocol_fee_bps(0);
+        assert_valid_protocol_fee_bps(FEE_BPS_DENOMINATOR);
+    }
+
+    #[test]
+    #[should_panic(expected = "Protocol fee must be at most")]
+    fn assert_valid_protocol_fee_bps_rejects_above_100_percent() {
+        assert_valid_protocol_fee_bps(FEE_BPS_DENOMINATOR + 1);
+    }
+
+    #[test]
+    fn protocol_fee_pda_is_deterministic_and_domain_separated() {
+        const AMM: ProgramId = [9; 8];
+        let config = AccountId::new([1; 32]);
+        let token = AccountId::new([2; 32]);
+        let other_config = AccountId::new([3; 32]);
+        let other_token = AccountId::new([4; 32]);
+
+        // Deterministic for the same (amm, config, token).
+        assert_eq!(
+            compute_protocol_fee_pda(AMM, config, token),
+            compute_protocol_fee_pda(AMM, config, token)
+        );
+        // Distinct per namespace and per token, so fees never collide across instances/tokens.
+        assert_ne!(
+            compute_protocol_fee_pda(AMM, config, token),
+            compute_protocol_fee_pda(AMM, other_config, token)
+        );
+        assert_ne!(
+            compute_protocol_fee_pda(AMM, config, token),
+            compute_protocol_fee_pda(AMM, config, other_token)
+        );
+
+        // Domain separation from vaults: even if a pool id happened to equal the config id and
+        // shared the token, the distinct seed tag keeps the protocol holding off the vault address.
+        assert_ne!(
+            compute_protocol_fee_pda_seed(config, token),
+            compute_vault_pda_seed(config, token)
+        );
     }
 }

@@ -11,5 +11,6 @@ pub mod remove;
 pub mod swap;
 pub mod sync;
 pub mod update_config;
+pub mod withdraw_protocol_fees;
 
 mod tests;

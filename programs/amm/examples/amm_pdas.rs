@@ -6,13 +6,14 @@
 //! `*_pid` are ProgramIds as 8 comma-separated u32 limbs (as printed by `spel program-id`);
 //! `owner`/`defA`/`defB` are base58 account ids. AMM instances are namespaced by `(owner, nonce)`;
 //! this prints the owner's default instance (all-zero nonce). With `<amm_pid> <owner>` it prints
-//! the instance's config PDA; with all args it also prints the pool/vault/LP/lock/tick PDAs.
+//! the instance's config PDA; with all args it also prints the pool/vault/LP/lock/tick and
+//! protocol-fee-holding PDAs.
 
 use std::str::FromStr;
 
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
-    compute_vault_pda,
+    compute_protocol_fee_pda, compute_vault_pda,
 };
 use lee_core::{account::AccountId, program::ProgramId};
 use twap_oracle_core::compute_current_tick_account_pda;
@@ -89,6 +90,16 @@ fn main() {
         println!(
             "current_tick_account {}",
             compute_current_tick_account_pda(twap, pool)
+        );
+        // Protocol-fee holdings are per (config, token definition) — the input token's holding is
+        // the one a swap credits and `WithdrawProtocolFees` drains.
+        println!(
+            "protocol_fee_a       {}",
+            compute_protocol_fee_pda(amm, config, def_a)
+        );
+        println!(
+            "protocol_fee_b       {}",
+            compute_protocol_fee_pda(amm, config, def_b)
         );
     }
 }

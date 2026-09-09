@@ -67,6 +67,14 @@ public:
     /// `wallet_submission_failed`, `backend_error`, or a plan code (e.g. `config_unavailable`).
     LogosMap transferOwnership(const LogosMap& request);
 
+    /// Submits a `WithdrawProtocolFees` moving `request.amount` of accrued protocol fees for
+    /// `request.tokenDefinitionId` (base58 or hex) out to `request.destinationId` (an existing
+    /// holding of that token). Only the config's admin authority can sign, so the connected wallet
+    /// must control it. On success `{ status:"ok", error:"", transactionId:<hex> }`; on failure:
+    /// `{ status:"error", error:<code> }` — `config_missing`, `invalid_account_id`,
+    /// `invalid_amount`, `wallet_submission_failed`, `backend_error`, or a plan code.
+    LogosMap withdrawProtocolFees(const LogosMap& request);
+
     /// Submits `CreatePriceObservations` / `CreateOraclePriceAccount` — seeds a pool's TWAP feed /
     /// creates its oracle price account for `request.windowDurationMs` (a distinct account per
     /// window). `request` carries `{ tokenAId, tokenBId, windowDurationMs }`. Both are direct

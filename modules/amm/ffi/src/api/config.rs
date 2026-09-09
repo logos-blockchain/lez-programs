@@ -26,9 +26,10 @@ pub(super) fn config_id(request: ConfigIdRequest) -> Result<Value, String> {
     }))
 }
 
-/// Decodes the AMM config account: authority, the token/twap program ids the AMM chains into, and
-/// the instance-wide `swapFeeBps` (the swap fee charged on every swap in this namespace — fees are
-/// not per-pool). Ids are base58 (app-facing). `config_unavailable` when the config PDA isn't
+/// Decodes the AMM config account: authority, the token/twap program ids the AMM chains into, the
+/// instance-wide `swapFeeBps` (the swap fee charged on every swap in this namespace — fees are not
+/// per-pool), and `protocolFeeBps` (the fraction of that swap fee diverted to the protocol; `0`
+/// disables it). Ids are base58 (app-facing). `config_unavailable` when the config PDA isn't
 /// on-chain yet / undecodable; `configId` / `ammProgramId` are still derivable from
 /// `amm_program_id` via `config_id` for address derivation.
 pub(super) fn config_account(request: ConfigAccountRequest) -> Result<Value, String> {
@@ -45,6 +46,7 @@ pub(super) fn config_account(request: ConfigAccountRequest) -> Result<Value, Str
         "tokenProgramId": program_id_base58(config.token_program_id),
         "twapOracleProgramId": program_id_base58(config.twap_oracle_program_id),
         "swapFeeBps": u32::try_from(config.swap_fee_bps).unwrap_or(u32::MAX),
+        "protocolFeeBps": u32::try_from(config.protocol_fee_bps).unwrap_or(u32::MAX),
     }))
 }
 

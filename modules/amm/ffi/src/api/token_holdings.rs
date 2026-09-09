@@ -74,6 +74,7 @@ mod tests {
                 twap_oracle_program_id: parse_program_id(&"02".repeat(32)).unwrap(),
                 authority: AccountId::new([0x09; 32]),
                 swap_fee_bps: 30,
+                protocol_fee_bps: 0,
             }),
             ..Account::default()
         };

@@ -140,6 +140,22 @@ impl Ids {
         )
     }
 
+    fn protocol_fee_holding_a() -> AccountId {
+        amm_core::compute_protocol_fee_pda(
+            Self::amm_program(),
+            Self::config(),
+            Self::token_a_definition(),
+        )
+    }
+
+    fn protocol_fee_holding_b() -> AccountId {
+        amm_core::compute_protocol_fee_pda(
+            Self::amm_program(),
+            Self::config(),
+            Self::token_b_definition(),
+        )
+    }
+
     fn user_a() -> AccountId {
         AccountId::from(&PublicKey::new_from_private_key(&Keys::user_a()))
     }
@@ -392,8 +408,27 @@ impl Accounts {
                 token_program_id: Ids::token_program(),
                 twap_oracle_program_id: Ids::twap_oracle_program(),
                 authority: Ids::admin(),
-                // The swap fee is now instance-wide, moved off the pool.
+                // The swap fee is now instance-wide (moved off the pool); protocol fee off by
+                // default.
                 swap_fee_bps: Balances::fee_tier(),
+                protocol_fee_bps: 0,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    /// Like [`config`], but with a nonzero `protocol_fee_bps` so swaps divert part of the swap fee
+    /// to the instance's protocol-fee holding. Used by the end-to-end protocol-fee tests.
+    fn config_with_protocol_fee(protocol_fee_bps: u128) -> Account {
+        Account {
+            program_owner: Ids::amm_program(),
+            balance: 0_u128,
+            data: Data::from(&amm_core::AmmConfig {
+                token_program_id: Ids::token_program(),
+                twap_oracle_program_id: Ids::twap_oracle_program(),
+                authority: Ids::admin(),
+                swap_fee_bps: Balances::fee_tier(),
+                protocol_fee_bps,
             }),
             nonce: Nonce(0),
         }
@@ -1280,6 +1315,7 @@ fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_ou
             Ids::user_b(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_a(),
         ],
         vec![current_nonce(state, Ids::user_a())],
         instruction,
@@ -1312,6 +1348,7 @@ fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_ou
             Ids::user_a(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_b(),
         ],
         vec![current_nonce(state, Ids::user_b())],
         instruction,
@@ -1434,6 +1471,7 @@ fn execute_initialize_for(
         twap_oracle_program_id: Ids::twap_oracle_program(),
         authority: Ids::admin(),
         swap_fee_bps: Balances::fee_tier(),
+        protocol_fee_bps: 0,
     };
 
     let message = public_transaction::Message::try_new(
@@ -1795,6 +1833,7 @@ fn amm_initialize_requires_owner_signature() {
         twap_oracle_program_id: Ids::twap_oracle_program(),
         authority: Ids::admin(),
         swap_fee_bps: Balances::fee_tier(),
+        protocol_fee_bps: 0,
     };
 
     // The owner account is declared, but no signature (and no nonce) is supplied for it.
@@ -1922,6 +1961,33 @@ fn execute_update_config(
 fn config_data(state: &V03State) -> amm_core::AmmConfig {
     amm_core::AmmConfig::try_from(&state.get_account_by_id(Ids::config()).data)
         .expect("config account must hold a valid AmmConfig")
+}
+
+/// Submits a `WithdrawProtocolFees` draining `amount` of `protocol_holding`'s token to
+/// `destination`. Account order mirrors the guest: config, protocol-fee holding (mut), destination
+/// (mut), authority (signs). `signer` must be the config's admin authority.
+#[cfg(test)]
+fn execute_withdraw_protocol_fees(
+    state: &mut V03State,
+    signer: &PrivateKey,
+    protocol_holding: AccountId,
+    destination: AccountId,
+    amount: u128,
+) -> Result<(), LeeError> {
+    let signer_id = AccountId::from(&PublicKey::new_from_private_key(signer));
+    let instruction = amm_core::Instruction::WithdrawProtocolFees { amount };
+
+    let message = public_transaction::Message::try_new(
+        Ids::amm_program(),
+        vec![Ids::config(), protocol_holding, destination, signer_id],
+        vec![current_nonce(state, signer_id)],
+        instruction,
+    )
+    .unwrap();
+
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &[signer]);
+    let tx = PublicTransaction::new(message, witness_set);
+    state.transition_from_public_transaction(&tx, 0, 0)
 }
 
 fn initialized_amm_state() -> V03State {
@@ -2926,6 +2992,7 @@ fn amm_swap_b_to_a() {
             Ids::user_a(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_b(),
         ],
         vec![Nonce(0)],
         instruction,
@@ -2980,6 +3047,7 @@ fn amm_swap_a_to_b() {
             Ids::user_b(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_a(),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3051,6 +3119,7 @@ fn amm_swap_exact_output_refreshes_current_tick() {
             Ids::user_b(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_a(),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3122,6 +3191,7 @@ fn amm_swap_exact_output_b_to_a_signs_only_input() {
             Ids::user_a(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_b(),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3200,6 +3270,7 @@ fn amm_swap_exact_input_requires_input_signature() {
             Ids::user_b(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_a(),
         ],
         vec![],
         instruction,
@@ -3239,6 +3310,7 @@ fn amm_swap_exact_input_rejects_when_only_output_holding_signed() {
             Ids::user_b(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_a(),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3276,6 +3348,7 @@ fn amm_swap_exact_output_requires_input_signature() {
             Ids::user_b(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_a(),
         ],
         vec![],
         instruction,
@@ -3315,6 +3388,7 @@ fn amm_swap_exact_output_rejects_when_only_output_holding_signed() {
             Ids::user_b(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_a(),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3415,6 +3489,106 @@ fn amm_fee_accumulates_across_multiple_swaps_and_pays_out_on_remove() {
     );
 }
 
+/// End-to-end: with a nonzero protocol fee, a swap diverts the protocol's cut of the swap fee into
+/// the instance's (lazily created) protocol-fee holding — through the zkVM + the chained token
+/// transfer — while the trader's output and the reserve==vault invariant are preserved.
+#[test]
+fn amm_swap_diverts_protocol_fee_to_the_protocol_holding() {
+    let mut state = state_for_amm_tests();
+    // 50% of the swap fee accrues to the protocol.
+    state.force_insert_account(Ids::config(), Accounts::config_with_protocol_fee(5_000));
+
+    // Swap 4000 A -> B at 30 bps on the 5000/2500 pool: effective in = 3988, swap fee = 12, output
+    // = 1109, protocol cut (50% of 12) = 6.
+    execute_swap_a_to_b(&mut state, 4_000, 200);
+
+    // The protocol's cut left the input (Token A) vault for the Token A protocol-fee holding, which
+    // the chained transfer created on first use.
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::protocol_fee_holding_a())),
+        6
+    );
+
+    // The input reserve grew by the input NET of the protocol cut (5000 + 4000 - 6); the output
+    // side is untouched by the protocol fee. reserve == vault still holds on both sides.
+    let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
+    assert_eq!(pool.reserve_a, 8_994);
+    assert_eq!(pool.reserve_b, 1_391);
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::vault_a())),
+        pool.reserve_a
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::vault_b())),
+        pool.reserve_b
+    );
+
+    // The trader paid the full 4000 and received the full 1109 — the protocol cut came out of the
+    // LPs' share of the fee, not the trade.
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::user_a())),
+        6_000
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::user_b())),
+        11_109
+    );
+}
+
+/// End-to-end: accrued protocol fees can be withdrawn by the admin authority (and only the admin),
+/// moving them from the protocol-fee holding to a destination holding through the zkVM.
+#[test]
+fn amm_withdraw_protocol_fees_moves_accrued_fees_and_is_admin_gated() {
+    let mut state = state_for_amm_tests();
+    state.force_insert_account(Ids::config(), Accounts::config_with_protocol_fee(5_000));
+
+    // Accrue a protocol fee (6 Token A) via a swap.
+    execute_swap_a_to_b(&mut state, 4_000, 200);
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::protocol_fee_holding_a())),
+        6
+    );
+
+    // A non-admin cannot withdraw: user_b signs (distinct from the destination), but the config
+    // authority is the admin — the guest rejects it and nothing moves.
+    let not_admin = execute_withdraw_protocol_fees(
+        &mut state,
+        &Keys::user_b(),
+        Ids::protocol_fee_holding_a(),
+        Ids::user_a(),
+        6,
+    );
+    assert!(matches!(
+        not_admin,
+        Err(LeeError::ProgramExecutionFailed(_))
+    ));
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::protocol_fee_holding_a())),
+        6
+    );
+
+    // The admin withdraws the accrued fee to the Token A holding (user_a).
+    let user_a_before = fungible_balance(&state.get_account_by_id(Ids::user_a()));
+    execute_withdraw_protocol_fees(
+        &mut state,
+        &Keys::admin(),
+        Ids::protocol_fee_holding_a(),
+        Ids::user_a(),
+        6,
+    )
+    .unwrap();
+
+    // The protocol holding is drained to zero and the destination received exactly the accrued fee.
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::protocol_fee_holding_a())),
+        0
+    );
+    assert_eq!(
+        fungible_balance(&state.get_account_by_id(Ids::user_a())),
+        user_a_before + 6
+    );
+}
+
 #[test]
 fn amm_swap_rejects_expired_deadline() {
     let mut state = state_for_amm_tests();
@@ -3439,6 +3613,7 @@ fn amm_swap_rejects_expired_deadline() {
             Ids::user_b(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_a(),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3477,6 +3652,7 @@ fn amm_swap_exact_output_rejects_expired_deadline() {
             Ids::user_b(),
             Ids::current_tick_account(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
+            Ids::protocol_fee_holding_a(),
         ],
         vec![current_nonce(&state, Ids::user_a())],
         instruction,

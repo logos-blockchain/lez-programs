@@ -10,8 +10,10 @@ use std::num::NonZero;
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_liquidity_token_pda_seed,
     compute_lp_lock_holding_pda, compute_lp_lock_holding_pda_seed, compute_pool_pda,
-    compute_pool_pda_seed, compute_vault_pda, compute_vault_pda_seed, isqrt_product, mul_div_floor,
-    AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR, FEE_TIER_BPS_30, MINIMUM_LIQUIDITY,
+    compute_pool_pda_seed, compute_protocol_fee_pda, compute_protocol_fee_pda_seed,
+    compute_vault_pda, compute_vault_pda_seed, isqrt_product, mul_div_floor, protocol_fee_amount,
+    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR,
+    FEE_TIER_BPS_30, MINIMUM_LIQUIDITY,
 };
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
@@ -45,6 +47,11 @@ type AccountForTests = AccountWithMetadataForTests;
 impl BalanceForTests {
     fn fee_tier() -> u128 {
         FEE_TIER_BPS_30
+    }
+
+    /// 50% of the swap fee goes to the protocol (used by protocol-fee behavior tests).
+    fn protocol_fee_tier() -> u128 {
+        5_000
     }
 
     fn vault_a_reserve_init() -> u128 {
@@ -660,6 +667,22 @@ impl IdForTests {
             IdForTests::token_b_definition_id(),
         )
     }
+
+    fn protocol_fee_holding_a_id() -> AccountId {
+        compute_protocol_fee_pda(
+            AMM_PROGRAM_ID,
+            IdForTests::config_id(),
+            IdForTests::token_a_definition_id(),
+        )
+    }
+
+    fn protocol_fee_holding_b_id() -> AccountId {
+        compute_protocol_fee_pda(
+            AMM_PROGRAM_ID,
+            IdForTests::config_id(),
+            IdForTests::token_b_definition_id(),
+        )
+    }
 }
 
 impl AccountWithMetadataForTests {
@@ -673,12 +696,23 @@ impl AccountWithMetadataForTests {
                     twap_oracle_program_id: TWAP_ORACLE_PROGRAM_ID,
                     authority: AccountId::new([9; 32]),
                     swap_fee_bps: BalanceForTests::fee_tier(),
+                    protocol_fee_bps: 0,
                 }),
                 nonce: Nonce(0),
             },
             is_authorized: false,
             account_id: IdForTests::config_id(),
         }
+    }
+
+    /// Like `config_init`, but with a 50% protocol fee so swaps divert part of the swap fee to the
+    /// protocol-fee holding. Used by the protocol-fee behavior tests.
+    fn config_init_with_protocol_fee() -> AccountWithMetadata {
+        let mut config = AccountWithMetadataForTests::config_init();
+        let mut data = AmmConfig::try_from(&config.account.data).expect("valid config");
+        data.protocol_fee_bps = BalanceForTests::protocol_fee_tier();
+        config.account.data = Data::from(&data);
+        config
     }
 
     /// Config PDA owned by the AMM Program but never initialized (empty data), so it fails to parse
@@ -752,6 +786,25 @@ impl AccountWithMetadataForTests {
             },
             is_authorized: true,
             account_id: IdForTests::user_token_b_id(),
+        }
+    }
+
+    /// The instance-wide protocol-fee holding for token A. Swap tests default to a zero protocol
+    /// fee (see `config_init`), so no fee is diverted and the account is only PDA-validated; it is
+    /// created lazily by the first fee-bearing swap in production.
+    fn protocol_fee_holding_a() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: IdForTests::protocol_fee_holding_a_id(),
+        }
+    }
+
+    fn protocol_fee_holding_b() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: IdForTests::protocol_fee_holding_b_id(),
         }
     }
 
@@ -2477,6 +2530,7 @@ fn test_call_swap_pool_outside_config_namespace() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         AMM_PROGRAM_ID,
@@ -2495,6 +2549,7 @@ fn test_call_swap_incorrect_token_type() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         AMM_PROGRAM_ID,
@@ -2513,6 +2568,7 @@ fn test_call_swap_vault_a_omitted() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         AMM_PROGRAM_ID,
@@ -2531,6 +2587,7 @@ fn test_call_swap_vault_b_omitted() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         AMM_PROGRAM_ID,
@@ -2549,6 +2606,7 @@ fn test_call_swap_reserves_vault_mismatch_1() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         AMM_PROGRAM_ID,
@@ -2567,6 +2625,7 @@ fn test_call_swap_reserves_vault_mismatch_2() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         AMM_PROGRAM_ID,
@@ -2585,6 +2644,7 @@ fn test_call_swap_below_minimum_liquidity() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         AMM_PROGRAM_ID,
@@ -2603,6 +2663,7 @@ fn test_call_swap_below_min_out() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out_too_high(),
         AMM_PROGRAM_ID,
@@ -2621,6 +2682,7 @@ fn test_call_swap_effective_amount_zero() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         1,
         0,
         AMM_PROGRAM_ID,
@@ -2639,6 +2701,7 @@ fn test_call_swap_output_rounds_to_zero() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         2,
         0,
         AMM_PROGRAM_ID,
@@ -2657,6 +2720,7 @@ fn test_call_swap_exact_input_rejects_amount_that_rounds_down_below_target_outpu
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         2,
         1,
         AMM_PROGRAM_ID,
@@ -2674,6 +2738,7 @@ fn test_call_swap_exact_input_accepts_smallest_amount_for_rounded_boundary() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         3,
         1,
         AMM_PROGRAM_ID,
@@ -2744,6 +2809,7 @@ fn test_call_swap_chained_call_successful_1() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::add_max_amount_a_low(),
         AMM_PROGRAM_ID,
@@ -2782,6 +2848,7 @@ fn test_call_swap_chained_call_successful_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_b(),
         BalanceForTests::add_max_amount_b(),
         BalanceForTests::min_amount_out(),
         AMM_PROGRAM_ID,
@@ -2809,6 +2876,250 @@ fn test_call_swap_chained_call_successful_2() {
     assert_update_tick_call(&chained_calls, pool_post.account());
 }
 
+/// With a nonzero protocol fee, a token-A-in exact-input swap emits a fourth chained call: the
+/// protocol's cut of the swap fee, moved from the input (Token A) vault to Token A's protocol-fee
+/// holding under both the vault seed (to debit) and the protocol-fee seed (to create/credit).
+#[test]
+fn test_swap_exact_input_diverts_protocol_fee() {
+    let (post_states, chained_calls) = swap_exact_input(
+        AccountWithMetadataForTests::config_init_with_protocol_fee(),
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::min_amount_out(),
+        AMM_PROGRAM_ID,
+    );
+
+    // [deposit, withdraw, protocol-fee, update-tick].
+    assert_eq!(chained_calls.len(), 4);
+
+    // Expected protocol cut: swap_fee = amount_in - floor(amount_in * (1 - fee)); then a 50% cut.
+    let amount_in = BalanceForTests::add_max_amount_a();
+    let reserve_a_init = BalanceForTests::vault_a_reserve_init();
+    let reserve_b_init = BalanceForTests::vault_b_reserve_init();
+    let (effective_in, withdraw_b) = swap_exact_in_amounts(
+        amount_in,
+        reserve_a_init,
+        reserve_b_init,
+        BalanceForTests::fee_tier(),
+    );
+    let swap_fee = amount_in - effective_in;
+    let expected_protocol_fee = protocol_fee_amount(swap_fee, BalanceForTests::protocol_fee_tier());
+    assert!(
+        expected_protocol_fee > 0,
+        "test setup must produce a nonzero protocol fee"
+    );
+
+    // Reserve accounting: the input reserve grows by the input NET of the protocol fee (the cut
+    // left the vault to the protocol holding), while the output reserve and the trader's output are
+    // unchanged by the protocol fee. This is what keeps reserve == vault and leaves LPs only
+    // `swap_fee - protocol_fee`.
+    let pool_post = PoolDefinition::try_from(&post_states[1].account().data)
+        .expect("pool post-state must hold a valid PoolDefinition");
+    assert_eq!(
+        pool_post.reserve_a,
+        reserve_a_init + amount_in - expected_protocol_fee
+    );
+    assert_eq!(pool_post.reserve_b, reserve_b_init - withdraw_b);
+
+    let protocol_call = &chained_calls[2];
+    // Source is the Token A (input) vault; destination is Token A's protocol-fee holding.
+    assert_eq!(
+        protocol_call.pre_states[0].account_id,
+        IdForTests::vault_a_id()
+    );
+    assert!(protocol_call.pre_states[0].is_authorized);
+    assert_eq!(
+        protocol_call.pre_states[1].account_id,
+        IdForTests::protocol_fee_holding_a_id()
+    );
+    // Authorized by the vault seed (debit) and the protocol-fee seed (create/credit).
+    assert_eq!(
+        protocol_call.pda_seeds,
+        vec![
+            compute_vault_pda_seed(
+                IdForTests::pool_definition_id(),
+                IdForTests::token_a_definition_id()
+            ),
+            compute_protocol_fee_pda_seed(
+                IdForTests::config_id(),
+                IdForTests::token_a_definition_id()
+            ),
+        ]
+    );
+    let expected = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        protocol_call.pre_states.clone(),
+        &token_core::Instruction::Transfer {
+            amount_to_transfer: expected_protocol_fee,
+        },
+    );
+    assert_eq!(protocol_call.instruction_data, expected.instruction_data);
+}
+
+/// A zero protocol fee (the default config) diverts nothing: no fourth call, exactly the three
+/// pre-existing chained calls. Guards against emitting an empty protocol transfer.
+#[test]
+fn test_swap_exact_input_zero_protocol_fee_emits_no_protocol_call() {
+    let (_post_states, chained_calls) = swap_exact_input(
+        AccountWithMetadataForTests::config_init(),
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::add_max_amount_a_low(),
+        AMM_PROGRAM_ID,
+    );
+
+    assert_eq!(chained_calls.len(), 3);
+}
+
+/// The protocol-fee holding must be the input token's protocol PDA. Passing Token B's holding for a
+/// Token-A-in swap is rejected — a caller cannot redirect the protocol cut to an arbitrary account.
+#[should_panic(
+    expected = "Swap exact input: protocol-fee holding does not match the input token's protocol PDA"
+)]
+#[test]
+fn test_swap_exact_input_rejects_mismatched_protocol_holding() {
+    let _ = swap_exact_input(
+        AccountWithMetadataForTests::config_init_with_protocol_fee(),
+        AccountWithMetadataForTests::pool_definition_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        // Wrong token's protocol holding for a Token-A input.
+        AccountWithMetadataForTests::protocol_fee_holding_b(),
+        BalanceForTests::add_max_amount_a(),
+        BalanceForTests::min_amount_out(),
+        AMM_PROGRAM_ID,
+    );
+}
+
+/// Exact-output counterpart of `test_swap_exact_input_diverts_protocol_fee`: with a nonzero
+/// protocol fee, a token-A-in exact-output swap emits the protocol-fee transfer (input Token A
+/// vault → Token A's protocol-fee holding) and the input reserve grows by the required input NET
+/// of the protocol cut, while the output reserve drops by exactly the requested output.
+#[test]
+fn test_swap_exact_output_diverts_protocol_fee() {
+    // Matches `pool_definition_swap_exact_output_init` (reserve_a = 1000, reserve_b = 500).
+    let reserve_a_init = 1_000u128;
+    let reserve_b_init = 500u128;
+    let exact_out = BalanceForTests::max_amount_in();
+
+    let (post_states, chained_calls) = swap_exact_output(
+        AccountWithMetadataForTests::config_init_with_protocol_fee(),
+        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
+        exact_out,
+        BalanceForTests::vault_b_reserve_init(),
+        AMM_PROGRAM_ID,
+    );
+
+    // [deposit, withdraw, protocol-fee, update-tick].
+    assert_eq!(chained_calls.len(), 4);
+
+    // Required input for the exact output, then the protocol's cut of its swap fee.
+    let (effective_in, required_in) = swap_exact_out_amounts(
+        exact_out,
+        reserve_a_init,
+        reserve_b_init,
+        BalanceForTests::fee_tier(),
+    )
+    .expect("exact-output amounts must be fulfillable");
+    let swap_fee = required_in - effective_in;
+    let expected_protocol_fee = protocol_fee_amount(swap_fee, BalanceForTests::protocol_fee_tier());
+    assert!(
+        expected_protocol_fee > 0,
+        "test setup must produce a nonzero protocol fee"
+    );
+
+    // Reserve accounting: input reserve grows by required_in NET of the protocol cut; the output
+    // reserve falls by exactly the requested output (the protocol fee is taken on the input side).
+    let pool_post = PoolDefinition::try_from(&post_states[1].account().data)
+        .expect("pool post-state must hold a valid PoolDefinition");
+    assert_eq!(
+        pool_post.reserve_a,
+        reserve_a_init + required_in - expected_protocol_fee
+    );
+    assert_eq!(pool_post.reserve_b, reserve_b_init - exact_out);
+
+    let protocol_call = &chained_calls[2];
+    assert_eq!(
+        protocol_call.pre_states[0].account_id,
+        IdForTests::vault_a_id()
+    );
+    assert!(protocol_call.pre_states[0].is_authorized);
+    assert_eq!(
+        protocol_call.pre_states[1].account_id,
+        IdForTests::protocol_fee_holding_a_id()
+    );
+    assert_eq!(
+        protocol_call.pda_seeds,
+        vec![
+            compute_vault_pda_seed(
+                IdForTests::pool_definition_id(),
+                IdForTests::token_a_definition_id()
+            ),
+            compute_protocol_fee_pda_seed(
+                IdForTests::config_id(),
+                IdForTests::token_a_definition_id()
+            ),
+        ]
+    );
+    let expected = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        protocol_call.pre_states.clone(),
+        &token_core::Instruction::Transfer {
+            amount_to_transfer: expected_protocol_fee,
+        },
+    );
+    assert_eq!(protocol_call.instruction_data, expected.instruction_data);
+}
+
+/// Exact-output counterpart of the mismatch guard: the protocol-fee holding must be the input
+/// token's protocol PDA. Passing Token B's holding for a Token-A-in exact-output swap is rejected.
+#[should_panic(
+    expected = "Swap exact output: protocol-fee holding does not match the input token's protocol PDA"
+)]
+#[test]
+fn test_swap_exact_output_rejects_mismatched_protocol_holding() {
+    let _ = swap_exact_output(
+        AccountWithMetadataForTests::config_init_with_protocol_fee(),
+        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
+        AccountWithMetadataForTests::vault_a_init(),
+        AccountWithMetadataForTests::vault_b_init(),
+        AccountWithMetadataForTests::user_holding_a(),
+        AccountWithMetadataForTests::user_holding_b(),
+        AccountWithMetadataForTests::current_tick_account_uninit(),
+        AccountWithMetadataForTests::clock(),
+        // Wrong token's protocol holding for a Token-A input.
+        AccountWithMetadataForTests::protocol_fee_holding_b(),
+        BalanceForTests::max_amount_in(),
+        BalanceForTests::vault_b_reserve_init(),
+        AMM_PROGRAM_ID,
+    );
+}
+
 #[should_panic(expected = "Swap exact output: input holding token is not part of the pool")]
 #[test]
 fn call_swap_exact_output_incorrect_token_type() {
@@ -2821,6 +3132,7 @@ fn call_swap_exact_output_incorrect_token_type() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         AMM_PROGRAM_ID,
@@ -2839,6 +3151,7 @@ fn call_swap_exact_output_vault_a_omitted() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         AMM_PROGRAM_ID,
@@ -2857,6 +3170,7 @@ fn call_swap_exact_output_vault_b_omitted() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         AMM_PROGRAM_ID,
@@ -2875,6 +3189,7 @@ fn call_swap_exact_output_reserves_vault_mismatch_1() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         AMM_PROGRAM_ID,
@@ -2893,6 +3208,7 @@ fn call_swap_exact_output_reserves_vault_mismatch_2() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         AMM_PROGRAM_ID,
@@ -2911,6 +3227,7 @@ fn call_swap_exact_output_below_minimum_liquidity() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::max_amount_in(),
         AMM_PROGRAM_ID,
@@ -2929,6 +3246,7 @@ fn call_swap_exact_output_exceeds_max_in() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         166_u128,
         100_u128,
         AMM_PROGRAM_ID,
@@ -2947,6 +3265,7 @@ fn call_swap_exact_output_zero() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         0_u128,
         500_u128,
         AMM_PROGRAM_ID,
@@ -2965,6 +3284,7 @@ fn call_swap_exact_output_exceeds_reserve() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::vault_b_reserve_init(),
         BalanceForTests::max_amount_in(),
         AMM_PROGRAM_ID,
@@ -2982,6 +3302,7 @@ fn call_swap_exact_output_chained_call_successful() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::max_amount_in(),
         BalanceForTests::vault_b_reserve_init(),
         AMM_PROGRAM_ID,
@@ -3018,6 +3339,7 @@ fn call_swap_exact_output_chained_call_successful_2() {
         AccountWithMetadataForTests::user_holding_a(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_b(),
         285,
         300,
         AMM_PROGRAM_ID,
@@ -3057,6 +3379,7 @@ fn call_swap_exact_output_fee_enforced() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         166_u128, // exact_amount_out: token_b
         499_u128, // max_amount_in: still one short after fee rounding
         AMM_PROGRAM_ID,
@@ -3078,6 +3401,7 @@ fn call_swap_exact_output_rejects_max_in_that_rounds_down_below_target_output() 
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         1,
         2,
         AMM_PROGRAM_ID,
@@ -3095,6 +3419,7 @@ fn call_swap_exact_output_accepts_smallest_max_in_for_rounded_boundary() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         1,
         3,
         AMM_PROGRAM_ID,
@@ -3190,6 +3515,7 @@ fn swap_exact_output_overflow_protection() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         2, // exact_amount_out: small, valid (< reserve_b)
         1, // max_amount_in: tiny — real deposit would be enormous, but
         // overflow wraps it to 0, making 0 <= 1 pass silently
@@ -3873,6 +4199,7 @@ fn swap_exact_input_overflow_protection() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         3,
         1,
         AMM_PROGRAM_ID,
@@ -4016,6 +4343,7 @@ fn test_swap_exact_input_rejects_user_holding_a_wrong_program() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         AMM_PROGRAM_ID,
@@ -4034,6 +4362,7 @@ fn test_swap_exact_input_rejects_user_holding_b_wrong_program() {
         AccountWithMetadataForTests::user_holding_b_wrong_program(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         BalanceForTests::add_max_amount_a(),
         BalanceForTests::min_amount_out(),
         AMM_PROGRAM_ID,
@@ -4052,6 +4381,7 @@ fn test_swap_exact_output_rejects_user_holding_a_wrong_program() {
         AccountWithMetadataForTests::user_holding_b(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         166,
         BalanceForTests::max_amount_in(),
         AMM_PROGRAM_ID,
@@ -4070,6 +4400,7 @@ fn test_swap_exact_output_rejects_user_holding_b_wrong_program() {
         AccountWithMetadataForTests::user_holding_b_wrong_program(),
         AccountWithMetadataForTests::current_tick_account_uninit(),
         AccountWithMetadataForTests::clock(),
+        AccountWithMetadataForTests::protocol_fee_holding_a(),
         166,
         BalanceForTests::max_amount_in(),
         AMM_PROGRAM_ID,

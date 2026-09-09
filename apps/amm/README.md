@@ -218,7 +218,10 @@ The Pools view is config-driven the same way: it reads a flat JSON list from the
 entry. `tokenA`/`tokenB` are the display symbols;
 `poolId`/`tokenADefinitionId`/`tokenBDefinitionId` identify the pool on-chain.
 The swap fee is not a pool field — it is instance-wide (`AmmConfig.swapFeeBps`),
-read from the config. Adding more pairs is purely a config edit — no app change:
+read from the config. (An instance may also set a `protocolFeeBps` — a cut of the
+swap fee routed to the protocol; it is an admin/instance concern and is not
+surfaced in the UI. See [AMM protocol fees](../../docs/amm-protocol-fees.md).)
+Adding more pairs is purely a config edit — no app change:
 
 ```json
 [

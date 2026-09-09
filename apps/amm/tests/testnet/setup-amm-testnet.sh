@@ -135,6 +135,10 @@ POOL_TOKEN_B_AMOUNT="10000"
 # Instance-wide swap fee (basis points), set once at `initialize` and stored in the AMM
 # config — no longer a per-pool value. Every swap in this namespace uses it.
 SWAP_FEE_BPS="1"
+# Protocol fee as a fraction of the swap fee (basis points), also set once at `initialize`.
+# On each swap, this % of the swap fee is diverted to the instance's protocol-fee holding;
+# the rest stays with LPs. 0 = no protocol fee.
+PROTOCOL_FEE_BPS="0"
 POOL_DEADLINE="18446744073709551615"
 
 # Where the UI token config is written for TESTS ONLY (git-ignored). This is
@@ -550,7 +554,8 @@ run_tx strict "initialize AMM config" -- \
     --token-program-id "$TOKEN_PID" \
     --twap-oracle-program-id "$TWAP_PID" \
     --authority "$AMM_AUTHORITY" \
-    --swap-fee-bps "$SWAP_FEE_BPS"
+    --swap-fee-bps "$SWAP_FEE_BPS" \
+    --protocol-fee-bps "$PROTOCOL_FEE_BPS"
 
 ###############################################################################
 # 8. Create the pool (seed initial liquidity)

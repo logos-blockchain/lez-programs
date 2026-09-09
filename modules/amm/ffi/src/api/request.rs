@@ -36,6 +36,21 @@ pub struct TransferOwnershipPlanRequest {
     pub new_authority_id: String,
 }
 
+/// Builds the `WithdrawProtocolFees` submission that moves accrued protocol fees for one token
+/// out to a destination holding. `config` is the read of the config PDA (the admin `authority` —
+/// the sole signer — is decoded from it); `token_definition_id` (hex) selects which token's
+/// protocol-fee PDA is drained; `destination_id` (hex) is an existing holding of that token that
+/// receives the fees; `amount` is the decimal (base-unit) amount to withdraw.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WithdrawProtocolFeesPlanRequest {
+    pub amm_program_id: String,
+    pub config: AccountRead,
+    pub token_definition_id: String,
+    pub destination_id: String,
+    pub amount: String,
+}
+
 /// Builds the `CreatePriceObservations` submission — seeds the pool's TWAP observations feed for a
 /// window. `config` is the read of the config PDA (its `twap_oracle_program_id` seeds the feed
 /// PDAs); `token_ids` are hex; `window_duration_ms` is the TWAP window in milliseconds.

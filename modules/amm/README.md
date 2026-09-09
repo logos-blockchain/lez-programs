@@ -26,8 +26,9 @@ methods (the module API is generated from the header) are:
   "no_pool", poolId }` (other codes: `no_program_bin`, `amm_not_initialized`,
   `bad_config`).
 - `configAccount()` — decodes the AMM instance's config (authority, the
-  token/oracle program ids it was initialized with, and `swapFeeBps` — the
-  instance-wide swap fee).
+  token/oracle program ids it was initialized with, `swapFeeBps` — the
+  instance-wide swap fee — and `protocolFeeBps` — the fraction of that swap fee
+  diverted to the protocol, `0` = none).
 - `feeTiers()` — **legacy.** Historical fee tiers `[1, 5, 30, 100]`; fees are now
   instance-wide (set at `initialize`, any value below 100%), so this is unused.
 - `tokenHoldings(walletOpen)` — the connected wallet's fungible token holdings.
@@ -48,6 +49,9 @@ except the two swaps which return a bare tx hash)
 - `syncReserves` — permissionless keeper op refreshing stored reserves + TWAP tick.
 - `createPriceObservations` / `createOraclePriceAccount` — seed a pool's TWAP feed.
 - `transferOwnership` — admin-only `UpdateConfig` handing over the authority.
+- `withdrawProtocolFees` — admin-only; drains one token's accrued protocol fees
+  (the per-`(config, token)` PDA) to a destination holding of that token. Takes
+  `{ tokenDefinitionId, destinationId, amount }`.
 
 See **Amount / id conventions** below, and the
 [full `logoscore` runbook](../../docs/module/amm.md) for a worked call per method.

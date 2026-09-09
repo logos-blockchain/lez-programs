@@ -43,6 +43,10 @@
         {
           "name": "swap_fee_bps",
           "type": "u128"
+        },
+        {
+          "name": "protocol_fee_bps",
+          "type": "u128"
         }
       ]
     },
@@ -446,6 +450,12 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "protocol_fee_holding",
+          "writable": true,
+          "signer": false,
+          "init": false
         }
       ],
       "args": [
@@ -513,6 +523,12 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "protocol_fee_holding",
+          "writable": true,
+          "signer": false,
+          "init": false
         }
       ],
       "args": [
@@ -571,6 +587,41 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "withdraw_protocol_fees",
+      "accounts": [
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_fee_holding",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "destination",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "authority",
+          "writable": false,
+          "signer": true,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -633,6 +684,10 @@
           },
           {
             "name": "swap_fee_bps",
+            "type": "u128"
+          },
+          {
+            "name": "protocol_fee_bps",
             "type": "u128"
           }
         ]

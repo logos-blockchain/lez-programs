@@ -507,6 +507,61 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
     return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
 }
 
+LogosMap AmmModuleImpl::withdrawProtocolFees(const LogosMap& request) {
+    auto error = [](const std::string& err) {
+        return LogosMap{{"status", "error"}, {"error", err}};
+    };
+
+    const std::string amm_program_id = ammProgramId();
+    if (amm_program_id.empty())
+        return error("config_missing");
+
+    // The plan needs the config account to decode the admin authority (the sole signer) and to
+    // derive the token's protocol-fee PDA under this namespace.
+    const json config = readConfig();
+    if (config.is_null())
+        return error("config_missing");
+
+    const std::string token_definition = normalizeAccountId(jStr(request, "tokenDefinitionId"));
+    const std::string destination = normalizeAccountId(jStr(request, "destinationId"));
+    if (token_definition.empty() || destination.empty())
+        return error("invalid_account_id");
+
+    // amount may arrive as a JSON number (UI) or a decimal string (CLI); the FFI wants a decimal.
+    std::string amount_decimal;
+    if (!jsonAmountToDecimal(request.value("amount", json()), amount_decimal))
+        return error("invalid_amount");
+
+    const FfiResult planResult = call(amm_withdraw_protocol_fees_plan, json{
+        {"ammProgramId", amm_program_id},
+        {"config", config},
+        {"tokenDefinitionId", token_definition},
+        {"destinationId", destination},
+        {"amount", amount_decimal},
+    });
+    if (!planResult.ok)
+        return error(planResult.error.empty() ? "backend_error" : planResult.error);
+    const json plan = planResult.value;
+
+    const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
+    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::string program_id = jStr(plan, "programId");
+
+    AMM_TRACE("withdrawProtocolFees: SUBMIT programId=" << program_id
+              << " accounts=" << accounts.size());
+
+    const std::string reply = modules().lez_core.send_generic_public_transaction(
+        accounts, signers, instruction, program_id);
+    AMM_TRACE("withdrawProtocolFees: tx reply=" << reply);
+
+    const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
+    if (!obj.is_object() || !obj.value("success", false))
+        return error("wallet_submission_failed");
+
+    return LogosMap{{"status", "ok"}, {"error", ""}, {"transactionId", jStr(obj, "tx_hash")}};
+}
+
 LogosMap AmmModuleImpl::createPriceObservations(const LogosMap& request) {
     return oracleSetupSubmit(request, /*observations=*/true);
 }
