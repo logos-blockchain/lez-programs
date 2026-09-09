@@ -1,9 +1,9 @@
 # Stablecoin core module
 
 `stablecoin_module` is a headless Logos `core` module for the LEZ Stablecoin
-Program. It exposes deployment discovery, protocol-parameter reads, and
-protocol initialization through the same universal API used by `logoscore` and
-UI modules.
+Program. It exposes deployment discovery, protocol-state reads, and protocol
+initialization through the same universal API used by `logoscore` and UI
+modules.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
 `stablecoin_ffi` owns exact account decoding, PDA derivation, request
@@ -43,6 +43,15 @@ verifies its PDA and owner, and exactly decodes its stored snapshot. The result
 includes the account ID in base58 and lowercase hexadecimal form plus
 `accumulatedRateAtLastAccrual` and `lastAccruedAt` as decimal strings. It does
 not project the accumulator to the current time.
+
+### `redemptionPriceState()`
+
+Reads the singleton Redemption Price State account through `lez_core`, verifies
+its PDA and owner, and exactly decodes its stored controller state. The result
+includes the account ID in base58 and lowercase hexadecimal form plus
+`redemptionPriceAtLastUpdate`, `redemptionRatePerMillisecond`,
+`controllerIntegralTerm`, and `lastUpdatedAt` as decimal strings. It does not
+project the current redemption price or simulate a controller update.
 
 ### `initializeProgram(request)`
 
