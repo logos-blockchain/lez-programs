@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+program-revert = { path = "../../common/revert" }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"] }
 borsh = { version = "1.5", features = ["derive"] }
 alloy-primitives = { version = "1", default-features = false }

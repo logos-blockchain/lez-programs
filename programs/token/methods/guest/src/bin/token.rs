@@ -9,8 +9,9 @@ use spel_framework::context::ProgramContext;
 use spel_framework::prelude::*;
 
 #[cfg(not(test))]
-risc0_zkvm::guest::entry!(main);
+risc0_zkvm::guest::entry!(metered_main);
 
+#[program_revert_macros::metered_entry(token_core::error::INVALID_INPUT)]
 #[lez_program(instruction = "token_core::Instruction")]
 mod token {
     #[expect(

@@ -1,7 +1,9 @@
+use ata_core::error;
 use lee_core::{
     account::{Account, AccountWithMetadata},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use token_core::TokenHolding;
 
 pub fn transfer_from_associated_token_account(
@@ -12,13 +14,19 @@ pub fn transfer_from_associated_token_account(
     token_program_id: ProgramId,
     amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    assert!(owner.is_authorized, "Owner authorization is missing");
-    assert_eq!(
-        sender_ata.account.program_owner, token_program_id,
+    program_revert::require!(
+        error::INVALID_INPUT,
+        owner.is_authorized,
+        "Owner authorization is missing"
+    );
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        sender_ata.account.program_owner,
+        token_program_id,
         "Sender ATA must be owned by expected token program"
     );
     let sender_definition_id = TokenHolding::try_from(&sender_ata.account.data)
-        .expect("Sender ATA must hold a valid token")
+        .unwrap_or_revert(error::INVALID_INPUT, "Sender ATA must hold a valid token")
         .definition_id();
     let sender_seed = ata_core::verify_ata_and_get_seed(
         &sender_ata,
@@ -34,20 +42,25 @@ pub fn transfer_from_associated_token_account(
     // materialized by the downstream token transfer (e.g. via `Claim::Authorized` on a default
     // recipient), so integrators get an ATA-level failure rather than having to reverse-engineer
     // token/runtime semantics.
-    assert_ne!(
+    program_revert::require_ne!(
+        error::INVALID_INPUT,
         recipient.account,
         Account::default(),
         "Recipient token holding must be initialized"
     );
-    assert_eq!(
-        recipient.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        recipient.account.program_owner,
+        token_program_id,
         "Recipient must be owned by the same token program as the sender ATA"
     );
     let recipient_definition_id = TokenHolding::try_from(&recipient.account.data)
-        .expect("Recipient must hold a valid token")
+        .unwrap_or_revert(error::INVALID_INPUT, "Recipient must hold a valid token")
         .definition_id();
-    assert_eq!(
-        recipient_definition_id, sender_definition_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        recipient_definition_id,
+        sender_definition_id,
         "Recipient and sender token definitions do not match"
     );
 

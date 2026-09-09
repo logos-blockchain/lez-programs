@@ -4,8 +4,8 @@ use lee_core::{
     program::{AccountPostState, Claim, ProgramId},
 };
 use twap_oracle_core::{
-    compute_oracle_price_account_pda, compute_oracle_price_account_pda_seed, OraclePriceAccount,
-    OBSERVATIONS_CAPACITY,
+    compute_oracle_price_account_pda, compute_oracle_price_account_pda_seed, error,
+    OraclePriceAccount, OBSERVATIONS_CAPACITY,
 };
 
 /// Creates and initialises an [`OraclePriceAccount`] for a price source account and time window.
@@ -26,8 +26,8 @@ use twap_oracle_core::{
 /// `price_source.account_id` and `window_duration`, so whoever controls the price source
 /// controls this account.
 ///
-/// # Panics
-/// Panics if:
+/// # Failures
+/// Reverts in the zkVM (panics on native targets) if:
 /// - `oracle_price_account.account_id` does not match
 ///   `compute_oracle_price_account_pda(oracle_program_id, price_source.account_id,
 ///   window_duration)`.
@@ -57,25 +57,30 @@ pub fn create_oracle_price_account(
     oracle_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     let price_source_id = price_source.account_id;
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         oracle_price_account.account_id,
         compute_oracle_price_account_pda(oracle_program_id, price_source_id, window_duration),
         "CreateOraclePriceAccount: oracle price account ID does not match expected PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         oracle_price_account.account,
         Account::default(),
         "CreateOraclePriceAccount: oracle price account must be uninitialized"
     );
-    assert!(
+    program_revert::require!(error::INVALID_INPUT,
         price_source.is_authorized,
         "CreateOraclePriceAccount: price source account must be authorized (caller must control it via a PDA)"
     );
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "CreateOraclePriceAccount: clock account must be the canonical 1-block LEZ clock account"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         window_duration >= u64::from(OBSERVATIONS_CAPACITY),
         "CreateOraclePriceAccount: window_duration must be >= OBSERVATIONS_CAPACITY so a matching \
          PriceObservations account can exist and PublishPrice can update this price account"
@@ -83,11 +88,13 @@ pub fn create_oracle_price_account(
 
     let timestamp = ClockAccountData::from_bytes(clock.account.data.as_ref()).timestamp;
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         initial_price != 0,
         "CreateOraclePriceAccount: initial price must be non-zero"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         timestamp != 0,
         "CreateOraclePriceAccount: clock timestamp must be non-zero"
     );

@@ -1,3 +1,5 @@
+pub mod error;
+
 pub use lee_core::program::PdaSeed;
 use lee_core::{
     account::{AccountId, AccountWithMetadata},
@@ -93,8 +95,10 @@ pub fn verify_ata_and_get_seed(
 ) -> PdaSeed {
     let seed = compute_ata_seed(token_program_id, owner.account_id, definition_id);
     let expected_id = get_associated_token_account_id(&ata_program_id, &seed);
-    assert_eq!(
-        ata_account.account_id, expected_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        ata_account.account_id,
+        expected_id,
         "ATA account ID does not match expected derivation"
     );
     seed

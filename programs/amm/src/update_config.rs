@@ -1,8 +1,9 @@
-use amm_core::{compute_config_pda, AmmConfig};
+use amm_core::{compute_config_pda, error, AmmConfig};
 use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 
 /// Transfers the AMM Program's admin authority to a new account.
 ///
@@ -14,8 +15,8 @@ use lee_core::{
 /// cannot change them; it only moves the admin authority. The config account is already owned by
 /// this Program (created at `initialize`), so its data is updated in place — no claim is required.
 ///
-/// # Panics
-/// Panics if:
+/// # Failures
+/// Reverts in the zkVM (panics on native targets) if:
 /// - `config.account_id` does not match `compute_config_pda(amm_program_id)`, or the config is
 ///   uninitialized (the Program has not been initialized).
 /// - `authority.account_id` is not the config's current admin authority.
@@ -26,20 +27,26 @@ pub fn update_config(
     new_authority: AccountId,
     amm_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account_id,
         compute_config_pda(amm_program_id),
         "Update config: AMM config Account ID does not match PDA"
     );
-    let mut config_data = AmmConfig::try_from(&config.account.data)
-        .expect("Update config: AMM Program must be initialized before use");
+    let mut config_data = AmmConfig::try_from(&config.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Update config: AMM Program must be initialized before use",
+    );
 
     // Access control: the caller must be the configured admin and must have signed.
-    assert_eq!(
-        authority.account_id, config_data.authority,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        authority.account_id,
+        config_data.authority,
         "Update config: caller is not the configured admin authority"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         authority.is_authorized,
         "Update config: admin authority must authorize the update"
     );

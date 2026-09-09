@@ -1,3 +1,5 @@
+pub mod error;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
     account::{AccountId, Data},

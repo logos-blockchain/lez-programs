@@ -2,7 +2,7 @@ use std::num::NonZeroU128;
 
 use amm_core::{
     assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda_seed,
-    compute_pool_pda_seed, mul_div_floor, read_vault_fungible_balances, spot_price_q64_64,
+    compute_pool_pda_seed, error, mul_div_floor, read_vault_fungible_balances, spot_price_q64_64,
     AmmConfig, PoolDefinition,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
@@ -10,6 +10,7 @@ use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use twap_oracle_core::compute_current_tick_account_pda;
 
 #[expect(
@@ -34,65 +35,88 @@ pub fn add_liquidity(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     // The program IDs are taken from the config account, not trusted from a caller-supplied
     // holding. Validating the config PDA is also the Program's initialization gate.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account_id,
         compute_config_pda(amm_program_id),
         "Add liquidity: AMM config Account ID does not match PDA"
     );
-    let config_data = AmmConfig::try_from(&config.account.data)
-        .expect("Add liquidity: AMM Program must be initialized before use");
+    let config_data = AmmConfig::try_from(&config.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Add liquidity: AMM Program must be initialized before use",
+    );
     let token_program_id = config_data.token_program_id;
     let twap_oracle_program_id = config_data.twap_oracle_program_id;
 
     // 1. Fetch Pool state
-    let pool_def_data = PoolDefinition::try_from(&pool.account.data)
-        .expect("Add liquidity: AMM Program expects valid Pool Definition Account");
+    let pool_def_data = PoolDefinition::try_from(&pool.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "Add liquidity: AMM Program expects valid Pool Definition Account",
+    );
     assert_supported_fee_tier(pool_def_data.fees);
 
-    assert_eq!(
-        vault_a.account_id, pool_def_data.vault_a_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_a.account_id,
+        pool_def_data.vault_a_id,
         "Vault A was not provided"
     );
 
-    assert_eq!(
-        pool_def_data.liquidity_pool_id, pool_definition_lp.account_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        pool_def_data.liquidity_pool_id,
+        pool_definition_lp.account_id,
         "LP definition mismatch"
     );
 
-    assert_eq!(
-        vault_b.account_id, pool_def_data.vault_b_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_b.account_id,
+        pool_def_data.vault_b_id,
         "Vault B was not provided"
     );
 
-    assert_eq!(
-        vault_a.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_a.account.program_owner,
+        token_program_id,
         "Vault A must be owned by the configured Token Program"
     );
-    assert_eq!(
-        vault_b.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        vault_b.account.program_owner,
+        token_program_id,
         "Vault B must be owned by the configured Token Program"
     );
-    assert_eq!(
-        user_holding_a.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_a.account.program_owner,
+        token_program_id,
         "User Token A holding must be owned by the configured Token Program"
     );
-    assert_eq!(
-        user_holding_b.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_b.account.program_owner,
+        token_program_id,
         "User Token B holding must be owned by the configured Token Program"
     );
     // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
     // clock here so the add is rejected early with an AMM-level error.
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "Add liquidity: clock account must be the canonical 1-block LEZ clock account"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
         "Add liquidity: current tick Account ID does not match PDA"
     );
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         max_amount_to_add_token_a != 0 && max_amount_to_add_token_b != 0,
         "Both max-balances must be nonzero"
     );
@@ -100,18 +124,28 @@ pub fn add_liquidity(
     let (vault_a_balance, vault_b_balance) =
         read_vault_fungible_balances("Add liquidity", &vault_a, &vault_b);
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         vault_a_balance >= pool_def_data.reserve_a,
         "Vaults' balances must be at least the reserve amounts"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         vault_b_balance >= pool_def_data.reserve_b,
         "Vaults' balances must be at least the reserve amounts"
     );
 
     // 2. Determine deposit amount
-    assert!(pool_def_data.reserve_a != 0, "Reserves must be nonzero");
-    assert!(pool_def_data.reserve_b != 0, "Reserves must be nonzero");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        pool_def_data.reserve_a != 0,
+        "Reserves must be nonzero"
+    );
+    program_revert::require!(
+        error::INVALID_INPUT,
+        pool_def_data.reserve_b != 0,
+        "Reserves must be nonzero"
+    );
 
     // floor(reserve * max_amount / reserve), products widened to U256. Reserves are nonzero
     // (asserted above), so the divisors are valid.
@@ -138,17 +172,27 @@ pub fn add_liquidity(
     };
 
     // 3. Validate amounts
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         max_amount_to_add_token_a >= actual_amount_a,
         "Actual trade amounts cannot exceed max_amounts"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         max_amount_to_add_token_b >= actual_amount_b,
         "Actual trade amounts cannot exceed max_amounts"
     );
 
-    assert!(actual_amount_a != 0, "A trade amount is 0");
-    assert!(actual_amount_b != 0, "A trade amount is 0");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        actual_amount_a != 0,
+        "A trade amount is 0"
+    );
+    program_revert::require!(
+        error::INVALID_INPUT,
+        actual_amount_b != 0,
+        "A trade amount is 0"
+    );
 
     // 4. Calculate LP to mint
     // floor(supply * actual / reserve), products widened to U256.
@@ -165,9 +209,14 @@ pub fn add_liquidity(
         ),
     );
 
-    assert!(delta_lp != 0, "Payable LP must be nonzero");
+    program_revert::require!(
+        error::INVALID_INPUT,
+        delta_lp != 0,
+        "Payable LP must be nonzero"
+    );
 
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         delta_lp >= min_amount_liquidity.get(),
         "Payable LP is less than provided minimum LP amount"
     );
@@ -178,15 +227,24 @@ pub fn add_liquidity(
         liquidity_pool_supply: pool_def_data
             .liquidity_pool_supply
             .checked_add(delta_lp)
-            .expect("liquidity_pool_supply + delta_lp overflows u128"),
+            .unwrap_or_revert(
+                error::ARITHMETIC,
+                "liquidity_pool_supply + delta_lp overflows u128",
+            ),
         reserve_a: pool_def_data
             .reserve_a
             .checked_add(actual_amount_a)
-            .expect("reserve_a + actual_amount_a overflows u128"),
+            .unwrap_or_revert(
+                error::ARITHMETIC,
+                "reserve_a + actual_amount_a overflows u128",
+            ),
         reserve_b: pool_def_data
             .reserve_b
             .checked_add(actual_amount_b)
-            .expect("reserve_b + actual_amount_b overflows u128"),
+            .unwrap_or_revert(
+                error::ARITHMETIC,
+                "reserve_b + actual_amount_b overflows u128",
+            ),
         ..pool_def_data
     };
 

@@ -84,6 +84,7 @@ dependencies = [
  "alloy-primitives",
  "borsh",
  "lee_core",
+ "program-revert",
  "risc0-zkvm",
  "ruint",
  "serde",
@@ -119,6 +120,7 @@ dependencies = [
  "amm_core",
  "clock_core",
  "lee_core",
+ "program-revert",
  "token_core",
  "twap_oracle_core",
 ]
@@ -553,6 +555,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "lee_core",
+ "program-revert",
  "risc0-zkvm",
  "serde",
 ]
@@ -563,6 +566,7 @@ version = "0.1.0"
 dependencies = [
  "ata_core",
  "lee_core",
+ "program-revert",
  "token_core",
 ]
 
@@ -2224,6 +2228,8 @@ dependencies = [
  "clock_core",
  "lee",
  "lee_core",
+ "risc0-zkvm",
+ "serde",
  "stablecoin-methods",
  "stablecoin_core",
  "token-methods",
@@ -2927,6 +2933,23 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "version_check",
+]
+
+[[package]]
+name = "program-revert"
+version = "0.1.0"
+dependencies = [
+ "risc0-zkvm",
+ "serde",
+]
+
+[[package]]
+name = "program-revert-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -4038,6 +4061,7 @@ dependencies = [
  "alloy-primitives",
  "borsh",
  "lee_core",
+ "program-revert",
  "risc0-zkvm",
  "ruint",
  "serde",
@@ -4071,6 +4095,7 @@ version = "0.1.0"
 dependencies = [
  "clock_core",
  "lee_core",
+ "program-revert",
  "stablecoin_core",
  "token_core",
  "twap_oracle_core",
@@ -4306,6 +4331,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "lee_core",
+ "program-revert",
  "serde",
  "spel-framework-macros",
 ]
@@ -4354,6 +4380,7 @@ name = "token_program"
 version = "0.1.0"
 dependencies = [
  "lee_core",
+ "program-revert",
  "token_core",
 ]
 
@@ -4587,6 +4614,7 @@ version = "0.1.0"
 dependencies = [
  "clock_core",
  "lee_core",
+ "program-revert",
  "twap_oracle_core",
 ]
 

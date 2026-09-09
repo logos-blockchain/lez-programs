@@ -4,7 +4,7 @@ use amm_core::{
     assert_supported_fee_tier, compute_config_pda, compute_liquidity_token_pda,
     compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
     compute_lp_lock_holding_pda_seed, compute_pool_pda, compute_pool_pda_seed, compute_vault_pda,
-    compute_vault_pda_seed, isqrt_product, spot_price_q64_64, AmmConfig, PoolDefinition,
+    compute_vault_pda_seed, error, isqrt_product, spot_price_q64_64, AmmConfig, PoolDefinition,
     MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
@@ -12,6 +12,7 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use token_core::TokenDefinition;
 use twap_oracle_core::compute_current_tick_account_pda;
 
@@ -37,58 +38,77 @@ pub fn new_definition(
     amm_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let definition_token_a_id = token_core::TokenHolding::try_from(&user_holding_a.account.data)
-        .expect("New definition: AMM Program expects valid Token Holding account for Token A")
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "New definition: AMM Program expects valid Token Holding account for Token A",
+        )
         .definition_id();
     let definition_token_b_id = token_core::TokenHolding::try_from(&user_holding_b.account.data)
-        .expect("New definition: AMM Program expects valid Token Holding account for Token B")
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "New definition: AMM Program expects valid Token Holding account for Token B",
+        )
         .definition_id();
 
     // The Token Program is taken from the config account, not trusted from a caller-supplied
     // holding. Validating the config PDA is also the Program's initialization gate.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         config.account_id,
         compute_config_pda(amm_program_id),
         "New definition: AMM config Account ID does not match PDA"
     );
-    let config_data = AmmConfig::try_from(&config.account.data)
-        .expect("New definition: AMM Program must be initialized before use");
+    let config_data = AmmConfig::try_from(&config.account.data).unwrap_or_revert(
+        error::INVALID_INPUT,
+        "New definition: AMM Program must be initialized before use",
+    );
     let token_program_id = config_data.token_program_id;
     let twap_oracle_program_id = config_data.twap_oracle_program_id;
 
-    assert_eq!(
-        user_holding_a.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_a.account.program_owner,
+        token_program_id,
         "User Token A holding must be owned by the configured Token Program"
     );
-    assert_eq!(
-        user_holding_b.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        user_holding_b.account.program_owner,
+        token_program_id,
         "User Token B holding must be owned by the configured Token Program"
     );
     // Verify token_a and token_b are different
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         definition_token_a_id != definition_token_b_id,
         "Cannot set up a swap for a token with itself"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         pool.account_id,
         compute_pool_pda(amm_program_id, definition_token_a_id, definition_token_b_id),
         "Pool Definition Account ID does not match PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         vault_a.account_id,
         compute_vault_pda(amm_program_id, pool.account_id, definition_token_a_id),
         "Vault ID does not match PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         vault_b.account_id,
         compute_vault_pda(amm_program_id, pool.account_id, definition_token_b_id),
         "Vault ID does not match PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         pool_definition_lp.account_id,
         compute_liquidity_token_pda(amm_program_id, pool.account_id),
         "Liquidity pool Token Definition Account ID does not match PDA"
     );
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         lp_lock_holding.account_id,
         compute_lp_lock_holding_pda(amm_program_id, pool.account_id),
         "LP lock holding Account ID does not match PDA"
@@ -96,32 +116,38 @@ pub fn new_definition(
     assert_supported_fee_tier(fees);
 
     // Assert that pool is uninitialized (hard precondition)
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         pool.account,
         Account::default(),
         "Pool account must be uninitialized"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         user_holding_lp.account != Account::default() || user_holding_lp.is_authorized,
         "Fresh user LP holding requires user authorization"
     );
 
     // The pool's TWAP current-tick account is created in the same transaction (a chained call to
     // the oracle). Validate its PDA and that the clock is the canonical 1-block LEZ clock.
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
         "New definition: current tick Account ID does not match PDA"
     );
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "New definition: clock account must be the canonical 1-block LEZ clock account"
     );
 
     // LP Token minting calculation. The `token_a * token_b` product is computed in U256 (via
     // `isqrt_product`) so realistic 18-decimal amounts can't overflow u128 before the sqrt.
     let initial_lp = isqrt_product(token_a_amount.get(), token_b_amount.get());
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         initial_lp > MINIMUM_LIQUIDITY,
         "Initial liquidity must exceed minimum liquidity lock"
     );

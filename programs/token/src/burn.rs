@@ -2,24 +2,30 @@ use lee_core::{
     account::{AccountWithMetadata, Data},
     program::AccountPostState,
 };
-use token_core::{TokenDefinition, TokenHolding};
+use program_revert::UnwrapOrRevert as _;
+use token_core::{error, TokenDefinition, TokenHolding};
 
 pub fn burn(
     definition_account: AccountWithMetadata,
     user_holding_account: AccountWithMetadata,
     amount_to_burn: u128,
 ) -> Vec<AccountPostState> {
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         user_holding_account.is_authorized,
         "Authorization is missing"
     );
 
     let mut definition = TokenDefinition::try_from(&definition_account.account.data)
-        .expect("Token Definition account must be valid");
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Token Definition account must be valid",
+        );
     let mut holding = TokenHolding::try_from(&user_holding_account.account.data)
-        .expect("Token Holding account must be valid");
+        .unwrap_or_revert(error::INVALID_INPUT, "Token Holding account must be valid");
 
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         definition_account.account_id,
         holding.definition_id(),
         "Mismatch Token Definition and Token Holding"
@@ -40,11 +46,11 @@ pub fn burn(
         ) => {
             *balance = balance
                 .checked_sub(amount_to_burn)
-                .expect("Insufficient balance to burn");
+                .unwrap_or_revert(error::INSUFFICIENT_BALANCE, "Insufficient balance to burn");
 
             *total_supply = total_supply
                 .checked_sub(amount_to_burn)
-                .expect("Total supply underflow");
+                .unwrap_or_revert(error::ARITHMETIC, "Total supply underflow");
         }
         (
             TokenDefinition::NonFungible {
@@ -59,11 +65,11 @@ pub fn burn(
         ) => {
             *printable_supply = printable_supply
                 .checked_sub(amount_to_burn)
-                .expect("Printable supply underflow");
+                .unwrap_or_revert(error::ARITHMETIC, "Printable supply underflow");
 
             *print_balance = print_balance
                 .checked_sub(amount_to_burn)
-                .expect("Insufficient balance to burn");
+                .unwrap_or_revert(error::INSUFFICIENT_BALANCE, "Insufficient balance to burn");
         }
         (
             TokenDefinition::NonFungible {
@@ -76,20 +82,29 @@ pub fn burn(
                 owned,
             },
         ) => {
-            assert_eq!(
-                amount_to_burn, 1,
+            program_revert::require_eq!(
+                error::INVALID_INPUT,
+                amount_to_burn,
+                1,
                 "Invalid balance to burn for NFT Printed Copy"
             );
 
-            assert!(*owned, "Cannot burn unowned NFT Printed Copy");
+            program_revert::require!(
+                error::INVALID_INPUT,
+                *owned,
+                "Cannot burn unowned NFT Printed Copy"
+            );
 
             *printable_supply = printable_supply
                 .checked_sub(1)
-                .expect("Printable supply underflow");
+                .unwrap_or_revert(error::ARITHMETIC, "Printable supply underflow");
 
             *owned = false;
         }
-        _ => panic!("Mismatched Token Definition and Token Holding types"),
+        _ => program_revert::revert!(
+            error::INVALID_INPUT,
+            "Mismatched Token Definition and Token Holding types"
+        ),
     }
 
     let mut definition_post = definition_account.account;

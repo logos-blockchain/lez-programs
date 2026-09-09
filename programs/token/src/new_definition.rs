@@ -3,7 +3,7 @@ use lee_core::{
     program::{AccountPostState, Claim},
 };
 use token_core::{
-    NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding, TokenMetadata,
+    error, NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding, TokenMetadata,
 };
 
 /// Validate the mint authority for a freshly created fungible definition.
@@ -12,7 +12,8 @@ use token_core::{
 /// An all-zero authority id is rejected as it cannot be a real signer.
 fn validate_mint_authority(mint_authority: Option<AccountId>) -> Option<AccountId> {
     if let Some(id) = &mint_authority {
-        assert!(
+        program_revert::require!(
+            error::INVALID_INPUT,
             id.value() != &[0u8; 32],
             "Mint authority must be a valid non-zero account ID"
         );
@@ -27,22 +28,26 @@ pub fn new_fungible_definition(
     total_supply: u128,
     mint_authority: Option<AccountId>,
 ) -> Vec<AccountPostState> {
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         definition_target_account.account,
         Account::default(),
         "Definition target account must have default values"
     );
 
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         holding_target_account.account,
         Account::default(),
         "Holding target account must have default values"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         definition_target_account.is_authorized,
         "Definition target account must be authorized"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         holding_target_account.is_authorized,
         "Holding target account must be authorized"
     );
@@ -77,32 +82,38 @@ pub fn new_definition_with_metadata(
     new_definition: NewTokenDefinition,
     metadata: NewTokenMetadata,
 ) -> Vec<AccountPostState> {
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         definition_target_account.account,
         Account::default(),
         "Definition target account must have default values"
     );
 
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         holding_target_account.account,
         Account::default(),
         "Holding target account must have default values"
     );
 
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         metadata_target_account.account,
         Account::default(),
         "Metadata target account must have default values"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         definition_target_account.is_authorized,
         "Definition target account must be authorized"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         holding_target_account.is_authorized,
         "Holding target account must be authorized"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         metadata_target_account.is_authorized,
         "Metadata target account must be authorized"
     );

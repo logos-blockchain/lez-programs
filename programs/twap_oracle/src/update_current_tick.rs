@@ -3,7 +3,10 @@ use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ProgramId},
 };
-use twap_oracle_core::{compute_current_tick_account_pda, price_to_tick, CurrentTickAccount};
+use program_revert::UnwrapOrRevert as _;
+use twap_oracle_core::{
+    compute_current_tick_account_pda, error, price_to_tick, CurrentTickAccount,
+};
 
 /// Updates the tick stored in an existing [`CurrentTickAccount`] from a new spot price.
 ///
@@ -13,8 +16,8 @@ use twap_oracle_core::{compute_current_tick_account_pda, price_to_tick, CurrentT
 /// The timestamp is taken from `clock`, which must be [`CLOCK_01_PROGRAM_ACCOUNT_ID`]; it is never
 /// caller-supplied, so it cannot be forged.
 ///
-/// # Panics
-/// Panics if:
+/// # Failures
+/// Reverts in the zkVM (panics on native targets) if:
 /// - `current_tick_account.account_id` does not match
 ///   `compute_current_tick_account_pda(oracle_program_id, price_source.account_id)`.
 /// - `current_tick_account.account` is not a valid, initialised [`CurrentTickAccount`].
@@ -28,22 +31,29 @@ pub fn update_current_tick(
     oracle_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     let price_source_id = price_source.account_id;
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         current_tick_account.account_id,
         compute_current_tick_account_pda(oracle_program_id, price_source_id),
         "UpdateCurrentTick: current tick account ID does not match expected PDA"
     );
-    assert!(
+    program_revert::require!(
+        error::INVALID_INPUT,
         price_source.is_authorized,
         "UpdateCurrentTick: price source account must be authorized"
     );
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        clock.account_id,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
         "UpdateCurrentTick: clock account must be the canonical 1-block LEZ clock account"
     );
 
     let mut stored = CurrentTickAccount::try_from(&current_tick_account.account.data)
-        .expect("UpdateCurrentTick: current tick account must be initialized");
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "UpdateCurrentTick: current tick account must be initialized",
+        );
 
     let clock_data = ClockAccountData::from_bytes(clock.account.data.as_ref());
     stored.tick = price_to_tick(price);

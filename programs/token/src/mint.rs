@@ -2,7 +2,8 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, Claim, ProgramId},
 };
-use token_core::{TokenDefinition, TokenHolding};
+use program_revert::UnwrapOrRevert as _;
+use token_core::{error, TokenDefinition, TokenHolding};
 
 /// Mint additional supply under **self/PDA authority**: the definition account
 /// itself is the current mint authority and proves it by being authorized in
@@ -54,13 +55,18 @@ fn mint_inner(
     amount_to_mint: u128,
     token_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
-    assert_eq!(
-        definition_account.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        definition_account.account.program_owner,
+        token_program_id,
         "Token definition must be owned by token program"
     );
 
     let mut definition = TokenDefinition::try_from(&definition_account.account.data)
-        .expect("Token Definition account must be valid");
+        .unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Token Definition account must be valid",
+        );
 
     // Minting is gated on the definition's stored mint authority: the account
     // that proves authority must be authorized AND its id must match the stored
@@ -68,15 +74,20 @@ fn mint_inner(
     // otherwise the definition account itself (self/PDA authority).
     if let TokenDefinition::Fungible { authority, .. } = &definition {
         // `None` means the supply is permanently fixed (renounced) — minting is rejected.
-        let mint_authority =
-            authority.expect("Mint authority check failed: authority revoked, supply is fixed");
+        let mint_authority = authority.unwrap_or_revert(
+            error::INVALID_INPUT,
+            "Mint authority check failed: authority revoked, supply is fixed",
+        );
         let authority_ref = authority_account.as_ref().unwrap_or(&definition_account);
-        assert!(
+        program_revert::require!(
+            error::INVALID_INPUT,
             authority_ref.is_authorized,
             "Mint authority must authorize the transaction"
         );
-        assert_eq!(
-            authority_ref.account_id, mint_authority,
+        program_revert::require_eq!(
+            error::INVALID_INPUT,
+            authority_ref.account_id,
+            mint_authority,
             "Mint authority check failed: signer is not the current authority"
         );
     }
@@ -85,10 +96,11 @@ fn mint_inner(
         TokenHolding::zeroized_from_definition(definition_account.account_id, &definition)
     } else {
         TokenHolding::try_from(&user_holding_account.account.data)
-            .expect("Token Holding account must be valid")
+            .unwrap_or_revert(error::INVALID_INPUT, "Token Holding account must be valid")
     };
 
-    assert_eq!(
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
         definition_account.account_id,
         holding.definition_id(),
         "Mismatch Token Definition and Token Holding"
@@ -109,19 +121,25 @@ fn mint_inner(
         ) => {
             *balance = balance
                 .checked_add(amount_to_mint)
-                .expect("Balance overflow on minting");
+                .unwrap_or_revert(error::ARITHMETIC, "Balance overflow on minting");
 
             *total_supply = total_supply
                 .checked_add(amount_to_mint)
-                .expect("Total supply overflow");
+                .unwrap_or_revert(error::ARITHMETIC, "Total supply overflow");
         }
         (
             TokenDefinition::NonFungible { .. },
             TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. },
         ) => {
-            panic!("Cannot mint additional supply for Non-Fungible Tokens");
+            program_revert::revert!(
+                error::INVALID_INPUT,
+                "Cannot mint additional supply for Non-Fungible Tokens"
+            );
         }
-        _ => panic!("Mismatched Token Definition and Token Holding types"),
+        _ => program_revert::revert!(
+            error::INVALID_INPUT,
+            "Mismatched Token Definition and Token Holding types"
+        ),
     }
 
     let mut definition_post = definition_account.account;

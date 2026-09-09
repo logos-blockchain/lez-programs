@@ -6,6 +6,8 @@
 
 use std::num::NonZeroU128;
 
+use program_revert::UnwrapOrRevert as _;
+
 use spel_framework::prelude::*;
 use spel_framework::context::ProgramContext;
 use nssa_core::{
@@ -14,8 +16,9 @@ use nssa_core::{
 };
 
 #[cfg(not(test))]
-risc0_zkvm::guest::entry!(main);
+risc0_zkvm::guest::entry!(metered_main);
 
+#[program_revert_macros::metered_entry(amm_core::error::INVALID_INPUT)]
 #[lez_program(instruction = "amm_core::Instruction")]
 mod amm {
     #[expect(
@@ -183,8 +186,14 @@ mod amm {
             user_holding_lp,
             current_tick_account,
             clock,
-            NonZeroU128::new(token_a_amount).expect("token_a_amount must be nonzero"),
-            NonZeroU128::new(token_b_amount).expect("token_b_amount must be nonzero"),
+            NonZeroU128::new(token_a_amount).unwrap_or_revert(
+                amm_core::error::INVALID_INPUT,
+                "token_a_amount must be nonzero",
+            ),
+            NonZeroU128::new(token_b_amount).unwrap_or_revert(
+                amm_core::error::INVALID_INPUT,
+                "token_b_amount must be nonzero",
+            ),
             fees,
             ctx.self_program_id,
         );
@@ -234,7 +243,10 @@ mod amm {
             user_holding_lp,
             current_tick_account,
             clock,
-            NonZeroU128::new(min_amount_liquidity).expect("min_amount_liquidity must be nonzero"),
+            NonZeroU128::new(min_amount_liquidity).unwrap_or_revert(
+                amm_core::error::INVALID_INPUT,
+                "min_amount_liquidity must be nonzero",
+            ),
             max_amount_to_add_token_a,
             max_amount_to_add_token_b,
             ctx.self_program_id,
@@ -285,8 +297,10 @@ mod amm {
             user_holding_lp,
             current_tick_account,
             clock,
-            NonZeroU128::new(remove_liquidity_amount)
-                .expect("remove_liquidity_amount must be nonzero"),
+            NonZeroU128::new(remove_liquidity_amount).unwrap_or_revert(
+                amm_core::error::INVALID_INPUT,
+                "remove_liquidity_amount must be nonzero",
+            ),
             min_amount_to_remove_token_a,
             min_amount_to_remove_token_b,
             ctx.self_program_id,

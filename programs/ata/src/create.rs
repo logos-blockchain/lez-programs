@@ -1,7 +1,9 @@
+use ata_core::error;
 use lee_core::{
     account::{Account, AccountWithMetadata},
     program::{AccountPostState, ChainedCall, Claim, ProgramId},
 };
+use program_revert::UnwrapOrRevert as _;
 use token_core::{TokenDefinition, TokenHolding};
 
 pub fn create_associated_token_account(
@@ -15,12 +17,14 @@ pub fn create_associated_token_account(
     // call itself may proceed without `owner.is_authorized`. If the owner account is still
     // default, the returned post-state will still carry `Claim::Authorized` so the runtime can
     // claim that owner account when needed.
-    assert_eq!(
-        token_definition.account.program_owner, token_program_id,
+    program_revert::require_eq!(
+        error::INVALID_INPUT,
+        token_definition.account.program_owner,
+        token_program_id,
         "Token definition must be owned by expected token program"
     );
     let _definition = TokenDefinition::try_from(&token_definition.account.data)
-        .expect("Token definition must be valid");
+        .unwrap_or_revert(error::INVALID_INPUT, "Token definition must be valid");
     let seed = ata_core::verify_ata_and_get_seed(
         &ata_account,
         &owner,
@@ -31,13 +35,16 @@ pub fn create_associated_token_account(
 
     // Idempotent: already initialized → no-op
     if ata_account.account != Account::default() {
-        assert_eq!(
-            ata_account.account.program_owner, token_program_id,
+        program_revert::require_eq!(
+            error::INVALID_INPUT,
+            ata_account.account.program_owner,
+            token_program_id,
             "Existing ATA must be owned by expected token program"
         );
         let holding = TokenHolding::try_from(&ata_account.account.data)
-            .expect("Existing ATA must hold a valid token");
-        assert_eq!(
+            .unwrap_or_revert(error::INVALID_INPUT, "Existing ATA must hold a valid token");
+        program_revert::require_eq!(
+            error::INVALID_INPUT,
             holding.definition_id(),
             token_definition.account_id,
             "Existing ATA token definition does not match"

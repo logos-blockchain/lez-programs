@@ -263,6 +263,8 @@ dependencies = [
  "ata_program",
  "borsh",
  "lee_core",
+ "program-revert",
+ "program-revert-macros",
  "risc0-zkvm",
  "ruint",
  "serde",
@@ -276,6 +278,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "lee_core",
+ "program-revert",
  "risc0-zkvm",
  "serde",
 ]
@@ -286,6 +289,7 @@ version = "0.1.0"
 dependencies = [
  "ata_core",
  "lee_core",
+ "program-revert",
  "token_core",
 ]
 
@@ -1353,6 +1357,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "program-revert"
+version = "0.1.0"
+dependencies = [
+ "risc0-zkvm",
+ "serde",
+]
+
+[[package]]
+name = "program-revert-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "proptest"
 version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2047,6 +2068,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "lee_core",
+ "program-revert",
  "serde",
  "spel-framework-macros",
 ]
