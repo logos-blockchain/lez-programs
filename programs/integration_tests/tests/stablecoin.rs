@@ -389,6 +389,15 @@ fn state_for_stablecoin_repay_tests() -> V03State {
         Ids::user_stablecoin_holding(),
         Accounts::user_stablecoin_holding_init(),
     );
+    state.force_insert_account(
+        compute_protocol_parameters_pda(Ids::stablecoin_program()),
+        Accounts::protocol_parameters_init(),
+    );
+    state.force_insert_account(
+        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+        Accounts::stability_fee_accumulator_init(),
+    );
+    seed_clock(&mut state, OPEN_POSITION_NOW);
     state
 }
 
@@ -551,6 +560,9 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
             Ids::position(),
             Ids::stablecoin_definition(),
             Ids::user_stablecoin_holding(),
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![
             current_nonce(&state, Ids::owner()),

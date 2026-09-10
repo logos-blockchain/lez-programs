@@ -239,27 +239,23 @@ pub enum Instruction {
     },
     /// Repay `amount` of outstanding stablecoin debt against an existing position.
     ///
-    /// Required accounts (4):
-    /// - Owner account (authorized; binds caller-as-owner via position PDA re-derivation)
-    /// - Position account (initialized, owned by `self_program_id`)
-    /// - Stablecoin token definition account (the definition of the stablecoin being repaid)
-    /// - User's stablecoin holding (authorized, initialized, owned by the same Token Program as
-    ///   the definition, with `TokenHolding.definition_id == stablecoin_definition.account_id`)
+    /// Allowed while frozen — repaying only improves the protocol's position (§7).
+    /// The normalized-debt decrement is rounded **down** (§6.3), so debt shrinks
+    /// by at most what was burned.
+    ///
+    /// Required accounts (7), in order:
+    /// 1. `owner` — authorized; bound to the position via PDA re-derivation.
+    /// 2. `position` — initialized, writable, owned by `self_program_id`.
+    /// 3. `stablecoin_definition` — initialized, writable via the chained `Token::Burn`; must
+    ///    equal `protocol_parameters.stablecoin_definition_id`.
+    /// 4. `user_stablecoin_holding` — authorized, initialized; same Token Program and definition
+    ///    as `stablecoin_definition`.
+    /// 5. `stability_fee_accumulator` — initialized, read-only; at its canonical PDA.
+    /// 6. `protocol_parameters` — initialized, read-only; at its canonical PDA.
+    /// 7. `clock` — the system `CLOCK_01` account; read-only.
     ///
     /// `token_program_id` is derived from `user_stablecoin_holding.account.program_owner`.
-    /// `position_nonce` (for position PDA verification) is read from the
-    /// decoded [`Position`].
-    ///
-    /// **Note:** until issue #97 (stability fee accrual) lands, this instruction does
-    /// not accrue fees before reducing debt. A `// TODO(#97)` comment in the host
-    /// function marks where the accrual code will plug in. Today every position has
-    /// `normalized_debt_amount = 0` (no `generate_debt` yet), so the precondition
-    /// is vacuously met.
-    ///
-    /// **Note:** until issue #91 (`generate_debt`) records the stablecoin definition
-    /// into `Position`, this instruction cannot validate that the passed
-    /// `stablecoin_token_definition` is the one this position's debt is denominated
-    /// in. The caller is trusted for that until then.
+    /// `position_nonce` (for position PDA verification) is read from the decoded [`Position`].
     RepayDebt {
         /// Amount of stablecoin debt to repay (also the amount burned from the user's holding).
         amount: u128,

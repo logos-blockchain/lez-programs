@@ -2,7 +2,11 @@ use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
-use stablecoin_core::{verify_position_and_get_seed, Position};
+use stablecoin_core::{
+    compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda,
+    math::{compute_current_accumulated_rate, mul_div, FIXED_POINT_ONE},
+    verify_position_and_get_seed, Position, ProtocolParameters, StabilityFeeAccumulator,
+};
 use token_core::TokenHolding;
 
 /// Repay `amount` of outstanding stablecoin debt against an existing position.
@@ -12,15 +16,14 @@ use token_core::TokenHolding;
 /// amount. The position post-state uses plain [`AccountPostState::new`] — the
 /// PDA was already claimed at `open_position` time.
 ///
-/// Until #173 (stability fee accrual) lands, the fee-accrual step is a
-/// no-op (every position structurally has `normalized_debt_amount = 0` today
-/// because `generate_debt` is unimplemented; "fees-accrued" is therefore
-/// vacuously true). A `// TODO(#173)` comment marks where the accrual code
-/// will plug in — right before the `checked_sub` below.
+/// The normalized-debt decrement is `⌊amount × FIXED_POINT_ONE /
+/// current_accumulator⌋`, rounded **down** per §6.3, so the position's debt
+/// shrinks by at most what was burned and the rounding remainder stays with the
+/// protocol. The accumulator is projected forward to the clock timestamp (§5.3).
 ///
-/// Until #173 (`generate_debt`) records the stablecoin definition into
-/// `Position`, this instruction cannot validate that `stablecoin_definition`
-/// is the correct one for the position's debt. The caller is trusted.
+/// Allowed while the protocol is frozen — repaying only improves the protocol's
+/// position (§7). `stablecoin_definition` is pinned against
+/// `ProtocolParameters.stablecoin_definition_id`.
 ///
 /// # Panics
 /// - `owner` is not authorized.
@@ -30,13 +33,24 @@ use token_core::TokenHolding;
 /// - `user_stablecoin_holding` is not authorized, is uninitialized, is owned by a different Token
 ///   Program than `stablecoin_definition`, or holds a [`TokenHolding`] whose `definition_id` does
 ///   not match `stablecoin_definition.account_id`.
-/// - `stablecoin_definition` is uninitialized.
-/// - `amount > Position.normalized_debt_amount`.
+/// - `stablecoin_definition` is uninitialized, or does not match
+///   `protocol_parameters.stablecoin_definition_id`.
+/// - `protocol_parameters` or `stability_fee_accumulator` is uninitialized, wrongly owned, not at
+///   its canonical PDA, or does not decode.
+/// - `clock` is not the initialized system `CLOCK_01` account.
+/// - The floored decrement exceeds `Position.normalized_debt_amount`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the seven account inputs mirror the spec §10.8 ABI"
+)]
 pub fn repay_debt(
     owner: AccountWithMetadata,
     position: AccountWithMetadata,
     stablecoin_definition: AccountWithMetadata,
     user_stablecoin_holding: AccountWithMetadata,
+    stability_fee_accumulator: AccountWithMetadata,
+    protocol_parameters: AccountWithMetadata,
+    clock: AccountWithMetadata,
     stablecoin_program_id: ProgramId,
     amount: u128,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
@@ -73,6 +87,21 @@ pub fn repay_debt(
         user_stablecoin_holding.is_authorized,
         "User stablecoin holding authorization is missing"
     );
+
+    let parameters = ProtocolParameters::try_from(&crate::checks::decode_global(
+        &protocol_parameters,
+        compute_protocol_parameters_pda(stablecoin_program_id),
+        stablecoin_program_id,
+        "ProtocolParameters",
+    ))
+    .expect("ProtocolParameters must decode");
+    // `is_frozen` is deliberately not read: repaying only improves the protocol's
+    // position, so spec §7 keeps it available while frozen.
+    assert_eq!(
+        stablecoin_definition.account_id, parameters.stablecoin_definition_id,
+        "Stablecoin definition does not match the one bound at initialize_program"
+    );
+
     assert_ne!(
         user_stablecoin_holding.account,
         Account::default(),
@@ -95,13 +124,28 @@ pub fn repay_debt(
         "Stablecoin holding does not match the provided stablecoin definition"
     );
 
-    // TODO(#173): accrue stability fees onto position_data.normalized_debt_amount
-    // here, before the checked_sub below. Today every position has
-    // normalized_debt_amount = 0 (no generate_debt yet), so the precondition is
-    // trivially met.
+    let accumulator = StabilityFeeAccumulator::try_from(&crate::checks::decode_global(
+        &stability_fee_accumulator,
+        compute_stability_fee_accumulator_pda(stablecoin_program_id),
+        stablecoin_program_id,
+        "StabilityFeeAccumulator",
+    ))
+    .expect("StabilityFeeAccumulator must decode");
+
+    let now = crate::accrue_stability_fee::read_clock(&clock);
+    let current_accumulator = compute_current_accumulated_rate(
+        accumulator.accumulated_rate_at_last_accrual,
+        parameters.stability_fee_per_millisecond,
+        accumulator.last_accrued_at,
+        now,
+    );
+
+    // Round DOWN (§6.3): the borrower burned exactly `amount`, and their debt
+    // shrinks by at most that much. The remainder is fee credit for the protocol.
+    let debt_delta = mul_div(amount, FIXED_POINT_ONE, current_accumulator);
     let new_debt = position_data
         .normalized_debt_amount
-        .checked_sub(amount)
+        .checked_sub(debt_delta)
         .expect("Repay amount exceeds outstanding debt");
 
     let updated_position = Position {
@@ -120,6 +164,9 @@ pub fn repay_debt(
         AccountPostState::new(position_post),
         AccountPostState::new(stablecoin_definition.account.clone()),
         AccountPostState::new(user_stablecoin_holding.account.clone()),
+        AccountPostState::new(stability_fee_accumulator.account),
+        AccountPostState::new(protocol_parameters.account),
+        AccountPostState::new(clock.account),
     ];
 
     let token_program_id = user_stablecoin_holding.account.program_owner;

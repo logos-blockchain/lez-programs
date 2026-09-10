@@ -1188,6 +1188,131 @@ fn generate_debt_rejects_holding_for_another_definition() {
     );
 }
 
+// --- repay_debt: fee-aware rebuild (spec §10.8) ---
+
+fn repay(
+    position: AccountWithMetadata,
+    definition: AccountWithMetadata,
+    accumulator: AccountWithMetadata,
+    parameters: AccountWithMetadata,
+    amount: u128,
+) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
+    crate::repay_debt::repay_debt(
+        owner_account(),
+        position,
+        definition,
+        user_stablecoin_holding_account(1_000),
+        accumulator,
+        parameters,
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        amount,
+    )
+}
+
+#[test]
+fn repay_debt_echoes_the_three_new_accounts() {
+    let (post_states, _) = repay(
+        init_position_account(1_000, 300),
+        stablecoin_definition_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        100,
+    );
+
+    assert_eq!(post_states.len(), 7);
+    assert_eq!(*post_states[6].account(), clock_account(NOW).account);
+}
+
+#[test]
+fn repay_debt_rounds_the_normalized_delta_down() {
+    // accumulator 3.0 → 100 / 3 = 33.33…, floored to 33 (§6.3), so the debt
+    // shrinks by slightly less than paid and the remainder favours the protocol.
+    let (post_states, _) = repay(
+        init_position_account(1_000, 300),
+        stablecoin_definition_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE * 3, NOW),
+        protocol_parameters_account(false),
+        100,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.normalized_debt_amount, 300 - 33);
+}
+
+#[test]
+fn repay_debt_is_allowed_while_frozen() {
+    // Repaying only improves the protocol's position, so §7 keeps it open.
+    let (post_states, chained_calls) = repay(
+        init_position_account(1_000, 300),
+        stablecoin_definition_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(true),
+        100,
+    );
+
+    assert_eq!(chained_calls.len(), 1);
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.normalized_debt_amount, 200);
+}
+
+#[test]
+#[should_panic(
+    expected = "Stablecoin definition does not match the one bound at initialize_program"
+)]
+fn repay_debt_rejects_an_unbound_stablecoin_definition() {
+    // The Plan 1 scaffold trusted the caller here; ProtocolParameters now pins it.
+    let mut definition = stablecoin_definition_account();
+    definition.account_id = AccountId::new([0x88u8; 32]);
+    repay(
+        init_position_account(1_000, 300),
+        definition,
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Repay amount exceeds outstanding debt")]
+fn repay_debt_rejects_overrepay_against_the_floored_delta() {
+    repay(
+        init_position_account(1_000, 10),
+        stablecoin_definition_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        11,
+    );
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account must be initialized")]
+fn repay_debt_rejects_uninitialized_protocol_parameters() {
+    repay(
+        init_position_account(1_000, 300),
+        stablecoin_definition_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: false,
+            account_id: protocol_parameters_id(),
+        },
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "StabilityFeeAccumulator account must be initialized")]
+fn repay_debt_rejects_uninitialized_accumulator() {
+    repay(
+        init_position_account(1_000, 300),
+        stablecoin_definition_account(),
+        crate::test_support::uninitialized(crate::test_support::accumulator_id()),
+        protocol_parameters_account(false),
+        100,
+    );
+}
+
 #[test]
 fn position_pda_is_deterministic_and_owner_and_nonce_specific() {
     let id_a = compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), TEST_POSITION_NONCE);
@@ -1650,11 +1775,14 @@ fn repay_debt_decreases_debt_and_emits_burn() {
         init_position_account(initial_collateral, initial_debt),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(holding_balance),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         amount,
     );
 
-    assert_eq!(post_states.len(), 4);
+    assert_eq!(post_states.len(), 7);
 
     // Position post-state: plain `new`, holds the decremented Position.
     let position_post = &post_states[1];
@@ -1706,6 +1834,9 @@ fn repay_debt_allows_full_repayment() {
         init_position_account(500, debt),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         debt,
     );
@@ -1722,6 +1853,9 @@ fn repay_debt_allows_zero_amount() {
         init_position_account(500, initial_debt),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         0,
     );
@@ -1749,6 +1883,9 @@ fn repay_debt_requires_owner_authorization() {
         init_position_account(500, 300),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1762,6 +1899,9 @@ fn repay_debt_rejects_uninitialized_position() {
         uninit_position_account(),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1777,6 +1917,9 @@ fn repay_debt_rejects_position_owned_by_other_program() {
         position,
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1792,6 +1935,9 @@ fn repay_debt_rejects_wrong_position_address() {
         position,
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1807,6 +1953,9 @@ fn repay_debt_requires_user_holding_authorization() {
         init_position_account(500, 300),
         stablecoin_definition_account(),
         holding,
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1825,6 +1974,9 @@ fn repay_debt_rejects_uninitialized_user_holding() {
         init_position_account(500, 300),
         stablecoin_definition_account(),
         holding,
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1842,6 +1994,9 @@ fn repay_debt_rejects_holding_with_different_token_program() {
         init_position_account(500, 300),
         stablecoin_definition_account(),
         holding,
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1860,6 +2015,9 @@ fn repay_debt_rejects_holding_for_other_definition() {
         init_position_account(500, 300),
         stablecoin_definition_account(),
         holding,
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
@@ -1873,6 +2031,9 @@ fn repay_debt_rejects_overrepay() {
         init_position_account(500, 100),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         200,
     );
@@ -1934,6 +2095,9 @@ fn repay_debt_rejects_position_with_stale_owner_field() {
         }),
         stablecoin_definition_account(),
         user_stablecoin_holding_account(1_000),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         100,
     );
