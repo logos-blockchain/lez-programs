@@ -85,7 +85,7 @@ fn protocol_parameters_account_for(
                 freeze_authority_account_id: AccountId::new([0xFEu8; 32]),
                 stablecoin_definition_id: stablecoin_definition_id(),
                 collateral_definition_id,
-                market_price_oracle_id: AccountId::new([0xB0u8; 32]),
+                market_price_oracle_id: crate::test_support::oracle_id(),
                 stability_fee_per_millisecond: FIXED_POINT_ONE,
                 controller_proportional_gain: 0,
                 controller_integral_gain: 0,
@@ -939,6 +939,252 @@ fn deposit_collateral_rejects_overflow() {
         user_holding_account(1_000),
         protocol_parameters_account(false),
         1,
+    );
+}
+
+// --- generate_debt (spec §10.7) ---
+//
+// accumulator 1.0, redemption price 0.5, ratio 1.5x → required collateral is
+// 0.75 x nominal debt. Oracle is fresh and used only as a liveness gate.
+
+const ORACLE_PRICE: u128 = FIXED_POINT_ONE / 4;
+
+#[allow(clippy::too_many_arguments, reason = "mirrors the host fn ABI")]
+fn generate(
+    position: AccountWithMetadata,
+    accumulator: AccountWithMetadata,
+    oracle: AccountWithMetadata,
+    parameters: AccountWithMetadata,
+    amount: u128,
+) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
+    crate::generate_debt::generate_debt(
+        owner_account(),
+        position,
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(0),
+        accumulator,
+        crate::test_support::redemption_price_state_account(NOW),
+        oracle,
+        parameters,
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        amount,
+    )
+}
+
+fn fresh_oracle() -> AccountWithMetadata {
+    crate::test_support::oracle_account(NOW, ORACLE_PRICE)
+}
+
+fn unit_accumulator() -> AccountWithMetadata {
+    crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW)
+}
+
+#[test]
+fn generate_debt_mints_and_increases_normalized_debt() {
+    let (post_states, chained_calls) = generate(
+        init_position_account(1_000, 0),
+        unit_accumulator(),
+        fresh_oracle(),
+        protocol_parameters_account(false),
+        100,
+    );
+
+    assert_eq!(post_states.len(), 9);
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    // accumulator is exactly 1.0, so the delta equals the minted amount.
+    assert_eq!(position.normalized_debt_amount, 100);
+    assert_eq!(position.collateral_amount, 1_000);
+
+    assert_eq!(chained_calls.len(), 1);
+    let mut definition_authorized = stablecoin_definition_account();
+    definition_authorized.is_authorized = true;
+    let expected = ChainedCall::new(
+        TOKEN_PROGRAM_ID,
+        vec![definition_authorized, user_stablecoin_holding_account(0)],
+        &token_core::Instruction::Mint {
+            amount_to_mint: 100,
+        },
+    )
+    .with_pda_seeds(vec![
+        stablecoin_core::compute_stablecoin_definition_pda_seed(),
+    ]);
+    assert_eq!(chained_calls[0], expected);
+}
+
+#[test]
+fn generate_debt_rounds_the_normalized_delta_up() {
+    // accumulator 3.0 → 100 / 3 = 33.33…, and §6.3 rounds UP so the borrower's
+    // nominal debt grows by at least the amount minted.
+    let (post_states, _) = generate(
+        init_position_account(1_000, 0),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE * 3, NOW),
+        fresh_oracle(),
+        protocol_parameters_account(false),
+        100,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.normalized_debt_amount, 34);
+}
+
+#[test]
+fn generate_debt_echoes_the_read_only_globals() {
+    let (post_states, _) = generate(
+        init_position_account(1_000, 0),
+        unit_accumulator(),
+        fresh_oracle(),
+        protocol_parameters_account(false),
+        100,
+    );
+
+    assert_eq!(*post_states[6].account(), fresh_oracle().account);
+    assert_eq!(*post_states[8].account(), clock_account(NOW).account);
+}
+
+#[test]
+#[should_panic(expected = "Position is undercollateralized")]
+fn generate_debt_fails_when_the_mint_would_undercollateralize() {
+    // 100 collateral supports at most 133 nominal debt at 0.75x; 200 is over.
+    generate(
+        init_position_account(100, 0),
+        unit_accumulator(),
+        fresh_oracle(),
+        protocol_parameters_account(false),
+        200,
+    );
+}
+
+#[test]
+fn generate_debt_at_the_exact_ratio_boundary_succeeds() {
+    // debt 100 requires exactly 75 collateral.
+    let (post_states, _) = generate(
+        init_position_account(75, 0),
+        unit_accumulator(),
+        fresh_oracle(),
+        protocol_parameters_account(false),
+        100,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.normalized_debt_amount, 100);
+}
+
+#[test]
+#[should_panic(expected = "Protocol is frozen")]
+fn generate_debt_rejects_when_frozen() {
+    generate(
+        init_position_account(1_000, 0),
+        unit_accumulator(),
+        fresh_oracle(),
+        protocol_parameters_account(true),
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Market price oracle observation is stale")]
+fn generate_debt_rejects_a_stale_oracle() {
+    let stale = NOW - 86_400_001;
+    generate(
+        init_position_account(1_000, 0),
+        unit_accumulator(),
+        crate::test_support::oracle_account(stale, ORACLE_PRICE),
+        protocol_parameters_account(false),
+        100,
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "Market price oracle account_id does not match ProtocolParameters.market_price_oracle_id"
+)]
+fn generate_debt_rejects_an_unbound_oracle() {
+    let mut oracle = fresh_oracle();
+    oracle.account_id = AccountId::new([0x99u8; 32]);
+    generate(
+        init_position_account(1_000, 0),
+        unit_accumulator(),
+        oracle,
+        protocol_parameters_account(false),
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Owner authorization is missing")]
+fn generate_debt_requires_owner_authorization() {
+    let mut owner = owner_account();
+    owner.is_authorized = false;
+    crate::generate_debt::generate_debt(
+        owner,
+        init_position_account(1_000, 0),
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(0),
+        unit_accumulator(),
+        crate::test_support::redemption_price_state_account(NOW),
+        fresh_oracle(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Position account must be initialized")]
+fn generate_debt_rejects_uninitialized_position() {
+    generate(
+        uninit_position_account(),
+        unit_accumulator(),
+        fresh_oracle(),
+        protocol_parameters_account(false),
+        100,
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "Stablecoin definition does not match the one bound at initialize_program"
+)]
+fn generate_debt_rejects_an_unbound_stablecoin_definition() {
+    let mut definition = stablecoin_definition_account();
+    definition.account_id = AccountId::new([0x88u8; 32]);
+    crate::generate_debt::generate_debt(
+        owner_account(),
+        init_position_account(1_000, 0),
+        definition,
+        user_stablecoin_holding_account(0),
+        unit_accumulator(),
+        crate::test_support::redemption_price_state_account(NOW),
+        fresh_oracle(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "User stablecoin holding does not match the stablecoin definition")]
+fn generate_debt_rejects_holding_for_another_definition() {
+    let holding = token_holding_account(
+        user_stablecoin_holding_id(),
+        AccountId::new([0x21u8; 32]),
+        0,
+    );
+    crate::generate_debt::generate_debt(
+        owner_account(),
+        init_position_account(1_000, 0),
+        stablecoin_definition_account(),
+        holding,
+        unit_accumulator(),
+        crate::test_support::redemption_price_state_account(NOW),
+        fresh_oracle(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        100,
     );
 }
 
