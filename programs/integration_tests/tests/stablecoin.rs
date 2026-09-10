@@ -412,6 +412,22 @@ fn assert_position(state: &V03State, expected_collateral: u128) {
 }
 
 fn assert_fungible_balance(state: &V03State, account_id: AccountId, expected_balance: u128) {
+    assert_fungible_balance_of(
+        state,
+        account_id,
+        Ids::collateral_definition(),
+        expected_balance,
+    );
+}
+
+/// Same check, for holdings of a definition other than the collateral one (the
+/// lifecycle test also asserts stablecoin balances).
+fn assert_fungible_balance_of(
+    state: &V03State,
+    account_id: AccountId,
+    expected_definition: AccountId,
+    expected_balance: u128,
+) {
     let holding = TokenHolding::try_from(&state.get_account_by_id(account_id).data)
         .expect("valid TokenHolding");
     match holding {
@@ -419,7 +435,7 @@ fn assert_fungible_balance(state: &V03State, account_id: AccountId, expected_bal
             definition_id,
             balance,
         } => {
-            assert_eq!(definition_id, Ids::collateral_definition());
+            assert_eq!(definition_id, expected_definition);
             assert_eq!(balance, expected_balance);
         }
         TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
@@ -625,6 +641,14 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
 /// Wall clock for the open/withdraw fixture, in Unix milliseconds.
 const OPEN_POSITION_NOW: u64 = 1_700_000_000_000;
 
+/// Amounts for the full-lifecycle test.
+const LIFECYCLE_OPEN_COLLATERAL: u128 = 500_000;
+const LIFECYCLE_TOP_UP: u128 = 100_000;
+const LIFECYCLE_BORROW: u128 = 100_000;
+/// Stablecoin the owner holds before borrowing, standing in for a market purchase.
+/// Needed because accrued fees make full repayment cost more than was minted.
+const LIFECYCLE_STABLECOIN_BUFFER: u128 = 50_000;
+
 mod protocol_config {
     use stablecoin_core::math::FIXED_POINT_ONE;
 
@@ -739,6 +763,302 @@ fn submit_poke(
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::admin()]);
     let tx = PublicTransaction::new(message, witness_set);
     state.transition_from_public_transaction(&tx, block_id, now)
+}
+
+/// Full position lifecycle through the zkVM against a really-bootstrapped
+/// protocol: open → deposit → borrow → accrue → repay → withdraw → close.
+///
+/// This is "Mode A" — Plan 2 has shipped, so `accrue_stability_fee` runs between
+/// borrowing and repaying and the §6.3 rounding is exercised at a non-trivial
+/// accumulator rather than at exactly 1.0.
+#[test]
+fn stablecoin_full_position_lifecycle() {
+    use stablecoin_core::math::{compute_current_accumulated_rate, mul_div_ceil, FIXED_POINT_ONE};
+
+    let start: u64 = 1_700_000_000_000;
+    let mut state = initialize_protocol(start, 0);
+
+    // The owner, their collateral, and a market-acquired stablecoin balance. The
+    // buffer matters: stability fees mean repaying the debt costs more stablecoin
+    // than was minted, which is exactly the spec's §2 "acquire from market" model.
+    state.force_insert_account(
+        Ids::owner(),
+        Account {
+            program_owner: [7u32; 8],
+            ..Account::default()
+        },
+    );
+    state.force_insert_account(Ids::user_holding(), Accounts::user_holding_init());
+    // A fresh observation: the bootstrap fixture's oracle is anchored at 0, which
+    // `generate_debt`'s staleness gate rejects against a real wall clock.
+    state.force_insert_account(
+        Ids::oracle(),
+        Accounts::oracle_with(
+            Ids::stablecoin_definition_pda(),
+            Ids::collateral_definition(),
+            stablecoin_core::math::FIXED_POINT_ONE / 4,
+            start,
+        ),
+    );
+    state.force_insert_account(
+        Ids::user_stablecoin_holding(),
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::stablecoin_definition_pda(),
+                balance: LIFECYCLE_STABLECOIN_BUFFER,
+            }),
+            nonce: Nonce(0),
+        },
+    );
+    // Credit the buffer to `total_supply` too. Force-inserting a holding without
+    // it would leave the token's books inconsistent, and the chained Burn during
+    // repayment would underflow.
+    let mut definition = state.get_account_by_id(Ids::stablecoin_definition_pda());
+    let bootstrapped = TokenDefinition::try_from(&definition.data).expect("valid TokenDefinition");
+    match bootstrapped {
+        TokenDefinition::Fungible {
+            name,
+            total_supply,
+            metadata_id,
+            authority,
+        } => {
+            definition.data = Data::from(&TokenDefinition::Fungible {
+                name,
+                total_supply: total_supply + LIFECYCLE_STABLECOIN_BUFFER,
+                metadata_id,
+                authority,
+            });
+        }
+        TokenDefinition::NonFungible { .. } => panic!("stablecoin definition must be fungible"),
+    }
+    state.force_insert_account(Ids::stablecoin_definition_pda(), definition);
+
+    let mut block = 1u64;
+
+    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    let accumulator_pda = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
+    let redemption_pda = compute_redemption_price_state_pda(Ids::stablecoin_program());
+
+    // 1. Open with collateral.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            Ids::collateral_definition(),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![
+            (&Keys::owner(), Ids::owner()),
+            (&Keys::user_holding(), Ids::user_holding()),
+        ],
+        stablecoin_core::Instruction::OpenPosition {
+            position_nonce: Ids::position_nonce(),
+            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
+        },
+        "open_position",
+    );
+    assert_position(&state, LIFECYCLE_OPEN_COLLATERAL);
+
+    // 2. Top up.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            params_pda,
+        ],
+        vec![
+            (&Keys::owner(), Ids::owner()),
+            (&Keys::user_holding(), Ids::user_holding()),
+        ],
+        stablecoin_core::Instruction::DepositCollateral {
+            amount: LIFECYCLE_TOP_UP,
+        },
+        "deposit_collateral",
+    );
+    let collateral = LIFECYCLE_OPEN_COLLATERAL + LIFECYCLE_TOP_UP;
+    assert_position(&state, collateral);
+    assert_fungible_balance(&state, Ids::vault(), collateral);
+
+    // 3. Borrow. The accumulator is still exactly 1.0, so normalized == nominal.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::stablecoin_definition_pda(),
+            Ids::user_stablecoin_holding(),
+            accumulator_pda,
+            redemption_pda,
+            Ids::oracle(),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![(&Keys::owner(), Ids::owner())],
+        stablecoin_core::Instruction::GenerateDebt {
+            amount: LIFECYCLE_BORROW,
+        },
+        "generate_debt",
+    );
+    let borrowed = read_position(&state);
+    assert_eq!(borrowed.normalized_debt_amount, LIFECYCLE_BORROW);
+    assert_fungible_balance_of(
+        &state,
+        Ids::user_stablecoin_holding(),
+        Ids::stablecoin_definition_pda(),
+        LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW,
+    );
+
+    // 4. Let an hour of fees accrue, then poke.
+    let after_accrual = start + 3_600_000;
+    submit_poke(
+        &mut state,
+        after_accrual,
+        block,
+        stablecoin_core::Instruction::AccrueStabilityFee,
+        vec![params_pda, accumulator_pda, CLOCK_01_PROGRAM_ACCOUNT_ID],
+    )
+    .expect("accrue_stability_fee must succeed");
+    block += 1;
+    let accumulator = read_accumulator(&state);
+    assert!(
+        accumulator.accumulated_rate_at_last_accrual > FIXED_POINT_ONE,
+        "an hour of stability fee must move the accumulator above 1.0"
+    );
+
+    // 5. Repay the whole debt. It costs more than was minted — that gap is the fee.
+    let current_accumulator = compute_current_accumulated_rate(
+        accumulator.accumulated_rate_at_last_accrual,
+        protocol_config::STABILITY_FEE_PER_MILLISECOND,
+        accumulator.last_accrued_at,
+        after_accrual,
+    );
+    let nominal_debt = mul_div_ceil(
+        borrowed.normalized_debt_amount,
+        current_accumulator,
+        FIXED_POINT_ONE,
+    );
+    assert!(
+        nominal_debt > LIFECYCLE_BORROW,
+        "accrued nominal debt must exceed the amount minted"
+    );
+    submit(
+        &mut state,
+        &mut block,
+        after_accrual,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::stablecoin_definition_pda(),
+            Ids::user_stablecoin_holding(),
+            accumulator_pda,
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![
+            (&Keys::owner(), Ids::owner()),
+            (
+                &Keys::user_stablecoin_holding(),
+                Ids::user_stablecoin_holding(),
+            ),
+        ],
+        stablecoin_core::Instruction::RepayDebt {
+            amount: nominal_debt,
+        },
+        "repay_debt",
+    );
+    assert_eq!(read_position(&state).normalized_debt_amount, 0);
+
+    // 6. Withdraw every last unit of collateral — allowed now the debt is gone.
+    submit(
+        &mut state,
+        &mut block,
+        after_accrual,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            accumulator_pda,
+            redemption_pda,
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![(&Keys::owner(), Ids::owner())],
+        stablecoin_core::Instruction::WithdrawCollateral { amount: collateral },
+        "withdraw_collateral",
+    );
+    assert_position(&state, 0);
+    assert_fungible_balance(&state, Ids::vault(), 0);
+
+    // 7. Close. The position is released; the vault lingers empty (§12).
+    submit(
+        &mut state,
+        &mut block,
+        after_accrual,
+        vec![Ids::owner(), Ids::position(), Ids::vault(), params_pda],
+        vec![(&Keys::owner(), Ids::owner())],
+        stablecoin_core::Instruction::ClosePosition,
+        "close_position",
+    );
+    let closed = state.get_account_by_id(Ids::position());
+    assert_eq!(
+        closed.data,
+        Data::default(),
+        "close_position must clear the position data"
+    );
+    // The account itself lingers, stablecoin-owned: LEE forbids a program from
+    // changing `program_owner` or `nonce`, so the PDA cannot be released.
+    assert_eq!(closed.program_owner, Ids::stablecoin_program());
+    assert_fungible_balance(&state, Ids::vault(), 0);
+}
+
+fn submit(
+    state: &mut V03State,
+    block: &mut u64,
+    now: u64,
+    accounts: Vec<AccountId>,
+    signers: Vec<(&PrivateKey, AccountId)>,
+    instruction: stablecoin_core::Instruction,
+    label: &str,
+) {
+    seed_clock(state, now);
+    let nonces = signers
+        .iter()
+        .map(|(_, id)| current_nonce(state, *id))
+        .collect();
+    let keys: Vec<&PrivateKey> = signers.iter().map(|(key, _)| *key).collect();
+    let message = public_transaction::Message::try_new(
+        Ids::stablecoin_program(),
+        accounts,
+        nonces,
+        instruction,
+    )
+    .expect("valid lifecycle message");
+    let witness_set = public_transaction::WitnessSet::for_message(&message, &keys);
+    let tx = PublicTransaction::new(message, witness_set);
+    state
+        .transition_from_public_transaction(&tx, *block, now)
+        .unwrap_or_else(|e| panic!("{label} must succeed: {e:?}"));
+    *block = block.saturating_add(1);
+}
+
+fn read_position(state: &V03State) -> Position {
+    Position::try_from(&state.get_account_by_id(Ids::position()).data).expect("valid Position")
 }
 
 fn read_accumulator(state: &V03State) -> stablecoin_core::StabilityFeeAccumulator {
