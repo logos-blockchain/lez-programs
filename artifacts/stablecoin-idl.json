@@ -371,6 +371,36 @@
       ]
     },
     {
+      "name": "close_position",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "withdraw_collateral",
       "accounts": [
         {

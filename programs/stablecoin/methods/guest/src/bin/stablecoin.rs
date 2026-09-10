@@ -331,6 +331,37 @@ mod stablecoin {
         ))
     }
 
+    /// Clear a fully-settled position, releasing its PDA (spec §10.9; host fn
+    /// `stablecoin_program::close_position`).
+    ///
+    /// Allowed while frozen. Emits no chained calls; the vault lingers empty.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn close_position(
+        ctx: ProgramContext,
+        #[account(signer)]
+        owner: AccountWithMetadata,
+        #[account(mut)]
+        position: AccountWithMetadata,
+        vault: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::close_position::close_position(
+            owner,
+            position,
+            vault,
+            protocol_parameters,
+            ctx.self_program_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
     /// Withdraw `amount` collateral tokens from an existing position back to a
     /// user-controlled holding.
     ///

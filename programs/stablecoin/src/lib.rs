@@ -8,6 +8,9 @@ pub mod accrue_stability_fee;
 /// Shared validation helpers reused across the position-lifecycle instructions.
 pub mod checks;
 
+/// Clear a fully-settled position, releasing its PDA.
+pub mod close_position;
+
 /// Deposit additional collateral into an existing position.
 pub mod deposit_collateral;
 
