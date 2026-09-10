@@ -1,6 +1,6 @@
 //! Shared validation helpers reused across the position-lifecycle instructions.
 
-use alloy_primitives::U256;
+use alloy_primitives::U512;
 use stablecoin_core::{math::FIXED_POINT_ONE, Position};
 
 /// Assert that `position` satisfies the collateralization invariant from spec §6.2:
@@ -15,7 +15,11 @@ use stablecoin_core::{math::FIXED_POINT_ONE, Position};
 /// divides once instead of twice, so no intermediate rounding creeps into the
 /// comparison.
 ///
-/// Computed in `U256` to avoid intermediate overflow. The caller is responsible for
+/// Computed in `U512`. `U256` is **not** wide enough: `collateral × FIXED_POINT_ONE²`
+/// alone exceeds it once collateral passes 115792089237316195423570 — about
+/// 115_792 whole tokens at 18 decimals — and the right-hand side, where nominal
+/// debt is scaled by both the redemption price and the ratio, overflows sooner
+/// still. Neither side has a bound below `u128::MAX`. The caller is responsible for
 /// projecting `current_accumulator` and `current_redemption_price` forward to the
 /// current timestamp (spec §5.3) before calling; this helper only compares.
 ///
@@ -25,7 +29,7 @@ use stablecoin_core::{math::FIXED_POINT_ONE, Position};
 /// # Panics
 ///
 /// - `"Position is undercollateralized"` when `lhs >= rhs` does not hold.
-/// - When an intermediate product exceeds `U256`.
+/// - When an intermediate product exceeds `U512`.
 pub fn assert_position_is_collateralized(
     position: &Position,
     current_accumulator: u128,
@@ -36,24 +40,24 @@ pub fn assert_position_is_collateralized(
         return;
     }
 
-    let multiply = |a: U256, b: U256| {
+    let multiply = |a: U512, b: U512| {
         a.checked_mul(b)
-            .expect("collateralization check: intermediate product overflows U256")
+            .expect("collateralization check: intermediate product overflows U512")
     };
 
-    let one = U256::from(FIXED_POINT_ONE);
+    let one = U512::from(FIXED_POINT_ONE);
 
     let nominal_debt = multiply(
-        U256::from(position.normalized_debt_amount),
-        U256::from(current_accumulator),
+        U512::from(position.normalized_debt_amount),
+        U512::from(current_accumulator),
     )
     .checked_div(one)
     .expect("collateralization check: FIXED_POINT_ONE is non-zero");
 
-    let collateral_value = multiply(multiply(U256::from(position.collateral_amount), one), one);
+    let collateral_value = multiply(multiply(U512::from(position.collateral_amount), one), one);
     let required_collateral_value = multiply(
-        multiply(nominal_debt, U256::from(current_redemption_price)),
-        U256::from(minimum_collateralization_ratio),
+        multiply(nominal_debt, U512::from(current_redemption_price)),
+        U512::from(minimum_collateralization_ratio),
     );
 
     assert!(
@@ -82,6 +86,58 @@ mod tests {
             normalized_debt_amount,
             opened_at: 0,
         }
+    }
+
+    /// Regression for the `U256` overflow found in review: `collateral * F^2`
+    /// exceeds `U256` once collateral passes 115792089237316195423570, which is
+    /// only ~115_792 whole tokens at 18 decimals. The position below is
+    /// comfortably collateralized, so it must compare, not panic.
+    #[test]
+    fn very_large_collateral_does_not_overflow_the_cross_product() {
+        let collateral = 115_792_089_237_316_195_423_571u128;
+        assert_position_is_collateralized(
+            &position_with(collateral, 1),
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE * 11 / 10,
+        );
+    }
+
+    #[test]
+    fn maximum_collateral_does_not_overflow_the_cross_product() {
+        assert_position_is_collateralized(
+            &position_with(u128::MAX, 1),
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE * 11 / 10,
+        );
+    }
+
+    /// The right-hand side has the same exposure: nominal debt is scaled by both
+    /// the redemption price and the ratio.
+    #[test]
+    #[should_panic(expected = "Position is undercollateralized")]
+    fn very_large_debt_still_compares_rather_than_overflowing() {
+        assert_position_is_collateralized(
+            &position_with(1, 115_792_089_237_316_195_423_571),
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE * 11 / 10,
+        );
+    }
+
+    /// Every input at `u128::MAX` — the widest the domain allows. Pins the claim
+    /// that `U512` has headroom for the whole cross-product, not just for the
+    /// boundary case above.
+    #[test]
+    #[should_panic(expected = "Position is undercollateralized")]
+    fn all_inputs_at_u128_max_compare_without_overflowing() {
+        assert_position_is_collateralized(
+            &position_with(u128::MAX, u128::MAX),
+            u128::MAX,
+            u128::MAX,
+            u128::MAX,
+        );
     }
 
     #[test]
