@@ -138,22 +138,31 @@ pub enum Instruction {
     RefreshGlobals,
     /// Open a new collateral-only [`Position`] for the calling owner.
     ///
-    /// Required accounts (5):
-    /// - Owner account (authorized)
-    /// - Position account (uninitialized, address must match
-    ///   `compute_position_pda(self_program_id, owner, position_nonce)`)
-    /// - Position vault token holding account (uninitialized, address must match
-    ///   `compute_position_vault_pda(self_program_id, position_id)`)
-    /// - Owner's source token holding for the collateral (authorized, initialized)
-    /// - Token definition account for the collateral (matches the user holding's `definition_id`;
-    ///   its `program_owner` determines the Token Program used by the chained `InitializeAccount`
-    ///   / `Transfer` calls)
+    /// The position starts with no debt — spec §10.4 deliberately omits an
+    /// initial-debt parameter; borrowing is a separate `GenerateDebt`. Blocked
+    /// while the protocol is frozen.
+    ///
+    /// Required accounts (7), in order:
+    /// 1. `owner` — authorized.
+    /// 2. `position` — uninitialized; address must match `compute_position_pda(self_program_id,
+    ///    owner, position_nonce)`.
+    /// 3. `vault` — uninitialized position vault token holding; address must match
+    ///    `compute_position_vault_pda(self_program_id, position_id)`.
+    /// 4. `user_collateral_holding` — authorized, initialized; the owner's source holding for the
+    ///    collateral.
+    /// 5. `collateral_definition` — initialized; must equal
+    ///    `protocol_parameters.collateral_definition_id`. Its `program_owner` determines the Token
+    ///    Program used by the chained `InitializeAccount` and `Transfer` calls.
+    /// 6. `protocol_parameters` — initialized, read-only; must sit at
+    ///    `compute_protocol_parameters_pda(self_program_id)`. Supplies the single global
+    ///    collateral definition id and the freeze flag.
+    /// 7. `clock` — the system `CLOCK_01` account; read-only. Stamps `opened_at`.
     OpenPosition {
         /// Caller-chosen nonce that, with the owner's account id, forms the
         /// position PDA's seed pre-image. Lets one owner hold many positions.
         position_nonce: u64,
-        /// Amount of collateral tokens to deposit into the position vault.
-        collateral_amount: u128,
+        /// Collateral tokens to move into the position vault at open time.
+        initial_collateral_amount: u128,
     },
     /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
     ///

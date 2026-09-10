@@ -201,6 +201,33 @@ impl Accounts {
         }
     }
 
+    /// A bootstrapped `ProtocolParameters`, force-inserted rather than produced by
+    /// `initialize_program`, so the position tests stay independent of the bootstrap
+    /// flow. The full lifecycle test in Plan 3 issue 08 uses the real bootstrap.
+    fn protocol_parameters_init() -> Account {
+        Account {
+            program_owner: Ids::stablecoin_program(),
+            balance: 0,
+            data: Data::from(&stablecoin_core::ProtocolParameters {
+                admin_account_id: Ids::admin(),
+                freeze_authority_account_id: Ids::freeze_authority(),
+                stablecoin_definition_id: Ids::stablecoin_definition(),
+                collateral_definition_id: Ids::collateral_definition(),
+                market_price_oracle_id: Ids::oracle(),
+                stability_fee_per_millisecond: protocol_config::STABILITY_FEE_PER_MILLISECOND,
+                controller_proportional_gain: 0,
+                controller_integral_gain: 0,
+                minimum_collateralization_ratio: stablecoin_core::math::FIXED_POINT_ONE * 3 / 2,
+                minimum_milliseconds_between_rate_updates:
+                    protocol_config::MINIMUM_MILLISECONDS_BETWEEN_RATE_UPDATES,
+                maximum_oracle_price_age_milliseconds:
+                    protocol_config::MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS,
+                is_frozen: false,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
     fn oracle_init(base_asset: AccountId, quote_asset: AccountId) -> Account {
         Self::oracle_with(
             base_asset,
@@ -296,6 +323,11 @@ fn state_for_stablecoin_tests() -> V03State {
             ..Account::default()
         },
     );
+    state.force_insert_account(
+        compute_protocol_parameters_pda(Ids::stablecoin_program()),
+        Accounts::protocol_parameters_init(),
+    );
+    seed_clock(&mut state, OPEN_POSITION_NOW);
     state
 }
 
@@ -356,7 +388,7 @@ fn stablecoin_open_position_then_withdraw_collateral() {
     // Open the position: deposit collateral from the user's holding into a fresh vault.
     let open = stablecoin_core::Instruction::OpenPosition {
         position_nonce: Ids::position_nonce(),
-        collateral_amount: Balances::collateral_deposit(),
+        initial_collateral_amount: Balances::collateral_deposit(),
     };
     let message = public_transaction::Message::try_new(
         Ids::stablecoin_program(),
@@ -366,6 +398,8 @@ fn stablecoin_open_position_then_withdraw_collateral() {
             Ids::vault(),
             Ids::user_holding(),
             Ids::collateral_definition(),
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![
             current_nonce(&state, Ids::owner()),
@@ -503,6 +537,9 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
 
 /// Protocol parameters the initialized-protocol helper installs. Kept as
 /// constants so the poke tests can reason about the interval / staleness gates.
+/// Wall clock for the open/withdraw fixture, in Unix milliseconds.
+const OPEN_POSITION_NOW: u64 = 1_700_000_000_000;
+
 mod protocol_config {
     use stablecoin_core::math::FIXED_POINT_ONE;
 
