@@ -232,6 +232,32 @@ impl Accounts {
         }
     }
 
+    fn stability_fee_accumulator_init() -> Account {
+        Account {
+            program_owner: Ids::stablecoin_program(),
+            balance: 0,
+            data: Data::from(&stablecoin_core::StabilityFeeAccumulator {
+                accumulated_rate_at_last_accrual: stablecoin_core::math::FIXED_POINT_ONE,
+                last_accrued_at: OPEN_POSITION_NOW,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn redemption_price_state_init() -> Account {
+        Account {
+            program_owner: Ids::stablecoin_program(),
+            balance: 0,
+            data: Data::from(&stablecoin_core::RedemptionPriceState {
+                redemption_price_at_last_update: protocol_config::INITIAL_REDEMPTION_PRICE,
+                redemption_rate_per_millisecond: stablecoin_core::math::FIXED_POINT_ONE,
+                controller_integral_term: 0,
+                last_updated_at: OPEN_POSITION_NOW,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
     fn oracle_init(base_asset: AccountId, quote_asset: AccountId) -> Account {
         Self::oracle_with(
             base_asset,
@@ -330,6 +356,14 @@ fn state_for_stablecoin_tests() -> V03State {
     state.force_insert_account(
         compute_protocol_parameters_pda(Ids::stablecoin_program()),
         Accounts::protocol_parameters_init(),
+    );
+    state.force_insert_account(
+        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+        Accounts::stability_fee_accumulator_init(),
+    );
+    state.force_insert_account(
+        compute_redemption_price_state_pda(Ids::stablecoin_program()),
+        Accounts::redemption_price_state_init(),
     );
     seed_clock(&mut state, OPEN_POSITION_NOW);
     state
@@ -478,6 +512,10 @@ fn stablecoin_open_position_then_withdraw_collateral() {
             Ids::position(),
             Ids::vault(),
             Ids::user_holding(),
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            compute_redemption_price_state_pda(Ids::stablecoin_program()),
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![current_nonce(&state, Ids::owner())],
         withdraw,
