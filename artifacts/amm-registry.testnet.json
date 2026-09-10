@@ -1,0 +1,22 @@
+{
+  "name": "AMM testnet registry",
+  "networks": [
+    {
+      "id": "testnet",
+      "name": "Testnet",
+      "programIds": {
+        "amm": "cf93244a56a4bb974b72a5f5fa2fe68906709dd17ce422367baef195b57c1709",
+        "token": "14b3bc6cc129d0359f9595ba0f60a13e4a8df08ffe8eb1a83251c47abecc67a8",
+        "token_mint_authority": "b0163189f35d29b3c4a4e6b64f3d797015e52fdbb5dae30433f810b8b007033a"
+      },
+      "ammConfigId": "FQeKyLsnVTD5XxZC96FLQS2dWoHQYewv372BdmocMHr6"
+    }
+  ],
+  "tokens": [
+    { "network": "testnet", "symbol": "TKA", "name": "Token A", "definitionId": "9zHnyUgGP7o2wJyt9fk56J55mzv5gsBeB9GrEJLqX4P9" },
+    { "network": "testnet", "symbol": "TKB", "name": "Token B", "definitionId": "6jZvWmfhVT5HZ54wYs1mnnU2raE8e5m9ryndraHyKu4P" }
+  ],
+  "pools": [
+    { "network": "testnet", "tokenA": "TKA", "tokenB": "TKB", "poolId": "8rJJ14smQ1edE11UQ95dSLkMVBSdcY5aUBA88dCRiEWZ", "tokenADefinitionId": "9zHnyUgGP7o2wJyt9fk56J55mzv5gsBeB9GrEJLqX4P9", "tokenBDefinitionId": "6jZvWmfhVT5HZ54wYs1mnnU2raE8e5m9ryndraHyKu4P" }
+  ]
+}

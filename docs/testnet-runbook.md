@@ -3,6 +3,11 @@
 End-to-end steps to deploy the programs, initialize the AMM, and create a pool using
 `spel`, in the order they must happen. Follow top to bottom; nothing here can be skipped.
 
+> **Live addresses.** The current testnet deployment's ProgramIds, PDAs, token
+> definitions, and the faucet mint-authority PDA are recorded in
+> [DEPLOYMENTS.md](../DEPLOYMENTS.md) — use those when interacting with the live
+> instance instead of re-deriving.
+
 > **Golden rule:** every time you **recompile** a guest, its **ProgramId changes**, and
 > **every PDA derived from that ProgramId changes too** (config, pool, vaults, LP def, lp
 > lock, current tick). If you rebuild the AMM, you must recompute all AMM PDAs and
@@ -31,6 +36,7 @@ End-to-end steps to deploy the programs, initialize the AMM, and create a pool u
 - [11. Create the oracle price account](#11-create-the-oracle-price-account)
 - [12. Publish a price](#12-publish-a-price)
 - [13. (Admin) Withdraw protocol fees](#13-admin-withdraw-protocol-fees)
+- [14. Faucet: mint additional tokens](#14-faucet-mint-additional-tokens-token-mint-authority)
 - [Gotchas](#gotchas-we-hit-and-how-to-avoid-them)
 
 ---
@@ -517,6 +523,123 @@ spel --idl artifacts/amm-idl.json \
   initialize it first with `initialize-account` (step 3) if needed.
 
 See [AMM protocol fees](./amm-protocol-fees.md) for the full model.
+
+---
+
+## 14. Faucet: mint additional tokens (`token-mint-authority`)
+
+The **token-mint-authority** program is a permissionless faucet: once a token's
+`mint_authority` is set to the faucet's singleton PDA, anyone can mint a fixed amount of
+that token to themselves — rate-limited to **once per 24h per `(recipient, token
+definition)`**. Use it to top up a test token after the initial supply is spent.
+
+> The live testnet faucet PDA, the deployed faucet ImageID, and the faucet-mintable token
+> definitions are in [DEPLOYMENTS.md](../DEPLOYMENTS.md). The steps below are the generic
+> flow; when using the live instance, take the concrete ids from there.
+
+### 14.1 Deploy the faucet + derive its PDA
+
+Build and deploy like the other programs, then derive its mint-authority PDA **from the
+exact binary you deployed** (the PDA is a function of the ImageID):
+
+```bash
+cargo risczero build --manifest-path programs/token_mint_authority/methods/guest/Cargo.toml
+wallet deploy-program programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin
+
+cargo run -q -p token_mint_authority_program --example mint_authority -- \
+  programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin
+# prints the base58 <FAUCET_PDA>
+```
+
+> **Build consistency.** Unlike `token`, the faucet's `target/guest` and docker builds have
+> **different** ImageIDs — so derive the PDA from, and deploy, the **same** binary, and set
+> the tokens' `mint_authority` to that PDA. A mismatch makes every FaucetMint fail. (The
+> live testnet faucet is the `target/guest` build — see DEPLOYMENTS.md.)
+
+### 14.2 Make a token faucet-mintable (at creation)
+
+A token is only faucet-mintable if its `mint_authority` was set to `<FAUCET_PDA>` when it
+was created (§3). Add `--mint-authority` to `new-fungible-definition`:
+
+```bash
+spel --idl artifacts/token-idl.json \
+     --program <TOKEN_PROGRAM_ID> \
+     -- new-fungible-definition \
+     --name "TOKEN A" --total-supply 1000000000000000000000 \
+     --definition-target-account <DEF_A> \
+     --holding-target-account <HOLDING_A> \
+     --mint-authority <FAUCET_PDA>
+```
+
+The initial supply is still minted to `<HOLDING_A>` at creation; the `mint_authority` only
+governs who can mint **more** later. (The live testnet tokens were already created this way
+— see DEPLOYMENTS.md.)
+
+### 14.3 FaucetMint
+
+`FaucetMint` takes 6 accounts (no value args):
+
+| account | what |
+|---|---|
+| `recipient` | signs; the rate-limit subject. A plain account you control, **different** from `user_holding`. |
+| `mint_allowance` | the per-`(recipient, definition)` PDA (derived below). |
+| `user_holding` | recipient's Token Holding for the faucet token — the mint target. Must already be **initialized** (`initialize-account`, §3); the faucet writes into an existing holding, it won't create one. |
+| `token_definition` | the faucet token's `<DEF>`. |
+| `mint_authority` | `<FAUCET_PDA>`. |
+| `clock` | the canonical system clock `4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU`. |
+
+Submitting the transactions below needs only the **program id** — pass the ImageID hex
+(from [DEPLOYMENTS.md](../DEPLOYMENTS.md)) to `--program` and spel skips loading the
+binary (the program-id forms are listed in the [arg-format table](#argument-formats-used-throughout)).
+So `<FAUCET_PROGRAM_ID>` / `<TOKEN_PROGRAM_ID>` below are ImageIDs, not paths.
+
+The one step that still needs the faucet **binary** is deriving the per-`(recipient,
+definition)` `mint_allowance` PDA (the helper reads the bin to get its ImageID; it can't
+yet take an ImageID directly, so build it once with `make build-programs` if you don't have
+it):
+
+```bash
+cargo run -q -p token_mint_authority_program --example faucet_allowance -- \
+  <FAUCET_BIN> <RECIPIENT> <DEF_A>
+# prints the base58 <MINT_ALLOWANCE>
+```
+
+If the recipient's holding is fresh, initialize it first (the faucet won't):
+
+```bash
+spel --idl artifacts/token-idl.json \
+     --program <TOKEN_PROGRAM_ID> \
+     -- initialize-account \
+     --definition-account <DEF_A> \
+     --account-to-initialize <USER_HOLDING>
+```
+
+Then mint:
+
+```bash
+spel --idl artifacts/token_mint_authority-idl.json \
+     --program <FAUCET_PROGRAM_ID> \
+     -- faucet-mint \
+     --recipient <RECIPIENT> \
+     --mint-allowance <MINT_ALLOWANCE> \
+     --user-holding <USER_HOLDING> \
+     --token-definition <DEF_A> \
+     --mint-authority <FAUCET_PDA> \
+     --clock 4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU
+```
+
+Mints a fixed **10,000e18** into `<USER_HOLDING>`. A second mint for the same
+`(recipient, definition)` within 24h is rejected (`FaucetMint cooldown has not elapsed`) —
+use a **different** recipient to mint again sooner. Verify:
+
+```bash
+spel --idl artifacts/token-idl.json inspect <USER_HOLDING> --type TokenHolding
+```
+
+> The faucet mints into any **existing** holding without an ownership check, so `recipient`
+> is only the signer / rate-limit subject — it does not need to own `user_holding`. It must
+> just be a distinct, authorized account. A dedicated throwaway `recipient` keeps the
+> per-recipient cooldown bookkeeping clean.
 
 ---
 
