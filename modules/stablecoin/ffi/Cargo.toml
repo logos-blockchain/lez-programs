@@ -24,3 +24,4 @@ cbindgen = "0.28"
 
 [dev-dependencies]
 stablecoin-methods = { path = "../../../programs/stablecoin/methods" }
+stablecoin_program = { workspace = true }
