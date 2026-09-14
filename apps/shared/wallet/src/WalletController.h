@@ -63,6 +63,8 @@ private:
     void openOnStartup();
     bool beginOpen(const QString& config, const QString& storage);
     void applySnapshot(const WalletSnapshot& snapshot);
+    void pollSnapshot();
+    void scheduleSnapshotPoll(bool retry);
     void checkReachability();
 
     WalletProvider& m_wallet;
@@ -71,6 +73,8 @@ private:
     WalletAccountModel* m_accountModel;
     QNetworkAccessManager* m_network;
     QTimer* m_reachabilityTimer;
+    QTimer* m_snapshotPollTimer;
+    int m_snapshotRetryDelayMs = 1000;
     bool m_started = false;
     quint64 m_operationGeneration = 0;
 };
