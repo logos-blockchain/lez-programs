@@ -7171,6 +7171,7 @@ dependencies = [
  "serde_json",
  "stablecoin-methods",
  "stablecoin_core",
+ "stablecoin_program",
  "token_core",
  "twap_oracle_core",
 ]
