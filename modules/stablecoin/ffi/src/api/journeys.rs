@@ -761,3 +761,64 @@ fn journey_recovers_from_blocked_updates_with_fee_only_refreshes() {
     assert_eq!(frozen.redemption.last_updated_at, DUE);
     assert_eq!(frozen.parameters.is_frozen, true);
 }
+
+#[test]
+fn journey_rechecks_state_after_a_quote_becomes_stale() {
+    let mut state = JourneyState::new();
+    let first_quote =
+        redemption_rate_update_quote(state.quote_request()).expect("initial quote must be ready");
+    assert_eq!(first_quote["canSubmit"], true);
+
+    // A different keeper submits the update represented by the first quote.
+    // This changes the persisted anchor and controller state before the user
+    // attempts to submit their own previously observed quote.
+    let other_keeper_plan = update_redemption_rate_plan(state.update_request())
+        .expect("other keeper update must be ready");
+    state.execute_instruction(decode_instruction(&other_keeper_plan));
+    let updated_anchor = state.redemption.redemption_price_at_last_update;
+    assert_eq!(
+        updated_anchor,
+        exact_u128(&first_quote, "currentRedemptionPrice")
+    );
+
+    // Time advances past the oracle freshness window while the user still has
+    // the old ready quote. The module must read current accounts again and stop
+    // before submission; it cannot use a quote as cached authorization.
+    state.clock.timestamp = DUE + MAX_ORACLE_AGE + 1;
+    let stale_quote = redemption_rate_update_quote(state.quote_request())
+        .expect("stale oracle is a successful blocked quote");
+    assert_eq!(stale_quote["canSubmit"], false);
+    assert_eq!(stale_quote["errors"][0]["code"], "oracle_stale");
+    expect_error(
+        update_redemption_rate_plan(state.update_request()),
+        "oracle_stale",
+    );
+    assert_eq!(
+        state.redemption.redemption_price_at_last_update,
+        updated_anchor
+    );
+
+    // Refreshing the same oracle account makes a fresh quote valid. Its price
+    // reflects the intervening keeper update and the elapsed time, so it is a
+    // distinct quote and is the only one executed below.
+    state.oracle.timestamp = state.clock.timestamp;
+    let fresh_quote = redemption_rate_update_quote(state.quote_request())
+        .expect("refreshed oracle must produce a ready quote");
+    assert_eq!(fresh_quote["canSubmit"], true);
+    assert_ne!(
+        fresh_quote["currentRedemptionPrice"],
+        first_quote["currentRedemptionPrice"]
+    );
+    let retry =
+        update_redemption_rate_plan(state.update_request()).expect("fresh retry must be ready");
+    state.execute_instruction(decode_instruction(&retry));
+    assert_eq!(
+        state.redemption.redemption_price_at_last_update,
+        exact_u128(&fresh_quote, "currentRedemptionPrice")
+    );
+    assert_eq!(
+        state.redemption.redemption_rate_per_millisecond,
+        exact_u128(&fresh_quote, "nextRedemptionRatePerMillisecond")
+    );
+    assert_eq!(state.redemption.last_updated_at, state.clock.timestamp);
+}
