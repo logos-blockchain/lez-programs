@@ -822,3 +822,72 @@ fn journey_rechecks_state_after_a_quote_becomes_stale() {
     );
     assert_eq!(state.redemption.last_updated_at, state.clock.timestamp);
 }
+
+#[test]
+fn journey_recovers_from_bad_callers_and_account_reads_without_retries() {
+    let mut state = JourneyState::new();
+    let accumulator_before = state.accumulator.clone();
+
+    let mut malformed_caller = state.accrue_request();
+    malformed_caller.caller_id = String::from("not-an-account");
+    expect_error(
+        accrue_stability_fee_plan(malformed_caller),
+        "invalid_account_id",
+    );
+    assert_eq!(state.accumulator, accumulator_before);
+
+    let mut missing_parameters = state.accrue_request();
+    missing_parameters.protocol_parameters = missing_read(JourneyState::protocol_id());
+    expect_error(
+        accrue_stability_fee_plan(missing_parameters),
+        "account_read_failed",
+    );
+    assert_eq!(state.accumulator, accumulator_before);
+
+    let mut private_accumulator = state.accrue_request();
+    if let Some(account) = private_accumulator
+        .stability_fee_accumulator
+        .account
+        .as_mut()
+    {
+        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+    }
+    expect_error(
+        accrue_stability_fee_plan(private_accumulator),
+        "stablecoin_program_mismatch",
+    );
+    assert_eq!(state.accumulator, accumulator_before);
+
+    let mut malformed_accumulator = state.accrue_request();
+    if let Some(account) = malformed_accumulator
+        .stability_fee_accumulator
+        .account
+        .as_mut()
+    {
+        account.data = String::from("00");
+    }
+    expect_error(
+        accrue_stability_fee_plan(malformed_accumulator),
+        "invalid_stability_fee_accumulator_data",
+    );
+    assert_eq!(state.accumulator, accumulator_before);
+
+    let valid = accrue_stability_fee_plan(state.accrue_request())
+        .expect("corrected account reads must produce a plan");
+    assert_plan(
+        &valid,
+        &[
+            JourneyState::caller_id(),
+            JourneyState::protocol_id(),
+            JourneyState::accumulator_id(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        1,
+    );
+    state.execute_instruction(decode_instruction(&valid));
+    assert_eq!(state.accumulator.last_accrued_at, DUE);
+    assert!(
+        state.accumulator.accumulated_rate_at_last_accrual
+            > accumulator_before.accumulated_rate_at_last_accrual
+    );
+}
