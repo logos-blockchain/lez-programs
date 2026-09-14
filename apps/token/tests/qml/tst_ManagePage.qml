@@ -19,6 +19,7 @@ Item {
             property bool isWalletOpen: true
             property string syncStatus: "ready"
             property int lastSyncedBlock: 0
+            property bool initialSync: false
             property var liveDefinitions: []
             property int walletDefinitionsCalls: 0
 

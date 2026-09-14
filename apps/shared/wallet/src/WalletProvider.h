@@ -59,6 +59,13 @@ bool balanceLess(QString left, QString right);
 // A public account whose balance covers MIN_FEE_RESERVE.
 bool canPayFees(const WalletAccount& account);
 
+struct WalletSyncProgress {
+    bool known = false;
+    quint64 currentBlock = 0;
+    quint64 targetBlock = 0;
+    quint64 remainingBlocks = 0;
+};
+
 struct WalletSnapshot {
     WalletFailure failure = WalletFailure::None;
     QVector<WalletAccount> accounts;
@@ -117,15 +124,20 @@ public:
     using SessionCallback = std::function<void(WalletSession)>;
     using SnapshotCallback = std::function<void(WalletSnapshot)>;
     using HeightCallback = std::function<void(qint64)>;
+    using ProgressCallback = std::function<void(WalletSyncProgress)>;
 
     virtual ~WalletProvider() = default;
 
     virtual WalletSession connect(const WalletPaths& paths) = 0;
-    virtual void connectAsync(const WalletPaths& paths, SessionCallback callback) = 0;
+    virtual void connectAsync(const WalletPaths& paths,
+                              SessionCallback callback,
+                              ProgressCallback progress = {}) = 0;
     virtual WalletCreation createWallet(const WalletPaths& paths,
                                         const QString& password) = 0;
     virtual WalletSnapshot snapshot(bool forceRefresh = false) = 0;
-    virtual void snapshotAsync(bool forceRefresh, SnapshotCallback callback) = 0;
+    virtual void snapshotAsync(bool forceRefresh,
+                                SnapshotCallback callback,
+                                ProgressCallback progress = {}) = 0;
     // The sequencer's current block height without syncing the wallet; -1 when unknown.
     virtual void currentBlockHeightAsync(HeightCallback callback) = 0;
     virtual void clearSnapshot() = 0;

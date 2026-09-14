@@ -118,6 +118,10 @@ Item {
         function onIsWalletOpenChanged() { root.refreshHoldings() }
         // Re-fetch when the registry snapshot refreshes (e.g. a remote list lands).
         function onRegistryRevisionChanged() { root.loadTokens() }
+        function onSyncStatusChanged() {
+            if (root.backend && root.backend.syncStatus === "ready")
+                root.refreshHoldings()
+        }
     }
 
     QtObject {

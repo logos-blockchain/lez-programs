@@ -127,6 +127,12 @@ bool TokenUiBackend::openExisting()
     return opened;
 }
 
+void TokenUiBackend::cancelSync()
+{
+    m_walletController->cancelSync();
+    syncWalletState();
+}
+
 void TokenUiBackend::disconnectWallet()
 {
     m_walletController->disconnect();
@@ -146,8 +152,13 @@ void TokenUiBackend::syncWalletState()
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
     setFeePayerId(state.feePayerId);
-    setSyncStatus(state.syncStatus);
     setSyncError(state.syncError);
+    setSyncStatus(state.syncStatus);
+    setInitialSync(state.initialSync);
+    setSyncProgressKnown(state.syncProgressKnown);
+    setSyncCurrentBlock(state.syncCurrentBlock);
+    setSyncTargetBlock(state.syncTargetBlock);
+    setSyncRemainingBlocks(state.syncRemainingBlocks);
 }
 
 bool TokenUiBackend::setFeePayer(QString accountId)
@@ -160,11 +171,11 @@ QVariantMap TokenUiBackend::walletUnavailable() const
     return errorResult(QStringLiteral("wallet_unavailable"));
 }
 
-// Every submit needs an open wallet and a funded fee payer (LEZ charges public
+// Every submit needs a synchronized wallet and a funded fee payer (LEZ charges public
 // transactions, and fresh create targets cannot pay). Empty when clear to submit.
 QVariantMap TokenUiBackend::submitBlocked() const
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     if (m_walletController->state().feePayerId.isEmpty())
         return errorResult(QStringLiteral("fee_payer_required"));
@@ -202,14 +213,14 @@ QVariantMap TokenUiBackend::inspectMetadata(QString metadataId)
 
 QVariantMap TokenUiBackend::walletTokenAccounts()
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return m_logos->token_module.walletTokenAccounts();
 }
 
 QVariantList TokenUiBackend::walletDefinitions()
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return {};
 
     const QVariantMap accountsResult = m_logos->token_module.walletTokenAccounts();
