@@ -146,6 +146,8 @@ void TokenUiBackend::syncWalletState()
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
     setFeePayerId(state.feePayerId);
+    setSyncStatus(state.syncStatus);
+    setSyncError(state.syncError);
 }
 
 bool TokenUiBackend::setFeePayer(QString accountId)

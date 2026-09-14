@@ -19,6 +19,10 @@ class TokenUiBackend
     // public transactions). Empty when none is funded; submits then fail with
     // fee_payer_required. Defaults to the best-funded account.
     PROP(QString feePayerId READONLY)
+    // Wallet startup and refresh state. `isWalletOpen` remains false until the
+    // capability handshake and first snapshot both complete.
+    PROP(QString syncStatus READONLY)
+    PROP(QString syncError READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
