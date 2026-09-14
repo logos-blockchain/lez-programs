@@ -414,3 +414,75 @@ fn journey_starts_uninitialized_then_exposes_all_global_reads() {
     assert_eq!(state.redemption, before.redemption);
     assert_eq!(state.clock.timestamp, before.clock.timestamp);
 }
+
+#[test]
+fn journey_projects_fees_then_persists_only_the_accumulator() {
+    let mut state = JourneyState::new();
+    let redemption_before = state.redemption.clone();
+    let projection =
+        current_global_state(state.current_request()).expect("initialized globals must project");
+    let projected_rate = projection["currentAccumulatedRate"]
+        .as_str()
+        .expect("projected accumulator must be an exact string")
+        .parse::<u128>()
+        .expect("projected accumulator must be a u128");
+    assert!(projected_rate > state.accumulator.accumulated_rate_at_last_accrual);
+    assert_eq!(
+        projection["accumulatedRateAtLastAccrual"],
+        state
+            .accumulator
+            .accumulated_rate_at_last_accrual
+            .to_string()
+    );
+    assert_eq!(projection["lastAccruedAt"], START.to_string());
+    assert_eq!(projection["projectedAt"], DUE.to_string());
+    assert_eq!(state.redemption, redemption_before);
+
+    let plan =
+        accrue_stability_fee_plan(state.accrue_request()).expect("accrual plan must be ready");
+    assert_plan(
+        &plan,
+        &[
+            JourneyState::caller_id(),
+            JourneyState::protocol_id(),
+            JourneyState::accumulator_id(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        1,
+    );
+    assert!(matches!(
+        decode_instruction(&plan),
+        Instruction::AccrueStabilityFee
+    ));
+    state.execute_instruction(decode_instruction(&plan));
+
+    assert_eq!(state.accumulator.last_accrued_at, DUE);
+    assert_eq!(
+        state.accumulator.accumulated_rate_at_last_accrual,
+        projected_rate
+    );
+    assert_eq!(state.redemption, redemption_before);
+    let after =
+        current_global_state(state.current_request()).expect("post-accrual globals must project");
+    assert_eq!(
+        after["accumulatedRateAtLastAccrual"],
+        projected_rate.to_string()
+    );
+    assert_eq!(after["currentAccumulatedRate"], projected_rate.to_string());
+    assert_eq!(after["lastAccruedAt"], DUE.to_string());
+    assert_eq!(
+        after["redemptionPriceAtLastUpdate"],
+        redemption_before
+            .redemption_price_at_last_update
+            .to_string()
+    );
+
+    let repeat = accrue_stability_fee_plan(state.accrue_request())
+        .expect("same-time accrual must remain available");
+    state.execute_instruction(decode_instruction(&repeat));
+    assert_eq!(
+        state.accumulator.accumulated_rate_at_last_accrual,
+        projected_rate
+    );
+    assert_eq!(state.accumulator.last_accrued_at, DUE);
+}
