@@ -381,10 +381,15 @@ Rectangle {
     readonly property bool outputExceedsLiquidity: editingSide === "buy" && root.quoteOutError === "output_exceeds_liquidity"
     // Loading flag for whichever direction the user is editing.
     readonly property bool quoteLoading: editingSide === "sell" ? root.quoteInLoading : root.quoteOutLoading
-    // True only when THIS app's wallet is connected. The backend also enforces
-    // this before submitting, but gate the UI too so a disconnected app never
-    // even initiates a swap against the shared wallet.
-    readonly property bool walletOpen: root.backend !== null && root.backend.isWalletOpen
+    // True only when THIS app's wallet is connected and synchronized. The backend
+    // also enforces this before submitting, but gate the UI too so a wallet that is
+    // still loading cannot initiate a swap against incomplete account state.
+    readonly property bool walletSynchronizing: root.backend !== null
+        && root.backend.initialSync === true
+        && (root.backend.syncStatus === "opening" || root.backend.syncStatus === "syncing")
+    readonly property bool walletOpen: root.backend !== null
+                                       && root.backend.isWalletOpen
+                                       && root.backend.walletStateReady === true
 
     // Both directions are submittable: exact input via swapExactInput, exact
     // output via swapExactOutput. The typed side and the quoted side must both be
@@ -409,6 +414,7 @@ Rectangle {
         if (root.quoteLoading) return qsTr("Quoting…")
         if (outputExceedsLiquidity) return qsTr("Insufficient liquidity")
         if (parsedSellAmount <= 0 || parsedBuyAmount <= 0) return qsTr("Amount too small")
+        if (root.walletSynchronizing) return qsTr("Synchronizing wallet…")
         if (!root.walletOpen) return qsTr("Connect wallet to swap")
         if (root.sellHolding.length === 0 || root.buyHolding.length === 0)
             return qsTr("Select token accounts")

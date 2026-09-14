@@ -17,6 +17,11 @@ struct WalletUiState {
     QString walletHome;
     int lastSyncedBlock = 0;
     int currentBlockHeight = 0;
+    bool syncProgressKnown = false;
+    int syncCurrentBlock = 0;
+    int syncTargetBlock = 0;
+    int syncRemainingBlocks = 0;
+    bool initialSync = false;
     QString sequencerAddress;
     bool sequencerReachable = true;
     QString syncStatus = QStringLiteral("closed");
@@ -24,7 +29,7 @@ struct WalletUiState {
 
     bool canSubmit() const
     {
-        return isWalletOpen && syncStatus == QStringLiteral("ready");
+        return isWalletOpen && !initialSync;
     }
 };
 
@@ -50,6 +55,7 @@ public:
                          const QString& storagePath,
                          const QString& password);
     bool open();
+    void cancelSync();
     void disconnect();
 
 signals:
@@ -63,6 +69,7 @@ private:
     void openOnStartup();
     bool beginOpen(const QString& config, const QString& storage);
     void applySnapshot(const WalletSnapshot& snapshot);
+    void applySyncProgress(const WalletSyncProgress& progress);
     void pollSnapshot();
     void scheduleSnapshotPoll(bool retry);
     void checkReachability();
