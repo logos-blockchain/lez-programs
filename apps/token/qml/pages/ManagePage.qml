@@ -22,6 +22,9 @@ Item {
     readonly property var definitions: store ? store.allDefinitions : []
     readonly property var filteredDefinitions: root.filterDefinitions()
     readonly property var selectedDefinition: store && selectedId.length > 0 ? store.findDefinition(selectedId) : null
+    readonly property bool walletReady: root.backend !== null
+        && root.backend.isWalletOpen
+        && root.backend.syncStatus === "ready"
     readonly property bool hasSelection: selectedDefinition !== null
     readonly property bool selectedIsFungible: hasSelection && selectedDefinition.type === "fungible"
     readonly property bool selectedIsNft: hasSelection && selectedDefinition.type === "nonFungible"
@@ -123,6 +126,10 @@ Item {
             root.ensureSelection();
             return;
         }
+        if (!root.walletReady) {
+            root.loading = false;
+            return;
+        }
 
         var requestSerial = ++root.refreshSerial;
         root.loading = true;
@@ -159,7 +166,14 @@ Item {
     Connections {
         target: root.backend
         ignoreUnknownSignals: true
-        function onIsWalletOpenChanged() { root.refreshLiveDefinitions() }
+        function onIsWalletOpenChanged() {
+            if (root.backend && !root.backend.isWalletOpen)
+                root.refreshLiveDefinitions()
+        }
+        function onSyncStatusChanged() {
+            if (root.walletReady)
+                root.refreshLiveDefinitions()
+        }
     }
 
     Rectangle {
@@ -254,7 +268,7 @@ Item {
                             color: root.loadError.length > 0 ? "#F08A76" : "#8E8780"
                             font.pixelSize: 12
                             elide: Text.ElideRight
-                            text: root.loadError.length > 0 ? root.loadError : root.loading ? qsTr("Reading wallet token accounts…") : root.backend && root.backend.isWalletOpen ? qsTr("Live wallet view") : qsTr("Connect wallet to inspect live assets")
+                            text: root.loadError.length > 0 ? root.loadError : root.loading ? qsTr("Reading wallet token accounts…") : root.backend && root.backend.isWalletOpen && !root.walletReady ? qsTr("Waiting for wallet synchronization…") : root.walletReady ? qsTr("Live wallet view") : qsTr("Connect wallet to inspect live assets")
                         }
 
                         Button {
@@ -264,7 +278,7 @@ Item {
 
                             Layout.preferredWidth: 86
                             Layout.preferredHeight: 32
-                            enabled: root.backend !== null && root.backend.isWalletOpen && !root.loading
+                            enabled: root.walletReady && !root.loading
                             text: root.loading ? qsTr("Reading…") : qsTr("Refresh")
                             Accessible.name: qsTr("Refresh live token definitions")
                             onClicked: root.refreshLiveDefinitions()

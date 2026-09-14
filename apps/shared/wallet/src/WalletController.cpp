@@ -18,6 +18,9 @@ namespace {
 const char SETTINGS_ORG[] = "Logos";
 const char DISCONNECTED_KEY[] = "disconnected";
 const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
+constexpr int SNAPSHOT_POLL_INTERVAL_MS = 10000;
+constexpr int SNAPSHOT_RETRY_INITIAL_MS = 1000;
+constexpr int SNAPSHOT_RETRY_MAX_MS = 10000;
 
 QString toLocalPath(const QString& path)
 {
@@ -35,14 +38,21 @@ WalletController::WalletController(WalletProvider& wallet,
       m_settingsApplication(std::move(settingsApplication)),
       m_accountModel(new WalletAccountModel(this)),
       m_network(new QNetworkAccessManager(this)),
-      m_reachabilityTimer(new QTimer(this))
+      m_reachabilityTimer(new QTimer(this)),
+      m_snapshotPollTimer(new QTimer(this))
 {
     m_state.walletHome = defaultWalletHome();
     m_state.walletExists = QFileInfo::exists(defaultStoragePath());
 
+    m_reachabilityTimer->setObjectName(QStringLiteral("walletReachabilityTimer"));
     m_reachabilityTimer->setInterval(10000);
     connect(m_reachabilityTimer, &QTimer::timeout,
             this, &WalletController::checkReachability);
+
+    m_snapshotPollTimer->setObjectName(QStringLiteral("walletSnapshotPollTimer"));
+    m_snapshotPollTimer->setSingleShot(true);
+    connect(m_snapshotPollTimer, &QTimer::timeout,
+            this, &WalletController::pollSnapshot);
 }
 
 WalletController::~WalletController() = default;
@@ -189,6 +199,7 @@ bool WalletController::open()
 void WalletController::disconnect()
 {
     ++m_operationGeneration;
+    m_snapshotPollTimer->stop();
     m_wallet.disconnect();
     m_state.isWalletOpen = false;
     m_state.syncStatus = QStringLiteral("closed");
@@ -220,6 +231,7 @@ void WalletController::refresh()
     if (!m_state.isWalletOpen || m_state.syncStatus == QStringLiteral("syncing"))
         return;
 
+    m_snapshotPollTimer->stop();
     const quint64 generation = ++m_operationGeneration;
     m_state.syncStatus = QStringLiteral("syncing");
     m_state.syncError.clear();
@@ -235,6 +247,7 @@ void WalletController::refresh()
             m_state.syncStatus = QStringLiteral("error");
             m_state.syncError = walletFailureCode(next.failure);
             emit stateChanged();
+            scheduleSnapshotPoll(true);
         }
     });
 }
@@ -257,8 +270,27 @@ void WalletController::applySnapshot(const WalletSnapshot& snapshot)
     m_state.sequencerAddress = snapshot.sequencerAddress;
     m_state.syncStatus = QStringLiteral("ready");
     m_state.syncError.clear();
+    m_snapshotRetryDelayMs = SNAPSHOT_RETRY_INITIAL_MS;
     emit stateChanged();
     checkReachability();
+    scheduleSnapshotPoll(false);
+}
+
+void WalletController::pollSnapshot()
+{
+    refresh();
+}
+
+void WalletController::scheduleSnapshotPoll(bool retry)
+{
+    if (!m_state.isWalletOpen)
+        return;
+
+    const int delay = retry ? m_snapshotRetryDelayMs : SNAPSHOT_POLL_INTERVAL_MS;
+    m_snapshotPollTimer->start(delay);
+    if (retry)
+        m_snapshotRetryDelayMs = qMin(m_snapshotRetryDelayMs * 2,
+                                      SNAPSHOT_RETRY_MAX_MS);
 }
 
 void WalletController::checkReachability()
