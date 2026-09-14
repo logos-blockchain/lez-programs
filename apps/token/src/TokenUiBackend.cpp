@@ -145,6 +145,8 @@ void TokenUiBackend::syncWalletState()
     setCurrentBlockHeight(state.currentBlockHeight);
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
+    setSyncStatus(state.syncStatus);
+    setSyncError(state.syncError);
 }
 
 QVariantMap TokenUiBackend::walletUnavailable() const
