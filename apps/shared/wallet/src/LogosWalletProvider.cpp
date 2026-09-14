@@ -1,11 +1,15 @@
 #include "LogosWalletProvider.h"
 
+#include <utility>
+
 #include <QByteArray>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QThread>
+#include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
 
@@ -13,6 +17,8 @@
 
 namespace {
 constexpr int WALLET_FFI_SUCCESS = 0;
+constexpr int CAPABILITY_WARMUP_RETRY_MS = 50;
+constexpr int CAPABILITY_WARMUP_MAX_ATTEMPTS = 100;
 
 bool isHex(const QString& value, qsizetype size, bool lowercaseOnly = true)
 {
@@ -74,6 +80,51 @@ WalletCreation failedCreation(WalletFailure failure)
     creation.snapshot.failure = failure;
     return creation;
 }
+
+bool waitForCapability(LogosModules* logos)
+{
+    for (int attempt = 1; attempt <= CAPABILITY_WARMUP_MAX_ATTEMPTS; ++attempt) {
+        if (!logos->logos_execution_zone.version().isEmpty())
+            return true;
+        if (attempt < CAPABILITY_WARMUP_MAX_ATTEMPTS)
+            QThread::msleep(CAPABILITY_WARMUP_RETRY_MS);
+    }
+    return false;
+}
+
+WalletAccountRead parsePublicAccount(const QString& accountId,
+                                     const QString& payload)
+{
+    WalletAccountRead read;
+    read.accountId = accountId;
+    if (!isHex(accountId, 64))
+        return read;
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(payload.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject())
+        return read;
+
+    const QJsonObject account = document.object();
+    const QString owner = account.value(QStringLiteral("program_owner")).toString();
+    const QString balance = account.value(QStringLiteral("balance")).toString();
+    const QString nonce = account.value(QStringLiteral("nonce")).toString();
+    const QString data = account.value(QStringLiteral("data")).toString();
+    if (!isHex(owner, 64)
+        || !isHex(balance, 32)
+        || !isHex(nonce, 32)
+        || data.size() % 2 != 0
+        || !isHex(data, data.size())) {
+        return read;
+    }
+
+    read.status = QStringLiteral("ok");
+    read.programOwner = owner;
+    read.balanceHex = balance;
+    read.nonceHex = nonce;
+    read.dataHex = data;
+    return read;
+}
 }
 
 struct LogosWalletProvider::Impl {
@@ -112,6 +163,8 @@ WalletSession LogosWalletProvider::connect(const WalletPaths& paths)
     clearSnapshot();
     if (!m_impl->logos)
         return failedSession(WalletFailure::WalletUnavailable);
+    if (!waitForCapability(m_impl->logos))
+        return failedSession(WalletFailure::CapabilityUnavailable);
 
     WalletSession session;
     if (sharedWalletIsOpen()) {
@@ -119,7 +172,7 @@ WalletSession LogosWalletProvider::connect(const WalletPaths& paths)
     } else {
         if (!QFileInfo::exists(paths.storage))
             return failedSession(WalletFailure::WalletMissing);
-        if (m_impl->logos->lez_core.open(paths.config, paths.storage, paths.statistics)
+        if (m_impl->logos->logos_execution_zone.open(paths.config, paths.storage)
             != WALLET_FFI_SUCCESS) {
             return failedSession(WalletFailure::OpenFailed);
         }
@@ -129,6 +182,119 @@ WalletSession LogosWalletProvider::connect(const WalletPaths& paths)
     session.snapshot = snapshot(true);
     session.failure = session.snapshot.failure;
     return session;
+}
+
+void LogosWalletProvider::connectAsync(const WalletPaths& paths,
+                                       SessionCallback callback)
+{
+    clearSnapshot();
+    ++m_generation;
+    const quint64 generation = m_generation;
+    const auto sharedCallback = std::make_shared<SessionCallback>(std::move(callback));
+    if (!m_impl->logos) {
+        QTimer::singleShot(0, [sharedCallback]() {
+            (*sharedCallback)(failedSession(WalletFailure::WalletUnavailable));
+        });
+        return;
+    }
+
+    retryCapabilityAsync(paths, 1, generation, sharedCallback);
+}
+
+void LogosWalletProvider::retryCapabilityAsync(
+    const WalletPaths& paths,
+    int attempt,
+    quint64 generation,
+    const std::shared_ptr<SessionCallback>& callback)
+{
+    if (generation != m_generation)
+        return;
+
+    m_impl->logos->logos_execution_zone.versionAsync(
+        [this, paths, attempt, generation, callback](QString version) {
+            if (generation != m_generation)
+                return;
+            if (version.isEmpty()) {
+                if (attempt >= CAPABILITY_WARMUP_MAX_ATTEMPTS) {
+                    (*callback)(failedSession(WalletFailure::CapabilityUnavailable));
+                    return;
+                }
+                QTimer::singleShot(CAPABILITY_WARMUP_RETRY_MS,
+                                   [this, paths, attempt, generation, callback]() {
+                    retryCapabilityAsync(paths, attempt + 1, generation, callback);
+                });
+                return;
+            }
+
+            openAfterCapabilityAsync(paths, generation, callback);
+        });
+}
+
+void LogosWalletProvider::openAfterCapabilityAsync(
+    const WalletPaths& paths,
+    quint64 generation,
+    const std::shared_ptr<SessionCallback>& callback)
+{
+    if (generation != m_generation)
+        return;
+
+    const auto finishOpen = std::make_shared<std::function<void(bool, WalletFailure)>>();
+    *finishOpen = [this, generation, callback](bool adopted, WalletFailure failure) {
+        if (generation != m_generation)
+            return;
+        if (failure != WalletFailure::None) {
+            (*callback)(failedSession(failure));
+            return;
+        }
+
+        m_connected = true;
+        loadSnapshotAsync(generation,
+            [this, generation, adopted, callback](WalletSnapshot snapshot) {
+                if (generation != m_generation)
+                    return;
+                WalletSession session;
+                session.adopted = adopted;
+                session.failure = snapshot.failure;
+                session.snapshot = std::move(snapshot);
+                (*callback)(std::move(session));
+            });
+    };
+
+    const auto openStored = [this, generation, paths, finishOpen]() {
+        if (generation != m_generation)
+            return;
+        if (!QFileInfo::exists(paths.storage)) {
+            (*finishOpen)(false, WalletFailure::WalletMissing);
+            return;
+        }
+        m_impl->logos->logos_execution_zone.openAsync(
+            paths.config, paths.storage,
+            [this, generation, finishOpen](int result) {
+                if (generation != m_generation)
+                    return;
+                (*finishOpen)(false, result == WALLET_FFI_SUCCESS
+                    ? WalletFailure::None : WalletFailure::OpenFailed);
+            });
+    };
+
+    m_impl->logos->logos_execution_zone.get_sequencer_addrAsync(
+        [this, generation, finishOpen, openStored](QString address) {
+            if (generation != m_generation)
+                return;
+            if (!address.isEmpty()) {
+                (*finishOpen)(true, WalletFailure::None);
+                return;
+            }
+            m_impl->logos->logos_execution_zone.list_accountsAsync(
+                [this, generation, finishOpen, openStored](QVariantList accounts) {
+                    if (generation != m_generation)
+                        return;
+                    if (!accounts.isEmpty())
+                        (*finishOpen)(true, WalletFailure::None);
+                    else
+                        openStored();
+                });
+        });
 }
 
 WalletCreation LogosWalletProvider::createWallet(const WalletPaths& paths,
@@ -146,8 +312,8 @@ WalletCreation LogosWalletProvider::createWallet(const WalletPaths& paths,
     }
 
     WalletCreation creation;
-    creation.mnemonic = m_impl->logos->lez_core.create_new(
-        paths.config, paths.storage, paths.statistics, password);
+    creation.mnemonic = m_impl->logos->logos_execution_zone.create_new(
+        paths.config, paths.storage, password);
     if (creation.mnemonic.isEmpty())
         return failedCreation(WalletFailure::CreateFailed);
 
@@ -181,6 +347,26 @@ WalletSnapshot LogosWalletProvider::snapshot(bool forceRefresh)
     return result;
 }
 
+void LogosWalletProvider::snapshotAsync(bool forceRefresh, SnapshotCallback callback)
+{
+    if (m_snapshotReady && !forceRefresh) {
+        const WalletSnapshot snapshot = m_snapshot;
+        QTimer::singleShot(0, [callback = std::move(callback), snapshot]() mutable {
+            callback(snapshot);
+        });
+        return;
+    }
+    if (!m_connected) {
+        WalletSnapshot snapshot;
+        snapshot.failure = WalletFailure::WalletUnavailable;
+        QTimer::singleShot(0, [callback = std::move(callback), snapshot]() mutable {
+            callback(snapshot);
+        });
+        return;
+    }
+    loadSnapshotAsync(++m_generation, std::move(callback));
+}
+
 void LogosWalletProvider::clearSnapshot()
 {
     m_snapshot = {};
@@ -196,8 +382,8 @@ WalletAccountCreation LogosWalletProvider::createAccount(bool isPublic)
     }
 
     creation.accountId = isPublic
-        ? m_impl->logos->lez_core.create_account_public()
-        : m_impl->logos->lez_core.create_account_private();
+        ? m_impl->logos->logos_execution_zone.create_account_public()
+        : m_impl->logos->logos_execution_zone.create_account_private();
     if (!isHex(creation.accountId, 64)) {
         creation.failure = WalletFailure::CreateFailed;
         return creation;
@@ -217,37 +403,11 @@ WalletAccountCreation LogosWalletProvider::createAccount(bool isPublic)
 
 WalletAccountRead LogosWalletProvider::readPublicAccount(const QString& accountId) const
 {
-    WalletAccountRead read;
-    read.accountId = accountId;
-    if (!m_impl->logos || !isHex(accountId, 64))
-        return read;
-
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(
-        m_impl->logos->lez_core.get_account_public(accountId).toUtf8(),
-        &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject())
-        return read;
-
-    const QJsonObject account = document.object();
-    const QString owner = account.value(QStringLiteral("program_owner")).toString();
-    const QString balance = account.value(QStringLiteral("balance")).toString();
-    const QString nonce = account.value(QStringLiteral("nonce")).toString();
-    const QString data = account.value(QStringLiteral("data")).toString();
-    if (!isHex(owner, 64)
-        || !isHex(balance, 32)
-        || !isHex(nonce, 32)
-        || data.size() % 2 != 0
-        || !isHex(data, data.size())) {
-        return read;
-    }
-
-    read.status = QStringLiteral("ok");
-    read.programOwner = owner;
-    read.balanceHex = balance;
-    read.nonceHex = nonce;
-    read.dataHex = data;
-    return read;
+    if (!m_impl->logos)
+        return WalletAccountRead { accountId };
+    return parsePublicAccount(
+        accountId,
+        m_impl->logos->logos_execution_zone.get_account_public(accountId));
 }
 
 WalletSubmission LogosWalletProvider::submitPublicTransaction(
@@ -291,7 +451,7 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
     }
 
     const QString response =
-        m_impl->logos->lez_core.send_generic_public_transaction(
+        m_impl->logos->logos_execution_zone.send_generic_public_transaction(
             transaction.accountIds,
             signingRequirements,
             QVariant::fromValue(instructionBytes),
@@ -325,6 +485,7 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
 
 void LogosWalletProvider::disconnect()
 {
+    ++m_generation;
     if (m_connected)
         save();
     clearSnapshot();
@@ -335,27 +496,27 @@ bool LogosWalletProvider::sharedWalletIsOpen() const
 {
     if (!m_impl->logos)
         return false;
-    if (!m_impl->logos->lez_core.get_sequencer_addr().isEmpty())
+    if (!m_impl->logos->logos_execution_zone.get_sequencer_addr().isEmpty())
         return true;
-    return !m_impl->logos->lez_core.list_accounts().isEmpty();
+    return !m_impl->logos->logos_execution_zone.list_accounts().isEmpty();
 }
 
 WalletSnapshot LogosWalletProvider::loadSnapshot()
 {
     WalletSnapshot result;
     result.currentBlockHeight = static_cast<quint64>(
-        qMax(0, m_impl->logos->lez_core.get_current_block_height()));
+        qMax(0, m_impl->logos->logos_execution_zone.get_current_block_height()));
     if (result.currentBlockHeight > 0
-        && m_impl->logos->lez_core.sync_to_block(result.currentBlockHeight)
+        && m_impl->logos->logos_execution_zone.sync_to_block(result.currentBlockHeight)
             != WALLET_FFI_SUCCESS) {
         result.failure = WalletFailure::ReadFailed;
         return result;
     }
     result.lastSyncedBlock = static_cast<quint64>(
-        qMax(0, m_impl->logos->lez_core.get_last_synced_block()));
-    result.sequencerAddress = m_impl->logos->lez_core.get_sequencer_addr();
+        qMax(0, m_impl->logos->logos_execution_zone.get_last_synced_block()));
+    result.sequencerAddress = m_impl->logos->logos_execution_zone.get_sequencer_addr();
 
-    const QVariantList entries = m_impl->logos->lez_core.list_accounts();
+    const QVariantList entries = m_impl->logos->logos_execution_zone.list_accounts();
     result.accounts.reserve(entries.size());
     result.publicAccountReads.reserve(entries.size());
     for (const QVariant& value : entries) {
@@ -374,9 +535,9 @@ WalletSnapshot LogosWalletProvider::loadSnapshot()
             result.publicAccountReads.append(read);
             account.balance = read.ok()
                 ? littleEndianU128ToDecimal(read.balanceHex)
-                : m_impl->logos->lez_core.get_balance(address, true);
+                : m_impl->logos->logos_execution_zone.get_balance(address, true);
         } else {
-            account.balance = m_impl->logos->lez_core.get_balance(address, false);
+            account.balance = m_impl->logos->logos_execution_zone.get_balance(address, false);
         }
         result.accounts.append(account);
     }
@@ -386,8 +547,163 @@ WalletSnapshot LogosWalletProvider::loadSnapshot()
     return result;
 }
 
+void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback callback)
+{
+    if (!m_impl->logos || generation != m_generation)
+        return;
+
+    m_impl->logos->logos_execution_zone.get_current_block_heightAsync(
+        [this, generation, callback = std::move(callback)](int currentHeight) mutable {
+            if (generation != m_generation)
+                return;
+
+            auto afterSync = [this, generation, currentHeight,
+                              callback = std::move(callback)](int syncResult) mutable {
+                if (generation != m_generation)
+                    return;
+                if (syncResult != WALLET_FFI_SUCCESS) {
+                    WalletSnapshot failed;
+                    failed.failure = WalletFailure::ReadFailed;
+                    callback(std::move(failed));
+                    return;
+                }
+
+                m_impl->logos->logos_execution_zone.get_last_synced_blockAsync(
+                    [this, generation, currentHeight,
+                     callback = std::move(callback)](int lastSynced) mutable {
+                        if (generation != m_generation)
+                            return;
+                        m_impl->logos->logos_execution_zone.get_sequencer_addrAsync(
+                            [this, generation, currentHeight, lastSynced,
+                             callback = std::move(callback)](QString address) mutable {
+                                if (generation != m_generation)
+                                    return;
+                                m_impl->logos->logos_execution_zone.list_accountsAsync(
+                                    [this, generation, currentHeight, lastSynced,
+                                     address = std::move(address),
+                                     callback = std::move(callback)](
+                                        QVariantList entries) mutable {
+                                        if (generation != m_generation)
+                                            return;
+
+                                        struct SnapshotState {
+                                            WalletSnapshot snapshot;
+                                            QVector<WalletAccountRead> publicReads;
+                                            QVector<bool> publicFlags;
+                                            qsizetype remaining = 0;
+                                            SnapshotCallback callback;
+                                        };
+                                        auto state = std::make_shared<SnapshotState>();
+                                        state->snapshot.currentBlockHeight = static_cast<quint64>(
+                                            qMax(0, currentHeight));
+                                        state->snapshot.lastSyncedBlock = static_cast<quint64>(
+                                            qMax(0, lastSynced));
+                                        state->snapshot.sequencerAddress = std::move(address);
+                                        state->snapshot.accounts.resize(entries.size());
+                                        state->publicReads.resize(entries.size());
+                                        state->publicFlags.resize(entries.size());
+                                        state->remaining = entries.size();
+                                        state->callback = std::move(callback);
+
+                                        for (qsizetype index = 0; index < entries.size(); ++index) {
+                                            const QVariantMap entry = entries.at(index).toMap();
+                                            const QString accountId = entry
+                                                .value(QStringLiteral("account_id")).toString();
+                                            if (entry.isEmpty() || !isHex(accountId, 64)) {
+                                                state->snapshot.failure = WalletFailure::ReadFailed;
+                                                state->callback(std::move(state->snapshot));
+                                                return;
+                                            }
+                                            state->snapshot.accounts[index] = WalletAccount {
+                                                accountId,
+                                                {},
+                                                entry.value(QStringLiteral("is_public"), true).toBool(),
+                                            };
+                                            state->publicFlags[index] =
+                                                state->snapshot.accounts.at(index).isPublic;
+                                        }
+
+                                        auto finishOne = std::make_shared<std::function<void()>>();
+                                        *finishOne = [this, generation, state, finishOne]() mutable {
+                                            if (generation != m_generation || --state->remaining > 0)
+                                                return;
+                                            for (qsizetype index = 0;
+                                                 index < state->publicReads.size(); ++index) {
+                                                if (state->publicFlags.at(index))
+                                                    state->snapshot.publicAccountReads.append(
+                                                        state->publicReads.at(index));
+                                            }
+                                            m_impl->logos->logos_execution_zone.saveAsync(
+                                                [this, generation, state](int result) mutable {
+                                                    if (generation != m_generation)
+                                                        return;
+                                                    if (result != WALLET_FFI_SUCCESS)
+                                                        state->snapshot.failure = WalletFailure::SaveFailed;
+                                                    if (state->snapshot.ok()) {
+                                                        m_snapshot = state->snapshot;
+                                                        m_snapshotReady = true;
+                                                    }
+                                                    state->callback(std::move(state->snapshot));
+                                                });
+                                        };
+
+                                        if (entries.isEmpty()) {
+                                            state->remaining = 1;
+                                            (*finishOne)();
+                                            return;
+                                        }
+
+                                        for (qsizetype index = 0; index < entries.size(); ++index) {
+                                            const WalletAccount account = state->snapshot.accounts.at(index);
+                                            if (!account.isPublic) {
+                                                m_impl->logos->logos_execution_zone.get_balanceAsync(
+                                                    account.address, false,
+                                                    [state, finishOne, index](QString balance) {
+                                                        state->snapshot.accounts[index].balance =
+                                                            std::move(balance);
+                                                        (*finishOne)();
+                                                    });
+                                                continue;
+                                            }
+
+                                            m_impl->logos->logos_execution_zone.get_account_publicAsync(
+                                                account.address,
+                                                [this, state, finishOne, index,
+                                                 accountId = account.address](QString payload) {
+                                                    const WalletAccountRead read =
+                                                        parsePublicAccount(accountId, payload);
+                                                    state->publicReads[index] = read;
+                                                    if (read.ok()) {
+                                                        state->snapshot.accounts[index].balance =
+                                                            littleEndianU128ToDecimal(read.balanceHex);
+                                                        (*finishOne)();
+                                                        return;
+                                                    }
+                                                    m_impl->logos->logos_execution_zone.get_balanceAsync(
+                                                        accountId, true,
+                                                        [state, finishOne, index](QString balance) {
+                                                            state->snapshot.accounts[index].balance =
+                                                                std::move(balance);
+                                                            (*finishOne)();
+                                                        });
+                                                });
+                                        }
+                                    });
+                            });
+                    });
+            };
+
+            if (currentHeight > 0) {
+                m_impl->logos->logos_execution_zone.sync_to_blockAsync(
+                    currentHeight, std::move(afterSync));
+            } else {
+                afterSync(WALLET_FFI_SUCCESS);
+            }
+        });
+}
+
 bool LogosWalletProvider::save() const
 {
     return m_impl->logos
-        && m_impl->logos->lez_core.save() == WALLET_FFI_SUCCESS;
+        && m_impl->logos->logos_execution_zone.save() == WALLET_FFI_SUCCESS;
 }
