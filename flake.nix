@@ -339,7 +339,10 @@
         };
         tests = {
           dir = ./modules/stablecoin/tests;
-          mockCLibs = [ "stablecoin_ffi" ];
+          # Keep the existing mock suite and also build the real-FFI journey
+          # target declared by the test CMake file.
+          mockCLibs = [ ];
+          extraCmakeFlags = [ "-DSTABLECOIN_REAL_FFI_TESTS=ON" ];
         };
       };
       stablecoinModulePkgs = stablecoinModuleOutputs.packages or { };
