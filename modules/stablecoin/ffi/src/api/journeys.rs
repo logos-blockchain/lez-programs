@@ -42,7 +42,7 @@ const ORACLE_PROGRAM_ID: ProgramId = [0x33_u32; 8];
 const CLOCK_PROGRAM_ID: ProgramId = [0x44_u32; 8];
 
 const START: u64 = 1_000;
-const DUE: u64 = START + 600_000;
+const DUE: u64 = START + 1_800_000;
 const LATER: u64 = DUE + 600_000;
 const MIN_UPDATE_INTERVAL: u64 = 300_000;
 const MAX_ORACLE_AGE: u64 = 900_000;
@@ -380,6 +380,55 @@ impl JourneyState {
     }
 }
 
+fn exercise_soft_blocker(
+    mut state: JourneyState,
+    expected_blocker: &str,
+    repair: impl FnOnce(&mut JourneyState),
+) -> JourneyState {
+    let redemption_before = state.redemption.clone();
+    let quote = redemption_rate_update_quote(state.quote_request())
+        .expect("a blocked quote is still a successful read");
+    assert_eq!(quote["canSubmit"], false);
+    assert_eq!(quote["code"], "blocked");
+    assert_eq!(quote["errors"][0]["code"], expected_blocker);
+    assert!(quote["nextRedemptionRatePerMillisecond"].is_null());
+    assert!(quote["nextControllerIntegralTerm"].is_null());
+
+    expect_error(
+        update_redemption_rate_plan(state.update_request()),
+        expected_blocker,
+    );
+
+    let refresh = refresh_globals_plan(state.refresh_request())
+        .expect("soft gates must still produce a refresh plan");
+    assert_plan(
+        &refresh,
+        &[
+            JourneyState::caller_id(),
+            JourneyState::protocol_id(),
+            JourneyState::accumulator_id(),
+            JourneyState::redemption_id(),
+            state.parameters.market_price_oracle_id,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        3,
+    );
+    state.execute_instruction(decode_instruction(&refresh));
+    assert_eq!(state.accumulator.last_accrued_at, state.clock.timestamp);
+    assert_eq!(state.redemption, redemption_before);
+
+    repair(&mut state);
+    let ready = redemption_rate_update_quote(state.quote_request())
+        .expect("repaired oracle and time must produce a quote");
+    assert_eq!(ready["canSubmit"], true);
+    assert_eq!(ready["code"], "ready");
+    let update = update_redemption_rate_plan(state.update_request())
+        .expect("repaired oracle and time must produce an update plan");
+    state.execute_instruction(decode_instruction(&update));
+    assert_eq!(state.redemption.last_updated_at, state.clock.timestamp);
+    state
+}
+
 #[test]
 fn journey_starts_uninitialized_then_exposes_all_global_reads() {
     let state = JourneyState::new();
@@ -627,4 +676,88 @@ fn journey_quotes_and_persists_successive_controller_updates() {
     standalone.execute_instruction(decode_instruction(&update));
     assert_eq!(combined.accumulator, standalone.accumulator);
     assert_eq!(combined.redemption, standalone.redemption);
+}
+
+#[test]
+fn journey_recovers_from_blocked_updates_with_fee_only_refreshes() {
+    let stale = exercise_soft_blocker(
+        {
+            let mut state = JourneyState::new();
+            state.oracle.timestamp = DUE - MAX_ORACLE_AGE - 1;
+            state
+        },
+        "oracle_stale",
+        |state| state.oracle.timestamp = state.clock.timestamp,
+    );
+    assert_eq!(stale.redemption.last_updated_at, DUE);
+
+    let zero_price = exercise_soft_blocker(
+        {
+            let mut state = JourneyState::new();
+            state.oracle.price = 0;
+            state
+        },
+        "oracle_price_zero",
+        |state| state.oracle.price = FIXED_POINT_ONE / 2,
+    );
+    assert_eq!(zero_price.redemption.last_updated_at, DUE);
+
+    let too_soon = exercise_soft_blocker(
+        {
+            let mut state = JourneyState::new();
+            state.clock.timestamp = START + 100;
+            state.oracle.timestamp = state.clock.timestamp;
+            state
+        },
+        "rate_update_too_soon",
+        |state| {
+            state.clock.timestamp = DUE;
+            state.oracle.timestamp = DUE;
+        },
+    );
+    assert_eq!(too_soon.redemption.last_updated_at, DUE);
+
+    let mut combined_blockers = JourneyState::new();
+    combined_blockers.oracle.timestamp = DUE - MAX_ORACLE_AGE - 1;
+    combined_blockers.oracle.price = 0;
+    combined_blockers.clock.timestamp = DUE;
+    combined_blockers.redemption.last_updated_at = DUE - 100;
+    assert_eq!(
+        redemption_rate_update_quote(combined_blockers.quote_request())
+            .expect("combined blockers are a successful quote")["errors"][0]["code"],
+        "oracle_stale"
+    );
+    expect_error(
+        update_redemption_rate_plan(combined_blockers.update_request()),
+        "oracle_stale",
+    );
+
+    let mut exact_interval = JourneyState::new();
+    exact_interval.clock.timestamp = START + MIN_UPDATE_INTERVAL;
+    exact_interval.oracle.timestamp = exact_interval.clock.timestamp;
+    assert_eq!(
+        redemption_rate_update_quote(exact_interval.quote_request())
+            .expect("exact interval is due")["canSubmit"],
+        true
+    );
+    let mut exact_age = JourneyState::new();
+    exact_age.oracle.timestamp = DUE - MAX_ORACLE_AGE;
+    assert_eq!(
+        redemption_rate_update_quote(exact_age.quote_request()).expect("exact oracle age is fresh")
+            ["canSubmit"],
+        true
+    );
+
+    let frozen = exercise_soft_blocker(
+        {
+            let mut state = JourneyState::new();
+            state.parameters.is_frozen = true;
+            state.oracle.price = 0;
+            state
+        },
+        "oracle_price_zero",
+        |state| state.oracle.price = FIXED_POINT_ONE / 2,
+    );
+    assert_eq!(frozen.redemption.last_updated_at, DUE);
+    assert_eq!(frozen.parameters.is_frozen, true);
 }
