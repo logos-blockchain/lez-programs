@@ -42,3 +42,19 @@ logos_module(
     LINK_TARGETS
         logos_wallet_access
 )
+
+if(BUILD_TESTING)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+
+    qt_add_executable(token_qml_test
+        tests/qml/main.cpp
+    )
+    target_compile_definitions(token_qml_test PRIVATE
+        QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/qml"
+    )
+    target_link_libraries(token_qml_test PRIVATE Qt6::QuickTest)
+    add_test(NAME token_qml COMMAND token_qml_test)
+    set_tests_properties(token_qml PROPERTIES ENVIRONMENT
+        "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    )
+endif()
