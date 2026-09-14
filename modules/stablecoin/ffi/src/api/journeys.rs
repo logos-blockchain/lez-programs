@@ -14,8 +14,9 @@ use lee_core::{
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
-    compute_stability_fee_accumulator_pda, math::FIXED_POINT_ONE, Instruction, ProtocolParameters,
-    RedemptionPriceState, StabilityFeeAccumulator,
+    compute_stability_fee_accumulator_pda,
+    math::{FIXED_POINT_ONE, MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS},
+    Instruction, ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator,
 };
 use stablecoin_program::{
     accrue_stability_fee::accrue_stability_fee, refresh_globals::refresh_globals,
@@ -44,6 +45,7 @@ const CLOCK_PROGRAM_ID: ProgramId = [0x44_u32; 8];
 const START: u64 = 1_000;
 const DUE: u64 = START + 1_800_000;
 const LATER: u64 = DUE + 600_000;
+const IDLE: u64 = DUE + MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS + 17;
 const MIN_UPDATE_INTERVAL: u64 = 300_000;
 const MAX_ORACLE_AGE: u64 = 900_000;
 
@@ -759,7 +761,7 @@ fn journey_recovers_from_blocked_updates_with_fee_only_refreshes() {
         |state| state.oracle.price = FIXED_POINT_ONE / 2,
     );
     assert_eq!(frozen.redemption.last_updated_at, DUE);
-    assert_eq!(frozen.parameters.is_frozen, true);
+    assert!(frozen.parameters.is_frozen);
 }
 
 #[test]
@@ -889,5 +891,116 @@ fn journey_recovers_from_bad_callers_and_account_reads_without_retries() {
     assert!(
         state.accumulator.accumulated_rate_at_last_accrual
             > accumulator_before.accumulated_rate_at_last_accrual
+    );
+}
+
+#[test]
+fn journey_survives_long_idle_periods_and_preserves_exact_values() {
+    let mut at_clamp = JourneyState::new();
+    at_clamp.clock.timestamp = START + MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS;
+    let clamp_projection = current_global_state(at_clamp.current_request())
+        .expect("projection at the compounding boundary must succeed");
+
+    let mut beyond_clamp = at_clamp.clone();
+    beyond_clamp.clock.timestamp = IDLE;
+    let beyond_projection = current_global_state(beyond_clamp.current_request())
+        .expect("projection beyond the compounding boundary must succeed");
+    assert_eq!(
+        clamp_projection["currentAccumulatedRate"],
+        beyond_projection["currentAccumulatedRate"]
+    );
+    assert_eq!(
+        clamp_projection["currentRedemptionPrice"],
+        beyond_projection["currentRedemptionPrice"]
+    );
+    assert_eq!(
+        clamp_projection["projectedAt"],
+        (START + MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS).to_string()
+    );
+    assert_eq!(beyond_projection["projectedAt"], IDLE.to_string());
+
+    let mut idle = JourneyState::new();
+    idle.clock.timestamp = IDLE;
+    idle.oracle.timestamp = IDLE;
+    let idle_quote = redemption_rate_update_quote(idle.quote_request())
+        .expect("fresh oracle after a long idle period must produce a quote");
+    assert_eq!(idle_quote["canSubmit"], true);
+    assert_eq!(
+        idle_quote["elapsedMilliseconds"],
+        (IDLE - START).to_string()
+    );
+    assert_eq!(
+        idle_quote["currentRedemptionPrice"],
+        beyond_projection["currentRedemptionPrice"]
+    );
+    assert!(
+        exact_u128(&idle_quote, "elapsedMilliseconds")
+            > u128::from(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS)
+    );
+
+    let refresh =
+        refresh_globals_plan(idle.refresh_request()).expect("long-idle refresh plan must be ready");
+    assert_plan(
+        &refresh,
+        &[
+            JourneyState::caller_id(),
+            JourneyState::protocol_id(),
+            JourneyState::accumulator_id(),
+            JourneyState::redemption_id(),
+            idle.parameters.market_price_oracle_id,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        3,
+    );
+    idle.execute_instruction(decode_instruction(&refresh));
+    assert_eq!(idle.accumulator.last_accrued_at, IDLE);
+    assert_eq!(idle.redemption.last_updated_at, IDLE);
+    let after_refresh = current_global_state(idle.current_request())
+        .expect("post-refresh state must remain readable");
+    assert_eq!(
+        after_refresh["currentAccumulatedRate"],
+        idle.accumulator
+            .accumulated_rate_at_last_accrual
+            .to_string()
+    );
+    assert_eq!(
+        after_refresh["currentRedemptionPrice"],
+        idle.redemption.redemption_price_at_last_update.to_string()
+    );
+    assert_eq!(after_refresh["projectedAt"], IDLE.to_string());
+
+    let mut exact = JourneyState::new();
+    exact.clock.timestamp = START;
+    exact.oracle.timestamp = START;
+    exact.parameters.stability_fee_per_millisecond = FIXED_POINT_ONE;
+    exact.accumulator.accumulated_rate_at_last_accrual = u128::MAX;
+    exact.redemption.redemption_price_at_last_update = u128::MAX;
+    exact.redemption.controller_integral_term = i128::MIN;
+    let exact_projection = current_global_state(exact.current_request())
+        .expect("maximum anchors must cross the projection boundary");
+    assert_eq!(
+        exact_projection["accumulatedRateAtLastAccrual"],
+        u128::MAX.to_string()
+    );
+    assert_eq!(
+        exact_projection["currentAccumulatedRate"],
+        u128::MAX.to_string()
+    );
+    assert_eq!(
+        exact_projection["redemptionPriceAtLastUpdate"],
+        u128::MAX.to_string()
+    );
+    assert_eq!(
+        exact_projection["currentRedemptionPrice"],
+        u128::MAX.to_string()
+    );
+    let exact_redemption = decode_redemption_price_state(DecodeRedemptionPriceStateRequest {
+        stablecoin_program_id: program_id_hex(),
+        redemption_price_state: exact.redemption_read(),
+    })
+    .expect("maximum signed state must decode");
+    assert_eq!(
+        exact_redemption["controllerIntegralTerm"],
+        i128::MIN.to_string()
     );
 }
