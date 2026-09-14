@@ -24,6 +24,10 @@ public:
     /// Success adds `protocolParameters`; failures use stable error codes.
     LogosMap protocolParameters();
 
+    /// Reads and exactly decodes the singleton StabilityFeeAccumulator account.
+    /// Returns the stored snapshot without projecting it to the current time.
+    LogosMap stabilityFeeAccumulator();
+
     /// Initializes the stablecoin protocol. Request fields are `adminId`,
     /// `freezeAuthorityId`, `collateralDefinitionId`, `marketPriceOracleId`,
     /// `initialStabilityFeePerMillisecond`,
