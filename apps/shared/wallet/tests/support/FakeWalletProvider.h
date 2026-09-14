@@ -25,7 +25,9 @@ public:
     WalletTransaction lastTransaction;
     bool deferAsync = false;
     SessionCallback pendingConnectCallback;
+    ProgressCallback pendingConnectProgress;
     SnapshotCallback pendingSnapshotCallback;
+    ProgressCallback pendingSnapshotProgress;
 
     WalletSession connect(const WalletPaths& paths) override
     {
@@ -34,14 +36,20 @@ public:
         return connectResult;
     }
 
-    void connectAsync(const WalletPaths& paths, SessionCallback callback) override
+    void connectAsync(const WalletPaths& paths,
+                      SessionCallback callback,
+                      ProgressCallback progress = {}) override
     {
         ++connectCalls;
         lastPaths = paths;
-        if (deferAsync)
+        if (deferAsync) {
             pendingConnectCallback = std::move(callback);
-        else
+            pendingConnectProgress = std::move(progress);
+        } else {
+            if (progress)
+                progress({});
             callback(connectResult);
+        }
     }
 
     WalletCreation createWallet(const WalletPaths& paths,
@@ -59,14 +67,20 @@ public:
         return snapshotResult;
     }
 
-    void snapshotAsync(bool forceRefresh, SnapshotCallback callback) override
+    void snapshotAsync(bool forceRefresh,
+                       SnapshotCallback callback,
+                       ProgressCallback progress = {}) override
     {
         ++snapshotCalls;
         lastForceRefresh = forceRefresh;
-        if (deferAsync)
+        if (deferAsync) {
             pendingSnapshotCallback = std::move(callback);
-        else
+            pendingSnapshotProgress = std::move(progress);
+        } else {
+            if (progress)
+                progress({});
             callback(snapshotResult);
+        }
     }
 
     void clearSnapshot() override { ++clearCalls; }
@@ -98,15 +112,29 @@ public:
 
     void finishConnect()
     {
+        pendingConnectProgress = {};
         SessionCallback callback = std::move(pendingConnectCallback);
         if (callback)
             callback(connectResult);
     }
 
+    void reportConnectProgress(WalletSyncProgress progress)
+    {
+        if (pendingConnectProgress)
+            pendingConnectProgress(progress);
+    }
+
     void finishSnapshot()
     {
+        pendingSnapshotProgress = {};
         SnapshotCallback callback = std::move(pendingSnapshotCallback);
         if (callback)
             callback(snapshotResult);
+    }
+
+    void reportSnapshotProgress(WalletSyncProgress progress)
+    {
+        if (pendingSnapshotProgress)
+            pendingSnapshotProgress(progress);
     }
 };

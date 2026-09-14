@@ -52,7 +52,13 @@ Item {
     readonly property bool validExternalAuthority: !isFungible || authorityMode !== 2 || (isAccountId(externalAuthorityField.text) && externalAuthorityField.text !== "11111111111111111111111111111111")
     readonly property bool canContinue: validSupply && validExternalAuthority
     readonly property bool canPrepare: canContinue && validDefinitionTarget && validHoldingTarget && validMetadataTarget
-    readonly property bool canSubmit: canPrepare && root.backend !== null && root.backend.isWalletOpen
+    readonly property bool walletReady: root.backend !== null && root.backend.isWalletOpen
+                                      && root.backend.initialSync !== true
+    readonly property bool synchronizing: root.backend !== null
+                                          && root.backend.initialSync === true
+                                          && (root.backend.syncStatus === "opening"
+                                              || root.backend.syncStatus === "syncing")
+    readonly property bool canSubmit: canPrepare && root.walletReady
                                       && !root.submitting && !root.prepared
     readonly property int validTargetCount: (validDefinitionTarget ? 1 : 0) + (validHoldingTarget ? 1 : 0) + (hasMetadata && validMetadataTarget ? 1 : 0)
     readonly property int targetCount: hasMetadata ? 3 : 2
@@ -87,7 +93,7 @@ Item {
     }
 
     function createTargetAccounts() {
-        if (!root.backend || !root.backend.isWalletOpen || root.accountBusy)
+        if (!root.walletReady || root.accountBusy)
             return;
 
         var fields = [definitionTargetField, holdingTargetField];
@@ -1098,7 +1104,7 @@ Item {
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 38
-                                enabled: root.backend !== null && root.backend.isWalletOpen && !root.accountBusy
+                                enabled: root.walletReady && !root.accountBusy
                                 text: root.accountBusy ? qsTr("Creating fresh accounts…") : qsTr("Create fresh wallet accounts")
                                 Accessible.name: qsTr("Create fresh wallet accounts for this definition")
                                 onClicked: root.createTargetAccounts()
@@ -1557,7 +1563,7 @@ Item {
                                     activeFocusOnTab: true
                                     Accessible.name: qsTr("Create token definition")
                                     enabled: root.canSubmit
-                                    text: root.submitting ? qsTr("Submitting…") : root.prepared ? qsTr("Transaction submitted") : !root.backend || !root.backend.isWalletOpen ? qsTr("Connect wallet to create") : root.canPrepare ? qsTr("Create token definition") : qsTr("Complete required fields")
+                                    text: root.submitting ? qsTr("Submitting…") : root.prepared ? qsTr("Transaction submitted") : !root.walletReady ? root.synchronizing ? qsTr("Synchronizing wallet…") : qsTr("Connect wallet to create") : root.canPrepare ? qsTr("Create token definition") : qsTr("Complete required fields")
                                     onClicked: root.prepareDefinition()
 
                                     contentItem: Text {

@@ -5,8 +5,8 @@
 class AmmUiBackend
 {
     PROP(bool isWalletOpen READONLY)
-    // False while startup or reconnect is still resolving wallet state. This
-    // stays distinct from isWalletOpen because a disconnected wallet is ready.
+    // False while startup, reconnect, or a failed synchronization is unresolved.
+    // This stays distinct from isWalletOpen because a disconnected wallet is ready.
     PROP(bool walletStateReady READONLY)
     PROP(bool walletExists READONLY)
     PROP(QString configPath READONLY)
@@ -34,6 +34,13 @@ class AmmUiBackend
     // The registry's declared networks as [{ id, name }] for the network picker
     // (empty for local / none sources). Auto-syncs on each registry refresh / pick.
     PROP(QVariantList networks READONLY)
+    PROP(QString syncStatus READONLY)
+    PROP(QString syncError READONLY)
+    PROP(bool initialSync READONLY)
+    PROP(bool syncProgressKnown READONLY)
+    PROP(int syncCurrentBlock READONLY)
+    PROP(int syncTargetBlock READONLY)
+    PROP(int syncRemainingBlocks READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
@@ -54,6 +61,7 @@ class AmmUiBackend
     SLOT(bool openExisting())
     // Close this app's wallet view (lock); does not delete the wallet and, in
     // Basecamp, does not close the wallet other apps share.
+    SLOT(void cancelSync())
     SLOT(void disconnectWallet())
 
     // AMM

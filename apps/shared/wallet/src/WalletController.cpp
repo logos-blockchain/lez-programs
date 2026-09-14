@@ -1,5 +1,6 @@
 #include "WalletController.h"
 
+#include <limits>
 #include <utility>
 
 #include <QDebug>
@@ -21,6 +22,12 @@ const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
 constexpr int SNAPSHOT_POLL_INTERVAL_MS = 10000;
 constexpr int SNAPSHOT_RETRY_INITIAL_MS = 1000;
 constexpr int SNAPSHOT_RETRY_MAX_MS = 10000;
+
+int blockValue(quint64 value)
+{
+    return value > static_cast<quint64>(std::numeric_limits<int>::max())
+        ? std::numeric_limits<int>::max() : static_cast<int>(value);
+}
 
 QString toLocalPath(const QString& path)
 {
@@ -107,6 +114,11 @@ bool WalletController::beginOpen(const QString& config, const QString& storage)
     const quint64 generation = ++m_operationGeneration;
     m_state.configPath = config;
     m_state.storagePath = storage;
+    m_state.syncProgressKnown = false;
+    m_state.syncCurrentBlock = 0;
+    m_state.syncTargetBlock = 0;
+    m_state.syncRemainingBlocks = 0;
+    m_state.initialSync = true;
     m_state.syncStatus = QStringLiteral("opening");
     m_state.syncError.clear();
     emit stateChanged();
@@ -120,11 +132,12 @@ bool WalletController::beginOpen(const QString& config, const QString& storage)
     });
 
     m_wallet.connectAsync({ config, storage },
-        [this, generation, config, storage](WalletSession session) {
+            [this, generation, config, storage](WalletSession session) {
             if (generation != m_operationGeneration)
                 return;
             if (session.failure == WalletFailure::WalletMissing) {
                 m_state.isWalletOpen = false;
+                m_state.initialSync = false;
                 m_state.syncStatus = QStringLiteral("closed");
                 m_state.syncError.clear();
                 m_state.walletExists = false;
@@ -135,6 +148,7 @@ bool WalletController::beginOpen(const QString& config, const QString& storage)
                 qWarning() << "WalletController: wallet connection failed"
                            << walletFailureCode(session.failure);
                 m_state.isWalletOpen = false;
+                m_state.initialSync = false;
                 m_state.syncStatus = QStringLiteral("error");
                 m_state.syncError = walletFailureCode(session.failure);
                 emit stateChanged();
@@ -146,6 +160,10 @@ bool WalletController::beginOpen(const QString& config, const QString& storage)
             m_state.walletExists = QFileInfo::exists(storage) || session.adopted;
             m_state.isWalletOpen = true;
             applySnapshot(session.snapshot);
+        }, [this, generation](WalletSyncProgress progress) {
+            if (generation != m_operationGeneration)
+                return;
+            applySyncProgress(progress);
         });
     return true;
 }
@@ -180,9 +198,37 @@ QString WalletController::createWallet(const QString& configPath,
         return creation.mnemonic;
     }
 
+    const quint64 generation = ++m_operationGeneration;
+    m_snapshotPollTimer->stop();
     m_state.isWalletOpen = true;
-    m_state.syncStatus = QStringLiteral("ready");
-    applySnapshot(creation.snapshot);
+    m_state.syncProgressKnown = false;
+    m_state.syncCurrentBlock = 0;
+    m_state.syncTargetBlock = 0;
+    m_state.syncRemainingBlocks = 0;
+    m_state.initialSync = true;
+    m_state.syncStatus = QStringLiteral("syncing");
+    m_state.syncError.clear();
+    emit stateChanged();
+    m_wallet.snapshotAsync(true,
+        [this, generation](WalletSnapshot snapshot) {
+            if (generation != m_operationGeneration)
+                return;
+            if (snapshot.ok()) {
+                applySnapshot(snapshot);
+                return;
+            }
+            qWarning() << "WalletController: initial wallet sync failed"
+                       << walletFailureCode(snapshot.failure);
+            m_state.isWalletOpen = false;
+            m_state.initialSync = false;
+            m_state.syncStatus = QStringLiteral("error");
+            m_state.syncError = walletFailureCode(snapshot.failure);
+            emit stateChanged();
+        }, [this, generation](WalletSyncProgress progress) {
+            if (generation != m_operationGeneration)
+                return;
+            applySyncProgress(progress);
+        });
     return creation.mnemonic;
 }
 
@@ -196,12 +242,41 @@ bool WalletController::open()
     return beginOpen(config, storage);
 }
 
+void WalletController::cancelSync()
+{
+    if (!m_state.initialSync
+        || (m_state.syncStatus != QStringLiteral("opening")
+        && m_state.syncStatus != QStringLiteral("syncing"))) {
+        return;
+    }
+
+    ++m_operationGeneration;
+    m_snapshotPollTimer->stop();
+    m_wallet.disconnect();
+    m_state.isWalletOpen = false;
+    m_state.syncProgressKnown = false;
+    m_state.syncCurrentBlock = 0;
+    m_state.syncTargetBlock = 0;
+    m_state.syncRemainingBlocks = 0;
+    m_state.initialSync = false;
+    m_state.syncStatus = QStringLiteral("error");
+    m_state.syncError = QStringLiteral("sync_cancelled");
+    m_accountModel->replaceAccounts({});
+    QSettings(SETTINGS_ORG, m_settingsApplication).setValue(DISCONNECTED_KEY, true);
+    emit stateChanged();
+}
+
 void WalletController::disconnect()
 {
     ++m_operationGeneration;
     m_snapshotPollTimer->stop();
     m_wallet.disconnect();
     m_state.isWalletOpen = false;
+    m_state.syncProgressKnown = false;
+    m_state.syncCurrentBlock = 0;
+    m_state.syncTargetBlock = 0;
+    m_state.syncRemainingBlocks = 0;
+    m_state.initialSync = false;
     m_state.syncStatus = QStringLiteral("closed");
     m_state.syncError.clear();
     m_accountModel->replaceAccounts({});
@@ -211,6 +286,9 @@ void WalletController::disconnect()
 
 QString WalletController::createAccount(bool isPublic)
 {
+    if (!m_state.canSubmit())
+        return {};
+
     const WalletAccountCreation creation = m_wallet.createAccount(isPublic);
     if (!creation.ok()) {
         qWarning() << "WalletController: account creation failed"
@@ -233,6 +311,12 @@ void WalletController::refresh()
 
     m_snapshotPollTimer->stop();
     const quint64 generation = ++m_operationGeneration;
+    m_state.syncProgressKnown = false;
+    m_state.syncCurrentBlock = 0;
+    m_state.syncTargetBlock = 0;
+    m_state.syncRemainingBlocks = 0;
+    // Refreshes after the first successful snapshot retain the last usable wallet
+    // state; only initial open/create synchronization blocks submissions.
     m_state.syncStatus = QStringLiteral("syncing");
     m_state.syncError.clear();
     emit stateChanged();
@@ -249,6 +333,10 @@ void WalletController::refresh()
             emit stateChanged();
             scheduleSnapshotPoll(true);
         }
+    }, [this, generation](WalletSyncProgress progress) {
+        if (generation != m_operationGeneration)
+            return;
+        applySyncProgress(progress);
     });
 }
 
@@ -265,8 +353,13 @@ QString WalletController::balance(const QString& accountId, bool isPublic)
 void WalletController::applySnapshot(const WalletSnapshot& snapshot)
 {
     m_accountModel->replaceAccounts(snapshot.accounts);
-    m_state.lastSyncedBlock = static_cast<int>(snapshot.lastSyncedBlock);
-    m_state.currentBlockHeight = static_cast<int>(snapshot.currentBlockHeight);
+    m_state.lastSyncedBlock = blockValue(snapshot.lastSyncedBlock);
+    m_state.currentBlockHeight = blockValue(snapshot.currentBlockHeight);
+    m_state.syncProgressKnown = false;
+    m_state.syncCurrentBlock = 0;
+    m_state.syncTargetBlock = 0;
+    m_state.syncRemainingBlocks = 0;
+    m_state.initialSync = false;
     m_state.sequencerAddress = snapshot.sequencerAddress;
     m_state.syncStatus = QStringLiteral("ready");
     m_state.syncError.clear();
@@ -274,6 +367,24 @@ void WalletController::applySnapshot(const WalletSnapshot& snapshot)
     emit stateChanged();
     checkReachability();
     scheduleSnapshotPoll(false);
+}
+
+void WalletController::applySyncProgress(const WalletSyncProgress& progress)
+{
+    const bool changed = m_state.syncProgressKnown != progress.known
+        || m_state.syncCurrentBlock != blockValue(progress.currentBlock)
+        || m_state.syncTargetBlock != blockValue(progress.targetBlock)
+        || m_state.syncRemainingBlocks != blockValue(progress.remainingBlocks);
+    if (!changed)
+        return;
+
+    m_state.syncProgressKnown = progress.known;
+    m_state.syncCurrentBlock = blockValue(progress.currentBlock);
+    m_state.syncTargetBlock = blockValue(progress.targetBlock);
+    m_state.syncRemainingBlocks = blockValue(progress.remainingBlocks);
+    if (m_state.syncStatus == QStringLiteral("opening"))
+        m_state.syncStatus = QStringLiteral("syncing");
+    emit stateChanged();
 }
 
 void WalletController::pollSnapshot()

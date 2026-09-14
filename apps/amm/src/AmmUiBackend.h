@@ -52,6 +52,7 @@ public slots:
     QString createNewDefault(QString password) override;
     QString createNew(QString configPath, QString storagePath, QString password) override;
     bool openExisting() override;
+    void cancelSync() override;
     void disconnectWallet() override;
 
     // AMM — all forwarded to the amm_module core module.
