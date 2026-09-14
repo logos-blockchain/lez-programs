@@ -26,9 +26,10 @@ use twap_oracle_core::OraclePriceAccount;
 use super::{
     accrue_stability_fee_plan, current_global_state, decode_protocol_parameters,
     decode_redemption_price_state, decode_stability_fee_accumulator, redemption_rate_update_quote,
-    AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest, DecodeProtocolParametersRequest,
-    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
-    RedemptionRateUpdateQuoteRequest, StablecoinResult, UpdateRedemptionRatePlanRequest,
+    refresh_globals_plan, update_redemption_rate_plan, AccrueStabilityFeePlanRequest,
+    CurrentGlobalStateRequest, DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
+    DecodeStabilityFeeAccumulatorRequest, RedemptionRateUpdateQuoteRequest,
+    RefreshGlobalsPlanRequest, StablecoinResult, UpdateRedemptionRatePlanRequest,
 };
 use crate::{
     account::{account_id_hex, account_read, program_id_bytes},
@@ -92,6 +93,22 @@ fn assert_plan(plan: &Value, account_ids: &[AccountId], instruction_word: u32) {
     assert_eq!(plan["accountIds"], json!(expected_ids));
     assert_eq!(plan["signingRequirements"], json!(expected_signers));
     assert_eq!(plan["instruction"], json!([instruction_word]));
+}
+
+fn exact_u128(value: &Value, key: &str) -> u128 {
+    value[key]
+        .as_str()
+        .unwrap_or_else(|| panic!("{key} must be an exact decimal string"))
+        .parse::<u128>()
+        .unwrap_or_else(|_| panic!("{key} must fit u128"))
+}
+
+fn exact_i128(value: &Value, key: &str) -> i128 {
+    value[key]
+        .as_str()
+        .unwrap_or_else(|| panic!("{key} must be an exact decimal string"))
+        .parse::<i128>()
+        .unwrap_or_else(|_| panic!("{key} must fit i128"))
 }
 
 #[derive(Clone)]
@@ -234,6 +251,18 @@ impl JourneyState {
             stablecoin_program_id: program_id_hex(),
             caller_id: account_id_hex(Self::caller_id()),
             protocol_parameters: self.protocol_read(),
+            redemption_price_state: self.redemption_read(),
+            market_price_oracle: self.oracle_read(),
+            clock: self.clock_read(),
+        }
+    }
+
+    fn refresh_request(&self) -> RefreshGlobalsPlanRequest {
+        RefreshGlobalsPlanRequest {
+            stablecoin_program_id: program_id_hex(),
+            caller_id: account_id_hex(Self::caller_id()),
+            protocol_parameters: self.protocol_read(),
+            stability_fee_accumulator: self.accumulator_read(),
             redemption_price_state: self.redemption_read(),
             market_price_oracle: self.oracle_read(),
             clock: self.clock_read(),
@@ -485,4 +514,117 @@ fn journey_projects_fees_then_persists_only_the_accumulator() {
         projected_rate
     );
     assert_eq!(state.accumulator.last_accrued_at, DUE);
+}
+
+#[test]
+fn journey_quotes_and_persists_successive_controller_updates() {
+    let mut state = JourneyState::new();
+    let accumulator_before = state.accumulator.clone();
+
+    let first_quote = redemption_rate_update_quote(state.quote_request())
+        .expect("first controller quote must be ready");
+    assert_eq!(first_quote["canSubmit"], true);
+    assert_eq!(first_quote["code"], "ready");
+    assert_eq!(
+        first_quote["elapsedMilliseconds"],
+        (DUE - START).to_string()
+    );
+
+    let first_plan = update_redemption_rate_plan(state.update_request())
+        .expect("first controller plan must be ready");
+    assert_plan(
+        &first_plan,
+        &[
+            JourneyState::caller_id(),
+            JourneyState::protocol_id(),
+            JourneyState::redemption_id(),
+            state.parameters.market_price_oracle_id,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        2,
+    );
+    assert!(matches!(
+        decode_instruction(&first_plan),
+        Instruction::UpdateRedemptionRate
+    ));
+    state.execute_instruction(decode_instruction(&first_plan));
+
+    assert_eq!(
+        state.redemption.redemption_price_at_last_update,
+        exact_u128(&first_quote, "currentRedemptionPrice")
+    );
+    assert_eq!(
+        state.redemption.redemption_rate_per_millisecond,
+        exact_u128(&first_quote, "nextRedemptionRatePerMillisecond")
+    );
+    assert_eq!(
+        state.redemption.controller_integral_term,
+        exact_i128(&first_quote, "nextControllerIntegralTerm")
+    );
+    assert_eq!(state.redemption.last_updated_at, DUE);
+    assert_eq!(state.accumulator, accumulator_before);
+
+    state.clock.timestamp = LATER;
+    state.oracle.timestamp = LATER;
+    state.oracle.price = FIXED_POINT_ONE * 3 / 2;
+    let second_quote = redemption_rate_update_quote(state.quote_request())
+        .expect("second controller quote must be ready");
+    assert_eq!(second_quote["canSubmit"], true);
+    assert_eq!(
+        second_quote["elapsedMilliseconds"],
+        (LATER - DUE).to_string()
+    );
+
+    let second_plan = update_redemption_rate_plan(state.update_request())
+        .expect("second controller plan must be ready");
+    assert!(matches!(
+        decode_instruction(&second_plan),
+        Instruction::UpdateRedemptionRate
+    ));
+    state.execute_instruction(decode_instruction(&second_plan));
+    assert_eq!(
+        state.redemption.redemption_price_at_last_update,
+        exact_u128(&second_quote, "currentRedemptionPrice")
+    );
+    assert_eq!(
+        state.redemption.redemption_rate_per_millisecond,
+        exact_u128(&second_quote, "nextRedemptionRatePerMillisecond")
+    );
+    assert_eq!(
+        state.redemption.controller_integral_term,
+        exact_i128(&second_quote, "nextControllerIntegralTerm")
+    );
+    assert_eq!(state.redemption.last_updated_at, LATER);
+    assert_ne!(
+        state.redemption.controller_integral_term,
+        exact_i128(&first_quote, "nextControllerIntegralTerm")
+    );
+    assert_eq!(state.accumulator, accumulator_before);
+
+    let mut combined = JourneyState::new();
+    let combined_plan = refresh_globals_plan(combined.refresh_request())
+        .expect("combined refresh plan must be ready");
+    assert_plan(
+        &combined_plan,
+        &[
+            JourneyState::caller_id(),
+            JourneyState::protocol_id(),
+            JourneyState::accumulator_id(),
+            JourneyState::redemption_id(),
+            combined.parameters.market_price_oracle_id,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        3,
+    );
+    combined.execute_instruction(decode_instruction(&combined_plan));
+
+    let mut standalone = JourneyState::new();
+    let accrue = accrue_stability_fee_plan(standalone.accrue_request())
+        .expect("standalone accrual plan must be ready");
+    standalone.execute_instruction(decode_instruction(&accrue));
+    let update = update_redemption_rate_plan(standalone.update_request())
+        .expect("standalone update plan must be ready");
+    standalone.execute_instruction(decode_instruction(&update));
+    assert_eq!(combined.accumulator, standalone.accumulator);
+    assert_eq!(combined.redemption, standalone.redemption);
 }
