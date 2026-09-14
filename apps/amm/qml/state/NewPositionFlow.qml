@@ -224,7 +224,9 @@ QtObject {
         root.submitting = true
         root.flowErrorCode = ""
 
-        if (!root.backend || root.runtime === null) {
+        if (!root.backend || root.runtime === null
+                || !root.backend.isWalletOpen
+                || root.backend.walletStateReady !== true) {
             root.finishSubmitFailure(root.quoteError("wallet_unavailable"))
             return
         }
