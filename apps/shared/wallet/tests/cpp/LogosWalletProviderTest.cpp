@@ -66,6 +66,7 @@ private slots:
     void controllerOwnsUiWalletFlow();
     void controllerRejectsDuplicateOpenWhileStarting();
     void controllerCanRetryAfterOpenFailure();
+    void controllerPollsSnapshotsAndRetriesAfterFailure();
     void controllerStopsReachabilityChecksAfterDisconnect();
 };
 
@@ -533,6 +534,63 @@ void LogosWalletProviderTest::controllerCanRetryAfterOpenFailure()
     settings.clear();
 }
 
+void LogosWalletProviderTest::controllerPollsSnapshotsAndRetriesAfterFailure()
+{
+    const QString settingsApplication = QStringLiteral("WalletSnapshotPollingTest");
+    QSettings settings(QStringLiteral("Logos"), settingsApplication);
+    settings.clear();
+
+    FakeWalletProvider provider;
+    provider.deferAsync = true;
+    provider.connectResult.snapshot.accounts = {
+        { ACCOUNT_A, QStringLiteral("5"), true },
+    };
+    provider.connectResult.snapshot.lastSyncedBlock = 7;
+    provider.connectResult.snapshot.currentBlockHeight = 8;
+
+    WalletController controller(provider, settingsApplication);
+    QVERIFY(controller.open());
+    provider.finishConnect();
+    QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncStatus,
+                              QStringLiteral("ready"), 1000);
+
+    auto* pollTimer = controller.findChild<QTimer*>(
+        QStringLiteral("walletSnapshotPollTimer"));
+    QVERIFY(pollTimer);
+    pollTimer->setInterval(1);
+    pollTimer->start();
+    QTRY_COMPARE_WITH_TIMEOUT(provider.snapshotCalls, 1, 1000);
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("syncing"));
+
+    pollTimer->start();
+    QTest::qWait(20);
+    QCOMPARE(provider.snapshotCalls, 1);
+
+    provider.snapshotResult.failure = WalletFailure::ReadFailed;
+    provider.finishSnapshot();
+    QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncStatus,
+                              QStringLiteral("error"), 1000);
+    QCOMPARE(controller.state().syncError, QStringLiteral("read_failed"));
+    QVERIFY(pollTimer->isActive());
+
+    provider.snapshotResult = {};
+    provider.snapshotResult.accounts = {
+        { ACCOUNT_A, QStringLiteral("9"), true },
+    };
+    pollTimer->setInterval(1);
+    QTRY_COMPARE_WITH_TIMEOUT(provider.snapshotCalls, 2, 1000);
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("syncing"));
+
+    provider.finishSnapshot();
+    QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncStatus,
+                              QStringLiteral("ready"), 1000);
+    QCOMPARE(provider.snapshotCalls, 2);
+    QCOMPARE(controller.balance(ACCOUNT_A, true), QStringLiteral("9"));
+
+    controller.disconnect();
+    settings.clear();
+}
+
 void LogosWalletProviderTest::controllerStopsReachabilityChecksAfterDisconnect()
 {
     const QString settingsApplication = QStringLiteral("WalletReachabilityTest");
@@ -551,7 +609,7 @@ void LogosWalletProviderTest::controllerStopsReachabilityChecksAfterDisconnect()
     controller.disconnect();
     finished.clear();
 
-    auto* timer = controller.findChild<QTimer*>();
+    auto* timer = controller.findChild<QTimer*>(QStringLiteral("walletReachabilityTimer"));
     QVERIFY(timer);
     timer->setInterval(1);
     controller.start();
