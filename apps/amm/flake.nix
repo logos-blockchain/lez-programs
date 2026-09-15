@@ -12,9 +12,10 @@
 
     # Core wallet module (the LEZ wallet FFI Qt plugin). The input name must
     # match the metadata.json `dependencies` entry so the builder can resolve it
-    # as a module dependency. Same ref the repo-root flake and the amm_module
-    # flake pin (the QtRO byte-string `instruction` fix).
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=byte-string-fix";
+    # as a module dependency. Same rev the repo-root flake and the amm_module
+    # flake pin: the 0.4.1-interim build (byte-string fix on a v0.2.4 wallet-ffi).
+    # See the root flake.nix for the full rationale.
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=acf0cd501b262c4c15969e3735e85318297b85bf";
 
     # The AMM core module, resolved as the metadata.json `amm_module` dependency
     # (the builder reads its .lidl to generate modules().amm_module). Built from
