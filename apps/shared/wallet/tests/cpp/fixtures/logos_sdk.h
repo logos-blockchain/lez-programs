@@ -37,8 +37,10 @@ public:
     int submitCalls = 0;
     QString openedConfig;
     QString openedStorage;
+    QString openedStatistics;
     QString createdConfig;
     QString createdStorage;
+    QString createdStatistics;
     QString createdPassword;
     QStringList submittedAccountIds;
     QVariantList submittedSigningRequirements;
@@ -61,27 +63,33 @@ public:
         callback(version());
     }
 
-    int open(const QString& config, const QString& storage)
+    int open(const QString& config,
+             const QString& storage,
+             const QString& statistics)
     {
         ++openCalls;
         openedConfig = config;
         openedStorage = storage;
+        openedStatistics = statistics;
         return openResult;
     }
 
     void openAsync(const QString& config,
                    const QString& storage,
+                   const QString& statistics,
                    std::function<void(int)> callback)
     {
-        callback(open(config, storage));
+        callback(open(config, storage, statistics));
     }
 
     QString create_new(const QString& config,
                        const QString& storage,
+                       const QString& statistics,
                        const QString& password)
     {
         createdConfig = config;
         createdStorage = storage;
+        createdStatistics = statistics;
         createdPassword = password;
         return mnemonic;
     }
@@ -182,5 +190,5 @@ struct LogosModules {
     LogosModules() = default;
     explicit LogosModules(LogosAPI*) { }
 
-    FakeExecutionZone logos_execution_zone;
+    FakeExecutionZone lez_core;
 };

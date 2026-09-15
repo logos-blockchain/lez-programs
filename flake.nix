@@ -35,28 +35,21 @@
     # match the metadata.json `dependencies` entry so the builder can resolve it
     # as a module dependency.
     #
-    # Upstream logos-blockchain/logos-execution-zone-module, pinned to the
-    # `0.4.1-interim` build (acf0cd50) that the package-release repo ships on its
-    # `erhant/lez-core-0.4.1-interim` branch. This is the byte-string-fix rebased
-    # onto a v0.2.4 wallet-ffi: it is the byte-string commit (send_generic_public_
-    # transaction's `instruction` as a byte-string IPC type, see
-    # docs/amm-swap-qtro-serialization-bug.md) PLUS a bump of the transitive
-    # logos-execution-zone (wallet-ffi) to v0.2.4 + an r0 nix-fetch fix
-    # (erhant/0.2.4-with-r0-fix, 9edf4a62 = v0.2.4 + one build-only commit).
+    # The 0.4.1-interim module pin descends from the byte-string fix and keeps
+    # the four-argument FFI and byte-string instruction encoding used by the
+    # deployed guests.
     #
-    # Why this exact pin (vs plain byte-string-fix, or release v0.4.1/0.4.2):
-    #  - Keeps the 4-arg FFI + risc0-word instruction encoding (carried as LE
-    #    bytes), so the currently-deployed guests work with NO Borsh migration
-    #    (issue #351) and NO payer-arg client changes.
-    #  - wallet-ffi is v0.2.4, whose wallet-storage/config schema matches the
-    #    local `wallet`/`spel` CLI and the deployed sequencer — the app loads a
-    #    wallet the v0.2.4 CLI wrote (release v0.4.1/0.4.2 pin a much newer
-    #    wallet-ffi that cannot).
-    # The wallet-ffi and sequencer must agree on the JSON-RPC API and wallet-config
-    # schema, so keep this in sync with the deployed sequencer's version. (Also
-    # builds from the Logos nix cache, so `ring` isn't compiled locally — it fails
-    # under the nix cc-wrapper on Apple Silicon.)
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=acf0cd501b262c4c15969e3735e85318297b85bf";
+    # The deployed testnet contains program accounts larger than the old
+    # 100 KiB client limit. Override the module's nested LEZ input to 70c41652,
+    # which raises that limit to 700 KiB while retaining the transaction API.
+    # Keep this module/client pair aligned in the root, apps/amm, and modules/amm
+    # flakes. Pin both inputs to avoid unreviewed wallet-FFI/API changes.
+    lez_core = {
+      url = "github:logos-blockchain/logos-execution-zone-module?rev=acf0cd501b262c4c15969e3735e85318297b85bf";
+
+      inputs.logos-execution-zone.url =
+        "github:logos-blockchain/logos-execution-zone?rev=70c41652fa129d8a0e0fe74c4caa1b11a6b5de9c";
+    };
 
   };
 
