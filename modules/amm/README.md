@@ -163,10 +163,10 @@ Have all of the following in place before staging the modules dir:
 4. **The wallet module it depends on, built** — `lez_core` is a
    *separate repo*, not part of this tree. Build the **same rev** this module
    pins as its `lez_core` flake input (mismatched revs = ABI/ImageID
-   drift), producing `logos_execution_zone_plugin.dylib` + `libwallet_ffi.dylib`:
+   drift), producing `lez_core_plugin.dylib` + `libwallet_ffi.dylib`:
 
    ```bash
-   nix build 'github:gravityblast/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr'
+   nix build 'github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2'
    # output under result/lib/ — copy it aside before building amm-module (both use ./result)
    ```
 
@@ -198,7 +198,7 @@ modules/
     variant                     # one line: darwin-arm64-dev
     manifest.json
   lez_core/
-    logos_execution_zone_plugin.dylib
+    lez_core_plugin.dylib
     libwallet_ffi.dylib
     variant
     manifest.json
@@ -231,7 +231,8 @@ which fails on a null wallet handle (surfacing as an absent pool), so open the
 wallet first — `resolvePoolAccount` then works:
 
 ```bash
-logoscore call lez_core open ~/.lee/wallet/wallet_config.json ~/.lee/wallet/storage.json
+logoscore call lez_core open ~/.lee/wallet/wallet_config.json \
+  ~/.lee/wallet/storage.json ~/.lee/wallet/statistics.json
 logoscore call amm_module resolvePoolAccount <defA_hex> <defB_hex>
 ```
 
