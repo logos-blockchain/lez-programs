@@ -225,6 +225,7 @@ void LogosWalletProviderTest::opensConfiguredWalletWhenNoSharedSessionExists()
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const QString storage = directory.filePath(QStringLiteral("storage.json"));
+    const QString statistics = directory.filePath(QStringLiteral("statistics.json"));
     QFile file(storage);
     QVERIFY(file.open(QIODevice::WriteOnly));
     file.close();
@@ -234,15 +235,14 @@ void LogosWalletProviderTest::opensConfiguredWalletWhenNoSharedSessionExists()
     const WalletSession session = provider.connect({
         directory.filePath(QStringLiteral("wallet.json")),
         storage,
-        directory.filePath(QStringLiteral("statistics.json")),
+        statistics,
     });
 
     QVERIFY(session.ok());
     QVERIFY(!session.adopted);
     QCOMPARE(modules.lez_core.openCalls, 1);
     QCOMPARE(modules.lez_core.openedStorage, storage);
-    QCOMPARE(modules.lez_core.openedStatistics,
-             directory.filePath(QStringLiteral("statistics.json")));
+    QCOMPARE(modules.lez_core.openedStatistics, statistics);
 
     bool completed = false;
     provider.connectAsync({ QStringLiteral("config"), storage, QStringLiteral("statistics") },

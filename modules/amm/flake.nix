@@ -6,11 +6,13 @@
 
     # Core wallet module dependency. The input name must match the
     # metadata.json `dependencies` entry so the builder resolves it as a module
-    # dependency. Same rev the repo-root flake and the apps/amm flake pin: the
-    # 0.4.1-interim build (byte-string fix on a v0.2.4 wallet-ffi). See the root
-    # flake.nix for the full rationale.
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=acf0cd501b262c4c15969e3735e85318297b85bf";
-
+    # dependency. Keep this module/client pair aligned with the root and
+    # apps/amm flakes; see the root flake for the rationale.
+    lez_core = {
+      url = "github:logos-blockchain/logos-execution-zone-module?rev=acf0cd501b262c4c15969e3735e85318297b85bf";
+      inputs.logos-execution-zone.url =
+        "github:logos-blockchain/logos-execution-zone?rev=70c41652fa129d8a0e0fe74c4caa1b11a6b5de9c";
+    };
     # The repo-root flake supplies the amm_ffi crate. amm_ffi is a Cargo
     # workspace member (it path-depends on amm_core / token_core /
     # twap_oracle_core under programs/*), so it can only be built with the whole
