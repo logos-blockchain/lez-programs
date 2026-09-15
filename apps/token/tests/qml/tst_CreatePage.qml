@@ -14,6 +14,8 @@ Item {
 
         QtObject {
             property bool isWalletOpen: true
+            property string syncStatus: "ready"
+            property bool initialSync: false
             property int createCalls: 0
 
             function createFungible(_definitionId, _holdingId, _name, _supply, _authority) {
@@ -157,6 +159,23 @@ Item {
             fixture.runtime.finishSuccess()
             tryCompare(fixture.page, "prepared", true)
             compare(fixture.store.drafts.length, 1)
+        }
+
+        function test_waitsForWalletSynchronizationBeforeSubmit() {
+            const fixture = createFixture()
+            fixture.backend.syncStatus = "syncing"
+            fixture.backend.initialSync = true
+            tryCompare(fixture.page, "walletReady", false)
+            tryCompare(fixture.prepareButton, "enabled", false)
+            compare(fixture.backend.createCalls, 0)
+
+            fixture.backend.syncStatus = "ready"
+            fixture.backend.initialSync = false
+            tryCompare(fixture.page, "walletReady", true)
+            tryCompare(fixture.prepareButton, "enabled", true)
+            mouseClick(fixture.prepareButton)
+            compare(fixture.backend.createCalls, 1)
+            fixture.runtime.finishFailure()
         }
     }
 }

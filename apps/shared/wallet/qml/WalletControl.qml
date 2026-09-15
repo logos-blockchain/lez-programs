@@ -15,17 +15,37 @@ Item {
     property int selectedIndex: 0
     property bool busy: false
     property bool waitingForWallet: false
+    property bool cancellationRequested: false
 
     readonly property bool connected: root.wallet !== null && root.wallet.isWalletOpen
     readonly property bool synchronizing: root.wallet !== null
+        && root.wallet.initialSync === true
         && (root.wallet.syncStatus === "opening" || root.wallet.syncStatus === "syncing")
+    readonly property bool syncFailed: root.wallet !== null
+        && root.wallet.syncStatus === "error"
+    readonly property bool syncProgressKnown: root.wallet !== null
+        && root.wallet.syncProgressKnown === true
+    readonly property string syncProgressText: {
+        if (!root.synchronizing)
+            return ""
+        if (root.syncProgressKnown && root.wallet.syncTargetBlock > 0) {
+            return qsTr("Syncing wallet · %1 / %2 · %3 blocks left")
+                .arg(root.wallet.syncCurrentBlock)
+                .arg(root.wallet.syncTargetBlock)
+                .arg(root.wallet.syncRemainingBlocks)
+        }
+        return qsTr("Synchronizing wallet…")
+    }
     readonly property bool compactLayout: root.compact || root.viewportWidth < 680
     readonly property string selectedAddress: root.accountAt(root.selectedIndex, "address")
     readonly property string selectedName: root.accountAt(root.selectedIndex, "name")
     readonly property string selectedBalance: root.accountAt(root.selectedIndex, "balance")
     readonly property bool selectedIsPublic: root.accountAt(root.selectedIndex, "isPublic") === true
 
-    implicitWidth: root.connected ? connectedButton.implicitWidth : connectButton.implicitWidth
+    implicitWidth: root.synchronizing
+        ? cancelSyncButton.implicitWidth
+        : root.syncFailed ? syncErrorButton.implicitWidth
+        : root.connected ? connectedButton.implicitWidth : connectButton.implicitWidth
     implicitHeight: 40
 
     Instantiator {
@@ -77,6 +97,7 @@ Item {
             return
         root.busy = true
         root.waitingForWallet = true
+        root.cancellationRequested = false
         try {
             root.watchResult(root.wallet.openExisting(), function(ok) {
                 if (!ok) {
@@ -97,6 +118,20 @@ Item {
             root.busy = false
             root.showError(qsTr("Wallet could not be opened: %1").arg(error))
         }
+    }
+
+    function retryWalletSync() {
+        if (!root.wallet || root.busy)
+            return
+        if (!root.connected) {
+            root.openWallet()
+            return
+        }
+        root.busy = true
+        root.waitingForWallet = true
+        root.cancellationRequested = false
+        if (root.wallet.refreshAccounts)
+            root.wallet.refreshAccounts()
     }
 
     TextEdit {
@@ -127,18 +162,26 @@ Item {
         ignoreUnknownSignals: true
 
         function onSyncStatusChanged() {
-            if (!root.waitingForWallet || !root.wallet)
+            if (!root.wallet)
                 return
             if (root.wallet.syncStatus === "ready") {
                 root.waitingForWallet = false
                 root.busy = false
+                root.cancellationRequested = false
             } else if (root.wallet.syncStatus === "error"
                        || root.wallet.syncStatus === "closed") {
+                const wasWaiting = root.waitingForWallet
                 root.waitingForWallet = false
                 root.busy = false
-                root.showError(root.wallet.syncError
-                    ? qsTr("Wallet could not be opened: %1").arg(root.wallet.syncError)
-                    : qsTr("Wallet could not be opened."))
+                if (wasWaiting || root.cancellationRequested) {
+                    root.cancellationRequested = false
+                    if (!(createWalletDialog.opened
+                          && createWalletDialog.mnemonic.length > 0)) {
+                        root.showError(root.wallet.syncError
+                            ? qsTr("Wallet synchronization failed: %1").arg(root.wallet.syncError)
+                            : qsTr("Wallet could not be opened."))
+                    }
+                }
             }
         }
     }
@@ -156,15 +199,102 @@ Item {
     }
 
     Button {
+        id: syncErrorButton
+        objectName: "walletSyncErrorButton"
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        visible: root.syncFailed
+        implicitHeight: 40
+        implicitWidth: root.compactLayout ? 40 : 180
+        text: root.compactLayout ? "!" : qsTr("Retry wallet sync")
+        Accessible.name: qsTr("Retry wallet synchronization")
+        ToolTip.text: root.wallet && root.wallet.syncError
+            ? qsTr("Wallet synchronization failed: %1").arg(root.wallet.syncError)
+            : Accessible.name
+        ToolTip.visible: hovered && root.compactLayout
+
+        background: Rectangle {
+            color: syncErrorButton.pressed ? "#8f3f3f" : "#6b3030"
+            border.color: "#fca5a5"
+            border.width: 1
+            radius: 6
+        }
+
+        contentItem: Label {
+            text: syncErrorButton.text
+            color: "#ffffff"
+            font.bold: true
+            font.pixelSize: 11
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+
+        onClicked: root.retryWalletSync()
+    }
+
+    Button {
+        id: cancelSyncButton
+        objectName: "walletCancelSyncButton"
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        visible: root.synchronizing
+        implicitHeight: 40
+        implicitWidth: root.compactLayout ? 40 : 220
+        text: root.compactLayout ? "" : root.syncProgressText
+        Accessible.name: qsTr("Cancel wallet synchronization")
+        ToolTip.text: root.syncProgressText
+        ToolTip.visible: hovered && root.compactLayout
+
+        background: Rectangle {
+            color: cancelSyncButton.pressed ? "#d95c1e" : "#f26a21"
+            radius: 6
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 1
+                width: root.syncProgressKnown && root.wallet.syncTargetBlock > 0
+                    ? parent.width * Math.min(1,
+                                              root.wallet.syncCurrentBlock
+                                              / root.wallet.syncTargetBlock)
+                    : 0
+                height: 3
+                radius: 1.5
+                color: "#ffd0a8"
+                visible: root.syncProgressKnown
+            }
+        }
+
+        contentItem: Label {
+            text: cancelSyncButton.text
+            color: "#ffffff"
+            font.bold: true
+            font.pixelSize: 11
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+
+        onClicked: {
+            root.waitingForWallet = false
+            root.busy = false
+            root.cancellationRequested = true
+            if (root.wallet)
+                root.wallet.cancelSync ? root.wallet.cancelSync() : root.wallet.disconnectWallet()
+        }
+    }
+
+    Button {
         id: connectButton
         objectName: "walletConnectButton"
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        visible: !root.connected
-        enabled: root.wallet !== null && !root.busy && !root.synchronizing
+        visible: !root.connected && !root.synchronizing
+        enabled: root.wallet !== null && !root.busy
         implicitHeight: 40
         implicitWidth: root.compactLayout ? 40 : 108
-        text: root.compactLayout ? "" : root.busy || root.synchronizing ? qsTr("Connecting...") : qsTr("Connect")
+        text: root.compactLayout ? "" : root.busy ? qsTr("Connecting...") : qsTr("Connect")
         display: root.compactLayout ? AbstractButton.IconOnly : AbstractButton.TextBesideIcon
         icon.source: Qt.resolvedUrl("icons/account.svg")
         icon.color: "#ffffff"
@@ -210,7 +340,7 @@ Item {
         objectName: "walletAccountButton"
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        visible: root.connected
+        visible: root.connected && !root.synchronizing
         enabled: !root.busy && !root.synchronizing
         implicitHeight: 40
         implicitWidth: root.compactLayout ? 44 : Math.max(140, accountButtonLabel.implicitWidth + 58)
@@ -472,6 +602,12 @@ Item {
         objectName: "createWalletDialog"
         walletHome: root.wallet ? root.wallet.walletHome || "" : ""
         busy: root.busy
+        syncing: root.synchronizing
+        syncProgressKnown: root.syncProgressKnown
+        syncCurrentBlock: root.wallet ? root.wallet.syncCurrentBlock || 0 : 0
+        syncTargetBlock: root.wallet ? root.wallet.syncTargetBlock || 0 : 0
+        syncRemainingBlocks: root.wallet ? root.wallet.syncRemainingBlocks || 0 : 0
+        syncError: root.wallet ? root.wallet.syncError || "" : ""
 
         onCreateRequested: function(password) {
             if (!root.wallet || root.busy)
@@ -495,6 +631,13 @@ Item {
         }
 
         onCopyRequested: function(text) { root.copyToClipboard(text) }
+        onCancelSyncRequested: {
+            root.waitingForWallet = false
+            root.busy = false
+            root.cancellationRequested = true
+            if (root.wallet)
+                root.wallet.cancelSync ? root.wallet.cancelSync() : root.wallet.disconnectWallet()
+        }
     }
 
     CreateAccountDialog {

@@ -12,9 +12,14 @@
 
     # Core wallet module (the LEZ wallet FFI Qt plugin). The input name must
     # match the metadata.json `dependencies` entry so the builder can resolve it
-    # as a module dependency. Same ref the repo-root flake and the amm_module
-    # flake pin (the QtRO byte-string `instruction` fix).
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=byte-string-fix";
+    lez_core = {
+      url = "github:logos-blockchain/logos-execution-zone-module?rev=b60be4640c4dc5ba3e0b552ecbe859482d02f2dd";
+
+      # Match the wallet client to the deployed testnet's 700 KiB account-data
+      # limit. The module's default v0.2.2 input still has the old 100 KiB cap.
+      inputs.logos-execution-zone.url =
+        "github:logos-blockchain/logos-execution-zone?rev=70c41652fa129d8a0e0fe74c4caa1b11a6b5de9c";
+    };
 
     # The AMM core module, resolved as the metadata.json `amm_module` dependency
     # (the builder reads its .lidl to generate modules().amm_module). Built from

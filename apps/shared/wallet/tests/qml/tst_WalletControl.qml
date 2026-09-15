@@ -14,21 +14,35 @@ Item {
             property bool isWalletOpen: false
             property bool walletExists: true
             property string walletHome: "/wallet"
+            property string syncStatus: "closed"
+            property string syncError: ""
+            property bool initialSync: false
+            property bool syncProgressKnown: false
+            property int syncCurrentBlock: 0
+            property int syncTargetBlock: 0
+            property int syncRemainingBlocks: 0
+            property bool createLeavesSyncing: false
             property int openCalls: 0
             property int createCalls: 0
             property int publicAccountCalls: 0
             property int privateAccountCalls: 0
+            property int cancelCalls: 0
+            property int refreshCalls: 0
             property int disconnectCalls: 0
 
             function openExisting() {
                 openCalls++
                 isWalletOpen = true
+                initialSync = false
+                syncStatus = "ready"
                 return true
             }
 
             function createNewDefault(_password) {
                 createCalls++
                 isWalletOpen = true
+                initialSync = createLeavesSyncing
+                syncStatus = createLeavesSyncing ? "syncing" : "ready"
                 return "alpha beta gamma"
             }
 
@@ -42,9 +56,24 @@ Item {
                 return "b".repeat(64)
             }
 
+            function refreshAccounts() {
+                refreshCalls++
+                syncStatus = "syncing"
+            }
+
             function disconnectWallet() {
                 disconnectCalls++
                 isWalletOpen = false
+                initialSync = false
+                syncStatus = "closed"
+            }
+
+            function cancelSync() {
+                cancelCalls++
+                syncError = "sync_cancelled"
+                isWalletOpen = false
+                initialSync = false
+                syncStatus = "error"
             }
         }
     }
@@ -163,6 +192,67 @@ Item {
             verify(continueButton.enabled)
             mouseClick(continueButton)
             tryCompare(dialog, "opened", false)
+        }
+
+        function test_displaysAndCancelsSync() {
+            const fixture = createControl({
+                isWalletOpen: true,
+                syncStatus: "syncing",
+                initialSync: true,
+                syncProgressKnown: true,
+                syncCurrentBlock: 100,
+                syncTargetBlock: 500,
+                syncRemainingBlocks: 400
+            }, [])
+            const cancelButton = findChild(fixture.control, "walletCancelSyncButton")
+            verify(cancelButton && cancelButton.visible, "Sync cancel button is visible")
+            verify(fixture.control.syncProgressText.indexOf("100") >= 0)
+            verify(fixture.control.syncProgressText.indexOf("500") >= 0)
+
+            mouseClick(cancelButton)
+            compare(fixture.backend.cancelCalls, 1)
+            tryCompare(fixture.control, "synchronizing", false)
+            tryCompare(fixture.control, "connected", false)
+            const message = findChild(fixture.control, "walletMessageDialog")
+            tryCompare(message, "opened", true)
+            verify(message.message.indexOf("sync_cancelled") >= 0)
+            message.close()
+
+            const errorButton = findChild(fixture.control, "walletSyncErrorButton")
+            verify(errorButton && errorButton.visible)
+            mouseClick(errorButton)
+            compare(fixture.backend.openCalls, 1)
+            tryCompare(fixture.control, "syncFailed", false)
+        }
+
+        function test_creationShowsSyncProgressAndCancellation() {
+            const fixture = createControl({
+                walletExists: false,
+                createLeavesSyncing: true,
+                syncProgressKnown: true,
+                syncCurrentBlock: 100,
+                syncTargetBlock: 500,
+                syncRemainingBlocks: 400
+            }, [])
+            mouseClick(findChild(fixture.control, "walletConnectButton"))
+            const dialog = findChild(fixture.control, "createWalletDialog")
+            tryCompare(dialog, "opened", true)
+            findChild(dialog, "walletPasswordField").text = "secret"
+            findChild(dialog, "walletConfirmPasswordField").text = "secret"
+            mouseClick(findChild(dialog, "createWalletButton"))
+            tryCompare(dialog, "mnemonic", "alpha beta gamma")
+
+            const status = findChild(dialog, "walletSyncStatus")
+            const cancelButton = findChild(dialog, "walletCancelSyncButton")
+            verify(status && status.visible, "Creation sync status is visible")
+            verify(cancelButton && cancelButton.visible, "Creation sync cancel button is visible")
+            verify(status.text.indexOf("100") >= 0)
+
+            mouseClick(cancelButton)
+            compare(fixture.backend.cancelCalls, 1)
+            tryCompare(cancelButton, "visible", false)
+            verify(status.visible)
+            verify(status.text.indexOf("sync_cancelled") >= 0)
         }
 
         function test_clampsSelectionAndDisconnectsLocally() {

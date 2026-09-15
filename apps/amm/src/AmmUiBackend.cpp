@@ -27,6 +27,10 @@ namespace {
 const char SETTINGS_ORG[] = "Logos";
 const char SETTINGS_APP[] = "AmmUI";
 const char REGISTRY_URL_KEY[] = "registryUrl";
+    bool walletReady(const AmmUiBackend& backend)
+    {
+        return backend.isWalletOpen() && backend.walletStateReady();
+    }
 }
 
 AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
@@ -105,6 +109,12 @@ bool AmmUiBackend::openExisting()
     return opened;
 }
 
+void AmmUiBackend::cancelSync()
+{
+    m_walletController->cancelSync();
+    syncWalletState();
+}
+
 void AmmUiBackend::disconnectWallet()
 {
     m_walletController->disconnect();
@@ -140,8 +150,9 @@ void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
 
-    setWalletStateReady(state.syncStatus != QStringLiteral("opening")
-                        && state.syncStatus != QStringLiteral("syncing"));
+    setWalletStateReady(state.syncStatus == QStringLiteral("ready")
+                        || state.syncStatus == QStringLiteral("closed")
+                        || (state.isWalletOpen && !state.initialSync));
     setIsWalletOpen(state.isWalletOpen);
     setWalletExists(state.walletExists);
     setConfigPath(state.configPath);
@@ -151,6 +162,13 @@ void AmmUiBackend::syncWalletState()
     setCurrentBlockHeight(state.currentBlockHeight);
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
+    setSyncError(state.syncError);
+    setSyncStatus(state.syncStatus);
+    setInitialSync(state.initialSync);
+    setSyncProgressKnown(state.syncProgressKnown);
+    setSyncCurrentBlock(state.syncCurrentBlock);
+    setSyncTargetBlock(state.syncTargetBlock);
+    setSyncRemainingBlocks(state.syncRemainingBlocks);
 }
 
 QVariantMap AmmUiBackend::resolvePoolAccount(QString defAHex, QString defBHex)
@@ -165,9 +183,9 @@ QVariantMap AmmUiBackend::configAccount()
 
 QVariantMap AmmUiBackend::transferOwnership(QVariantMap request)
 {
-    // Submit guard — this app's wallet-open state is authoritative even though the shared
-    // wallet may remain open elsewhere (same guard as createPool / the swaps).
-    if (!isWalletOpen())
+    // Submit guard — this app's synchronized wallet state is authoritative even though the
+    // shared wallet may remain open elsewhere (same guard as createPool / the swaps).
+    if (!walletReady(*this))
         return QVariantMap {
             { QStringLiteral("status"), QStringLiteral("error") },
             { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
@@ -179,7 +197,7 @@ QVariantMap AmmUiBackend::transferOwnership(QVariantMap request)
 
 QVariantMap AmmUiBackend::createPriceObservations(QVariantMap request)
 {
-    if (!isWalletOpen())
+    if (!walletReady(*this))
         return QVariantMap {
             { QStringLiteral("status"), QStringLiteral("error") },
             { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
@@ -190,7 +208,7 @@ QVariantMap AmmUiBackend::createPriceObservations(QVariantMap request)
 
 QVariantMap AmmUiBackend::createOraclePriceAccount(QVariantMap request)
 {
-    if (!isWalletOpen())
+    if (!walletReady(*this))
         return QVariantMap {
             { QStringLiteral("status"), QStringLiteral("error") },
             { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
@@ -207,7 +225,7 @@ QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString u
     // app may keep it open, or this app opened-then-disconnected), and the QML submit path
     // doesn't check isWalletOpen — so without this a swap could sign/submit while the UI
     // shows "Connect".
-    if (!isWalletOpen())
+    if (!walletReady(*this))
         return {};
 
     const QString txHash = m_logos->amm_module.swapExactInput(
@@ -241,9 +259,9 @@ QString AmmUiBackend::swapExactOutput(QString defAHex, QString defBHex, QString 
                                        QString userOutputHoldingHex, QString amountOutDecimal,
                                        QString maxInDecimal, QString deadlineDecimal)
 {
-    // Same connected-state submit guard as swapExactInput — this app's lock is
+    // Same synchronized-state submit guard as swapExactInput — this app's lock is
     // authoritative even though the shared wallet may remain open elsewhere.
-    if (!isWalletOpen())
+    if (!walletReady(*this))
         return {};
 
     const QString txHash = m_logos->amm_module.swapExactOutput(
@@ -329,8 +347,8 @@ QVariantMap AmmUiBackend::removeLiquidityQuote(QVariantMap request)
 QVariantList AmmUiBackend::tokenHoldings()
 {
     // Read-only list of the wallet's token holdings for the account selector. Gated
-    // by this app's wallet-open state (a closed wallet has nothing to list).
-    return m_logos->amm_module.tokenHoldings(isWalletOpen());
+    // by this app's synchronized wallet state (a closed wallet has nothing to list).
+    return m_logos->amm_module.tokenHoldings(walletReady(*this));
 }
 
 QVariantList AmmUiBackend::poolList()
@@ -356,7 +374,7 @@ QVariantList AmmUiBackend::resolveTokens()
     // wallet merely holds are NOT auto-listed here; to provide liquidity with an unlisted
     // token the user adds it by id (addCustomToken). The module still annotates
     // holdingId/balance for whichever of these ids the wallet does hold.
-    const bool wallet_open = isWalletOpen();
+    const bool wallet_open = walletReady(*this);
 
     QVariantList ids;
     const QVariantList configured = m_registry->tokens();
@@ -410,7 +428,7 @@ QVariantMap AmmUiBackend::addCustomToken(QString tokenId)
     // real fungible token (a non-fungible / unreadable id yields no row).
     QVariantMap probe;
     probe.insert(QStringLiteral("tokenIds"), QVariantList{id});
-    const QVariantList rows = m_logos->amm_module.resolveTokens(probe, isWalletOpen());
+    const QVariantList rows = m_logos->amm_module.resolveTokens(probe, walletReady(*this));
     if (rows.isEmpty())
         return QVariantMap{{QStringLiteral("ok"), false},
                            {QStringLiteral("error"), QStringLiteral("unresolved")}};
@@ -497,9 +515,9 @@ bool AmmUiBackend::saveCustomTokenIds(const QStringList& ids) const
 
 QVariantMap AmmUiBackend::createPool(QVariantMap request)
 {
-    // Same connected-state submit guard as the swaps — this app's lock is
+    // Same synchronized-state submit guard as the swaps — this app's lock is
     // authoritative even though the shared wallet may remain open elsewhere.
-    if (!isWalletOpen())
+    if (!walletReady(*this))
         return QVariantMap {
             { QStringLiteral("status"), QStringLiteral("error") },
             { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
@@ -517,9 +535,9 @@ QVariantMap AmmUiBackend::createPool(QVariantMap request)
 
 QVariantMap AmmUiBackend::addLiquidity(QVariantMap request)
 {
-    // Same connected-state submit guard as createPool — this app's lock is authoritative
+    // Same synchronized-state submit guard as createPool — this app's lock is authoritative
     // even though the shared wallet may remain open elsewhere.
-    if (!isWalletOpen())
+    if (!walletReady(*this))
         return QVariantMap {
             { QStringLiteral("status"), QStringLiteral("error") },
             { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
