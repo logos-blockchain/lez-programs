@@ -95,6 +95,28 @@ async function saveShot(app, name) {
   console.log(`    screenshot -> ${path}`);
 }
 
+function treeHasText(node, expected) {
+  if (!node)
+    return false;
+  if (node.text === expected)
+    return true;
+  return (node.children || []).some((child) => treeHasText(child, expected));
+}
+
+async function hasNetworkDefinitionRow(app) {
+  const result = await app.findByProperty("objectName", "tokenDefinitionRow");
+  for (const match of result.matches || []) {
+    if ((await prop(app, match.id, "visible")) !== true)
+      continue;
+    const tree = await app.getTree({ objectId: match.id, depth: 6 });
+    if (tree.error || !tree.tree)
+      continue;
+    if (treeHasText(tree.tree, tokenName) && treeHasText(tree.tree, "Network"))
+      return true;
+  }
+  return false;
+}
+
 async function chooseFixedTemplate(app) {
   await clickObject(app, "tokenExamplesButton");
   await app.waitFor(
@@ -196,7 +218,7 @@ test(live
     "enabled",
     (value) => value === true,
     "connected wallet for fresh accounts",
-    5000,
+    60000,
   );
   await clickObject(app, "tokenCreateAccountsButton");
 
@@ -235,13 +257,11 @@ test(live
   await app.waitFor(
     async () => {
       try { await clickObject(app, "tokenRefreshButton"); } catch { /* refresh may be busy */ }
-      const result = await app.findByProperty("text", tokenName);
-      if (!result.matches || result.matches.length === 0)
-        throw new Error(`live definition ${tokenName} not indexed yet`);
+      if (!(await hasNetworkDefinitionRow(app)))
+        throw new Error(`live definition ${tokenName} not indexed from network yet`);
     },
     { timeout: 60000, interval: 1200, description: "created definition in live Inspect view" },
   );
-  await app.expectTexts([tokenName, "Network"]);
   await saveShot(app, "token-inspect-live-definition");
   console.log(`    mode: live; verified ${tokenName} in wallet-backed Inspect view`);
 });

@@ -67,7 +67,9 @@ private:
     QString defaultStoragePath() const;
 
     void openOnStartup();
-    bool beginOpen(const QString& config, const QString& storage);
+    bool beginOpen(const QString& config,
+                   const QString& storage,
+                   const QString& statistics);
     void applySnapshot(const WalletSnapshot& snapshot);
     void applySyncProgress(const WalletSyncProgress& progress);
     void pollSnapshot();

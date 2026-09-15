@@ -34,20 +34,19 @@
     # match the metadata.json `dependencies` entry so the builder can resolve it
     # as a module dependency.
     #
-    # Upstream logos-blockchain/logos-execution-zone-module, `byte-string-fix`
-    # branch: carries the QtRO serialization fix — send_generic_public_transaction's
-    # `instruction` uses a byte-string IPC type so the args survive the cross-process
-    # boundary (see docs/amm-swap-qtro-serialization-bug.md).
-    #
-    # Deliberately NOT on `main`: main's transitive logos-execution-zone (the
-    # wallet-ffi) has moved ahead of the deployed sequencer + the local `wallet`/
-    # `spel` CLI (v0.2.4), and its wallet-storage/config format no longer matches
-    # them — the app opens but can't load a wallet the v0.2.4 CLI wrote. This branch
-    # stays on the compatible LEZ version. The wallet-ffi and sequencer must agree on
-    # the JSON-RPC API and wallet-config schema, so keep this in sync with the
-    # deployed sequencer's version. (Also builds from the Logos nix cache, so `ring`
-    # isn't compiled locally — it fails under the nix cc-wrapper on Apple Silicon.)
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=byte-string-fix";
+    # Upstream logos-blockchain/logos-execution-zone-module byte-string fix.
+    # send_generic_public_transaction's `instruction` uses a byte-string IPC
+    # type so the args survive the cross-process boundary.
+    lez_core = {
+      url = "github:logos-blockchain/logos-execution-zone-module?rev=b60be4640c4dc5ba3e0b552ecbe859482d02f2dd";
+
+      # The deployed testnet contains program accounts larger than the old
+      # 100 KiB wallet parser limit.  70c41652 raises the client/account-data
+      # limit to 700 KiB while retaining the four-argument transaction API used
+      # by the byte-string module.
+      inputs.logos-execution-zone.url =
+        "github:logos-blockchain/logos-execution-zone?rev=70c41652fa129d8a0e0fe74c4caa1b11a6b5de9c";
+    };
 
   };
 

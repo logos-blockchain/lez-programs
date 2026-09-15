@@ -50,12 +50,16 @@ Run the live round trip against an open wallet and reachable sequencer:
 ```bash
 TOKEN_E2E_LIVE=1 \
 TOKEN_E2E_NAME="Basecamp Token E2E" \
-node apps/token/tests/token-definition.mjs
+TOKEN_PROGRAM_BIN=/absolute/path/to/target/guest/token.bin \
+TOKEN_E2E_WALLET_HOME=/absolute/path/to/prepared/wallet \
+apps/token/tests/run-basecamp-e2e.sh
 ```
 
-The live path creates fresh public wallet accounts, submits a fixed-supply
-definition through `token_module`, switches to Inspect, and waits for the
-definition to be read back from the connected wallet.
+The live path requires `TOKEN_PROGRAM_BIN` so the test derives the deployed
+program identity from the exact release binary. It creates fresh public wallet
+accounts, submits a fixed-supply definition through `token_module`, switches to
+Inspect, and waits for the definition to be read back from the connected wallet.
+The wallet home must already contain a wallet configured for that network.
 
 Screenshots are written to `.3esmit/projects/lez-programs/docs/token-basecamp-e2e/`
 after each major step. The inspector listens on `localhost:3768`; override it with

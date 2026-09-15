@@ -6,10 +6,13 @@
 
     # Core wallet module dependency. The input name must match the
     # metadata.json `dependencies` entry so the builder resolves it as a module
-    # dependency. Same upstream branch the repo-root flake pins (the QtRO byte-string
-    # `instruction` fix for send_generic_public_transaction).
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?ref=byte-string-fix";
-
+    # dependency. Pin the byte-string module and the 700 KiB-compatible wallet
+    # client together.
+    lez_core = {
+      url = "github:logos-blockchain/logos-execution-zone-module?rev=b60be4640c4dc5ba3e0b552ecbe859482d02f2dd";
+      inputs.logos-execution-zone.url =
+        "github:logos-blockchain/logos-execution-zone?rev=70c41652fa129d8a0e0fe74c4caa1b11a6b5de9c";
+    };
     # The repo-root flake supplies the amm_ffi crate. amm_ffi is a Cargo
     # workspace member (it path-depends on amm_core / token_core /
     # twap_oracle_core under programs/*), so it can only be built with the whole
