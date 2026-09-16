@@ -1287,7 +1287,21 @@ fn repay_debt_echoes_the_three_new_accounts() {
     );
 
     assert_eq!(post_states.len(), 7);
-    assert_eq!(*post_states[6].account(), clock_account(NOW).account);
+    assert_eq!(
+        *post_states[4].account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW).account,
+        "accumulator must be echoed unchanged"
+    );
+    assert_eq!(
+        *post_states[5].account(),
+        protocol_parameters_account(false).account,
+        "protocol parameters must be echoed unchanged"
+    );
+    assert_eq!(
+        *post_states[6].account(),
+        clock_account(NOW).account,
+        "clock must be echoed unchanged"
+    );
 }
 
 #[test]
@@ -1340,7 +1354,7 @@ fn repay_debt_rejects_an_unbound_stablecoin_definition() {
 }
 
 #[test]
-#[should_panic(expected = "Repay amount exceeds outstanding debt")]
+#[should_panic(expected = "Repay amount exceeds outstanding normalized debt")]
 fn repay_debt_rejects_overrepay_against_the_floored_delta() {
     repay(
         init_position_account(1_000, 10),
@@ -2268,7 +2282,7 @@ fn repay_debt_rejects_holding_for_other_definition() {
 }
 
 #[test]
-#[should_panic(expected = "Repay amount exceeds outstanding debt")]
+#[should_panic(expected = "Repay amount exceeds outstanding normalized debt")]
 fn repay_debt_rejects_overrepay() {
     crate::repay_debt::repay_debt(
         owner_account(),
