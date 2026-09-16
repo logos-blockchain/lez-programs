@@ -18,6 +18,7 @@ using json = nlohmann::json;
 
 const std::string PROGRAM_ID_HEX(64, '1');
 const std::string ACCUMULATOR_ID_HEX(64, '2');
+const std::string REDEMPTION_STATE_ID_HEX(64, '4');
 
 class ScopedEnvironment {
 public:
@@ -58,7 +59,7 @@ json programInfoValue() {
         {"stabilityFeeAccumulatorId", "stability-fee-accumulator-id"},
         {"stabilityFeeAccumulatorIdHex", ACCUMULATOR_ID_HEX},
         {"redemptionPriceStateId", "redemption-price-state-id"},
-        {"redemptionPriceStateIdHex", std::string(64, '4')},
+        {"redemptionPriceStateIdHex", REDEMPTION_STATE_ID_HEX},
         {"stablecoinDefinitionId", "stablecoin-definition-id"},
         {"stablecoinDefinitionIdHex", std::string(64, '5')},
         {"stablecoinMasterHoldingId", "stablecoin-master-holding-id"},
@@ -193,4 +194,105 @@ LOGOS_TEST(stability_fee_accumulator_preserves_stable_decoder_errors) {
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 1);
     LOGOS_ASSERT_EQ(
         context.cFunctionCallCount("stablecoin_decode_stability_fee_accumulator"), 1);
+}
+
+LOGOS_TEST(redemption_price_state_reads_once_and_returns_exact_snapshot) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const json decoded = {
+        {"accountId", "redemption-price-state-id"},
+        {"accountIdHex", REDEMPTION_STATE_ID_HEX},
+        {"redemptionPriceAtLastUpdate", "340282366920938463463374607431768211455"},
+        {"redemptionRatePerMillisecond", "340282366920938463463374607431768211455"},
+        {"controllerIntegralTerm", "-170141183460469231731687303715884105728"},
+        {"lastUpdatedAt", "18446744073709551615"},
+    };
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::string decoder_response = successEnvelope(decoded);
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockCFunction("stablecoin_decode_redemption_price_state")
+        .returns(decoder_response);
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+
+    const LogosMap response = module.redemptionPriceState();
+
+    LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(response["error"].get<std::string>(), std::string());
+    LOGOS_ASSERT_EQ(response["redemptionPriceState"], decoded);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 1);
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith(
+        "lez_core",
+        "get_account_public",
+        QVariantList{QVariant(QString::fromStdString(REDEMPTION_STATE_ID_HEX))}));
+    LOGOS_ASSERT_EQ(
+        context.cFunctionCallCount("stablecoin_decode_redemption_price_state"), 1);
+}
+
+LOGOS_TEST(redemption_price_state_maps_missing_account_to_not_initialized) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockModule("lez_core", "get_account_public").returns("");
+
+    const LogosMap response = module.redemptionPriceState();
+
+    assertError(response, "not_initialized");
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 1);
+    LOGOS_ASSERT_EQ(
+        context.cFunctionCallCount("stablecoin_decode_redemption_price_state"), 0);
+}
+
+LOGOS_TEST(redemption_price_state_rejects_malformed_account_response) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockModule("lez_core", "get_account_public").returns("not-json");
+
+    const LogosMap response = module.redemptionPriceState();
+
+    assertError(response, "account_read_failed");
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 1);
+    LOGOS_ASSERT_EQ(
+        context.cFunctionCallCount("stablecoin_decode_redemption_price_state"), 0);
+}
+
+LOGOS_TEST(redemption_price_state_preserves_stable_decoder_errors) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::string decoder_response = failureEnvelope(
+        "redemption_price_state_pda_mismatch");
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockCFunction("stablecoin_decode_redemption_price_state")
+        .returns(decoder_response);
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+
+    const LogosMap response = module.redemptionPriceState();
+
+    assertError(response, "redemption_price_state_pda_mismatch");
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 1);
+    LOGOS_ASSERT_EQ(
+        context.cFunctionCallCount("stablecoin_decode_redemption_price_state"), 1);
 }

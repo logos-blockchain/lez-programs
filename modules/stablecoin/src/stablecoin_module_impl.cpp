@@ -305,6 +305,33 @@ LogosMap StablecoinModuleImpl::stabilityFeeAccumulator() {
     });
 }
 
+LogosMap StablecoinModuleImpl::redemptionPriceState() {
+    return guarded([&]() -> LogosMap {
+        std::string error;
+        const json info = stablecoinProgramInfo(error);
+        if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+
+        const json read = readPublicAccount(jsonString(info, "redemptionPriceStateIdHex"));
+        const std::string status = jsonString(read, "status");
+        if (status == "not_found") return publicError("not_initialized");
+        if (status != "ok") return publicError("account_read_failed");
+
+        const FfiResult decoded = callStablecoin(
+            stablecoin_decode_redemption_price_state,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"redemptionPriceState", read},
+            });
+        if (!decoded.ok) {
+            return publicError(stablecoin_module::detail::stableFfiError(decoded.error));
+        }
+
+        LogosMap result = publicOk();
+        result["redemptionPriceState"] = decoded.value;
+        return result;
+    });
+}
+
 LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
     const auto accounts_field = plan.find("accountIds");
     const auto signers_field = plan.find("signingRequirements");
