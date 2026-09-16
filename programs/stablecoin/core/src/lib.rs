@@ -214,7 +214,8 @@ pub enum Instruction {
     /// `token_program_id` is derived from `vault.account.program_owner`;
     /// the collateral definition is read from the PDA-verified vault holding.
     WithdrawCollateral {
-        /// Amount of collateral tokens to move from the vault back to `destination`.
+        /// Amount of collateral tokens to move from the vault back to
+        /// `user_collateral_holding`.
         amount: u128,
     },
     /// Repay `amount` of outstanding stablecoin debt against an existing position.
