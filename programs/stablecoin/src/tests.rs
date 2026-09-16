@@ -1022,6 +1022,76 @@ fn withdraw(
     )
 }
 
+/// A redemption-price state with a caller-chosen drift rate, for the projection
+/// edge cases the controller can actually produce.
+fn redemption_state_with(rate_per_millisecond: u128, last_updated_at: u64) -> AccountWithMetadata {
+    AccountWithMetadata {
+        account: Account {
+            program_owner: STABLECOIN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&stablecoin_core::RedemptionPriceState {
+                redemption_price_at_last_update: FIXED_POINT_ONE,
+                redemption_rate_per_millisecond: rate_per_millisecond,
+                controller_integral_term: 0,
+                last_updated_at,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: false,
+        account_id: crate::test_support::redemption_price_state_id(),
+    }
+}
+
+/// A rate one clamp below 1.0 decays the projected price to exactly zero over
+/// 7_000_000 ms. If the check runs against that, required collateral becomes
+/// zero and an indebted position can be drained completely.
+#[test]
+#[should_panic(expected = "Redemption price projected to zero")]
+fn withdraw_collateral_rejects_a_redemption_price_that_projects_to_zero() {
+    let elapsed = 7_000_000;
+    crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        init_position_account(500_000, 300),
+        init_vault_account(),
+        destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        redemption_state_with(
+            FIXED_POINT_ONE - stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
+            NOW - elapsed,
+        ),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        500_000,
+    );
+}
+
+/// The mirror case: a rate one clamp above 1.0 projects past `u128` in
+/// 2_700_000 ms. A zero-debt position needs no collateralization check at all,
+/// so computing the projection must not block the withdrawal.
+#[test]
+fn withdraw_collateral_from_a_zero_debt_position_skips_the_projection() {
+    let elapsed = 2_700_000;
+    let (post_states, _) = crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        init_position_account(500_000, 0),
+        init_vault_account(),
+        destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        redemption_state_with(
+            FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
+            NOW - elapsed,
+        ),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        500_000,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.collateral_amount, 0);
+}
+
 #[test]
 fn withdraw_collateral_echoes_the_four_read_only_globals() {
     let (post_states, chained_calls) = withdraw(
@@ -1032,6 +1102,21 @@ fn withdraw_collateral_echoes_the_four_read_only_globals() {
 
     assert_eq!(post_states.len(), 8);
     assert_eq!(chained_calls.len(), 1);
+    assert_eq!(
+        *post_states[4].account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW).account,
+        "accumulator must be echoed unchanged"
+    );
+    assert_eq!(
+        *post_states[5].account(),
+        crate::test_support::redemption_price_state_account(NOW).account,
+        "redemption price state must be echoed unchanged"
+    );
+    assert_eq!(
+        *post_states[6].account(),
+        protocol_parameters_account(false).account,
+        "protocol parameters must be echoed unchanged"
+    );
     assert_eq!(
         *post_states[7].account(),
         clock_account(NOW).account,
@@ -1341,7 +1426,7 @@ fn withdraw_collateral_rejects_wrong_vault_address() {
 #[should_panic(
     expected = "User collateral holding definition does not match the position's collateral definition"
 )]
-fn withdraw_collateral_rejects_destination_for_other_definition() {
+fn withdraw_collateral_rejects_user_holding_for_other_definition() {
     let mut destination = destination_holding_account();
     destination.account.data = Data::from(&TokenHolding::Fungible {
         definition_id: AccountId::new([0x21u8; 32]),
@@ -1363,7 +1448,7 @@ fn withdraw_collateral_rejects_destination_for_other_definition() {
 
 #[test]
 #[should_panic(expected = "User collateral holding must be initialized")]
-fn withdraw_collateral_rejects_uninitialized_destination() {
+fn withdraw_collateral_rejects_uninitialized_user_holding() {
     let destination = AccountWithMetadata {
         account: Account::default(),
         is_authorized: false,
@@ -1387,7 +1472,7 @@ fn withdraw_collateral_rejects_uninitialized_destination() {
 #[should_panic(
     expected = "User collateral holding must be owned by the same Token Program as the vault"
 )]
-fn withdraw_collateral_rejects_destination_with_wrong_token_program() {
+fn withdraw_collateral_rejects_user_holding_with_wrong_token_program() {
     let mut destination = destination_holding_account();
     destination.account.program_owner = [9u32; 8];
     crate::withdraw_collateral::withdraw_collateral(
