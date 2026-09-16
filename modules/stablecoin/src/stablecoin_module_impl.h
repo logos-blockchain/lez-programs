@@ -36,6 +36,11 @@ public:
     /// at the canonical CLOCK_01 timestamp.
     LogosMap currentGlobalState();
 
+    /// Quotes the next redemption-rate controller tick from live protocol,
+    /// redemption-price, configured oracle, and CLOCK_01 state. Never submits
+    /// a transaction; soft gates return `canSubmit: false` with blockers.
+    LogosMap redemptionRateUpdateQuote();
+
     /// Initializes the stablecoin protocol. Request fields are `adminId`,
     /// `freezeAuthorityId`, `collateralDefinitionId`, `marketPriceOracleId`,
     /// `initialStabilityFeePerMillisecond`,
