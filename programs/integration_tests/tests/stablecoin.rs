@@ -1908,6 +1908,11 @@ fn stablecoin_full_position_lifecycle() {
         Ids::stablecoin_definition_pda(),
         LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW,
     );
+    assert_eq!(
+        read_total_supply(&state, Ids::stablecoin_definition_pda()),
+        LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW,
+        "the chained Mint must credit total_supply by exactly the amount minted"
+    );
 
     // 4. Let an hour of fees accrue, then poke.
     let after_accrual = start + 3_600_000;
@@ -1968,6 +1973,24 @@ fn stablecoin_full_position_lifecycle() {
         "repay_debt",
     );
     assert_eq!(read_position(&state).normalized_debt_amount, 0);
+    // The books stay consistent, and the gap is the fee: the owner burned more
+    // than was minted, so the buffer absorbed the difference.
+    let remaining = LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW - nominal_debt;
+    assert_fungible_balance_of(
+        &state,
+        Ids::user_stablecoin_holding(),
+        Ids::stablecoin_definition_pda(),
+        remaining,
+    );
+    assert_eq!(
+        read_total_supply(&state, Ids::stablecoin_definition_pda()),
+        remaining,
+        "total_supply must track the burn"
+    );
+    assert!(
+        remaining < LIFECYCLE_STABLECOIN_BUFFER,
+        "repaying accrued debt must cost more stablecoin than was minted"
+    );
 
     // 6. Withdraw every last unit of collateral — allowed now the debt is gone.
     submit(
@@ -2041,6 +2064,15 @@ fn submit(
         .transition_from_public_transaction(&tx, *block, now)
         .unwrap_or_else(|e| panic!("{label} must succeed: {e:?}"));
     *block = block.saturating_add(1);
+}
+
+fn read_total_supply(state: &V03State, definition_id: AccountId) -> u128 {
+    let definition = TokenDefinition::try_from(&state.get_account_by_id(definition_id).data)
+        .expect("valid TokenDefinition");
+    match definition {
+        TokenDefinition::Fungible { total_supply, .. } => total_supply,
+        TokenDefinition::NonFungible { .. } => panic!("expected a fungible definition"),
+    }
 }
 
 fn read_position(state: &V03State) -> Position {
