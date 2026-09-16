@@ -12,8 +12,10 @@ use token_core::TokenHolding;
 /// Repay `amount` of outstanding stablecoin debt against an existing position.
 ///
 /// Burns `amount` stablecoins from `user_stablecoin_holding` via a chained
-/// `Token::Burn` and decreases `Position.normalized_debt_amount` by the same
-/// amount. The position post-state uses plain [`AccountPostState::new`] — the
+/// `Token::Burn` and decreases `Position.normalized_debt_amount` by the
+/// *normalized* equivalent of that amount — `⌊amount × FIXED_POINT_ONE /
+/// current_accumulator⌋` — which is smaller than `amount` whenever fees have
+/// accrued. The position post-state uses plain [`AccountPostState::new`] — the
 /// PDA was already claimed at `open_position` time.
 ///
 /// The normalized-debt decrement is `⌊amount × FIXED_POINT_ONE /
@@ -146,7 +148,7 @@ pub fn repay_debt(
     let new_debt = position_data
         .normalized_debt_amount
         .checked_sub(debt_delta)
-        .expect("Repay amount exceeds outstanding debt");
+        .expect("Repay amount exceeds outstanding normalized debt");
 
     let updated_position = Position {
         owner_account_id: position_data.owner_account_id,
