@@ -1411,8 +1411,10 @@ fn close(
 
 #[test]
 fn close_position_clears_the_position_and_emits_no_chained_calls() {
+    let mut position = init_position_account(0, 0);
+    position.account.nonce = Nonce(7);
     let (post_states, chained_calls) = close(
-        init_position_account(0, 0),
+        position,
         init_vault_account(),
         protocol_parameters_account(false),
     );
@@ -1424,7 +1426,9 @@ fn close_position_clears_the_position_and_emits_no_chained_calls() {
     let cleared = post_states[1].account();
     assert_eq!(cleared.data, Data::default());
     assert_eq!(cleared.program_owner, STABLECOIN_PROGRAM_ID);
-    assert_eq!(cleared.nonce, init_position_account(0, 0).account.nonce);
+    // Asserted against a non-zero nonce: the default fixture nonce is 0, so
+    // comparing against it would pass even if the nonce were reset.
+    assert_eq!(cleared.nonce, Nonce(7));
     // The vault lingers untouched — the Token Program has no CloseHolding.
     assert_eq!(*post_states[2].account(), init_vault_account().account);
 }

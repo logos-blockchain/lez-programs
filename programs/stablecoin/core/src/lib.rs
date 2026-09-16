@@ -213,10 +213,13 @@ pub enum Instruction {
         /// Stablecoin atomic units to mint to `user_stablecoin_holding`.
         amount: u128,
     },
-    /// Clear a fully-settled position, releasing its PDA.
+    /// Clear a fully-settled position's data.
     ///
-    /// Allowed while frozen. The vault is **not** closed — the Token Program has
-    /// no `CloseHolding`, so it lingers at `balance = 0` (§12).
+    /// The PDA is **not** released: LEE forbids a program from changing an
+    /// account's `program_owner` or `nonce`, so the account lingers owned by this
+    /// program with empty data, and its `(owner, position_nonce)` pair cannot be
+    /// reused. Allowed while frozen. The vault is **not** closed either — the
+    /// Token Program has no `CloseHolding`, so it too lingers at `balance = 0` (§12).
     ///
     /// Required accounts (4), in order:
     /// 1. `owner` — authorized.
