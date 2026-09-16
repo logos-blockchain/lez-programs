@@ -111,8 +111,13 @@ pub fn generate_debt(
 
     // The oracle is a liveness gate only — spec §10.7 never consumes its price.
     let oracle = crate::update_redemption_rate::decode_oracle(&market_price_oracle, &parameters);
+    // A saturating subtraction would report age 0 for a future-dated observation,
+    // reading as maximally fresh and defeating the gate. Reject it outright.
+    let oracle_age = now
+        .checked_sub(oracle.timestamp)
+        .expect("Market price oracle observation is dated in the future");
     assert!(
-        now.saturating_sub(oracle.timestamp) <= parameters.maximum_oracle_price_age_milliseconds,
+        oracle_age <= parameters.maximum_oracle_price_age_milliseconds,
         "Market price oracle observation is stale"
     );
 
@@ -162,15 +167,22 @@ pub fn generate_debt(
         normalized_debt_amount: new_debt,
         ..position_data
     };
+    let current_redemption_price = compute_current_redemption_price(
+        redemption.redemption_price_at_last_update,
+        redemption.redemption_rate_per_millisecond,
+        redemption.last_updated_at,
+        now,
+    );
+    // A rate below 1.0 decays the projected price to zero over a long enough
+    // gap, which would zero the required collateral and let any mint through.
+    assert!(
+        current_redemption_price != 0,
+        "Redemption price projected to zero"
+    );
     crate::checks::assert_position_is_collateralized(
         &updated_position,
         current_accumulator,
-        compute_current_redemption_price(
-            redemption.redemption_price_at_last_update,
-            redemption.redemption_rate_per_millisecond,
-            redemption.last_updated_at,
-            now,
-        ),
+        current_redemption_price,
         parameters.minimum_collateralization_ratio,
     );
 

@@ -1010,6 +1010,43 @@ fn unit_accumulator() -> AccountWithMetadata {
 }
 
 #[test]
+#[should_panic(expected = "Market price oracle observation is dated in the future")]
+fn generate_debt_rejects_a_future_dated_oracle() {
+    // `saturating_sub` reports age 0 for a future timestamp, which would read as
+    // maximally fresh and defeat the liveness gate entirely.
+    generate(
+        init_position_account(1_000, 0),
+        unit_accumulator(),
+        crate::test_support::oracle_account(NOW + 1, ORACLE_PRICE),
+        protocol_parameters_account(false),
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Redemption price projected to zero")]
+fn generate_debt_rejects_a_redemption_price_that_projects_to_zero() {
+    // Same exposure as withdraw_collateral: a zero projected price zeroes the
+    // required collateral, so any mint would pass the §6.2 check.
+    crate::generate_debt::generate_debt(
+        owner_account(),
+        init_position_account(1_000, 0),
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(0),
+        unit_accumulator(),
+        redemption_state_with(
+            FIXED_POINT_ONE - stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
+            NOW - 7_000_000,
+        ),
+        fresh_oracle(),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        100_000,
+    );
+}
+
+#[test]
 fn generate_debt_mints_and_increases_normalized_debt() {
     let (post_states, chained_calls) = generate(
         init_position_account(1_000, 0),
