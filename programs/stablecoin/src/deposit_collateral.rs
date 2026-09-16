@@ -9,7 +9,8 @@ use token_core::TokenHolding;
 
 /// Deposit `amount` additional collateral tokens into an existing `position`'s vault.
 ///
-/// Increases `Position.collateral_amount` by `amount` and emits a single chained
+/// Sets `Position.collateral_amount` to the vault's current balance plus `amount`
+/// and emits a single chained
 /// `Token::Transfer` from the user's authorized holding into the vault. No PDA
 /// seed is attached: the sender is the user's own holding, which the transaction's
 /// witness set authorizes.
@@ -112,6 +113,12 @@ pub fn deposit_collateral(
         parameters.collateral_definition_id,
         "Vault holding does not match the protocol's collateral definition"
     );
+    let vault_balance = match vault_holding {
+        TokenHolding::Fungible { balance, .. } => balance,
+        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
+            panic!("Vault must hold a fungible collateral balance")
+        }
+    };
 
     let token_program_id = vault.account.program_owner;
     assert_eq!(
@@ -126,8 +133,12 @@ pub fn deposit_collateral(
         "User collateral holding does not match the protocol's collateral definition"
     );
 
-    let new_collateral = position_data
-        .collateral_amount
+    // Reconcile from the vault, not from the recorded figure. `Token::Transfer`
+    // only requires the sender's authorization, so anyone can donate directly
+    // into the vault; recording `position + amount` would leave the position
+    // permanently below the vault and strand the difference, since withdrawals
+    // are bounded by the recorded amount.
+    let new_collateral = vault_balance
         .checked_add(amount)
         .expect("Position collateral_amount overflow");
 
