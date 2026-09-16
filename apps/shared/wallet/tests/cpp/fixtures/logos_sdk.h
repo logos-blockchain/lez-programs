@@ -3,12 +3,17 @@
 #include <QHash>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QVariant>
 #include <QVariantList>
 
 #include <functional>
 #include <utility>
 #include <vector>
+
+struct Timeout {
+    explicit Timeout(int = 20000) { }
+};
 
 class LogosAPI;
 
@@ -47,6 +52,7 @@ public:
     int openCalls = 0;
     int versionCalls = 0;
     int saveCalls = 0;
+    int createAsyncCalls = 0;
     int syncCalls = 0;
     int listCalls = 0;
     int publicReadCalls = 0;
@@ -106,6 +112,20 @@ public:
         createdStatistics = statistics;
         createdPassword = password;
         return mnemonic;
+    }
+
+    void create_newAsync(const QString& config,
+                         const QString& storage,
+                         const QString& statistics,
+                         const QString& password,
+                         std::function<void(QString)> callback,
+                         Timeout = Timeout())
+    {
+        ++createAsyncCalls;
+        QTimer::singleShot(0, [this, config, storage, statistics, password,
+                               callback = std::move(callback)]() mutable {
+            callback(create_new(config, storage, statistics, password));
+        });
     }
 
     int save()
