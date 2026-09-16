@@ -331,10 +331,12 @@ mod stablecoin {
         ))
     }
 
-    /// Clear a fully-settled position, releasing its PDA (spec §10.9; host fn
+    /// Clear a fully-settled position's data (spec §10.9; host fn
     /// `stablecoin_program::close_position`).
     ///
-    /// Allowed while frozen. Emits no chained calls; the vault lingers empty.
+    /// The PDA is **not** released — LEE forbids changing an account's
+    /// `program_owner` or `nonce` — so the position account lingers empty, as
+    /// does the vault. Allowed while frozen. Emits no chained calls.
     ///
     /// # Errors
     /// Returns the host program's panic-converted error if any precondition
