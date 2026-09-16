@@ -177,7 +177,13 @@ fn init_position_account(
 }
 
 fn init_vault_account() -> AccountWithMetadata {
-    token_holding_account(vault_id(), collateral_definition_id(), 0)
+    vault_account_with(0)
+}
+
+/// A vault holding `balance` collateral. On chain the vault balance and
+/// `Position.collateral_amount` move together, so fixtures should agree too.
+fn vault_account_with(balance: u128) -> AccountWithMetadata {
+    token_holding_account(vault_id(), collateral_definition_id(), balance)
 }
 
 fn destination_holding_account() -> AccountWithMetadata {
@@ -656,7 +662,7 @@ fn deposit_collateral_adds_to_position_and_emits_transfer() {
     let (post_states, chained_calls) = deposit(
         owner_account(),
         init_position_account(starting_collateral, 0),
-        init_vault_account(),
+        vault_account_with(starting_collateral),
         user_holding_account(1_000),
         protocol_parameters_account(false),
         DEPOSIT_AMOUNT,
@@ -677,7 +683,10 @@ fn deposit_collateral_adds_to_position_and_emits_transfer() {
     assert_eq!(chained_calls.len(), 1);
     let expected = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![user_holding_account(1_000), init_vault_account()],
+        vec![
+            user_holding_account(1_000),
+            vault_account_with(starting_collateral),
+        ],
         &token_core::Instruction::Transfer {
             amount_to_transfer: DEPOSIT_AMOUNT,
         },
@@ -692,7 +701,7 @@ fn deposit_collateral_works_when_frozen() {
     let (post_states, chained_calls) = deposit(
         owner_account(),
         init_position_account(500, 0),
-        init_vault_account(),
+        vault_account_with(500),
         user_holding_account(1_000),
         protocol_parameters_account(true),
         DEPOSIT_AMOUNT,
@@ -709,7 +718,7 @@ fn deposit_collateral_allows_zero_amount() {
     let (post_states, chained_calls) = deposit(
         owner_account(),
         init_position_account(500, 0),
-        init_vault_account(),
+        vault_account_with(500),
         user_holding_account(1_000),
         protocol_parameters_account(false),
         0,
@@ -728,7 +737,7 @@ fn deposit_collateral_leaves_debt_untouched() {
     let (post_states, _) = deposit(
         owner_account(),
         init_position_account(500, 42),
-        init_vault_account(),
+        vault_account_with(500),
         user_holding_account(1_000),
         protocol_parameters_account(false),
         DEPOSIT_AMOUNT,
@@ -747,7 +756,7 @@ fn deposit_collateral_requires_owner_authorization() {
     deposit(
         owner,
         init_position_account(500, 0),
-        init_vault_account(),
+        vault_account_with(500),
         user_holding_account(1_000),
         protocol_parameters_account(false),
         DEPOSIT_AMOUNT,
@@ -818,7 +827,7 @@ fn deposit_collateral_rejects_uninitialized_protocol_parameters() {
     deposit(
         owner_account(),
         init_position_account(500, 0),
-        init_vault_account(),
+        vault_account_with(500),
         user_holding_account(1_000),
         AccountWithMetadata {
             account: Account::default(),
@@ -837,11 +846,31 @@ fn deposit_collateral_rejects_protocol_parameters_at_wrong_address() {
     deposit(
         owner_account(),
         init_position_account(500, 0),
-        init_vault_account(),
+        vault_account_with(500),
         user_holding_account(1_000),
         parameters,
         DEPOSIT_AMOUNT,
     );
+}
+
+#[test]
+fn deposit_collateral_reconciles_a_donated_vault_balance() {
+    // `Token::Transfer` only needs the sender's authorization, so anyone can
+    // donate straight into the vault. Recording `position + amount` would leave
+    // the position permanently short of the vault and strand the difference.
+    let donated_vault = token_holding_account(vault_id(), collateral_definition_id(), 501);
+    let (post_states, _) = deposit(
+        owner_account(),
+        init_position_account(500, 0),
+        donated_vault,
+        user_holding_account(1_000),
+        protocol_parameters_account(false),
+        100,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    // The chained transfer lands the vault at 601, so the position must say 601.
+    assert_eq!(position.collateral_amount, 601);
 }
 
 #[test]
@@ -935,7 +964,7 @@ fn deposit_collateral_rejects_overflow() {
     deposit(
         owner_account(),
         init_position_account(u128::MAX, 0),
-        init_vault_account(),
+        vault_account_with(u128::MAX),
         user_holding_account(1_000),
         protocol_parameters_account(false),
         1,
