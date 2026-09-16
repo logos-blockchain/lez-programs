@@ -4,6 +4,7 @@
 
 #include <QByteArray>
 #include <QDir>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -19,6 +20,10 @@ namespace {
 constexpr int WALLET_FFI_SUCCESS = 0;
 constexpr int CAPABILITY_WARMUP_RETRY_MS = 50;
 constexpr int CAPABILITY_WARMUP_MAX_ATTEMPTS = 100;
+// Wallet creation calibrates the configured sequencers before returning. The
+// SDK's default remote-call timeout is 20 seconds, which is too short for a
+// fresh wallet on a live network.
+constexpr int WALLET_CREATE_TIMEOUT_MS = 120000;
 constexpr quint64 SNAPSHOT_SYNC_CHUNK_BLOCKS = 512;
 
 bool isHex(const QString& value, qsizetype size, bool lowercaseOnly = true)
@@ -76,6 +81,8 @@ WalletSession failedSession(WalletFailure failure)
 
 WalletCreation failedCreation(WalletFailure failure)
 {
+    // Keep the provider API synchronous for the existing QtRO contract, but
+    // let the SDK perform the long-running calibration asynchronously.
     WalletCreation creation;
     creation.failure = failure;
     creation.snapshot.failure = failure;
@@ -334,8 +341,19 @@ WalletCreation LogosWalletProvider::createWallet(const WalletPaths& paths,
     }
 
     WalletCreation creation;
-    creation.mnemonic = m_impl->logos->lez_core.create_new(
-        paths.config, paths.storage, paths.statistics, password);
+    QEventLoop waitForCreation;
+    bool creationFinished = false;
+    m_impl->logos->lez_core.create_newAsync(
+        paths.config, paths.storage, paths.statistics, password,
+        [&creation, &creationFinished, &waitForCreation](QString mnemonic) {
+            creation.mnemonic = std::move(mnemonic);
+            creationFinished = true;
+            if (waitForCreation.isRunning())
+                waitForCreation.quit();
+        }, Timeout(WALLET_CREATE_TIMEOUT_MS));
+    if (!creationFinished)
+        waitForCreation.exec();
+
     if (creation.mnemonic.isEmpty())
         return failedCreation(WalletFailure::CreateFailed);
 

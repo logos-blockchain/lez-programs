@@ -256,6 +256,7 @@ void LogosWalletProviderTest::createsAndPersistsWallet()
 
     QVERIFY(creation.ok());
     QCOMPARE(creation.mnemonic, modules.lez_core.mnemonic);
+    QCOMPARE(modules.lez_core.createAsyncCalls, 1);
     QCOMPARE(modules.lez_core.createdConfig, paths.config);
     QCOMPARE(modules.lez_core.createdStorage, paths.storage);
     QCOMPARE(modules.lez_core.createdStatistics, paths.statistics);
