@@ -19,10 +19,10 @@ use token_core::TokenHolding;
 /// the initial PDA claim already happened in
 /// [`crate::open_position::open_position`].
 ///
-/// Until #173 lands (redemption price, price feed, stability fee accrual),
-/// this instruction hard-asserts `Position.normalized_debt_amount == 0`.
-/// When that lands, this guard is replaced by real fee accrual + a
-/// collateralization-ratio check against the post-withdrawal collateral.
+/// Blocked while the protocol is frozen. After the decrement, the §6.2
+/// collateralization invariant is checked against debt and redemption price both
+/// projected forward to the clock timestamp (§5.3) — unless the position carries
+/// no debt, in which case the projections are skipped entirely.
 ///
 /// # Panics
 /// - `owner` is not authorized.
@@ -34,8 +34,12 @@ use token_core::TokenHolding;
 /// - `user_collateral_holding` is uninitialized, owned by a different Token Program than the vault,
 ///   or holds a [`TokenHolding`] whose `definition_id` does not match the vault holding's
 ///   collateral definition.
-/// - `Position.normalized_debt_amount` is non-zero.
-/// - `amount > Position.collateral_amount`.
+/// - `protocol_parameters`, `stability_fee_accumulator` or `redemption_price_state` is
+///   uninitialized, wrongly owned, not at its canonical PDA, or does not decode.
+/// - `protocol_parameters.is_frozen` is set.
+/// - `clock` is not the initialized system `CLOCK_01` account.
+/// - The projected redemption price is zero.
+/// - `amount > Position.collateral_amount`, or §6.2 fails post-decrement.
 #[allow(
     clippy::too_many_arguments,
     reason = "the eight account inputs mirror the spec §10.6 ABI; a param struct would obscure it"
@@ -157,22 +161,37 @@ pub fn withdraw_collateral(
     };
     // Spec §6.2 is enforced *after* the decrement, against debt and redemption
     // price both projected forward to `now` (§5.3).
-    crate::checks::assert_position_is_collateralized(
-        &updated_position,
-        compute_current_accumulated_rate(
-            accumulator.accumulated_rate_at_last_accrual,
-            parameters.stability_fee_per_millisecond,
-            accumulator.last_accrued_at,
-            now,
-        ),
-        compute_current_redemption_price(
+    //
+    // The zero-debt case is short-circuited *before* projecting, not inside the
+    // check: a rate the controller can legitimately produce overflows `u128`
+    // when projected across a few million milliseconds, and evaluating that as
+    // an argument would panic a withdrawal that needs no check at all.
+    if updated_position.normalized_debt_amount != 0 {
+        let current_redemption_price = compute_current_redemption_price(
             redemption.redemption_price_at_last_update,
             redemption.redemption_rate_per_millisecond,
             redemption.last_updated_at,
             now,
-        ),
-        parameters.minimum_collateralization_ratio,
-    );
+        );
+        // A rate below 1.0 decays the projected price toward zero, and it does
+        // reach zero over a long enough gap. Zero would zero out the required
+        // collateral and let an indebted position be drained completely.
+        assert!(
+            current_redemption_price != 0,
+            "Redemption price projected to zero"
+        );
+        crate::checks::assert_position_is_collateralized(
+            &updated_position,
+            compute_current_accumulated_rate(
+                accumulator.accumulated_rate_at_last_accrual,
+                parameters.stability_fee_per_millisecond,
+                accumulator.last_accrued_at,
+                now,
+            ),
+            current_redemption_price,
+            parameters.minimum_collateralization_ratio,
+        );
+    }
 
     let mut position_post = position.account.clone();
     position_post.data = Data::from(&updated_position);
