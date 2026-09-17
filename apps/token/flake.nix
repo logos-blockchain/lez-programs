@@ -3,15 +3,37 @@
 
   inputs = {
     logos-module-builder.url = "github:logos-co/logos-module-builder";
+
+    # Shared C++ wallet access and Logos.Wallet QML sources.
     shared_wallet = {
       url = "path:../shared/wallet";
       flake = false;
     };
+
+    # Core wallet module (the LEZ wallet FFI Qt plugin). The input name must
+    # match the metadata.json `dependencies` entry so the builder can resolve it
+    # as a module dependency. Same rev the repo-root flake and the token_module
+    # flake pin: the 0.4.1-interim build (byte-string fix on a v0.2.4 wallet-ffi).
+    # See the root flake.nix for the full rationale.
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=acf0cd501b262c4c15969e3735e85318297b85bf";
+
+    # The token core module, resolved as the metadata.json `token_module`
+    # dependency (the builder reads its .lidl to generate modules().token_module).
+    # Built from the sibling flake; force its wallet to the SAME lez_core so the
+    # UI and the core module resolve one shared wallet instance.
+    token_module = {
+      url = "path:../../modules/token";
+      inputs.lez_core.follows = "lez_core";
+    };
   };
 
-  # The repository root is the supported build for this UI because it injects
-  # the in-tree token_module core module. Keep this file useful for local QML
-  # iteration and consistent with the AMM UI's standalone source layout.
+  # Self-contained so the release CI can build it as its own module
+  # (module_path=apps/token, `nix build .#lgx-portable`). The UI links no
+  # external lib of its own — the Token Program logic lives in token_ffi, linked
+  # by the token_module core module, which the UI reaches via
+  # modules().token_module. Kept in sync with the repo-root flake's
+  # tokenAppOutputs (preConfigure + the Basecamp-safe wallet staging in
+  # postInstall).
   outputs = inputs@{ logos-module-builder, shared_wallet, ... }:
     logos-module-builder.lib.mkLogosQmlModule {
       src = ./.;
