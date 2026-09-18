@@ -11,17 +11,24 @@ use stablecoin_core::{math::FIXED_POINT_ONE, Position};
 /// ```
 ///
 /// where `nominal_debt = position.normalized_debt_amount * current_accumulator /
-/// FIXED_POINT_ONE`. This is the cross-multiplied form the spec prescribes — it
-/// divides once instead of twice, so no intermediate rounding creeps into the
-/// comparison.
+/// FIXED_POINT_ONE`. That division is folded into the left-hand side instead of
+/// being performed, so the comparison is **exact**:
+///
+/// ```text
+/// collateral * FIXED_POINT_ONE^3
+///   >= normalized_debt * accumulator * redemption_price * ratio
+/// ```
+///
+/// Flooring the nominal debt first would understate it and tilt the check toward
+/// the borrower — the opposite of §6.3's rounding direction.
 ///
 /// Computed in `U512`. `U256` is **not** wide enough: `collateral × FIXED_POINT_ONE²`
 /// alone exceeds it once collateral passes 115792089237316195423570 — about
-/// 115_792 whole tokens at 18 decimals — and the right-hand side, where nominal
-/// debt is scaled by both the redemption price and the ratio, overflows sooner
-/// still. Neither side has a bound below `u128::MAX`. The caller is responsible for
-/// projecting `current_accumulator` and `current_redemption_price` forward to the
-/// current timestamp (spec §5.3) before calling; this helper only compares.
+/// 115_792 whole tokens at 18 decimals. `U512` holds the full product of four
+/// `u128::MAX` inputs (`(2^128 − 1)^4 < 2^512`), so no input can overflow it.
+/// The caller is responsible for projecting `current_accumulator` and
+/// `current_redemption_price` forward to the current timestamp (spec §5.3) before
+/// calling; this helper only compares.
 ///
 /// **A zero-debt position always passes**, regardless of collateral — there is
 /// nothing to collateralize.
@@ -47,16 +54,20 @@ pub fn assert_position_is_collateralized(
 
     let one = U512::from(FIXED_POINT_ONE);
 
-    let nominal_debt = multiply(
-        U512::from(position.normalized_debt_amount),
-        U512::from(current_accumulator),
-    )
-    .checked_div(one)
-    .expect("collateralization check: FIXED_POINT_ONE is non-zero");
-
-    let collateral_value = multiply(multiply(U512::from(position.collateral_amount), one), one);
+    // No division anywhere: `/ FIXED_POINT_ONE` on the debt side is carried as an
+    // extra `× FIXED_POINT_ONE` on the collateral side, keeping the check exact.
+    let collateral_value = multiply(
+        multiply(multiply(U512::from(position.collateral_amount), one), one),
+        one,
+    );
     let required_collateral_value = multiply(
-        multiply(nominal_debt, U512::from(current_redemption_price)),
+        multiply(
+            multiply(
+                U512::from(position.normalized_debt_amount),
+                U512::from(current_accumulator),
+            ),
+            U512::from(current_redemption_price),
+        ),
         U512::from(minimum_collateralization_ratio),
     );
 
@@ -137,6 +148,31 @@ mod tests {
             u128::MAX,
             u128::MAX,
             u128::MAX,
+        );
+    }
+
+    /// Flooring `normalized × accumulator / FIXED_POINT_ONE` before comparing
+    /// understates the debt and tilts the check toward the borrower. Here the true
+    /// nominal debt is 1.9, which needs 2.85 collateral at 1.5x — so 2 must fail,
+    /// even though a floored nominal debt of 1 would only ask for 1.5.
+    #[test]
+    #[should_panic(expected = "Position is undercollateralized")]
+    fn fractional_nominal_debt_is_not_rounded_down() {
+        assert_position_is_collateralized(
+            &position_with(2, 1),
+            FIXED_POINT_ONE * 19 / 10,
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE * 3 / 2,
+        );
+    }
+
+    #[test]
+    fn fractional_nominal_debt_passes_once_fully_covered() {
+        assert_position_is_collateralized(
+            &position_with(3, 1),
+            FIXED_POINT_ONE * 19 / 10,
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE * 3 / 2,
         );
     }
 
