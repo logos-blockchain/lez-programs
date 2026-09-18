@@ -213,6 +213,22 @@ pub enum Instruction {
         /// Stablecoin atomic units to mint to `user_stablecoin_holding`.
         amount: u128,
     },
+    /// Clear a fully-settled position's data.
+    ///
+    /// The PDA is **not** released: LEE forbids a program from changing an
+    /// account's `program_owner` or `nonce`, so the account lingers owned by this
+    /// program with empty data, and its `(owner, position_nonce)` pair cannot be
+    /// reused. Allowed while frozen. The vault is **not** closed either — the
+    /// Token Program has no `CloseHolding`, so it too lingers at `balance = 0` (§12).
+    ///
+    /// Required accounts (4), in order:
+    /// 1. `owner` — authorized.
+    /// 2. `position` — initialized, owned by `self_program_id`, at its `(owner, position_nonce)`
+    ///    PDA. Cleared to `Account::default()`.
+    /// 3. `vault` — initialized, read-only; must equal `Position.vault_account_id` and hold a zero
+    ///    balance.
+    /// 4. `protocol_parameters` — initialized, read-only; at its canonical PDA.
+    ClosePosition,
     /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
     ///
     /// Blocked while the protocol is frozen. The §6.2 collateralization
