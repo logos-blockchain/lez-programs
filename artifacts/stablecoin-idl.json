@@ -265,6 +265,47 @@
       ]
     },
     {
+      "name": "deposit_collateral",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_collateral_holding",
+          "writable": true,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
+    },
+    {
       "name": "withdraw_collateral",
       "accounts": [
         {
