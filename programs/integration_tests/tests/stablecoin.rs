@@ -290,6 +290,32 @@ impl Accounts {
         }
     }
 
+    fn stability_fee_accumulator_init() -> Account {
+        Account {
+            program_owner: Ids::stablecoin_program(),
+            balance: 0,
+            data: Data::from(&stablecoin_core::StabilityFeeAccumulator {
+                accumulated_rate_at_last_accrual: stablecoin_core::math::FIXED_POINT_ONE,
+                last_accrued_at: OPEN_POSITION_NOW,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
+    fn redemption_price_state_init() -> Account {
+        Account {
+            program_owner: Ids::stablecoin_program(),
+            balance: 0,
+            data: Data::from(&stablecoin_core::RedemptionPriceState {
+                redemption_price_at_last_update: protocol_config::INITIAL_REDEMPTION_PRICE,
+                redemption_rate_per_millisecond: stablecoin_core::math::FIXED_POINT_ONE,
+                controller_integral_term: 0,
+                last_updated_at: OPEN_POSITION_NOW,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
     fn oracle_init(base_asset: AccountId, quote_asset: AccountId) -> Account {
         Self::oracle_with(
             base_asset,
@@ -388,6 +414,14 @@ fn state_for_stablecoin_tests() -> V03State {
     state.force_insert_account(
         compute_protocol_parameters_pda(Ids::stablecoin_program()),
         Accounts::protocol_parameters_init(),
+    );
+    state.force_insert_account(
+        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+        Accounts::stability_fee_accumulator_init(),
+    );
+    state.force_insert_account(
+        compute_redemption_price_state_pda(Ids::stablecoin_program()),
+        Accounts::redemption_price_state_init(),
     );
     seed_clock(&mut state, OPEN_POSITION_NOW);
     state
@@ -536,6 +570,10 @@ fn stablecoin_open_position_then_withdraw_collateral() {
             Ids::position(),
             Ids::vault(),
             Ids::user_holding(),
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            compute_redemption_price_state_pda(Ids::stablecoin_program()),
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![current_nonce(&state, Ids::owner())],
         withdraw,
@@ -626,6 +664,48 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
             panic!("expected Fungible holding")
         }
     }
+}
+
+/// Seeds the three read-only globals and the clock that the fee-aware position
+/// instructions read. The privacy tests build their state by hand rather than via
+/// `initialize_program`, so they need these inserted explicitly.
+fn seed_stablecoin_globals(state: &mut V03State) {
+    state.force_insert_account(
+        compute_protocol_parameters_pda(Ids::stablecoin_program()),
+        Accounts::protocol_parameters_init(),
+    );
+    state.force_insert_account(
+        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+        Accounts::stability_fee_accumulator_init(),
+    );
+    state.force_insert_account(
+        compute_redemption_price_state_pda(Ids::stablecoin_program()),
+        Accounts::redemption_price_state_init(),
+    );
+    seed_clock(state, OPEN_POSITION_NOW);
+}
+
+fn public_pre_state(state: &V03State, account_id: AccountId) -> AccountWithMetadata {
+    AccountWithMetadata::new(state.get_account_by_id(account_id), false, account_id)
+}
+
+/// The four trailing public inputs of `WithdrawCollateral`, in ABI order.
+fn withdraw_global_pre_states(state: &V03State) -> Vec<AccountWithMetadata> {
+    vec![
+        public_pre_state(
+            state,
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+        ),
+        public_pre_state(
+            state,
+            compute_redemption_price_state_pda(Ids::stablecoin_program()),
+        ),
+        public_pre_state(
+            state,
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+        ),
+        public_pre_state(state, CLOCK_01_PROGRAM_ACCOUNT_ID),
+    ]
 }
 
 fn stablecoin_program() -> Program {
@@ -730,6 +810,7 @@ fn stablecoin_open_position_via_privacy_transaction_is_not_expressible() {
 fn stablecoin_withdraw_collateral_private_destination() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
+    seed_stablecoin_globals(&mut state);
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -801,13 +882,21 @@ fn stablecoin_withdraw_collateral_private_destination() {
     };
 
     let (output, proof) = execute_and_prove(
-        vec![owner_pre, position_pre, vault_pre, destination_pre],
+        [
+            vec![owner_pre, position_pre, vault_pre, destination_pre],
+            withdraw_global_pre_states(&state),
+        ]
+        .concat(),
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             private_authorized_update_identity(destination_nsk, &destination_vpk, membership_proof),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
         ],
         &stablecoin_with_token_deps(),
     )
@@ -864,6 +953,7 @@ fn stablecoin_withdraw_collateral_private_destination() {
 fn stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
+    seed_stablecoin_globals(&mut state);
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -917,7 +1007,11 @@ fn stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible(
     };
 
     let result = execute_and_prove(
-        vec![owner_pre, position_pre, vault_pre, destination_pre],
+        [
+            vec![owner_pre, position_pre, vault_pre, destination_pre],
+            withdraw_global_pre_states(&state),
+        ]
+        .concat(),
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
@@ -928,6 +1022,10 @@ fn stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible(
                 &destination_vpk,
                 state.commitment_root(),
             ),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
         ],
         &stablecoin_with_token_deps(),
     );
@@ -938,7 +1036,7 @@ fn stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible(
     );
     let message = format!("{err:?}");
     assert!(
-        message.contains("Destination must be initialized"),
+        message.contains("User collateral holding must be initialized"),
         "expected the destination-must-be-initialized rejection, got a different error: {message}"
     );
 }
@@ -947,6 +1045,7 @@ fn stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible(
 fn stablecoin_withdraw_collateral_group_owned_destination() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
+    seed_stablecoin_globals(&mut state);
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1022,13 +1121,21 @@ fn stablecoin_withdraw_collateral_group_owned_destination() {
     };
 
     let (output, proof) = execute_and_prove(
-        vec![owner_pre, position_pre, vault_pre, destination_pre],
+        [
+            vec![owner_pre, position_pre, vault_pre, destination_pre],
+            withdraw_global_pre_states(&state),
+        ]
+        .concat(),
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             private_authorized_update_identity(bob_nsk, &destination_vpk, membership_proof),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
         ],
         &stablecoin_with_token_deps(),
     )
@@ -1337,6 +1444,7 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
 fn stablecoin_group_owned_position_owner() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
+    seed_stablecoin_globals(&mut state);
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1398,10 +1506,18 @@ fn stablecoin_group_owned_position_owner() {
     };
 
     let (output, proof) = execute_and_prove(
-        vec![owner_pre, position_pre, vault_pre, destination_pre],
+        [
+            vec![owner_pre, position_pre, vault_pre, destination_pre],
+            withdraw_global_pre_states(&state),
+        ]
+        .concat(),
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
