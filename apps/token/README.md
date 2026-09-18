@@ -77,6 +77,28 @@ nix run .#token-ui
 
 This builds and runs the application in development mode.
 
+### Which Token Program it talks to
+
+`token_module` takes the Token Program identity from the environment, and every
+submit path fails with `config_missing` when it is unset. The `nix run` wrapper
+defaults `TOKEN_PROGRAM_ID` to the deployed testnet program (the token row in
+`DEPLOYMENTS.md`), so the command above needs no setup.
+
+To point the UI at a different deployment, set either variable yourself:
+
+```bash
+# by program id
+TOKEN_PROGRAM_ID=<program id> nix run .#token-ui
+
+# or derive it from a local binary (use the docker-built .bin - a release-profile
+# build has a different ImageID and will not own the deployed accounts)
+TOKEN_PROGRAM_BIN=$(pwd)/programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin \
+  nix run .#token-ui
+```
+
+Setting both is only valid when they agree; a mismatch is reported as
+`config_missing` too.
+
 ## Updating Dependencies
 
 To update the pinned versions of dependencies in `flake.lock`:
