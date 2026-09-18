@@ -720,6 +720,21 @@ fn withdraw_global_pre_states(state: &V03State) -> Vec<AccountWithMetadata> {
     ]
 }
 
+/// The three trailing public inputs of `RepayDebt`, in ABI order.
+fn repay_global_pre_states(state: &V03State) -> Vec<AccountWithMetadata> {
+    vec![
+        public_pre_state(
+            state,
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+        ),
+        public_pre_state(
+            state,
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+        ),
+        public_pre_state(state, CLOCK_01_PROGRAM_ACCOUNT_ID),
+    ]
+}
+
 fn stablecoin_program() -> Program {
     Program::new(stablecoin_methods::STABLECOIN_ELF.to_vec().into()).expect("valid stablecoin ELF")
 }
@@ -1190,6 +1205,7 @@ fn stablecoin_withdraw_collateral_group_owned_destination() {
 fn stablecoin_repay_debt_private_stablecoin_holding() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
+    seed_stablecoin_globals(&mut state);
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1266,12 +1282,16 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
     };
 
     let (output, proof) = execute_and_prove(
-        vec![
-            owner_pre,
-            position_pre,
-            definition_pre,
-            stablecoin_holding_pre,
-        ],
+        [
+            vec![
+                owner_pre,
+                position_pre,
+                definition_pre,
+                stablecoin_holding_pre,
+            ],
+            repay_global_pre_states(&state),
+        ]
+        .concat(),
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
@@ -1282,6 +1302,9 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
                 &stablecoin_holding_vpk,
                 membership_proof,
             ),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
         ],
         &stablecoin_with_token_deps(),
     )
@@ -1337,6 +1360,7 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
 fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
+    seed_stablecoin_globals(&mut state);
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1410,13 +1434,20 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
     };
 
     let (output, proof) = execute_and_prove(
-        vec![owner_pre, position_pre, definition_pre, holding_pre],
+        [
+            vec![owner_pre, position_pre, definition_pre, holding_pre],
+            repay_global_pre_states(&state),
+        ]
+        .concat(),
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             private_authorized_update_identity(bob_nsk, &holding_vpk, membership_proof),
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
         ],
         &stablecoin_with_token_deps(),
     )
