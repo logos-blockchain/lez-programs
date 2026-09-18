@@ -410,6 +410,13 @@
         app // {
           program = "${pkgs.writeShellScript "run-token-ui" ''
             export QML_IMPORT_PATH="${moduleDir}/lib''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
+            # token_module resolves the Token Program identity from the env
+            # only (TOKEN_PROGRAM_ID or TOKEN_PROGRAM_BIN); with neither set
+            # every submit path returns `config_missing`. Default to the
+            # deployed testnet program so `nix run .#token-ui` works with no
+            # setup - see the token row in DEPLOYMENTS.md. Override the var to
+            # target another deployment.
+            export TOKEN_PROGRAM_ID="''${TOKEN_PROGRAM_ID:-2Pp7aXgGY9Lsox326tcY58KAD6VmzYB8wquZw83nhUyV}"
             exec ${app.program} "$@"
           ''}";
         };
