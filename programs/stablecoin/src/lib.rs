@@ -11,6 +11,9 @@ pub mod checks;
 /// Deposit additional collateral into an existing position.
 pub mod deposit_collateral;
 
+/// Mint stablecoins against a position, increasing its debt.
+pub mod generate_debt;
+
 /// Bootstrap the protocol: create the global PDAs and the stablecoin definition.
 pub mod initialize_program;
 
