@@ -10,10 +10,14 @@ use token_core::TokenHolding;
 /// Deposit `amount` additional collateral tokens into an existing `position`'s vault.
 ///
 /// Sets `Position.collateral_amount` to the vault's current balance plus `amount`
-/// and emits a single chained
-/// `Token::Transfer` from the user's authorized holding into the vault. No PDA
-/// seed is attached: the sender is the user's own holding, which the transaction's
-/// witness set authorizes.
+/// and emits a single chained `Token::Transfer` from the user's authorized holding
+/// into the vault. No PDA seed is attached: the sender is the user's own holding,
+/// which the transaction's witness set authorizes.
+///
+/// The position is reconciled from the vault rather than incremented, because
+/// `Token::Transfer` only needs the sender's authorization and anyone can donate
+/// into a vault. A zero-amount deposit is therefore the recovery path for a
+/// donated balance: it folds the surplus into the position so it can be withdrawn.
 ///
 /// Deliberately allowed while the protocol is frozen, and deliberately skips the
 /// §6.2 collateralization check — a deposit can only improve the position, so
@@ -31,7 +35,7 @@ use token_core::TokenHolding;
 ///   decode.
 /// - `user_collateral_holding` is owned by a different Token Program than the vault, or its
 ///   `definition_id` is not `ProtocolParameters.collateral_definition_id`.
-/// - `Position.collateral_amount + amount` overflows.
+/// - The vault balance plus `amount` overflows.
 pub fn deposit_collateral(
     owner: AccountWithMetadata,
     position: AccountWithMetadata,
