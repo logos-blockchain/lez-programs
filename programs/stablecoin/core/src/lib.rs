@@ -170,6 +170,10 @@ pub enum Instruction {
     /// position's collateralization, so §7 keeps it available in emergencies.
     /// No collateralization check for the same reason.
     ///
+    /// The position's collateral is set to the vault balance plus `amount`, not
+    /// incremented, so a balance donated directly into the vault is absorbed
+    /// rather than stranded. `amount = 0` is the recovery path for that case.
+    ///
     /// Required accounts (5), in order:
     /// 1. `owner` — authorized; must match `Position.owner_account_id`.
     /// 2. `position` — initialized, writable, owned by this program; address must match
