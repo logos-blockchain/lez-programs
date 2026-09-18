@@ -619,6 +619,12 @@ fn stablecoin_open_position_via_privacy_transaction_is_not_expressible() {
         Accounts::collateral_definition_init(),
     );
     state.force_insert_account(Ids::user_holding(), Accounts::user_holding_init());
+    // The rebuilt `open_position` reads the global parameters and the clock before it
+    // reaches the chained calls, so both must exist for the circuit to get as far as
+    // the rejection this test is about.
+    let parameters_id = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    state.force_insert_account(parameters_id, Accounts::protocol_parameters_init());
+    seed_clock(&mut state, OPEN_POSITION_NOW);
 
     let owner_id = Ids::owner();
     let position_id =
@@ -636,10 +642,17 @@ fn stablecoin_open_position_via_privacy_transaction_is_not_expressible() {
         Ids::collateral_definition(),
     );
 
-    let collateral_amount = Balances::collateral_deposit();
+    let parameters_pre =
+        AccountWithMetadata::new(state.get_account_by_id(parameters_id), false, parameters_id);
+    let clock_pre = AccountWithMetadata::new(
+        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        false,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+
     let instruction = stablecoin_core::Instruction::OpenPosition {
         position_nonce: Ids::position_nonce(),
-        collateral_amount,
+        initial_collateral_amount: Balances::collateral_deposit(),
     };
 
     let result = execute_and_prove(
@@ -649,9 +662,13 @@ fn stablecoin_open_position_via_privacy_transaction_is_not_expressible() {
             vault_pre,
             user_holding_pre,
             definition_pre,
+            parameters_pre,
+            clock_pre,
         ],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
+            InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
