@@ -31,6 +31,7 @@ use token_core::TokenHolding;
 ///   `compute_position_pda(stablecoin_program_id, owner, Position.position_nonce)`.
 /// - `vault` sits at an address that does not match
 ///   `compute_position_vault_pda(stablecoin_program_id, position_id)`.
+/// - `vault` holds a token other than `protocol_parameters.collateral_definition_id`.
 /// - `user_collateral_holding` is uninitialized, owned by a different Token Program than the vault,
 ///   or holds a [`TokenHolding`] whose `definition_id` does not match the vault holding's
 ///   collateral definition.
@@ -122,11 +123,16 @@ pub fn withdraw_collateral(
 
     let vault_holding = TokenHolding::try_from(&vault.account.data)
         .expect("Vault account must hold a valid TokenHolding");
-    // The vault PDA is verified to belong to this position, so its holding's
-    // definition is the authoritative collateral definition. #161 dropped the
-    // redundant copy from `Position`; `ProtocolParameters` owns the global
-    // collateral definition from #173 onward.
-    let collateral_definition_id = vault_holding.definition_id();
+    // `ProtocolParameters` is the authority on which token is collateral. The
+    // vault PDA is verified to belong to this position and was created against
+    // that same definition, so this should always hold — it is pinned anyway, as
+    // in `deposit_collateral`, so the two instructions cannot drift apart.
+    let collateral_definition_id = parameters.collateral_definition_id;
+    assert_eq!(
+        vault_holding.definition_id(),
+        collateral_definition_id,
+        "Vault holding does not match the protocol's collateral definition"
+    );
 
     let token_program_id = vault.account.program_owner;
     assert_ne!(

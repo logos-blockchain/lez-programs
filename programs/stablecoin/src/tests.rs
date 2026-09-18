@@ -1092,6 +1092,99 @@ fn withdraw_collateral_from_a_zero_debt_position_skips_the_projection() {
     assert_eq!(position.collateral_amount, 0);
 }
 
+// The three read-only globals must each sit at their canonical PDA and be owned by
+// this program. Ownership plus a successful decode is not enough: a substituted
+// account could otherwise stand in for the global config.
+
+fn withdraw_with_globals(
+    accumulator: AccountWithMetadata,
+    redemption: AccountWithMetadata,
+    parameters: AccountWithMetadata,
+) {
+    crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        init_position_account(1_000, 0),
+        init_vault_account(),
+        destination_holding_account(),
+        accumulator,
+        redemption,
+        parameters,
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account ID does not match expected PDA derivation")]
+fn withdraw_collateral_rejects_protocol_parameters_at_wrong_address() {
+    let mut parameters = protocol_parameters_account(false);
+    parameters.account_id = AccountId::new([0xC0u8; 32]);
+    withdraw_with_globals(
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        parameters,
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "StabilityFeeAccumulator account ID does not match expected PDA derivation"
+)]
+fn withdraw_collateral_rejects_accumulator_at_wrong_address() {
+    let mut accumulator = crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW);
+    accumulator.account_id = AccountId::new([0xC1u8; 32]);
+    withdraw_with_globals(
+        accumulator,
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+    );
+}
+
+#[test]
+#[should_panic(expected = "RedemptionPriceState account ID does not match expected PDA derivation")]
+fn withdraw_collateral_rejects_redemption_price_state_at_wrong_address() {
+    let mut redemption = crate::test_support::redemption_price_state_account(NOW);
+    redemption.account_id = AccountId::new([0xC2u8; 32]);
+    withdraw_with_globals(
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        redemption,
+        protocol_parameters_account(false),
+    );
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account must be owned by the stablecoin program")]
+fn withdraw_collateral_rejects_protocol_parameters_owned_by_another_program() {
+    let mut parameters = protocol_parameters_account(false);
+    parameters.account.program_owner = [9u32; 8];
+    withdraw_with_globals(
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        parameters,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Vault holding does not match the protocol's collateral definition")]
+fn withdraw_collateral_rejects_vault_holding_for_other_definition() {
+    // Mirrors deposit_collateral: the global parameters, not the vault, are the
+    // authority on which token is collateral.
+    let other_definition = AccountId::new([0x21u8; 32]);
+    crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        init_position_account(1_000, 0),
+        token_holding_account(vault_id(), other_definition, 1_000),
+        token_holding_account(destination_holding_id(), other_definition, 0),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        crate::test_support::redemption_price_state_account(NOW),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        100,
+    );
+}
+
 #[test]
 fn withdraw_collateral_echoes_the_four_read_only_globals() {
     let (post_states, chained_calls) = withdraw(
