@@ -4,7 +4,7 @@
 //! `u128` integers scaled by [`FIXED_POINT_ONE`], so the integer `1.0` is
 //! `10^27`. Multiplications use `U256` intermediates to avoid overflow.
 
-use alloy_primitives::U256;
+use alloy_primitives::{U256, U512};
 
 /// The value `1.0` in our 27-decimal fixed-point representation.
 ///
@@ -147,6 +147,94 @@ pub fn compute_current_redemption_price(
         .min(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS);
     let factor = compound_rate(redemption_rate_per_millisecond, elapsed);
     mul_div(redemption_price_at_last_update, factor, FIXED_POINT_ONE)
+}
+
+/// `per_millisecond_rate^milliseconds_elapsed` in `U512`, saturating instead of
+/// panicking.
+///
+/// [`compound_rate`] works in `u128`, so a rate the controller can legitimately
+/// produce overflows it a few million milliseconds out, and the
+/// [`MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS`] clamp is nowhere near tight
+/// enough to prevent that. Values that are only ever *compared* — the §6.2
+/// collateralization check — do not need to fit `u128`, so this variant keeps
+/// the factor in `U512` and saturates at the ceiling.
+///
+/// Saturating only ever understates the factor, which would otherwise risk
+/// waving a position through. It cannot: the smallest value this function can
+/// saturate to is around `10^127`, while the largest left-hand side §6.2 can
+/// build is `u128::MAX × FIXED_POINT_ONE^3`, about `10^119`. Any saturated
+/// factor is already past that before the debt, accumulator and ratio scale it.
+fn compound_rate_wide(per_millisecond_rate: u128, milliseconds_elapsed: u64) -> U512 {
+    let one = U512::from(FIXED_POINT_ONE);
+    if milliseconds_elapsed == 0 || per_millisecond_rate == FIXED_POINT_ONE {
+        return one;
+    }
+    let mut result = one;
+    let mut base = U512::from(per_millisecond_rate);
+    let mut exponent = milliseconds_elapsed;
+    while exponent > 0 {
+        if exponent & 1 == 1 {
+            result = result.saturating_mul(base) / one;
+        }
+        exponent >>= 1;
+        if exponent > 0 {
+            base = base.saturating_mul(base) / one;
+        }
+    }
+    result
+}
+
+/// Project `anchor` forward to `now` in `U512`, without panicking.
+///
+/// Same `Δt` saturation and clamp as the `u128` projections; see
+/// [`compound_rate_wide`] for why the width and the saturation are safe.
+fn project_forward_wide(
+    anchor: u128,
+    per_millisecond_rate: u128,
+    last_updated_at: u64,
+    now: u64,
+) -> U512 {
+    let elapsed = now
+        .saturating_sub(last_updated_at)
+        .min(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS);
+    let factor = compound_rate_wide(per_millisecond_rate, elapsed);
+    U512::from(anchor).saturating_mul(factor) / U512::from(FIXED_POINT_ONE)
+}
+
+/// [`compute_current_accumulated_rate`] widened to `U512`, for the read-side
+/// §6.2 check. A stability fee at its permitted upper bound overflows the
+/// `u128` projection well inside the compounding window.
+#[must_use]
+pub fn compute_current_accumulated_rate_wide(
+    accumulated_rate_at_last_accrual: u128,
+    stability_fee_per_millisecond: u128,
+    last_accrued_at: u64,
+    now: u64,
+) -> U512 {
+    project_forward_wide(
+        accumulated_rate_at_last_accrual,
+        stability_fee_per_millisecond,
+        last_accrued_at,
+        now,
+    )
+}
+
+/// [`compute_current_redemption_price`] widened to `U512`, for the read-side
+/// §6.2 check. A redemption rate at its permitted upper bound overflows the
+/// `u128` projection about 45 minutes out.
+#[must_use]
+pub fn compute_current_redemption_price_wide(
+    redemption_price_at_last_update: u128,
+    redemption_rate_per_millisecond: u128,
+    last_updated_at: u64,
+    now: u64,
+) -> U512 {
+    project_forward_wide(
+        redemption_price_at_last_update,
+        redemption_rate_per_millisecond,
+        last_updated_at,
+        now,
+    )
 }
 
 #[cfg(test)]
@@ -398,5 +486,82 @@ mod tests {
             at_window,
         );
         assert!(at_window < anchor);
+    }
+
+    /// The `u128` and `U512` projections must not disagree anywhere the `u128`
+    /// one can represent the answer.
+    #[test]
+    fn wide_projections_agree_with_the_narrow_ones_in_range() {
+        let anchor = FIXED_POINT_ONE / 2;
+        for &rate in &[
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE + 10u128.pow(20),
+            FIXED_POINT_ONE - 10u128.pow(20),
+        ] {
+            for &elapsed in &[0u64, 1, 1_000, 86_400_000] {
+                assert_eq!(
+                    compute_current_redemption_price_wide(anchor, rate, 0, elapsed),
+                    U512::from(compute_current_redemption_price(anchor, rate, 0, elapsed)),
+                    "price mismatch at rate={rate}, elapsed={elapsed}",
+                );
+                assert_eq!(
+                    compute_current_accumulated_rate_wide(anchor, rate, 0, elapsed),
+                    U512::from(compute_current_accumulated_rate(anchor, rate, 0, elapsed)),
+                    "accumulator mismatch at rate={rate}, elapsed={elapsed}",
+                );
+            }
+        }
+    }
+
+    /// Regression for the review finding: the controller's maximum rate projects
+    /// a 1.0 anchor past `u128` in 2_700_000 ms. The narrow projection panics
+    /// there; the wide one returns the value the §6.2 check needs.
+    #[test]
+    fn wide_redemption_price_projects_past_u128_without_panicking() {
+        let rate = FIXED_POINT_ONE + FIXED_POINT_ONE / 100_000;
+        let projected = compute_current_redemption_price_wide(FIXED_POINT_ONE, rate, 0, 2_700_000);
+        assert!(projected > U512::from(u128::MAX));
+        // e^27 ≈ 5.32e11, so the fixed-point value lands just above 5.3e38.
+        assert!(projected < U512::from(u128::MAX) * U512::from(2u8));
+    }
+
+    /// Past the point where `U512` runs out, the projection saturates instead of
+    /// panicking, and stays far above the largest left-hand side the §6.2 check
+    /// can build (`u128::MAX × FIXED_POINT_ONE^3`, about `10^119`).
+    #[test]
+    fn wide_projection_saturates_above_any_comparable_collateral() {
+        let rate = FIXED_POINT_ONE + FIXED_POINT_ONE / 100_000;
+        let one = U512::from(FIXED_POINT_ONE);
+        let largest_collateral_value = U512::from(u128::MAX) * one * one * one;
+        let projected = compute_current_redemption_price_wide(
+            FIXED_POINT_ONE,
+            rate,
+            0,
+            MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+        );
+        assert!(projected > largest_collateral_value);
+    }
+
+    #[test]
+    fn wide_projection_clamps_elapsed_to_maximum_window() {
+        let rate = FIXED_POINT_ONE - 1_500_000_000_000_000;
+        let at_window = compute_current_redemption_price_wide(
+            FIXED_POINT_ONE,
+            rate,
+            0,
+            MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+        );
+        assert_eq!(
+            compute_current_redemption_price_wide(FIXED_POINT_ONE, rate, 0, u64::MAX),
+            at_window,
+        );
+    }
+
+    #[test]
+    fn wide_projection_of_a_decaying_rate_reaches_zero() {
+        let rate = FIXED_POINT_ONE - FIXED_POINT_ONE / 100_000;
+        assert!(
+            compute_current_redemption_price_wide(FIXED_POINT_ONE, rate, 0, 7_000_000).is_zero()
+        );
     }
 }
