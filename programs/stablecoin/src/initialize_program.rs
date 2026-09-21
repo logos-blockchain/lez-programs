@@ -21,17 +21,6 @@ use stablecoin_core::{
 use token_core::TokenDefinition;
 use twap_oracle_core::OraclePriceAccount;
 
-// --- Sane-band constants per spec §8 -----------------------------------------
-
-const MAX_STABILITY_FEE_PER_MILLISECOND: u128 = FIXED_POINT_ONE * 2;
-const MIN_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 110 / 100; // 1.1x
-const MAX_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 10;
-// Gain magnitude caps (spec §8; placeholders pending the §15 tuning pass):
-// |Kp| <= FIXED_POINT_ONE * 10^3, |Ki| <= FIXED_POINT_ONE.
-const MAX_PROPORTIONAL_GAIN_MAGNITUDE: u128 = FIXED_POINT_ONE * 1_000;
-const MAX_INTEGRAL_GAIN_MAGNITUDE: u128 = FIXED_POINT_ONE;
-const MAX_TIMING_MILLISECONDS: u64 = 86_400_000; // 1 day
-
 // --- Unpacked numerical parameters -------------------------------------------
 
 /// Numerical parameters for [`initialize_program`]. Bundled to keep the host
@@ -172,48 +161,28 @@ pub fn initialize_program(
         "Oracle quote_asset must equal the collateral definition's account_id"
     );
 
-    // 7. Numerical param bounds (spec §8)
-    assert!(
-        params.initial_stability_fee_per_millisecond >= FIXED_POINT_ONE,
-        "initial_stability_fee_per_millisecond below FIXED_POINT_ONE"
+    // 7. Numerical param bounds (spec §8). Shared with the `set_*` instructions
+    // so bootstrap and later updates enforce exactly the same bands.
+    crate::checks::assert_stability_fee_in_band(
+        params.initial_stability_fee_per_millisecond,
+        "initial_stability_fee_per_millisecond",
     );
-    assert!(
-        params.initial_stability_fee_per_millisecond <= MAX_STABILITY_FEE_PER_MILLISECOND,
-        "initial_stability_fee_per_millisecond above sane upper bound"
+    crate::checks::assert_collateralization_ratio_in_band(
+        params.initial_minimum_collateralization_ratio,
+        "initial_minimum_collateralization_ratio",
     );
-    assert!(
-        params.initial_minimum_collateralization_ratio >= MIN_COLLATERALIZATION_RATIO,
-        "initial_minimum_collateralization_ratio below 1.1x"
+    crate::checks::assert_controller_gains_in_band(
+        params.initial_controller_proportional_gain,
+        params.initial_controller_integral_gain,
     );
-    assert!(
-        params.initial_minimum_collateralization_ratio <= MAX_COLLATERALIZATION_RATIO,
-        "initial_minimum_collateralization_ratio above 10x"
+    crate::checks::assert_timing_milliseconds_in_band(
+        params.minimum_milliseconds_between_rate_updates,
+        "minimum_milliseconds_between_rate_updates",
     );
-    assert!(
-        params.initial_controller_proportional_gain.unsigned_abs()
-            <= MAX_PROPORTIONAL_GAIN_MAGNITUDE,
-        "controller_proportional_gain out of band"
+    crate::checks::assert_timing_milliseconds_in_band(
+        params.maximum_oracle_price_age_milliseconds,
+        "maximum_oracle_price_age_milliseconds",
     );
-    assert!(
-        params.initial_controller_integral_gain.unsigned_abs() <= MAX_INTEGRAL_GAIN_MAGNITUDE,
-        "controller_integral_gain out of band"
-    );
-    for &(milliseconds, label) in &[
-        (
-            params.minimum_milliseconds_between_rate_updates,
-            "minimum_milliseconds_between_rate_updates",
-        ),
-        (
-            params.maximum_oracle_price_age_milliseconds,
-            "maximum_oracle_price_age_milliseconds",
-        ),
-    ] {
-        assert!(milliseconds >= 1, "{label} below minimum 1ms");
-        assert!(
-            milliseconds <= MAX_TIMING_MILLISECONDS,
-            "{label} above maximum 86_400_000ms"
-        );
-    }
     assert!(
         params.initial_redemption_price > 0,
         "initial_redemption_price must be positive"

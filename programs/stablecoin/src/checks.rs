@@ -1,11 +1,16 @@
-//! Shared validation helpers reused across the position-lifecycle instructions.
+//! Shared validation helpers: the §6.2 collateralization invariant, global-account
+//! validation, admin authorization, and the §8 parameter bands.
+//!
+//! The bands live here rather than in `initialize_program` because spec §8 requires
+//! the same limits at bootstrap *and* in every `set_*` instruction. One definition
+//! means the two can't drift apart.
 
 use alloy_primitives::U512;
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::ProgramId,
 };
-use stablecoin_core::{math::FIXED_POINT_ONE, Position};
+use stablecoin_core::{math::FIXED_POINT_ONE, Position, ProtocolParameters};
 
 /// Assert that `position` satisfies the collateralization invariant from spec §6.2:
 ///
@@ -78,6 +83,78 @@ pub fn assert_position_is_collateralized(
     assert!(
         collateral_value >= required_collateral_value,
         "Position is undercollateralized"
+    );
+}
+
+// --- Sane-band constants per spec §8 -----------------------------------------
+
+pub(crate) const MAX_STABILITY_FEE_PER_MILLISECOND: u128 = FIXED_POINT_ONE * 2;
+pub(crate) const MIN_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 110 / 100; // 1.1x
+pub(crate) const MAX_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 10;
+// Gain magnitude caps (spec §8; placeholders pending the §15 tuning pass):
+// |Kp| <= FIXED_POINT_ONE * 10^3, |Ki| <= FIXED_POINT_ONE.
+pub(crate) const MAX_PROPORTIONAL_GAIN_MAGNITUDE: u128 = FIXED_POINT_ONE * 1_000;
+pub(crate) const MAX_INTEGRAL_GAIN_MAGNITUDE: u128 = FIXED_POINT_ONE;
+pub(crate) const MAX_TIMING_MILLISECONDS: u64 = 86_400_000; // 1 day
+
+/// The two-part gate every admin instruction performs: the caller signed, and the
+/// caller is the handle currently bound as `ProtocolParameters.admin_account_id`.
+///
+/// Rotating the admin (`set_admin`) therefore takes effect immediately for every
+/// later instruction, since the check always reads the stored handle.
+///
+/// # Panics
+/// - `"Admin authorization is missing"` when `admin` did not sign.
+/// - `"Signer is not the protocol's admin"` when the handle does not match.
+pub(crate) fn assert_admin_authorized(
+    admin: &AccountWithMetadata,
+    parameters: &ProtocolParameters,
+) {
+    assert!(admin.is_authorized, "Admin authorization is missing");
+    assert_eq!(
+        admin.account_id, parameters.admin_account_id,
+        "Signer is not the protocol's admin"
+    );
+}
+
+/// Spec §8: `FIXED_POINT_ONE <= rate <= 2 x FIXED_POINT_ONE`.
+///
+/// The lower bound keeps the fee from decaying debt; the upper bound is an
+/// anti-typo cap, not an overflow guard — that is the compounding-window clamp.
+pub(crate) fn assert_stability_fee_in_band(rate: u128, label: &str) {
+    assert!(rate >= FIXED_POINT_ONE, "{label} below FIXED_POINT_ONE");
+    assert!(
+        rate <= MAX_STABILITY_FEE_PER_MILLISECOND,
+        "{label} above sane upper bound"
+    );
+}
+
+/// Spec §8: `1.1x <= ratio <= 10x`. Below 1.1x a position is insolvent on arrival.
+pub(crate) fn assert_collateralization_ratio_in_band(ratio: u128, label: &str) {
+    assert!(ratio >= MIN_COLLATERALIZATION_RATIO, "{label} below 1.1x");
+    assert!(ratio <= MAX_COLLATERALIZATION_RATIO, "{label} above 10x");
+}
+
+/// Spec §8 magnitude caps on the PI gains. Either sign is legal; only the
+/// magnitude is bounded.
+pub(crate) fn assert_controller_gains_in_band(proportional_gain: i128, integral_gain: i128) {
+    assert!(
+        proportional_gain.unsigned_abs() <= MAX_PROPORTIONAL_GAIN_MAGNITUDE,
+        "controller_proportional_gain out of band"
+    );
+    assert!(
+        integral_gain.unsigned_abs() <= MAX_INTEGRAL_GAIN_MAGNITUDE,
+        "controller_integral_gain out of band"
+    );
+}
+
+/// Spec §8: `1 <= milliseconds <= 86_400_000`. Zero would allow spam; beyond a
+/// day is self-evidently wrong for both the rate interval and oracle staleness.
+pub(crate) fn assert_timing_milliseconds_in_band(milliseconds: u64, label: &str) {
+    assert!(milliseconds >= 1, "{label} below minimum 1ms");
+    assert!(
+        milliseconds <= MAX_TIMING_MILLISECONDS,
+        "{label} above maximum 86_400_000ms"
     );
 }
 
@@ -177,6 +254,126 @@ mod tests {
             u128::MAX,
             u128::MAX,
         );
+    }
+
+    // --- admin authorization + §8 bounds ---
+
+    fn parameters() -> stablecoin_core::ProtocolParameters {
+        stablecoin_core::ProtocolParameters::try_from(
+            &crate::test_support::protocol_parameters_account(
+                crate::test_support::ParameterOverrides::default(),
+            )
+            .account
+            .data,
+        )
+        .expect("valid ProtocolParameters")
+    }
+
+    fn admin_account() -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            is_authorized: true,
+            account_id: crate::test_support::admin_id(),
+        }
+    }
+
+    #[test]
+    fn admin_authorization_accepts_the_bound_admin() {
+        assert_admin_authorized(&admin_account(), &parameters());
+    }
+
+    #[test]
+    #[should_panic(expected = "Admin authorization is missing")]
+    fn admin_authorization_requires_a_signature() {
+        let mut admin = admin_account();
+        admin.is_authorized = false;
+        assert_admin_authorized(&admin, &parameters());
+    }
+
+    #[test]
+    #[should_panic(expected = "Signer is not the protocol's admin")]
+    fn admin_authorization_rejects_another_signer() {
+        // Authorized, but not the handle bound at initialize_program — e.g. the
+        // freeze authority, which has its own powers and must not gain the admin's.
+        let mut impostor = admin_account();
+        impostor.account_id = crate::test_support::freeze_authority_id();
+        assert_admin_authorized(&impostor, &parameters());
+    }
+
+    #[test]
+    fn stability_fee_band_accepts_both_endpoints() {
+        assert_stability_fee_in_band(FIXED_POINT_ONE, "rate");
+        assert_stability_fee_in_band(MAX_STABILITY_FEE_PER_MILLISECOND, "rate");
+    }
+
+    #[test]
+    #[should_panic(expected = "rate below FIXED_POINT_ONE")]
+    fn stability_fee_band_rejects_below_one() {
+        assert_stability_fee_in_band(FIXED_POINT_ONE - 1, "rate");
+    }
+
+    #[test]
+    #[should_panic(expected = "rate above sane upper bound")]
+    fn stability_fee_band_rejects_above_two() {
+        assert_stability_fee_in_band(MAX_STABILITY_FEE_PER_MILLISECOND + 1, "rate");
+    }
+
+    #[test]
+    fn collateralization_ratio_band_accepts_both_endpoints() {
+        assert_collateralization_ratio_in_band(MIN_COLLATERALIZATION_RATIO, "ratio");
+        assert_collateralization_ratio_in_band(MAX_COLLATERALIZATION_RATIO, "ratio");
+    }
+
+    #[test]
+    #[should_panic(expected = "ratio below 1.1x")]
+    fn collateralization_ratio_band_rejects_below_one_point_one() {
+        assert_collateralization_ratio_in_band(MIN_COLLATERALIZATION_RATIO - 1, "ratio");
+    }
+
+    #[test]
+    #[should_panic(expected = "ratio above 10x")]
+    fn collateralization_ratio_band_rejects_above_ten() {
+        assert_collateralization_ratio_in_band(MAX_COLLATERALIZATION_RATIO + 1, "ratio");
+    }
+
+    #[test]
+    fn controller_gain_band_accepts_the_magnitude_limits_in_both_signs() {
+        let kp = i128::try_from(MAX_PROPORTIONAL_GAIN_MAGNITUDE).expect("fits i128");
+        let ki = i128::try_from(MAX_INTEGRAL_GAIN_MAGNITUDE).expect("fits i128");
+        assert_controller_gains_in_band(kp, ki);
+        assert_controller_gains_in_band(-kp, -ki);
+    }
+
+    #[test]
+    #[should_panic(expected = "controller_proportional_gain out of band")]
+    fn controller_gain_band_rejects_an_oversized_proportional_gain() {
+        let kp = i128::try_from(MAX_PROPORTIONAL_GAIN_MAGNITUDE).expect("fits i128") + 1;
+        assert_controller_gains_in_band(kp, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "controller_integral_gain out of band")]
+    fn controller_gain_band_rejects_an_oversized_integral_gain() {
+        let ki = i128::try_from(MAX_INTEGRAL_GAIN_MAGNITUDE).expect("fits i128") + 1;
+        assert_controller_gains_in_band(0, ki);
+    }
+
+    #[test]
+    fn timing_band_accepts_both_endpoints() {
+        assert_timing_milliseconds_in_band(1, "interval");
+        assert_timing_milliseconds_in_band(MAX_TIMING_MILLISECONDS, "interval");
+    }
+
+    #[test]
+    #[should_panic(expected = "interval below minimum 1ms")]
+    fn timing_band_rejects_zero() {
+        assert_timing_milliseconds_in_band(0, "interval");
+    }
+
+    #[test]
+    #[should_panic(expected = "interval above maximum 86_400_000ms")]
+    fn timing_band_rejects_above_one_day() {
+        assert_timing_milliseconds_in_band(MAX_TIMING_MILLISECONDS + 1, "interval");
     }
 
     /// Flooring `normalized × accumulator / FIXED_POINT_ONE` before comparing
