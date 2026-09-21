@@ -654,4 +654,54 @@ mod stablecoin {
         ))
     }
 
+    /// Emergency kill switch (spec §10.17; host fn `stablecoin_program::freeze`).
+    /// Only the bound freeze authority may call it. Idempotent.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn freeze(
+        ctx: ProgramContext,
+        #[account(signer)]
+        freeze_authority: AccountWithMetadata,
+        #[account(mut)]
+        protocol_parameters: AccountWithMetadata,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::freeze::freeze(
+            freeze_authority,
+            protocol_parameters,
+            ctx.self_program_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
+    /// Resume normal operation (spec §10.18; host fn
+    /// `stablecoin_program::unfreeze`). Idempotent.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn unfreeze(
+        ctx: ProgramContext,
+        #[account(signer)]
+        freeze_authority: AccountWithMetadata,
+        #[account(mut)]
+        protocol_parameters: AccountWithMetadata,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::freeze::unfreeze(
+            freeze_authority,
+            protocol_parameters,
+            ctx.self_program_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
 }

@@ -17,6 +17,9 @@ pub mod close_position;
 /// Deposit additional collateral into an existing position.
 pub mod deposit_collateral;
 
+/// Emergency kill switch: `freeze` / `unfreeze` the risk-increasing instructions.
+pub mod freeze;
+
 /// Mint stablecoins against a position, increasing its debt.
 pub mod generate_debt;
 

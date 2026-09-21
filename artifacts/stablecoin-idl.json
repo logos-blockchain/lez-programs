@@ -693,6 +693,42 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "freeze",
+      "accounts": [
+        {
+          "name": "freeze_authority",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "unfreeze",
+      "accounts": [
+        {
+          "name": "freeze_authority",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [
