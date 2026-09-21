@@ -229,6 +229,22 @@ pub enum Instruction {
     ///    balance.
     /// 4. `protocol_parameters` — initialized, read-only; at its canonical PDA.
     ClosePosition,
+    /// Retune the stability fee (spec §10.10).
+    ///
+    /// Accrues the fee accumulator forward at the **old** rate first, so the new
+    /// rate applies only from `now` onward and never retroactively to the elapsed
+    /// gap. That is why this is the only setter taking the accumulator and clock.
+    ///
+    /// Required accounts (4), in order:
+    /// 1. `admin` — authorized; must equal `ProtocolParameters.admin_account_id`.
+    /// 2. `protocol_parameters` — initialized, writable; at its canonical PDA.
+    /// 3. `stability_fee_accumulator` — initialized, writable; at its canonical PDA.
+    /// 4. `clock` — the system `CLOCK_01` account; read-only.
+    SetStabilityFeePerMillisecond {
+        /// New per-millisecond fee multiplier. Must sit in the §8 band
+        /// `FIXED_POINT_ONE ..= 2 * FIXED_POINT_ONE`.
+        new_rate: u128,
+    },
     /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
     ///
     /// Blocked while the protocol is frozen. The §6.2 collateralization
@@ -504,6 +520,17 @@ mod instruction_tests {
         let json = serde_json::to_string(&Instruction::UpdateRedemptionRate).expect("serialize");
         let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
         assert!(matches!(decoded, Instruction::UpdateRedemptionRate));
+    }
+
+    #[test]
+    fn set_stability_fee_per_millisecond_json_roundtrip() {
+        let instruction = Instruction::SetStabilityFeePerMillisecond { new_rate: 7 };
+        let json = serde_json::to_string(&instruction).expect("serialize");
+        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(
+            decoded,
+            Instruction::SetStabilityFeePerMillisecond { new_rate: 7 }
+        ));
     }
 
     #[test]

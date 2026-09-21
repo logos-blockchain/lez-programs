@@ -511,6 +511,41 @@
           "type": "u128"
         }
       ]
+    },
+    {
+      "name": "set_stability_fee_per_millisecond",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "new_rate",
+          "type": "u128"
+        }
+      ]
     }
   ],
   "accounts": [

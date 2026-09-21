@@ -8,6 +8,9 @@ pub mod accrue_stability_fee;
 /// Shared validation helpers reused across the position-lifecycle instructions.
 pub mod checks;
 
+/// Admin parameter updates.
+pub mod admin;
+
 /// Clear a fully-settled position's data. The PDA itself cannot be released.
 pub mod close_position;
 
