@@ -454,4 +454,41 @@ mod stablecoin {
             chained_calls,
         ))
     }
+    /// Retune the stability fee (spec §10.10; host fn
+    /// `stablecoin_program::admin::set_stability_fee_per_millisecond`).
+    ///
+    /// Auto-accrues at the OLD rate before writing the new one, so the change is
+    /// never retroactive. Wall-clock time comes from the system `CLOCK_01`
+    /// account passed as the 4th input.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn set_stability_fee_per_millisecond(
+        ctx: ProgramContext,
+        #[account(signer)]
+        admin: AccountWithMetadata,
+        #[account(mut)]
+        protocol_parameters: AccountWithMetadata,
+        #[account(mut)]
+        stability_fee_accumulator: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        new_rate: u128,
+    ) -> SpelResult {
+        let (post_states, chained_calls) =
+            stablecoin_program::admin::set_stability_fee_per_millisecond(
+                admin,
+                protocol_parameters,
+                stability_fee_accumulator,
+                clock,
+                ctx.self_program_id,
+                new_rate,
+            );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
 }
