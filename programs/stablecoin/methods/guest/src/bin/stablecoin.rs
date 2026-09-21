@@ -491,4 +491,167 @@ mod stablecoin {
         ))
     }
 
+    /// Retune the minimum collateralization ratio (spec §10.11).
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn set_minimum_collateralization_ratio(
+        ctx: ProgramContext,
+        #[account(signer)]
+        admin: AccountWithMetadata,
+        #[account(mut)]
+        protocol_parameters: AccountWithMetadata,
+        new_ratio: u128,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::admin::set_minimum_collateralization_ratio(
+            admin,
+            protocol_parameters,
+            ctx.self_program_id,
+            new_ratio,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
+    /// Retune both PI controller gains (spec §10.12).
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn set_controller_gains(
+        ctx: ProgramContext,
+        #[account(signer)]
+        admin: AccountWithMetadata,
+        #[account(mut)]
+        protocol_parameters: AccountWithMetadata,
+        new_proportional_gain: i128,
+        new_integral_gain: i128,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::admin::set_controller_gains(
+            admin,
+            protocol_parameters,
+            ctx.self_program_id,
+            new_proportional_gain,
+            new_integral_gain,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
+    /// Retune both timing parameters (spec §10.14).
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn set_timing_parameters(
+        ctx: ProgramContext,
+        #[account(signer)]
+        admin: AccountWithMetadata,
+        #[account(mut)]
+        protocol_parameters: AccountWithMetadata,
+        new_minimum_milliseconds_between_rate_updates: u64,
+        new_maximum_oracle_price_age_milliseconds: u64,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::admin::set_timing_parameters(
+            admin,
+            protocol_parameters,
+            ctx.self_program_id,
+            new_minimum_milliseconds_between_rate_updates,
+            new_maximum_oracle_price_age_milliseconds,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
+    /// Rotate the admin handle (spec §10.15). One-step, effective immediately.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn set_admin(
+        ctx: ProgramContext,
+        #[account(signer)]
+        admin: AccountWithMetadata,
+        #[account(mut)]
+        protocol_parameters: AccountWithMetadata,
+        new_admin_account_id: nssa_core::account::AccountId,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::admin::set_admin(
+            admin,
+            protocol_parameters,
+            ctx.self_program_id,
+            new_admin_account_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
+    /// Rotate the freeze-authority handle (spec §10.16). Admin-only.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn set_freeze_authority(
+        ctx: ProgramContext,
+        #[account(signer)]
+        admin: AccountWithMetadata,
+        #[account(mut)]
+        protocol_parameters: AccountWithMetadata,
+        new_freeze_authority_account_id: nssa_core::account::AccountId,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::admin::set_freeze_authority(
+            admin,
+            protocol_parameters,
+            ctx.self_program_id,
+            new_freeze_authority_account_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
+    /// Rotate the market-price oracle (spec §10.13).
+    ///
+    /// Validates the replacement's shape and base/quote pair; its `program_owner`
+    /// is deliberately not pinned.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn set_market_price_oracle(
+        ctx: ProgramContext,
+        #[account(signer)]
+        admin: AccountWithMetadata,
+        #[account(mut)]
+        protocol_parameters: AccountWithMetadata,
+        new_oracle: AccountWithMetadata,
+    ) -> SpelResult {
+        let (post_states, chained_calls) = stablecoin_program::admin::set_market_price_oracle(
+            admin,
+            protocol_parameters,
+            new_oracle,
+            ctx.self_program_id,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
+
 }

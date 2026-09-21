@@ -546,6 +546,153 @@
           "type": "u128"
         }
       ]
+    },
+    {
+      "name": "set_minimum_collateralization_ratio",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "new_ratio",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "set_controller_gains",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "new_proportional_gain",
+          "type": "i128"
+        },
+        {
+          "name": "new_integral_gain",
+          "type": "i128"
+        }
+      ]
+    },
+    {
+      "name": "set_timing_parameters",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "new_minimum_milliseconds_between_rate_updates",
+          "type": "u64"
+        },
+        {
+          "name": "new_maximum_oracle_price_age_milliseconds",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_admin",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin_account_id",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
+      "name": "set_freeze_authority",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "new_freeze_authority_account_id",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
+      "name": "set_market_price_oracle",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "new_oracle",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [

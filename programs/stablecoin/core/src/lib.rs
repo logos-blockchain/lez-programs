@@ -229,6 +229,67 @@ pub enum Instruction {
     ///    balance.
     /// 4. `protocol_parameters` — initialized, read-only; at its canonical PDA.
     ClosePosition,
+    /// Retune the minimum collateralization ratio (spec §10.11).
+    ///
+    /// Tightening leaves existing positions retroactively under-collateralized:
+    /// they can still deposit or repay to recover, but cannot withdraw or borrow
+    /// until back above the ratio.
+    ///
+    /// Required accounts (2): `admin` (authorized, must equal
+    /// `ProtocolParameters.admin_account_id`) and `protocol_parameters`
+    /// (initialized, writable, at its canonical PDA).
+    SetMinimumCollateralizationRatio {
+        /// §8 band: `1.1 * FIXED_POINT_ONE ..= 10 * FIXED_POINT_ONE`.
+        new_ratio: u128,
+    },
+    /// Retune both PI controller gains (spec §10.12). Bundled, and deliberately
+    /// does not reset the controller's integral term.
+    ///
+    /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
+    SetControllerGains {
+        /// §8 magnitude cap: `|x| <= 10^3 * FIXED_POINT_ONE`.
+        new_proportional_gain: i128,
+        /// §8 magnitude cap: `|x| <= FIXED_POINT_ONE`.
+        new_integral_gain: i128,
+    },
+    /// Rotate the market-price oracle (spec §10.13).
+    ///
+    /// Validates the replacement's shape and base/quote pair against the
+    /// definitions bound at bootstrap. Its `program_owner` is deliberately not
+    /// pinned, so any producer emitting a well-formed `OraclePriceAccount` works.
+    ///
+    /// Required accounts (3), in order: `admin`, `protocol_parameters` (writable),
+    /// and `new_oracle` (initialized, read-only).
+    SetMarketPriceOracle,
+    /// Retune both timing parameters (spec §10.14). Bundled.
+    ///
+    /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
+    SetTimingParameters {
+        /// §8 band: `1 ..= 86_400_000` milliseconds.
+        new_minimum_milliseconds_between_rate_updates: u64,
+        /// §8 band: `1 ..= 86_400_000` milliseconds.
+        new_maximum_oracle_price_age_milliseconds: u64,
+    },
+    /// Rotate the admin handle (spec §10.15).
+    ///
+    /// One-step and effective immediately, since every admin check reads the
+    /// stored handle. A wrong id locks the admin out permanently.
+    ///
+    /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
+    SetAdmin {
+        /// The account that will hold admin rights from this instruction onward.
+        new_admin_account_id: AccountId,
+    },
+    /// Rotate the freeze-authority handle (spec §10.16).
+    ///
+    /// Set by the **admin**, not by the freeze authority, so a compromised freeze
+    /// authority cannot entrench itself.
+    ///
+    /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
+    SetFreezeAuthority {
+        /// The account that will hold freeze rights from this instruction onward.
+        new_freeze_authority_account_id: AccountId,
+    },
     /// Retune the stability fee (spec §10.10).
     ///
     /// Accrues the fee accumulator forward at the **old** rate first, so the new
@@ -520,6 +581,36 @@ mod instruction_tests {
         let json = serde_json::to_string(&Instruction::UpdateRedemptionRate).expect("serialize");
         let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
         assert!(matches!(decoded, Instruction::UpdateRedemptionRate));
+    }
+
+    #[test]
+    fn admin_setter_json_roundtrips() {
+        for instruction in [
+            Instruction::SetMinimumCollateralizationRatio { new_ratio: 3 },
+            Instruction::SetControllerGains {
+                new_proportional_gain: -1,
+                new_integral_gain: 2,
+            },
+            Instruction::SetMarketPriceOracle,
+            Instruction::SetTimingParameters {
+                new_minimum_milliseconds_between_rate_updates: 4,
+                new_maximum_oracle_price_age_milliseconds: 5,
+            },
+            Instruction::SetAdmin {
+                new_admin_account_id: AccountId::new([1u8; 32]),
+            },
+            Instruction::SetFreezeAuthority {
+                new_freeze_authority_account_id: AccountId::new([2u8; 32]),
+            },
+        ] {
+            let json = serde_json::to_string(&instruction).expect("serialize");
+            let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(
+                serde_json::to_string(&decoded).expect("re-serialize"),
+                json,
+                "round-trip must preserve the instruction"
+            );
+        }
     }
 
     #[test]

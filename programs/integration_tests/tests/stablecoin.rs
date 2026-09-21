@@ -91,6 +91,10 @@ impl Keys {
     fn admin() -> PrivateKey {
         PrivateKey::try_new([44; 32]).expect("valid private key")
     }
+
+    fn freeze_authority() -> PrivateKey {
+        PrivateKey::try_new([45; 32]).expect("valid private key")
+    }
 }
 
 impl Ids {
@@ -145,7 +149,7 @@ impl Ids {
     }
 
     fn freeze_authority() -> AccountId {
-        AccountId::new([0xFE; 32])
+        AccountId::from(&PublicKey::new_from_private_key(&Keys::freeze_authority()))
     }
 
     fn oracle() -> AccountId {
@@ -2045,6 +2049,20 @@ fn submit(
     instruction: stablecoin_core::Instruction,
     label: &str,
 ) {
+    try_submit(state, block, now, accounts, signers, instruction)
+        .unwrap_or_else(|e| panic!("{label} must succeed: {e:?}"));
+}
+
+/// Like [`submit`], but hands the outcome back so a test can assert that an
+/// instruction is *rejected* — and why. `block` advances only on success.
+fn try_submit(
+    state: &mut V03State,
+    block: &mut u64,
+    now: u64,
+    accounts: Vec<AccountId>,
+    signers: Vec<(&PrivateKey, AccountId)>,
+    instruction: stablecoin_core::Instruction,
+) -> Result<(), LeeError> {
     seed_clock(state, now);
     let nonces = signers
         .iter()
@@ -2057,13 +2075,31 @@ fn submit(
         nonces,
         instruction,
     )
-    .expect("valid lifecycle message");
+    .expect("valid message");
     let witness_set = public_transaction::WitnessSet::for_message(&message, &keys);
     let tx = PublicTransaction::new(message, witness_set);
-    state
-        .transition_from_public_transaction(&tx, *block, now)
-        .unwrap_or_else(|e| panic!("{label} must succeed: {e:?}"));
+    state.transition_from_public_transaction(&tx, *block, now)?;
     *block = block.saturating_add(1);
+    Ok(())
+}
+
+/// Asserts a rejected transition failed inside the guest with `message`.
+fn assert_rejected_with(result: Result<(), LeeError>, message: &str, label: &str) {
+    let err = result.expect_err(&format!("{label} must be rejected"));
+    let text = format!("{err:?}");
+    assert!(
+        text.contains(message),
+        "{label}: expected rejection containing {message:?}, got {text}"
+    );
+}
+
+fn read_parameters(state: &V03State) -> stablecoin_core::ProtocolParameters {
+    stablecoin_core::ProtocolParameters::try_from(
+        &state
+            .get_account_by_id(compute_protocol_parameters_pda(Ids::stablecoin_program()))
+            .data,
+    )
+    .expect("valid ProtocolParameters")
 }
 
 fn read_total_supply(state: &V03State, definition_id: AccountId) -> u128 {
@@ -2073,6 +2109,187 @@ fn read_total_supply(state: &V03State, definition_id: AccountId) -> u128 {
         TokenDefinition::Fungible { total_supply, .. } => total_supply,
         TokenDefinition::NonFungible { .. } => panic!("expected a fungible definition"),
     }
+}
+
+/// Spec §10.10–10.16: the admin retunes parameters, then rotates the role away.
+///
+/// The rotation is the part worth proving end to end: it is one-step and
+/// effective immediately, so the previous admin must be locked out on the very
+/// next instruction.
+#[test]
+fn stablecoin_admin_retunes_parameters_then_rotates_the_role() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let start: u64 = 1_700_000_000_000;
+    let mut state = initialize_protocol(start, 0);
+    state.force_insert_account(
+        Ids::freeze_authority(),
+        Account {
+            program_owner: [7u32; 8],
+            ..Account::default()
+        },
+    );
+    let mut block = 1u64;
+    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    let accumulator_pda = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
+    let admin = (&Keys::admin(), Ids::admin());
+
+    // A fee change auto-accrues the elapsed gap at the OLD rate first.
+    let one_hour_later = start + 3_600_000;
+    let new_rate = FIXED_POINT_ONE + 2_000_000_000_000_000;
+    submit(
+        &mut state,
+        &mut block,
+        one_hour_later,
+        vec![
+            Ids::admin(),
+            params_pda,
+            accumulator_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![admin],
+        stablecoin_core::Instruction::SetStabilityFeePerMillisecond { new_rate },
+        "set_stability_fee_per_millisecond",
+    );
+    assert_eq!(
+        read_parameters(&state).stability_fee_per_millisecond,
+        new_rate
+    );
+    let accrued = read_accumulator(&state);
+    assert!(
+        accrued.accumulated_rate_at_last_accrual > FIXED_POINT_ONE,
+        "the elapsed hour must have accrued before the rate changed"
+    );
+    assert_eq!(accrued.last_accrued_at, one_hour_later);
+
+    // The bundled setters.
+    let new_ratio = FIXED_POINT_ONE * 2;
+    submit(
+        &mut state,
+        &mut block,
+        one_hour_later,
+        vec![Ids::admin(), params_pda],
+        vec![admin],
+        stablecoin_core::Instruction::SetMinimumCollateralizationRatio { new_ratio },
+        "set_minimum_collateralization_ratio",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        one_hour_later,
+        vec![Ids::admin(), params_pda],
+        vec![admin],
+        stablecoin_core::Instruction::SetControllerGains {
+            new_proportional_gain: -7,
+            new_integral_gain: 11,
+        },
+        "set_controller_gains",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        one_hour_later,
+        vec![Ids::admin(), params_pda],
+        vec![admin],
+        stablecoin_core::Instruction::SetTimingParameters {
+            new_minimum_milliseconds_between_rate_updates: 1_000,
+            new_maximum_oracle_price_age_milliseconds: 2_000,
+        },
+        "set_timing_parameters",
+    );
+    let after_tuning = read_parameters(&state);
+    assert_eq!(after_tuning.minimum_collateralization_ratio, new_ratio);
+    assert_eq!(after_tuning.controller_proportional_gain, -7);
+    assert_eq!(after_tuning.controller_integral_gain, 11);
+    assert_eq!(
+        after_tuning.minimum_milliseconds_between_rate_updates,
+        1_000
+    );
+    assert_eq!(after_tuning.maximum_oracle_price_age_milliseconds, 2_000);
+
+    // Out-of-band values are refused by the same §8 bands bootstrap enforces.
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            one_hour_later,
+            vec![Ids::admin(), params_pda],
+            vec![admin],
+            stablecoin_core::Instruction::SetMinimumCollateralizationRatio {
+                new_ratio: FIXED_POINT_ONE,
+            },
+        ),
+        "new_minimum_collateralization_ratio below 1.1x",
+        "set_minimum_collateralization_ratio below the band",
+    );
+
+    // The freeze authority is the admin's to set, not its own.
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            one_hour_later,
+            vec![Ids::freeze_authority(), params_pda],
+            vec![(&Keys::freeze_authority(), Ids::freeze_authority())],
+            stablecoin_core::Instruction::SetFreezeAuthority {
+                new_freeze_authority_account_id: Ids::freeze_authority(),
+            },
+        ),
+        "Signer is not the protocol's admin",
+        "set_freeze_authority by the freeze authority",
+    );
+
+    // Rotate the admin to the owner's handle, then confirm the old admin is out.
+    submit(
+        &mut state,
+        &mut block,
+        one_hour_later,
+        vec![Ids::admin(), params_pda],
+        vec![admin],
+        stablecoin_core::Instruction::SetAdmin {
+            new_admin_account_id: Ids::owner(),
+        },
+        "set_admin",
+    );
+    assert_eq!(read_parameters(&state).admin_account_id, Ids::owner());
+
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            one_hour_later,
+            vec![Ids::admin(), params_pda],
+            vec![admin],
+            stablecoin_core::Instruction::SetControllerGains {
+                new_proportional_gain: 0,
+                new_integral_gain: 0,
+            },
+        ),
+        "Signer is not the protocol's admin",
+        "the rotated-out admin",
+    );
+
+    // And the new admin can act immediately.
+    state.force_insert_account(
+        Ids::owner(),
+        Account {
+            program_owner: [7u32; 8],
+            ..Account::default()
+        },
+    );
+    submit(
+        &mut state,
+        &mut block,
+        one_hour_later,
+        vec![Ids::owner(), params_pda],
+        vec![(&Keys::owner(), Ids::owner())],
+        stablecoin_core::Instruction::SetControllerGains {
+            new_proportional_gain: 3,
+            new_integral_gain: 4,
+        },
+        "set_controller_gains by the new admin",
+    );
+    assert_eq!(read_parameters(&state).controller_proportional_gain, 3);
 }
 
 fn read_position(state: &V03State) -> Position {
