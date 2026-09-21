@@ -5,7 +5,7 @@ use lee_core::{
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
     compute_stability_fee_accumulator_pda,
-    math::{compute_current_accumulated_rate, compute_current_redemption_price},
+    math::{compute_current_accumulated_rate_wide, compute_current_redemption_price_wide},
     verify_position_and_get_seed, verify_position_vault_and_get_seed, Position, ProtocolParameters,
     RedemptionPriceState, StabilityFeeAccumulator,
 };
@@ -21,8 +21,10 @@ use token_core::TokenHolding;
 ///
 /// Blocked while the protocol is frozen. After the decrement, the §6.2
 /// collateralization invariant is checked against debt and redemption price both
-/// projected forward to the clock timestamp (§5.3) — unless the position carries
-/// no debt, in which case the projections are skipped entirely.
+/// projected forward to the clock timestamp (§5.3) — unless `amount` is zero or
+/// the position carries no debt, in which case the projections are skipped
+/// entirely. A zero-amount withdrawal is a valid no-op (§11) and leaves the
+/// position untouched, so there is nothing for the check to re-examine.
 ///
 /// # Panics
 /// - `owner` is not authorized.
@@ -168,12 +170,13 @@ pub fn withdraw_collateral(
     // Spec §6.2 is enforced *after* the decrement, against debt and redemption
     // price both projected forward to `now` (§5.3).
     //
-    // The zero-debt case is short-circuited *before* projecting, not inside the
-    // check: a rate the controller can legitimately produce overflows `u128`
-    // when projected across a few million milliseconds, and evaluating that as
-    // an argument would panic a withdrawal that needs no check at all.
-    if updated_position.normalized_debt_amount != 0 {
-        let current_redemption_price = compute_current_redemption_price(
+    // Two cases skip the check, and with it the projections. `amount == 0` is a
+    // valid no-op (§11): collateral and debt are unchanged, so re-running the
+    // check could only reject a position the call did not touch. A position
+    // with no debt has nothing to collateralize. Projecting is `O(log Δt)`
+    // `U512` multiplications, so skipping is worth it on its own in the guest.
+    if amount != 0 && updated_position.normalized_debt_amount != 0 {
+        let current_redemption_price = compute_current_redemption_price_wide(
             redemption.redemption_price_at_last_update,
             redemption.redemption_rate_per_millisecond,
             redemption.last_updated_at,
@@ -183,12 +186,12 @@ pub fn withdraw_collateral(
         // reach zero over a long enough gap. Zero would zero out the required
         // collateral and let an indebted position be drained completely.
         assert!(
-            current_redemption_price != 0,
+            !current_redemption_price.is_zero(),
             "Redemption price projected to zero"
         );
         crate::checks::assert_position_is_collateralized(
             &updated_position,
-            compute_current_accumulated_rate(
+            compute_current_accumulated_rate_wide(
                 accumulator.accumulated_rate_at_last_accrual,
                 parameters.stability_fee_per_millisecond,
                 accumulator.last_accrued_at,

@@ -72,6 +72,16 @@ fn protocol_parameters_account(is_frozen: bool) -> AccountWithMetadata {
     protocol_parameters_account_for(collateral_definition_id(), is_frozen)
 }
 
+/// The default fixture pins a 1.5x ratio; the projection tests need 1.1x.
+fn protocol_parameters_account_with_ratio(ratio: u128) -> AccountWithMetadata {
+    let mut account = protocol_parameters_account(false);
+    let mut parameters =
+        ProtocolParameters::try_from(&account.account.data).expect("valid ProtocolParameters");
+    parameters.minimum_collateralization_ratio = ratio;
+    account.account.data = Data::from(&parameters);
+    account
+}
+
 fn protocol_parameters_account_for(
     collateral_definition_id: AccountId,
     is_frozen: bool,
@@ -1063,6 +1073,85 @@ fn withdraw_collateral_rejects_a_redemption_price_that_projects_to_zero() {
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
         500_000,
+    );
+}
+
+/// Spec §11: `withdraw_collateral(0)` is a no-op. An indebted position must
+/// reach that no-op too — nothing about the position changes, so there is
+/// nothing to re-check. The rate below decays the projected price to zero,
+/// which the check rejects, so projecting at all would fail the call.
+#[test]
+fn withdraw_collateral_of_zero_is_a_no_op_for_an_indebted_position() {
+    let elapsed = 7_000_000;
+    let (post_states, chained_calls) = crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        init_position_account(500_000, 300),
+        init_vault_account(),
+        destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        redemption_state_with(
+            FIXED_POINT_ONE - stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
+            NOW - elapsed,
+        ),
+        protocol_parameters_account(false),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        0,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.collateral_amount, 500_000);
+    assert_eq!(position.normalized_debt_amount, 300);
+    assert_eq!(chained_calls.len(), 1);
+}
+
+/// A rate one clamp above 1.0 projects the price past `u128` in 2_700_000 ms.
+/// The position below is comfortably collateralized against that price — about
+/// 585_174_061_358 required against 900_000_000_000 left — so the withdrawal
+/// must compare and succeed rather than overflow on the way to the comparison.
+#[test]
+fn withdraw_collateral_succeeds_when_the_projected_price_exceeds_u128() {
+    let elapsed = 2_700_000;
+    let (post_states, _) = crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        init_position_account(1_000_000_000_000, 1),
+        init_vault_account(),
+        destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        redemption_state_with(
+            FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
+            NOW - elapsed,
+        ),
+        protocol_parameters_account_with_ratio(FIXED_POINT_ONE * 11 / 10),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        100_000_000_000,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.collateral_amount, 900_000_000_000);
+}
+
+/// The same projection against a position that cannot cover it: 999 collateral
+/// left against debt 1 fails the comparison rather than panicking before it.
+#[test]
+#[should_panic(expected = "Position is undercollateralized")]
+fn withdraw_collateral_rejects_when_the_projected_price_exceeds_the_collateral() {
+    let elapsed = 2_700_000;
+    crate::withdraw_collateral::withdraw_collateral(
+        owner_account(),
+        init_position_account(1_000, 1),
+        init_vault_account(),
+        destination_holding_account(),
+        crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
+        redemption_state_with(
+            FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
+            NOW - elapsed,
+        ),
+        protocol_parameters_account_with_ratio(FIXED_POINT_ONE * 11 / 10),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        1,
     );
 }
 
