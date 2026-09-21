@@ -1755,18 +1755,19 @@ fn submit_poke(
     state.transition_from_public_transaction(&tx, block_id, now)
 }
 
-/// Full position lifecycle through the zkVM against a really-bootstrapped
-/// protocol: open → deposit → borrow → accrue → repay → withdraw → close.
-///
-/// This is "Mode A" — Plan 2 has shipped, so `accrue_stability_fee` runs between
-/// borrowing and repaying and the §6.3 rounding is exercised at a non-trivial
-/// accumulator rather than at exactly 1.0.
-#[test]
-fn stablecoin_full_position_lifecycle() {
-    use stablecoin_core::math::{compute_current_accumulated_rate, mul_div_ceil, FIXED_POINT_ONE};
-
-    let start: u64 = 1_700_000_000_000;
+/// A really-bootstrapped protocol plus everything a position owner needs: a
+/// non-default-owned owner and freeze authority, a funded collateral holding, a
+/// fresh oracle observation, and a market-acquired stablecoin buffer (credited
+/// to `total_supply` so the books stay consistent).
+fn bootstrapped_owner_state(start: u64) -> V03State {
     let mut state = initialize_protocol(start, 0);
+    state.force_insert_account(
+        Ids::freeze_authority(),
+        Account {
+            program_owner: [7u32; 8],
+            ..Account::default()
+        },
+    );
 
     // The owner, their collateral, and a market-acquired stablecoin balance. The
     // buffer matters: stability fees mean repaying the debt costs more stablecoin
@@ -1816,7 +1817,9 @@ fn stablecoin_full_position_lifecycle() {
         } => {
             definition.data = Data::from(&TokenDefinition::Fungible {
                 name,
-                total_supply: total_supply + LIFECYCLE_STABLECOIN_BUFFER,
+                total_supply: total_supply
+                    .checked_add(LIFECYCLE_STABLECOIN_BUFFER)
+                    .expect("seeded supply fits"),
                 metadata_id,
                 authority,
             });
@@ -1824,6 +1827,22 @@ fn stablecoin_full_position_lifecycle() {
         TokenDefinition::NonFungible { .. } => panic!("stablecoin definition must be fungible"),
     }
     state.force_insert_account(Ids::stablecoin_definition_pda(), definition);
+
+    state
+}
+
+/// Full position lifecycle through the zkVM against a really-bootstrapped
+/// protocol: open → deposit → borrow → accrue → repay → withdraw → close.
+///
+/// This is "Mode A" — Plan 2 has shipped, so `accrue_stability_fee` runs between
+/// borrowing and repaying and the §6.3 rounding is exercised at a non-trivial
+/// accumulator rather than at exactly 1.0.
+#[test]
+fn stablecoin_full_position_lifecycle() {
+    use stablecoin_core::math::{compute_current_accumulated_rate, mul_div_ceil, FIXED_POINT_ONE};
+
+    let start: u64 = 1_700_000_000_000;
+    let mut state = bootstrapped_owner_state(start);
 
     let mut block = 1u64;
 
@@ -2093,15 +2112,6 @@ fn assert_rejected_with(result: Result<(), LeeError>, message: &str, label: &str
     );
 }
 
-fn read_parameters(state: &V03State) -> stablecoin_core::ProtocolParameters {
-    stablecoin_core::ProtocolParameters::try_from(
-        &state
-            .get_account_by_id(compute_protocol_parameters_pda(Ids::stablecoin_program()))
-            .data,
-    )
-    .expect("valid ProtocolParameters")
-}
-
 fn read_total_supply(state: &V03State, definition_id: AccountId) -> u128 {
     let definition = TokenDefinition::try_from(&state.get_account_by_id(definition_id).data)
         .expect("valid TokenDefinition");
@@ -2290,6 +2300,347 @@ fn stablecoin_admin_retunes_parameters_then_rotates_the_role() {
         "set_controller_gains by the new admin",
     );
     assert_eq!(read_parameters(&state).controller_proportional_gain, 3);
+}
+
+/// Spec §16.2: the freeze authority halts the risk-increasing instructions.
+/// Everything that reduces risk — plus the permissionless pokes — keeps working.
+#[test]
+fn stablecoin_freeze_blocks_risky_ops() {
+    let start: u64 = 1_700_000_000_000;
+    let mut state = bootstrapped_owner_state(start);
+    let mut block = 1u64;
+    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    let accumulator_pda = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
+    let redemption_pda = compute_redemption_price_state_pda(Ids::stablecoin_program());
+    let owner = (&Keys::owner(), Ids::owner());
+    let user_holding = (&Keys::user_holding(), Ids::user_holding());
+    let freeze_authority = (&Keys::freeze_authority(), Ids::freeze_authority());
+
+    // Normal operation: open, then borrow so the frozen-path assertions below
+    // exercise a position that actually carries debt.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            Ids::collateral_definition(),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![owner, user_holding],
+        stablecoin_core::Instruction::OpenPosition {
+            position_nonce: Ids::position_nonce(),
+            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
+        },
+        "open_position",
+    );
+    let generate_debt_accounts = vec![
+        Ids::owner(),
+        Ids::position(),
+        Ids::stablecoin_definition_pda(),
+        Ids::user_stablecoin_holding(),
+        accumulator_pda,
+        redemption_pda,
+        Ids::oracle(),
+        params_pda,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    ];
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        generate_debt_accounts.clone(),
+        vec![owner],
+        stablecoin_core::Instruction::GenerateDebt {
+            amount: LIFECYCLE_BORROW,
+        },
+        "generate_debt before the freeze",
+    );
+
+    // Only the bound freeze authority may freeze — the admin is not it.
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            vec![Ids::admin(), params_pda],
+            vec![(&Keys::admin(), Ids::admin())],
+            stablecoin_core::Instruction::Freeze,
+        ),
+        "Signer is not the protocol's freeze authority",
+        "freeze by the admin",
+    );
+
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![Ids::freeze_authority(), params_pda],
+        vec![freeze_authority],
+        stablecoin_core::Instruction::Freeze,
+        "freeze",
+    );
+    assert!(read_parameters(&state).is_frozen);
+
+    // Blocked: the three risk-increasing instructions.
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            generate_debt_accounts.clone(),
+            vec![owner],
+            stablecoin_core::Instruction::GenerateDebt { amount: 1 },
+        ),
+        "Protocol is frozen",
+        "generate_debt while frozen",
+    );
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            vec![
+                Ids::owner(),
+                Ids::position(),
+                Ids::vault(),
+                Ids::user_holding(),
+                accumulator_pda,
+                redemption_pda,
+                params_pda,
+                CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ],
+            vec![owner],
+            stablecoin_core::Instruction::WithdrawCollateral { amount: 1 },
+        ),
+        "Protocol is frozen",
+        "withdraw_collateral while frozen",
+    );
+    let second_nonce = Ids::position_nonce() + 1;
+    let second_position =
+        compute_position_pda(Ids::stablecoin_program(), Ids::owner(), second_nonce);
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            vec![
+                Ids::owner(),
+                second_position,
+                compute_position_vault_pda(Ids::stablecoin_program(), second_position),
+                Ids::user_holding(),
+                Ids::collateral_definition(),
+                params_pda,
+                CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ],
+            vec![owner, user_holding],
+            stablecoin_core::Instruction::OpenPosition {
+                position_nonce: second_nonce,
+                initial_collateral_amount: 1,
+            },
+        ),
+        "Protocol is frozen",
+        "open_position while frozen",
+    );
+
+    // Still allowed: everything that reduces risk, and the pokes.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            params_pda,
+        ],
+        vec![owner, user_holding],
+        stablecoin_core::Instruction::DepositCollateral {
+            amount: LIFECYCLE_TOP_UP,
+        },
+        "deposit_collateral while frozen",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::stablecoin_definition_pda(),
+            Ids::user_stablecoin_holding(),
+            accumulator_pda,
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![
+            owner,
+            (
+                &Keys::user_stablecoin_holding(),
+                Ids::user_stablecoin_holding(),
+            ),
+        ],
+        stablecoin_core::Instruction::RepayDebt {
+            amount: LIFECYCLE_BORROW / 2,
+        },
+        "repay_debt while frozen",
+    );
+    submit_poke(
+        &mut state,
+        start + 60_000,
+        block,
+        stablecoin_core::Instruction::AccrueStabilityFee,
+        vec![params_pda, accumulator_pda, CLOCK_01_PROGRAM_ACCOUNT_ID],
+    )
+    .expect("accrue_stability_fee must work while frozen");
+    block += 1;
+
+    // Freezing twice is a successful no-op.
+    submit(
+        &mut state,
+        &mut block,
+        start + 60_000,
+        vec![Ids::freeze_authority(), params_pda],
+        vec![freeze_authority],
+        stablecoin_core::Instruction::Freeze,
+        "second freeze",
+    );
+    assert!(read_parameters(&state).is_frozen);
+    let position = read_position(&state);
+    assert_eq!(
+        position.collateral_amount,
+        LIFECYCLE_OPEN_COLLATERAL + LIFECYCLE_TOP_UP
+    );
+    assert_eq!(position.normalized_debt_amount, LIFECYCLE_BORROW / 2);
+}
+
+/// Spec §10.18: `unfreeze` restores the blocked instructions, and is idempotent.
+#[test]
+fn stablecoin_unfreeze_resumes_normal_operation() {
+    let start: u64 = 1_700_000_000_000;
+    let mut state = bootstrapped_owner_state(start);
+    let mut block = 1u64;
+    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    let owner = (&Keys::owner(), Ids::owner());
+    let freeze_authority = (&Keys::freeze_authority(), Ids::freeze_authority());
+
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            Ids::collateral_definition(),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![owner, (&Keys::user_holding(), Ids::user_holding())],
+        stablecoin_core::Instruction::OpenPosition {
+            position_nonce: Ids::position_nonce(),
+            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
+        },
+        "open_position",
+    );
+    let withdraw_accounts = vec![
+        Ids::owner(),
+        Ids::position(),
+        Ids::vault(),
+        Ids::user_holding(),
+        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+        compute_redemption_price_state_pda(Ids::stablecoin_program()),
+        params_pda,
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    ];
+
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![Ids::freeze_authority(), params_pda],
+        vec![freeze_authority],
+        stablecoin_core::Instruction::Freeze,
+        "freeze",
+    );
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            withdraw_accounts.clone(),
+            vec![owner],
+            stablecoin_core::Instruction::WithdrawCollateral { amount: 1 },
+        ),
+        "Protocol is frozen",
+        "withdraw_collateral while frozen",
+    );
+
+    // The admin cannot lift a freeze either.
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            vec![Ids::admin(), params_pda],
+            vec![(&Keys::admin(), Ids::admin())],
+            stablecoin_core::Instruction::Unfreeze,
+        ),
+        "Signer is not the protocol's freeze authority",
+        "unfreeze by the admin",
+    );
+
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![Ids::freeze_authority(), params_pda],
+        vec![freeze_authority],
+        stablecoin_core::Instruction::Unfreeze,
+        "unfreeze",
+    );
+    assert!(!read_parameters(&state).is_frozen);
+
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        withdraw_accounts,
+        vec![owner],
+        stablecoin_core::Instruction::WithdrawCollateral { amount: 1 },
+        "withdraw_collateral after the unfreeze",
+    );
+    assert_eq!(
+        read_position(&state).collateral_amount,
+        LIFECYCLE_OPEN_COLLATERAL - 1
+    );
+
+    // Unfreezing twice is a successful no-op.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![Ids::freeze_authority(), params_pda],
+        vec![freeze_authority],
+        stablecoin_core::Instruction::Unfreeze,
+        "second unfreeze",
+    );
+    assert!(!read_parameters(&state).is_frozen);
+}
+
+fn read_parameters(state: &V03State) -> stablecoin_core::ProtocolParameters {
+    stablecoin_core::ProtocolParameters::try_from(
+        &state
+            .get_account_by_id(compute_protocol_parameters_pda(Ids::stablecoin_program()))
+            .data,
+    )
+    .expect("valid ProtocolParameters")
 }
 
 fn read_position(state: &V03State) -> Position {

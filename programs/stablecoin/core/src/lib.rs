@@ -306,6 +306,21 @@ pub enum Instruction {
         /// `FIXED_POINT_ONE ..= 2 * FIXED_POINT_ONE`.
         new_rate: u128,
     },
+    /// Emergency kill switch: halt the risk-increasing instructions (spec §10.17).
+    ///
+    /// Sets `ProtocolParameters.is_frozen`. While frozen, `OpenPosition`,
+    /// `WithdrawCollateral` and `GenerateDebt` panic; `DepositCollateral`,
+    /// `RepayDebt`, `ClosePosition` and the permissionless pokes keep working (§7).
+    /// Idempotent.
+    ///
+    /// Required accounts (2), in order:
+    /// 1. `freeze_authority` — authorized; must equal
+    ///    `ProtocolParameters.freeze_authority_account_id`.
+    /// 2. `protocol_parameters` — initialized, writable; at its canonical PDA.
+    Freeze,
+    /// Resume normal operation (spec §10.18): clears `ProtocolParameters.is_frozen`.
+    /// Idempotent. Same accounts and preconditions as [`Instruction::Freeze`].
+    Unfreeze,
     /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
     ///
     /// Blocked while the protocol is frozen. The §6.2 collateralization
@@ -622,6 +637,20 @@ mod instruction_tests {
             decoded,
             Instruction::SetStabilityFeePerMillisecond { new_rate: 7 }
         ));
+    }
+
+    #[test]
+    fn freeze_json_roundtrip() {
+        let json = serde_json::to_string(&Instruction::Freeze).expect("serialize");
+        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(decoded, Instruction::Freeze));
+    }
+
+    #[test]
+    fn unfreeze_json_roundtrip() {
+        let json = serde_json::to_string(&Instruction::Unfreeze).expect("serialize");
+        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(decoded, Instruction::Unfreeze));
     }
 
     #[test]

@@ -1563,6 +1563,168 @@ fn close_position_rejects_uninitialized_protocol_parameters() {
     );
 }
 
+// --- freeze / unfreeze (spec §10.17–10.18) ---
+
+fn freeze_authority_account() -> AccountWithMetadata {
+    AccountWithMetadata {
+        account: Account::default(),
+        is_authorized: true,
+        account_id: crate::test_support::freeze_authority_id(),
+    }
+}
+
+fn parameters_frozen(is_frozen: bool) -> AccountWithMetadata {
+    crate::test_support::protocol_parameters_account(crate::test_support::ParameterOverrides {
+        is_frozen,
+        ..Default::default()
+    })
+}
+
+fn decoded_parameters(post: &lee_core::program::AccountPostState) -> ProtocolParameters {
+    ProtocolParameters::try_from(&post.account().data).expect("valid ProtocolParameters")
+}
+
+#[test]
+fn freeze_sets_is_frozen_and_touches_nothing_else() {
+    let before = decoded_parameters(&lee_core::program::AccountPostState::new(
+        parameters_frozen(false).account,
+    ));
+    let (post_states, chained_calls) = crate::freeze::freeze(
+        freeze_authority_account(),
+        parameters_frozen(false),
+        STABLECOIN_PROGRAM_ID,
+    );
+
+    assert_eq!(post_states.len(), 2);
+    assert!(chained_calls.is_empty());
+    let after = decoded_parameters(&post_states[1]);
+    assert!(after.is_frozen);
+    assert_eq!(
+        ProtocolParameters {
+            is_frozen: false,
+            ..after
+        },
+        before,
+        "only is_frozen may change"
+    );
+    // The parameters account keeps its owner and nonce; only the data changes.
+    assert_eq!(
+        post_states[1].account().program_owner,
+        STABLECOIN_PROGRAM_ID
+    );
+}
+
+#[test]
+fn unfreeze_clears_is_frozen_and_touches_nothing_else() {
+    let before = decoded_parameters(&lee_core::program::AccountPostState::new(
+        parameters_frozen(true).account,
+    ));
+    let (post_states, chained_calls) = crate::freeze::unfreeze(
+        freeze_authority_account(),
+        parameters_frozen(true),
+        STABLECOIN_PROGRAM_ID,
+    );
+
+    assert_eq!(post_states.len(), 2);
+    assert!(chained_calls.is_empty());
+    let after = decoded_parameters(&post_states[1]);
+    assert!(!after.is_frozen);
+    assert_eq!(
+        ProtocolParameters {
+            is_frozen: true,
+            ..after
+        },
+        before
+    );
+}
+
+#[test]
+fn freeze_is_idempotent_when_already_frozen() {
+    let (post_states, _) = crate::freeze::freeze(
+        freeze_authority_account(),
+        parameters_frozen(true),
+        STABLECOIN_PROGRAM_ID,
+    );
+    assert!(decoded_parameters(&post_states[1]).is_frozen);
+}
+
+#[test]
+fn unfreeze_is_idempotent_when_already_unfrozen() {
+    let (post_states, _) = crate::freeze::unfreeze(
+        freeze_authority_account(),
+        parameters_frozen(false),
+        STABLECOIN_PROGRAM_ID,
+    );
+    assert!(!decoded_parameters(&post_states[1]).is_frozen);
+}
+
+#[test]
+#[should_panic(expected = "Freeze authority authorization is missing")]
+fn freeze_requires_the_authority_to_sign() {
+    let mut authority = freeze_authority_account();
+    authority.is_authorized = false;
+    crate::freeze::freeze(authority, parameters_frozen(false), STABLECOIN_PROGRAM_ID);
+}
+
+#[test]
+#[should_panic(expected = "Freeze authority authorization is missing")]
+fn unfreeze_requires_the_authority_to_sign() {
+    let mut authority = freeze_authority_account();
+    authority.is_authorized = false;
+    crate::freeze::unfreeze(authority, parameters_frozen(true), STABLECOIN_PROGRAM_ID);
+}
+
+#[test]
+#[should_panic(expected = "Signer is not the protocol's freeze authority")]
+fn freeze_rejects_a_signer_other_than_the_freeze_authority() {
+    // Authorized, but not the account bound at initialize_program — e.g. the admin.
+    let mut impostor = freeze_authority_account();
+    impostor.account_id = crate::test_support::admin_id();
+    crate::freeze::freeze(impostor, parameters_frozen(false), STABLECOIN_PROGRAM_ID);
+}
+
+#[test]
+#[should_panic(expected = "Signer is not the protocol's freeze authority")]
+fn unfreeze_rejects_a_signer_other_than_the_freeze_authority() {
+    let mut impostor = freeze_authority_account();
+    impostor.account_id = crate::test_support::admin_id();
+    crate::freeze::unfreeze(impostor, parameters_frozen(true), STABLECOIN_PROGRAM_ID);
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account must be initialized")]
+fn freeze_rejects_uninitialized_protocol_parameters() {
+    crate::freeze::freeze(
+        freeze_authority_account(),
+        crate::test_support::uninitialized(crate::test_support::protocol_parameters_id()),
+        STABLECOIN_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account ID does not match expected PDA derivation")]
+fn freeze_rejects_protocol_parameters_at_wrong_address() {
+    let mut parameters = parameters_frozen(false);
+    parameters.account_id = AccountId::new([0xC0u8; 32]);
+    crate::freeze::freeze(
+        freeze_authority_account(),
+        parameters,
+        STABLECOIN_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "ProtocolParameters account must be owned by the stablecoin program")]
+fn unfreeze_rejects_protocol_parameters_owned_by_another_program() {
+    let mut parameters = parameters_frozen(true);
+    parameters.account.program_owner = [9u32; 8];
+    crate::freeze::unfreeze(
+        freeze_authority_account(),
+        parameters,
+        STABLECOIN_PROGRAM_ID,
+    );
+}
+
 #[test]
 fn position_pda_is_deterministic_and_owner_and_nonce_specific() {
     let id_a = compute_position_pda(STABLECOIN_PROGRAM_ID, owner_id(), TEST_POSITION_NONCE);
