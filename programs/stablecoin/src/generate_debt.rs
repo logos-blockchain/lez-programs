@@ -1,7 +1,7 @@
 use alloy_primitives::U512;
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
@@ -56,9 +56,9 @@ pub fn generate_debt(
     market_price_oracle: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     clock: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     amount: u128,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(owner.is_authorized, "Owner authorization is missing");
 
     assert_ne!(
@@ -191,33 +191,33 @@ pub fn generate_debt(
         parameters.minimum_collateralization_ratio,
     );
 
-    let mut position_post = position.account.clone();
-    position_post.data = Data::from(&updated_position);
+    // Captured before the accounts move into the diffs -- the call names them by id.
+    let stablecoin_definition_id = stablecoin_definition.account_id;
+    let user_stablecoin_holding_id = user_stablecoin_holding.account_id;
 
-    let post_states = vec![
-        AccountPostState::new(owner.account),
-        AccountPostState::new(position_post),
-        AccountPostState::new(stablecoin_definition.account.clone()),
-        AccountPostState::new(user_stablecoin_holding.account.clone()),
-        AccountPostState::new(stability_fee_accumulator.account),
-        AccountPostState::new(redemption_price_state.account),
-        AccountPostState::new(market_price_oracle.account),
-        AccountPostState::new(protocol_parameters.account),
-        AccountPostState::new(clock.account),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(owner),
+        AccountStateDiff::new(position, BalanceDiff::Add(0), Data::from(&updated_position)),
+        AccountStateDiff::unchanged(stablecoin_definition),
+        AccountStateDiff::unchanged(user_stablecoin_holding),
+        AccountStateDiff::unchanged(stability_fee_accumulator),
+        AccountStateDiff::unchanged(redemption_price_state),
+        AccountStateDiff::unchanged(market_price_oracle),
+        AccountStateDiff::unchanged(protocol_parameters),
+        AccountStateDiff::unchanged(clock),
     ];
 
     // `initialize_program` made the definition its own mint authority, so the
-    // chained call authorizes it with the definition's PDA seed.
-    let mut definition_authorized = stablecoin_definition.clone();
-    definition_authorized.is_authorized = true;
+    // chained call authorizes it with the definition's PDA seed -- the call ships
+    // bare ids, not an `is_authorized` pre-state flag.
     let mint_call = ChainedCall::new(
         token_program_id,
-        vec![definition_authorized, user_stablecoin_holding],
+        vec![stablecoin_definition_id, user_stablecoin_holding_id],
         &token_core::Instruction::Mint {
             amount_to_mint: amount,
         },
     )
     .with_pda_seeds(vec![compute_stablecoin_definition_pda_seed()]);
 
-    (post_states, vec![mint_call])
+    (state_diffs, vec![mint_call])
 }

@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
     compute_protocol_parameters_pda, verify_position_and_get_seed, Position, ProtocolParameters,
@@ -42,9 +42,9 @@ pub fn deposit_collateral(
     vault: AccountWithMetadata,
     user_collateral_holding: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     amount: u128,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(owner.is_authorized, "Owner authorization is missing");
     assert!(
         user_collateral_holding.is_authorized,
@@ -146,29 +146,35 @@ pub fn deposit_collateral(
         .checked_add(amount)
         .expect("Position collateral_amount overflow");
 
-    let mut position_post = position.account.clone();
-    position_post.data = Data::from(&Position {
-        collateral_amount: new_collateral,
-        ..position_data
-    });
+    // Captured before the accounts are moved into the diffs -- the call names
+    // them by id.
+    let user_collateral_holding_id = user_collateral_holding.account_id;
+    let vault_id = vault.account_id;
 
-    let post_states = vec![
-        AccountPostState::new(owner.account),
-        AccountPostState::new(position_post),
-        AccountPostState::new(vault.account.clone()),
-        AccountPostState::new(user_collateral_holding.account.clone()),
-        AccountPostState::new(protocol_parameters.account),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(owner),
+        AccountStateDiff::new(
+            position,
+            BalanceDiff::Add(0),
+            Data::from(&Position {
+                collateral_amount: new_collateral,
+                ..position_data
+            }),
+        ),
+        AccountStateDiff::unchanged(vault),
+        AccountStateDiff::unchanged(user_collateral_holding),
+        AccountStateDiff::unchanged(protocol_parameters),
     ];
 
     // No PDA seed: the sender is the user's own holding, authorized by the
     // transaction's witness set. The receiving vault needs no authorization.
     let transfer_call = ChainedCall::new(
         token_program_id,
-        vec![user_collateral_holding, vault],
+        vec![user_collateral_holding_id, vault_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: amount,
         },
     );
 
-    (post_states, vec![transfer_call])
+    (state_diffs, vec![transfer_call])
 }

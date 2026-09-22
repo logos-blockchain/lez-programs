@@ -7,7 +7,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
     account::{AccountId, Data},
-    program::{PdaSeed, ProgramId},
+    program::PdaSeed,
 };
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
@@ -88,7 +88,7 @@ pub fn compute_protocol_parameters_pda_seed() -> PdaSeed {
 /// Account id of the [`ProtocolParameters`] PDA under the given stablecoin
 /// program.
 #[must_use]
-pub fn compute_protocol_parameters_pda(stablecoin_program_id: ProgramId) -> AccountId {
+pub fn compute_protocol_parameters_pda(stablecoin_program_id: AccountId) -> AccountId {
     AccountId::for_public_pda(
         &stablecoin_program_id,
         &compute_protocol_parameters_pda_seed(),
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn pda_is_deterministic_for_fixed_program_id() {
-        let program_id: ProgramId = [42u32; 8];
+        let program_id = AccountId::new([42u8; 32]);
         let first = compute_protocol_parameters_pda(program_id);
         let second = compute_protocol_parameters_pda(program_id);
         assert_eq!(first, second);
@@ -145,8 +145,8 @@ mod tests {
 
     #[test]
     fn pda_differs_for_different_program_ids() {
-        let id_a: ProgramId = [1u32; 8];
-        let id_b: ProgramId = [2u32; 8];
+        let id_a = AccountId::new([1u8; 32]);
+        let id_b = AccountId::new([2u8; 32]);
         assert_ne!(
             compute_protocol_parameters_pda(id_a),
             compute_protocol_parameters_pda(id_b),
