@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, ProgramId},
+    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 use token_core::TokenDefinition;
 
@@ -10,8 +10,8 @@ use token_core::TokenDefinition;
 pub fn set_authority(
     definition_account: AccountWithMetadata,
     new_authority: Option<AccountId>,
-    token_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    token_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     set_authority_inner(definition_account, None, new_authority, token_program_id)
 }
 
@@ -23,8 +23,8 @@ pub fn set_authority_with_authority(
     definition_account: AccountWithMetadata,
     authority_account: AccountWithMetadata,
     new_authority: Option<AccountId>,
-    token_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    token_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     set_authority_inner(
         definition_account,
         Some(authority_account),
@@ -42,8 +42,8 @@ fn set_authority_inner(
     definition_account: AccountWithMetadata,
     authority_account: Option<AccountWithMetadata>,
     new_authority: Option<AccountId>,
-    token_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    token_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     assert_eq!(
         definition_account.account.program_owner, token_program_id,
         "Token definition must be owned by token program"
@@ -83,15 +83,16 @@ fn set_authority_inner(
         }
     }
 
-    let mut definition_post = definition_account.account;
-    definition_post.data = Data::from(&definition);
-
-    // Post-states must match pre-state order and count: [definition] for self
+    // Diffs must match pre-state order and count: [definition] for self
     // authority, plus the read-only authority account when external.
-    let mut post_states = Vec::with_capacity(2);
-    post_states.push(AccountPostState::new(definition_post));
+    let mut state_diffs = Vec::with_capacity(2);
+    state_diffs.push(AccountStateDiff::new(
+        definition_account,
+        BalanceDiff::Add(0),
+        Data::from(&definition),
+    ));
     if let Some(authority) = authority_account {
-        post_states.push(AccountPostState::new(authority.account));
+        state_diffs.push(AccountStateDiff::unchanged(authority));
     }
-    post_states
+    state_diffs
 }

@@ -6,7 +6,12 @@ use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
 
 /// Token Program Instruction.
-#[derive(Serialize, Deserialize)]
+///
+/// Borsh is the instruction wire format LEZ reads; serde stays for tooling and IDL.
+///
+/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
+/// inserting one shifts the encoding of every variant after it.
+#[derive(Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum Instruction {
     /// Transfer tokens from sender to recipient.
     ///
@@ -106,7 +111,7 @@ pub enum Instruction {
     SetAuthorityWithAuthority { new_authority: Option<AccountId> },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum NewTokenDefinition {
     Fungible {
         name: String,
@@ -246,7 +251,7 @@ impl From<&TokenHolding> for Data {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct NewTokenMetadata {
     /// Metadata standard.
     pub standard: MetadataStandard,
@@ -272,7 +277,7 @@ pub struct TokenMetadata {
 }
 
 /// Metadata standard defining the expected format of JSON located off-chain.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum MetadataStandard {
     Simple,
     Expanded,
