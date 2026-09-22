@@ -1,18 +1,15 @@
 //! Shared account builders for the `faucet_mint` host-function unit tests.
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use token_core::{TokenDefinition, TokenHolding};
 use token_mint_authority_core::{
     compute_mint_allowance_pda, compute_mint_authority_pda, MintAllowance,
 };
 
-pub(crate) const TOKEN_MINT_AUTHORITY_PROGRAM_ID: ProgramId = [11u32; 8];
-pub(crate) const TOKEN_PROGRAM_ID: ProgramId = [2u32; 8];
-pub(crate) const CLOCK_PROGRAM_ID: ProgramId = [5u32; 8];
+pub(crate) const TOKEN_MINT_AUTHORITY_PROGRAM_ID: AccountId = AccountId::new([11u8; 32]);
+pub(crate) const TOKEN_PROGRAM_ID: AccountId = AccountId::new([2u8; 32]);
+pub(crate) const CLOCK_PROGRAM_ID: AccountId = AccountId::new([5u8; 32]);
 
 /// The clock timestamp used as "now" in every test (Unix milliseconds).
 pub(crate) const NOW: u64 = 1_700_000_000_000;
