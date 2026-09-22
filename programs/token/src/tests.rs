@@ -4,14 +4,12 @@
     reason = "test fixtures use fixed values to lock boundary behavior"
 )]
 
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::{Claim, ProgramId},
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use token_core::{
     MetadataStandard, NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding,
 };
 
+use crate::StateDiffExt;
 use crate::{
     burn::burn,
     initialize::initialize_account,
@@ -30,8 +28,8 @@ struct IdForTests;
 
 struct AccountForTests;
 
-const TOKEN_PROGRAM_ID: ProgramId = [5u32; 8];
-const FOREIGN_TOKEN_PROGRAM_ID: ProgramId = [6u32; 8];
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([5u8; 32]);
+const FOREIGN_TOKEN_PROGRAM_ID: AccountId = AccountId::new([6u8; 32]);
 
 impl AccountForTests {
     fn definition_account_auth() -> AccountWithMetadata {
@@ -91,7 +89,7 @@ impl AccountForTests {
     fn holding_different_definition() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id_diff(),
@@ -107,7 +105,7 @@ impl AccountForTests {
     fn holding_same_definition_with_authorization() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -123,7 +121,7 @@ impl AccountForTests {
     fn holding_same_definition_without_authorization() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -139,7 +137,7 @@ impl AccountForTests {
     fn holding_same_definition_without_authorization_overflow() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -155,7 +153,7 @@ impl AccountForTests {
     fn definition_account_post_burn() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenDefinition::Fungible {
                     name: String::from("test"),
@@ -173,7 +171,7 @@ impl AccountForTests {
     fn holding_account_post_burn() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -202,10 +200,12 @@ impl AccountForTests {
         }
     }
 
+    /// Freshly claimed by the program's own write: v0.2.5 makes the writing program the
+    /// owner of a default-owned account, so that ownership is part of the post-state.
     fn init_mint() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [0u32; 8],
+                program_owner: TOKEN_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -221,7 +221,7 @@ impl AccountForTests {
     fn holding_account_same_definition_mint() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -237,7 +237,7 @@ impl AccountForTests {
     fn definition_account_mint() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenDefinition::Fungible {
                     name: String::from("test"),
@@ -255,7 +255,7 @@ impl AccountForTests {
     fn holding_same_definition_with_authorization_and_large_balance() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -271,7 +271,7 @@ impl AccountForTests {
     fn definition_account_with_authorization_nonfungible() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenDefinition::NonFungible {
                     name: String::from("test"),
@@ -312,7 +312,7 @@ impl AccountForTests {
     fn holding_account_init() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -325,10 +325,12 @@ impl AccountForTests {
         }
     }
 
-    fn definition_account_unclaimed() -> AccountWithMetadata {
+    /// The definition account as the write leaves it. Under v0.2.5 the data write is
+    /// itself the claim, so the token program is already its owner here.
+    fn definition_account_claimed() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [0u32; 8],
+                program_owner: TOKEN_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&TokenDefinition::Fungible {
                     name: String::from("test"),
@@ -343,10 +345,11 @@ impl AccountForTests {
         }
     }
 
-    fn holding_account_unclaimed() -> AccountWithMetadata {
+    /// The holding account as the write leaves it — claimed by the write, as above.
+    fn holding_account_claimed() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [0u32; 8],
+                program_owner: TOKEN_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -362,7 +365,7 @@ impl AccountForTests {
     fn holding_account2_init() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -378,7 +381,7 @@ impl AccountForTests {
     fn holding_account2_init_post_transfer() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -394,7 +397,7 @@ impl AccountForTests {
     fn holding_account_init_post_transfer() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: IdForTests::pool_definition_id(),
@@ -410,7 +413,7 @@ impl AccountForTests {
     fn holding_account_master_nft() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::NftMaster {
                     definition_id: IdForTests::pool_definition_id(),
@@ -426,7 +429,7 @@ impl AccountForTests {
     fn holding_account_master_nft_insufficient_balance() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::NftMaster {
                     definition_id: IdForTests::pool_definition_id(),
@@ -442,7 +445,7 @@ impl AccountForTests {
     fn holding_account_master_nft_after_print() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::NftMaster {
                     definition_id: IdForTests::pool_definition_id(),
@@ -455,10 +458,12 @@ impl AccountForTests {
         }
     }
 
+    /// Freshly claimed by the program's own write: v0.2.5 makes the writing program the
+    /// owner of a default-owned account, so that ownership is part of the post-state.
     fn holding_account_printed_nft() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [0u32; 8],
+                program_owner: TOKEN_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&TokenHolding::NftPrintedCopy {
                     definition_id: IdForTests::pool_definition_id(),
@@ -471,10 +476,12 @@ impl AccountForTests {
         }
     }
 
+    /// Freshly claimed by the program's own write: v0.2.5 makes the writing program the
+    /// owner of a default-owned account, so that ownership is part of the post-state.
     fn holding_account_with_master_nft_transferred_to() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [0u32; 8],
+                program_owner: TOKEN_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&TokenHolding::NftMaster {
                     definition_id: IdForTests::pool_definition_id(),
@@ -490,7 +497,7 @@ impl AccountForTests {
     fn holding_account_master_nft_post_transfer() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0u128,
                 data: Data::from(&TokenHolding::NftMaster {
                     definition_id: IdForTests::pool_definition_id(),
@@ -585,7 +592,7 @@ impl IdForTests {
 fn test_new_definition_non_default_first_account_should_fail() {
     let definition_account = AccountWithMetadata {
         account: Account {
-            program_owner: [1, 2, 3, 4, 5, 6, 7, 8],
+            program_owner: FOREIGN_TOKEN_PROGRAM_ID,
             ..Account::default()
         },
         is_authorized: true,
@@ -615,7 +622,7 @@ fn test_new_definition_non_default_second_account_should_fail() {
     };
     let holding_account = AccountWithMetadata {
         account: Account {
-            program_owner: [1, 2, 3, 4, 5, 6, 7, 8],
+            program_owner: FOREIGN_TOKEN_PROGRAM_ID,
             ..Account::default()
         },
         is_authorized: true,
@@ -673,16 +680,14 @@ fn test_new_definition_with_valid_inputs_succeeds() {
 
     let [definition_account, holding_account] = post_states.try_into().unwrap();
     assert_eq!(
-        *definition_account.account(),
-        AccountForTests::definition_account_unclaimed().account
+        definition_account.post_account(TOKEN_PROGRAM_ID),
+        AccountForTests::definition_account_claimed().account
     );
-    assert_eq!(definition_account.required_claim(), Some(Claim::Authorized));
 
     assert_eq!(
-        *holding_account.account(),
-        AccountForTests::holding_account_unclaimed().account
+        holding_account.post_account(TOKEN_PROGRAM_ID),
+        AccountForTests::holding_account_claimed().account
     );
-    assert_eq!(holding_account.required_claim(), Some(Claim::Authorized));
 }
 
 #[should_panic(expected = "Sender and recipient definition id mismatch")]
@@ -718,15 +723,13 @@ fn test_transfer_with_valid_inputs_succeeds() {
     let [sender_post, recipient_post] = post_states.try_into().unwrap();
 
     assert_eq!(
-        *sender_post.account(),
+        sender_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::holding_account_init_post_transfer().account
     );
     assert_eq!(
-        *recipient_post.account(),
+        recipient_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::holding_account2_init_post_transfer().account
     );
-    assert_eq!(sender_post.required_claim(), None);
-    assert_eq!(recipient_post.required_claim(), None);
 }
 
 #[should_panic(expected = "Invalid balance for NFT Master transfer")]
@@ -748,16 +751,16 @@ fn test_transfer_with_master_nft_invalid_recipient_balance() {
 #[test]
 fn test_transfer_with_master_nft_success() {
     let sender = AccountForTests::holding_account_master_nft();
-    let recipient = AccountForTests::holding_account_uninit();
+    let recipient = AccountForTests::holding_account_uninit_auth();
     let post_states = transfer(sender, recipient, BalanceForTests::printable_copies());
     let [sender_post, recipient_post] = post_states.try_into().unwrap();
 
     assert_eq!(
-        *sender_post.account(),
+        sender_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::holding_account_master_nft_post_transfer().account
     );
     assert_eq!(
-        *recipient_post.account(),
+        recipient_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::holding_account_with_master_nft_transferred_to().account
     );
 }
@@ -765,18 +768,18 @@ fn test_transfer_with_master_nft_success() {
 #[test]
 fn test_transfer_with_default_recipient_claims_recipient() {
     let sender = AccountForTests::holding_account_init();
-    let recipient = AccountForTests::holding_account_uninit();
+    let recipient = AccountForTests::holding_account_uninit_auth();
     let post_states = transfer(sender, recipient, BalanceForTests::transfer_amount());
     let [sender_post, recipient_post] = post_states.try_into().unwrap();
 
     assert_eq!(
-        *sender_post.account(),
+        sender_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::holding_account_init_post_transfer().account
     );
     assert_eq!(
-        *recipient_post.account(),
+        recipient_post.post_account(TOKEN_PROGRAM_ID),
         Account {
-            program_owner: [0u32; 8],
+            program_owner: TOKEN_PROGRAM_ID,
             balance: 0u128,
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: IdForTests::pool_definition_id(),
@@ -785,8 +788,6 @@ fn test_transfer_with_default_recipient_claims_recipient() {
             nonce: Nonce(0),
         }
     );
-    assert_eq!(sender_post.required_claim(), None);
-    assert_eq!(recipient_post.required_claim(), Some(Claim::Authorized));
 }
 
 #[test]
@@ -797,13 +798,13 @@ fn test_token_initialize_account_succeeds() {
     let [definition_post, holding_post] = post_states.try_into().unwrap();
 
     assert_eq!(
-        *definition_post.account(),
+        definition_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::definition_account_auth().account
     );
     assert_eq!(
-        *holding_post.account(),
+        holding_post.post_account(TOKEN_PROGRAM_ID),
         Account {
-            program_owner: [0u32; 8],
+            program_owner: TOKEN_PROGRAM_ID,
             balance: 0u128,
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: IdForTests::pool_definition_id(),
@@ -812,8 +813,6 @@ fn test_token_initialize_account_succeeds() {
             nonce: Nonce(0),
         }
     );
-    assert_eq!(definition_post.required_claim(), None);
-    assert_eq!(holding_post.required_claim(), Some(Claim::Authorized));
 }
 
 #[test]
@@ -894,11 +893,11 @@ fn test_burn_success() {
     let [def_post, holding_post] = post_states.try_into().unwrap();
 
     assert_eq!(
-        *def_post.account(),
+        def_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::definition_account_post_burn().account
     );
     assert_eq!(
-        *holding_post.account(),
+        holding_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::holding_account_post_burn().account
     );
 }
@@ -998,21 +997,19 @@ fn test_mint_success() {
     let [def_post, holding_post] = post_states.try_into().unwrap();
 
     assert_eq!(
-        *def_post.account(),
+        def_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::definition_account_mint().account
     );
     assert_eq!(
-        *holding_post.account(),
+        holding_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::holding_account_same_definition_mint().account
     );
-    assert_eq!(def_post.required_claim(), None);
-    assert_eq!(holding_post.required_claim(), None);
 }
 
 #[test]
 fn test_mint_uninit_holding_success() {
     let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_account_uninit();
+    let holding_account = AccountForTests::holding_account_uninit_auth();
     let post_states = mint(
         definition_account,
         holding_account,
@@ -1023,15 +1020,13 @@ fn test_mint_uninit_holding_success() {
     let [def_post, holding_post] = post_states.try_into().unwrap();
 
     assert_eq!(
-        *def_post.account(),
+        def_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::definition_account_mint().account
     );
     assert_eq!(
-        *holding_post.account(),
+        holding_post.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::init_mint().account
     );
-    assert_eq!(def_post.required_claim(), None);
-    assert_eq!(holding_post.required_claim(), Some(Claim::Authorized));
 }
 
 #[test]
@@ -1098,9 +1093,12 @@ fn test_new_definition_with_metadata_success() {
     );
     let [definition_post, holding_post, metadata_post] = post_states.try_into().unwrap();
 
-    assert_eq!(definition_post.required_claim(), Some(Claim::Authorized));
-    assert_eq!(holding_post.required_claim(), Some(Claim::Authorized));
-    assert_eq!(metadata_post.required_claim(), Some(Claim::Authorized));
+    // All three accounts are claimed by their own writes: in v0.2.5 writing data to a
+    // default-owned account makes the writing program its owner.
+    for diff in [&definition_post, &holding_post, &metadata_post] {
+        assert!(diff.writes_data());
+        assert_eq!(diff.post_owner(TOKEN_PROGRAM_ID), TOKEN_PROGRAM_ID);
+    }
 }
 
 /// Comment #2: a metadata-backed fungible created with `mint_authority: Some(..)`
@@ -1131,7 +1129,7 @@ fn test_metadata_fungible_with_authority_is_mintable() {
     let [definition_post, _holding_post, _metadata_post] = post_states.try_into().unwrap();
 
     // The stored authority must be the requested key, NOT renounced.
-    let def = TokenDefinition::try_from(&definition_post.account().data).unwrap();
+    let def = TokenDefinition::try_from(definition_post.post_data()).unwrap();
     let stored = match def {
         TokenDefinition::Fungible { authority, .. } => authority,
         _ => None,
@@ -1374,15 +1372,13 @@ fn test_print_nft_success() {
     let [post_master_nft, post_printed] = post_states.try_into().unwrap();
 
     assert_eq!(
-        *post_master_nft.account(),
+        post_master_nft.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::holding_account_master_nft_after_print().account
     );
     assert_eq!(
-        *post_printed.account(),
+        post_printed.post_account(TOKEN_PROGRAM_ID),
         AccountForTests::holding_account_printed_nft().account
     );
-    assert_eq!(post_master_nft.required_claim(), None);
-    assert_eq!(post_printed.required_claim(), Some(Claim::Authorized));
 }
 
 #[cfg(test)]
@@ -1391,7 +1387,7 @@ mod authority_tests {
     use crate::{mint::mint, set_authority::set_authority};
 
     const AUTHORITY: [u8; 32] = [15_u8; 32];
-    const TOKEN_PROGRAM_ID: [u32; 8] = [5_u32; 8];
+    const TOKEN_PROGRAM_ID: AccountId = AccountId::new([5u8; 32]);
 
     /// A fungible definition whose own account id ([15;32]) equals its stored
     /// mint authority, authorized in the transaction. This models both an external
@@ -1399,7 +1395,7 @@ mod authority_tests {
     fn def_with_authority() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5_u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0_u128,
                 data: Data::from(&TokenDefinition::Fungible {
                     name: String::from("test"),
@@ -1418,7 +1414,7 @@ mod authority_tests {
     fn def_with_authority_revoked() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5_u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0_u128,
                 data: Data::from(&TokenDefinition::Fungible {
                     name: String::from("test"),
@@ -1438,7 +1434,7 @@ mod authority_tests {
     fn def_wrong_authority() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5_u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0_u128,
                 data: Data::from(&TokenDefinition::Fungible {
                     name: String::from("test"),
@@ -1456,7 +1452,7 @@ mod authority_tests {
     fn holding_account() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [5_u32; 8],
+                program_owner: AccountId::new([5u8; 32]),
                 balance: 0_u128,
                 data: Data::from(&TokenHolding::Fungible {
                     definition_id: AccountId::new([15; 32]),
@@ -1479,8 +1475,8 @@ mod authority_tests {
         );
         let [def_post, holding_post] = post_states.try_into().unwrap();
 
-        let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
-        let holding = TokenHolding::try_from(&holding_post.account().data).unwrap();
+        let def = TokenDefinition::try_from(def_post.post_data()).unwrap();
+        let holding = TokenHolding::try_from(holding_post.post_data()).unwrap();
 
         assert!(matches!(
             def,
@@ -1544,7 +1540,7 @@ mod authority_tests {
         let post_states = set_authority(def_with_authority(), Some(new_key), TOKEN_PROGRAM_ID);
         let [def_post] = post_states.try_into().unwrap();
 
-        let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
+        let def = TokenDefinition::try_from(def_post.post_data()).unwrap();
         let auth = match def {
             TokenDefinition::Fungible { authority, .. } => authority,
             _ => None,
@@ -1557,7 +1553,7 @@ mod authority_tests {
         let post_states = set_authority(def_with_authority(), None, TOKEN_PROGRAM_ID);
         let [def_post] = post_states.try_into().unwrap();
 
-        let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
+        let def = TokenDefinition::try_from(def_post.post_data()).unwrap();
         let renounced = match def {
             TokenDefinition::Fungible { authority, .. } => authority.is_none(),
             _ => false,
@@ -1605,7 +1601,7 @@ mod authority_tests {
         let [def_post] = rotate_post.try_into().unwrap();
 
         let mut rotated_def = def_with_authority();
-        rotated_def.account = def_post.account().clone();
+        rotated_def.account = def_post.post_account(TOKEN_PROGRAM_ID);
 
         // B ([7;32]) rotates to C ([9;32]) as the external authority.
         let post_states = set_authority_with_authority(
@@ -1615,7 +1611,7 @@ mod authority_tests {
             TOKEN_PROGRAM_ID,
         );
         let [def_after, _auth] = post_states.try_into().unwrap();
-        let auth = match TokenDefinition::try_from(&def_after.account().data).unwrap() {
+        let auth = match TokenDefinition::try_from(def_after.post_data()).unwrap() {
             TokenDefinition::Fungible { authority, .. } => authority,
             _ => None,
         };
@@ -1633,7 +1629,7 @@ mod authority_tests {
         let [def_post] = rotate_post.try_into().unwrap();
 
         let mut rotated_def = def_with_authority();
-        rotated_def.account = def_post.account().clone();
+        rotated_def.account = def_post.post_account(TOKEN_PROGRAM_ID);
 
         let post_states = set_authority_with_authority(
             rotated_def,
@@ -1642,7 +1638,7 @@ mod authority_tests {
             TOKEN_PROGRAM_ID,
         );
         let [def_after, _auth] = post_states.try_into().unwrap();
-        let renounced = match TokenDefinition::try_from(&def_after.account().data).unwrap() {
+        let renounced = match TokenDefinition::try_from(def_after.post_data()).unwrap() {
             TokenDefinition::Fungible { authority, .. } => authority.is_none(),
             _ => false,
         };
@@ -1673,7 +1669,7 @@ mod authority_tests {
         let post_states = set_authority(def_with_authority(), Some(new_key), TOKEN_PROGRAM_ID);
         let [def_post] = post_states.try_into().unwrap();
 
-        let def = TokenDefinition::try_from(&def_post.account().data).unwrap();
+        let def = TokenDefinition::try_from(def_post.post_data()).unwrap();
         let auth = match def {
             TokenDefinition::Fungible { authority, .. } => authority,
             _ => None,
@@ -1706,7 +1702,7 @@ mod authority_tests {
 
         // Rebuild the definition carrying the rotated authority, re-authorized.
         let mut rotated_def = def_with_authority();
-        rotated_def.account = def_post.account().clone();
+        rotated_def.account = def_post.post_account(TOKEN_PROGRAM_ID);
 
         // B mints by presenting itself as the external authority.
         let mint_post = mint_with_authority(
@@ -1717,7 +1713,7 @@ mod authority_tests {
             TOKEN_PROGRAM_ID,
         );
         let [def_after, holding_after, _auth] = mint_post.try_into().unwrap();
-        let minted = TokenDefinition::try_from(&def_after.account().data).unwrap();
+        let minted = TokenDefinition::try_from(def_after.post_data()).unwrap();
         assert!(matches!(
             minted,
             TokenDefinition::Fungible {
@@ -1725,7 +1721,7 @@ mod authority_tests {
                 ..
             }
         ));
-        let holding = TokenHolding::try_from(&holding_after.account().data).unwrap();
+        let holding = TokenHolding::try_from(holding_after.post_data()).unwrap();
         assert!(matches!(
             holding,
             TokenHolding::Fungible {
@@ -1749,7 +1745,7 @@ mod authority_tests {
         let [def_post] = rotate_post.try_into().unwrap();
 
         let mut rotated_def = def_with_authority();
-        rotated_def.account = def_post.account().clone();
+        rotated_def.account = def_post.post_account(TOKEN_PROGRAM_ID);
 
         // A ([15;32]) is no longer the authority; self-authority must fail.
         let _ = mint(rotated_def, holding_account(), 10_000, TOKEN_PROGRAM_ID);
