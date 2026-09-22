@@ -1,11 +1,10 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, Claim, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 use twap_oracle_core::{
-    compute_oracle_price_account_pda, compute_oracle_price_account_pda_seed, OraclePriceAccount,
-    OBSERVATIONS_CAPACITY,
+    compute_oracle_price_account_pda, OraclePriceAccount, OBSERVATIONS_CAPACITY,
 };
 
 /// Creates and initialises an [`OraclePriceAccount`] for a price source account and time window.
@@ -54,8 +53,8 @@ pub fn create_oracle_price_account(
     quote_asset: AccountId,
     initial_price: u128,
     window_duration: u64,
-    oracle_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    oracle_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     let price_source_id = price_source.account_id;
     assert_eq!(
         oracle_price_account.account_id,
@@ -101,30 +100,29 @@ pub fn create_oracle_price_account(
         confidence_interval: 0,
     };
 
-    let mut oracle_price_account_post = oracle_price_account.account.clone();
-    oracle_price_account_post.data = Data::from(&account);
-
+    // Writing the data is itself the claim on this PDA: since v0.2.5 a program that writes
+    // data to a default-owned account becomes its owner, so there is no `Claim::Pda` and no
+    // seed to present. The account's address was asserted against its PDA derivation above.
     vec![
-        AccountPostState::new_claimed(
-            oracle_price_account_post,
-            Claim::Pda(compute_oracle_price_account_pda_seed(
-                price_source_id,
-                window_duration,
-            )),
+        AccountStateDiff::new(
+            oracle_price_account,
+            BalanceDiff::Add(0),
+            Data::from(&account),
         ),
-        AccountPostState::new(price_source.account.clone()),
-        AccountPostState::new(clock.account.clone()),
+        AccountStateDiff::unchanged(price_source),
+        AccountStateDiff::unchanged(clock),
     ]
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::StateDiffExt;
     use lee_core::account::Nonce;
 
     use super::*;
 
-    const ORACLE_PROGRAM_ID: ProgramId = [77u32; 8];
-    const CLOCK_PROGRAM_ID: ProgramId = [88u32; 8];
+    const ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
+    const CLOCK_PROGRAM_ID: AccountId = AccountId::new([88u8; 32]);
     /// 24-hour window in milliseconds.
     const WINDOW_24H: u64 = 24 * 60 * 60 * 1_000;
     /// A representative non-zero initialisation price. Prices are `Q64.64` fixed point
@@ -170,7 +168,7 @@ mod tests {
     fn price_source_authorized() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [42u32; 8],
+                program_owner: AccountId::new([42u8; 32]),
                 balance: 0,
                 data: Data::default(),
                 nonce: Nonce(0),
@@ -210,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn oracle_price_account_post_state_is_pda_claimed() {
+    fn oracle_price_account_claims_the_pda_by_writing() {
         let post_states = create_oracle_price_account(
             oracle_price_account_uninit(),
             price_source_authorized(),
@@ -221,12 +219,13 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
+        // The write is the claim: v0.2.5 makes the program that writes data to a
+        // default-owned account its owner, so there is no separate claim to inspect.
+        // The PDA address itself is asserted by the handler (and by the PDA tests below).
+        assert!(post_states[0].writes_data());
         assert_eq!(
-            post_states[0].required_claim(),
-            Some(Claim::Pda(compute_oracle_price_account_pda_seed(
-                price_source_id(),
-                WINDOW_24H,
-            )))
+            post_states[0].post_owner(ORACLE_PROGRAM_ID),
+            ORACLE_PROGRAM_ID
         );
     }
 
@@ -244,8 +243,8 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        assert_eq!(*post_states[1].account(), price_source.account);
-        assert_eq!(*post_states[2].account(), clock.account);
+        assert_eq!(post_states[1], AccountStateDiff::unchanged(price_source));
+        assert_eq!(post_states[2], AccountStateDiff::unchanged(clock));
     }
 
     #[test]
@@ -260,7 +259,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let account = OraclePriceAccount::try_from(&post_states[0].account().data)
+        let account = OraclePriceAccount::try_from(post_states[0].post_data())
             .expect("post state must contain a valid OraclePriceAccount");
         assert_eq!(account.price, INITIAL_PRICE);
         assert_eq!(account.timestamp, TIMESTAMP);
@@ -279,7 +278,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let account = OraclePriceAccount::try_from(&post_states[0].account().data)
+        let account = OraclePriceAccount::try_from(post_states[0].post_data())
             .expect("post state must contain a valid OraclePriceAccount");
         assert_eq!(account.base_asset, base_asset());
         assert_eq!(account.quote_asset, quote_asset());
@@ -293,7 +292,7 @@ mod tests {
         let other_source_id = AccountId::new([99u8; 32]);
         let other_source = AccountWithMetadata {
             account: Account {
-                program_owner: [42u32; 8],
+                program_owner: AccountId::new([42u8; 32]),
                 balance: 0,
                 data: Data::default(),
                 nonce: Nonce(0),
@@ -320,7 +319,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let account = OraclePriceAccount::try_from(&post_states[0].account().data)
+        let account = OraclePriceAccount::try_from(post_states[0].post_data())
             .expect("post state must contain a valid OraclePriceAccount");
         assert_eq!(account.source_id, other_source_id);
     }
@@ -360,7 +359,7 @@ mod tests {
         let wallet_id = AccountId::new([55u8; 32]);
         let wallet = AccountWithMetadata {
             account: Account {
-                program_owner: [0u32; 8],
+                program_owner: AccountId::new([0u8; 32]),
                 balance: 1_000,
                 data: Data::default(),
                 nonce: Nonce(0),
@@ -383,7 +382,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let account = OraclePriceAccount::try_from(&post_states[0].account().data)
+        let account = OraclePriceAccount::try_from(post_states[0].post_data())
             .expect("post state must contain a valid OraclePriceAccount");
         assert_eq!(account.source_id, wallet_id);
         assert_eq!(account.base_asset, base_asset());

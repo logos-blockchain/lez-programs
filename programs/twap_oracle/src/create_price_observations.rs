@@ -1,11 +1,10 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, Claim, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 use twap_oracle_core::{
-    compute_price_observations_pda, compute_price_observations_pda_seed, ObservationEntry,
-    PriceObservations, OBSERVATIONS_CAPACITY,
+    compute_price_observations_pda, ObservationEntry, PriceObservations, OBSERVATIONS_CAPACITY,
 };
 
 /// Creates and initialises a [`PriceObservations`] for a price source account and time window.
@@ -34,8 +33,8 @@ pub fn create_price_observations(
     clock: AccountWithMetadata,
     initial_tick: i32,
     window_duration: u64,
-    oracle_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    oracle_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     let price_source_id = price_source.account_id;
     assert_eq!(
         price_observations.account_id,
@@ -81,30 +80,29 @@ pub fn create_price_observations(
         entries,
     };
 
-    let mut price_observations_post = price_observations.account.clone();
-    price_observations_post.data = Data::from(&observations);
-
+    // Writing the data is itself the claim on this PDA: since v0.2.5 a program that writes
+    // data to a default-owned account becomes its owner, so there is no `Claim::Pda` and no
+    // seed to present. The account's address was asserted against its PDA derivation above.
     vec![
-        AccountPostState::new_claimed(
-            price_observations_post,
-            Claim::Pda(compute_price_observations_pda_seed(
-                price_source_id,
-                window_duration,
-            )),
+        AccountStateDiff::new(
+            price_observations,
+            BalanceDiff::Add(0),
+            Data::from(&observations),
         ),
-        AccountPostState::new(price_source.account.clone()),
-        AccountPostState::new(clock.account.clone()),
+        AccountStateDiff::unchanged(price_source),
+        AccountStateDiff::unchanged(clock),
     ]
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::StateDiffExt;
     use lee_core::account::{AccountId, Nonce};
 
     use super::*;
 
-    const ORACLE_PROGRAM_ID: ProgramId = [77u32; 8];
-    const CLOCK_PROGRAM_ID: ProgramId = [88u32; 8];
+    const ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
+    const CLOCK_PROGRAM_ID: AccountId = AccountId::new([88u8; 32]);
     /// 24-hour window in milliseconds, used as the default window for tests.
     const WINDOW_24H: u64 = 24 * 60 * 60 * 1_000;
 
@@ -137,7 +135,7 @@ mod tests {
     fn price_source_authorized() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [42u32; 8],
+                program_owner: AccountId::new([42u8; 32]),
                 balance: 0,
                 data: Data::default(),
                 nonce: Nonce(0),
@@ -175,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn price_observations_post_state_is_pda_claimed() {
+    fn price_observations_claims_the_pda_by_writing() {
         let post_states = create_price_observations(
             price_observations_uninit(),
             price_source_authorized(),
@@ -184,12 +182,13 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
+        // The write is the claim: v0.2.5 makes the program that writes data to a
+        // default-owned account its owner, so there is no separate claim to inspect.
+        // The PDA address itself is asserted by the handler (and by the PDA tests below).
+        assert!(post_states[0].writes_data());
         assert_eq!(
-            post_states[0].required_claim(),
-            Some(Claim::Pda(compute_price_observations_pda_seed(
-                price_source_id(),
-                WINDOW_24H
-            )))
+            post_states[0].post_owner(ORACLE_PROGRAM_ID),
+            ORACLE_PROGRAM_ID
         );
     }
 
@@ -205,8 +204,8 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        assert_eq!(*post_states[1].account(), price_source.account);
-        assert_eq!(*post_states[2].account(), clock.account);
+        assert_eq!(post_states[1], AccountStateDiff::unchanged(price_source));
+        assert_eq!(post_states[2], AccountStateDiff::unchanged(clock));
     }
 
     #[test]
@@ -222,7 +221,7 @@ mod tests {
             ORACLE_PROGRAM_ID,
         );
 
-        let feed = PriceObservations::try_from(&post_states[0].account().data)
+        let feed = PriceObservations::try_from(post_states[0].post_data())
             .expect("post state must contain a valid PriceObservations");
 
         assert_eq!(feed.entries[0].tick_cumulative, 0);
@@ -242,7 +241,7 @@ mod tests {
             ORACLE_PROGRAM_ID,
         );
 
-        let feed = PriceObservations::try_from(&post_states[0].account().data)
+        let feed = PriceObservations::try_from(post_states[0].post_data())
             .expect("post state must contain a valid PriceObservations");
 
         assert_eq!(feed.last_recorded_tick, initial_tick);
@@ -259,7 +258,7 @@ mod tests {
             ORACLE_PROGRAM_ID,
         );
 
-        let feed = PriceObservations::try_from(&post_states[0].account().data)
+        let feed = PriceObservations::try_from(post_states[0].post_data())
             .expect("post state must contain a valid PriceObservations");
 
         assert_eq!(feed.write_index, 1);
@@ -277,7 +276,7 @@ mod tests {
             ORACLE_PROGRAM_ID,
         );
 
-        let feed = PriceObservations::try_from(&post_states[0].account().data)
+        let feed = PriceObservations::try_from(post_states[0].post_data())
             .expect("post state must contain a valid PriceObservations");
 
         assert_eq!(
@@ -300,7 +299,7 @@ mod tests {
             ORACLE_PROGRAM_ID,
         );
 
-        let feed = PriceObservations::try_from(&post_states[0].account().data)
+        let feed = PriceObservations::try_from(post_states[0].post_data())
             .expect("post state must contain a valid PriceObservations");
 
         assert_eq!(feed.price_source_id, price_source_id());
@@ -327,7 +326,7 @@ mod tests {
                 WINDOW_24H,
                 ORACLE_PROGRAM_ID,
             );
-            let feed = PriceObservations::try_from(&post_states[0].account().data)
+            let feed = PriceObservations::try_from(post_states[0].post_data())
                 .expect("post state must contain a valid PriceObservations");
             assert_eq!(feed.last_recorded_tick, tick);
         }

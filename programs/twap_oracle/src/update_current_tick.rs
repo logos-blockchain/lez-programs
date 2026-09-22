@@ -1,7 +1,7 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
-    account::{AccountWithMetadata, Data},
-    program::{AccountPostState, ProgramId},
+    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 use twap_oracle_core::{compute_current_tick_account_pda, price_to_tick, CurrentTickAccount};
 
@@ -25,8 +25,8 @@ pub fn update_current_tick(
     price_source: AccountWithMetadata,
     clock: AccountWithMetadata,
     price: u128,
-    oracle_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    oracle_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     let price_source_id = price_source.account_id;
     assert_eq!(
         current_tick_account.account_id,
@@ -49,25 +49,27 @@ pub fn update_current_tick(
     stored.tick = price_to_tick(price);
     stored.last_updated = clock_data.timestamp;
 
-    let mut current_tick_account_post = current_tick_account.account.clone();
-    current_tick_account_post.data = Data::from(&stored);
-
     vec![
-        AccountPostState::new(current_tick_account_post),
-        AccountPostState::new(price_source.account.clone()),
-        AccountPostState::new(clock.account.clone()),
+        AccountStateDiff::new(
+            current_tick_account,
+            BalanceDiff::Add(0),
+            Data::from(&stored),
+        ),
+        AccountStateDiff::unchanged(price_source),
+        AccountStateDiff::unchanged(clock),
     ]
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::StateDiffExt;
     use lee_core::account::{Account, AccountId, Nonce};
     use twap_oracle_core::compute_current_tick_account_pda;
 
     use super::*;
 
-    const ORACLE_PROGRAM_ID: ProgramId = [77u32; 8];
-    const CLOCK_PROGRAM_ID: ProgramId = [88u32; 8];
+    const ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
+    const CLOCK_PROGRAM_ID: AccountId = AccountId::new([88u8; 32]);
     /// `1.0` in Q64.64 — the spot price at tick 0.
     const UNIT_PRICE: u128 = 1u128 << 64;
 
@@ -100,7 +102,7 @@ mod tests {
     fn price_source_authorized() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: [42u32; 8],
+                program_owner: AccountId::new([42u8; 32]),
                 balance: 0,
                 data: Data::default(),
                 nonce: Nonce(0),
@@ -151,7 +153,7 @@ mod tests {
             price,
             ORACLE_PROGRAM_ID,
         );
-        let account = CurrentTickAccount::try_from(&post_states[0].account().data)
+        let account = CurrentTickAccount::try_from(post_states[0].post_data())
             .expect("post state must contain a valid CurrentTickAccount");
         assert_eq!(account.tick, twap_oracle_core::price_to_tick(price));
         assert_ne!(account.tick, 100);
@@ -166,7 +168,7 @@ mod tests {
             UNIT_PRICE,
             ORACLE_PROGRAM_ID,
         );
-        let account = CurrentTickAccount::try_from(&post_states[0].account().data)
+        let account = CurrentTickAccount::try_from(post_states[0].post_data())
             .expect("post state must contain a valid CurrentTickAccount");
         assert_eq!(account.last_updated, 999_000);
     }
@@ -189,7 +191,7 @@ mod tests {
                 price,
                 ORACLE_PROGRAM_ID,
             );
-            let account = CurrentTickAccount::try_from(&post_states[0].account().data)
+            let account = CurrentTickAccount::try_from(post_states[0].post_data())
                 .expect("post state must contain a valid CurrentTickAccount");
             assert_eq!(account.tick, twap_oracle_core::price_to_tick(price));
         }
@@ -208,8 +210,8 @@ mod tests {
             ORACLE_PROGRAM_ID,
         );
 
-        assert_eq!(*post_states[1].account(), price_source.account);
-        assert_eq!(*post_states[2].account(), clock.account);
+        assert_eq!(post_states[1], AccountStateDiff::unchanged(price_source));
+        assert_eq!(post_states[2], AccountStateDiff::unchanged(clock));
     }
 
     // ── precondition violations ───────────────────────────────────────────────
