@@ -1,13 +1,14 @@
 //! Print the AMM PDAs for a namespaced instance (and, given a token pair, a pool's PDAs).
 //!
 //! Usage:
-//!   cargo run -q -p amm_program --example amm_pdas -- <amm_pid> <owner> [<twap_pid> <defA> <defB>]
+//!   cargo run -q -p amm_program --example amm_pdas -- <amm_account_id> <owner>
+//! [<twap_account_id> <defA> <defB>]
 //!
-//! `*_pid` are ProgramIds as 8 comma-separated u32 limbs (as printed by `spel program-id`);
-//! `owner`/`defA`/`defB` are base58 account ids. AMM instances are namespaced by `(owner, nonce)`;
-//! this prints the owner's default instance (all-zero nonce). With `<amm_pid> <owner>` it prints
-//! the instance's config PDA; with all args it also prints the pool/vault/LP/lock/tick and
-//! protocol-fee-holding PDAs.
+//! Since LEZ v0.2.5 a program is addressed by the account id of its deployed `ProgramHeader`,
+//! not by its ImageID, so every argument is a base58 account id. AMM instances are namespaced
+//! by `(owner, nonce)`; this prints the owner's default instance (all-zero nonce). With
+//! `<amm_account_id> <owner>` it prints the instance's config PDA; with all args it also prints
+//! the pool/vault/LP/lock/tick and protocol-fee-holding PDAs.
 
 use std::str::FromStr;
 
@@ -15,50 +16,16 @@ use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
     compute_protocol_fee_pda, compute_vault_pda,
 };
-use lee_core::{account::AccountId, program::ProgramId};
+use lee_core::account::AccountId;
 use twap_oracle_core::compute_current_tick_account_pda;
-
-// Accepts a ProgramId as 8 comma-separated u32 limbs, a 64-char ImageID hex, or a base58
-// ImageID. Hex/base58 are decoded as the 32 ImageID bytes read little-endian per u32 word,
-// matching how `spel program-id` maps the ImageID to limbs.
-fn parse_pid(s: &str) -> ProgramId {
-    if s.contains(',') {
-        let limbs: Vec<u32> = s
-            .split(',')
-            .map(|x| x.trim().parse().expect("ProgramId limb must be a u32"))
-            .collect();
-        assert_eq!(limbs.len(), 8, "ProgramId must be 8 u32 limbs");
-        let mut pid: ProgramId = [0u32; 8];
-        pid.copy_from_slice(&limbs);
-        return pid;
-    }
-    let bytes: [u8; 32] = if s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()) {
-        let mut out = [0u8; 32];
-        for (byte, pair) in out.iter_mut().zip(s.as_bytes().chunks_exact(2)) {
-            let pair: [u8; 2] = pair.try_into().expect("hex pair");
-            let hex = std::str::from_utf8(&pair).expect("ascii hex");
-            *byte = u8::from_str_radix(hex, 16).expect("invalid hex digit");
-        }
-        out
-    } else {
-        AccountId::from_str(s)
-            .expect("ProgramId must be 8 u32 limbs, a 64-char hex ImageID, or base58")
-            .into_value()
-    };
-    let mut pid: ProgramId = [0u32; 8];
-    for (limb, chunk) in pid.iter_mut().zip(bytes.chunks_exact(4)) {
-        *limb = u32::from_le_bytes(chunk.try_into().expect("4-byte chunk"));
-    }
-    pid
-}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [amm_s, owner_s, rest @ ..] = args.as_slice() else {
-        eprintln!("usage: amm_pdas <amm_pid> <owner> [<twap_pid> <defA> <defB>]");
+        eprintln!("usage: amm_pdas <amm_account_id> <owner> [<twap_account_id> <defA> <defB>]");
         std::process::exit(1);
     };
-    let amm = parse_pid(amm_s);
+    let amm = AccountId::from_str(amm_s).expect("amm program account id must be base58");
     let owner = AccountId::from_str(owner_s).expect("owner must be base58");
     // The owner's default instance uses the all-zero nonce.
     let nonce = [0u8; 32];
@@ -66,7 +33,7 @@ fn main() {
     println!("config               {config}");
 
     if let [twap_s, def_a_s, def_b_s] = rest {
-        let twap = parse_pid(twap_s);
+        let twap = AccountId::from_str(twap_s).expect("twap program account id must be base58");
         let def_a = AccountId::from_str(def_a_s).expect("defA must be base58");
         let def_b = AccountId::from_str(def_b_s).expect("defB must be base58");
         let pool = compute_pool_pda(amm, config, def_a, def_b);

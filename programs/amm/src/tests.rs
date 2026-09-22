@@ -7,6 +7,7 @@
 
 use std::num::NonZero;
 
+use crate::StateDiffExt;
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_liquidity_token_pda_seed,
     compute_lp_lock_holding_pda, compute_lp_lock_holding_pda_seed, compute_pool_pda,
@@ -17,7 +18,7 @@ use amm_core::{
 };
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::{ChainedCall, Claim, ProgramId},
+    program::ChainedCall,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -29,10 +30,10 @@ use crate::{
     sync::sync_reserves,
 };
 
-const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
-const AMM_PROGRAM_ID: ProgramId = [42; 8];
-const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
-const MALICIOUS_TOKEN_PROGRAM_ID: ProgramId = [99; 8];
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([15u8; 32]);
+const AMM_PROGRAM_ID: AccountId = AccountId::new([42u8; 32]);
+const TWAP_ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
+const MALICIOUS_TOKEN_PROGRAM_ID: AccountId = AccountId::new([99u8; 32]);
 /// Canonical test namespace: the owner that signs Initialize and the default (all-zero) nonce.
 /// Every pool/vault/config fixture derives from `IdForTests::config_id()`, the config PDA of this
 /// `(owner, nonce)` instance.
@@ -244,8 +245,8 @@ impl ChainedCallForTests {
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
             vec![
-                AccountWithMetadataForTests::user_holding_a(),
-                AccountWithMetadataForTests::vault_a_init(),
+                AccountWithMetadataForTests::user_holding_a().account_id,
+                AccountWithMetadataForTests::vault_a_init().account_id,
             ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: BalanceForTests::add_max_amount_a(),
@@ -256,12 +257,12 @@ impl ChainedCallForTests {
     fn cc_swap_token_b_test_1() -> ChainedCall {
         let swap_amount = BalanceForTests::swap_amount_out_b();
 
-        let mut vault_b_auth = AccountWithMetadataForTests::vault_b_init();
-        vault_b_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![vault_b_auth, AccountWithMetadataForTests::user_holding_b()],
+            vec![
+                AccountWithMetadataForTests::vault_b_init().account_id,
+                AccountWithMetadataForTests::user_holding_b().account_id,
+            ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: swap_amount,
             },
@@ -275,12 +276,12 @@ impl ChainedCallForTests {
     fn cc_swap_token_a_test_2() -> ChainedCall {
         let swap_amount = BalanceForTests::swap_amount_out_a();
 
-        let mut vault_a_auth = AccountWithMetadataForTests::vault_a_init();
-        vault_a_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![vault_a_auth, AccountWithMetadataForTests::user_holding_a()],
+            vec![
+                AccountWithMetadataForTests::vault_a_init().account_id,
+                AccountWithMetadataForTests::user_holding_a().account_id,
+            ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: swap_amount,
             },
@@ -295,8 +296,8 @@ impl ChainedCallForTests {
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
             vec![
-                AccountWithMetadataForTests::user_holding_b(),
-                AccountWithMetadataForTests::vault_b_init(),
+                AccountWithMetadataForTests::user_holding_b().account_id,
+                AccountWithMetadataForTests::vault_b_init().account_id,
             ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: BalanceForTests::add_max_amount_b(),
@@ -313,8 +314,8 @@ impl ChainedCallForTests {
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
             vec![
-                AccountWithMetadataForTests::user_holding_a(),
-                AccountWithMetadataForTests::vault_a_init(),
+                AccountWithMetadataForTests::user_holding_a().account_id,
+                AccountWithMetadataForTests::vault_a_init().account_id,
             ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: swap_amount,
@@ -325,12 +326,12 @@ impl ChainedCallForTests {
     fn cc_swap_exact_output_token_b_test_1() -> ChainedCall {
         let swap_amount: u128 = 166;
 
-        let mut vault_b_auth = AccountWithMetadataForTests::vault_b_init();
-        vault_b_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![vault_b_auth, AccountWithMetadataForTests::user_holding_b()],
+            vec![
+                AccountWithMetadataForTests::vault_b_init().account_id,
+                AccountWithMetadataForTests::user_holding_b().account_id,
+            ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: swap_amount,
             },
@@ -344,12 +345,12 @@ impl ChainedCallForTests {
     fn cc_swap_exact_output_token_a_test_2() -> ChainedCall {
         let swap_amount: u128 = 285;
 
-        let mut vault_a_auth = AccountWithMetadataForTests::vault_a_init();
-        vault_a_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![vault_a_auth, AccountWithMetadataForTests::user_holding_a()],
+            vec![
+                AccountWithMetadataForTests::vault_a_init().account_id,
+                AccountWithMetadataForTests::user_holding_a().account_id,
+            ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: swap_amount,
             },
@@ -369,8 +370,8 @@ impl ChainedCallForTests {
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
             vec![
-                AccountWithMetadataForTests::user_holding_b(),
-                AccountWithMetadataForTests::vault_b_init(),
+                AccountWithMetadataForTests::user_holding_b().account_id,
+                AccountWithMetadataForTests::vault_b_init().account_id,
             ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: swap_amount,
@@ -382,8 +383,8 @@ impl ChainedCallForTests {
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
             vec![
-                AccountWithMetadataForTests::user_holding_a(),
-                AccountWithMetadataForTests::vault_a_init(),
+                AccountWithMetadataForTests::user_holding_a().account_id,
+                AccountWithMetadataForTests::vault_a_init().account_id,
             ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: 3,
@@ -392,12 +393,12 @@ impl ChainedCallForTests {
     }
 
     fn cc_swap_rounding_boundary_token_b_out() -> ChainedCall {
-        let mut vault_b_auth = AccountWithMetadataForTests::vault_b_init();
-        vault_b_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![vault_b_auth, AccountWithMetadataForTests::user_holding_b()],
+            vec![
+                AccountWithMetadataForTests::vault_b_init().account_id,
+                AccountWithMetadataForTests::user_holding_b().account_id,
+            ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: 1,
             },
@@ -412,8 +413,8 @@ impl ChainedCallForTests {
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
             vec![
-                AccountWithMetadataForTests::user_holding_a(),
-                AccountWithMetadataForTests::vault_a_init(),
+                AccountWithMetadataForTests::user_holding_a().account_id,
+                AccountWithMetadataForTests::vault_a_init().account_id,
             ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: BalanceForTests::add_successful_amount_a(),
@@ -425,8 +426,8 @@ impl ChainedCallForTests {
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
             vec![
-                AccountWithMetadataForTests::user_holding_b(),
-                AccountWithMetadataForTests::vault_b_init(),
+                AccountWithMetadataForTests::user_holding_b().account_id,
+                AccountWithMetadataForTests::vault_b_init().account_id,
             ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: BalanceForTests::add_successful_amount_b(),
@@ -435,14 +436,11 @@ impl ChainedCallForTests {
     }
 
     fn cc_add_pool_lp() -> ChainedCall {
-        let mut pool_lp_auth = AccountWithMetadataForTests::pool_lp_init();
-        pool_lp_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
             vec![
-                pool_lp_auth,
-                AccountWithMetadataForTests::user_holding_lp_init(),
+                AccountWithMetadataForTests::pool_lp_init().account_id,
+                AccountWithMetadataForTests::user_holding_lp_init().account_id,
             ],
             &token_core::Instruction::Mint {
                 amount_to_mint: BalanceForTests::add_delta_lp_successful(),
@@ -454,12 +452,12 @@ impl ChainedCallForTests {
     }
 
     fn cc_remove_token_a() -> ChainedCall {
-        let mut vault_a_auth = AccountWithMetadataForTests::vault_a_init();
-        vault_a_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![vault_a_auth, AccountWithMetadataForTests::user_holding_a()],
+            vec![
+                AccountWithMetadataForTests::vault_a_init().account_id,
+                AccountWithMetadataForTests::user_holding_a().account_id,
+            ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: BalanceForTests::remove_actual_a_successful(),
             },
@@ -471,12 +469,12 @@ impl ChainedCallForTests {
     }
 
     fn cc_remove_token_b() -> ChainedCall {
-        let mut vault_b_auth = AccountWithMetadataForTests::vault_b_init();
-        vault_b_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![vault_b_auth, AccountWithMetadataForTests::user_holding_b()],
+            vec![
+                AccountWithMetadataForTests::vault_b_init().account_id,
+                AccountWithMetadataForTests::user_holding_b().account_id,
+            ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: BalanceForTests::remove_actual_b_successful(),
             },
@@ -488,14 +486,11 @@ impl ChainedCallForTests {
     }
 
     fn cc_remove_pool_lp() -> ChainedCall {
-        let mut pool_lp_auth = AccountWithMetadataForTests::pool_lp_init();
-        pool_lp_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
             vec![
-                pool_lp_auth,
-                AccountWithMetadataForTests::user_holding_lp_init(),
+                AccountWithMetadataForTests::pool_lp_init().account_id,
+                AccountWithMetadataForTests::user_holding_lp_init().account_id,
             ],
             &token_core::Instruction::Burn {
                 amount_to_burn: BalanceForTests::remove_amount_lp(),
@@ -507,12 +502,12 @@ impl ChainedCallForTests {
     }
 
     fn cc_new_definition_token_a() -> ChainedCall {
-        let mut vault_a_auth = AccountWithMetadataForTests::vault_a_init();
-        vault_a_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![AccountWithMetadataForTests::user_holding_a(), vault_a_auth],
+            vec![
+                AccountWithMetadataForTests::user_holding_a().account_id,
+                AccountWithMetadataForTests::vault_a_init().account_id,
+            ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: BalanceForTests::vault_a_reserve_init(),
             },
@@ -524,12 +519,12 @@ impl ChainedCallForTests {
     }
 
     fn cc_new_definition_token_b() -> ChainedCall {
-        let mut vault_b_auth = AccountWithMetadataForTests::vault_b_init();
-        vault_b_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![AccountWithMetadataForTests::user_holding_b(), vault_b_auth],
+            vec![
+                AccountWithMetadataForTests::user_holding_b().account_id,
+                AccountWithMetadataForTests::vault_b_init().account_id,
+            ],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: BalanceForTests::vault_b_reserve_init(),
             },
@@ -541,18 +536,16 @@ impl ChainedCallForTests {
     }
 
     fn cc_new_definition_token_lp_lock() -> ChainedCall {
-        let mut pool_lp_auth = AccountForTests::pool_lp_uninit();
-        pool_lp_auth.is_authorized = true;
-        let mut lp_lock_holding_auth = AccountForTests::lp_lock_holding_uninit();
-        lp_lock_holding_auth.is_authorized = true;
-
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![pool_lp_auth.clone(), lp_lock_holding_auth],
+            vec![
+                AccountForTests::pool_lp_uninit().account_id,
+                AccountForTests::lp_lock_holding_uninit().account_id,
+            ],
             &token_core::Instruction::NewFungibleDefinition {
                 name: String::from("LP Token"),
                 total_supply: MINIMUM_LIQUIDITY,
-                mint_authority: Some(pool_lp_auth.account_id),
+                mint_authority: Some(AccountForTests::pool_lp_uninit().account_id),
             },
         )
         .with_pda_seeds(vec![
@@ -565,8 +558,8 @@ impl ChainedCallForTests {
         ChainedCall::new(
             TOKEN_PROGRAM_ID,
             vec![
-                AccountForTests::pool_lp_created_after_lock(),
-                AccountForTests::user_holding_lp_uninit(),
+                AccountForTests::pool_lp_created_after_lock().account_id,
+                AccountForTests::user_holding_lp_uninit().account_id,
             ],
             &token_core::Instruction::Mint {
                 amount_to_mint: BalanceForTests::lp_user_init(),
@@ -578,12 +571,9 @@ impl ChainedCallForTests {
     }
 
     fn cc_new_definition_create_current_tick() -> ChainedCall {
-        // The pool is passed to the oracle in its post-claim state: owned by the AMM program and
-        // carrying the freshly written PoolDefinition, authorized as the price source.
-        let mut pool_price_source = AccountForTests::pool_definition_init();
-        pool_price_source.account.program_owner = AMM_PROGRAM_ID;
-        pool_price_source.is_authorized = true;
-
+        // The oracle reads the pool as the price source. A chained call names it by id and
+        // the runtime resolves the post-claim state from the transaction's diff, so the test
+        // no longer has to predict it.
         let initial_price = amm_core::spot_price_q64_64(
             BalanceForTests::vault_a_reserve_init(),
             BalanceForTests::vault_b_reserve_init(),
@@ -592,9 +582,9 @@ impl ChainedCallForTests {
         ChainedCall::new(
             TWAP_ORACLE_PROGRAM_ID,
             vec![
-                AccountForTests::current_tick_account_uninit(),
-                pool_price_source,
-                AccountForTests::clock(),
+                AccountForTests::current_tick_account_uninit().account_id,
+                AccountForTests::pool_definition_init().account_id,
+                AccountForTests::clock().account_id,
             ],
             &twap_oracle_core::Instruction::CreateCurrentTickAccount { initial_price },
         )
@@ -732,7 +722,7 @@ impl AccountWithMetadataForTests {
     /// program-owner gate (`must be owned by the AMM Program`).
     fn config_not_owned_by_amm() -> AccountWithMetadata {
         let mut config = AccountWithMetadataForTests::config_init();
-        config.account.program_owner = [0; 8];
+        config.account.program_owner = AccountId::default();
         config
     }
 
@@ -1053,7 +1043,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_init() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1087,7 +1077,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_swap_exact_output_init() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1109,7 +1099,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_swap_rounding_boundary_init() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1131,7 +1121,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_init_reserve_a_zero() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1153,7 +1143,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_init_reserve_b_zero() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1175,7 +1165,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_init_reserve_a_low() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1197,7 +1187,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_init_reserve_b_low() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1219,7 +1209,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_swap_test_1() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1241,7 +1231,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_swap_test_2() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1266,7 +1256,7 @@ impl AccountWithMetadataForTests {
         // cc_swap_exact_output_token_a_test_1) reserve_b: 500  - 166 = 334
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0_u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1288,7 +1278,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_swap_exact_output_test_2() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0_u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1310,7 +1300,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_swap_rounding_boundary_post() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0_u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1332,7 +1322,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_add_zero_lp() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1354,7 +1344,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_add_successful() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1376,7 +1366,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_init_low_balances() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1398,7 +1388,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_remove_successful() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1420,7 +1410,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_below_minimum_liquidity() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1442,7 +1432,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_with_wrong_id() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1530,7 +1520,7 @@ impl AccountWithMetadataForTests {
     fn pool_definition_at_minimum_liquidity() -> AccountWithMetadata {
         AccountWithMetadata {
             account: Account {
-                program_owner: ProgramId::default(),
+                program_owner: AMM_PROGRAM_ID,
                 balance: 0u128,
                 data: Data::from(&PoolDefinition {
                     definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -1906,9 +1896,9 @@ fn test_call_add_liquidity_chained_call_successsful() {
 
     let pool_post = post_states[1].clone();
 
-    assert!(
-        AccountWithMetadataForTests::pool_definition_add_successful().account
-            == *pool_post.account()
+    assert_eq!(
+        AccountWithMetadataForTests::pool_definition_add_successful().account,
+        pool_post.post_account(AMM_PROGRAM_ID)
     );
 
     let chained_call_lp = chained_calls[0].clone();
@@ -1921,11 +1911,11 @@ fn test_call_add_liquidity_chained_call_successsful() {
 
     // The fourth chained call refreshes the pool's TWAP current tick from the post-add price.
     assert_eq!(chained_calls.len(), 4);
-    assert_update_tick_call(&chained_calls, post_states[1].account());
+    assert_update_tick_call(&chained_calls, &post_states[1].post_account(AMM_PROGRAM_ID));
 
     // The config account is echoed back unchanged as the first post-state.
     assert_eq!(
-        *post_states[0].account(),
+        post_states[0].post_account(AMM_PROGRAM_ID),
         AccountWithMetadataForTests::config_init().account
     );
 }
@@ -2236,9 +2226,9 @@ fn test_call_remove_liquidity_chained_call_successful() {
 
     let pool_post = post_states[1].clone();
 
-    assert!(
-        AccountWithMetadataForTests::pool_definition_remove_successful().account
-            == *pool_post.account()
+    assert_eq!(
+        AccountWithMetadataForTests::pool_definition_remove_successful().account,
+        pool_post.post_account(AMM_PROGRAM_ID)
     );
 
     let chained_call_lp = chained_calls[0].clone();
@@ -2251,7 +2241,7 @@ fn test_call_remove_liquidity_chained_call_successful() {
 
     // The fourth chained call refreshes the pool's TWAP current tick from the post-removal price.
     assert_eq!(chained_calls.len(), 4);
-    assert_update_tick_call(&chained_calls, post_states[1].account());
+    assert_update_tick_call(&chained_calls, &post_states[1].post_account(AMM_PROGRAM_ID));
 }
 
 #[should_panic(expected = "Balances must be nonzero")]
@@ -2487,15 +2477,15 @@ fn test_call_new_definition_chained_call_successful() {
 
     let pool_post = post_states[1].clone();
 
-    assert!(AccountWithMetadataForTests::pool_definition_init().account == *pool_post.account());
+    // The pool write is itself the claim on its PDA in v0.2.5, so the acquired ownership is
+    // part of the post-state rather than a separate claim to inspect.
     assert_eq!(
-        pool_post.required_claim(),
-        Some(Claim::Pda(compute_pool_pda_seed(
-            IdForTests::config_id(),
-            IdForTests::token_a_definition_id(),
-            IdForTests::token_b_definition_id(),
-        )))
+        pool_post.post_data(),
+        &AccountWithMetadataForTests::pool_definition_init()
+            .account
+            .data
     );
+    assert_eq!(pool_post.post_owner(AMM_PROGRAM_ID), AMM_PROGRAM_ID);
 
     let chained_call_lp_lock = chained_calls[0].clone();
     let chained_call_lp_user = chained_calls[1].clone();
@@ -2748,7 +2738,7 @@ fn test_call_swap_exact_input_accepts_smallest_amount_for_rounded_boundary() {
 
     assert_eq!(
         AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_post().account,
-        *pool_post.account()
+        pool_post.post_account(AMM_PROGRAM_ID)
     );
 
     let chained_call_a = chained_calls[0].clone();
@@ -2765,21 +2755,17 @@ fn test_call_swap_exact_input_accepts_smallest_amount_for_rounded_boundary() {
 }
 
 /// Asserts the last chained call is the oracle UpdateCurrentTick, carrying the post-operation
-/// spot price and the post-operation pool authorized as the price source.
+/// spot price. The pool is named by id: the runtime resolves its post-operation state from the
+/// transaction's diff, so the price the call carries is the only thing left to check here.
 fn assert_update_tick_call(chained_calls: &[ChainedCall], pool_post_account: &Account) {
     let pool_def = PoolDefinition::try_from(&pool_post_account.data)
         .expect("pool post-state must hold a valid PoolDefinition");
-    let expected_price_source = AccountWithMetadata {
-        account: pool_post_account.clone(),
-        is_authorized: true,
-        account_id: IdForTests::pool_definition_id(),
-    };
     let expected = ChainedCall::new(
         TWAP_ORACLE_PROGRAM_ID,
         vec![
-            AccountWithMetadataForTests::current_tick_account_uninit(),
-            expected_price_source,
-            AccountWithMetadataForTests::clock(),
+            AccountWithMetadataForTests::current_tick_account_uninit().account_id,
+            IdForTests::pool_definition_id(),
+            AccountWithMetadataForTests::clock().account_id,
         ],
         &twap_oracle_core::Instruction::UpdateCurrentTick {
             price: amm_core::spot_price_q64_64(pool_def.reserve_a, pool_def.reserve_b),
@@ -2817,8 +2803,9 @@ fn test_call_swap_chained_call_successful_1() {
 
     let pool_post = post_states[1].clone();
 
-    assert!(
-        AccountWithMetadataForTests::pool_definition_swap_test_1().account == *pool_post.account()
+    assert_eq!(
+        AccountWithMetadataForTests::pool_definition_swap_test_1().account,
+        pool_post.post_account(AMM_PROGRAM_ID)
     );
 
     let chained_call_a = chained_calls[0].clone();
@@ -2834,7 +2821,7 @@ fn test_call_swap_chained_call_successful_1() {
     );
 
     assert_eq!(chained_calls.len(), 3);
-    assert_update_tick_call(&chained_calls, pool_post.account());
+    assert_update_tick_call(&chained_calls, &pool_post.post_account(AMM_PROGRAM_ID));
 }
 
 #[test]
@@ -2856,8 +2843,9 @@ fn test_call_swap_chained_call_successful_2() {
 
     let pool_post = post_states[1].clone();
 
-    assert!(
-        AccountWithMetadataForTests::pool_definition_swap_test_2().account == *pool_post.account()
+    assert_eq!(
+        AccountWithMetadataForTests::pool_definition_swap_test_2().account,
+        pool_post.post_account(AMM_PROGRAM_ID)
     );
 
     let chained_call_a = chained_calls[1].clone();
@@ -2873,7 +2861,7 @@ fn test_call_swap_chained_call_successful_2() {
     );
 
     assert_eq!(chained_calls.len(), 3);
-    assert_update_tick_call(&chained_calls, pool_post.account());
+    assert_update_tick_call(&chained_calls, &pool_post.post_account(AMM_PROGRAM_ID));
 }
 
 /// With a nonzero protocol fee, a token-A-in exact-input swap emits a fourth chained call: the
@@ -2920,7 +2908,7 @@ fn test_swap_exact_input_diverts_protocol_fee() {
     // left the vault to the protocol holding), while the output reserve and the trader's output are
     // unchanged by the protocol fee. This is what keeps reserve == vault and leaves LPs only
     // `swap_fee - protocol_fee`.
-    let pool_post = PoolDefinition::try_from(&post_states[1].account().data)
+    let pool_post = PoolDefinition::try_from(post_states[1].post_data())
         .expect("pool post-state must hold a valid PoolDefinition");
     assert_eq!(
         pool_post.reserve_a,
@@ -2930,13 +2918,10 @@ fn test_swap_exact_input_diverts_protocol_fee() {
 
     let protocol_call = &chained_calls[2];
     // Source is the Token A (input) vault; destination is Token A's protocol-fee holding.
+    assert_eq!(protocol_call.pre_state_ids[0], IdForTests::vault_a_id());
+    // The vault's authority is the seed below; a call carries bare ids, not flags.
     assert_eq!(
-        protocol_call.pre_states[0].account_id,
-        IdForTests::vault_a_id()
-    );
-    assert!(protocol_call.pre_states[0].is_authorized);
-    assert_eq!(
-        protocol_call.pre_states[1].account_id,
+        protocol_call.pre_state_ids[1],
         IdForTests::protocol_fee_holding_a_id()
     );
     // Authorized by the vault seed (debit) and the protocol-fee seed (create/credit).
@@ -2955,7 +2940,7 @@ fn test_swap_exact_input_diverts_protocol_fee() {
     );
     let expected = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        protocol_call.pre_states.clone(),
+        protocol_call.pre_state_ids.clone(),
         &token_core::Instruction::Transfer {
             amount_to_transfer: expected_protocol_fee,
         },
@@ -3055,7 +3040,7 @@ fn test_swap_exact_output_diverts_protocol_fee() {
 
     // Reserve accounting: input reserve grows by required_in NET of the protocol cut; the output
     // reserve falls by exactly the requested output (the protocol fee is taken on the input side).
-    let pool_post = PoolDefinition::try_from(&post_states[1].account().data)
+    let pool_post = PoolDefinition::try_from(post_states[1].post_data())
         .expect("pool post-state must hold a valid PoolDefinition");
     assert_eq!(
         pool_post.reserve_a,
@@ -3064,13 +3049,10 @@ fn test_swap_exact_output_diverts_protocol_fee() {
     assert_eq!(pool_post.reserve_b, reserve_b_init - exact_out);
 
     let protocol_call = &chained_calls[2];
+    assert_eq!(protocol_call.pre_state_ids[0], IdForTests::vault_a_id());
+    // The vault's authority is the seed below; a call carries bare ids, not flags.
     assert_eq!(
-        protocol_call.pre_states[0].account_id,
-        IdForTests::vault_a_id()
-    );
-    assert!(protocol_call.pre_states[0].is_authorized);
-    assert_eq!(
-        protocol_call.pre_states[1].account_id,
+        protocol_call.pre_state_ids[1],
         IdForTests::protocol_fee_holding_a_id()
     );
     assert_eq!(
@@ -3088,7 +3070,7 @@ fn test_swap_exact_output_diverts_protocol_fee() {
     );
     let expected = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        protocol_call.pre_states.clone(),
+        protocol_call.pre_state_ids.clone(),
         &token_core::Instruction::Transfer {
             amount_to_transfer: expected_protocol_fee,
         },
@@ -3310,9 +3292,9 @@ fn call_swap_exact_output_chained_call_successful() {
 
     let pool_post = post_states[1].clone();
 
-    assert!(
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_test_1().account
-            == *pool_post.account()
+    assert_eq!(
+        AccountWithMetadataForTests::pool_definition_swap_exact_output_test_1().account,
+        pool_post.post_account(AMM_PROGRAM_ID)
     );
 
     let chained_call_a = chained_calls[0].clone();
@@ -3347,9 +3329,9 @@ fn call_swap_exact_output_chained_call_successful_2() {
 
     let pool_post = post_states[1].clone();
 
-    assert!(
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_test_2().account
-            == *pool_post.account()
+    assert_eq!(
+        AccountWithMetadataForTests::pool_definition_swap_exact_output_test_2().account,
+        pool_post.post_account(AMM_PROGRAM_ID)
     );
 
     let chained_call_a = chained_calls[1].clone();
@@ -3429,7 +3411,7 @@ fn call_swap_exact_output_accepts_smallest_max_in_for_rounded_boundary() {
 
     assert_eq!(
         AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_post().account,
-        *pool_post.account()
+        pool_post.post_account(AMM_PROGRAM_ID)
     );
 
     let chained_call_a = chained_calls[0].clone();
@@ -3460,7 +3442,7 @@ fn swap_exact_output_overflow_protection() {
 
     let pool = AccountWithMetadata {
         account: Account {
-            program_owner: ProgramId::default(),
+            program_owner: AccountId::default(),
             balance: 0,
             data: Data::from(&PoolDefinition {
                 definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -3544,7 +3526,7 @@ fn test_new_definition_lp_asymmetric_amounts() {
 
     // check the minted LP amount
     let pool_post = post_states[1].clone();
-    let pool_def = PoolDefinition::try_from(&pool_post.account().data).unwrap();
+    let pool_def = PoolDefinition::try_from(pool_post.post_data()).unwrap();
     assert_eq!(
         pool_def.liquidity_pool_supply,
         BalanceForTests::lp_supply_init()
@@ -3582,23 +3564,22 @@ fn test_new_definition_lp_symmetric_amounts() {
     );
 
     let pool_post = post_states[1].clone();
-    let pool_def = PoolDefinition::try_from(&pool_post.account().data).unwrap();
+    let pool_def = PoolDefinition::try_from(pool_post.post_data()).unwrap();
     assert_eq!(pool_def.liquidity_pool_supply, expected_lp);
 
     let chained_call_lp_lock = chained_calls[0].clone();
     let chained_call_lp_user = chained_calls[1].clone();
 
-    let mut pool_lp_auth = AccountForTests::pool_lp_uninit();
-    pool_lp_auth.is_authorized = true;
-    let mut lp_lock_holding_auth = AccountForTests::lp_lock_holding_uninit();
-    lp_lock_holding_auth.is_authorized = true;
     let expected_lp_lock_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![pool_lp_auth.clone(), lp_lock_holding_auth],
+        vec![
+            AccountForTests::pool_lp_uninit().account_id,
+            AccountForTests::lp_lock_holding_uninit().account_id,
+        ],
         &token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
             total_supply: MINIMUM_LIQUIDITY,
-            mint_authority: Some(pool_lp_auth.account_id),
+            mint_authority: Some(AccountForTests::pool_lp_uninit().account_id),
         },
     )
     .with_pda_seeds(vec![
@@ -3609,8 +3590,8 @@ fn test_new_definition_lp_symmetric_amounts() {
     let expected_lp_user_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
         vec![
-            AccountForTests::pool_lp_created_after_lock(),
-            AccountForTests::user_holding_lp_uninit(),
+            AccountForTests::pool_lp_created_after_lock().account_id,
+            AccountForTests::user_holding_lp_uninit().account_id,
         ],
         &token_core::Instruction::Mint {
             amount_to_mint: expected_lp - MINIMUM_LIQUIDITY,
@@ -3652,7 +3633,7 @@ fn test_new_definition_large_18_decimal_amounts_no_overflow() {
     );
 
     let pool_post = post_states[1].clone();
-    let pool_def = PoolDefinition::try_from(&pool_post.account().data).unwrap();
+    let pool_def = PoolDefinition::try_from(pool_post.post_data()).unwrap();
     assert_eq!(pool_def.reserve_a, token_a_amount);
     assert_eq!(pool_def.reserve_b, token_b_amount);
     assert_eq!(pool_def.liquidity_pool_supply, expected_lp);
@@ -3688,18 +3669,16 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
         AMM_PROGRAM_ID,
     );
 
-    let mut pool_lp_auth = AccountForTests::pool_lp_uninit();
-    pool_lp_auth.is_authorized = true;
-    let mut lp_lock_holding_auth = AccountForTests::lp_lock_holding_uninit();
-    lp_lock_holding_auth.is_authorized = true;
-
     let expected_lock_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![pool_lp_auth.clone(), lp_lock_holding_auth],
+        vec![
+            AccountForTests::pool_lp_uninit().account_id,
+            AccountForTests::lp_lock_holding_uninit().account_id,
+        ],
         &token_core::Instruction::NewFungibleDefinition {
             name: String::from("LP Token"),
             total_supply: MINIMUM_LIQUIDITY,
-            mint_authority: Some(pool_lp_auth.account_id),
+            mint_authority: Some(AccountForTests::pool_lp_uninit().account_id),
         },
     )
     .with_pda_seeds(vec![
@@ -3709,8 +3688,8 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
     let expected_user_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
         vec![
-            AccountForTests::pool_lp_created_after_lock(),
-            AccountForTests::user_holding_lp_uninit(),
+            AccountForTests::pool_lp_created_after_lock().account_id,
+            AccountForTests::user_holding_lp_uninit().account_id,
         ],
         &token_core::Instruction::Mint {
             amount_to_mint: user_lp,
@@ -3722,11 +3701,11 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
     assert_eq!(chained_calls[0], expected_lock_call);
     assert_eq!(chained_calls[1], expected_user_call);
 
-    let pool_post = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
+    let pool_post = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
     assert_eq!(pool_post.liquidity_pool_supply, initial_lp);
 
     let pool_for_remove = AccountWithMetadata {
-        account: post_states[1].account().clone(),
+        account: post_states[1].post_account(AMM_PROGRAM_ID),
         is_authorized: true,
         account_id: IdForTests::pool_definition_id(),
     };
@@ -3747,8 +3726,7 @@ fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
         AMM_PROGRAM_ID,
     );
 
-    let pool_after_remove =
-        PoolDefinition::try_from(&remove_post_states[1].account().data).unwrap();
+    let pool_after_remove = PoolDefinition::try_from(remove_post_states[1].post_data()).unwrap();
     assert_eq!(pool_after_remove.liquidity_pool_supply, MINIMUM_LIQUIDITY);
     assert!(pool_after_remove.reserve_a > 0);
     assert!(pool_after_remove.reserve_b > 0);
@@ -3777,7 +3755,7 @@ fn test_sync_reserves_with_donation() {
         AccountWithMetadataForTests::clock(),
         AMM_PROGRAM_ID,
     );
-    let pool_post = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
+    let pool_post = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
     assert_eq!(
         pool_post.reserve_a,
         BalanceForTests::vault_a_reserve_init() + donation_a
@@ -3787,7 +3765,7 @@ fn test_sync_reserves_with_donation() {
     // Sync refreshes the pool's TWAP current tick via a chained call carrying the synced spot
     // price, with the synced pool authorized as the price source.
     assert_eq!(chained_calls.len(), 1);
-    assert_update_tick_call(&chained_calls, post_states[1].account());
+    assert_update_tick_call(&chained_calls, &post_states[1].post_account(AMM_PROGRAM_ID));
 }
 
 // A pool with the right token pair but an id NOT derived under config_init's namespace
@@ -3875,7 +3853,7 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
         50,
         AMM_PROGRAM_ID,
     );
-    let unsynced_pool_post = PoolDefinition::try_from(&post_unsynced[1].account().data).unwrap();
+    let unsynced_pool_post = PoolDefinition::try_from(post_unsynced[1].post_data()).unwrap();
     let unsynced_delta_lp =
         unsynced_pool_post.liquidity_pool_supply - BalanceForTests::lp_supply_init();
 
@@ -3892,7 +3870,7 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
         AMM_PROGRAM_ID,
     );
     let synced_pool = AccountWithMetadata {
-        account: sync_post[1].account().clone(),
+        account: sync_post[1].post_account(AMM_PROGRAM_ID),
         is_authorized: true,
         account_id: IdForTests::pool_definition_id(),
     };
@@ -3913,9 +3891,9 @@ fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
         50,
         AMM_PROGRAM_ID,
     );
-    let synced_pool_post = PoolDefinition::try_from(&post_synced[1].account().data).unwrap();
+    let synced_pool_post = PoolDefinition::try_from(post_synced[1].post_data()).unwrap();
     let synced_delta_lp = synced_pool_post.liquidity_pool_supply
-        - PoolDefinition::try_from(&sync_post[1].account().data)
+        - PoolDefinition::try_from(sync_post[1].post_data())
             .unwrap()
             .liquidity_pool_supply;
 
@@ -3946,7 +3924,7 @@ fn new_definition_overflow_protection() {
         AMM_PROGRAM_ID,
     );
 
-    let pool_def = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
+    let pool_def = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
     // floor(sqrt(2^127 * 2)) = floor(sqrt(2^128)) = 2^64.
     assert_eq!(pool_def.liquidity_pool_supply, 1u128 << 64);
     assert_eq!(pool_def.reserve_a, large_amount);
@@ -3963,7 +3941,7 @@ fn add_liquidity_overflow_protection() {
 
     let pool = AccountWithMetadata {
         account: Account {
-            program_owner: ProgramId::default(),
+            program_owner: AccountId::default(),
             balance: 0,
             data: Data::from(&PoolDefinition {
                 definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -4026,7 +4004,7 @@ fn add_liquidity_overflow_protection() {
         AMM_PROGRAM_ID,
     );
 
-    let pool_def = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
+    let pool_def = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
     // Balanced add of `1e30` to each `1e30` reserve mints `delta_lp = 1e30`.
     assert_eq!(pool_def.reserve_a, large + large);
     assert_eq!(pool_def.reserve_b, large + large);
@@ -4045,7 +4023,7 @@ fn remove_liquidity_overflow_protection() {
 
     let pool = AccountWithMetadata {
         account: Account {
-            program_owner: ProgramId::default(),
+            program_owner: AccountId::default(),
             balance: 0,
             data: Data::from(&PoolDefinition {
                 definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -4125,7 +4103,7 @@ fn remove_liquidity_overflow_protection() {
     // withdraw_a = floor(reserve_a * 2 / supply); withdraw_b = floor(1000 * 2 / 1002) = 1.
     let expected_withdraw_a = mul_div_floor(large_reserve, 2, lp_supply);
     let expected_withdraw_b = mul_div_floor(reserve_b, 2, lp_supply);
-    let pool_def = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
+    let pool_def = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
     assert_eq!(pool_def.reserve_a, large_reserve - expected_withdraw_a);
     assert_eq!(pool_def.reserve_b, reserve_b - expected_withdraw_b);
     assert_eq!(pool_def.liquidity_pool_supply, lp_supply - 2);
@@ -4141,7 +4119,7 @@ fn swap_exact_input_overflow_protection() {
 
     let pool = AccountWithMetadata {
         account: Account {
-            program_owner: ProgramId::default(),
+            program_owner: AccountId::default(),
             balance: 0,
             data: Data::from(&PoolDefinition {
                 definition_token_a_id: IdForTests::token_a_definition_id(),
@@ -4212,7 +4190,7 @@ fn swap_exact_input_overflow_protection() {
         effective_amount_in,
         1_000 + effective_amount_in,
     );
-    let pool_def = PoolDefinition::try_from(&post_states[1].account().data).unwrap();
+    let pool_def = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
     // token_a in: reserve_a grows by the full swap_amount_in (3); reserve_b shrinks by the
     // withdraw.
     assert_eq!(pool_def.reserve_a, 1_000 + 3);

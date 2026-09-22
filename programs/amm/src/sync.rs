@@ -4,8 +4,8 @@ use amm_core::{
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
-    account::{AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use twap_oracle_core::compute_current_tick_account_pda;
 
@@ -16,8 +16,8 @@ pub fn sync_reserves(
     vault_b: AccountWithMetadata,
     current_tick_account: AccountWithMetadata,
     clock: AccountWithMetadata,
-    amm_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    amm_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     let pool_def_data = PoolDefinition::try_from(&pool.account.data)
         .expect("Sync reserves: AMM Program expects a valid Pool Definition Account");
 
@@ -87,40 +87,36 @@ pub fn sync_reserves(
         reserve_b: vault_b_balance,
         ..pool_def_data
     };
-    let mut pool_post = pool.account.clone();
-    pool_post.data = Data::from(&pool_post_definition);
-
-    // Refresh the pool's TWAP current tick from the synced spot price. The pool is already owned by
-    // this program, so it is passed (in its synced state) as the authorized price source.
+    // Refresh the pool's TWAP current tick from the synced spot price. The oracle reads the
+    // pool in its *synced* state without this program hand-building that state: a chained
+    // call names accounts by id, and the runtime resolves each one from this transaction's
+    // diff first, so the pool write below is what the callee sees. The pool PDA seed is what
+    // authorizes the oracle over it.
     let new_price = spot_price_q64_64(vault_a_balance, vault_b_balance);
-    let pool_price_source = AccountWithMetadata {
-        account: pool_post.clone(),
-        is_authorized: true,
-        account_id: pool.account_id,
-    };
-    let update_tick_call = ChainedCall::new(
-        twap_oracle_program_id,
-        vec![
-            current_tick_account.clone(),
-            pool_price_source,
-            clock.clone(),
-        ],
-        &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
-    )
-    .with_pda_seeds(vec![compute_pool_pda_seed(
+    let pool_seed = compute_pool_pda_seed(
         config.account_id,
         pool_def_data.definition_token_a_id,
         pool_def_data.definition_token_b_id,
-    )]);
+    );
+    let update_tick_call = ChainedCall::new(
+        twap_oracle_program_id,
+        vec![
+            current_tick_account.account_id,
+            pool.account_id,
+            clock.account_id,
+        ],
+        &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
+    )
+    .with_pda_seeds(vec![pool_seed]);
 
     (
         vec![
-            AccountPostState::new(config.account.clone()),
-            AccountPostState::new(pool_post),
-            AccountPostState::new(vault_a.account.clone()),
-            AccountPostState::new(vault_b.account.clone()),
-            AccountPostState::new(current_tick_account.account.clone()),
-            AccountPostState::new(clock.account.clone()),
+            AccountStateDiff::unchanged(config),
+            AccountStateDiff::new(pool, BalanceDiff::Add(0), Data::from(&pool_post_definition)),
+            AccountStateDiff::unchanged(vault_a),
+            AccountStateDiff::unchanged(vault_b),
+            AccountStateDiff::unchanged(current_tick_account),
+            AccountStateDiff::unchanged(clock),
         ],
         vec![update_tick_call],
     )
