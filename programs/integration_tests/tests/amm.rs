@@ -18,13 +18,13 @@ use lee::{
         circuit::ProgramWithDependencies, Message, PrivacyPreservingTransaction, WitnessSet,
     },
     program::Program,
-    program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     encryption::ViewingPublicKey,
-    Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey, NullifierSecretKey,
+    AuthorizationSecretKey, Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey,
+    NullifierSecretKey,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -35,8 +35,14 @@ struct Accounts;
 struct PrivateKeys;
 
 impl PrivateKeys {
+    /// The authorization key is the root credential under v0.2.5: the circuit takes an
+    /// `ask` and derives the `nsk` from it, so the fixture roots here.
+    fn user_a_ask() -> AuthorizationSecretKey {
+        AuthorizationSecretKey([161; 32])
+    }
+
     fn user_a_nsk() -> NullifierSecretKey {
-        [161; 32]
+        NullifierSecretKey::from(&Self::user_a_ask())
     }
 
     fn user_a_npk() -> NullifierPublicKey {
@@ -51,8 +57,14 @@ impl PrivateKeys {
         AccountId::for_regular_private_account(&Self::user_a_npk(), &Self::user_a_vpk(), 0)
     }
 
+    /// The authorization key is the root credential under v0.2.5: the circuit takes an
+    /// `ask` and derives the `nsk` from it, so the fixture roots here.
+    fn user_lp_ask() -> AuthorizationSecretKey {
+        AuthorizationSecretKey([162; 32])
+    }
+
     fn user_lp_nsk() -> NullifierSecretKey {
-        [162; 32]
+        NullifierSecretKey::from(&Self::user_lp_ask())
     }
 
     fn user_lp_npk() -> NullifierPublicKey {
@@ -67,8 +79,14 @@ impl PrivateKeys {
         AccountId::for_regular_private_account(&Self::user_lp_npk(), &Self::user_lp_vpk(), 0)
     }
 
+    /// The authorization key is the root credential under v0.2.5: the circuit takes an
+    /// `ask` and derives the `nsk` from it, so the fixture roots here.
+    fn user_b_ask() -> AuthorizationSecretKey {
+        AuthorizationSecretKey([163; 32])
+    }
+
     fn user_b_nsk() -> NullifierSecretKey {
-        [163; 32]
+        NullifierSecretKey::from(&Self::user_b_ask())
     }
 
     fn user_b_npk() -> NullifierPublicKey {
@@ -116,16 +134,25 @@ impl Keys {
 }
 
 impl Ids {
-    fn token_program() -> lee_core::program::ProgramId {
-        token_methods::TOKEN_ID
+    /// The program's account id: since v0.2.5 a program is addressed by its deployed
+    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
+    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    fn token_program() -> AccountId {
+        AccountId::from(token_methods::TOKEN_ID)
     }
 
-    fn amm_program() -> lee_core::program::ProgramId {
-        amm_methods::AMM_ID
+    /// The program's account id: since v0.2.5 a program is addressed by its deployed
+    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
+    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    fn amm_program() -> AccountId {
+        AccountId::from(amm_methods::AMM_ID)
     }
 
-    fn twap_oracle_program() -> lee_core::program::ProgramId {
-        twap_oracle_methods::TWAP_ORACLE_ID
+    /// The program's account id: since v0.2.5 a program is addressed by its deployed
+    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
+    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    fn twap_oracle_program() -> AccountId {
+        AccountId::from(twap_oracle_methods::TWAP_ORACLE_ID)
     }
 
     /// The account that owns (and signs for) the canonical test AMM instance's namespace.
@@ -1213,29 +1240,18 @@ impl Accounts {
     }
 }
 
+// v0.2.5 deleted `ProgramDeploymentTransaction`; deployment is now the `program_loader`
+// pseudo-program's WriteSegment/CreateHeader flow. `with_programs` seeds each program in the
+// shape that flow produces — a loader-owned header plus its segment — without making every
+// test drive a deployment. The header lands at `AccountId::from(program.id())`, so a program's
+// account id stays derivable from its ELF here.
 fn deploy_programs(state: &mut V03State) {
-    let token_message =
-        program_deployment_transaction::Message::new(token_methods::TOKEN_ELF.to_vec());
-    state
-        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
-            token_message,
-        ))
-        .expect("token program deployment must succeed");
-
-    let amm_message = program_deployment_transaction::Message::new(amm_methods::AMM_ELF.to_vec());
-    state
-        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
-            amm_message,
-        ))
-        .expect("amm program deployment must succeed");
-
-    let twap_message =
-        program_deployment_transaction::Message::new(twap_oracle_methods::TWAP_ORACLE_ELF.to_vec());
-    state
-        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
-            twap_message,
-        ))
-        .expect("twap oracle program deployment must succeed");
+    *state = std::mem::take(state).with_programs([
+        Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF"),
+        Program::new(amm_methods::AMM_ELF.to_vec().into()).expect("valid amm ELF"),
+        Program::new(twap_oracle_methods::TWAP_ORACLE_ELF.to_vec().into())
+            .expect("valid twap oracle ELF"),
+    ]);
 }
 
 fn state_for_amm_tests() -> V03State {
@@ -1354,7 +1370,10 @@ fn try_execute_new_definition(
     };
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0)
+    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .map(|_events| ())
 }
 
 #[cfg(test)]
@@ -1551,7 +1570,10 @@ fn execute_initialize_for(
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[owner_key]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0)
+    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .map(|_events| ())
 }
 
 /// The full set of PDAs an AMM instance (`(owner, nonce)` namespace) derives for the canonical
@@ -1636,7 +1658,10 @@ fn execute_new_definition_in(
         &[&Keys::user_a(), &Keys::user_b(), lp_key],
     );
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0)
+    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .map(|_events| ())
 }
 
 /// Builds a fungible token holding account for `definition_id` with the given balance.
@@ -1676,7 +1701,10 @@ fn execute_create_price_observations(
 
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0)
+    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .map(|_events| ())
 }
 
 #[cfg(test)]
@@ -1701,7 +1729,10 @@ fn execute_create_oracle_price_account(
 
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0)
+    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .map(|_events| ())
 }
 
 #[cfg(test)]
@@ -1840,9 +1871,15 @@ fn amm_initialize_creates_config_account() {
     assert_eq!(config.authority, Ids::admin());
 }
 
-/// One owner opens multiple isolated instances via distinct `nonce`s. The first initialize claims
-/// the fresh owner into the AMM; the second, under the same (now AMM-owned) owner, echoes it
-/// unchanged — both must succeed end-to-end through the guest.
+/// One owner opens multiple isolated instances via distinct `nonce`s, both succeeding end to
+/// end through the guest.
+///
+/// Under v0.2.4 the first initialize also claimed the fresh owner into the AMM as a namespace
+/// marker. v0.2.5 acquires ownership only on a data write and forbids an unowned account from
+/// carrying data, so that marker is no longer expressible and the owner is simply echoed both
+/// times. Nothing read it — squat-resistance is the owner's signature, pinned by
+/// `amm_initialize_requires_owner_signature` — and dropping it means an everyday wallet can
+/// now open a namespace, where before the owner had to be a fresh dedicated account.
 #[test]
 fn amm_same_owner_multiple_instances_via_nonce() {
     let mut state = V03State::new();
@@ -1859,17 +1896,16 @@ fn amm_same_owner_multiple_instances_via_nonce() {
         "different nonces must yield different config PDAs"
     );
 
-    // First instance: owner is a fresh EOA → initialize claims it into the AMM.
+    // First instance: the owner signs and is echoed untouched.
     execute_initialize_for(&mut state, &owner_key, [0; 32], cfg0)
         .expect("first initialize (fresh owner) must succeed");
     assert_eq!(
         state.get_account_by_id(owner_id).program_owner,
-        amm,
-        "owner should be owned by the AMM after the first initialize"
+        AccountId::default(),
+        "the owner is a signer, not a state holder: initialize must leave it unowned"
     );
 
-    // Second instance under the SAME owner, different nonce: the owner is now AMM-owned and is
-    // echoed unchanged. This is the case that previously failed and must now pass.
+    // Second instance under the SAME owner, different nonce.
     execute_initialize_for(&mut state, &owner_key, [1; 32], cfg1)
         .expect("second initialize (same owner, new nonce) must succeed");
 
@@ -2021,7 +2057,10 @@ fn execute_update_config(
 
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[signer]);
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0)
+    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .map(|_events| ())
 }
 
 fn config_data(state: &V03State) -> amm_core::AmmConfig {
@@ -2053,7 +2092,10 @@ fn execute_withdraw_protocol_fees(
 
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[signer]);
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0)
+    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .map(|_events| ())
 }
 
 fn initialized_amm_state() -> V03State {
@@ -2268,7 +2310,7 @@ fn amm_create_price_observations_without_current_tick_account_fails() {
 /// to simulate the passage of time between observations.
 #[cfg(test)]
 fn advance_clock(state: &mut V03State, timestamp: u64) {
-    let clock_id: lee_core::program::ProgramId = [42_u32; 8];
+    let clock_id = CLOCK_01_PROGRAM_ACCOUNT_ID;
     let data = ClockAccountData {
         block_id: 0,
         timestamp,
@@ -2305,7 +2347,10 @@ fn execute_record_tick(state: &mut V03State, window_duration: u64) -> Result<(),
 
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0)
+    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .map(|_events| ())
 }
 
 #[cfg(test)]
@@ -2372,7 +2417,10 @@ fn execute_publish_price(state: &mut V03State, window_duration: u64) -> Result<(
 
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0)
+    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .map(|_events| ())
 }
 
 /// Builds a state whose pool feed already holds several observations: creates the observations
@@ -3922,6 +3970,7 @@ fn twap_oracle_program_instance() -> Program {
 fn amm_with_deps() -> ProgramWithDependencies {
     ProgramWithDependencies::new(
         amm_program_instance(),
+        Ids::amm_program(),
         HashMap::from([
             (Ids::token_program(), token_program_instance()),
             (Ids::twap_oracle_program(), twap_oracle_program_instance()),
@@ -3933,7 +3982,8 @@ fn amm_with_deps() -> ProgramWithDependencies {
 fn amm_swap_a_to_b_private_user_holding() {
     let mut state = state_for_amm_tests();
 
-    let user_a_nsk = PrivateKeys::user_a_nsk();
+    let user_a_ask = PrivateKeys::user_a_ask();
+    let user_a_nsk = NullifierSecretKey::from(&user_a_ask);
     let user_a_vpk = PrivateKeys::user_a_vpk();
     let user_a_id = PrivateKeys::user_a_id();
     let user_a_account = Account {
@@ -4017,7 +4067,7 @@ fn amm_swap_a_to_b_private_user_holding() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(user_a_nsk, &user_a_vpk, membership_proof),
+            private_authorized_update_identity(user_a_ask, &user_a_vpk, membership_proof),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
@@ -4176,7 +4226,7 @@ fn amm_swap_a_to_b_private_unauthorized_destination_is_not_expressible() {
 fn amm_swap_a_to_b_private_authorized_init_destination_is_not_expressible() {
     let state = state_for_amm_tests();
 
-    let user_b_nsk = PrivateKeys::user_b_nsk();
+    let user_b_ask = PrivateKeys::user_b_ask();
     let user_b_vpk = PrivateKeys::user_b_vpk();
     let user_b_id = PrivateKeys::user_b_id();
 
@@ -4243,7 +4293,7 @@ fn amm_swap_a_to_b_private_authorized_init_destination_is_not_expressible() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_init_identity(user_b_nsk, &user_b_vpk, state.commitment_root()),
+            private_authorized_init_identity(user_b_ask, &user_b_vpk, state.commitment_root()),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
@@ -4268,7 +4318,8 @@ fn amm_swap_a_to_b_private_authorized_init_destination_is_not_expressible() {
 fn amm_swap_exact_output_private_user_holding() {
     let mut state = state_for_amm_tests();
 
-    let user_a_nsk = PrivateKeys::user_a_nsk();
+    let user_a_ask = PrivateKeys::user_a_ask();
+    let user_a_nsk = NullifierSecretKey::from(&user_a_ask);
     let user_a_vpk = PrivateKeys::user_a_vpk();
     let user_a_id = PrivateKeys::user_a_id();
     let user_a_account = Account {
@@ -4352,7 +4403,7 @@ fn amm_swap_exact_output_private_user_holding() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(user_a_nsk, &user_a_vpk, membership_proof),
+            private_authorized_update_identity(user_a_ask, &user_a_vpk, membership_proof),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
@@ -4437,7 +4488,8 @@ fn amm_swap_exact_output_private_user_holding() {
 fn amm_add_liquidity_private_lp_holding() {
     let mut state = state_for_amm_tests();
 
-    let user_lp_nsk = PrivateKeys::user_lp_nsk();
+    let user_lp_ask = PrivateKeys::user_lp_ask();
+    let user_lp_nsk = NullifierSecretKey::from(&user_lp_ask);
     let user_lp_vpk = PrivateKeys::user_lp_vpk();
     let user_lp_id = PrivateKeys::user_lp_id();
     let user_lp_initial_balance = 500_u128;
@@ -4525,7 +4577,7 @@ fn amm_add_liquidity_private_lp_holding() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(user_lp_nsk, &user_lp_vpk, membership_proof),
+            private_authorized_update_identity(user_lp_ask, &user_lp_vpk, membership_proof),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
         ],
@@ -4596,7 +4648,8 @@ fn amm_add_liquidity_private_lp_holding() {
 fn amm_remove_liquidity_private_lp_holding() {
     let mut state = state_for_amm_tests();
 
-    let user_lp_nsk = PrivateKeys::user_lp_nsk();
+    let user_lp_ask = PrivateKeys::user_lp_ask();
+    let user_lp_nsk = NullifierSecretKey::from(&user_lp_ask);
     let user_lp_vpk = PrivateKeys::user_lp_vpk();
     let user_lp_id = PrivateKeys::user_lp_id();
     let user_lp_account = Account {
@@ -4683,7 +4736,7 @@ fn amm_remove_liquidity_private_lp_holding() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(user_lp_nsk, &user_lp_vpk, membership_proof),
+            private_authorized_update_identity(user_lp_ask, &user_lp_vpk, membership_proof),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
         ],
@@ -4850,7 +4903,8 @@ fn amm_remove_liquidity_private_new_user_holdings_is_not_expressible() {
 fn amm_add_liquidity_private_user_holdings() {
     let mut state = state_for_amm_tests();
 
-    let user_a_nsk = PrivateKeys::user_a_nsk();
+    let user_a_ask = PrivateKeys::user_a_ask();
+    let user_a_nsk = NullifierSecretKey::from(&user_a_ask);
     let user_a_vpk = PrivateKeys::user_a_vpk();
     let user_a_id = PrivateKeys::user_a_id();
     let user_a_account = Account {
@@ -4863,7 +4917,8 @@ fn amm_add_liquidity_private_user_holdings() {
         nonce: Nonce::private_account_nonce_init(&user_a_id),
     };
 
-    let user_b_nsk = PrivateKeys::user_b_nsk();
+    let user_b_ask = PrivateKeys::user_b_ask();
+    let user_b_nsk = NullifierSecretKey::from(&user_b_ask);
     let user_b_vpk = PrivateKeys::user_b_vpk();
     let user_b_id = PrivateKeys::user_b_id();
     let user_b_account = Account {
@@ -4960,8 +5015,8 @@ fn amm_add_liquidity_private_user_holdings() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(user_a_nsk, &user_a_vpk, user_a_membership_proof),
-            private_authorized_update_identity(user_b_nsk, &user_b_vpk, user_b_membership_proof),
+            private_authorized_update_identity(user_a_ask, &user_a_vpk, user_a_membership_proof),
+            private_authorized_update_identity(user_b_ask, &user_b_vpk, user_b_membership_proof),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
@@ -5042,7 +5097,7 @@ fn amm_new_definition_private_initial_lp_holder() {
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
 
-    let user_lp_nsk = PrivateKeys::user_lp_nsk();
+    let user_lp_ask = PrivateKeys::user_lp_ask();
     let user_lp_vpk = PrivateKeys::user_lp_vpk();
     let user_lp_id = PrivateKeys::user_lp_id();
 
@@ -5119,7 +5174,7 @@ fn amm_new_definition_private_initial_lp_holder() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_init_identity(user_lp_nsk, &user_lp_vpk, state.commitment_root()),
+            private_authorized_init_identity(user_lp_ask, &user_lp_vpk, state.commitment_root()),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
         ],
@@ -5198,12 +5253,15 @@ fn amm_new_definition_private_initial_lp_holder() {
         .is_some());
 }
 
-/// Since logos-execution-zone PR #621, pool creation CAN mint the initial LP tokens to a
-/// `PrivateForeignInit` holder (only the holder's `npk`, no `nsk`): its fresh pre-state is now
-/// `is_authorized == true`, satisfying the guest's signer requirement on `user_holding_lp`.
-/// (Previously not expressible.)
+/// Pool creation cannot mint the initial LP tokens to a foreign-init holder, and the round trip
+/// is worth recording: PR #621 made it expressible under v0.2.4 by giving a foreign-init
+/// pre-state `is_authorized == true`, which satisfied the guest's signer requirement on
+/// `user_holding_lp` without the holder consenting. v0.2.5 makes `is_authorized` match whether a
+/// credential was supplied, so the flag is `false` here and the guest correctly refuses.
+/// Minting the initial LP to a private holder requires their key — see
+/// `amm_new_definition_private_initial_lp_holder`, which uses `private_authorized_init_identity`.
 #[test]
-fn amm_new_definition_foreign_init_lp_holder() {
+fn amm_new_definition_foreign_init_lp_holder_is_refused() {
     let mut state = state_for_amm_tests_with_new_def();
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
@@ -5243,7 +5301,7 @@ fn amm_new_definition_foreign_init_lp_holder() {
         AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
     let user_b_pre =
         AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
-    let user_lp_pre = AccountWithMetadata::new(Account::default(), true, user_lp_id);
+    let user_lp_pre = AccountWithMetadata::new(Account::default(), false, user_lp_id);
     let current_tick_pre = AccountWithMetadata::new(
         state.get_account_by_id(Ids::current_tick_account()),
         false,
@@ -5261,7 +5319,7 @@ fn amm_new_definition_foreign_init_lp_holder() {
         deadline: u64::MAX,
     };
 
-    let (output, proof) = execute_and_prove(
+    let error = execute_and_prove(
         vec![
             config_pre,
             pool_pre,
@@ -5291,41 +5349,12 @@ fn amm_new_definition_foreign_init_lp_holder() {
         ],
         &amm_with_deps(),
     )
-    .expect(
-        "NewDefinition minting the initial LP tokens to a fresh, authorized PrivateForeignInit \
-         user_holding_lp must succeed",
-    );
+    .expect_err("a foreign-init LP holder cannot satisfy the guest's signer requirement");
 
-    let message = Message::from_circuit_output(
-        vec![
-            current_nonce(&state, Ids::user_a()),
-            current_nonce(&state, Ids::user_b()),
-        ],
-        output,
+    assert!(
+        format!("{error:?}").contains("must be a signer"),
+        "expected the LP holding's signer requirement to reject this, got: {error:?}"
     );
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::user_a(), &Keys::user_b()]);
-    state
-        .transition_from_privacy_preserving_transaction(
-            &PrivacyPreservingTransaction::new(message, witness_set),
-            0,
-            0,
-        )
-        .unwrap();
-
-    // The foreign-init LP holder is created as a fresh private account: its first-ever commitment
-    // (nonce at private_account_nonce_init) must land in the commitment set.
-    let new_user_lp_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::token_lp_definition(),
-            balance: Balances::lp_user_init(),
-        }),
-        nonce: Nonce::private_account_nonce_init(&user_lp_id),
-    };
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&user_lp_id, &new_user_lp_account))
-        .is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -5344,8 +5373,14 @@ fn amm_new_definition_foreign_init_lp_holder() {
 struct PrivateAdmins;
 
 impl PrivateAdmins {
+    /// The authorization key is the root credential under v0.2.5: the circuit takes an
+    /// `ask` and derives the `nsk` from it, so the fixture roots here.
+    fn owner_ask() -> AuthorizationSecretKey {
+        AuthorizationSecretKey([164; 32])
+    }
+
     fn owner_nsk() -> NullifierSecretKey {
-        [164; 32]
+        NullifierSecretKey::from(&Self::owner_ask())
     }
 
     fn owner_npk() -> NullifierPublicKey {
@@ -5408,7 +5443,7 @@ fn amm_initialize_private_namespace_owner() {
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             private_authorized_init_identity(
-                PrivateAdmins::owner_nsk(),
+                PrivateAdmins::owner_ask(),
                 &PrivateAdmins::owner_vpk(),
                 state.commitment_root(),
             ),
@@ -5436,10 +5471,13 @@ fn amm_initialize_private_namespace_owner() {
     assert_eq!(config.authority, Ids::admin());
     assert_eq!(config.swap_fee_bps, Balances::fee_tier());
 
-    // The namespace-owner marker is claimed into the AMM and lives on as a private commitment,
-    // so the owner never appears in public state.
+    // The owner is echoed, not claimed: v0.2.4 wrote an AMM-owned namespace marker here, but
+    // v0.2.5 acquires ownership only on a data write and an unowned account may carry no data,
+    // so the marker is gone and the owner stays unowned. It still lives on as a private
+    // commitment — a private input is re-committed even when unchanged — so the owner never
+    // appears in public state, which is what this test is really about.
     let owner_expected = Account {
-        program_owner: Ids::amm_program(),
+        program_owner: AccountId::default(),
         nonce: Nonce::private_account_nonce_init(&owner_id),
         ..Account::default()
     };
@@ -5458,7 +5496,7 @@ fn amm_update_config_group_owned_admin_authority() {
     deploy_programs(&mut state);
 
     let alice = GroupOwner::new([51_u8; 32]);
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
     state.force_insert_account(Ids::config(), config_with_authority(alice.id, 0));
 
     let config_pre =
@@ -5473,7 +5511,7 @@ fn amm_update_config_group_owned_admin_authority() {
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
-            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
         ],
         &amm_program_instance().into(),
     )
@@ -5509,7 +5547,8 @@ fn amm_withdraw_protocol_fees_to_private_destination() {
     assert_eq!(accrued, 6);
 
     // An existing, already-shielded Token A holding is the withdrawal destination.
-    let dest_nsk = PrivateKeys::user_a_nsk();
+    let dest_ask = PrivateKeys::user_a_ask();
+    let dest_nsk = NullifierSecretKey::from(&dest_ask);
     let dest_vpk = PrivateKeys::user_a_vpk();
     let dest_id = PrivateKeys::user_a_id();
     let dest_account = Account {
@@ -5544,7 +5583,7 @@ fn amm_withdraw_protocol_fees_to_private_destination() {
         vec![
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(dest_nsk, &dest_vpk, membership_proof),
+            private_authorized_update_identity(dest_ask, &dest_vpk, membership_proof),
             InputAccountIdentity::Public,
         ],
         &amm_with_deps(),
@@ -5587,7 +5626,7 @@ fn amm_withdraw_protocol_fees_to_private_destination() {
 fn amm_withdraw_protocol_fees_group_owned_admin_authority() {
     let mut state = state_for_amm_tests();
     let alice = GroupOwner::new([52_u8; 32]);
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
     state.force_insert_account(Ids::config(), config_with_authority(alice.id, 5_000));
 
     execute_swap_a_to_b(&mut state, 4_000, 200);
@@ -5621,7 +5660,7 @@ fn amm_withdraw_protocol_fees_group_owned_admin_authority() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
         ],
         &amm_with_deps(),
     )
