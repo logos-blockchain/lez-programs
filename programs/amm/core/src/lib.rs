@@ -3,7 +3,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
-    program::{PdaSeed, ProgramId},
+    program::PdaSeed,
 };
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
@@ -15,7 +15,12 @@ const LP_LOCK_HOLDING_PDA_SEED: &[u8] = b"LP_LOCK_HOLDING";
 const PROTOCOL_FEE_HOLDING_PDA_SEED: &[u8] = b"PROTOCOL_FEE_HOLDING";
 
 /// AMM Program Instruction.
-#[derive(Serialize, Deserialize)]
+///
+/// Borsh is the instruction wire format LEZ reads; serde stays for tooling and IDL.
+///
+/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
+/// inserting one shifts the encoding of every variant after it.
+#[derive(Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum Instruction {
     /// Initializes a **namespaced** AMM instance by creating its configuration account.
     ///
@@ -45,9 +50,9 @@ pub enum Instruction {
         /// Namespace discriminator under `owner`. `[0; 32]` is the owner's default instance.
         nonce: [u8; 32],
         /// Program ID of the Token Program the AMM will issue chained calls to.
-        token_program_id: ProgramId,
+        token_program_id: AccountId,
         /// Program ID of the TWAP oracle program the AMM will issue chained calls to.
-        twap_oracle_program_id: ProgramId,
+        twap_oracle_program_id: AccountId,
         /// Admin authority allowed to transfer admin control via `UpdateConfig`.
         authority: AccountId,
         /// Instance-wide swap fee in basis points, applied to every swap in this namespace.
@@ -567,10 +572,13 @@ impl From<&PoolDefinition> for Data {
 #[account_type]
 #[derive(Clone, Default, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct AmmConfig {
-    /// Program ID of the Token Program the AMM issues chained calls to.
-    pub token_program_id: ProgramId,
-    /// Program ID of the TWAP oracle program the AMM issues chained calls to.
-    pub twap_oracle_program_id: ProgramId,
+    /// Account address of the Token Program the AMM issues chained calls to.
+    ///
+    /// A program is identified by its deployed header account since LEZ v0.2.5, so this
+    /// is deployment configuration: it cannot be derived from the program's binary.
+    pub token_program_id: AccountId,
+    /// Account address of the TWAP oracle program the AMM issues chained calls to.
+    pub twap_oracle_program_id: AccountId,
     /// Admin authority allowed to transfer admin control via `UpdateConfig`.
     pub authority: AccountId,
     /// Instance-wide swap fee in basis points, applied to every swap in this namespace.
@@ -610,7 +618,7 @@ const CONFIG_PDA_SEED: &[u8] = b"CONFIG";
 /// namespace. Each `(owner, nonce)` pair is an independent AMM instance.
 #[must_use]
 pub fn compute_config_pda(
-    amm_program_id: ProgramId,
+    amm_program_id: AccountId,
     owner: AccountId,
     nonce: [u8; 32],
 ) -> AccountId {
@@ -640,7 +648,7 @@ pub fn compute_config_pda_seed(owner: AccountId, nonce: [u8; 32]) -> PdaSeed {
 /// of the owning instance's config PDA), so the same token pair in different instances yields
 /// different, fully isolated pools.
 pub fn compute_pool_pda(
-    amm_program_id: ProgramId,
+    amm_program_id: AccountId,
     config_id: AccountId,
     definition_token_a_id: AccountId,
     definition_token_b_id: AccountId,
@@ -682,7 +690,7 @@ pub fn compute_pool_pda_seed(
 }
 
 pub fn compute_vault_pda(
-    amm_program_id: ProgramId,
+    amm_program_id: AccountId,
     pool_id: AccountId,
     definition_token_id: AccountId,
 ) -> AccountId {
@@ -714,7 +722,7 @@ pub fn compute_vault_pda_seed(pool_id: AccountId, definition_token_id: AccountId
 /// this seed by `WithdrawProtocolFees`.
 #[must_use]
 pub fn compute_protocol_fee_pda(
-    amm_program_id: ProgramId,
+    amm_program_id: AccountId,
     config_id: AccountId,
     definition_token_id: AccountId,
 ) -> AccountId {
@@ -747,7 +755,7 @@ pub fn compute_protocol_fee_pda_seed(
     )
 }
 
-pub fn compute_liquidity_token_pda(amm_program_id: ProgramId, pool_id: AccountId) -> AccountId {
+pub fn compute_liquidity_token_pda(amm_program_id: AccountId, pool_id: AccountId) -> AccountId {
     AccountId::for_public_pda(&amm_program_id, &compute_liquidity_token_pda_seed(pool_id))
 }
 
@@ -766,7 +774,7 @@ pub fn compute_liquidity_token_pda_seed(pool_id: AccountId) -> PdaSeed {
     )
 }
 
-pub fn compute_lp_lock_holding_pda(amm_program_id: ProgramId, pool_id: AccountId) -> AccountId {
+pub fn compute_lp_lock_holding_pda(amm_program_id: AccountId, pool_id: AccountId) -> AccountId {
     AccountId::for_public_pda(&amm_program_id, &compute_lp_lock_holding_pda_seed(pool_id))
 }
 
@@ -1051,7 +1059,7 @@ mod tests {
 
     #[test]
     fn protocol_fee_pda_is_deterministic_and_domain_separated() {
-        const AMM: ProgramId = [9; 8];
+        const AMM: AccountId = AccountId::new([9; 32]);
         let config = AccountId::new([1; 32]);
         let token = AccountId::new([2; 32]);
         let other_config = AccountId::new([3; 32]);

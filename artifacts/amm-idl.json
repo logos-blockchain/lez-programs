@@ -30,11 +30,11 @@
         },
         {
           "name": "token_program_id",
-          "type": "program_id"
+          "type": "account_id"
         },
         {
           "name": "twap_oracle_program_id",
-          "type": "program_id"
+          "type": "account_id"
         },
         {
           "name": "authority",
@@ -672,11 +672,11 @@
         "fields": [
           {
             "name": "token_program_id",
-            "type": "program_id"
+            "type": "account_id"
           },
           {
             "name": "twap_oracle_program_id",
-            "type": "program_id"
+            "type": "account_id"
           },
           {
             "name": "authority",

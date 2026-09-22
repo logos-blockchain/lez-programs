@@ -7,8 +7,8 @@ use amm_core::{
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
-    account::{AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use twap_oracle_core::compute_current_tick_account_pda;
 
@@ -30,8 +30,8 @@ pub fn remove_liquidity(
     remove_liquidity_amount: NonZeroU128,
     min_amount_to_remove_token_a: u128,
     min_amount_to_remove_token_b: u128,
-    amm_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    amm_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     let remove_liquidity_amount: u128 = remove_liquidity_amount.into();
 
     // The program IDs are taken from the config account, not trusted from a caller-supplied
@@ -110,13 +110,9 @@ pub fn remove_liquidity(
         "Remove liquidity: current tick Account ID does not match PDA"
     );
 
-    // Vault addresses do not need to be checked with PDA
-    // calculation for setting authorization since stored
-    // in the Pool Definition.
-    let mut running_vault_a = vault_a.clone();
-    let mut running_vault_b = vault_b.clone();
-    running_vault_a.is_authorized = true;
-    running_vault_b.is_authorized = true;
+    // Vault addresses do not need a PDA check here: they are read from the Pool
+    // Definition, and the vault PDA seeds on the chained transfers below are what
+    // authorize the token program over them.
 
     assert!(
         min_amount_to_remove_token_a != 0,
@@ -197,7 +193,6 @@ pub fn remove_liquidity(
     let delta_lp: u128 = remove_liquidity_amount;
 
     // 5. Update pool account
-    let mut pool_post = pool.account.clone();
     let pool_post_definition = PoolDefinition {
         liquidity_pool_supply: pool_def_data
             .liquidity_pool_supply
@@ -214,85 +209,84 @@ pub fn remove_liquidity(
         ..pool_def_data.clone()
     };
 
-    pool_post.data = Data::from(&pool_post_definition);
+    // Ids for the chained calls, captured before the pre-states move into the diffs.
+    let pool_id = pool.account_id;
+    let config_id = config.account_id;
+    let vault_a_id = vault_a.account_id;
+    let vault_b_id = vault_b.account_id;
+    let pool_definition_lp_id = pool_definition_lp.account_id;
+    let user_holding_a_id = user_holding_a.account_id;
+    let user_holding_b_id = user_holding_b.account_id;
+    let user_holding_lp_id = user_holding_lp.account_id;
+    let current_tick_account_id = current_tick_account.account_id;
+    let clock_id = clock.account_id;
 
     // Chaincall for Token A withdraw
     let call_token_a = ChainedCall::new(
         token_program_id,
-        vec![running_vault_a, user_holding_a.clone()],
+        vec![vault_a_id, user_holding_a_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: withdraw_amount_a,
         },
     )
     .with_pda_seeds(vec![compute_vault_pda_seed(
-        pool.account_id,
+        pool_id,
         pool_def_data.definition_token_a_id,
     )]);
     // Chaincall for Token B withdraw
     let call_token_b = ChainedCall::new(
         token_program_id,
-        vec![running_vault_b, user_holding_b.clone()],
+        vec![vault_b_id, user_holding_b_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: withdraw_amount_b,
         },
     )
     .with_pda_seeds(vec![compute_vault_pda_seed(
-        pool.account_id,
+        pool_id,
         pool_def_data.definition_token_b_id,
     )]);
     // Chaincall for LP adjustment
-    let mut pool_definition_lp_auth = pool_definition_lp.clone();
-    pool_definition_lp_auth.is_authorized = true;
     let call_token_lp = ChainedCall::new(
         token_program_id,
-        vec![pool_definition_lp_auth, user_holding_lp.clone()],
+        vec![pool_definition_lp_id, user_holding_lp_id],
         &token_core::Instruction::Burn {
             amount_to_burn: delta_lp,
         },
     )
-    .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool.account_id)]);
+    .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool_id)]);
 
-    // Refresh the pool's TWAP current tick from the post-removal spot price. The pool is already
-    // owned by this program, so it is passed (in its post-removal state) as the authorized price
-    // source.
+    // Refresh the pool's TWAP current tick from the post-removal spot price. The oracle sees
+    // the pool in its post-removal state: a call names accounts by id and the runtime
+    // resolves each against this transaction's diff, which carries the pool write below.
     let new_price = spot_price_q64_64(
         pool_post_definition.reserve_a,
         pool_post_definition.reserve_b,
     );
-    let pool_price_source = AccountWithMetadata {
-        account: pool_post.clone(),
-        is_authorized: true,
-        account_id: pool.account_id,
-    };
     let call_update_tick = ChainedCall::new(
         twap_oracle_program_id,
-        vec![
-            current_tick_account.clone(),
-            pool_price_source,
-            clock.clone(),
-        ],
+        vec![current_tick_account_id, pool_id, clock_id],
         &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
     )
     .with_pda_seeds(vec![compute_pool_pda_seed(
-        config.account_id,
+        config_id,
         pool_def_data.definition_token_a_id,
         pool_def_data.definition_token_b_id,
     )]);
 
     let chained_calls = vec![call_token_lp, call_token_b, call_token_a, call_update_tick];
 
-    let post_states = vec![
-        AccountPostState::new(config.account.clone()),
-        AccountPostState::new(pool_post.clone()),
-        AccountPostState::new(vault_a.account.clone()),
-        AccountPostState::new(vault_b.account.clone()),
-        AccountPostState::new(pool_definition_lp.account.clone()),
-        AccountPostState::new(user_holding_a.account.clone()),
-        AccountPostState::new(user_holding_b.account.clone()),
-        AccountPostState::new(user_holding_lp.account.clone()),
-        AccountPostState::new(current_tick_account.account.clone()),
-        AccountPostState::new(clock.account.clone()),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(config),
+        AccountStateDiff::new(pool, BalanceDiff::Add(0), Data::from(&pool_post_definition)),
+        AccountStateDiff::unchanged(vault_a),
+        AccountStateDiff::unchanged(vault_b),
+        AccountStateDiff::unchanged(pool_definition_lp),
+        AccountStateDiff::unchanged(user_holding_a),
+        AccountStateDiff::unchanged(user_holding_b),
+        AccountStateDiff::unchanged(user_holding_lp),
+        AccountStateDiff::unchanged(current_tick_account),
+        AccountStateDiff::unchanged(clock),
     ];
 
-    (post_states, chained_calls)
+    (state_diffs, chained_calls)
 }

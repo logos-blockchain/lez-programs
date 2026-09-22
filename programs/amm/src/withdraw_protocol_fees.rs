@@ -1,7 +1,7 @@
 use amm_core::{compute_protocol_fee_pda, compute_protocol_fee_pda_seed, AmmConfig};
 use lee_core::{
-    account::AccountWithMetadata,
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{AccountId, AccountWithMetadata},
+    program::{AccountStateDiff, ChainedCall},
 };
 
 /// Withdraw `amount` of accrued protocol fees for one token from its instance-wide protocol-fee
@@ -25,8 +25,8 @@ pub fn withdraw_protocol_fees(
     destination: AccountWithMetadata,
     authority: AccountWithMetadata,
     amount: u128,
-    amm_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    amm_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert_eq!(
         config.account.program_owner, amm_program_id,
         "Withdraw protocol fees: AMM config account must be owned by the AMM Program"
@@ -82,13 +82,12 @@ pub fn withdraw_protocol_fees(
     );
 
     // Move `amount` out of the protocol-fee holding to the destination, under the protocol-fee
-    // PDA's seed. `destination` must be an initialized holding of the same token (an existing
-    // holding is credited without a signature; a fresh one would fail the token program's claim).
-    let mut source = protocol_fee_holding.clone();
-    source.is_authorized = true;
+    // PDA's seed — that seed is the authority now that calls carry account ids rather than
+    // pre-states. `destination` must be an initialized holding of the same token (an existing
+    // holding is credited without a signature; a fresh one would fail the token program's write).
     let transfer = ChainedCall::new(
         token_program_id,
-        vec![source, destination.clone()],
+        vec![protocol_fee_holding.account_id, destination.account_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: amount,
         },
@@ -98,15 +97,15 @@ pub fn withdraw_protocol_fees(
         token_def,
     )]);
 
-    // Post-states mirror the input account order; the chained transfer applies the balance moves.
-    let post_states = vec![
-        AccountPostState::new(config.account),
-        AccountPostState::new(protocol_fee_holding.account),
-        AccountPostState::new(destination.account),
-        AccountPostState::new(authority.account),
+    // Diffs mirror the input account order; the chained transfer applies the balance moves.
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(config),
+        AccountStateDiff::unchanged(protocol_fee_holding),
+        AccountStateDiff::unchanged(destination),
+        AccountStateDiff::unchanged(authority),
     ];
 
-    (post_states, vec![transfer])
+    (state_diffs, vec![transfer])
 }
 
 #[cfg(test)]
@@ -116,8 +115,8 @@ mod tests {
 
     use super::*;
 
-    const AMM_PROGRAM_ID: ProgramId = [42; 8];
-    const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
+    const AMM_PROGRAM_ID: AccountId = AccountId::new([42u8; 32]);
+    const TOKEN_PROGRAM_ID: AccountId = AccountId::new([15u8; 32]);
     const NONCE: [u8; 32] = [3; 32];
     const WITHDRAW_AMOUNT: u128 = 500;
 
@@ -144,7 +143,7 @@ mod tests {
                 balance: 0,
                 data: Data::from(&AmmConfig {
                     token_program_id: TOKEN_PROGRAM_ID,
-                    twap_oracle_program_id: [77; 8],
+                    twap_oracle_program_id: AccountId::new([77u8; 32]),
                     authority: authority_id(),
                     swap_fee_bps: 30,
                     protocol_fee_bps: 1_000,
@@ -196,7 +195,7 @@ mod tests {
         }
     }
 
-    fn run() -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    fn run() -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
         withdraw_protocol_fees(
             config_init(),
             protocol_fee_holding(),
@@ -214,14 +213,15 @@ mod tests {
         assert_eq!(chained_calls.len(), 1);
 
         let transfer = &chained_calls[0];
-        assert_eq!(transfer.program_id, TOKEN_PROGRAM_ID);
+        assert_eq!(transfer.program_account_id, TOKEN_PROGRAM_ID);
         // Source is the protocol-fee PDA (authorized via its seed); destination is the target.
         assert_eq!(
-            transfer.pre_states[0].account_id,
+            transfer.pre_state_ids[0],
             compute_protocol_fee_pda(AMM_PROGRAM_ID, config_id(), token_def_id())
         );
-        assert!(transfer.pre_states[0].is_authorized);
-        assert_eq!(transfer.pre_states[1].account_id, destination().account_id);
+        // Authority over the protocol-fee PDA comes from `pda_seeds` below — a call
+        // carries bare ids, so there is no per-account authorization flag any more.
+        assert_eq!(transfer.pre_state_ids[1], destination().account_id);
         assert_eq!(
             transfer.pda_seeds,
             vec![compute_protocol_fee_pda_seed(config_id(), token_def_id())]
@@ -229,7 +229,7 @@ mod tests {
         // The transfer moves exactly `WITHDRAW_AMOUNT` of the protocol-fee token.
         let expected = ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            transfer.pre_states.clone(),
+            transfer.pre_state_ids.clone(),
             &token_core::Instruction::Transfer {
                 amount_to_transfer: WITHDRAW_AMOUNT,
             },
@@ -271,7 +271,7 @@ mod tests {
     #[should_panic(expected = "AMM config account must be owned by the AMM Program")]
     fn config_not_amm_owned_panics() {
         let mut foreign = config_init();
-        foreign.account.program_owner = [1; 8];
+        foreign.account.program_owner = AccountId::new([1u8; 32]);
         withdraw_protocol_fees(
             foreign,
             protocol_fee_holding(),
@@ -305,7 +305,7 @@ mod tests {
     #[should_panic(expected = "protocol-fee holding must be owned by the configured Token Program")]
     fn protocol_holding_owned_by_foreign_program_panics() {
         let mut foreign = protocol_fee_holding();
-        foreign.account.program_owner = [1; 8];
+        foreign.account.program_owner = AccountId::new([1u8; 32]);
         withdraw_protocol_fees(
             config_init(),
             foreign,
@@ -320,7 +320,7 @@ mod tests {
     #[should_panic(expected = "destination must be owned by the configured Token Program")]
     fn destination_owned_by_foreign_program_panics() {
         let mut foreign = destination();
-        foreign.account.program_owner = [1; 8];
+        foreign.account.program_owner = AccountId::new([1u8; 32]);
         withdraw_protocol_fees(
             config_init(),
             protocol_fee_holding(),

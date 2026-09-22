@@ -6,8 +6,8 @@ use amm_core::{
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use twap_oracle_core::compute_current_tick_account_pda;
 
@@ -57,7 +57,7 @@ fn assert_pool_in_config_namespace(
     pool: &AccountWithMetadata,
     config: &AccountWithMetadata,
     pool_def_data: &PoolDefinition,
-    amm_program_id: ProgramId,
+    amm_program_id: AccountId,
 ) {
     assert_eq!(
         pool.account_id,
@@ -100,8 +100,8 @@ fn finalize_swap(
     withdraw_a: u128,
     deposit_b: u128,
     withdraw_b: u128,
-    twap_oracle_program_id: ProgramId,
-) -> (Vec<AccountPostState>, ChainedCall) {
+    twap_oracle_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, ChainedCall) {
     let pool_post_definition = PoolDefinition {
         reserve_a: pool_def_data
             .reserve_a
@@ -118,26 +118,20 @@ fn finalize_swap(
         ..pool_def_data
     };
 
-    let mut pool_post = pool.account.clone();
-    pool_post.data = Data::from(&pool_post_definition);
-
-    // Refresh the pool's TWAP current tick from the post-swap spot price. The pool is already owned
-    // by this program, so it is passed (in its post-swap state) as the authorized price source.
+    // Refresh the pool's TWAP current tick from the post-swap spot price. The oracle sees the
+    // pool in its post-swap state without this program constructing it: a chained call names
+    // accounts by id and the runtime resolves each against this transaction's diff, which
+    // carries the pool write below. The pool PDA seed is the oracle's authority over it.
     let new_price = spot_price_q64_64(
         pool_post_definition.reserve_a,
         pool_post_definition.reserve_b,
     );
-    let pool_price_source = AccountWithMetadata {
-        account: pool_post.clone(),
-        is_authorized: true,
-        account_id: pool.account_id,
-    };
     let update_tick_call = ChainedCall::new(
         twap_oracle_program_id,
         vec![
-            current_tick_account.clone(),
-            pool_price_source,
-            clock.clone(),
+            current_tick_account.account_id,
+            pool.account_id,
+            clock.account_id,
         ],
         &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
     )
@@ -147,19 +141,19 @@ fn finalize_swap(
         pool_def_data.definition_token_b_id,
     )]);
 
-    let post_states = vec![
-        AccountPostState::new(config.account),
-        AccountPostState::new(pool_post),
-        AccountPostState::new(vault_a.account),
-        AccountPostState::new(vault_b.account),
-        AccountPostState::new(user_holding_input.account),
-        AccountPostState::new(user_holding_output.account),
-        AccountPostState::new(current_tick_account.account),
-        AccountPostState::new(clock.account),
-        AccountPostState::new(protocol_fee_holding.account),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(config),
+        AccountStateDiff::new(pool, BalanceDiff::Add(0), Data::from(&pool_post_definition)),
+        AccountStateDiff::unchanged(vault_a),
+        AccountStateDiff::unchanged(vault_b),
+        AccountStateDiff::unchanged(user_holding_input),
+        AccountStateDiff::unchanged(user_holding_output),
+        AccountStateDiff::unchanged(current_tick_account),
+        AccountStateDiff::unchanged(clock),
+        AccountStateDiff::unchanged(protocol_fee_holding),
     ];
 
-    (post_states, update_tick_call)
+    (state_diffs, update_tick_call)
 }
 
 #[expect(
@@ -179,8 +173,8 @@ pub fn swap_exact_input(
     protocol_fee_holding: AccountWithMetadata,
     swap_amount_in: u128,
     min_amount_out: u128,
-    amm_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    amm_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
 
     // The program IDs are taken from the config account, not trusted from a caller-supplied
@@ -380,19 +374,22 @@ fn swap_logic(
 
     let mut chained_calls = Vec::new();
 
+    // Calls name accounts by id and carry their authority in `pda_seeds`; the runtime
+    // resolves each id against the transaction's accumulated diff, so later calls see
+    // what earlier ones did.
+    let vault_deposit_id = vault_deposit.account_id;
+    let vault_withdraw_id = vault_withdraw.account_id;
+
     // 1. user -> deposit vault (full input).
-    let mut vault_deposit_source = vault_deposit.clone();
     chained_calls.push(ChainedCall::new(
         token_program_id,
-        vec![user_deposit, vault_deposit],
+        vec![user_deposit.account_id, vault_deposit_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: swap_amount_in,
         },
     ));
 
     // 2. withdraw vault -> user (output), under the withdraw vault's PDA seed.
-    let mut vault_withdraw = vault_withdraw.clone();
-    vault_withdraw.is_authorized = true;
     let withdraw_seed = compute_vault_pda_seed(
         pool_id,
         token_core::TokenHolding::try_from(&vault_withdraw.account.data)
@@ -402,7 +399,7 @@ fn swap_logic(
     chained_calls.push(
         ChainedCall::new(
             token_program_id,
-            vec![vault_withdraw, user_withdraw],
+            vec![vault_withdraw_id, user_withdraw.account_id],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: withdraw_amount,
             },
@@ -413,30 +410,15 @@ fn swap_logic(
     // 3. protocol fee: deposit vault -> protocol-fee holding (input token). Authorized by the
     //    deposit vault's seed (to debit) and the protocol holding's seed (to create/credit it on
     //    first use). Only when nonzero.
+    //
+    //    This is the deposit vault's SECOND touch. Under the old pre-state model this had to
+    //    hand-build the post-deposit balance or the runtime rejected the call; ids make the
+    //    runtime resolve call 1's credit itself.
     if protocol_fee != 0 {
-        vault_deposit_source.is_authorized = true;
-        // This is the deposit vault's SECOND touch (call 1 already credited it the full input), so
-        // its pre-state here must be the post-deposit balance — otherwise the runtime rejects the
-        // chained call as an inconsistent pre-state.
-        if let token_core::TokenHolding::Fungible {
-            definition_id,
-            balance,
-        } = token_core::TokenHolding::try_from(&vault_deposit_source.account.data)
-            .expect("Swap Logic: AMM Program expects valid token data")
-        {
-            vault_deposit_source.account.data = Data::from(&token_core::TokenHolding::Fungible {
-                definition_id,
-                balance: balance
-                    .checked_add(swap_amount_in)
-                    .expect("deposit vault balance + swap_amount_in overflows u128"),
-            });
-        }
-        let mut protocol_fee_holding = protocol_fee_holding;
-        protocol_fee_holding.is_authorized = true;
         chained_calls.push(
             ChainedCall::new(
                 token_program_id,
-                vec![vault_deposit_source, protocol_fee_holding],
+                vec![vault_deposit_id, protocol_fee_holding.account_id],
                 &token_core::Instruction::Transfer {
                     amount_to_transfer: protocol_fee,
                 },
@@ -473,8 +455,8 @@ pub fn swap_exact_output(
     protocol_fee_holding: AccountWithMetadata,
     exact_amount_out: u128,
     max_amount_in: u128,
-    amm_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    amm_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     let pool_def_data = validate_swap_setup(&pool, &vault_a, &vault_b);
 
     // The program IDs are taken from the config account, not trusted from a caller-supplied
@@ -672,19 +654,19 @@ fn exact_output_swap_logic(
 
     let mut chained_calls = Vec::new();
 
+    let vault_deposit_id = vault_deposit.account_id;
+    let vault_withdraw_id = vault_withdraw.account_id;
+
     // 1. user -> deposit vault (full required input).
-    let mut vault_deposit_source = vault_deposit.clone();
     chained_calls.push(ChainedCall::new(
         token_program_id,
-        vec![user_deposit, vault_deposit],
+        vec![user_deposit.account_id, vault_deposit_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: deposit_amount,
         },
     ));
 
     // 2. withdraw vault -> user (exact output), under the withdraw vault's PDA seed.
-    let mut vault_withdraw = vault_withdraw;
-    vault_withdraw.is_authorized = true;
     let withdraw_seed = compute_vault_pda_seed(
         pool_id,
         token_core::TokenHolding::try_from(&vault_withdraw.account.data)
@@ -694,7 +676,7 @@ fn exact_output_swap_logic(
     chained_calls.push(
         ChainedCall::new(
             token_program_id,
-            vec![vault_withdraw, user_withdraw],
+            vec![vault_withdraw_id, user_withdraw.account_id],
             &token_core::Instruction::Transfer {
                 amount_to_transfer: exact_amount_out,
             },
@@ -703,30 +685,13 @@ fn exact_output_swap_logic(
     );
 
     // 3. protocol fee: deposit vault -> protocol-fee holding (input token), same as the exact-input
-    //    path. Only when nonzero.
+    //    path. Only when nonzero. Second touch of the deposit vault: the runtime resolves call 1's
+    //    credit from the transaction's diff, so there is nothing to hand-build here.
     if protocol_fee != 0 {
-        vault_deposit_source.is_authorized = true;
-        // Second touch of the deposit vault (call 1 credited it the full input): its pre-state here
-        // must be the post-deposit balance, or the runtime rejects the chained call.
-        if let token_core::TokenHolding::Fungible {
-            definition_id,
-            balance,
-        } = token_core::TokenHolding::try_from(&vault_deposit_source.account.data)
-            .expect("Exact Output Swap Logic: AMM Program expects valid token data")
-        {
-            vault_deposit_source.account.data = Data::from(&token_core::TokenHolding::Fungible {
-                definition_id,
-                balance: balance
-                    .checked_add(deposit_amount)
-                    .expect("deposit vault balance + deposit_amount overflows u128"),
-            });
-        }
-        let mut protocol_fee_holding = protocol_fee_holding;
-        protocol_fee_holding.is_authorized = true;
         chained_calls.push(
             ChainedCall::new(
                 token_program_id,
-                vec![vault_deposit_source, protocol_fee_holding],
+                vec![vault_deposit_id, protocol_fee_holding.account_id],
                 &token_core::Instruction::Transfer {
                     amount_to_transfer: protocol_fee,
                 },

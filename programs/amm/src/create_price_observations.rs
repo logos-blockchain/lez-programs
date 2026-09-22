@@ -1,8 +1,8 @@
 use amm_core::{compute_pool_pda, compute_pool_pda_seed, AmmConfig, PoolDefinition};
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
-    account::{Account, AccountWithMetadata},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata},
+    program::{AccountStateDiff, ChainedCall},
 };
 use twap_oracle_core::{
     compute_current_tick_account_pda, compute_price_observations_pda, CurrentTickAccount,
@@ -30,10 +30,11 @@ use twap_oracle_core::{
 /// - `config.account_id` does not match `compute_config_pda(amm_program_id)`, or the config is
 ///   uninitialized (the AMM Program has not been initialized).
 /// - `clock.account_id` is not [`CLOCK_01_PROGRAM_ACCOUNT_ID`].
-/// - `pool.account` does not hold a valid [`PoolDefinition`], or `pool.account_id` does not match
-///   its pool PDA.
-/// - `current_tick_account.account_id` does not match the pool's current-tick PDA, or the account
-///   does not hold a valid [`CurrentTickAccount`] (it has not been created yet).
+/// - `pool.account` is not owned by the AMM Program, does not hold a valid [`PoolDefinition`], or
+///   `pool.account_id` does not match its pool PDA.
+/// - `current_tick_account.account_id` does not match the pool's current-tick PDA, the account is
+///   not owned by the TWAP oracle, or it does not hold a valid [`CurrentTickAccount`] (it has not
+///   been created yet).
 /// - `price_observations.account_id` does not match the expected TWAP PDA for `(pool,
 ///   window_duration)`, or `price_observations.account` already exists.
 pub fn create_price_observations(
@@ -43,8 +44,8 @@ pub fn create_price_observations(
     price_observations: AccountWithMetadata,
     clock: AccountWithMetadata,
     window_duration: u64,
-    amm_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    amm_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     // Config gate: validate the config PDA and read the TWAP oracle program ID from it.
     assert_eq!(
         config.account.program_owner, amm_program_id,
@@ -63,6 +64,13 @@ pub fn create_price_observations(
 
     // The pool is the price source. Verify it is a genuine AMM pool PDA so we only ever authorize
     // a real pool as the source.
+    // Any program can claim an unused address by writing to it, so the PDA match below does not
+    // prove the AMM created this pool. Its reserves and the pool seed are only trusted from an
+    // AMM-owned pool (left unchanged here, so the runtime would not check its owner).
+    assert_eq!(
+        pool.account.program_owner, amm_program_id,
+        "Create price observations: Pool account must be owned by the AMM Program"
+    );
     let pool_def = PoolDefinition::try_from(&pool.account.data)
         .expect("Create price observations: AMM Program expects a valid Pool Definition Account");
     assert_eq!(
@@ -83,6 +91,11 @@ pub fn create_price_observations(
         compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
         "Create price observations: current tick Account ID does not match PDA"
     );
+    // Read-only here too, so only ownership proves the oracle wrote this tick.
+    assert_eq!(
+        current_tick_account.account.program_owner, twap_oracle_program_id,
+        "Create price observations: current tick account must be owned by the TWAP oracle"
+    );
     let initial_tick = CurrentTickAccount::try_from(&current_tick_account.account.data)
         .expect("Create price observations: AMM Program expects a valid CurrentTickAccount")
         .tick;
@@ -100,14 +113,16 @@ pub fn create_price_observations(
         "Create price observations: price observations account already exists"
     );
 
-    // Authorize the pool as the price source so the oracle ties the feed to this pool. The AMM
-    // proves control of the pool PDA via its seed.
-    let mut pool_price_source = pool.clone();
-    pool_price_source.is_authorized = true;
-
+    // The pool is the price source; the AMM's control of the pool PDA is proven by the
+    // seed on the call below. A chained call names accounts by id, so there is no
+    // pre-state flag to set — `pda_seeds` alone confers the authority.
     let chained_call = ChainedCall::new(
         twap_oracle_program_id,
-        vec![price_observations.clone(), pool_price_source, clock.clone()],
+        vec![
+            price_observations.account_id,
+            pool.account_id,
+            clock.account_id,
+        ],
         &twap_oracle_core::Instruction::CreatePriceObservations {
             initial_tick,
             window_duration,
@@ -120,11 +135,11 @@ pub fn create_price_observations(
     )]);
 
     let post_states = vec![
-        AccountPostState::new(config.account.clone()),
-        AccountPostState::new(pool.account.clone()),
-        AccountPostState::new(current_tick_account.account.clone()),
-        AccountPostState::new(price_observations.account.clone()),
-        AccountPostState::new(clock.account.clone()),
+        AccountStateDiff::unchanged(config.clone()),
+        AccountStateDiff::unchanged(pool.clone()),
+        AccountStateDiff::unchanged(current_tick_account.clone()),
+        AccountStateDiff::unchanged(price_observations.clone()),
+        AccountStateDiff::unchanged(clock.clone()),
     ];
 
     (post_states, vec![chained_call])
@@ -137,10 +152,11 @@ mod tests {
     use twap_oracle_core::compute_current_tick_account_pda;
 
     use super::*;
+    use crate::StateDiffExt;
 
-    const AMM_PROGRAM_ID: ProgramId = [42; 8];
-    const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
-    const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
+    const AMM_PROGRAM_ID: AccountId = AccountId::new([42u8; 32]);
+    const TOKEN_PROGRAM_ID: AccountId = AccountId::new([15u8; 32]);
+    const TWAP_ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
     /// 24-hour window in milliseconds.
     const WINDOW_24H: u64 = 24 * 60 * 60 * 1_000;
     /// The authoritative tick stored in the pool's `CurrentTickAccount`.
@@ -245,7 +261,7 @@ mod tests {
         }
     }
 
-    fn call() -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    fn call() -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
         create_price_observations(
             config_init(),
             pool(),
@@ -263,14 +279,20 @@ mod tests {
     fn returns_five_post_states_unchanged() {
         let (post_states, _) = call();
         assert_eq!(post_states.len(), 5);
-        assert_eq!(*post_states[0].account(), config_init().account);
-        assert_eq!(*post_states[1].account(), pool().account);
-        assert_eq!(*post_states[2].account(), current_tick_account().account);
         assert_eq!(
-            *post_states[3].account(),
+            post_states[0].post_account(AMM_PROGRAM_ID),
+            config_init().account
+        );
+        assert_eq!(post_states[1].post_account(AMM_PROGRAM_ID), pool().account);
+        assert_eq!(
+            post_states[2].post_account(AMM_PROGRAM_ID),
+            current_tick_account().account
+        );
+        assert_eq!(
+            post_states[3].post_account(AMM_PROGRAM_ID),
             price_observations_uninit().account
         );
-        assert_eq!(*post_states[4].account(), clock().account);
+        assert_eq!(post_states[4].post_account(AMM_PROGRAM_ID), clock().account);
     }
 
     #[test]
@@ -280,11 +302,13 @@ mod tests {
 
         // The chained call must carry the tick read from the CurrentTickAccount, not a
         // caller-supplied value, and authorize the pool as the price source.
-        let mut pool_authorized = pool();
-        pool_authorized.is_authorized = true;
         let expected = ChainedCall::new(
             TWAP_ORACLE_PROGRAM_ID,
-            vec![price_observations_uninit(), pool_authorized, clock()],
+            vec![
+                price_observations_uninit().account_id,
+                pool().account_id,
+                clock().account_id,
+            ],
             &twap_oracle_core::Instruction::CreatePriceObservations {
                 initial_tick: CURRENT_TICK,
                 window_duration: WINDOW_24H,
@@ -305,7 +329,7 @@ mod tests {
     #[should_panic(expected = "must be owned by the AMM Program")]
     fn config_not_owned_by_amm_panics() {
         let mut config = config_init();
-        config.account.program_owner = [0; 8];
+        config.account.program_owner = AccountId::default();
         create_price_observations(
             config,
             pool(),
@@ -373,6 +397,42 @@ mod tests {
         );
     }
 
+    /// Another program can write a pool definition at the pool PDA before the AMM creates it; the
+    /// AMM must not authorize such a pool as an oracle price source.
+    #[test]
+    #[should_panic(expected = "Pool account must be owned by the AMM Program")]
+    fn foreign_owned_pool_panics() {
+        let mut pool = pool();
+        pool.account.program_owner = AccountId::new([1u8; 32]);
+        create_price_observations(
+            config_init(),
+            pool,
+            current_tick_account(),
+            price_observations_uninit(),
+            clock(),
+            WINDOW_24H,
+            AMM_PROGRAM_ID,
+        );
+    }
+
+    /// Likewise a current-tick account at the right PDA but written by another program must not
+    /// seed the feed.
+    #[test]
+    #[should_panic(expected = "current tick account must be owned by the TWAP oracle")]
+    fn foreign_owned_current_tick_account_panics() {
+        let mut current_tick = current_tick_account();
+        current_tick.account.program_owner = AccountId::new([1u8; 32]);
+        create_price_observations(
+            config_init(),
+            pool(),
+            current_tick,
+            price_observations_uninit(),
+            clock(),
+            WINDOW_24H,
+            AMM_PROGRAM_ID,
+        );
+    }
+
     /// A caller cannot substitute a current-tick account they control to forge the seed tick: the
     /// account ID must match the pool's current-tick PDA.
     #[test]
@@ -392,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "AMM Program expects a valid CurrentTickAccount")]
+    #[should_panic(expected = "current tick account must be owned by the TWAP oracle")]
     fn uninitialized_current_tick_account_panics() {
         let current_tick = AccountWithMetadata {
             account: Account::default(),
