@@ -7,8 +7,8 @@ edition = "2021"
 workspace = true
 
 [dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"] }
-spel-framework-macros = { git = "https://github.com/logos-co/spel.git", rev = "1ef0500f8fc8ce3ddf95523726ae159db83f744f", package = "spel-framework-macros" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
+spel-framework-macros = { git = "https://github.com/0x-r4bbit/spel.git", rev = "fb55f137eb7014025192d9c2932e0d5e1e3ddfe7", package = "spel-framework-macros" }
 token_core = { path = "../../token/core" }
 borsh = { version = "1.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
