@@ -1,13 +1,18 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
     account::{AccountId, Data},
-    program::{PdaSeed, ProgramId},
+    program::PdaSeed,
 };
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
 
 /// TWAP Oracle Program Instruction.
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// Borsh is the instruction wire format LEZ reads; serde stays for tooling and IDL.
+///
+/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
+/// inserting one shifts the encoding of every variant after it.
+#[derive(Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum Instruction {
     /// Creates and initialises a price observations account for a price source and time window.
     ///
@@ -251,7 +256,7 @@ const PRICE_OBSERVATIONS_PDA_SEED: &[u8] = b"PRICE_OBSERVATIONS";
 /// maps to a distinct account.
 #[must_use]
 pub fn compute_price_observations_pda(
-    oracle_program_id: ProgramId,
+    oracle_program_id: AccountId,
     price_source_id: AccountId,
     window_duration: u64,
 ) -> AccountId {
@@ -293,7 +298,7 @@ const ORACLE_PRICE_ACCOUNT_PDA_SEED: &[u8] = b"ORACLE_PRICE_ACCOUNT";
 /// maps to a distinct account, mirroring the [`PriceObservations`] PDA derivation.
 #[must_use]
 pub fn compute_oracle_price_account_pda(
-    oracle_program_id: ProgramId,
+    oracle_program_id: AccountId,
     price_source_id: AccountId,
     window_duration: u64,
 ) -> AccountId {
@@ -543,7 +548,7 @@ const CURRENT_TICK_ACCOUNT_PDA_SEED: &[u8] = b"CURRENT_TICK_ACCOUNT";
 /// Derives the [`AccountId`] for a price source's [`CurrentTickAccount`] PDA.
 #[must_use]
 pub fn compute_current_tick_account_pda(
-    oracle_program_id: ProgramId,
+    oracle_program_id: AccountId,
     price_source_id: AccountId,
 ) -> AccountId {
     AccountId::for_public_pda(

@@ -22,23 +22,20 @@ mod twap_oracle {
     #[instruction]
     pub fn create_price_observations(
         ctx: ProgramContext,
-        #[account(init)]
-        price_observations: AccountWithMetadata,
-        #[account(signer)]
-        price_source: AccountWithMetadata,
+        #[account(init)] price_observations: AccountWithMetadata,
+        #[account(signer)] price_source: AccountWithMetadata,
         clock: AccountWithMetadata,
         initial_tick: i32,
         window_duration: u64,
     ) -> SpelResult {
-        let post_states =
-            twap_oracle_program::create_price_observations::create_price_observations(
-                price_observations,
-                price_source,
-                clock,
-                initial_tick,
-                window_duration,
-                ctx.self_program_id,
-            );
+        let post_states = twap_oracle_program::create_price_observations::create_price_observations(
+            price_observations,
+            price_source,
+            clock,
+            initial_tick,
+            window_duration,
+            ctx.self_account_id,
+        );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
 
@@ -58,10 +55,8 @@ mod twap_oracle {
     #[instruction]
     pub fn create_oracle_price_account(
         ctx: ProgramContext,
-        #[account(init)]
-        oracle_price_account: AccountWithMetadata,
-        #[account(signer)]
-        price_source: AccountWithMetadata,
+        #[account(init)] oracle_price_account: AccountWithMetadata,
+        #[account(signer)] price_source: AccountWithMetadata,
         clock: AccountWithMetadata,
         base_asset: AccountId,
         quote_asset: AccountId,
@@ -77,7 +72,7 @@ mod twap_oracle {
                 quote_asset,
                 initial_price,
                 window_duration,
-                ctx.self_program_id,
+                ctx.self_account_id,
             );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
@@ -93,10 +88,8 @@ mod twap_oracle {
     #[instruction]
     pub fn create_current_tick_account(
         ctx: ProgramContext,
-        #[account(init)]
-        current_tick_account: AccountWithMetadata,
-        #[account(signer)]
-        price_source: AccountWithMetadata,
+        #[account(init)] current_tick_account: AccountWithMetadata,
+        #[account(signer)] price_source: AccountWithMetadata,
         clock: AccountWithMetadata,
         initial_price: u128,
     ) -> SpelResult {
@@ -106,7 +99,7 @@ mod twap_oracle {
                 price_source,
                 clock,
                 initial_price,
-                ctx.self_program_id,
+                ctx.self_account_id,
             );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
@@ -122,10 +115,8 @@ mod twap_oracle {
     #[instruction]
     pub fn update_current_tick(
         ctx: ProgramContext,
-        #[account(mut)]
-        current_tick_account: AccountWithMetadata,
-        #[account(signer)]
-        price_source: AccountWithMetadata,
+        #[account(mut)] current_tick_account: AccountWithMetadata,
+        #[account(signer)] price_source: AccountWithMetadata,
         clock: AccountWithMetadata,
         price: u128,
     ) -> SpelResult {
@@ -134,7 +125,7 @@ mod twap_oracle {
             price_source,
             clock,
             price,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
@@ -152,8 +143,7 @@ mod twap_oracle {
     pub fn publish_price(
         ctx: ProgramContext,
         price_observations: AccountWithMetadata,
-        #[account(mut)]
-        oracle_price_account: AccountWithMetadata,
+        #[account(mut)] oracle_price_account: AccountWithMetadata,
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         price_source_id: AccountId,
@@ -166,7 +156,7 @@ mod twap_oracle {
             clock,
             price_source_id,
             window_duration,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
@@ -180,8 +170,7 @@ mod twap_oracle {
     #[instruction]
     pub fn record_tick(
         ctx: ProgramContext,
-        #[account(mut)]
-        price_observations: AccountWithMetadata,
+        #[account(mut)] price_observations: AccountWithMetadata,
         current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         price_source_id: AccountId,
@@ -193,7 +182,7 @@ mod twap_oracle {
             clock,
             price_source_id,
             window_duration,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
