@@ -6,8 +6,8 @@
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
     compute_stability_fee_accumulator_pda, math::compute_current_accumulated_rate,
@@ -28,8 +28,8 @@ pub fn accrue_stability_fee(
     protocol_parameters: AccountWithMetadata,
     stability_fee_accumulator: AccountWithMetadata,
     clock: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    stablecoin_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(caller.is_authorized, "Caller authorization is missing");
 
     let (params, accumulator) = decode_fee_accrual_inputs(
@@ -39,17 +39,20 @@ pub fn accrue_stability_fee(
     );
     let now = read_clock(&clock);
 
-    let accumulator_post =
-        advance_fee_accumulator(&stability_fee_accumulator, &params, &accumulator, now);
+    let accumulator_data = advance_fee_accumulator(&params, &accumulator, now);
 
-    let post_states = vec![
-        AccountPostState::new(caller.account),
-        AccountPostState::new(protocol_parameters.account),
-        AccountPostState::new(accumulator_post),
-        AccountPostState::new(clock.account),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(caller),
+        AccountStateDiff::unchanged(protocol_parameters),
+        AccountStateDiff::new(
+            stability_fee_accumulator,
+            BalanceDiff::Add(0),
+            accumulator_data,
+        ),
+        AccountStateDiff::unchanged(clock),
     ];
 
-    (post_states, vec![])
+    (state_diffs, vec![])
 }
 
 /// Validate and decode the two accounts the fee half needs.
@@ -59,7 +62,7 @@ pub fn accrue_stability_fee(
 pub(crate) fn decode_fee_accrual_inputs(
     protocol_parameters: &AccountWithMetadata,
     stability_fee_accumulator: &AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
 ) -> (ProtocolParameters, StabilityFeeAccumulator) {
     assert_ne!(
         protocol_parameters.account,
@@ -97,11 +100,10 @@ pub(crate) fn decode_fee_accrual_inputs(
 ///
 /// Shared with [`crate::refresh_globals`] — the fee half is identical in both.
 pub(crate) fn advance_fee_accumulator(
-    stability_fee_accumulator: &AccountWithMetadata,
     params: &ProtocolParameters,
     accumulator: &StabilityFeeAccumulator,
     now: u64,
-) -> Account {
+) -> Data {
     let updated = StabilityFeeAccumulator {
         accumulated_rate_at_last_accrual: compute_current_accumulated_rate(
             accumulator.accumulated_rate_at_last_accrual,
@@ -112,9 +114,7 @@ pub(crate) fn advance_fee_accumulator(
         last_accrued_at: now,
     };
 
-    let mut accumulator_post = stability_fee_accumulator.account.clone();
-    accumulator_post.data = Data::from(&updated);
-    accumulator_post
+    Data::from(&updated)
 }
 
 /// Read the millisecond wall-clock timestamp from the system `CLOCK_01` account.
@@ -141,6 +141,7 @@ pub(crate) fn read_clock(clock: &AccountWithMetadata) -> u64 {
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 mod tests {
+    use crate::StateDiffExt;
     use lee_core::account::{AccountId, Nonce};
     use stablecoin_core::math::FIXED_POINT_ONE;
 
@@ -151,7 +152,7 @@ mod tests {
         TEST_STABILITY_FEE_PER_MILLISECOND,
     };
 
-    fn invoke() -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    fn invoke() -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
         accrue_stability_fee(
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
@@ -172,7 +173,7 @@ mod tests {
     fn happy_path_advances_accumulator_by_the_projection() {
         let (post_states, _) = invoke();
         let decoded =
-            StabilityFeeAccumulator::try_from(&post_states[2].account().data).expect("decode");
+            StabilityFeeAccumulator::try_from(post_states[2].post_data()).expect("decode");
         let expected = compute_current_accumulated_rate(
             ACCUMULATOR_ANCHOR,
             TEST_STABILITY_FEE_PER_MILLISECOND,
@@ -189,9 +190,18 @@ mod tests {
         // The accumulator PDA was claimed at initialize_program time; this poke
         // only rewrites its data.
         let (post_states, _) = invoke();
-        assert_eq!(post_states[2].required_claim(), None);
-        assert_eq!(post_states[3].required_claim(), None);
-        assert_eq!(post_states[3].account(), &clock_account(NOW).account);
+        assert_eq!(
+            post_states[2].post_owner(STABLECOIN_PROGRAM_ID),
+            post_states[2].pre_state.account.program_owner
+        );
+        assert_eq!(
+            post_states[3].post_owner(STABLECOIN_PROGRAM_ID),
+            post_states[3].pre_state.account.program_owner
+        );
+        assert_eq!(
+            post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+            clock_account(NOW).account
+        );
     }
 
     #[test]
@@ -206,7 +216,7 @@ mod tests {
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
-        let decoded = StabilityFeeAccumulator::try_from(&post_states[2].account().data).unwrap();
+        let decoded = StabilityFeeAccumulator::try_from(post_states[2].post_data()).unwrap();
         assert_eq!(decoded.accumulated_rate_at_last_accrual, ACCUMULATOR_ANCHOR);
         assert_eq!(decoded.last_accrued_at, NOW);
     }
@@ -224,7 +234,7 @@ mod tests {
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
-        let decoded = StabilityFeeAccumulator::try_from(&post_states[2].account().data).unwrap();
+        let decoded = StabilityFeeAccumulator::try_from(post_states[2].post_data()).unwrap();
         assert_eq!(decoded.last_accrued_at, NOW);
     }
 
@@ -260,7 +270,7 @@ mod tests {
     #[should_panic(expected = "ProtocolParameters not owned by this stablecoin program")]
     fn rejects_foreign_owned_protocol_parameters() {
         let mut parameters = protocol_parameters_account(ParameterOverrides::default());
-        parameters.account.program_owner = [9u32; 8];
+        parameters.account.program_owner = AccountId::new([9u8; 32]);
         let _ = accrue_stability_fee(
             caller_account(),
             parameters,
@@ -286,7 +296,7 @@ mod tests {
     #[should_panic(expected = "StabilityFeeAccumulator not owned by this stablecoin program")]
     fn rejects_foreign_owned_accumulator() {
         let mut accumulator = accumulator_account(ACCUMULATOR_ANCHOR, T0);
-        accumulator.account.program_owner = [9u32; 8];
+        accumulator.account.program_owner = AccountId::new([9u8; 32]);
         let _ = accrue_stability_fee(
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
@@ -356,7 +366,7 @@ mod tests {
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
-        let decoded = StabilityFeeAccumulator::try_from(&post_states[2].account().data).unwrap();
+        let decoded = StabilityFeeAccumulator::try_from(post_states[2].post_data()).unwrap();
         assert_eq!(decoded.accumulated_rate_at_last_accrual, ACCUMULATOR_ANCHOR);
         assert_eq!(decoded.last_accrued_at, NOW);
     }
@@ -366,9 +376,12 @@ mod tests {
         let (post_states, _) = invoke();
         let original = accumulator_account(ACCUMULATOR_ANCHOR, T0);
         assert_eq!(
-            post_states[2].account().program_owner,
+            post_states[2].post_owner(STABLECOIN_PROGRAM_ID),
             original.account.program_owner
         );
-        assert_eq!(post_states[2].account().nonce, Nonce(0));
+        assert_eq!(
+            post_states[2].post_account(STABLECOIN_PROGRAM_ID).nonce,
+            Nonce(0)
+        );
     }
 }

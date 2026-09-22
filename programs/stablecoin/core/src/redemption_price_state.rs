@@ -7,7 +7,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
     account::{AccountId, Data},
-    program::{PdaSeed, ProgramId},
+    program::PdaSeed,
 };
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
@@ -65,7 +65,7 @@ pub fn compute_redemption_price_state_pda_seed() -> PdaSeed {
 }
 
 #[must_use]
-pub fn compute_redemption_price_state_pda(stablecoin_program_id: ProgramId) -> AccountId {
+pub fn compute_redemption_price_state_pda(stablecoin_program_id: AccountId) -> AccountId {
     AccountId::for_public_pda(
         &stablecoin_program_id,
         &compute_redemption_price_state_pda_seed(),
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn pda_is_deterministic() {
-        let program_id: ProgramId = [9u32; 8];
+        let program_id = AccountId::new([9u8; 32]);
         assert_eq!(
             compute_redemption_price_state_pda(program_id),
             compute_redemption_price_state_pda(program_id),
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn pda_distinct_from_other_global_pdas() {
         use crate::{compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda};
-        let program_id: ProgramId = [9u32; 8];
+        let program_id = AccountId::new([9u8; 32]);
         let me = compute_redemption_price_state_pda(program_id);
         assert_ne!(me, compute_protocol_parameters_pda(program_id));
         assert_ne!(me, compute_stability_fee_accumulator_pda(program_id));

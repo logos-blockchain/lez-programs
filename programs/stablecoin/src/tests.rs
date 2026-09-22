@@ -5,18 +5,18 @@
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 
+use crate::StateDiffExt;
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::{ChainedCall, Claim, ProgramId},
+    program::ChainedCall,
 };
 use stablecoin_core::{
-    compute_position_pda, compute_position_pda_seed, compute_position_vault_pda,
-    compute_position_vault_pda_seed, Position,
+    compute_position_pda, compute_position_vault_pda, compute_position_vault_pda_seed, Position,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
-const STABLECOIN_PROGRAM_ID: ProgramId = [3u32; 8];
-const TOKEN_PROGRAM_ID: ProgramId = [2u32; 8];
+const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([3u8; 32]);
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([2u8; 32]);
 const TEST_POSITION_NONCE: u64 = 0;
 
 fn owner_id() -> AccountId {
@@ -196,14 +196,14 @@ fn open_position_claims_pda_and_emits_chained_calls() {
 
     // Position is PDA-claimed and carries the encoded Position state.
     let position_post = &post_states[1];
+    // Writing the data is the claim: v0.2.5 makes the writing program the owner of a
+    // default-owned account. The PDA address is asserted by `verify_position_and_get_seed`.
+    assert!(position_post.writes_data());
     assert_eq!(
-        position_post.required_claim(),
-        Some(Claim::Pda(compute_position_pda_seed(
-            owner_id(),
-            TEST_POSITION_NONCE
-        )))
+        position_post.post_owner(STABLECOIN_PROGRAM_ID),
+        STABLECOIN_PROGRAM_ID
     );
-    let position = Position::try_from(&position_post.account().data).expect("valid Position");
+    let position = Position::try_from(position_post.post_data()).expect("valid Position");
     assert_eq!(
         position,
         Position {
@@ -215,37 +215,21 @@ fn open_position_claims_pda_and_emits_chained_calls() {
             opened_at: 0,
         }
     );
-    // The runtime sets the program_owner on the claimed account after validating Claim::Pda.
-    assert_eq!(position_post.account().program_owner, ProgramId::default());
-
     assert_eq!(chained_calls.len(), 2);
 
-    let mut vault_authorized = uninit_vault_account();
-    vault_authorized.is_authorized = true;
     let expected_initialize = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![collateral_definition_account(), vault_authorized],
+        vec![collateral_definition_id(), vault_id()],
         &token_core::Instruction::InitializeAccount,
     )
     .with_pda_seeds(vec![compute_position_vault_pda_seed(position_id())]);
     assert_eq!(chained_calls[0], expected_initialize);
 
-    let post_init_vault = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: collateral_definition_id(),
-                balance: 0,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: false,
-        account_id: vault_id(),
-    };
+    // The vault's post-InitializeAccount state is resolved by the runtime from the
+    // transaction's diff, so the call names it by id and the test no longer hand-builds it.
     let expected_transfer = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![user_holding_account(1_000), post_init_vault],
+        vec![user_holding_id(), vault_id()],
         &token_core::Instruction::Transfer {
             amount_to_transfer: collateral_amount,
         },
@@ -430,7 +414,7 @@ fn open_position_rejects_mismatched_token_definition() {
 )]
 fn open_position_rejects_definition_with_wrong_token_program() {
     let mut definition = collateral_definition_account();
-    definition.account.program_owner = [9u32; 8];
+    definition.account.program_owner = AccountId::new([9u8; 32]);
 
     crate::open_position::open_position(
         owner_account(),
@@ -488,8 +472,11 @@ fn withdraw_collateral_updates_position_and_emits_transfer() {
 
     // Position post-state: plain `new`, holds the decremented Position.
     let position_post = &post_states[1];
-    assert_eq!(position_post.required_claim(), None);
-    let position = Position::try_from(&position_post.account().data).expect("valid Position");
+    assert_eq!(
+        position_post.post_owner(STABLECOIN_PROGRAM_ID),
+        position_post.pre_state.account.program_owner
+    );
+    let position = Position::try_from(position_post.post_data()).expect("valid Position");
     assert_eq!(
         position,
         Position {
@@ -501,22 +488,26 @@ fn withdraw_collateral_updates_position_and_emits_transfer() {
             opened_at: 0,
         }
     );
-    assert_eq!(position_post.account().program_owner, STABLECOIN_PROGRAM_ID);
+    assert_eq!(
+        position_post.post_owner(STABLECOIN_PROGRAM_ID),
+        STABLECOIN_PROGRAM_ID
+    );
 
     // Vault and destination post-states are pre-transfer (mutation comes via chained call).
-    assert_eq!(post_states[2].account(), &init_vault_account().account);
     assert_eq!(
-        post_states[3].account(),
-        &destination_holding_account().account
+        post_states[2].post_account(STABLECOIN_PROGRAM_ID),
+        init_vault_account().account
+    );
+    assert_eq!(
+        post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+        destination_holding_account().account
     );
 
     // Single chained Token::Transfer with vault PDA seed.
     assert_eq!(chained_calls.len(), 1);
-    let mut vault_authorized = init_vault_account();
-    vault_authorized.is_authorized = true;
     let expected_transfer = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![vault_authorized, destination_holding_account()],
+        vec![vault_id(), destination_holding_account().account_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: amount,
         },
@@ -536,7 +527,7 @@ fn withdraw_collateral_allows_full_drain() {
         STABLECOIN_PROGRAM_ID,
         amount,
     );
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, 0);
     assert_eq!(position.normalized_debt_amount, 0);
 }
@@ -552,14 +543,12 @@ fn withdraw_collateral_allows_zero_amount() {
         STABLECOIN_PROGRAM_ID,
         0,
     );
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, initial);
 
-    let mut vault_authorized = init_vault_account();
-    vault_authorized.is_authorized = true;
     let expected_transfer = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![vault_authorized, destination_holding_account()],
+        vec![vault_id(), destination_holding_account().account_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: 0,
         },
@@ -600,7 +589,7 @@ fn withdraw_collateral_rejects_uninitialized_position() {
 #[should_panic(expected = "Position is not owned by this stablecoin program")]
 fn withdraw_collateral_rejects_position_owned_by_other_program() {
     let mut position = init_position_account(500, 0);
-    position.account.program_owner = [9u32; 8];
+    position.account.program_owner = AccountId::new([9u8; 32]);
     crate::withdraw_collateral::withdraw_collateral(
         owner_account(),
         position,
@@ -683,7 +672,7 @@ fn withdraw_collateral_rejects_uninitialized_destination() {
 #[should_panic(expected = "Destination must be owned by the same Token Program as the vault")]
 fn withdraw_collateral_rejects_destination_with_wrong_token_program() {
     let mut destination = destination_holding_account();
-    destination.account.program_owner = [9u32; 8];
+    destination.account.program_owner = AccountId::new([9u8; 32]);
     crate::withdraw_collateral::withdraw_collateral(
         owner_account(),
         init_position_account(500, 0),
@@ -740,8 +729,11 @@ fn repay_debt_decreases_debt_and_emits_burn() {
 
     // Position post-state: plain `new`, holds the decremented Position.
     let position_post = &post_states[1];
-    assert_eq!(position_post.required_claim(), None);
-    let position = Position::try_from(&position_post.account().data).expect("valid Position");
+    assert_eq!(
+        position_post.post_owner(STABLECOIN_PROGRAM_ID),
+        position_post.pre_state.account.program_owner
+    );
+    let position = Position::try_from(position_post.post_data()).expect("valid Position");
     assert_eq!(
         position,
         Position {
@@ -753,16 +745,19 @@ fn repay_debt_decreases_debt_and_emits_burn() {
             opened_at: 0,
         }
     );
-    assert_eq!(position_post.account().program_owner, STABLECOIN_PROGRAM_ID);
+    assert_eq!(
+        position_post.post_owner(STABLECOIN_PROGRAM_ID),
+        STABLECOIN_PROGRAM_ID
+    );
 
     // Stablecoin definition and user holding post-states are pre-burn.
     assert_eq!(
-        post_states[2].account(),
-        &stablecoin_definition_account().account
+        post_states[2].post_account(STABLECOIN_PROGRAM_ID),
+        stablecoin_definition_account().account
     );
     assert_eq!(
-        post_states[3].account(),
-        &user_stablecoin_holding_account(holding_balance).account
+        post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+        user_stablecoin_holding_account(holding_balance).account
     );
 
     // Single chained Token::Burn, no PDA seeds (user-authorized burn source).
@@ -770,8 +765,8 @@ fn repay_debt_decreases_debt_and_emits_burn() {
     let expected_burn = ChainedCall::new(
         TOKEN_PROGRAM_ID,
         vec![
-            stablecoin_definition_account(),
-            user_stablecoin_holding_account(holding_balance),
+            stablecoin_definition_account().account_id,
+            user_stablecoin_holding_account(holding_balance).account_id,
         ],
         &token_core::Instruction::Burn {
             amount_to_burn: amount,
@@ -791,7 +786,7 @@ fn repay_debt_allows_full_repayment() {
         STABLECOIN_PROGRAM_ID,
         debt,
     );
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, 0);
     assert_eq!(position.collateral_amount, 500);
 }
@@ -807,14 +802,14 @@ fn repay_debt_allows_zero_amount() {
         STABLECOIN_PROGRAM_ID,
         0,
     );
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, initial_debt);
 
     let expected_burn = ChainedCall::new(
         TOKEN_PROGRAM_ID,
         vec![
-            stablecoin_definition_account(),
-            user_stablecoin_holding_account(1_000),
+            stablecoin_definition_account().account_id,
+            user_stablecoin_holding_account(1_000).account_id,
         ],
         &token_core::Instruction::Burn { amount_to_burn: 0 },
     );
@@ -853,7 +848,7 @@ fn repay_debt_rejects_uninitialized_position() {
 #[should_panic(expected = "Position is not owned by this stablecoin program")]
 fn repay_debt_rejects_position_owned_by_other_program() {
     let mut position = init_position_account(500, 300);
-    position.account.program_owner = [9u32; 8];
+    position.account.program_owner = AccountId::new([9u8; 32]);
     crate::repay_debt::repay_debt(
         owner_account(),
         position,
@@ -918,7 +913,7 @@ fn repay_debt_rejects_uninitialized_user_holding() {
 )]
 fn repay_debt_rejects_holding_with_different_token_program() {
     let mut holding = user_stablecoin_holding_account(1_000);
-    holding.account.program_owner = [9u32; 8];
+    holding.account.program_owner = AccountId::new([9u8; 32]);
     crate::repay_debt::repay_debt(
         owner_account(),
         init_position_account(500, 300),
