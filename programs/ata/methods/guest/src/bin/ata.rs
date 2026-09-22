@@ -1,8 +1,8 @@
 #![cfg_attr(not(test), no_main)]
 
-use spel_framework::prelude::*;
+use nssa_core::account::{AccountId, AccountWithMetadata};
 use spel_framework::context::ProgramContext;
-use nssa_core::{account::AccountWithMetadata, program::ProgramId};
+use spel_framework::prelude::*;
 
 #[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
@@ -22,21 +22,22 @@ mod ata {
     #[instruction]
     pub fn create(
         ctx: ProgramContext,
-        #[account(mut)]
-        owner: AccountWithMetadata,
+        #[account(mut)] owner: AccountWithMetadata,
         token_definition: AccountWithMetadata,
-        #[account(mut)]
-        ata_account: AccountWithMetadata,
-        token_program_id: ProgramId,
+        #[account(mut)] ata_account: AccountWithMetadata,
+        token_program_id: AccountId,
     ) -> SpelResult {
         let (post_states, chained_calls) = ata_program::create::create_associated_token_account(
             owner,
             token_definition,
             ata_account,
-            ctx.self_program_id,
+            ctx.self_account_id,
             token_program_id,
         );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
     }
 
     /// Transfer tokens FROM owner's ATA to a recipient token holding account.
@@ -47,13 +48,10 @@ mod ata {
     #[instruction]
     pub fn transfer(
         ctx: ProgramContext,
-        #[account(signer)]
-        owner: AccountWithMetadata,
-        #[account(mut)]
-        sender_ata: AccountWithMetadata,
-        #[account(mut)]
-        recipient: AccountWithMetadata,
-        token_program_id: ProgramId,
+        #[account(signer)] owner: AccountWithMetadata,
+        #[account(mut)] sender_ata: AccountWithMetadata,
+        #[account(mut)] recipient: AccountWithMetadata,
+        token_program_id: AccountId,
         amount: u128,
     ) -> SpelResult {
         let (post_states, chained_calls) =
@@ -61,11 +59,14 @@ mod ata {
                 owner,
                 sender_ata,
                 recipient,
-                ctx.self_program_id,
+                ctx.self_account_id,
                 token_program_id,
                 amount,
             );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
     }
 
     /// Burn tokens FROM owner's ATA.
@@ -74,24 +75,23 @@ mod ata {
     #[instruction]
     pub fn burn(
         ctx: ProgramContext,
-        #[account(signer)]
-        owner: AccountWithMetadata,
-        #[account(mut)]
-        holder_ata: AccountWithMetadata,
-        #[account(mut)]
-        token_definition: AccountWithMetadata,
-        token_program_id: ProgramId,
+        #[account(signer)] owner: AccountWithMetadata,
+        #[account(mut)] holder_ata: AccountWithMetadata,
+        #[account(mut)] token_definition: AccountWithMetadata,
+        token_program_id: AccountId,
         amount: u128,
     ) -> SpelResult {
-        let (post_states, chained_calls) =
-            ata_program::burn::burn_from_associated_token_account(
-                owner,
-                holder_ata,
-                token_definition,
-                ctx.self_program_id,
-                token_program_id,
-                amount,
-            );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
+        let (post_states, chained_calls) = ata_program::burn::burn_from_associated_token_account(
+            owner,
+            holder_ata,
+            token_definition,
+            ctx.self_account_id,
+            token_program_id,
+            amount,
+        );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
     }
 }

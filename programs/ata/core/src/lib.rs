@@ -1,11 +1,13 @@
+use borsh::{BorshDeserialize, BorshSerialize};
+use lee_core::account::{AccountId, AccountWithMetadata};
 pub use lee_core::program::PdaSeed;
-use lee_core::{
-    account::{AccountId, AccountWithMetadata},
-    program::ProgramId,
-};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+/// Borsh is the instruction wire format LEZ reads; serde stays for tooling and IDL.
+///
+/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
+/// inserting one shifts the encoding of every variant after it.
+#[derive(Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum Instruction {
     /// Create the Associated Token Account for (token program, owner, definition).
     /// Idempotent: no-op if the account already exists.
@@ -17,7 +19,7 @@ pub enum Instruction {
     ///
     /// `token_program_id` is explicit so callers can support multiple token programs without
     /// letting account metadata choose downstream code.
-    Create { token_program_id: ProgramId },
+    Create { token_program_id: AccountId },
 
     /// Transfer tokens FROM owner's ATA to a recipient token holding account.
     /// Uses ATA PDA seeds to authorize the chained Token::Transfer call.
@@ -33,7 +35,7 @@ pub enum Instruction {
     /// `token_program_id` is explicit so callers can support multiple token programs without
     /// letting account metadata choose downstream code.
     Transfer {
-        token_program_id: ProgramId,
+        token_program_id: AccountId,
         amount: u128,
     },
 
@@ -48,13 +50,13 @@ pub enum Instruction {
     /// `token_program_id` is explicit so callers can support multiple token programs without
     /// letting account metadata choose downstream code.
     Burn {
-        token_program_id: ProgramId,
+        token_program_id: AccountId,
         amount: u128,
     },
 }
 
 pub fn compute_ata_seed(
-    token_program_id: ProgramId,
+    token_program_id: AccountId,
     owner_id: AccountId,
     definition_id: AccountId,
 ) -> PdaSeed {
@@ -62,12 +64,7 @@ pub fn compute_ata_seed(
     let mut bytes = [0u8; 96];
     let (program_id_bytes, rest) = bytes.split_at_mut(32);
     let (owner_bytes, definition_bytes) = rest.split_at_mut(32);
-    for (chunk, word) in program_id_bytes
-        .chunks_exact_mut(4)
-        .zip(token_program_id.iter())
-    {
-        chunk.copy_from_slice(&word.to_le_bytes());
-    }
+    program_id_bytes.copy_from_slice(&token_program_id.to_bytes());
     owner_bytes.copy_from_slice(&owner_id.to_bytes());
     definition_bytes.copy_from_slice(&definition_id.to_bytes());
     PdaSeed::new(
@@ -78,7 +75,7 @@ pub fn compute_ata_seed(
     )
 }
 
-pub fn get_associated_token_account_id(ata_program_id: &ProgramId, seed: &PdaSeed) -> AccountId {
+pub fn get_associated_token_account_id(ata_program_id: &AccountId, seed: &PdaSeed) -> AccountId {
     AccountId::for_public_pda(ata_program_id, seed)
 }
 
@@ -87,9 +84,9 @@ pub fn get_associated_token_account_id(ata_program_id: &ProgramId, seed: &PdaSee
 pub fn verify_ata_and_get_seed(
     ata_account: &AccountWithMetadata,
     owner: &AccountWithMetadata,
-    token_program_id: ProgramId,
+    token_program_id: AccountId,
     definition_id: AccountId,
-    ata_program_id: ProgramId,
+    ata_program_id: AccountId,
 ) -> PdaSeed {
     let seed = compute_ata_seed(token_program_id, owner.account_id, definition_id);
     let expected_id = get_associated_token_account_id(&ata_program_id, &seed);
