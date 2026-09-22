@@ -7,8 +7,8 @@
 //! only way to advance both globals in a single transaction.
 
 use lee_core::{
-    account::AccountWithMetadata,
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{AccountId, AccountWithMetadata, BalanceDiff},
+    program::{AccountStateDiff, ChainedCall},
 };
 
 use crate::{
@@ -36,8 +36,8 @@ pub fn refresh_globals(
     redemption_price_state: AccountWithMetadata,
     market_price_oracle: AccountWithMetadata,
     clock: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    stablecoin_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(caller.is_authorized, "Caller authorization is missing");
 
     let (params, accumulator) = decode_fee_accrual_inputs(
@@ -55,8 +55,7 @@ pub fn refresh_globals(
 
     // Fee half — always runs. It has no throttle and needs no oracle, so it
     // makes progress even during an oracle outage.
-    let accumulator_post =
-        advance_fee_accumulator(&stability_fee_accumulator, &params, &accumulator, now);
+    let accumulator_data = advance_fee_accumulator(&params, &accumulator, now);
 
     // Redemption half — three soft gates. Failing any one of them leaves the
     // redemption state untouched rather than panicking (the asymmetry with
@@ -67,28 +66,32 @@ pub fn refresh_globals(
         now.saturating_sub(oracle.timestamp) <= params.maximum_oracle_price_age_milliseconds;
     let oracle_price_usable = oracle.price > 0;
 
-    let redemption_post = if interval_due && oracle_fresh && oracle_price_usable {
-        advance_redemption_price(
-            &redemption_price_state,
-            &params,
-            &redemption,
-            oracle.price,
-            now,
+    // A soft gate that does not fire now reports the account as genuinely
+    // unchanged rather than rewriting identical data.
+    let redemption_diff = if interval_due && oracle_fresh && oracle_price_usable {
+        AccountStateDiff::new(
+            redemption_price_state,
+            BalanceDiff::Add(0),
+            advance_redemption_price(&params, &redemption, oracle.price, now),
         )
     } else {
-        redemption_price_state.account.clone()
+        AccountStateDiff::unchanged(redemption_price_state)
     };
 
-    let post_states = vec![
-        AccountPostState::new(caller.account),
-        AccountPostState::new(protocol_parameters.account),
-        AccountPostState::new(accumulator_post),
-        AccountPostState::new(redemption_post),
-        AccountPostState::new(market_price_oracle.account),
-        AccountPostState::new(clock.account),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(caller),
+        AccountStateDiff::unchanged(protocol_parameters),
+        AccountStateDiff::new(
+            stability_fee_accumulator,
+            BalanceDiff::Add(0),
+            accumulator_data,
+        ),
+        redemption_diff,
+        AccountStateDiff::unchanged(market_price_oracle),
+        AccountStateDiff::unchanged(clock),
     ];
 
-    (post_states, vec![])
+    (state_diffs, vec![])
 }
 
 #[cfg(test)]
@@ -99,6 +102,7 @@ pub fn refresh_globals(
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 mod tests {
+    use crate::StateDiffExt;
     use lee_core::account::AccountId;
     use stablecoin_core::{
         compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
@@ -113,12 +117,12 @@ mod tests {
         STABLECOIN_PROGRAM_ID, T0,
     };
 
-    fn decode_accumulator(post: &AccountPostState) -> StabilityFeeAccumulator {
-        StabilityFeeAccumulator::try_from(&post.account().data).expect("decode accumulator")
+    fn decode_accumulator(post: &AccountStateDiff) -> StabilityFeeAccumulator {
+        StabilityFeeAccumulator::try_from(post.post_data()).expect("decode accumulator")
     }
 
-    fn decode_redemption(post: &AccountPostState) -> RedemptionPriceState {
-        RedemptionPriceState::try_from(&post.account().data).expect("decode redemption state")
+    fn decode_redemption(post: &AccountStateDiff) -> RedemptionPriceState {
+        RedemptionPriceState::try_from(post.post_data()).expect("decode redemption state")
     }
 
     /// The default call: interval due, oracle fresh and non-zero.
@@ -127,7 +131,7 @@ mod tests {
         redemption_last_updated_at: u64,
         oracle_timestamp: u64,
         oracle_price: u128,
-    ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    ) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
         refresh_globals(
             caller_account(),
             protocol_parameters_account(overrides),
@@ -139,7 +143,7 @@ mod tests {
         )
     }
 
-    fn invoke() -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    fn invoke() -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
         invoke_with(
             ParameterOverrides::default(),
             T0,
@@ -186,8 +190,14 @@ mod tests {
             STABLECOIN_PROGRAM_ID,
         );
 
-        assert_eq!(combined[2].account(), accrue_only[2].account());
-        assert_eq!(combined[3].account(), update_only[2].account());
+        assert_eq!(
+            combined[2].post_account(STABLECOIN_PROGRAM_ID),
+            accrue_only[2].post_account(STABLECOIN_PROGRAM_ID)
+        );
+        assert_eq!(
+            combined[3].post_account(STABLECOIN_PROGRAM_ID),
+            update_only[2].post_account(STABLECOIN_PROGRAM_ID)
+        );
     }
 
     #[test]
@@ -237,8 +247,8 @@ mod tests {
     fn a_skipped_redemption_half_leaves_the_account_byte_identical() {
         let (post_states, _) = invoke_with(ParameterOverrides::default(), T0, NOW, 0);
         assert_eq!(
-            post_states[3].account(),
-            &redemption_price_state_account(T0).account
+            post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+            redemption_price_state_account(T0).account
         );
     }
 
@@ -262,13 +272,22 @@ mod tests {
     #[test]
     fn echoes_the_oracle_and_clock_unchanged_and_claims_no_pda() {
         let (post_states, _) = invoke();
-        assert_eq!(post_states[2].required_claim(), None);
-        assert_eq!(post_states[3].required_claim(), None);
         assert_eq!(
-            post_states[4].account(),
-            &oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR).account
+            post_states[2].post_owner(STABLECOIN_PROGRAM_ID),
+            post_states[2].pre_state.account.program_owner
         );
-        assert_eq!(post_states[5].account(), &clock_account(NOW).account);
+        assert_eq!(
+            post_states[3].post_owner(STABLECOIN_PROGRAM_ID),
+            post_states[3].pre_state.account.program_owner
+        );
+        assert_eq!(
+            post_states[4].post_account(STABLECOIN_PROGRAM_ID),
+            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR).account
+        );
+        assert_eq!(
+            post_states[5].post_account(STABLECOIN_PROGRAM_ID),
+            clock_account(NOW).account
+        );
     }
 
     #[test]

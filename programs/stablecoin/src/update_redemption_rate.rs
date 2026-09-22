@@ -4,8 +4,8 @@
 //! pokes.
 
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
     compute_redemption_price_state_pda, controller::run_controller_tick,
@@ -33,8 +33,8 @@ pub fn update_redemption_rate(
     redemption_price_state: AccountWithMetadata,
     market_price_oracle: AccountWithMetadata,
     clock: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    stablecoin_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(caller.is_authorized, "Caller authorization is missing");
 
     let (params, redemption) = decode_redemption_inputs(
@@ -58,23 +58,17 @@ pub fn update_redemption_rate(
         "update_redemption_rate called too soon since last update"
     );
 
-    let redemption_post = advance_redemption_price(
-        &redemption_price_state,
-        &params,
-        &redemption,
-        oracle.price,
-        now,
-    );
+    let redemption_data = advance_redemption_price(&params, &redemption, oracle.price, now);
 
-    let post_states = vec![
-        AccountPostState::new(caller.account),
-        AccountPostState::new(protocol_parameters.account),
-        AccountPostState::new(redemption_post),
-        AccountPostState::new(market_price_oracle.account),
-        AccountPostState::new(clock.account),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(caller),
+        AccountStateDiff::unchanged(protocol_parameters),
+        AccountStateDiff::new(redemption_price_state, BalanceDiff::Add(0), redemption_data),
+        AccountStateDiff::unchanged(market_price_oracle),
+        AccountStateDiff::unchanged(clock),
     ];
 
-    (post_states, vec![])
+    (state_diffs, vec![])
 }
 
 /// Validate and decode the two accounts the redemption half needs.
@@ -84,7 +78,7 @@ pub fn update_redemption_rate(
 pub(crate) fn decode_redemption_inputs(
     protocol_parameters: &AccountWithMetadata,
     redemption_price_state: &AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
 ) -> (ProtocolParameters, RedemptionPriceState) {
     assert_ne!(
         protocol_parameters.account,
@@ -143,18 +137,17 @@ pub(crate) fn decode_oracle(
 }
 
 /// Project the redemption price to `now`, run one controller tick against
-/// `market_price`, and return the re-anchored account.
+/// `market_price`, and return the re-anchored account data.
 ///
 /// Shared with [`crate::refresh_globals`] — the redemption half is identical in
 /// both. The projection deliberately runs BEFORE the tick and uses the OLD rate;
 /// the tick then produces the NEW rate that later reads compound against.
 pub(crate) fn advance_redemption_price(
-    redemption_price_state: &AccountWithMetadata,
     params: &ProtocolParameters,
     redemption: &RedemptionPriceState,
     market_price: u128,
     now: u64,
-) -> Account {
+) -> Data {
     let milliseconds_elapsed = now.saturating_sub(redemption.last_updated_at);
     let current_price = compute_current_redemption_price(
         redemption.redemption_price_at_last_update,
@@ -175,14 +168,12 @@ pub(crate) fn advance_redemption_price(
         milliseconds_elapsed,
     );
 
-    let mut redemption_post = redemption_price_state.account.clone();
-    redemption_post.data = Data::from(&RedemptionPriceState {
+    Data::from(&RedemptionPriceState {
         redemption_price_at_last_update: current_price,
         redemption_rate_per_millisecond,
         controller_integral_term,
         last_updated_at: now,
-    });
-    redemption_post
+    })
 }
 
 #[cfg(test)]
@@ -193,6 +184,7 @@ pub(crate) fn advance_redemption_price(
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 mod tests {
+    use crate::StateDiffExt;
     use lee_core::account::AccountId;
     use stablecoin_core::math::FIXED_POINT_ONE;
 
@@ -204,7 +196,7 @@ mod tests {
         STABLECOIN_PROGRAM_ID, T0,
     };
 
-    fn invoke() -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    fn invoke() -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
         update_redemption_rate(
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
@@ -225,8 +217,7 @@ mod tests {
     #[test]
     fn happy_path_re_anchors_with_the_projected_price_and_controller_output() {
         let (post_states, _) = invoke();
-        let decoded =
-            RedemptionPriceState::try_from(&post_states[2].account().data).expect("decode");
+        let decoded = RedemptionPriceState::try_from(post_states[2].post_data()).expect("decode");
 
         let projected =
             compute_current_redemption_price(REDEMPTION_PRICE_ANCHOR, FIXED_POINT_ONE, T0, NOW);
@@ -256,7 +247,7 @@ mod tests {
         // error = redemption − market > 0 with a positive Kp: the rate rises, so
         // the redemption price climbs and pulls the market up (negative feedback).
         let (post_states, _) = invoke();
-        let decoded = RedemptionPriceState::try_from(&post_states[2].account().data).unwrap();
+        let decoded = RedemptionPriceState::try_from(post_states[2].post_data()).unwrap();
         assert!(decoded.redemption_rate_per_millisecond > FIXED_POINT_ONE);
     }
 
@@ -270,7 +261,7 @@ mod tests {
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
-        let decoded = RedemptionPriceState::try_from(&post_states[2].account().data).unwrap();
+        let decoded = RedemptionPriceState::try_from(post_states[2].post_data()).unwrap();
         assert!(decoded.redemption_rate_per_millisecond < FIXED_POINT_ONE);
     }
 
@@ -289,7 +280,7 @@ mod tests {
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
-        let decoded = RedemptionPriceState::try_from(&post_states[2].account().data).unwrap();
+        let decoded = RedemptionPriceState::try_from(post_states[2].post_data()).unwrap();
         // Ki = 0 means nothing is integrated this tick, so the term is unchanged.
         assert_eq!(decoded.controller_integral_term, standing);
     }
@@ -297,12 +288,18 @@ mod tests {
     #[test]
     fn happy_path_claims_no_pda_and_echoes_oracle_and_clock() {
         let (post_states, _) = invoke();
-        assert_eq!(post_states[2].required_claim(), None);
         assert_eq!(
-            post_states[3].account(),
-            &oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR).account
+            post_states[2].post_owner(STABLECOIN_PROGRAM_ID),
+            post_states[2].pre_state.account.program_owner
         );
-        assert_eq!(post_states[4].account(), &clock_account(NOW).account);
+        assert_eq!(
+            post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR).account
+        );
+        assert_eq!(
+            post_states[4].post_account(STABLECOIN_PROGRAM_ID),
+            clock_account(NOW).account
+        );
     }
 
     #[test]
@@ -318,7 +315,7 @@ mod tests {
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
-        let decoded = RedemptionPriceState::try_from(&post_states[2].account().data).unwrap();
+        let decoded = RedemptionPriceState::try_from(post_states[2].post_data()).unwrap();
         assert_eq!(decoded.last_updated_at, NOW);
     }
 
@@ -369,7 +366,7 @@ mod tests {
     #[should_panic(expected = "RedemptionPriceState not owned by this stablecoin program")]
     fn rejects_foreign_owned_redemption_price_state() {
         let mut state = redemption_price_state_account(T0);
-        state.account.program_owner = [9u32; 8];
+        state.account.program_owner = AccountId::new([9u8; 32]);
         let _ = update_redemption_rate(
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),

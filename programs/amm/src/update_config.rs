@@ -1,7 +1,7 @@
 use amm_core::AmmConfig;
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, ProgramId},
+    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 
 /// Transfers the AMM Program's admin authority to a new account.
@@ -24,8 +24,8 @@ pub fn update_config(
     config: AccountWithMetadata,
     authority: AccountWithMetadata,
     new_authority: AccountId,
-    amm_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    amm_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     assert_eq!(
         config.account.program_owner, amm_program_id,
         "Update config: AMM config account must be owned by the AMM Program"
@@ -45,25 +45,23 @@ pub fn update_config(
 
     config_data.authority = new_authority;
 
-    let mut config_post = config.account.clone();
-    config_post.data = Data::from(&config_data);
-
     vec![
-        AccountPostState::new(config_post),
-        AccountPostState::new(authority.account.clone()),
+        AccountStateDiff::new(config, BalanceDiff::Add(0), Data::from(&config_data)),
+        AccountStateDiff::unchanged(authority),
     ]
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::StateDiffExt;
     use amm_core::compute_config_pda;
     use lee_core::account::{Account, Nonce};
 
     use super::*;
 
-    const AMM_PROGRAM_ID: ProgramId = [42; 8];
-    const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
-    const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
+    const AMM_PROGRAM_ID: AccountId = AccountId::new([42u8; 32]);
+    const TOKEN_PROGRAM_ID: AccountId = AccountId::new([15u8; 32]);
+    const TWAP_ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
     /// Canonical test namespace: the owner that signs Initialize and the default (all-zero) nonce.
     const TEST_NONCE: [u8; 32] = [0; 32];
 
@@ -110,8 +108,8 @@ mod tests {
         }
     }
 
-    fn updated_config(post_states: &[AccountPostState]) -> AmmConfig {
-        AmmConfig::try_from(&post_states[0].account().data)
+    fn updated_config(post_states: &[AccountStateDiff]) -> AmmConfig {
+        AmmConfig::try_from(post_states[0].post_data())
             .expect("post state must contain a valid AmmConfig")
     }
 
@@ -143,8 +141,8 @@ mod tests {
         );
         assert_eq!(post_states.len(), 2);
         // The config keeps its program owner (it is updated in place, not claimed).
-        assert_eq!(post_states[0].account().program_owner, AMM_PROGRAM_ID);
-        assert_eq!(*post_states[1].account(), authority.account);
+        assert_eq!(post_states[0].post_owner(AMM_PROGRAM_ID), AMM_PROGRAM_ID);
+        assert_eq!(post_states[1], AccountStateDiff::unchanged(authority));
     }
 
     // ── precondition violations ───────────────────────────────────────────────
@@ -153,7 +151,7 @@ mod tests {
     #[should_panic(expected = "must be owned by the AMM Program")]
     fn config_not_owned_by_amm_panics() {
         let mut config = config_init();
-        config.account.program_owner = [0; 8];
+        config.account.program_owner = AccountId::default();
         update_config(config, admin_authorized(), new_admin_id(), AMM_PROGRAM_ID);
     }
 

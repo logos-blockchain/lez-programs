@@ -7,16 +7,15 @@
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, Claim, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
-    compute_protocol_parameters_pda, compute_protocol_parameters_pda_seed,
-    compute_redemption_price_state_pda, compute_redemption_price_state_pda_seed,
-    compute_stability_fee_accumulator_pda, compute_stability_fee_accumulator_pda_seed,
-    compute_stablecoin_definition_pda, compute_stablecoin_definition_pda_seed,
-    compute_stablecoin_master_holding_pda, compute_stablecoin_master_holding_pda_seed,
-    math::FIXED_POINT_ONE, ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator,
+    compute_protocol_parameters_pda, compute_redemption_price_state_pda,
+    compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda,
+    compute_stablecoin_definition_pda_seed, compute_stablecoin_master_holding_pda,
+    compute_stablecoin_master_holding_pda_seed, math::FIXED_POINT_ONE, ProtocolParameters,
+    RedemptionPriceState, StabilityFeeAccumulator,
 };
 use token_core::TokenDefinition;
 use twap_oracle_core::OraclePriceAccount;
@@ -70,9 +69,9 @@ pub fn initialize_program(
     collateral_definition: AccountWithMetadata,
     market_price_oracle: AccountWithMetadata,
     clock: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     params: InitializeProgramParams<'_>,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     // 1. Authorization
     assert!(admin.is_authorized, "Admin authorization is missing");
 
@@ -249,58 +248,60 @@ pub fn initialize_program(
         last_updated_at: now,
     };
 
-    // 9. Post-states (9 accounts)
-    let mut protocol_parameters_post = protocol_parameters.account;
-    protocol_parameters_post.data = Data::from(&protocol_parameters_value);
-
-    let mut accumulator_post = stability_fee_accumulator.account;
-    accumulator_post.data = Data::from(&accumulator_value);
-
-    let mut redemption_post = redemption_price_state.account;
-    redemption_post.data = Data::from(&redemption_value);
-
-    let protocol_seed = compute_protocol_parameters_pda_seed();
-    let accumulator_seed = compute_stability_fee_accumulator_pda_seed();
-    let redemption_seed = compute_redemption_price_state_pda_seed();
+    // 9. State diffs (9 accounts)
+    //
+    // The three program PDAs are claimed by the writes themselves: since v0.2.5
+    // ownership of a default-owned account is acquired by writing data to it, so
+    // there is no separate `Claim::Pda` and no seed to present. Their addresses
+    // were already asserted against the PDA derivations above.
     let stablecoin_def_seed = compute_stablecoin_definition_pda_seed();
     let master_holding_seed = compute_stablecoin_master_holding_pda_seed();
 
     let token_program_id = collateral_definition.account.program_owner;
+    let stablecoin_definition_id = stablecoin_definition.account_id;
+    let stablecoin_master_holding_id = stablecoin_master_holding.account_id;
 
-    // For the chained Token::NewFungibleDefinition we mark both target PDAs
-    // authorized — the chained call's PDA seeds authorize the claim.
-    let mut stablecoin_def_authorized = stablecoin_definition.clone();
-    stablecoin_def_authorized.is_authorized = true;
-    let mut master_holding_authorized = stablecoin_master_holding.clone();
-    master_holding_authorized.is_authorized = true;
-
-    let post_states = vec![
-        AccountPostState::new(admin.account),
-        AccountPostState::new_claimed(protocol_parameters_post, Claim::Pda(protocol_seed)),
-        AccountPostState::new_claimed(accumulator_post, Claim::Pda(accumulator_seed)),
-        AccountPostState::new_claimed(redemption_post, Claim::Pda(redemption_seed)),
-        AccountPostState::new(stablecoin_definition.account.clone()),
-        AccountPostState::new(stablecoin_master_holding.account.clone()),
-        AccountPostState::new(collateral_definition.account.clone()),
-        AccountPostState::new(market_price_oracle.account.clone()),
-        AccountPostState::new(clock.account.clone()),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(admin),
+        AccountStateDiff::new(
+            protocol_parameters,
+            BalanceDiff::Add(0),
+            Data::from(&protocol_parameters_value),
+        ),
+        AccountStateDiff::new(
+            stability_fee_accumulator,
+            BalanceDiff::Add(0),
+            Data::from(&accumulator_value),
+        ),
+        AccountStateDiff::new(
+            redemption_price_state,
+            BalanceDiff::Add(0),
+            Data::from(&redemption_value),
+        ),
+        AccountStateDiff::unchanged(stablecoin_definition),
+        AccountStateDiff::unchanged(stablecoin_master_holding),
+        AccountStateDiff::unchanged(collateral_definition),
+        AccountStateDiff::unchanged(market_price_oracle),
+        AccountStateDiff::unchanged(clock),
     ];
 
+    // The chained call carries account ids; the PDA seeds below are what
+    // authorize the token program over both target PDAs.
     let new_definition_call = ChainedCall::new(
         token_program_id,
-        vec![stablecoin_def_authorized, master_holding_authorized],
+        vec![stablecoin_definition_id, stablecoin_master_holding_id],
         &token_core::Instruction::NewFungibleDefinition {
             name: params.stablecoin_name.to_owned(),
             total_supply: 0,
             // Self/PDA authority: the definition account is its own mint authority, so
             // `generate_debt` / `repay_debt` can mint and burn by presenting the
             // stablecoin definition PDA seed in their chained Token calls.
-            mint_authority: Some(stablecoin_definition.account_id),
+            mint_authority: Some(stablecoin_definition_id),
         },
     )
     .with_pda_seeds(vec![stablecoin_def_seed, master_holding_seed]);
 
-    (post_states, vec![new_definition_call])
+    (state_diffs, vec![new_definition_call])
 }
 
 #[cfg(test)]
@@ -311,15 +312,15 @@ pub fn initialize_program(
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 mod tests {
+    use crate::StateDiffExt;
     use lee_core::account::Nonce;
-    use stablecoin_core::compute_protocol_parameters_pda_seed;
 
     use super::*;
 
-    const STABLECOIN_PROGRAM_ID: ProgramId = [3u32; 8];
-    const TOKEN_PROGRAM_ID: ProgramId = [2u32; 8];
-    const ORACLE_PROGRAM_ID: ProgramId = [4u32; 8];
-    const CLOCK_PROGRAM_ID: ProgramId = [5u32; 8];
+    const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([3u8; 32]);
+    const TOKEN_PROGRAM_ID: AccountId = AccountId::new([2u8; 32]);
+    const ORACLE_PROGRAM_ID: AccountId = AccountId::new([4u8; 32]);
+    const CLOCK_PROGRAM_ID: AccountId = AccountId::new([5u8; 32]);
     const NOW: u64 = 1_700_000_000;
 
     fn admin_id() -> AccountId {
@@ -442,7 +443,7 @@ mod tests {
         }
     }
 
-    fn invoke(params: InitializeProgramParams<'_>) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    fn invoke(params: InitializeProgramParams<'_>) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
         initialize_program(
             admin_account(),
             uninit(protocol_parameters_id()),
@@ -469,11 +470,14 @@ mod tests {
     fn happy_path_protocol_parameters_post_state_has_expected_fields() {
         let (post_states, _) = invoke(ok_params());
         let pp_post = &post_states[1];
+        // Writing the data is the claim: v0.2.5 makes the writing program the owner of a
+        // default-owned account. The PDA address is asserted against its derivation above.
+        assert!(pp_post.writes_data());
         assert_eq!(
-            pp_post.required_claim(),
-            Some(Claim::Pda(compute_protocol_parameters_pda_seed()))
+            pp_post.post_owner(STABLECOIN_PROGRAM_ID),
+            STABLECOIN_PROGRAM_ID
         );
-        let decoded = ProtocolParameters::try_from(&pp_post.account().data).expect("decode");
+        let decoded = ProtocolParameters::try_from(pp_post.post_data()).expect("decode");
         assert_eq!(decoded.admin_account_id, admin_id());
         assert_eq!(decoded.freeze_authority_account_id, freeze_id());
         assert_eq!(decoded.stablecoin_definition_id, stablecoin_def_id());
@@ -486,7 +490,7 @@ mod tests {
     fn happy_path_accumulator_starts_at_fixed_point_one_with_now() {
         let (post_states, _) = invoke(ok_params());
         let acc_post = &post_states[2];
-        let decoded = StabilityFeeAccumulator::try_from(&acc_post.account().data).expect("decode");
+        let decoded = StabilityFeeAccumulator::try_from(acc_post.post_data()).expect("decode");
         assert_eq!(decoded.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
         assert_eq!(decoded.last_accrued_at, NOW);
     }
@@ -495,7 +499,7 @@ mod tests {
     fn happy_path_redemption_state_starts_at_params_initial_redemption_price() {
         let (post_states, _) = invoke(ok_params());
         let rp_post = &post_states[3];
-        let decoded = RedemptionPriceState::try_from(&rp_post.account().data).expect("decode");
+        let decoded = RedemptionPriceState::try_from(rp_post.post_data()).expect("decode");
         assert_eq!(decoded.redemption_price_at_last_update, FIXED_POINT_ONE / 2);
         assert_eq!(decoded.redemption_rate_per_millisecond, FIXED_POINT_ONE);
         assert_eq!(decoded.controller_integral_term, 0);
@@ -506,20 +510,22 @@ mod tests {
     fn happy_path_clock_post_state_is_unchanged_and_unclaimed() {
         let (post_states, _) = invoke(ok_params());
         let clock_post = &post_states[8];
-        assert_eq!(clock_post.required_claim(), None);
-        assert_eq!(clock_post.account(), &clock_account().account);
+        assert_eq!(
+            clock_post.post_owner(STABLECOIN_PROGRAM_ID),
+            clock_post.pre_state.account.program_owner
+        );
+        assert_eq!(
+            clock_post.post_account(STABLECOIN_PROGRAM_ID),
+            clock_account().account
+        );
     }
 
     #[test]
     fn happy_path_chained_call_is_new_fungible_definition_with_total_supply_zero_and_two_seeds() {
         let (_, chained_calls) = invoke(ok_params());
-        let mut def_authorized = uninit(stablecoin_def_id());
-        def_authorized.is_authorized = true;
-        let mut master_authorized = uninit(master_holding_id());
-        master_authorized.is_authorized = true;
         let expected = ChainedCall::new(
             TOKEN_PROGRAM_ID,
-            vec![def_authorized, master_authorized],
+            vec![stablecoin_def_id(), master_holding_id()],
             &token_core::Instruction::NewFungibleDefinition {
                 name: "test-stable".to_owned(),
                 total_supply: 0,

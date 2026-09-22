@@ -1,7 +1,7 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, ProgramId},
+    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 use twap_oracle_core::{
     compute_current_tick_account_pda, compute_price_observations_pda, CurrentTickAccount,
@@ -39,8 +39,8 @@ pub fn record_tick(
     clock: AccountWithMetadata,
     price_source_id: AccountId,
     window_duration: u64,
-    oracle_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    oracle_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     assert_eq!(
         current_tick_account.account_id,
         compute_current_tick_account_pda(oracle_program_id, price_source_id),
@@ -98,9 +98,9 @@ pub fn record_tick(
 
     if elapsed_ms < min_interval {
         return vec![
-            AccountPostState::new(price_observations.account.clone()),
-            AccountPostState::new(current_tick_account.account.clone()),
-            AccountPostState::new(clock.account.clone()),
+            AccountStateDiff::unchanged(price_observations),
+            AccountStateDiff::unchanged(current_tick_account),
+            AccountStateDiff::unchanged(clock),
         ];
     }
 
@@ -141,18 +141,20 @@ pub fn record_tick(
         .expect("total_entries does not overflow");
     observations.last_recorded_tick = current_tick;
 
-    let mut price_observations_post = price_observations.account.clone();
-    price_observations_post.data = Data::from(&observations);
-
     vec![
-        AccountPostState::new(price_observations_post),
-        AccountPostState::new(current_tick_account.account.clone()),
-        AccountPostState::new(clock.account.clone()),
+        AccountStateDiff::new(
+            price_observations,
+            BalanceDiff::Add(0),
+            Data::from(&observations),
+        ),
+        AccountStateDiff::unchanged(current_tick_account),
+        AccountStateDiff::unchanged(clock),
     ]
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::StateDiffExt;
     use lee_core::account::{Account, AccountId, Nonce};
     use twap_oracle_core::{
         compute_current_tick_account_pda, compute_price_observations_pda, OBSERVATIONS_CAPACITY,
@@ -160,8 +162,8 @@ mod tests {
 
     use super::*;
 
-    const ORACLE_PROGRAM_ID: ProgramId = [77u32; 8];
-    const CLOCK_PROGRAM_ID: ProgramId = [88u32; 8];
+    const ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
+    const CLOCK_PROGRAM_ID: AccountId = AccountId::new([88u8; 32]);
     const WINDOW_24H: u64 = 24 * 60 * 60 * 1_000;
 
     fn price_source_id() -> AccountId {
@@ -288,7 +290,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = 100_i64
             .checked_mul(elapsed_ms_i64)
@@ -310,7 +312,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = 500_000_i64
             .checked_add(
@@ -336,7 +338,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = (-100_i64)
             .checked_mul(elapsed_ms_i64)
@@ -357,7 +359,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.entries[1].timestamp, now);
     }
@@ -372,7 +374,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.write_index, 2);
     }
@@ -391,7 +393,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.write_index, 0);
     }
@@ -406,7 +408,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.total_entries, 2);
     }
@@ -425,7 +427,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.last_recorded_tick, current_tick);
     }
@@ -442,8 +444,8 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        assert_eq!(*post_states[1].account(), tick_account.account);
-        assert_eq!(*post_states[2].account(), clock.account);
+        assert_eq!(post_states[1], AccountStateDiff::unchanged(tick_account));
+        assert_eq!(post_states[2], AccountStateDiff::unchanged(clock));
     }
 
     // ── write_index = 0 path ──────────────────────────────────────────────────
@@ -463,7 +465,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = 100_i64
             .checked_mul(elapsed_ms_i64)
@@ -486,7 +488,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.write_index, 1);
         assert_eq!(obs.total_entries, 1);
@@ -505,7 +507,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.last_recorded_tick, 500);
     }
@@ -529,7 +531,7 @@ mod tests {
             tiny_window,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.write_index, 1, "guard must fire: no entry written");
         assert_eq!(
@@ -548,7 +550,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.write_index, 2);
         assert_eq!(obs.total_entries, 2);
@@ -572,7 +574,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = i64::from(MAX_TICK_DELTA)
             .checked_mul(elapsed_ms_i64)
@@ -597,7 +599,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let neg_max = MAX_TICK_DELTA
             .checked_neg()
@@ -621,7 +623,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = i64::from(MAX_TICK_DELTA)
             .checked_mul(elapsed_ms_i64)
@@ -643,7 +645,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = 100_i64
             .checked_mul(elapsed_ms_i64)
@@ -669,7 +671,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let clamped_tick = baseline
             .checked_add(MAX_TICK_DELTA)
@@ -693,7 +695,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = 100_i64
             .checked_mul(elapsed_ms_i64)

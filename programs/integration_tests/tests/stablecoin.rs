@@ -12,13 +12,13 @@ use lee::{
         circuit::ProgramWithDependencies, Message, PrivacyPreservingTransaction, WitnessSet,
     },
     program::Program,
-    program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     encryption::ViewingPublicKey,
-    Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey, NullifierSecretKey,
+    AuthorizationSecretKey, Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey,
+    NullifierSecretKey,
 };
 use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
@@ -34,8 +34,14 @@ struct Accounts;
 struct PrivateKeys;
 
 impl PrivateKeys {
+    /// The authorization key is the root credential under v0.2.5: the circuit takes an
+    /// `ask` and derives the `nsk` from it, so the fixture roots here.
+    fn destination_ask() -> AuthorizationSecretKey {
+        AuthorizationSecretKey([111; 32])
+    }
+
     fn destination_nsk() -> NullifierSecretKey {
-        [111; 32]
+        NullifierSecretKey::from(&Self::destination_ask())
     }
 
     fn destination_npk() -> NullifierPublicKey {
@@ -54,8 +60,14 @@ impl PrivateKeys {
         )
     }
 
+    /// The authorization key is the root credential under v0.2.5: the circuit takes an
+    /// `ask` and derives the `nsk` from it, so the fixture roots here.
+    fn stablecoin_holding_ask() -> AuthorizationSecretKey {
+        AuthorizationSecretKey([121; 32])
+    }
+
     fn stablecoin_holding_nsk() -> NullifierSecretKey {
-        [121; 32]
+        NullifierSecretKey::from(&Self::stablecoin_holding_ask())
     }
 
     fn stablecoin_holding_npk() -> NullifierPublicKey {
@@ -94,12 +106,18 @@ impl Keys {
 }
 
 impl Ids {
-    fn token_program() -> lee_core::program::ProgramId {
-        token_methods::TOKEN_ID
+    /// The program's account id: since v0.2.5 a program is addressed by its deployed
+    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
+    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    fn token_program() -> AccountId {
+        AccountId::from(token_methods::TOKEN_ID)
     }
 
-    fn stablecoin_program() -> lee_core::program::ProgramId {
-        stablecoin_methods::STABLECOIN_ID
+    /// The program's account id: since v0.2.5 a program is addressed by its deployed
+    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
+    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    fn stablecoin_program() -> AccountId {
+        AccountId::from(stablecoin_methods::STABLECOIN_ID)
     }
 
     fn collateral_definition() -> AccountId {
@@ -245,7 +263,7 @@ impl Accounts {
 
     fn position_with_debt_init() -> Account {
         Account {
-            program_owner: stablecoin_methods::STABLECOIN_ID,
+            program_owner: Ids::stablecoin_program(),
             balance: 0_u128,
             data: Data::from(&Position {
                 owner_account_id: Ids::owner(),
@@ -277,7 +295,7 @@ impl Accounts {
         timestamp: u64,
     ) -> Account {
         Account {
-            program_owner: [9u32; 8],
+            program_owner: AccountId::new([9u8; 32]),
             balance: 0_u128,
             data: Data::from(&twap_oracle_core::OraclePriceAccount {
                 base_asset,
@@ -306,29 +324,24 @@ fn seed_clock(state: &mut V03State, timestamp: u64) {
         // makes the spel-framework output filter drop the (unchanged, unclaimed)
         // clock post-state, which v0.2.1's DeclaredAccountMissingFromOutput invariant
         // then rejects. Use a non-default placeholder owner, as the oracle fixture does.
-        program_owner: [8u32; 8],
+        program_owner: AccountId::new([8u8; 32]),
         data: Data::try_from(data).expect("clock account data fits"),
         ..Account::default()
     };
     state.force_insert_account(CLOCK_01_PROGRAM_ACCOUNT_ID, clock_account);
 }
 
+// v0.2.5 deleted `ProgramDeploymentTransaction`; deployment is now the `program_loader`
+// pseudo-program's WriteSegment/CreateHeader flow. `with_programs` seeds each program in the
+// shape that flow produces — a loader-owned header plus its segment — without making every
+// test drive a deployment. The header lands at `AccountId::from(program.id())`, so a program's
+// account id stays derivable from its ELF here.
 fn deploy_programs(state: &mut V03State) {
-    let token_message =
-        program_deployment_transaction::Message::new(token_methods::TOKEN_ELF.to_vec());
-    state
-        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
-            token_message,
-        ))
-        .expect("token program deployment must succeed");
-
-    let stablecoin_message =
-        program_deployment_transaction::Message::new(stablecoin_methods::STABLECOIN_ELF.to_vec());
-    state
-        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
-            stablecoin_message,
-        ))
-        .expect("stablecoin program deployment must succeed");
+    *state = std::mem::take(state).with_programs([
+        Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF"),
+        Program::new(stablecoin_methods::STABLECOIN_ELF.to_vec().into())
+            .expect("valid stablecoin ELF"),
+    ]);
 }
 
 fn state_for_stablecoin_tests() -> V03State {
@@ -350,7 +363,7 @@ fn state_for_stablecoin_tests() -> V03State {
     state.force_insert_account(
         Ids::owner(),
         Account {
-            program_owner: [7u32; 8],
+            program_owner: AccountId::new([7u8; 32]),
             ..Account::default()
         },
     );
@@ -570,14 +583,21 @@ fn token_program_instance() -> Program {
 fn stablecoin_with_token_deps() -> ProgramWithDependencies {
     ProgramWithDependencies::new(
         stablecoin_program(),
+        Ids::stablecoin_program(),
         HashMap::from([(Ids::token_program(), token_program_instance())]),
     )
 }
 
-/// `OpenPosition` is blocked by the `privacy_preserving_circuit` due to the handling of
-/// sibling chain calls of (uninitialized) private accounts.
+/// `OpenPosition` through the privacy-preserving circuit, which LEZ v0.2.5 makes expressible.
+///
+/// Under v0.2.4 this was rejected with "Inconsistent authorization for account": the vault is
+/// touched by two chained calls, and the caller had to hand each one a pre-state carrying its
+/// own `is_authorized` flag — the second occurrence declared `false` after the first had been
+/// authorized by a `pda_seeds` match. v0.2.5's chained calls carry bare account ids and the
+/// runtime resolves both the state and the authorization itself, so the contradiction the
+/// caller used to be able to state no longer exists.
 #[test]
-fn stablecoin_open_position_via_privacy_transaction_is_not_expressible() {
+fn stablecoin_open_position_via_privacy_transaction() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
     state.force_insert_account(
@@ -627,15 +647,23 @@ fn stablecoin_open_position_via_privacy_transaction_is_not_expressible() {
         &stablecoin_with_token_deps(),
     );
 
-    let err = result.expect_err(
-        "OpenPosition must be rejected by the privacy-preserving circuit: vault's second \
-         chained-call occurrence declares is_authorized: false after already being marked \
-         authorized by the first chained call's pda_seeds match",
-    );
-    let message = format!("{err:?}");
-    assert!(
-        message.contains("Inconsistent authorization for account"),
-        "expected the authorization-consistency rejection, got a different error: {message}"
+    let (output, _proof) =
+        result.expect("v0.2.5 resolves the vault's two chained-call occurrences consistently");
+
+    // Stop at the circuit: every account here is public, and a privacy-preserving transaction
+    // needs at least one private action to be submittable. What this test pins is the circuit's
+    // handling of an account touched by two sibling chained calls, which is exactly what used
+    // to fail. Applying OpenPosition end to end is covered by
+    // `stablecoin_open_position_then_withdraw_collateral` on the public path.
+    let vault_post = output
+        .public_actions
+        .iter()
+        .find(|action| action.pre.account_id == vault_id)
+        .expect("the vault must appear in the circuit output");
+    assert_eq!(
+        vault_post.post.program_owner,
+        Ids::token_program(),
+        "the chained InitializeAccount must leave the vault owned by the token program"
     );
 }
 
@@ -682,7 +710,8 @@ fn stablecoin_withdraw_collateral_private_destination() {
     state.force_insert_account(position_id, position_account);
     state.force_insert_account(vault_id, vault_account);
 
-    let destination_nsk = PrivateKeys::destination_nsk();
+    let destination_ask = PrivateKeys::destination_ask();
+    let destination_nsk = NullifierSecretKey::from(&destination_ask);
     let destination_vpk = PrivateKeys::destination_vpk();
     let destination_id = PrivateKeys::destination_id();
     let destination_initial_balance = 100_000_u128;
@@ -721,7 +750,7 @@ fn stablecoin_withdraw_collateral_private_destination() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(destination_nsk, &destination_vpk, membership_proof),
+            private_authorized_update_identity(destination_ask, &destination_vpk, membership_proof),
         ],
         &stablecoin_with_token_deps(),
     )
@@ -902,7 +931,8 @@ fn stablecoin_withdraw_collateral_group_owned_destination() {
     // Alice creates the group and derives the shared destination's keys; Bob is admitted via
     // the real seal/unseal handshake and independently re-derives the same keys.
     let alice = GroupOwner::new([7_u8; 32]);
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
+    let bob_nsk = NullifierSecretKey::from(&bob_ask);
     let destination_vpk = alice.vpk;
     let destination_id = alice.id;
 
@@ -942,7 +972,7 @@ fn stablecoin_withdraw_collateral_group_owned_destination() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(bob_nsk, &destination_vpk, membership_proof),
+            private_authorized_update_identity(bob_ask, &destination_vpk, membership_proof),
         ],
         &stablecoin_with_token_deps(),
     )
@@ -1018,7 +1048,8 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
     };
     state.force_insert_account(position_id, position_account);
 
-    let stablecoin_holding_nsk = PrivateKeys::stablecoin_holding_nsk();
+    let stablecoin_holding_ask = PrivateKeys::stablecoin_holding_ask();
+    let stablecoin_holding_nsk = NullifierSecretKey::from(&stablecoin_holding_ask);
     let stablecoin_holding_vpk = PrivateKeys::stablecoin_holding_vpk();
     let stablecoin_holding_id = PrivateKeys::stablecoin_holding_id();
     let initial_stablecoin_balance = Balances::user_stablecoin_holding_init();
@@ -1073,7 +1104,7 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             private_authorized_update_identity(
-                stablecoin_holding_nsk,
+                stablecoin_holding_ask,
                 &stablecoin_holding_vpk,
                 membership_proof,
             ),
@@ -1168,7 +1199,8 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
     // Alice creates the group and derives the shared stablecoin holding's keys; Bob is
     // admitted via the real seal/unseal handshake and independently re-derives the same keys.
     let alice = GroupOwner::new([7_u8; 32]);
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
+    let bob_nsk = NullifierSecretKey::from(&bob_ask);
     let holding_vpk = alice.vpk;
     let holding_id = alice.id;
 
@@ -1211,7 +1243,7 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(bob_nsk, &holding_vpk, membership_proof),
+            private_authorized_update_identity(bob_ask, &holding_vpk, membership_proof),
         ],
         &stablecoin_with_token_deps(),
     )
@@ -1260,7 +1292,7 @@ fn stablecoin_group_owned_position_owner() {
     // Alice creates the group and derives the shared owner identity's keys; Bob is admitted
     // via the real seal/unseal handshake and independently re-derives the same keys.
     let alice = GroupOwner::new([7_u8; 32]);
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
     let owner_id = alice.id;
 
     // Position/vault addresses are derived from the group-owned owner_id — still ordinary
@@ -1315,7 +1347,7 @@ fn stablecoin_group_owned_position_owner() {
         vec![owner_pre, position_pre, vault_pre, destination_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
-            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
@@ -1409,7 +1441,7 @@ fn initialize_protocol(now: u64, controller_proportional_gain: i128) -> V03State
     state.force_insert_account(
         Ids::admin(),
         Account {
-            program_owner: [7u32; 8],
+            program_owner: AccountId::new([7u8; 32]),
             ..Account::default()
         },
     );
@@ -1476,7 +1508,10 @@ fn submit_poke(
     .expect("valid poke message");
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::admin()]);
     let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, block_id, now)
+    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
+    state
+        .transition_from_public_transaction(&tx, block_id, now)
+        .map(|_events| ())
 }
 
 fn read_accumulator(state: &V03State) -> stablecoin_core::StabilityFeeAccumulator {

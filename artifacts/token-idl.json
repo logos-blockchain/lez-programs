@@ -392,6 +392,44 @@
           "name": "Expanded"
         }
       ]
+    },
+    {
+      "name": "NewTokenDefinition",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Fungible",
+          "fields": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "total_supply",
+              "type": "u128"
+            },
+            {
+              "name": "mint_authority",
+              "type": {
+                "option": "account_id"
+              }
+            }
+          ]
+        },
+        {
+          "name": "NonFungible",
+          "fields": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "printable_supply",
+              "type": "u128"
+            }
+          ]
+        }
+      ]
     }
   ],
   "instruction_type": "token_core::Instruction"

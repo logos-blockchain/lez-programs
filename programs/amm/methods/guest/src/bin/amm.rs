@@ -6,12 +6,9 @@
 
 use std::num::NonZeroU128;
 
-use spel_framework::prelude::*;
+use nssa_core::account::{AccountId, AccountWithMetadata};
 use spel_framework::context::ProgramContext;
-use nssa_core::{
-    account::{AccountId, AccountWithMetadata},
-    program::ProgramId,
-};
+use spel_framework::prelude::*;
 
 #[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
@@ -47,13 +44,11 @@ mod amm {
     #[instruction]
     pub fn initialize(
         ctx: ProgramContext,
-        #[account(mut, signer)]
-        owner: AccountWithMetadata,
-        #[account(init)]
-        config: AccountWithMetadata,
+        #[account(mut, signer)] owner: AccountWithMetadata,
+        #[account(init)] config: AccountWithMetadata,
         nonce: [u8; 32],
-        token_program_id: ProgramId,
-        twap_oracle_program_id: ProgramId,
+        token_program_id: AccountId,
+        twap_oracle_program_id: AccountId,
         authority: AccountId,
         swap_fee_bps: u128,
         protocol_fee_bps: u128,
@@ -67,7 +62,7 @@ mod amm {
             authority,
             swap_fee_bps,
             protocol_fee_bps,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
@@ -82,17 +77,15 @@ mod amm {
     #[instruction]
     pub fn update_config(
         ctx: ProgramContext,
-        #[account(mut)]
-        config: AccountWithMetadata,
-        #[account(signer)]
-        authority: AccountWithMetadata,
+        #[account(mut)] config: AccountWithMetadata,
+        #[account(signer)] authority: AccountWithMetadata,
         new_authority: AccountId,
     ) -> SpelResult {
         let post_states = amm_program::update_config::update_config(
             config,
             authority,
             new_authority,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, vec![]))
     }
@@ -113,8 +106,7 @@ mod amm {
         config: AccountWithMetadata,
         pool: AccountWithMetadata,
         current_tick_account: AccountWithMetadata,
-        #[account(init)]
-        price_observations: AccountWithMetadata,
+        #[account(init)] price_observations: AccountWithMetadata,
         clock: AccountWithMetadata,
         window_duration: u64,
     ) -> SpelResult {
@@ -126,9 +118,12 @@ mod amm {
                 price_observations,
                 clock,
                 window_duration,
-                ctx.self_program_id,
+                ctx.self_account_id,
             );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
     }
 
     /// Creates a TWAP oracle price account for a pool over a time window, on behalf of the AMM, via
@@ -145,8 +140,7 @@ mod amm {
         ctx: ProgramContext,
         config: AccountWithMetadata,
         pool: AccountWithMetadata,
-        #[account(init)]
-        oracle_price_account: AccountWithMetadata,
+        #[account(init)] oracle_price_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         window_duration: u64,
     ) -> SpelResult {
@@ -157,9 +151,12 @@ mod amm {
                 oracle_price_account,
                 clock,
                 window_duration,
-                ctx.self_program_id,
+                ctx.self_account_id,
             );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
     }
 
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
@@ -172,24 +169,15 @@ mod amm {
     pub fn new_definition(
         ctx: ProgramContext,
         config: AccountWithMetadata,
-        #[account(init)]
-        pool: AccountWithMetadata,
-        #[account(mut)]
-        vault_a: AccountWithMetadata,
-        #[account(mut)]
-        vault_b: AccountWithMetadata,
-        #[account(init)]
-        pool_definition_lp: AccountWithMetadata,
-        #[account(init)]
-        lp_lock_holding: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_holding_a: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_holding_b: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_holding_lp: AccountWithMetadata,
-        #[account(init)]
-        current_tick_account: AccountWithMetadata,
+        #[account(init)] pool: AccountWithMetadata,
+        #[account(mut)] vault_a: AccountWithMetadata,
+        #[account(mut)] vault_b: AccountWithMetadata,
+        #[account(init)] pool_definition_lp: AccountWithMetadata,
+        #[account(init)] lp_lock_holding: AccountWithMetadata,
+        #[account(mut, signer)] user_holding_a: AccountWithMetadata,
+        #[account(mut, signer)] user_holding_b: AccountWithMetadata,
+        #[account(mut, signer)] user_holding_lp: AccountWithMetadata,
+        #[account(init)] current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         token_a_amount: u128,
         token_b_amount: u128,
@@ -209,10 +197,12 @@ mod amm {
             clock,
             NonZeroU128::new(token_a_amount).expect("token_a_amount must be nonzero"),
             NonZeroU128::new(token_b_amount).expect("token_b_amount must be nonzero"),
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
-            .with_timestamp_validity_window(..deadline))
+        Ok(
+            spel_framework::SpelOutput::execute(post_states, chained_calls)
+                .with_timestamp_validity_window(..deadline),
+        )
     }
 
     /// Adds liquidity to the Pool.
@@ -224,22 +214,14 @@ mod amm {
     pub fn add_liquidity(
         ctx: ProgramContext,
         config: AccountWithMetadata,
-        #[account(mut)]
-        pool: AccountWithMetadata,
-        #[account(mut)]
-        vault_a: AccountWithMetadata,
-        #[account(mut)]
-        vault_b: AccountWithMetadata,
-        #[account(mut)]
-        pool_definition_lp: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_holding_a: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_holding_b: AccountWithMetadata,
-        #[account(mut)]
-        user_holding_lp: AccountWithMetadata,
-        #[account(mut)]
-        current_tick_account: AccountWithMetadata,
+        #[account(mut)] pool: AccountWithMetadata,
+        #[account(mut)] vault_a: AccountWithMetadata,
+        #[account(mut)] vault_b: AccountWithMetadata,
+        #[account(mut)] pool_definition_lp: AccountWithMetadata,
+        #[account(mut, signer)] user_holding_a: AccountWithMetadata,
+        #[account(mut, signer)] user_holding_b: AccountWithMetadata,
+        #[account(mut)] user_holding_lp: AccountWithMetadata,
+        #[account(mut)] current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         min_amount_liquidity: u128,
         max_amount_to_add_token_a: u128,
@@ -260,10 +242,12 @@ mod amm {
             NonZeroU128::new(min_amount_liquidity).expect("min_amount_liquidity must be nonzero"),
             max_amount_to_add_token_a,
             max_amount_to_add_token_b,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
-            .with_timestamp_validity_window(..deadline))
+        Ok(
+            spel_framework::SpelOutput::execute(post_states, chained_calls)
+                .with_timestamp_validity_window(..deadline),
+        )
     }
 
     /// Removes liquidity from the Pool.
@@ -275,22 +259,14 @@ mod amm {
     pub fn remove_liquidity(
         ctx: ProgramContext,
         config: AccountWithMetadata,
-        #[account(mut)]
-        pool: AccountWithMetadata,
-        #[account(mut)]
-        vault_a: AccountWithMetadata,
-        #[account(mut)]
-        vault_b: AccountWithMetadata,
-        #[account(mut)]
-        pool_definition_lp: AccountWithMetadata,
-        #[account(mut)]
-        user_holding_a: AccountWithMetadata,
-        #[account(mut)]
-        user_holding_b: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_holding_lp: AccountWithMetadata,
-        #[account(mut)]
-        current_tick_account: AccountWithMetadata,
+        #[account(mut)] pool: AccountWithMetadata,
+        #[account(mut)] vault_a: AccountWithMetadata,
+        #[account(mut)] vault_b: AccountWithMetadata,
+        #[account(mut)] pool_definition_lp: AccountWithMetadata,
+        #[account(mut)] user_holding_a: AccountWithMetadata,
+        #[account(mut)] user_holding_b: AccountWithMetadata,
+        #[account(mut, signer)] user_holding_lp: AccountWithMetadata,
+        #[account(mut)] current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         remove_liquidity_amount: u128,
         min_amount_to_remove_token_a: u128,
@@ -312,10 +288,12 @@ mod amm {
                 .expect("remove_liquidity_amount must be nonzero"),
             min_amount_to_remove_token_a,
             min_amount_to_remove_token_b,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
-            .with_timestamp_validity_window(..deadline))
+        Ok(
+            spel_framework::SpelOutput::execute(post_states, chained_calls)
+                .with_timestamp_validity_window(..deadline),
+        )
     }
 
     /// Swap some quantity of tokens while maintaining the pool constant product.
@@ -330,23 +308,16 @@ mod amm {
     pub fn swap_exact_input(
         ctx: ProgramContext,
         config: AccountWithMetadata,
-        #[account(mut)]
-        pool: AccountWithMetadata,
-        #[account(mut)]
-        vault_a: AccountWithMetadata,
-        #[account(mut)]
-        vault_b: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_input_holding: AccountWithMetadata,
-        #[account(mut)]
-        user_output_holding: AccountWithMetadata,
-        #[account(mut)]
-        current_tick_account: AccountWithMetadata,
+        #[account(mut)] pool: AccountWithMetadata,
+        #[account(mut)] vault_a: AccountWithMetadata,
+        #[account(mut)] vault_b: AccountWithMetadata,
+        #[account(mut, signer)] user_input_holding: AccountWithMetadata,
+        #[account(mut)] user_output_holding: AccountWithMetadata,
+        #[account(mut)] current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         // The input-token protocol-fee holding (created lazily on first use); mutated when a
         // protocol fee is taken.
-        #[account(mut)]
-        protocol_fee_holding: AccountWithMetadata,
+        #[account(mut)] protocol_fee_holding: AccountWithMetadata,
         swap_amount_in: u128,
         min_amount_out: u128,
         deadline: u64,
@@ -363,10 +334,12 @@ mod amm {
             protocol_fee_holding,
             swap_amount_in,
             min_amount_out,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
-            .with_timestamp_validity_window(..deadline))
+        Ok(
+            spel_framework::SpelOutput::execute(post_states, chained_calls)
+                .with_timestamp_validity_window(..deadline),
+        )
     }
 
     /// Swap tokens specifying the exact desired output amount.
@@ -381,23 +354,16 @@ mod amm {
     pub fn swap_exact_output(
         ctx: ProgramContext,
         config: AccountWithMetadata,
-        #[account(mut)]
-        pool: AccountWithMetadata,
-        #[account(mut)]
-        vault_a: AccountWithMetadata,
-        #[account(mut)]
-        vault_b: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_input_holding: AccountWithMetadata,
-        #[account(mut)]
-        user_output_holding: AccountWithMetadata,
-        #[account(mut)]
-        current_tick_account: AccountWithMetadata,
+        #[account(mut)] pool: AccountWithMetadata,
+        #[account(mut)] vault_a: AccountWithMetadata,
+        #[account(mut)] vault_b: AccountWithMetadata,
+        #[account(mut, signer)] user_input_holding: AccountWithMetadata,
+        #[account(mut)] user_output_holding: AccountWithMetadata,
+        #[account(mut)] current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
         // The input-token protocol-fee holding (created lazily on first use); mutated when a
         // protocol fee is taken.
-        #[account(mut)]
-        protocol_fee_holding: AccountWithMetadata,
+        #[account(mut)] protocol_fee_holding: AccountWithMetadata,
         exact_amount_out: u128,
         max_amount_in: u128,
         deadline: u64,
@@ -414,10 +380,12 @@ mod amm {
             protocol_fee_holding,
             exact_amount_out,
             max_amount_in,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls)
-            .with_timestamp_validity_window(..deadline))
+        Ok(
+            spel_framework::SpelOutput::execute(post_states, chained_calls)
+                .with_timestamp_validity_window(..deadline),
+        )
     }
 
     /// Sync pool reserves with current vault balances, refreshing the pool's TWAP current tick.
@@ -425,15 +393,13 @@ mod amm {
     pub fn sync_reserves(
         ctx: ProgramContext,
         config: AccountWithMetadata,
-        #[account(mut)]
-        pool: AccountWithMetadata,
+        #[account(mut)] pool: AccountWithMetadata,
         // vault_a / vault_b are only read to compute balances in
         // amm_program::sync::sync_reserves (their post-states are unchanged
         // clones), so they are not writable — no `mut` metadata.
         vault_a: AccountWithMetadata,
         vault_b: AccountWithMetadata,
-        #[account(mut)]
-        current_tick_account: AccountWithMetadata,
+        #[account(mut)] current_tick_account: AccountWithMetadata,
         clock: AccountWithMetadata,
     ) -> SpelResult {
         let (post_states, chained_calls) = amm_program::sync::sync_reserves(
@@ -443,9 +409,12 @@ mod amm {
             vault_b,
             current_tick_account,
             clock,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
     }
 
     /// Withdraw accrued protocol fees for one token to a destination holding. Only the config's
@@ -462,12 +431,9 @@ mod amm {
     pub fn withdraw_protocol_fees(
         ctx: ProgramContext,
         config: AccountWithMetadata,
-        #[account(mut)]
-        protocol_fee_holding: AccountWithMetadata,
-        #[account(mut)]
-        destination: AccountWithMetadata,
-        #[account(signer)]
-        authority: AccountWithMetadata,
+        #[account(mut)] protocol_fee_holding: AccountWithMetadata,
+        #[account(mut)] destination: AccountWithMetadata,
+        #[account(signer)] authority: AccountWithMetadata,
         amount: u128,
     ) -> SpelResult {
         let (post_states, chained_calls) =
@@ -477,8 +443,11 @@ mod amm {
                 destination,
                 authority,
                 amount,
-                ctx.self_program_id,
+                ctx.self_account_id,
             );
-        Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
     }
 }

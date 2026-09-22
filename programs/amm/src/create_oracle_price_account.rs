@@ -3,8 +3,8 @@ use amm_core::{
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
-    account::{Account, AccountWithMetadata},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata},
+    program::{AccountStateDiff, ChainedCall},
 };
 use twap_oracle_core::{compute_oracle_price_account_pda, OBSERVATIONS_CAPACITY};
 
@@ -47,8 +47,8 @@ pub fn create_oracle_price_account(
     oracle_price_account: AccountWithMetadata,
     clock: AccountWithMetadata,
     window_duration: u64,
-    amm_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    amm_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     // Config gate: validate the config PDA and read the TWAP oracle program ID from it.
     assert_eq!(
         config.account.program_owner, amm_program_id,
@@ -114,17 +114,15 @@ pub fn create_oracle_price_account(
         "Create oracle price account: oracle price account already exists"
     );
 
-    // Authorize the pool as the price source so the oracle ties the account to this pool. The AMM
-    // proves control of the pool PDA via its seed.
-    let mut pool_price_source = pool.clone();
-    pool_price_source.is_authorized = true;
-
+    // The pool is the price source; the AMM's control of the pool PDA is proven by the
+    // seed on the call below. A chained call names accounts by id, so there is no
+    // pre-state flag to set — `pda_seeds` alone confers the authority.
     let chained_call = ChainedCall::new(
         twap_oracle_program_id,
         vec![
-            oracle_price_account.clone(),
-            pool_price_source,
-            clock.clone(),
+            oracle_price_account.account_id,
+            pool.account_id,
+            clock.account_id,
         ],
         &twap_oracle_core::Instruction::CreateOraclePriceAccount {
             base_asset: pool_def.definition_token_a_id,
@@ -140,10 +138,10 @@ pub fn create_oracle_price_account(
     )]);
 
     let post_states = vec![
-        AccountPostState::new(config.account.clone()),
-        AccountPostState::new(pool.account.clone()),
-        AccountPostState::new(oracle_price_account.account.clone()),
-        AccountPostState::new(clock.account.clone()),
+        AccountStateDiff::unchanged(config.clone()),
+        AccountStateDiff::unchanged(pool.clone()),
+        AccountStateDiff::unchanged(oracle_price_account.clone()),
+        AccountStateDiff::unchanged(clock.clone()),
     ];
 
     (post_states, vec![chained_call])
@@ -151,14 +149,15 @@ pub fn create_oracle_price_account(
 
 #[cfg(test)]
 mod tests {
+    use crate::StateDiffExt;
     use amm_core::{compute_config_pda, compute_pool_pda_seed};
     use lee_core::account::{Account, AccountId, Data, Nonce};
 
     use super::*;
 
-    const AMM_PROGRAM_ID: ProgramId = [42; 8];
-    const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
-    const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
+    const AMM_PROGRAM_ID: AccountId = AccountId::new([42u8; 32]);
+    const TOKEN_PROGRAM_ID: AccountId = AccountId::new([15u8; 32]);
+    const TWAP_ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
     /// 24-hour window in milliseconds.
     const WINDOW_24H: u64 = 24 * 60 * 60 * 1_000;
     const RESERVE_A: u128 = 5_000;
@@ -251,7 +250,7 @@ mod tests {
         }
     }
 
-    fn call() -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    fn call() -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
         create_oracle_price_account(
             config_init(),
             pool(),
@@ -268,13 +267,16 @@ mod tests {
     fn returns_four_post_states_unchanged() {
         let (post_states, _) = call();
         assert_eq!(post_states.len(), 4);
-        assert_eq!(*post_states[0].account(), config_init().account);
-        assert_eq!(*post_states[1].account(), pool().account);
         assert_eq!(
-            *post_states[2].account(),
+            post_states[0].post_account(AMM_PROGRAM_ID),
+            config_init().account
+        );
+        assert_eq!(post_states[1].post_account(AMM_PROGRAM_ID), pool().account);
+        assert_eq!(
+            post_states[2].post_account(AMM_PROGRAM_ID),
             oracle_price_account_uninit().account
         );
-        assert_eq!(*post_states[3].account(), clock().account);
+        assert_eq!(post_states[3].post_account(AMM_PROGRAM_ID), clock().account);
     }
 
     #[test]
@@ -285,11 +287,13 @@ mod tests {
         // The chained call must carry the pool's asset pair and the spot price derived from the
         // pool's reserves (not a caller-supplied value), and authorize the pool as the price
         // source.
-        let mut pool_authorized = pool();
-        pool_authorized.is_authorized = true;
         let expected = ChainedCall::new(
             TWAP_ORACLE_PROGRAM_ID,
-            vec![oracle_price_account_uninit(), pool_authorized, clock()],
+            vec![
+                oracle_price_account_uninit().account_id,
+                pool().account_id,
+                clock().account_id,
+            ],
             &twap_oracle_core::Instruction::CreateOraclePriceAccount {
                 base_asset: token_a_id(),
                 quote_asset: token_b_id(),
@@ -312,7 +316,7 @@ mod tests {
     #[should_panic(expected = "must be owned by the AMM Program")]
     fn config_not_owned_by_amm_panics() {
         let mut config = config_init();
-        config.account.program_owner = [0; 8];
+        config.account.program_owner = AccountId::default();
         create_oracle_price_account(
             config,
             pool(),

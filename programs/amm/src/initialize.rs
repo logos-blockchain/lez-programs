@@ -1,10 +1,9 @@
 use amm_core::{
-    assert_valid_protocol_fee_bps, assert_valid_swap_fee_bps, compute_config_pda,
-    compute_config_pda_seed, AmmConfig,
+    assert_valid_protocol_fee_bps, assert_valid_swap_fee_bps, compute_config_pda, AmmConfig,
 };
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, Claim, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 
 /// Initializes a namespaced AMM instance by creating its configuration account.
@@ -40,13 +39,13 @@ pub fn initialize(
     owner: AccountWithMetadata,
     config: AccountWithMetadata,
     nonce: [u8; 32],
-    token_program_id: ProgramId,
-    twap_oracle_program_id: ProgramId,
+    token_program_id: AccountId,
+    twap_oracle_program_id: AccountId,
     authority: AccountId,
     swap_fee_bps: u128,
     protocol_fee_bps: u128,
-    amm_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    amm_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     assert!(
         owner.is_authorized,
         "Initialize: owner account must sign to claim its namespace"
@@ -65,8 +64,7 @@ pub fn initialize(
     assert_valid_swap_fee_bps(swap_fee_bps);
     assert_valid_protocol_fee_bps(protocol_fee_bps);
 
-    let mut config_post = config.account.clone();
-    config_post.data = Data::from(&AmmConfig {
+    let config_data = Data::from(&AmmConfig {
         token_program_id,
         twap_oracle_program_id,
         authority,
@@ -74,41 +72,42 @@ pub fn initialize(
         protocol_fee_bps,
     });
 
-    // On first use the owner is a fresh EOA; the program claims it (the owner authorizes this by
-    // signing), binding the account to the AMM as a persistent namespace-owner marker. On every
-    // later `initialize` under the same owner (a different `nonce`) the owner is already AMM-owned,
-    // so it is echoed unchanged. This is what lets one owner open multiple instances.
+    // The owner account is echoed unchanged: it is the signer, not a state holder.
     //
-    // Consequence: the owner account becomes AMM-owned, so it must be a fresh, dedicated account
-    // (a pre-used wallet cannot be claimed) rather than an everyday wallet.
-    let owner_post = if owner.account == Account::default() {
-        AccountPostState::new_claimed(owner.account.clone(), Claim::Authorized)
-    } else {
-        assert_eq!(
-            owner.account.program_owner, amm_program_id,
-            "Initialize: owner must be a fresh account or an existing AMM namespace owner"
-        );
-        AccountPostState::new(owner.account.clone())
-    };
-
+    // Before LEZ v0.2.5 this program claimed a fresh owner account as a persistent,
+    // data-less AMM-owned namespace marker. v0.2.5 acquires ownership only on a data
+    // write (`acquire_ownership_on_data_write` fires when `post.data != pre.data`, and
+    // an account left unowned must carry no data), so that marker is no longer
+    // expressible at all.
+    //
+    // The marker had exactly one reader: this function, which required the owner be
+    // either fresh (and so claimable) or already AMM-owned. No other handler reads it —
+    // they all gate on `config.account.program_owner`. So dropping it drops that one
+    // gate, and with it the requirement that the owner be a fresh, dedicated account:
+    // an everyday wallet can open a namespace now.
+    //
+    // Nothing that gate provided is lost. A namespace is squat-proofed by the
+    // `owner.is_authorized` assert above — only the owner can open one in their own
+    // name — and the config PDA is derived from `(amm_program_id, owner.account_id,
+    // nonce)`, so distinct owners cannot collide regardless of who owns what.
+    //
+    // The config PDA is claimed by the write itself; its address was asserted above.
     vec![
-        owner_post,
-        AccountPostState::new_claimed(
-            config_post,
-            Claim::Pda(compute_config_pda_seed(owner.account_id, nonce)),
-        ),
+        AccountStateDiff::unchanged(owner),
+        AccountStateDiff::new(config, BalanceDiff::Add(0), config_data),
     ]
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::StateDiffExt;
     use lee_core::account::Nonce;
 
     use super::*;
 
-    const AMM_PROGRAM_ID: ProgramId = [42; 8];
-    const TOKEN_PROGRAM_ID: ProgramId = [15; 8];
-    const TWAP_ORACLE_PROGRAM_ID: ProgramId = [77; 8];
+    const AMM_PROGRAM_ID: AccountId = AccountId::new([42u8; 32]);
+    const TOKEN_PROGRAM_ID: AccountId = AccountId::new([15u8; 32]);
+    const TWAP_ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
     const NONCE: [u8; 32] = [3; 32];
     const SWAP_FEE_BPS: u128 = 30;
     const PROTOCOL_FEE_BPS: u128 = 1_000;
@@ -137,7 +136,7 @@ mod tests {
         }
     }
 
-    fn run() -> Vec<AccountPostState> {
+    fn run() -> Vec<AccountStateDiff> {
         initialize(
             owner_signed(),
             config_uninit(),
@@ -152,15 +151,21 @@ mod tests {
     }
 
     #[test]
-    fn fresh_owner_is_claimed_and_config_pda_claimed() {
+    fn owner_is_echoed_and_config_is_claimed_by_its_write() {
         let post_states = run();
         assert_eq!(post_states.len(), 2);
-        // 0: fresh owner claimed into the AMM (Authorized); 1: config claimed via its PDA seed.
-        assert_eq!(post_states[0].required_claim(), Some(Claim::Authorized));
+        // 0: the owner is echoed untouched. v0.2.4 claimed a fresh owner into the AMM as a
+        //    namespace marker; v0.2.5 acquires ownership only on a data write and forbids an
+        //    unowned account from carrying data, so that marker is gone. Squat-proofing is
+        //    still `owner.is_authorized`, asserted by the handler.
+        assert!(!post_states[0].writes_data());
         assert_eq!(
-            post_states[1].required_claim(),
-            Some(Claim::Pda(compute_config_pda_seed(owner_id(), NONCE)))
+            post_states[0].post_owner(AMM_PROGRAM_ID),
+            post_states[0].pre_state.account.program_owner
         );
+        // 1: the config write is itself the claim on its PDA.
+        assert!(post_states[1].writes_data());
+        assert_eq!(post_states[1].post_owner(AMM_PROGRAM_ID), AMM_PROGRAM_ID);
     }
 
     /// A second instance under the same owner: the owner is already AMM-owned, so it is echoed
@@ -185,14 +190,17 @@ mod tests {
             PROTOCOL_FEE_BPS,
             AMM_PROGRAM_ID,
         );
-        assert_eq!(post_states[0].required_claim(), None);
-        assert_eq!(post_states[0].account().program_owner, AMM_PROGRAM_ID);
+        assert_eq!(
+            post_states[0].post_owner(AMM_PROGRAM_ID),
+            post_states[0].pre_state.account.program_owner
+        );
+        assert_eq!(post_states[0].post_owner(AMM_PROGRAM_ID), AMM_PROGRAM_ID);
     }
 
     #[test]
     fn stores_program_ids_and_authority() {
         let post_states = run();
-        let config = AmmConfig::try_from(&post_states[1].account().data)
+        let config = AmmConfig::try_from(post_states[1].post_data())
             .expect("post state must contain a valid AmmConfig");
         assert_eq!(config.token_program_id, TOKEN_PROGRAM_ID);
         assert_eq!(config.twap_oracle_program_id, TWAP_ORACLE_PROGRAM_ID);
