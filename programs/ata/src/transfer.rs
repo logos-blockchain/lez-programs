@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{Account, AccountWithMetadata},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata},
+    program::{AccountStateDiff, ChainedCall},
 };
 use token_core::TokenHolding;
 
@@ -8,10 +8,10 @@ pub fn transfer_from_associated_token_account(
     owner: AccountWithMetadata,
     sender_ata: AccountWithMetadata,
     recipient: AccountWithMetadata,
-    ata_program_id: ProgramId,
-    token_program_id: ProgramId,
+    ata_program_id: AccountId,
+    token_program_id: AccountId,
     amount: u128,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(owner.is_authorized, "Owner authorization is missing");
     assert_eq!(
         sender_ata.account.program_owner, token_program_id,
@@ -31,8 +31,8 @@ pub fn transfer_from_associated_token_account(
     // The recipient contract: ATA::Transfer requires a recipient token holding that is already
     // initialized, owned by the same token program as the sender ATA, and that points at the same
     // token definition as the sender. Anything else fails here rather than being silently
-    // materialized by the downstream token transfer (e.g. via `Claim::Authorized` on a default
-    // recipient), so integrators get an ATA-level failure rather than having to reverse-engineer
+    // materialized by the downstream token transfer writing into a default recipient, so
+    // integrators get an ATA-level failure rather than having to reverse-engineer
     // token/runtime semantics.
     assert_ne!(
         recipient.account,
@@ -51,21 +51,26 @@ pub fn transfer_from_associated_token_account(
         "Recipient and sender token definitions do not match"
     );
 
-    let post_states = vec![
-        AccountPostState::new(owner.account.clone()),
-        AccountPostState::new(sender_ata.account.clone()),
-        AccountPostState::new(recipient.account.clone()),
-    ];
-    let mut sender_ata_auth = sender_ata.clone();
-    sender_ata_auth.is_authorized = true;
+    let sender_ata_id = sender_ata.account_id;
+    let recipient_id = recipient.account_id;
 
+    // The balances move in the chained call, executed by the token program that owns
+    // these holdings; this program reports them unchanged but must still report them.
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(owner),
+        AccountStateDiff::unchanged(sender_ata),
+        AccountStateDiff::unchanged(recipient),
+    ];
+
+    // `pda_seeds` is what authorizes the callee over the sender ATA — the call carries
+    // account ids, not pre-states, so there is no flag to set.
     let chained_call = ChainedCall::new(
         token_program_id,
-        vec![sender_ata_auth, recipient],
+        vec![sender_ata_id, recipient_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: amount,
         },
     )
     .with_pda_seeds(vec![sender_seed]);
-    (post_states, vec![chained_call])
+    (state_diffs, vec![chained_call])
 }

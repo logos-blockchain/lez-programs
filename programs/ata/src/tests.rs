@@ -1,13 +1,13 @@
 use ata_core::{compute_ata_seed, get_associated_token_account_id};
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
-    program::{ChainedCall, Claim},
+    program::{AccountStateDiff, ChainedCall},
 };
 use token_core::{TokenDefinition, TokenHolding};
 
-const ATA_PROGRAM_ID: lee_core::program::ProgramId = [1u32; 8];
-const TOKEN_PROGRAM_ID: lee_core::program::ProgramId = [2u32; 8];
-const OTHER_TOKEN_PROGRAM_ID: lee_core::program::ProgramId = [3u32; 8];
+const ATA_PROGRAM_ID: AccountId = AccountId::new([1u8; 32]);
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([2u8; 32]);
+const OTHER_TOKEN_PROGRAM_ID: AccountId = AccountId::new([3u8; 32]);
 
 fn owner_id() -> AccountId {
     AccountId::new([0x01u8; 32])
@@ -85,13 +85,14 @@ fn create_emits_chained_call_for_uninitialized_ata() {
     );
 
     assert_eq!(post_states.len(), 3);
-    assert_eq!(post_states[0].required_claim(), Some(Claim::Authorized));
+    // The owner is echoed untouched. v0.2.4 claimed it as a marker when it was default
+    // (`Claim::Authorized` over empty data); v0.2.5 acquires ownership only on a data
+    // write and forbids an unowned account from carrying data, so that marker is gone.
+    assert_eq!(post_states[0], AccountStateDiff::unchanged(owner_account()));
 
-    let mut authorized_ata = uninitialized_ata_account();
-    authorized_ata.is_authorized = true;
     let expected_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![definition_account(), authorized_ata],
+        vec![definition_id(), ata_id()],
         &token_core::Instruction::InitializeAccount,
     )
     .with_pda_seeds(vec![compute_ata_seed(
@@ -269,11 +270,9 @@ fn transfer_emits_chained_call_for_initialized_recipient() {
     assert_eq!(post_states.len(), 3);
     assert_eq!(chained_calls.len(), 1);
 
-    let mut sender_auth = initialized_ata_account();
-    sender_auth.is_authorized = true;
     let expected_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![sender_auth, initialized_recipient_account()],
+        vec![ata_id(), initialized_recipient_account().account_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: 25,
         },
@@ -342,7 +341,7 @@ fn transfer_panics_when_sender_ata_is_owned_by_unexpected_token_program() {
 #[should_panic(expected = "Recipient must be owned by the same token program as the sender ATA")]
 fn transfer_panics_when_recipient_is_foreign_owned() {
     let mut foreign_recipient = initialized_recipient_account();
-    foreign_recipient.account.program_owner = [9u32; 8];
+    foreign_recipient.account.program_owner = AccountId::new([9u8; 32]);
 
     crate::transfer::transfer_from_associated_token_account(
         owner_account(),
@@ -403,11 +402,9 @@ fn burn_emits_chained_call_for_initialized_ata() {
     assert_eq!(post_states.len(), 3);
     assert_eq!(chained_calls.len(), 1);
 
-    let mut holder_auth = initialized_ata_account();
-    holder_auth.is_authorized = true;
     let expected_call = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![definition_account(), holder_auth],
+        vec![definition_id(), ata_id()],
         &token_core::Instruction::Burn { amount_to_burn: 25 },
     )
     .with_pda_seeds(vec![compute_ata_seed(
