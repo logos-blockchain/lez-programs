@@ -28,18 +28,12 @@ mod stablecoin {
     )]
     pub fn initialize_program(
         ctx: ProgramContext,
-        #[account(signer)]
-        admin: AccountWithMetadata,
-        #[account(init)]
-        protocol_parameters: AccountWithMetadata,
-        #[account(init)]
-        stability_fee_accumulator: AccountWithMetadata,
-        #[account(init)]
-        redemption_price_state: AccountWithMetadata,
-        #[account(init)]
-        stablecoin_definition: AccountWithMetadata,
-        #[account(init)]
-        stablecoin_master_holding: AccountWithMetadata,
+        #[account(signer)] admin: AccountWithMetadata,
+        #[account(init)] protocol_parameters: AccountWithMetadata,
+        #[account(init)] stability_fee_accumulator: AccountWithMetadata,
+        #[account(init)] redemption_price_state: AccountWithMetadata,
+        #[account(init)] stablecoin_definition: AccountWithMetadata,
+        #[account(init)] stablecoin_master_holding: AccountWithMetadata,
         collateral_definition: AccountWithMetadata,
         market_price_oracle: AccountWithMetadata,
         clock: AccountWithMetadata,
@@ -64,7 +58,7 @@ mod stablecoin {
                 collateral_definition,
                 market_price_oracle,
                 clock,
-                ctx.self_program_id,
+                ctx.self_account_id,
                 stablecoin_program::initialize_program::InitializeProgramParams {
                     freeze_authority_account_id,
                     initial_stability_fee_per_millisecond,
@@ -95,11 +89,9 @@ mod stablecoin {
     #[instruction]
     pub fn accrue_stability_fee(
         ctx: ProgramContext,
-        #[account(signer)]
-        caller: AccountWithMetadata,
+        #[account(signer)] caller: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
-        #[account(mut)]
-        stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
         clock: AccountWithMetadata,
     ) -> SpelResult {
         let (post_states, chained_calls) =
@@ -108,7 +100,7 @@ mod stablecoin {
                 protocol_parameters,
                 stability_fee_accumulator,
                 clock,
-                ctx.self_program_id,
+                ctx.self_account_id,
             );
         Ok(spel_framework::SpelOutput::execute(
             post_states,
@@ -130,11 +122,9 @@ mod stablecoin {
     #[instruction]
     pub fn update_redemption_rate(
         ctx: ProgramContext,
-        #[account(signer)]
-        caller: AccountWithMetadata,
+        #[account(signer)] caller: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
-        #[account(mut)]
-        redemption_price_state: AccountWithMetadata,
+        #[account(mut)] redemption_price_state: AccountWithMetadata,
         market_price_oracle: AccountWithMetadata,
         clock: AccountWithMetadata,
     ) -> SpelResult {
@@ -145,7 +135,7 @@ mod stablecoin {
                 redemption_price_state,
                 market_price_oracle,
                 clock,
-                ctx.self_program_id,
+                ctx.self_account_id,
             );
         Ok(spel_framework::SpelOutput::execute(
             post_states,
@@ -168,13 +158,10 @@ mod stablecoin {
     #[instruction]
     pub fn refresh_globals(
         ctx: ProgramContext,
-        #[account(signer)]
-        caller: AccountWithMetadata,
+        #[account(signer)] caller: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
-        #[account(mut)]
-        stability_fee_accumulator: AccountWithMetadata,
-        #[account(mut)]
-        redemption_price_state: AccountWithMetadata,
+        #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] redemption_price_state: AccountWithMetadata,
         market_price_oracle: AccountWithMetadata,
         clock: AccountWithMetadata,
     ) -> SpelResult {
@@ -185,7 +172,7 @@ mod stablecoin {
             redemption_price_state,
             market_price_oracle,
             clock,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(
             post_states,
@@ -211,14 +198,10 @@ mod stablecoin {
     )]
     pub fn open_position(
         ctx: ProgramContext,
-        #[account(signer)]
-        owner: AccountWithMetadata,
-        #[account(init)]
-        position: AccountWithMetadata,
-        #[account(init)]
-        vault: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_collateral_holding: AccountWithMetadata,
+        #[account(signer)] owner: AccountWithMetadata,
+        #[account(init)] position: AccountWithMetadata,
+        #[account(init)] vault: AccountWithMetadata,
+        #[account(mut, signer)] user_collateral_holding: AccountWithMetadata,
         collateral_definition: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         clock: AccountWithMetadata,
@@ -233,7 +216,7 @@ mod stablecoin {
             collateral_definition,
             protocol_parameters,
             clock,
-            ctx.self_program_id,
+            ctx.self_account_id,
             position_nonce,
             initial_collateral_amount,
         );
@@ -255,14 +238,10 @@ mod stablecoin {
     #[instruction]
     pub fn deposit_collateral(
         ctx: ProgramContext,
-        #[account(signer)]
-        owner: AccountWithMetadata,
-        #[account(mut)]
-        position: AccountWithMetadata,
-        #[account(mut)]
-        vault: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_collateral_holding: AccountWithMetadata,
+        #[account(signer)] owner: AccountWithMetadata,
+        #[account(mut)] position: AccountWithMetadata,
+        #[account(mut)] vault: AccountWithMetadata,
+        #[account(mut, signer)] user_collateral_holding: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         amount: u128,
     ) -> SpelResult {
@@ -272,7 +251,7 @@ mod stablecoin {
             vault,
             user_collateral_holding,
             protocol_parameters,
-            ctx.self_program_id,
+            ctx.self_account_id,
             amount,
         );
         Ok(spel_framework::SpelOutput::execute(
@@ -297,14 +276,10 @@ mod stablecoin {
     )]
     pub fn generate_debt(
         ctx: ProgramContext,
-        #[account(signer)]
-        owner: AccountWithMetadata,
-        #[account(mut)]
-        position: AccountWithMetadata,
-        #[account(mut)]
-        stablecoin_definition: AccountWithMetadata,
-        #[account(mut)]
-        user_stablecoin_holding: AccountWithMetadata,
+        #[account(signer)] owner: AccountWithMetadata,
+        #[account(mut)] position: AccountWithMetadata,
+        #[account(mut)] stablecoin_definition: AccountWithMetadata,
+        #[account(mut)] user_stablecoin_holding: AccountWithMetadata,
         stability_fee_accumulator: AccountWithMetadata,
         redemption_price_state: AccountWithMetadata,
         market_price_oracle: AccountWithMetadata,
@@ -322,7 +297,7 @@ mod stablecoin {
             market_price_oracle,
             protocol_parameters,
             clock,
-            ctx.self_program_id,
+            ctx.self_account_id,
             amount,
         );
         Ok(spel_framework::SpelOutput::execute(
@@ -344,10 +319,8 @@ mod stablecoin {
     #[instruction]
     pub fn close_position(
         ctx: ProgramContext,
-        #[account(signer)]
-        owner: AccountWithMetadata,
-        #[account(mut)]
-        position: AccountWithMetadata,
+        #[account(signer)] owner: AccountWithMetadata,
+        #[account(mut)] position: AccountWithMetadata,
         vault: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
     ) -> SpelResult {
@@ -356,7 +329,7 @@ mod stablecoin {
             position,
             vault,
             protocol_parameters,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(
             post_states,
@@ -379,14 +352,10 @@ mod stablecoin {
     )]
     pub fn withdraw_collateral(
         ctx: ProgramContext,
-        #[account(signer)]
-        owner: AccountWithMetadata,
-        #[account(mut)]
-        position: AccountWithMetadata,
-        #[account(mut)]
-        vault: AccountWithMetadata,
-        #[account(mut)]
-        user_collateral_holding: AccountWithMetadata,
+        #[account(signer)] owner: AccountWithMetadata,
+        #[account(mut)] position: AccountWithMetadata,
+        #[account(mut)] vault: AccountWithMetadata,
+        #[account(mut)] user_collateral_holding: AccountWithMetadata,
         stability_fee_accumulator: AccountWithMetadata,
         redemption_price_state: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
@@ -403,7 +372,7 @@ mod stablecoin {
                 redemption_price_state,
                 protocol_parameters,
                 clock,
-                ctx.self_program_id,
+                ctx.self_account_id,
                 amount,
             );
         Ok(spel_framework::SpelOutput::execute(
@@ -425,14 +394,10 @@ mod stablecoin {
     )]
     pub fn repay_debt(
         ctx: ProgramContext,
-        #[account(signer)]
-        owner: AccountWithMetadata,
-        #[account(mut)]
-        position: AccountWithMetadata,
-        #[account(mut)]
-        stablecoin_definition: AccountWithMetadata,
-        #[account(mut, signer)]
-        user_stablecoin_holding: AccountWithMetadata,
+        #[account(signer)] owner: AccountWithMetadata,
+        #[account(mut)] position: AccountWithMetadata,
+        #[account(mut)] stablecoin_definition: AccountWithMetadata,
+        #[account(mut, signer)] user_stablecoin_holding: AccountWithMetadata,
         stability_fee_accumulator: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         clock: AccountWithMetadata,
@@ -446,7 +411,7 @@ mod stablecoin {
             stability_fee_accumulator,
             protocol_parameters,
             clock,
-            ctx.self_program_id,
+            ctx.self_account_id,
             amount,
         );
         Ok(spel_framework::SpelOutput::execute(
@@ -467,12 +432,9 @@ mod stablecoin {
     #[instruction]
     pub fn set_stability_fee_per_millisecond(
         ctx: ProgramContext,
-        #[account(signer)]
-        admin: AccountWithMetadata,
-        #[account(mut)]
-        protocol_parameters: AccountWithMetadata,
-        #[account(mut)]
-        stability_fee_accumulator: AccountWithMetadata,
+        #[account(signer)] admin: AccountWithMetadata,
+        #[account(mut)] protocol_parameters: AccountWithMetadata,
+        #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
         clock: AccountWithMetadata,
         new_rate: u128,
     ) -> SpelResult {
@@ -482,7 +444,7 @@ mod stablecoin {
                 protocol_parameters,
                 stability_fee_accumulator,
                 clock,
-                ctx.self_program_id,
+                ctx.self_account_id,
                 new_rate,
             );
         Ok(spel_framework::SpelOutput::execute(
@@ -499,16 +461,14 @@ mod stablecoin {
     #[instruction]
     pub fn set_minimum_collateralization_ratio(
         ctx: ProgramContext,
-        #[account(signer)]
-        admin: AccountWithMetadata,
-        #[account(mut)]
-        protocol_parameters: AccountWithMetadata,
+        #[account(signer)] admin: AccountWithMetadata,
+        #[account(mut)] protocol_parameters: AccountWithMetadata,
         new_ratio: u128,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::admin::set_minimum_collateralization_ratio(
             admin,
             protocol_parameters,
-            ctx.self_program_id,
+            ctx.self_account_id,
             new_ratio,
         );
         Ok(spel_framework::SpelOutput::execute(
@@ -525,17 +485,15 @@ mod stablecoin {
     #[instruction]
     pub fn set_controller_gains(
         ctx: ProgramContext,
-        #[account(signer)]
-        admin: AccountWithMetadata,
-        #[account(mut)]
-        protocol_parameters: AccountWithMetadata,
+        #[account(signer)] admin: AccountWithMetadata,
+        #[account(mut)] protocol_parameters: AccountWithMetadata,
         new_proportional_gain: i128,
         new_integral_gain: i128,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::admin::set_controller_gains(
             admin,
             protocol_parameters,
-            ctx.self_program_id,
+            ctx.self_account_id,
             new_proportional_gain,
             new_integral_gain,
         );
@@ -553,17 +511,15 @@ mod stablecoin {
     #[instruction]
     pub fn set_timing_parameters(
         ctx: ProgramContext,
-        #[account(signer)]
-        admin: AccountWithMetadata,
-        #[account(mut)]
-        protocol_parameters: AccountWithMetadata,
+        #[account(signer)] admin: AccountWithMetadata,
+        #[account(mut)] protocol_parameters: AccountWithMetadata,
         new_minimum_milliseconds_between_rate_updates: u64,
         new_maximum_oracle_price_age_milliseconds: u64,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::admin::set_timing_parameters(
             admin,
             protocol_parameters,
-            ctx.self_program_id,
+            ctx.self_account_id,
             new_minimum_milliseconds_between_rate_updates,
             new_maximum_oracle_price_age_milliseconds,
         );
@@ -581,16 +537,14 @@ mod stablecoin {
     #[instruction]
     pub fn set_admin(
         ctx: ProgramContext,
-        #[account(signer)]
-        admin: AccountWithMetadata,
-        #[account(mut)]
-        protocol_parameters: AccountWithMetadata,
+        #[account(signer)] admin: AccountWithMetadata,
+        #[account(mut)] protocol_parameters: AccountWithMetadata,
         new_admin_account_id: nssa_core::account::AccountId,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::admin::set_admin(
             admin,
             protocol_parameters,
-            ctx.self_program_id,
+            ctx.self_account_id,
             new_admin_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(
@@ -607,16 +561,14 @@ mod stablecoin {
     #[instruction]
     pub fn set_freeze_authority(
         ctx: ProgramContext,
-        #[account(signer)]
-        admin: AccountWithMetadata,
-        #[account(mut)]
-        protocol_parameters: AccountWithMetadata,
+        #[account(signer)] admin: AccountWithMetadata,
+        #[account(mut)] protocol_parameters: AccountWithMetadata,
         new_freeze_authority_account_id: nssa_core::account::AccountId,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::admin::set_freeze_authority(
             admin,
             protocol_parameters,
-            ctx.self_program_id,
+            ctx.self_account_id,
             new_freeze_authority_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(
@@ -636,17 +588,15 @@ mod stablecoin {
     #[instruction]
     pub fn set_market_price_oracle(
         ctx: ProgramContext,
-        #[account(signer)]
-        admin: AccountWithMetadata,
-        #[account(mut)]
-        protocol_parameters: AccountWithMetadata,
+        #[account(signer)] admin: AccountWithMetadata,
+        #[account(mut)] protocol_parameters: AccountWithMetadata,
         new_oracle: AccountWithMetadata,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::admin::set_market_price_oracle(
             admin,
             protocol_parameters,
             new_oracle,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(
             post_states,
@@ -663,15 +613,13 @@ mod stablecoin {
     #[instruction]
     pub fn freeze(
         ctx: ProgramContext,
-        #[account(signer)]
-        freeze_authority: AccountWithMetadata,
-        #[account(mut)]
-        protocol_parameters: AccountWithMetadata,
+        #[account(signer)] freeze_authority: AccountWithMetadata,
+        #[account(mut)] protocol_parameters: AccountWithMetadata,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::freeze::freeze(
             freeze_authority,
             protocol_parameters,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(
             post_states,
@@ -688,15 +636,13 @@ mod stablecoin {
     #[instruction]
     pub fn unfreeze(
         ctx: ProgramContext,
-        #[account(signer)]
-        freeze_authority: AccountWithMetadata,
-        #[account(mut)]
-        protocol_parameters: AccountWithMetadata,
+        #[account(signer)] freeze_authority: AccountWithMetadata,
+        #[account(mut)] protocol_parameters: AccountWithMetadata,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::freeze::unfreeze(
             freeze_authority,
             protocol_parameters,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(
             post_states,

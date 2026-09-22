@@ -5,8 +5,8 @@
 //! the new value against §8, then overwrite exactly the named field(s).
 
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda, ProtocolParameters,
@@ -31,9 +31,9 @@ pub fn set_stability_fee_per_millisecond(
     protocol_parameters: AccountWithMetadata,
     stability_fee_accumulator: AccountWithMetadata,
     clock: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     new_rate: u128,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     let mut parameters = ProtocolParameters::try_from(&crate::checks::decode_global(
         &protocol_parameters,
         compute_protocol_parameters_pda(stablecoin_program_id),
@@ -57,25 +57,27 @@ pub fn set_stability_fee_per_millisecond(
     // rate out of `parameters`, so calling it first is what makes the change
     // non-retroactive — and it is the same helper `accrue_stability_fee` uses, so
     // the two can never disagree about how a gap accrues.
-    let accumulator_post = crate::accrue_stability_fee::advance_fee_accumulator(
-        &stability_fee_accumulator,
-        &parameters,
-        &accumulator,
-        now,
-    );
+    let accumulator_data =
+        crate::accrue_stability_fee::advance_fee_accumulator(&parameters, &accumulator, now);
 
     parameters.stability_fee_per_millisecond = new_rate;
-    let mut parameters_post = protocol_parameters.account;
-    parameters_post.data = Data::from(&parameters);
 
-    let post_states = vec![
-        AccountPostState::new(admin.account),
-        AccountPostState::new(parameters_post),
-        AccountPostState::new(accumulator_post),
-        AccountPostState::new(clock.account),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(admin),
+        AccountStateDiff::new(
+            protocol_parameters,
+            BalanceDiff::Add(0),
+            Data::from(&parameters),
+        ),
+        AccountStateDiff::new(
+            stability_fee_accumulator,
+            BalanceDiff::Add(0),
+            accumulator_data,
+        ),
+        AccountStateDiff::unchanged(clock),
     ];
 
-    (post_states, vec![])
+    (state_diffs, vec![])
 }
 
 /// The shape all six simple setters share: validate the parameters account at its
@@ -87,9 +89,9 @@ pub fn set_stability_fee_per_millisecond(
 fn update_parameters(
     admin: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     mutate: impl FnOnce(&mut ProtocolParameters),
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     let mut parameters = ProtocolParameters::try_from(&crate::checks::decode_global(
         &protocol_parameters,
         compute_protocol_parameters_pda(stablecoin_program_id),
@@ -101,15 +103,16 @@ fn update_parameters(
 
     mutate(&mut parameters);
 
-    let mut parameters_post = protocol_parameters.account;
-    parameters_post.data = Data::from(&parameters);
-
-    let post_states = vec![
-        AccountPostState::new(admin.account),
-        AccountPostState::new(parameters_post),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(admin),
+        AccountStateDiff::new(
+            protocol_parameters,
+            BalanceDiff::Add(0),
+            Data::from(&parameters),
+        ),
     ];
 
-    (post_states, vec![])
+    (state_diffs, vec![])
 }
 
 /// Retune the minimum collateralization ratio (spec §10.11).
@@ -125,9 +128,9 @@ fn update_parameters(
 pub fn set_minimum_collateralization_ratio(
     admin: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     new_ratio: u128,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     update_parameters(
         admin,
         protocol_parameters,
@@ -155,10 +158,10 @@ pub fn set_minimum_collateralization_ratio(
 pub fn set_controller_gains(
     admin: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     new_proportional_gain: i128,
     new_integral_gain: i128,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     update_parameters(
         admin,
         protocol_parameters,
@@ -183,10 +186,10 @@ pub fn set_controller_gains(
 pub fn set_timing_parameters(
     admin: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     new_minimum_milliseconds_between_rate_updates: u64,
     new_maximum_oracle_price_age_milliseconds: u64,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     update_parameters(
         admin,
         protocol_parameters,
@@ -220,9 +223,9 @@ pub fn set_timing_parameters(
 pub fn set_admin(
     admin: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     new_admin_account_id: AccountId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     update_parameters(
         admin,
         protocol_parameters,
@@ -244,9 +247,9 @@ pub fn set_admin(
 pub fn set_freeze_authority(
     admin: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     new_freeze_authority_account_id: AccountId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     update_parameters(
         admin,
         protocol_parameters,
@@ -273,10 +276,10 @@ pub fn set_market_price_oracle(
     admin: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     new_oracle: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    stablecoin_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     let new_oracle_id = new_oracle.account_id;
-    let (mut post_states, chained_calls) = update_parameters(
+    let (mut state_diffs, chained_calls) = update_parameters(
         admin,
         protocol_parameters,
         stablecoin_program_id,
@@ -299,8 +302,8 @@ pub fn set_market_price_oracle(
             parameters.market_price_oracle_id = new_oracle_id;
         },
     );
-    post_states.push(AccountPostState::new(new_oracle.account));
-    (post_states, chained_calls)
+    state_diffs.push(AccountStateDiff::unchanged(new_oracle));
+    (state_diffs, chained_calls)
 }
 
 #[cfg(test)]
@@ -314,10 +317,13 @@ mod tests {
     use stablecoin_core::math::{compute_current_accumulated_rate, FIXED_POINT_ONE};
 
     use super::*;
-    use crate::test_support::{
-        accumulator_account, accumulator_id, admin_id, clock_account, freeze_authority_id,
-        protocol_parameters_account, protocol_parameters_id, uninitialized, ParameterOverrides,
-        ACCUMULATOR_ANCHOR, NOW, STABLECOIN_PROGRAM_ID, T0,
+    use crate::{
+        test_support::{
+            accumulator_account, accumulator_id, admin_id, clock_account, freeze_authority_id,
+            protocol_parameters_account, protocol_parameters_id, uninitialized, ParameterOverrides,
+            ACCUMULATOR_ANCHOR, NOW, STABLECOIN_PROGRAM_ID, T0,
+        },
+        StateDiffExt,
     };
 
     const OLD_RATE: u128 = FIXED_POINT_ONE + 1_500_000_000_000_000;
@@ -344,7 +350,7 @@ mod tests {
         accumulator: AccountWithMetadata,
         now: u64,
         new_rate: u128,
-    ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    ) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
         set_stability_fee_per_millisecond(
             admin,
             parameters,
@@ -355,8 +361,8 @@ mod tests {
         )
     }
 
-    fn decoded(post: &AccountPostState) -> ProtocolParameters {
-        ProtocolParameters::try_from(&post.account().data).expect("valid ProtocolParameters")
+    fn decoded(diff: &AccountStateDiff) -> ProtocolParameters {
+        ProtocolParameters::try_from(diff.post_data()).expect("valid ProtocolParameters")
     }
 
     #[test]
@@ -375,7 +381,10 @@ mod tests {
             decoded(&post_states[1]).stability_fee_per_millisecond,
             NEW_RATE
         );
-        assert_eq!(*post_states[3].account(), clock_account(NOW).account);
+        assert_eq!(
+            post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+            clock_account(NOW).account
+        );
     }
 
     #[test]
@@ -411,7 +420,7 @@ mod tests {
             NEW_RATE,
         );
 
-        let accumulator = StabilityFeeAccumulator::try_from(&post_states[2].account().data)
+        let accumulator = StabilityFeeAccumulator::try_from(post_states[2].post_data())
             .expect("valid StabilityFeeAccumulator");
         let at_old_rate = compute_current_accumulated_rate(ACCUMULATOR_ANCHOR, OLD_RATE, T0, NOW);
         let at_new_rate = compute_current_accumulated_rate(ACCUMULATOR_ANCHOR, NEW_RATE, T0, NOW);
@@ -433,7 +442,7 @@ mod tests {
             NOW,
             NEW_RATE,
         );
-        let accumulator = StabilityFeeAccumulator::try_from(&post_states[2].account().data)
+        let accumulator = StabilityFeeAccumulator::try_from(post_states[2].post_data())
             .expect("valid StabilityFeeAccumulator");
         assert_eq!(
             accumulator.accumulated_rate_at_last_accrual,
@@ -750,7 +759,10 @@ mod tests {
             decoded(&post_states[1]).market_price_oracle_id,
             new_oracle_account().account_id
         );
-        assert_eq!(*post_states[2].account(), new_oracle_account().account);
+        assert_eq!(
+            post_states[2].post_account(STABLECOIN_PROGRAM_ID),
+            new_oracle_account().account
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda,
@@ -15,7 +15,7 @@ use token_core::TokenHolding;
 /// `Token::Burn` and decreases `Position.normalized_debt_amount` by the
 /// *normalized* equivalent of that amount — `⌊amount × FIXED_POINT_ONE /
 /// current_accumulator⌋` — which is smaller than `amount` whenever fees have
-/// accrued. The position post-state uses plain [`AccountPostState::new`] — the
+/// accrued. The position diff is a plain data write — the
 /// PDA was already claimed at `open_position` time.
 ///
 /// The normalized-debt decrement is `⌊amount × FIXED_POINT_ONE /
@@ -53,9 +53,9 @@ pub fn repay_debt(
     stability_fee_accumulator: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     clock: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     amount: u128,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(owner.is_authorized, "Owner authorization is missing");
     assert_ne!(
         position.account,
@@ -158,27 +158,27 @@ pub fn repay_debt(
         normalized_debt_amount: new_debt,
         opened_at: position_data.opened_at,
     };
-    let mut position_post = position.account.clone();
-    position_post.data = Data::from(&updated_position);
+    let token_program_id = user_stablecoin_holding.account.program_owner;
+    let stablecoin_definition_id = stablecoin_definition.account_id;
+    let user_stablecoin_holding_id = user_stablecoin_holding.account_id;
 
-    let post_states = vec![
-        AccountPostState::new(owner.account),
-        AccountPostState::new(position_post),
-        AccountPostState::new(stablecoin_definition.account.clone()),
-        AccountPostState::new(user_stablecoin_holding.account.clone()),
-        AccountPostState::new(stability_fee_accumulator.account),
-        AccountPostState::new(protocol_parameters.account),
-        AccountPostState::new(clock.account),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(owner),
+        AccountStateDiff::new(position, BalanceDiff::Add(0), Data::from(&updated_position)),
+        AccountStateDiff::unchanged(stablecoin_definition),
+        AccountStateDiff::unchanged(user_stablecoin_holding),
+        AccountStateDiff::unchanged(stability_fee_accumulator),
+        AccountStateDiff::unchanged(protocol_parameters),
+        AccountStateDiff::unchanged(clock),
     ];
 
-    let token_program_id = user_stablecoin_holding.account.program_owner;
     let burn_call = ChainedCall::new(
         token_program_id,
-        vec![stablecoin_definition, user_stablecoin_holding],
+        vec![stablecoin_definition_id, user_stablecoin_holding_id],
         &token_core::Instruction::Burn {
             amount_to_burn: amount,
         },
     );
 
-    (post_states, vec![burn_call])
+    (state_diffs, vec![burn_call])
 }

@@ -14,7 +14,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 pub use controller::{run_controller_tick, ControllerOutput, INTEGRAL_CLAMP, RATE_DELTA_CLAMP};
 use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
-    program::{PdaSeed, ProgramId},
+    program::PdaSeed,
 };
 pub use protocol_parameters::{
     compute_protocol_parameters_pda, compute_protocol_parameters_pda_seed, ProtocolParameters,
@@ -38,7 +38,12 @@ const STABLECOIN_DEFINITION_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__DEFINITION____
 const STABLECOIN_MASTER_HOLDING_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__MASTER_HOLDING______";
 
 /// Stablecoin Program Instruction.
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// Borsh is the instruction wire format LEZ reads; serde stays for tooling and IDL.
+///
+/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
+/// inserting one shifts the encoding of every variant after it.
+#[derive(Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum Instruction {
     /// Bootstrap the protocol. One-shot — fails if any of the five global PDAs
     /// is already initialized.
@@ -445,7 +450,7 @@ pub fn compute_position_pda_seed(owner_id: AccountId, position_nonce: u64) -> Pd
 /// `stablecoin_program_id`.
 #[must_use]
 pub fn compute_position_pda(
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     owner_id: AccountId,
     position_nonce: u64,
 ) -> AccountId {
@@ -473,7 +478,7 @@ pub fn compute_position_vault_pda_seed(position_id: AccountId) -> PdaSeed {
 
 /// Account id of the collateral vault PDA for `position_id` under `stablecoin_program_id`.
 pub fn compute_position_vault_pda(
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     position_id: AccountId,
 ) -> AccountId {
     AccountId::for_public_pda(
@@ -492,7 +497,7 @@ pub fn verify_position_and_get_seed(
     position: &AccountWithMetadata,
     owner: &AccountWithMetadata,
     position_nonce: u64,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
 ) -> PdaSeed {
     let seed = compute_position_pda_seed(owner.account_id, position_nonce);
     let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
@@ -512,7 +517,7 @@ pub fn verify_position_and_get_seed(
 pub fn verify_position_vault_and_get_seed(
     vault: &AccountWithMetadata,
     position_id: AccountId,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
 ) -> PdaSeed {
     let seed = compute_position_vault_pda_seed(position_id);
     let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
@@ -536,7 +541,7 @@ pub fn compute_stablecoin_definition_pda_seed() -> PdaSeed {
 }
 
 #[must_use]
-pub fn compute_stablecoin_definition_pda(stablecoin_program_id: ProgramId) -> AccountId {
+pub fn compute_stablecoin_definition_pda(stablecoin_program_id: AccountId) -> AccountId {
     AccountId::for_public_pda(
         &stablecoin_program_id,
         &compute_stablecoin_definition_pda_seed(),
@@ -557,7 +562,7 @@ pub fn compute_stablecoin_master_holding_pda_seed() -> PdaSeed {
 }
 
 #[must_use]
-pub fn compute_stablecoin_master_holding_pda(stablecoin_program_id: ProgramId) -> AccountId {
+pub fn compute_stablecoin_master_holding_pda(stablecoin_program_id: AccountId) -> AccountId {
     AccountId::for_public_pda(
         &stablecoin_program_id,
         &compute_stablecoin_master_holding_pda_seed(),
@@ -570,7 +575,7 @@ mod global_pda_tests {
 
     #[test]
     fn stablecoin_definition_and_master_holding_pdas_are_distinct() {
-        let program_id: ProgramId = [11u32; 8];
+        let program_id = AccountId::new([11u8; 32]);
         let def = compute_stablecoin_definition_pda(program_id);
         let master = compute_stablecoin_master_holding_pda(program_id);
         assert_ne!(def, master);
