@@ -7,14 +7,14 @@
     reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
 )]
 
+use crate::StateDiffExt;
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata},
-    program::{AccountPostState, ChainedCall, Claim},
+    program::{AccountStateDiff, ChainedCall},
 };
 use token_core::Instruction as TokenInstruction;
 use token_mint_authority_core::{
-    compute_mint_allowance_pda_seed, compute_mint_authority_pda_seed, MintAllowance,
-    FAUCET_MINT_AMOUNT, MINT_COOLDOWN_MS,
+    compute_mint_authority_pda_seed, MintAllowance, FAUCET_MINT_AMOUNT, MINT_COOLDOWN_MS,
 };
 
 use crate::{
@@ -28,7 +28,7 @@ use crate::{
     },
 };
 
-fn invoke(allowance: AccountWithMetadata, now: u64) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+fn invoke(allowance: AccountWithMetadata, now: u64) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     faucet_mint(
         recipient_account(),
         allowance,
@@ -41,7 +41,7 @@ fn invoke(allowance: AccountWithMetadata, now: u64) -> (Vec<AccountPostState>, V
 }
 
 fn decode_token_instruction(call: &ChainedCall) -> TokenInstruction {
-    risc0_zkvm::serde::from_slice::<TokenInstruction, u32>(&call.instruction_data)
+    borsh::from_slice::<TokenInstruction>(&call.instruction_data)
         .expect("chained instruction must decode as a token_core::Instruction")
 }
 
@@ -55,15 +55,15 @@ fn first_mint_returns_six_post_states_and_one_chained_call() {
 #[test]
 fn first_mint_claims_allowance_pda_and_stamps_now() {
     let (post_states, _) = invoke(uninitialized_allowance(), NOW);
-    // post_states[1] is the allowance (input-order).
+    // post_states[1] is the allowance (input-order). Writing its data is the claim in
+    // v0.2.5 — there is no `Claim::Pda` to inspect — so assert the ownership that write
+    // acquires. The PDA address itself is asserted by `verify_mint_allowance_and_get_seed`.
+    assert!(post_states[1].writes_data());
     assert_eq!(
-        post_states[1].required_claim(),
-        Some(Claim::Pda(compute_mint_allowance_pda_seed(
-            recipient_id(),
-            definition_id()
-        )))
+        post_states[1].post_owner(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
+        TOKEN_MINT_AUTHORITY_PROGRAM_ID
     );
-    let decoded = MintAllowance::try_from(&post_states[1].account().data).unwrap();
+    let decoded = MintAllowance::try_from(post_states[1].post_data()).unwrap();
     assert_eq!(decoded.recipient_id, recipient_id());
     assert_eq!(decoded.definition_id, definition_id());
     assert_eq!(decoded.last_mint_ms, NOW);
@@ -74,15 +74,25 @@ fn first_mint_echoes_authority_pda_without_claiming_it() {
     // The authority PDA holds no state; the seed alone authorizes the chained
     // mint, so this program takes no ownership of it.
     let (post_states, _) = invoke(uninitialized_allowance(), NOW);
-    assert_eq!(post_states[4].required_claim(), None);
+    assert!(!post_states[4].writes_data());
+    assert_eq!(
+        post_states[4].post_owner(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
+        post_states[4].pre_state.account.program_owner
+    );
 }
 
 #[test]
 fn post_state_order_mirrors_inputs() {
     let (post_states, _) = invoke(uninitialized_allowance(), NOW);
     // [recipient, allowance, holding, definition, authority, clock]
-    assert_eq!(post_states[0].account(), &Account::default()); // recipient echoed
-    assert_eq!(post_states[5].account(), &clock_account(NOW).account); // clock echoed
+    assert_eq!(
+        post_states[0].post_account(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
+        Account::default()
+    ); // recipient echoed
+    assert_eq!(
+        post_states[5].post_account(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
+        clock_account(NOW).account
+    ); // clock echoed
 }
 
 #[test]
@@ -90,14 +100,13 @@ fn chained_call_delegates_fixed_mint_to_token_program() {
     let (_, chained_calls) = invoke(uninitialized_allowance(), NOW);
     let call = &chained_calls[0];
 
-    assert_eq!(call.program_id, TOKEN_PROGRAM_ID);
-    // MintWithAuthority account order: [definition, holding, authority].
-    assert_eq!(call.pre_states.len(), 3);
-    assert_eq!(call.pre_states[0].account_id, definition_id());
-    assert_eq!(call.pre_states[1].account_id, user_holding_id());
-    assert_eq!(call.pre_states[2].account_id, mint_authority_id());
-    // The authority PDA is authorized to the callee via its seed.
-    assert!(call.pre_states[2].is_authorized);
+    assert_eq!(call.program_account_id, TOKEN_PROGRAM_ID);
+    // MintWithAuthority account order: [definition, holding, authority]. Calls carry bare
+    // account ids since v0.2.5; the authority PDA's authority comes from its seed alone.
+    assert_eq!(
+        call.pre_state_ids,
+        vec![definition_id(), user_holding_id(), mint_authority_id()]
+    );
     assert_eq!(call.pda_seeds, vec![compute_mint_authority_pda_seed()]);
 
     match decode_token_instruction(call) {
@@ -112,9 +121,12 @@ fn chained_call_delegates_fixed_mint_to_token_program() {
 fn mint_exactly_at_cooldown_boundary_is_allowed_and_rewrites_without_claim() {
     let (post_states, chained_calls) = invoke(allowance_account(NOW - MINT_COOLDOWN_MS), NOW);
     assert_eq!(chained_calls.len(), 1);
-    // Already owned by this program -> rewritten, not re-claimed.
-    assert_eq!(post_states[1].required_claim(), None);
-    let decoded = MintAllowance::try_from(&post_states[1].account().data).unwrap();
+    // Already owned by this program -> rewritten, and the owner is unchanged.
+    assert_eq!(
+        post_states[1].post_owner(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
+        TOKEN_MINT_AUTHORITY_PROGRAM_ID
+    );
+    let decoded = MintAllowance::try_from(post_states[1].post_data()).unwrap();
     assert_eq!(decoded.last_mint_ms, NOW);
 }
 
@@ -131,9 +143,31 @@ fn mint_to_a_fresh_holding_delegates_the_authorized_holding() {
     );
     assert_eq!(chained_calls.len(), 1);
     // Holding is echoed as default; the chained mint materializes it.
-    assert_eq!(post_states[2].account(), &Account::default());
-    assert_eq!(chained_calls[0].pre_states[1].account_id, user_holding_id());
-    assert!(chained_calls[0].pre_states[1].is_authorized);
+    assert_eq!(
+        post_states[2].post_account(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
+        Account::default()
+    );
+    assert_eq!(chained_calls[0].pre_state_ids[1], user_holding_id());
+}
+
+#[test]
+#[should_panic(expected = "A fresh user holding must be authorized by its owner")]
+fn rejects_creating_a_holding_the_caller_cannot_sign_for() {
+    // An unowned address the caller names but nobody authorized. v0.2.4 rejected this
+    // downstream via `Claim::Authorized`; v0.2.5 has no claims, so the faucet checks it.
+    let unauthorized_fresh_holding = AccountWithMetadata {
+        is_authorized: false,
+        ..fresh_user_holding_account()
+    };
+    faucet_mint(
+        recipient_account(),
+        uninitialized_allowance(),
+        unauthorized_fresh_holding,
+        faucet_definition_account(),
+        mint_authority_account(),
+        clock_account(NOW),
+        TOKEN_MINT_AUTHORITY_PROGRAM_ID,
+    );
 }
 
 #[test]
@@ -246,7 +280,7 @@ fn rejects_wrong_allowance_pda() {
 #[should_panic(expected = "Mint allowance account is not owned by this program")]
 fn rejects_foreign_owned_allowance() {
     let mut allowance = allowance_account(NOW - MINT_COOLDOWN_MS);
-    allowance.account.program_owner = [9u32; 8];
+    allowance.account.program_owner = AccountId::new([9u8; 32]);
     let _ = invoke(allowance, NOW);
 }
 

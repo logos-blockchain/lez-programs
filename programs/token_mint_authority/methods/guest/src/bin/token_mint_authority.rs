@@ -28,14 +28,10 @@ mod token_mint_authority {
     #[instruction]
     pub fn faucet_mint(
         ctx: ProgramContext,
-        #[account(signer)]
-        recipient: AccountWithMetadata,
-        #[account(mut)]
-        mint_allowance: AccountWithMetadata,
-        #[account(mut)]
-        user_holding: AccountWithMetadata,
-        #[account(mut)]
-        token_definition: AccountWithMetadata,
+        #[account(signer)] recipient: AccountWithMetadata,
+        #[account(mut)] mint_allowance: AccountWithMetadata,
+        #[account(mut)] user_holding: AccountWithMetadata,
+        #[account(mut)] token_definition: AccountWithMetadata,
         mint_authority: AccountWithMetadata,
         clock: AccountWithMetadata,
     ) -> SpelResult {
@@ -46,7 +42,7 @@ mod token_mint_authority {
             token_definition,
             mint_authority,
             clock,
-            ctx.self_program_id,
+            ctx.self_account_id,
         );
         Ok(spel_framework::SpelOutput::execute(
             post_states,
