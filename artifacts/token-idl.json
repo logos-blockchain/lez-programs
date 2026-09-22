@@ -189,6 +189,24 @@
       ]
     },
     {
+      "name": "print_nft",
+      "accounts": [
+        {
+          "name": "master_account",
+          "writable": true,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "printed_account",
+          "writable": true,
+          "signer": true,
+          "init": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "set_authority",
       "accounts": [
         {
@@ -231,24 +249,6 @@
           }
         }
       ]
-    },
-    {
-      "name": "print_nft",
-      "accounts": [
-        {
-          "name": "master_account",
-          "writable": true,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "printed_account",
-          "writable": true,
-          "signer": true,
-          "init": true
-        }
-      ],
-      "args": []
     }
   ],
   "accounts": [

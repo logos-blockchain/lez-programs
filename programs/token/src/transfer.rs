@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, Claim},
+    account::{Account, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 use token_core::TokenHolding;
 
@@ -8,7 +8,7 @@ pub fn transfer(
     sender: AccountWithMetadata,
     recipient: AccountWithMetadata,
     balance_to_move: u128,
-) -> Vec<AccountPostState> {
+) -> Vec<AccountStateDiff> {
     assert!(sender.is_authorized, "Sender authorization is missing");
 
     let mut sender_holding =
@@ -97,14 +97,21 @@ pub fn transfer(
         }
     };
 
-    let mut sender_post = sender.account;
-    sender_post.data = Data::from(&sender_holding);
-
-    let mut recipient_post = recipient.account;
-    recipient_post.data = Data::from(&recipient_holding);
-
+    // Deliberately no `is_authorized` check on an uninitialized recipient: crediting a
+    // recipient who has not participated is a supported flow (see the private foreign-init
+    // path, where the recipient is known only by `npk`/`vpk`). v0.2.4 expressed the claim as
+    // `Claim::Authorized`, but logos-execution-zone PR #621 made foreign-init pre-states carry
+    // `is_authorized = true` as a circuit artifact rather than as recipient consent, so that
+    // claim never actually gated this path. v0.2.5 makes it honest — `is_authorized` now
+    // matches whether a credential was supplied — and acquires ownership on any data write.
+    // A guard here cannot distinguish an unauthorized public recipient from a legitimate
+    // private foreign init, so squatting on unowned accounts is the runtime's to prevent.
     vec![
-        AccountPostState::new(sender_post),
-        AccountPostState::new_claimed_if_default(recipient_post, Claim::Authorized),
+        AccountStateDiff::new(sender, BalanceDiff::Add(0), Data::from(&sender_holding)),
+        AccountStateDiff::new(
+            recipient,
+            BalanceDiff::Add(0),
+            Data::from(&recipient_holding),
+        ),
     ]
 }

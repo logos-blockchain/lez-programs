@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, Claim, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -12,8 +12,8 @@ pub fn mint(
     definition_account: AccountWithMetadata,
     user_holding_account: AccountWithMetadata,
     amount_to_mint: u128,
-    token_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    token_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     mint_inner(
         definition_account,
         user_holding_account,
@@ -32,8 +32,8 @@ pub fn mint_with_authority(
     user_holding_account: AccountWithMetadata,
     authority_account: AccountWithMetadata,
     amount_to_mint: u128,
-    token_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    token_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     mint_inner(
         definition_account,
         user_holding_account,
@@ -52,8 +52,8 @@ fn mint_inner(
     user_holding_account: AccountWithMetadata,
     authority_account: Option<AccountWithMetadata>,
     amount_to_mint: u128,
-    token_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    token_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     assert_eq!(
         definition_account.account.program_owner, token_program_id,
         "Token definition must be owned by token program"
@@ -124,22 +124,30 @@ fn mint_inner(
         _ => panic!("Mismatched Token Definition and Token Holding types"),
     }
 
-    let mut definition_post = definition_account.account;
-    definition_post.data = Data::from(&definition);
-
-    let mut holding_post = user_holding_account.account;
-    holding_post.data = Data::from(&holding);
-
-    // Post-states must match pre-state order and count: [definition, holding]
+    // Deliberately no `is_authorized` check on an uninitialized holding: crediting a
+    // recipient who has not participated is a supported flow (see the private foreign-init
+    // path, where the recipient is known only by `npk`/`vpk`). v0.2.4 expressed the claim as
+    // `Claim::Authorized`, but logos-execution-zone PR #621 made foreign-init pre-states carry
+    // `is_authorized = true` as a circuit artifact rather than as recipient consent, so that
+    // claim never actually gated this path. v0.2.5 makes it honest — `is_authorized` now
+    // matches whether a credential was supplied — and acquires ownership on any data write.
+    // A guard here cannot distinguish an unauthorized public recipient from a legitimate
+    // private foreign init, so squatting on unowned accounts is the runtime's to prevent.
+    // Diffs must match pre-state order and count: [definition, holding]
     // for self authority, plus the read-only authority account when external.
-    let mut post_states = Vec::with_capacity(3);
-    post_states.push(AccountPostState::new(definition_post));
-    post_states.push(AccountPostState::new_claimed_if_default(
-        holding_post,
-        Claim::Authorized,
+    let mut state_diffs = Vec::with_capacity(3);
+    state_diffs.push(AccountStateDiff::new(
+        definition_account,
+        BalanceDiff::Add(0),
+        Data::from(&definition),
+    ));
+    state_diffs.push(AccountStateDiff::new(
+        user_holding_account,
+        BalanceDiff::Add(0),
+        Data::from(&holding),
     ));
     if let Some(authority) = authority_account {
-        post_states.push(AccountPostState::new(authority.account));
+        state_diffs.push(AccountStateDiff::unchanged(authority));
     }
-    post_states
+    state_diffs
 }
