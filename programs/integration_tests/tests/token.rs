@@ -6,13 +6,13 @@ use lee::{
     execute_and_prove,
     privacy_preserving_transaction::{Message, PrivacyPreservingTransaction, WitnessSet},
     program::Program,
-    program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     encryption::ViewingPublicKey,
-    Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey, NullifierSecretKey,
+    AuthorizationSecretKey, Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey,
+    NullifierSecretKey,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -39,12 +39,16 @@ impl Keys {
 }
 
 impl Ids {
-    fn token_program() -> lee_core::program::ProgramId {
-        token_methods::TOKEN_ID
+    /// The program's account id: since v0.2.5 a program is addressed by its deployed
+    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
+    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    fn token_program() -> AccountId {
+        AccountId::from(token_methods::TOKEN_ID)
     }
 
-    fn foreign_token_program() -> lee_core::program::ProgramId {
-        [0xfeed_u32; 8]
+    /// A program that was never deployed here, for "owned by someone else" fixtures.
+    fn foreign_token_program() -> AccountId {
+        AccountId::new([0xfe; 32])
     }
 
     fn token_definition() -> AccountId {
@@ -126,12 +130,16 @@ impl Accounts {
     }
 }
 
+// v0.2.5 deleted `ProgramDeploymentTransaction`; deployment is now the `program_loader`
+// pseudo-program's WriteSegment/CreateHeader flow. `with_programs` seeds each program in the
+// shape that flow produces — a loader-owned header plus its segment — without making every
+// test drive a deployment. The header lands at `AccountId::from(program.id())`, so a program's
+// account id stays derivable from its ELF here.
 fn deploy_token(state: &mut V03State) {
-    let message = program_deployment_transaction::Message::new(token_methods::TOKEN_ELF.to_vec());
-    let tx = ProgramDeploymentTransaction::new(message);
-    state
-        .transition_from_program_deployment_transaction(&tx)
-        .expect("token program deployment must succeed");
+    *state = std::mem::take(state)
+        .with_programs([
+            Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF")
+        ]);
 }
 
 fn state_for_token_tests() -> V03State {
@@ -297,8 +305,18 @@ fn token_transfer() {
     );
 }
 
+/// REGRESSION MARKER (LEZ v0.2.5). Under v0.2.4 this was rejected: crediting a fresh account
+/// required claiming it, and `Claim::Authorized` made the runtime demand the recipient's
+/// signature. v0.2.5 acquires ownership implicitly on any data write and authenticates
+/// nothing, so the transfer now succeeds and binds the recipient address to the token program
+/// without its consent.
+///
+/// The token program cannot restore the guard itself: the same unauthenticated write is what
+/// legitimate private foreign-init credits rely on (see `token_mint_private_unauthorized`),
+/// and a guest cannot tell the two apart. If LEZ re-authenticates first-write ownership, this
+/// test fails and should go back to asserting rejection.
 #[test]
-fn token_transfer_fresh_public_recipient_requires_authorization() {
+fn token_transfer_fresh_public_recipient_is_unauthenticated_since_v0_2_5() {
     let mut state = state_for_token_tests_without_recipient();
 
     let instruction = token_core::Instruction::Transfer {
@@ -316,15 +334,15 @@ fn token_transfer_fresh_public_recipient_requires_authorization() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::holder_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .expect("v0.2.5 accepts a credit to an unauthorized fresh recipient");
 
-    assert_eq!(
-        state.get_account_by_id(Ids::holder()),
-        Accounts::holder_init()
-    );
+    // The balance moved and the recipient is now token-program-owned, with no signature
+    // from it anywhere in the transaction.
     assert_eq!(
         state.get_account_by_id(Ids::recipient()),
-        Account::default()
+        Accounts::token_holding(500_000_u128, Nonce(0))
     );
 }
 
@@ -485,8 +503,11 @@ fn token_mint_rejects_foreign_owned_definition() {
     );
 }
 
+/// REGRESSION MARKER (LEZ v0.2.5) — the mint counterpart of
+/// `token_transfer_fresh_public_recipient_is_unauthenticated_since_v0_2_5`; see that test for
+/// why the program cannot guard this itself.
 #[test]
-fn token_mint_fresh_public_recipient_requires_authorization() {
+fn token_mint_fresh_public_recipient_is_unauthenticated_since_v0_2_5() {
     let mut state = state_for_token_tests_without_recipient();
 
     let instruction = token_core::Instruction::Mint {
@@ -504,15 +525,14 @@ fn token_mint_fresh_public_recipient_requires_authorization() {
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
 
     let tx = PublicTransaction::new(message, witness_set);
-    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
+    state
+        .transition_from_public_transaction(&tx, 0, 0)
+        .expect("v0.2.5 accepts a mint into an unauthorized fresh holding");
 
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Accounts::token_definition_init()
-    );
-    assert_eq!(
+    assert_ne!(
         state.get_account_by_id(Ids::recipient()),
-        Account::default()
+        Account::default(),
+        "the fresh holding was materialized without its consent"
     );
 }
 
@@ -564,8 +584,14 @@ fn token_mint_fresh_authorized_public_recipient() {
 struct PrivateKeys;
 
 impl PrivateKeys {
+    /// The authorization key is the root credential under v0.2.5: the circuit takes an
+    /// `ask` and derives the `nsk` from it, so the fixture roots here.
+    fn holder_ask() -> AuthorizationSecretKey {
+        AuthorizationSecretKey([42; 32])
+    }
+
     fn holder_nsk() -> NullifierSecretKey {
-        [42; 32]
+        NullifierSecretKey::from(&Self::holder_ask())
     }
 
     fn holder_npk() -> NullifierPublicKey {
@@ -582,8 +608,14 @@ impl PrivateKeys {
         AccountId::for_regular_private_account(&Self::holder_npk(), &Self::holder_vpk(), 0)
     }
 
+    /// The authorization key is the root credential under v0.2.5: the circuit takes an
+    /// `ask` and derives the `nsk` from it, so the fixture roots here.
+    fn recipient_ask() -> AuthorizationSecretKey {
+        AuthorizationSecretKey([84; 32])
+    }
+
     fn recipient_nsk() -> NullifierSecretKey {
-        [84; 32]
+        NullifierSecretKey::from(&Self::recipient_ask())
     }
 
     fn recipient_npk() -> NullifierPublicKey {
@@ -656,7 +688,7 @@ fn token_shielded_transfer() {
     let recipient_account = shielded_token_transfer(
         amount,
         &mut state,
-        true,
+        false,
         private_foreign_init_identity(recipient_npk, &recipient_vpk, commitment_root),
     );
 
@@ -684,7 +716,7 @@ fn token_shielded_transfer_authorized_private_init() {
         &mut state,
         true,
         private_authorized_init_identity(
-            PrivateKeys::recipient_nsk(),
+            PrivateKeys::recipient_ask(),
             &PrivateKeys::recipient_vpk(),
             commitment_root,
         ),
@@ -712,14 +744,15 @@ fn token_private_transfer() {
     let sender_account = shielded_token_transfer(
         shielded_amount,
         &mut state,
-        true,
+        false,
         private_foreign_init_identity(
             PrivateKeys::recipient_npk(),
             &PrivateKeys::recipient_vpk(),
             commitment_root,
         ),
     );
-    let sender_nsk = PrivateKeys::recipient_nsk();
+    let sender_ask = PrivateKeys::recipient_ask();
+    let sender_nsk = NullifierSecretKey::from(&sender_ask);
     let sender_vpk = PrivateKeys::recipient_vpk();
     let sender_id = PrivateKeys::recipient_id();
 
@@ -733,7 +766,7 @@ fn token_private_transfer() {
         .expect("sender's commitment must be in the set");
 
     let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, sender_id);
-    let new_recipient_pre = AccountWithMetadata::new(Account::default(), true, new_recipient_id);
+    let new_recipient_pre = AccountWithMetadata::new(Account::default(), false, new_recipient_id);
 
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: transfer_amount,
@@ -744,7 +777,7 @@ fn token_private_transfer() {
         vec![
             // Distinct `output_index` per private output keeps the encapsulated secrets
             // reproducible.
-            private_authorized_update_identity(sender_nsk, &sender_vpk, membership_proof),
+            private_authorized_update_identity(sender_ask, &sender_vpk, membership_proof),
             private_foreign_init_identity(
                 new_recipient_npk,
                 &new_recipient_vpk,
@@ -791,14 +824,15 @@ fn token_deshielded_transfer() {
     let sender_account = shielded_token_transfer(
         shielded_amount,
         &mut state,
-        true,
+        false,
         private_foreign_init_identity(
             PrivateKeys::recipient_npk(),
             &PrivateKeys::recipient_vpk(),
             commitment_root,
         ),
     );
-    let sender_nsk = PrivateKeys::recipient_nsk();
+    let sender_ask = PrivateKeys::recipient_ask();
+    let sender_nsk = NullifierSecretKey::from(&sender_ask);
     let sender_vpk = PrivateKeys::recipient_vpk();
     let sender_id = PrivateKeys::recipient_id();
 
@@ -822,7 +856,7 @@ fn token_deshielded_transfer() {
         vec![sender_pre, public_recipient_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
-            private_authorized_update_identity(sender_nsk, &sender_vpk, membership_proof),
+            private_authorized_update_identity(sender_ask, &sender_vpk, membership_proof),
             InputAccountIdentity::Public,
         ],
         &token_program().into(),
@@ -866,7 +900,7 @@ fn token_mint_private_unauthorized() {
     let definition_nonce = definition_account.nonce;
     let definition_pre =
         AccountWithMetadata::new(definition_account, true, Ids::token_definition());
-    let recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
+    let recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
 
     let instruction = token_core::Instruction::Mint { amount_to_mint };
     let (output, proof) = execute_and_prove(
@@ -919,7 +953,7 @@ fn token_mint_authorized_private_init() {
     let mut state = state_for_token_tests_without_recipient();
     let amount_to_mint = 500_000_u128;
 
-    let recipient_nsk = PrivateKeys::recipient_nsk();
+    let recipient_ask = PrivateKeys::recipient_ask();
     let recipient_vpk = PrivateKeys::recipient_vpk();
     let recipient_id = PrivateKeys::recipient_id();
 
@@ -936,7 +970,7 @@ fn token_mint_authorized_private_init() {
         vec![
             InputAccountIdentity::Public,
             private_authorized_init_identity(
-                recipient_nsk,
+                recipient_ask,
                 &recipient_vpk,
                 state.commitment_root(),
             ),
@@ -985,7 +1019,8 @@ fn token_mint_into_existing_private_holding() {
     let pre_balance = 500_000_u128;
     let amount_to_mint = 250_000_u128;
 
-    let recipient_nsk = PrivateKeys::recipient_nsk();
+    let recipient_ask = PrivateKeys::recipient_ask();
+    let recipient_nsk = NullifierSecretKey::from(&recipient_ask);
     let recipient_vpk = PrivateKeys::recipient_vpk();
     let recipient_id = PrivateKeys::recipient_id();
 
@@ -1015,7 +1050,7 @@ fn token_mint_into_existing_private_holding() {
         Program::serialize_instruction(token_core::Instruction::Mint { amount_to_mint }).unwrap(),
         vec![
             InputAccountIdentity::Public,
-            private_authorized_update_identity(recipient_nsk, &recipient_vpk, membership_proof),
+            private_authorized_update_identity(recipient_ask, &recipient_vpk, membership_proof),
         ],
         &token_program().into(),
     )
@@ -1065,7 +1100,8 @@ fn token_private_burn() {
     let holding_balance = 500_000_u128;
     let burn_amount = 200_000_u128;
 
-    let holder_nsk = PrivateKeys::recipient_nsk();
+    let holder_ask = PrivateKeys::recipient_ask();
+    let holder_nsk = NullifierSecretKey::from(&holder_ask);
     let holder_vpk = PrivateKeys::recipient_vpk();
     let holder_id = PrivateKeys::recipient_id();
 
@@ -1098,7 +1134,7 @@ fn token_private_burn() {
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
-            private_authorized_update_identity(holder_nsk, &holder_vpk, membership_proof),
+            private_authorized_update_identity(holder_ask, &holder_vpk, membership_proof),
         ],
         &token_program().into(),
     )
@@ -1144,7 +1180,8 @@ fn token_transfer_into_existing_private_holding() {
     let init_balance = 500_000_u128;
     let second_amount = 100_000_u128;
 
-    let recipient_nsk = PrivateKeys::recipient_nsk();
+    let recipient_ask = PrivateKeys::recipient_ask();
+    let recipient_nsk = NullifierSecretKey::from(&recipient_ask);
     let recipient_vpk = PrivateKeys::recipient_vpk();
     let recipient_id = PrivateKeys::recipient_id();
 
@@ -1176,7 +1213,7 @@ fn token_transfer_into_existing_private_holding() {
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
-            private_authorized_update_identity(recipient_nsk, &recipient_vpk, membership_proof),
+            private_authorized_update_identity(recipient_ask, &recipient_vpk, membership_proof),
         ],
         &token_program().into(),
     )
@@ -1215,11 +1252,13 @@ fn token_private_transfer_into_existing_private_holding() {
     let recipient_initial_balance = 300_000_u128;
     let transfer_amount = 200_000_u128;
 
-    let sender_nsk = PrivateKeys::recipient_nsk();
+    let sender_ask = PrivateKeys::recipient_ask();
+    let sender_nsk = NullifierSecretKey::from(&sender_ask);
     let sender_vpk = PrivateKeys::recipient_vpk();
     let sender_id = PrivateKeys::recipient_id();
 
-    let recipient_nsk = PrivateKeys::holder_nsk();
+    let recipient_ask = PrivateKeys::holder_ask();
+    let recipient_nsk = NullifierSecretKey::from(&recipient_ask);
     let recipient_vpk = PrivateKeys::holder_vpk();
     let recipient_id = PrivateKeys::holder_id();
 
@@ -1262,9 +1301,9 @@ fn token_private_transfer_into_existing_private_holding() {
         vec![sender_pre, recipient_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
-            private_authorized_update_identity(sender_nsk, &sender_vpk, sender_membership_proof),
+            private_authorized_update_identity(sender_ask, &sender_vpk, sender_membership_proof),
             private_authorized_update_identity(
-                recipient_nsk,
+                recipient_ask,
                 &recipient_vpk,
                 recipient_membership_proof,
             ),
@@ -1310,7 +1349,7 @@ fn token_private_transfer_into_existing_private_holding() {
 fn token_initialize_private_account_succeeds_for_canonical_definition() {
     let mut state = state_for_token_tests_without_recipient();
 
-    let owner_nsk = PrivateKeys::recipient_nsk();
+    let owner_ask = PrivateKeys::recipient_ask();
     let owner_vpk = PrivateKeys::recipient_vpk();
     let owner_id = PrivateKeys::recipient_id();
 
@@ -1327,7 +1366,7 @@ fn token_initialize_private_account_succeeds_for_canonical_definition() {
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
-            private_authorized_init_identity(owner_nsk, &owner_vpk, state.commitment_root()),
+            private_authorized_init_identity(owner_ask, &owner_vpk, state.commitment_root()),
         ],
         &token_program().into(),
     )
@@ -1347,13 +1386,13 @@ fn token_initialize_private_account_succeeds_for_canonical_definition() {
         .is_some());
 }
 
-/// Since logos-execution-zone PR #621, `InitializeAccount` CAN be performed for an owner without
-/// its `nsk`: a third party supplies only the owner's `npk`/`vpk` via `PrivateForeignInit`, whose
-/// fresh pre-state is now `is_authorized == true`, so the signer-gated instruction succeeds.
-/// (Previously not expressible — `PrivateUnauthorized` forced `is_authorized == false`.)
+/// The `InitializeAccount` counterpart of
+/// `token_new_fungible_definition_foreign_init_holder_is_refused`: PR #621 briefly made this
+/// expressible under v0.2.4, and v0.2.5 refuses it again because a foreign-init pre-state now
+/// correctly carries `is_authorized == false`. Initializing an account requires its key.
 #[test]
-fn token_initialize_private_account_via_foreign_init() {
-    let mut state = state_for_token_tests_without_recipient();
+fn token_initialize_private_account_via_foreign_init_is_refused() {
+    let state = state_for_token_tests_without_recipient();
 
     let recipient_npk = PrivateKeys::recipient_npk();
     let recipient_vpk = PrivateKeys::recipient_vpk();
@@ -1364,9 +1403,9 @@ fn token_initialize_private_account_via_foreign_init() {
         false,
         Ids::token_definition(),
     );
-    let account_to_init_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
+    let account_to_init_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
 
-    let (output, proof) = execute_and_prove(
+    let error = execute_and_prove(
         vec![definition_pre, account_to_init_pre],
         Program::serialize_instruction(token_core::Instruction::InitializeAccount).unwrap(),
         vec![
@@ -1375,20 +1414,12 @@ fn token_initialize_private_account_via_foreign_init() {
         ],
         &token_program().into(),
     )
-    .unwrap();
+    .expect_err("a foreign-init target cannot satisfy the signer requirement");
 
-    let message = Message::from_circuit_output(vec![], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    let expected_account =
-        Accounts::token_holding(0, Nonce::private_account_nonce_init(&recipient_id));
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&recipient_id, &expected_account))
-        .is_some());
+    assert!(
+        format!("{error:?}").contains("must be a signer"),
+        "expected the init target's signer requirement to reject this, got: {error:?}"
+    );
 }
 
 #[test]
@@ -1396,7 +1427,7 @@ fn token_new_fungible_definition_private_initial_holder() {
     let mut state = V03State::new();
     deploy_token(&mut state);
 
-    let holder_nsk = PrivateKeys::holder_nsk();
+    let holder_ask = PrivateKeys::holder_ask();
     let holder_vpk = PrivateKeys::holder_vpk();
     let holder_id = PrivateKeys::holder_id();
 
@@ -1415,7 +1446,7 @@ fn token_new_fungible_definition_private_initial_holder() {
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
-            private_authorized_init_identity(holder_nsk, &holder_vpk, state.commitment_root()),
+            private_authorized_init_identity(holder_ask, &holder_vpk, state.commitment_root()),
         ],
         &token_program().into(),
     )
@@ -1452,11 +1483,15 @@ fn token_new_fungible_definition_private_initial_holder() {
         .is_some());
 }
 
-/// Since logos-execution-zone PR #621, the initial holder CAN be created via `PrivateForeignInit`
-/// (only the holder's `npk`, no `nsk`): its fresh pre-state is now `is_authorized == true`, so the
-/// signer-gated `NewFungibleDefinition` succeeds. (Previously not expressible.)
+/// Foreign init cannot drive a signer-gated instruction, and the round trip is worth
+/// recording: PR #621 made this expressible under v0.2.4 by giving a foreign-init pre-state
+/// `is_authorized == true`, which satisfied `NewFungibleDefinition`'s signer requirement
+/// without the holder ever consenting. v0.2.5 makes `is_authorized` mean what it says — it
+/// must equal whether a credential was supplied — so the flag is `false` here and the
+/// instruction is correctly refused. Creating a holding for someone requires their key; use
+/// `private_authorized_init_identity`.
 #[test]
-fn token_new_fungible_definition_foreign_init_holder() {
+fn token_new_fungible_definition_foreign_init_holder_is_refused() {
     let mut state = V03State::new();
     deploy_token(&mut state);
 
@@ -1464,17 +1499,16 @@ fn token_new_fungible_definition_foreign_init_holder() {
     let holder_vpk = PrivateKeys::holder_vpk();
     let holder_id = PrivateKeys::holder_id();
 
-    let definition_nonce = state.get_account_by_id(Ids::token_definition()).nonce;
     let definition_pre =
         AccountWithMetadata::new(Account::default(), true, Ids::token_definition());
-    let holder_pre = AccountWithMetadata::new(Account::default(), true, holder_id);
+    let holder_pre = AccountWithMetadata::new(Account::default(), false, holder_id);
 
     let instruction = token_core::Instruction::NewFungibleDefinition {
         name: String::from("Gold"),
         total_supply: 1_000_000_u128,
         mint_authority: None,
     };
-    let (output, proof) = execute_and_prove(
+    let error = execute_and_prove(
         vec![definition_pre, holder_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
@@ -1483,22 +1517,12 @@ fn token_new_fungible_definition_foreign_init_holder() {
         ],
         &token_program().into(),
     )
-    .unwrap();
+    .expect_err("a foreign-init holder cannot satisfy the signer requirement");
 
-    let message = Message::from_circuit_output(vec![definition_nonce], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::def_key()]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    let holder_account = Accounts::token_holding(
-        1_000_000_u128,
-        Nonce::private_account_nonce_init(&holder_id),
+    assert!(
+        format!("{error:?}").contains("must be a signer"),
+        "expected the holding target's signer requirement to reject this, got: {error:?}"
     );
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&holder_id, &holder_account))
-        .is_some());
 }
 
 /// Two independent parties (Alice and Bob) control a private Token holding (via `GroupKeyHolder`).
@@ -1512,7 +1536,8 @@ fn token_group_owned_holding_shared_control_burn() {
     // Alice creates the group and derives the shared account's keys; Bob is admitted via the
     // real seal/unseal handshake and independently re-derives the same keys.
     let alice = GroupOwner::new([7_u8; 32]);
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
+    let bob_nsk = NullifierSecretKey::from(&bob_ask);
     let group_npk = alice.npk;
     let group_vpk = alice.vpk;
     let group_id = alice.id;
@@ -1523,7 +1548,7 @@ fn token_group_owned_holding_shared_control_burn() {
     let sender_account = state.get_account_by_id(sender_id);
     let sender_nonce = sender_account.nonce;
     let sender_pre = AccountWithMetadata::new(sender_account, true, sender_id);
-    let group_pre_shield = AccountWithMetadata::new(Account::default(), true, group_id);
+    let group_pre_shield = AccountWithMetadata::new(Account::default(), false, group_id);
 
     let shield_instruction = token_core::Instruction::Transfer {
         amount_to_transfer: shield_amount,
@@ -1572,7 +1597,7 @@ fn token_group_owned_holding_shared_control_burn() {
         Program::serialize_instruction(burn_instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
-            private_authorized_update_identity(bob_nsk, &group_vpk, membership_proof),
+            private_authorized_update_identity(bob_ask, &group_vpk, membership_proof),
         ],
         &token_program().into(),
     )
@@ -1619,7 +1644,8 @@ fn token_group_owned_holding_shared_control_transfer() {
     // Alice creates the group and derives the shared account's keys; Bob is admitted via the
     // real seal/unseal handshake and independently re-derives the same keys.
     let alice = GroupOwner::new([7_u8; 32]);
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
+    let bob_nsk = NullifierSecretKey::from(&bob_ask);
     let group_vpk = alice.vpk;
     let group_id = alice.id;
 
@@ -1641,7 +1667,7 @@ fn token_group_owned_holding_shared_control_transfer() {
     let recipient_id = PrivateKeys::holder_id();
 
     let group_pre = AccountWithMetadata::new(group_account, true, group_id);
-    let recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
+    let recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
 
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: transfer_amount,
@@ -1650,7 +1676,7 @@ fn token_group_owned_holding_shared_control_transfer() {
         vec![group_pre, recipient_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
-            private_authorized_update_identity(bob_nsk, &group_vpk, membership_proof),
+            private_authorized_update_identity(bob_ask, &group_vpk, membership_proof),
             private_foreign_init_identity(recipient_npk, &recipient_vpk, state.commitment_root()),
         ],
         &token_program().into(),
@@ -1694,7 +1720,7 @@ fn token_group_owned_holding_shared_control_initialize() {
     // real seal/unseal handshake and independently re-derives the same keys.
     let alice = GroupOwner::new([7_u8; 32]);
     let group_id = alice.id;
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
 
     // Bob — who never created the group — self-initializes the shared holding directly.
     let definition_pre = AccountWithMetadata::new(
@@ -1710,7 +1736,7 @@ fn token_group_owned_holding_shared_control_initialize() {
         Program::serialize_instruction(instruction).unwrap(),
         vec![
             InputAccountIdentity::Public,
-            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
         ],
         &token_program().into(),
     )
@@ -2085,7 +2111,7 @@ fn token_mint_with_authority_to_private_holding() {
         false,
         Ids::token_definition(),
     );
-    let recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
+    let recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
     let authority_account = state.get_account_by_id(Ids::authority());
     let authority_nonce = authority_account.nonce;
     let authority_pre = AccountWithMetadata::new(authority_account, true, Ids::authority());
