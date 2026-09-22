@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = ["host"] }
-clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2" }
 token_mint_authority_core = { path = "core" }
 token_core = { path = "../token/core" }
 
@@ -14,3 +14,4 @@ risc0-zkvm = { version = "=3.0.5", default-features = false }
 # For the `mint_authority` example: decode a built guest `.bin` and compute its ImageID.
 risc0-binfmt = { version = "=3.0.4", default-features = false }
 hex = "0.4"
+borsh = "1.5"
