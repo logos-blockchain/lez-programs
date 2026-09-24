@@ -31,6 +31,22 @@ char *stablecoin_program_info(const char *request_json);
 char *stablecoin_decode_protocol_parameters(const char *request_json);
 
 /**
+ * Derives the position and collateral-vault account IDs for an owner and nonce.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_position_info(const char *request_json);
+
+/**
+ * Decodes and validates a stablecoin `Position` account.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_decode_position(const char *request_json);
+
+/**
  * Builds the exact wallet submission plan for `InitializeProgram`.
  *
  * # Safety

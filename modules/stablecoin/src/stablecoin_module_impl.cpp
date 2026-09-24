@@ -125,6 +125,26 @@ bool hasString(const json& object, const char* key) {
     return field != object.end() && field->is_string();
 }
 
+bool hasUnsignedDecimalString(const json& object, const char* key) {
+    const std::string value = jsonString(object, key);
+    return !value.empty()
+        && std::all_of(value.begin(), value.end(), [](unsigned char character) {
+               return std::isdigit(character) != 0;
+           });
+}
+
+std::string canonicalUnsignedDecimal(const std::string& value) {
+    if (value.empty()
+        || !std::all_of(value.begin(), value.end(), [](unsigned char character) {
+               return std::isdigit(character) != 0;
+           })) {
+        return {};
+    }
+    const std::size_t first_nonzero = value.find_first_not_of('0');
+    return first_nonzero == std::string::npos ? std::string("0")
+                                              : value.substr(first_nonzero);
+}
+
 }  // namespace
 
 std::vector<std::uint8_t> StablecoinModuleImpl::loadStablecoinBinary() const {
@@ -274,6 +294,100 @@ LogosMap StablecoinModuleImpl::protocolParameters() {
 
         LogosMap result = publicOk();
         result["protocolParameters"] = decoded.value;
+        return result;
+    });
+}
+
+LogosMap StablecoinModuleImpl::positionAccount(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!request.is_object() || !hasString(request, "ownerId")
+            || !hasString(request, "positionNonce")) {
+            return publicError("bad_request");
+        }
+
+        const std::string position_nonce = jsonString(request, "positionNonce");
+        const std::string canonical_nonce = canonicalUnsignedDecimal(position_nonce);
+
+        std::string error;
+        const json info = stablecoinProgramInfo(error);
+        if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+        if (canonical_nonce.empty()) return publicError("invalid_numeric_value");
+
+        const std::string owner_id = normalizeAccountId(jsonString(request, "ownerId"));
+        if (owner_id.empty()) return publicError("invalid_account_id");
+
+        const FfiResult derived = callStablecoin(stablecoin_position_info, {
+            {"stablecoinProgramId", info["programIdHex"]},
+            {"ownerId", owner_id},
+            {"positionNonce", position_nonce},
+        });
+        if (!derived.ok) {
+            return publicError(stablecoin_module::detail::stableFfiError(derived.error));
+        }
+
+        static constexpr const char* identity_fields[] = {
+            "ownerId",
+            "ownerIdHex",
+            "positionNonce",
+            "positionId",
+            "positionIdHex",
+            "vaultId",
+            "vaultIdHex",
+        };
+        if (std::any_of(std::begin(identity_fields), std::end(identity_fields),
+                        [&](const char* key) {
+                            return !hasString(derived.value, key)
+                                || jsonString(derived.value, key).empty();
+                        })
+            || jsonString(derived.value, "ownerIdHex") != owner_id
+            || jsonString(derived.value, "positionNonce") != canonical_nonce
+            || !stablecoin_module::detail::isValidAccountIdHex(
+                jsonString(derived.value, "positionIdHex"))
+            || !stablecoin_module::detail::isValidAccountIdHex(
+                jsonString(derived.value, "vaultIdHex"))
+            || derived.value["positionIdHex"] == derived.value["vaultIdHex"]) {
+            return publicError("backend_error");
+        }
+
+        const json read = readPublicAccount(jsonString(derived.value, "positionIdHex"));
+        const std::string status = jsonString(read, "status");
+        if (status == "not_found") {
+            LogosMap result = publicError("not_found");
+            result["position"] = derived.value;
+            return result;
+        }
+        if (status != "ok") return publicError("account_read_failed");
+
+        const FfiResult decoded = callStablecoin(stablecoin_decode_position, {
+            {"stablecoinProgramId", info["programIdHex"]},
+            {"ownerId", owner_id},
+            {"positionNonce", position_nonce},
+            {"position", read},
+        });
+        if (!decoded.ok) {
+            return publicError(stablecoin_module::detail::stableFfiError(decoded.error));
+        }
+
+        static constexpr const char* numeric_fields[] = {
+            "positionNonce",
+            "collateralAmount",
+            "normalizedDebtAmount",
+            "openedAt",
+        };
+        if (std::any_of(std::begin(identity_fields), std::end(identity_fields),
+                        [&](const char* key) {
+                            return !hasString(decoded.value, key)
+                                || decoded.value[key] != derived.value[key];
+                        })
+            || std::any_of(std::begin(numeric_fields), std::end(numeric_fields),
+                           [&](const char* key) {
+                               return !hasUnsignedDecimalString(decoded.value, key);
+                           })) {
+            return publicError("backend_error");
+        }
+
+        LogosMap result = publicOk();
+        result["position"] = decoded.value;
         return result;
     });
 }
