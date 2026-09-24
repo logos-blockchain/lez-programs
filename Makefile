@@ -1,7 +1,13 @@
-.PHONY: build-programs clippy clippy-guest clippy-all test integration-test fmt idl changelog release
+.PHONY: build-programs setup-workspace-tools deploy-stablecoin clippy clippy-guest clippy-all test test-deploy-scripts integration-test fmt idl changelog release
 
 build-programs:
 	./scripts/build-guests.sh
+
+setup-workspace-tools:
+	python3 scripts/setup-workspace-tools.py
+
+deploy-stablecoin:
+	./apps/stablecoin/tests/testnet/setup-stablecoin-testnet.sh
 
 clippy:
 	RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings
@@ -15,6 +21,10 @@ clippy-all: clippy clippy-guest
 
 test:
 	RISC0_DEV_MODE=1 cargo test --workspace
+	$(MAKE) test-deploy-scripts
+
+test-deploy-scripts:
+	python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
 integration-test:
 	RISC0_DEV_MODE=1 cargo test -p integration_tests

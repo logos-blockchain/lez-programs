@@ -97,6 +97,9 @@ jobs:
         env:
           RISC0_DEV_MODE: 1
 
+      - name: Deployment script tests
+        run: make test-deploy-scripts
+
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
