@@ -1,3 +1,4 @@
+use alloy_primitives::U512;
 use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
@@ -6,7 +7,7 @@ use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
     compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda_seed,
     math::{
-        compute_current_accumulated_rate, compute_current_redemption_price, mul_div_ceil,
+        compute_current_accumulated_rate, compute_current_redemption_price_wide, mul_div_ceil,
         FIXED_POINT_ONE,
     },
     verify_position_and_get_seed, Position, ProtocolParameters, RedemptionPriceState,
@@ -167,7 +168,11 @@ pub fn generate_debt(
         normalized_debt_amount: new_debt,
         ..position_data
     };
-    let current_redemption_price = compute_current_redemption_price(
+    // Projected in `U512`: a redemption rate at the controller's permitted limit
+    // outgrows `u128` about 45 minutes out, and this value is only ever compared,
+    // never stored. `current_accumulator` stays narrow — it divides `amount`
+    // above, so a debt delta it cannot express is not a mint we can price.
+    let current_redemption_price = compute_current_redemption_price_wide(
         redemption.redemption_price_at_last_update,
         redemption.redemption_rate_per_millisecond,
         redemption.last_updated_at,
@@ -176,12 +181,12 @@ pub fn generate_debt(
     // A rate below 1.0 decays the projected price to zero over a long enough
     // gap, which would zero the required collateral and let any mint through.
     assert!(
-        current_redemption_price != 0,
+        !current_redemption_price.is_zero(),
         "Redemption price projected to zero"
     );
     crate::checks::assert_position_is_collateralized(
         &updated_position,
-        current_accumulator,
+        U512::from(current_accumulator),
         current_redemption_price,
         parameters.minimum_collateralization_ratio,
     );

@@ -1056,6 +1056,33 @@ fn generate_debt_rejects_a_redemption_price_that_projects_to_zero() {
     );
 }
 
+/// The mirror of the withdraw_collateral case: a rate at the controller's upper
+/// clamp projects the price past `u128` in 2_700_000 ms. The mint below is
+/// comfortably collateralized against that price — about 585_174_061_358
+/// required against 1_000_000_000_000 — so it must compare, not overflow.
+#[test]
+fn generate_debt_succeeds_when_the_projected_price_exceeds_u128() {
+    let (post_states, _) = crate::generate_debt::generate_debt(
+        owner_account(),
+        init_position_account(1_000_000_000_000, 0),
+        stablecoin_definition_account(),
+        user_stablecoin_holding_account(0),
+        unit_accumulator(),
+        redemption_state_with(
+            FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
+            NOW - 2_700_000,
+        ),
+        fresh_oracle(),
+        protocol_parameters_account_with_ratio(FIXED_POINT_ONE * 11 / 10),
+        clock_account(NOW),
+        STABLECOIN_PROGRAM_ID,
+        1,
+    );
+
+    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    assert_eq!(position.normalized_debt_amount, 1);
+}
+
 #[test]
 fn generate_debt_mints_and_increases_normalized_debt() {
     let (post_states, chained_calls) = generate(
