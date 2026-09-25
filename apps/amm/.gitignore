@@ -31,3 +31,7 @@ tests/testnet/custom-tokens.json
 # Faucet manifest written by the setup script for tests/faucet-swap.mjs (account ids
 # + PDAs + bin/IDL paths for the FaucetMint). Regenerated on every setup run.
 tests/testnet/faucet.json
+
+# Stablecoin deployment manifest written by scripts/deploy-stablecoin.sh when the
+# setup script deploys the stablecoin. Regenerated on every setup run.
+tests/testnet/stablecoin.json
