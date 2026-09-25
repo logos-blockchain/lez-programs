@@ -47,6 +47,14 @@ char *stablecoin_decode_stability_fee_accumulator(const char *request_json);
 char *stablecoin_decode_redemption_price_state(const char *request_json);
 
 /**
+ * Validates stablecoin global accounts and projects their current values at `CLOCK_01`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_current_global_state(const char *request_json);
+
+/**
  * Builds the exact wallet submission plan for `InitializeProgram`.
  *
  * # Safety
