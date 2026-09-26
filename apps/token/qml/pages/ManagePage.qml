@@ -24,7 +24,7 @@ Item {
     readonly property var selectedDefinition: store && selectedId.length > 0 ? store.findDefinition(selectedId) : null
     readonly property bool walletReady: root.backend !== null
         && root.backend.isWalletOpen
-        && root.backend.syncStatus === "ready"
+        && root.backend.initialSync !== true
     readonly property bool hasSelection: selectedDefinition !== null
     readonly property bool selectedIsFungible: hasSelection && selectedDefinition.type === "fungible"
     readonly property bool selectedIsNft: hasSelection && selectedDefinition.type === "nonFungible"
@@ -171,7 +171,7 @@ Item {
                 root.refreshLiveDefinitions()
         }
         function onSyncStatusChanged() {
-            if (root.walletReady)
+            if (root.backend && root.backend.syncStatus === "ready")
                 root.refreshLiveDefinitions()
         }
     }

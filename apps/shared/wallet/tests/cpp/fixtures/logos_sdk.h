@@ -3,10 +3,15 @@
 #include <QHash>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QVariant>
 #include <QVariantList>
 
 #include <functional>
+
+struct Timeout {
+    explicit Timeout(int = 20000) { }
+};
 
 class LogosAPI;
 
@@ -31,14 +36,17 @@ public:
     int openCalls = 0;
     int versionCalls = 0;
     int saveCalls = 0;
+    int createAsyncCalls = 0;
     int syncCalls = 0;
     int listCalls = 0;
     int publicReadCalls = 0;
     int submitCalls = 0;
     QString openedConfig;
     QString openedStorage;
+    QString openedStatistics;
     QString createdConfig;
     QString createdStorage;
+    QString createdStatistics;
     QString createdPassword;
     QStringList submittedAccountIds;
     QVariantList submittedSigningRequirements;
@@ -61,29 +69,49 @@ public:
         callback(version());
     }
 
-    int open(const QString& config, const QString& storage)
+    int open(const QString& config,
+             const QString& storage,
+             const QString& statistics)
     {
         ++openCalls;
         openedConfig = config;
         openedStorage = storage;
+        openedStatistics = statistics;
         return openResult;
     }
 
     void openAsync(const QString& config,
                    const QString& storage,
+                   const QString& statistics,
                    std::function<void(int)> callback)
     {
-        callback(open(config, storage));
+        callback(open(config, storage, statistics));
     }
 
     QString create_new(const QString& config,
                        const QString& storage,
+                       const QString& statistics,
                        const QString& password)
     {
         createdConfig = config;
         createdStorage = storage;
+        createdStatistics = statistics;
         createdPassword = password;
         return mnemonic;
+    }
+
+    void create_newAsync(const QString& config,
+                         const QString& storage,
+                         const QString& statistics,
+                         const QString& password,
+                         std::function<void(QString)> callback,
+                         Timeout = Timeout())
+    {
+        ++createAsyncCalls;
+        QTimer::singleShot(0, [this, config, storage, statistics, password,
+                               callback = std::move(callback)]() mutable {
+            callback(create_new(config, storage, statistics, password));
+        });
     }
 
     int save()
@@ -182,5 +210,5 @@ struct LogosModules {
     LogosModules() = default;
     explicit LogosModules(LogosAPI*) { }
 
-    FakeExecutionZone logos_execution_zone;
+    FakeExecutionZone lez_core;
 };

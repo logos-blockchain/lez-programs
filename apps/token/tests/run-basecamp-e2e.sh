@@ -8,6 +8,21 @@ run_root="${TOKEN_E2E_RUN_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/token-basecamp-e2e.
 inspector_port="${QML_INSPECTOR_PORT:-3768}"
 basecamp_pid=""
 
+if [[ "${TOKEN_E2E_LIVE:-0}" == 1 ]]; then
+  if [[ -z "${TOKEN_PROGRAM_BIN:-}" ]]; then
+    printf 'Live acceptance requires TOKEN_PROGRAM_BIN for deployed program identity\n' >&2
+    exit 2
+  fi
+  if [[ ! -r "${TOKEN_PROGRAM_BIN}" || ! -s "${TOKEN_PROGRAM_BIN}" ]]; then
+    printf 'Token program binary is missing or unreadable: %s\n' "${TOKEN_PROGRAM_BIN}" >&2
+    exit 2
+  fi
+  if [[ -z "${TOKEN_E2E_WALLET_HOME:-}" ]]; then
+    printf 'Live acceptance requires TOKEN_E2E_WALLET_HOME for a prepared wallet\n' >&2
+    exit 2
+  fi
+fi
+
 cleanup() {
   local status=$?
   set +e
@@ -28,8 +43,15 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${output_dir}" "${run_root}/user/modules" "${run_root}/user/plugins"
-wallet_home="${run_root}/wallet"
+wallet_home="${TOKEN_E2E_WALLET_HOME:-${run_root}/wallet}"
 mkdir -p "${wallet_home}"
+if [[ "${TOKEN_E2E_LIVE:-0}" == 1
+  && ( ! -f "${wallet_home}/wallet_config.json"
+    || ! -f "${wallet_home}/storage.json" ) ]]; then
+  printf 'Prepared wallet is missing wallet_config.json or storage.json: %s\n' \
+    "${wallet_home}" >&2
+  exit 2
+fi
 
 build_if_missing() {
   local override="$1"
@@ -46,9 +68,9 @@ build_if_missing() {
 mcp_root="$(build_if_missing "${LOGOS_QT_MCP:-}" "${run_root}/result-mcp" .#test-framework)"
 bundle_root="$(build_if_missing "${TOKEN_BASECAMP_BUNDLE:-}" "${run_root}/result-bundle" github:logos-co/logos-basecamp#bin-bundle-dir-inspector)"
 wallet_install="$(build_if_missing "${TOKEN_WALLET_INSTALL:-}" "${run_root}/wallet-install" \
-  'github:gravityblast/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr#install-portable' \
+  'github:logos-blockchain/logos-execution-zone-module?rev=b60be4640c4dc5ba3e0b552ecbe859482d02f2dd#install-portable' \
   --override-input logos-execution-zone \
-  'github:logos-blockchain/logos-execution-zone?rev=415964d7f9043a1bfe28da8d0e8b3a6f64abb258')"
+  'github:logos-blockchain/logos-execution-zone?rev=70c41652fa129d8a0e0fe74c4caa1b11a6b5de9c')"
 token_install="$(build_if_missing "${TOKEN_MODULE_INSTALL:-}" "${run_root}/token-install" .#install-portable)"
 ui_install="$(build_if_missing "${TOKEN_UI_INSTALL:-}" "${run_root}/token-ui-install" .#token-ui-install-portable)"
 

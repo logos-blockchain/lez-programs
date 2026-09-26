@@ -52,6 +52,7 @@ private slots:
     void retriesCapabilityWarmupSynchronously();
     void retriesCapabilityWarmupBeforeReadingWallet();
     void boundsPersistentCapabilityWarmupFailure();
+    void reportsProgressDuringAsyncSync();
     void opensConfiguredWalletWhenNoSharedSessionExists();
     void createsAndPersistsWallet();
     void validatesCompletePublicAccountPayloads();
@@ -67,22 +68,24 @@ private slots:
     void controllerRejectsDuplicateOpenWhileStarting();
     void controllerCanRetryAfterOpenFailure();
     void controllerPollsSnapshotsAndRetriesAfterFailure();
+    void controllerExposesProgressAndCancelsInitialSync();
+    void controllerCreatesWalletBeforeAsyncSyncCompletes();
     void controllerStopsReachabilityChecksAfterDisconnect();
 };
 
 void LogosWalletProviderTest::adoptsOpenWalletAndCachesSnapshots()
 {
     LogosModules modules;
-    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
-    modules.logos_execution_zone.currentBlockHeight = 12;
-    modules.logos_execution_zone.lastSyncedBlock = 11;
-    modules.logos_execution_zone.accounts = {
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.currentBlockHeight = 12;
+    modules.lez_core.lastSyncedBlock = 11;
+    modules.lez_core.accounts = {
         accountEntry(ACCOUNT_A, true),
         accountEntry(ACCOUNT_B, false),
     };
-    modules.logos_execution_zone.publicAccounts.insert(
+    modules.lez_core.publicAccounts.insert(
         ACCOUNT_A, publicAccountJson());
-    modules.logos_execution_zone.balances.insert(ACCOUNT_B, QStringLiteral("42"));
+    modules.lez_core.balances.insert(ACCOUNT_B, QStringLiteral("42"));
 
     LogosWalletProvider provider(&modules);
     const WalletSession session = provider.connect({ QStringLiteral("unused"), QStringLiteral("unused") });
@@ -96,25 +99,25 @@ void LogosWalletProviderTest::adoptsOpenWalletAndCachesSnapshots()
     QCOMPARE(session.snapshot.currentBlockHeight, quint64(12));
     QCOMPARE(session.snapshot.lastSyncedBlock, quint64(11));
 
-    const int listCalls = modules.logos_execution_zone.listCalls;
-    const int readCalls = modules.logos_execution_zone.publicReadCalls;
+    const int listCalls = modules.lez_core.listCalls;
+    const int readCalls = modules.lez_core.publicReadCalls;
     QVERIFY(provider.snapshot().ok());
-    QCOMPARE(modules.logos_execution_zone.listCalls, listCalls);
-    QCOMPARE(modules.logos_execution_zone.publicReadCalls, readCalls);
+    QCOMPARE(modules.lez_core.listCalls, listCalls);
+    QCOMPARE(modules.lez_core.publicReadCalls, readCalls);
 
     QVERIFY(provider.snapshot(true).ok());
-    QVERIFY(modules.logos_execution_zone.listCalls > listCalls);
-    QVERIFY(modules.logos_execution_zone.publicReadCalls > readCalls);
+    QVERIFY(modules.lez_core.listCalls > listCalls);
+    QVERIFY(modules.lez_core.publicReadCalls > readCalls);
 
-    modules.logos_execution_zone.publicAccounts[ACCOUNT_A] = publicAccountJson(
+    modules.lez_core.publicAccounts[ACCOUNT_A] = publicAccountJson(
         PROGRAM_ID, QString(32, QLatin1Char('f')));
     QCOMPARE(provider.snapshot(true).accounts.at(0).balance,
              QStringLiteral("340282366920938463463374607431768211455"));
 
     provider.clearSnapshot();
-    const int afterRefresh = modules.logos_execution_zone.listCalls;
+    const int afterRefresh = modules.lez_core.listCalls;
     QVERIFY(provider.snapshot().ok());
-    QVERIFY(modules.logos_execution_zone.listCalls > afterRefresh);
+    QVERIFY(modules.lez_core.listCalls > afterRefresh);
 
     provider.disconnect();
     QCOMPARE(provider.snapshot().failure, WalletFailure::WalletUnavailable);
@@ -123,8 +126,8 @@ void LogosWalletProviderTest::adoptsOpenWalletAndCachesSnapshots()
 void LogosWalletProviderTest::retriesCapabilityWarmupBeforeReadingWallet()
 {
     LogosModules modules;
-    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
-    modules.logos_execution_zone.versionFailuresRemaining = 2;
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.versionFailuresRemaining = 2;
 
     LogosWalletProvider provider(&modules);
     bool completed = false;
@@ -134,32 +137,32 @@ void LogosWalletProviderTest::retriesCapabilityWarmupBeforeReadingWallet()
         completed = true;
     });
 
-    QTRY_VERIFY_WITH_TIMEOUT(modules.logos_execution_zone.versionCalls >= 2, 1000);
-    QCOMPARE(modules.logos_execution_zone.listCalls, 0);
+    QTRY_VERIFY_WITH_TIMEOUT(modules.lez_core.versionCalls >= 2, 1000);
+    QCOMPARE(modules.lez_core.listCalls, 0);
     QTRY_VERIFY_WITH_TIMEOUT(completed, 3000);
     QVERIFY(result.ok());
-    QCOMPARE(modules.logos_execution_zone.versionCalls, 3);
-    QCOMPARE(modules.logos_execution_zone.listCalls, 1);
+    QCOMPARE(modules.lez_core.versionCalls, 3);
+    QCOMPARE(modules.lez_core.listCalls, 1);
 }
 
 void LogosWalletProviderTest::retriesCapabilityWarmupSynchronously()
 {
     LogosModules modules;
-    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
-    modules.logos_execution_zone.versionFailuresRemaining = 2;
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.versionFailuresRemaining = 2;
 
     LogosWalletProvider provider(&modules);
     const WalletSession result = provider.connect({});
 
     QVERIFY(result.ok());
-    QCOMPARE(modules.logos_execution_zone.versionCalls, 3);
-    QCOMPARE(modules.logos_execution_zone.listCalls, 1);
+    QCOMPARE(modules.lez_core.versionCalls, 3);
+    QCOMPARE(modules.lez_core.listCalls, 1);
 }
 
 void LogosWalletProviderTest::boundsPersistentCapabilityWarmupFailure()
 {
     LogosModules modules;
-    modules.logos_execution_zone.versionFailuresRemaining = -1;
+    modules.lez_core.versionFailuresRemaining = -1;
 
     LogosWalletProvider provider(&modules);
     bool completed = false;
@@ -171,9 +174,40 @@ void LogosWalletProviderTest::boundsPersistentCapabilityWarmupFailure()
 
     QTRY_VERIFY_WITH_TIMEOUT(completed, 7000);
     QCOMPARE(result.failure, WalletFailure::CapabilityUnavailable);
-    QVERIFY(modules.logos_execution_zone.versionCalls <= 100);
-    QCOMPARE(modules.logos_execution_zone.listCalls, 0);
-    QCOMPARE(modules.logos_execution_zone.openCalls, 0);
+    QVERIFY(modules.lez_core.versionCalls <= 100);
+    QCOMPARE(modules.lez_core.listCalls, 0);
+    QCOMPARE(modules.lez_core.openCalls, 0);
+}
+
+void LogosWalletProviderTest::reportsProgressDuringAsyncSync()
+{
+    LogosModules modules;
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.currentBlockHeight = 1500;
+
+    LogosWalletProvider provider(&modules);
+    QVector<WalletSyncProgress> progress;
+    bool completed = false;
+    provider.connectAsync({},
+        [&completed](WalletSession session) {
+            completed = session.ok();
+        },
+        [&progress](WalletSyncProgress update) {
+            progress.append(update);
+        });
+
+    QTRY_VERIFY_WITH_TIMEOUT(completed, 1000);
+    QVERIFY(progress.size() >= 4);
+    QVERIFY(progress.first().known);
+    QCOMPARE(progress.first().currentBlock, quint64(0));
+    QCOMPARE(progress.first().targetBlock, quint64(1500));
+    QCOMPARE(progress.first().remainingBlocks, quint64(1500));
+    QVERIFY(progress.last().known);
+    QCOMPARE(progress.last().currentBlock, quint64(1500));
+    QCOMPARE(progress.last().targetBlock, quint64(1500));
+    QCOMPARE(progress.last().remainingBlocks, quint64(0));
+    for (qsizetype index = 1; index < progress.size(); ++index)
+        QVERIFY(progress.at(index - 1).currentBlock < progress.at(index).currentBlock);
 }
 
 void LogosWalletProviderTest::opensConfiguredWalletWhenNoSharedSessionExists()
@@ -181,6 +215,7 @@ void LogosWalletProviderTest::opensConfiguredWalletWhenNoSharedSessionExists()
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const QString storage = directory.filePath(QStringLiteral("storage.json"));
+    const QString statistics = directory.filePath(QStringLiteral("statistics.json"));
     QFile file(storage);
     QVERIFY(file.open(QIODevice::WriteOnly));
     file.close();
@@ -190,12 +225,14 @@ void LogosWalletProviderTest::opensConfiguredWalletWhenNoSharedSessionExists()
     const WalletSession session = provider.connect({
         directory.filePath(QStringLiteral("wallet.json")),
         storage,
+        statistics,
     });
 
     QVERIFY(session.ok());
     QVERIFY(!session.adopted);
-    QCOMPARE(modules.logos_execution_zone.openCalls, 1);
-    QCOMPARE(modules.logos_execution_zone.openedStorage, storage);
+    QCOMPARE(modules.lez_core.openCalls, 1);
+    QCOMPARE(modules.lez_core.openedStorage, storage);
+    QCOMPARE(modules.lez_core.openedStatistics, statistics);
 
     LogosModules missingModules;
     LogosWalletProvider missingProvider(&missingModules);
@@ -213,34 +250,37 @@ void LogosWalletProviderTest::createsAndPersistsWallet()
     const WalletPaths paths {
         directory.filePath(QStringLiteral("config/wallet.json")),
         directory.filePath(QStringLiteral("state/storage.json")),
+        directory.filePath(QStringLiteral("state/statistics.json")),
     };
     const WalletCreation creation = provider.createWallet(paths, QStringLiteral("secret"));
 
     QVERIFY(creation.ok());
-    QCOMPARE(creation.mnemonic, modules.logos_execution_zone.mnemonic);
-    QCOMPARE(modules.logos_execution_zone.createdConfig, paths.config);
-    QCOMPARE(modules.logos_execution_zone.createdStorage, paths.storage);
-    QCOMPARE(modules.logos_execution_zone.createdPassword, QStringLiteral("secret"));
-    QVERIFY(modules.logos_execution_zone.saveCalls >= 1);
+    QCOMPARE(creation.mnemonic, modules.lez_core.mnemonic);
+    QCOMPARE(modules.lez_core.createAsyncCalls, 1);
+    QCOMPARE(modules.lez_core.createdConfig, paths.config);
+    QCOMPARE(modules.lez_core.createdStorage, paths.storage);
+    QCOMPARE(modules.lez_core.createdStatistics, paths.statistics);
+    QCOMPARE(modules.lez_core.createdPassword, QStringLiteral("secret"));
+    QVERIFY(modules.lez_core.saveCalls >= 1);
 
     LogosModules rejectedModules;
-    rejectedModules.logos_execution_zone.mnemonic.clear();
+    rejectedModules.lez_core.mnemonic.clear();
     LogosWalletProvider rejectedProvider(&rejectedModules);
     QCOMPARE(rejectedProvider.createWallet(paths, QStringLiteral("secret")).failure,
              WalletFailure::CreateFailed);
 
     LogosModules unsavedModules;
-    unsavedModules.logos_execution_zone.saveResult = 1;
+    unsavedModules.lez_core.saveResult = 1;
     LogosWalletProvider unsavedProvider(&unsavedModules);
     const WalletCreation unsaved = unsavedProvider.createWallet(paths, QStringLiteral("secret"));
     QCOMPARE(unsaved.failure, WalletFailure::SaveFailed);
-    QCOMPARE(unsaved.mnemonic, unsavedModules.logos_execution_zone.mnemonic);
+    QCOMPARE(unsaved.mnemonic, unsavedModules.lez_core.mnemonic);
 }
 
 void LogosWalletProviderTest::validatesCompletePublicAccountPayloads()
 {
     LogosModules modules;
-    modules.logos_execution_zone.publicAccounts.insert(ACCOUNT_A, publicAccountJson());
+    modules.lez_core.publicAccounts.insert(ACCOUNT_A, publicAccountJson());
     LogosWalletProvider provider(&modules);
 
     const WalletAccountRead valid = provider.readPublicAccount(ACCOUNT_A);
@@ -250,16 +290,16 @@ void LogosWalletProviderTest::validatesCompletePublicAccountPayloads()
     QCOMPARE(valid.balanceHex, QStringLiteral("01000000000000000000000000000000"));
     QCOMPARE(valid.dataHex, QStringLiteral("00ff"));
 
-    modules.logos_execution_zone.publicAccounts[ACCOUNT_A] = publicAccountJson(PROGRAM_ID.toUpper());
+    modules.lez_core.publicAccounts[ACCOUNT_A] = publicAccountJson(PROGRAM_ID.toUpper());
     QVERIFY(!provider.readPublicAccount(ACCOUNT_A).ok());
-    modules.logos_execution_zone.publicAccounts[ACCOUNT_A] = publicAccountJson(
+    modules.lez_core.publicAccounts[ACCOUNT_A] = publicAccountJson(
         PROGRAM_ID, QStringLiteral("01"));
     QVERIFY(!provider.readPublicAccount(ACCOUNT_A).ok());
-    modules.logos_execution_zone.publicAccounts[ACCOUNT_A] = publicAccountJson(
+    modules.lez_core.publicAccounts[ACCOUNT_A] = publicAccountJson(
         PROGRAM_ID, QStringLiteral("01000000000000000000000000000000"),
         QString(32, QLatin1Char('0')), QStringLiteral("abc"));
     QVERIFY(!provider.readPublicAccount(ACCOUNT_A).ok());
-    modules.logos_execution_zone.publicAccounts[ACCOUNT_A] = QStringLiteral("[]");
+    modules.lez_core.publicAccounts[ACCOUNT_A] = QStringLiteral("[]");
     QVERIFY(!provider.readPublicAccount(ACCOUNT_A).ok());
     QVERIFY(!provider.readPublicAccount(QStringLiteral("invalid")).ok());
 }
@@ -267,9 +307,9 @@ void LogosWalletProviderTest::validatesCompletePublicAccountPayloads()
 void LogosWalletProviderTest::fallsBackToBalanceWhenPublicReadFails()
 {
     LogosModules modules;
-    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
-    modules.logos_execution_zone.accounts = { accountEntry(ACCOUNT_A, true) };
-    modules.logos_execution_zone.balances.insert(ACCOUNT_A, QStringLiteral("42"));
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.accounts = { accountEntry(ACCOUNT_A, true) };
+    modules.lez_core.balances.insert(ACCOUNT_A, QStringLiteral("42"));
 
     LogosWalletProvider provider(&modules);
     const WalletSession session = provider.connect({});
@@ -284,32 +324,32 @@ void LogosWalletProviderTest::fallsBackToBalanceWhenPublicReadFails()
 void LogosWalletProviderTest::createsAndPersistsAccounts()
 {
     LogosModules modules;
-    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
-    modules.logos_execution_zone.publicAccountId = ACCOUNT_A;
-    modules.logos_execution_zone.accounts = { accountEntry(ACCOUNT_A, true) };
-    modules.logos_execution_zone.publicAccounts.insert(ACCOUNT_A, publicAccountJson());
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.publicAccountId = ACCOUNT_A;
+    modules.lez_core.accounts = { accountEntry(ACCOUNT_A, true) };
+    modules.lez_core.publicAccounts.insert(ACCOUNT_A, publicAccountJson());
     LogosWalletProvider provider(&modules);
     QVERIFY(provider.connect({}).ok());
 
-    const int savesBeforeCreate = modules.logos_execution_zone.saveCalls;
+    const int savesBeforeCreate = modules.lez_core.saveCalls;
     const WalletAccountCreation creation = provider.createAccount(true);
     QVERIFY(creation.ok());
     QCOMPARE(creation.accountId, ACCOUNT_A);
     QVERIFY(creation.publicAccount.ok());
     QCOMPARE(creation.snapshot.accounts.size(), 1);
-    QVERIFY(modules.logos_execution_zone.saveCalls > savesBeforeCreate);
+    QVERIFY(modules.lez_core.saveCalls > savesBeforeCreate);
 
-    modules.logos_execution_zone.saveResult = 1;
+    modules.lez_core.saveResult = 1;
     QCOMPARE(provider.createAccount(true).failure, WalletFailure::SaveFailed);
 }
 
 void LogosWalletProviderTest::preservesCreatedAccountWhenPublicReadFails()
 {
     LogosModules modules;
-    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
-    modules.logos_execution_zone.publicAccountId = ACCOUNT_A;
-    modules.logos_execution_zone.accounts = { accountEntry(ACCOUNT_A, true) };
-    modules.logos_execution_zone.balances.insert(ACCOUNT_A, QStringLiteral("7"));
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.publicAccountId = ACCOUNT_A;
+    modules.lez_core.accounts = { accountEntry(ACCOUNT_A, true) };
+    modules.lez_core.balances.insert(ACCOUNT_A, QStringLiteral("7"));
     LogosWalletProvider provider(&modules);
     QVERIFY(provider.connect({}).ok());
 
@@ -325,14 +365,14 @@ void LogosWalletProviderTest::preservesCreatedAccountWhenPublicReadFails()
 void LogosWalletProviderTest::preservesCreatedAccountWhenSnapshotRefreshFails()
 {
     LogosModules modules;
-    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
-    modules.logos_execution_zone.publicAccountId = ACCOUNT_A;
-    modules.logos_execution_zone.publicAccounts.insert(ACCOUNT_A, publicAccountJson());
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.publicAccountId = ACCOUNT_A;
+    modules.lez_core.publicAccounts.insert(ACCOUNT_A, publicAccountJson());
     LogosWalletProvider provider(&modules);
     QVERIFY(provider.connect({}).ok());
 
-    modules.logos_execution_zone.currentBlockHeight = 1;
-    modules.logos_execution_zone.syncResult = 1;
+    modules.lez_core.currentBlockHeight = 1;
+    modules.lez_core.syncResult = 1;
     const WalletAccountCreation creation = provider.createAccount(true);
 
     QVERIFY(creation.ok());
@@ -343,8 +383,8 @@ void LogosWalletProviderTest::preservesCreatedAccountWhenSnapshotRefreshFails()
 void LogosWalletProviderTest::dispatchesExactGenericTransaction()
 {
     LogosModules modules;
-    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
-    modules.logos_execution_zone.transactionResponse = QStringLiteral(
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.transactionResponse = QStringLiteral(
         R"({"success":true,"tx_hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"})");
     LogosWalletProvider provider(&modules);
     QVERIFY(provider.connect({}).ok());
@@ -358,19 +398,19 @@ void LogosWalletProviderTest::dispatchesExactGenericTransaction()
     const WalletSubmission submission = provider.submitPublicTransaction(transaction);
     QVERIFY(submission.accepted());
     QCOMPARE(submission.nativeHash, QString(64, QLatin1Char('a')));
-    QCOMPARE(modules.logos_execution_zone.submitCalls, 1);
-    QCOMPARE(modules.logos_execution_zone.submittedProgramId, PROGRAM_ID);
-    QCOMPARE(modules.logos_execution_zone.submittedAccountIds, transaction.accountIds);
-    QCOMPARE(modules.logos_execution_zone.submittedSigningRequirements,
+    QCOMPARE(modules.lez_core.submitCalls, 1);
+    QCOMPARE(modules.lez_core.submittedProgramId, PROGRAM_ID);
+    QCOMPARE(modules.lez_core.submittedAccountIds, transaction.accountIds);
+    QCOMPARE(modules.lez_core.submittedSigningRequirements,
              QVariantList({ true, false }));
-    QCOMPARE(modules.logos_execution_zone.submittedInstruction.toByteArray(),
+    QCOMPARE(modules.lez_core.submittedInstruction.toByteArray(),
              QByteArray::fromHex("0700000000000000ffffffff"));
 }
 
 void LogosWalletProviderTest::rejectsInvalidSubmissionResponses()
 {
     LogosModules modules;
-    modules.logos_execution_zone.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
     LogosWalletProvider provider(&modules);
     QVERIFY(provider.connect({}).ok());
 
@@ -388,7 +428,7 @@ void LogosWalletProviderTest::rejectsInvalidSubmissionResponses()
         QStringLiteral(R"({"success":true,"tx_hash":"short"})"),
     };
     for (const QString& response : invalidResponses) {
-        modules.logos_execution_zone.transactionResponse = response;
+        modules.lez_core.transactionResponse = response;
         QCOMPARE(provider.submitPublicTransaction(transaction).failure,
                  WalletFailure::SubmissionFailed);
     }
@@ -503,6 +543,7 @@ void LogosWalletProviderTest::controllerRejectsDuplicateOpenWhileStarting()
     provider.finishConnect();
     QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncStatus,
                               QStringLiteral("ready"), 1000);
+    QVERIFY(controller.state().canSubmit());
     QVERIFY(!controller.open());
     QCOMPARE(provider.connectCalls, 1);
 
@@ -561,6 +602,7 @@ void LogosWalletProviderTest::controllerPollsSnapshotsAndRetriesAfterFailure()
     pollTimer->start();
     QTRY_COMPARE_WITH_TIMEOUT(provider.snapshotCalls, 1, 1000);
     QCOMPARE(controller.state().syncStatus, QStringLiteral("syncing"));
+    QVERIFY(controller.state().canSubmit());
 
     pollTimer->start();
     QTest::qWait(20);
@@ -571,6 +613,7 @@ void LogosWalletProviderTest::controllerPollsSnapshotsAndRetriesAfterFailure()
     QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncStatus,
                               QStringLiteral("error"), 1000);
     QCOMPARE(controller.state().syncError, QStringLiteral("read_failed"));
+    QVERIFY(controller.state().canSubmit());
     QVERIFY(pollTimer->isActive());
 
     provider.snapshotResult = {};
@@ -586,6 +629,70 @@ void LogosWalletProviderTest::controllerPollsSnapshotsAndRetriesAfterFailure()
                               QStringLiteral("ready"), 1000);
     QCOMPARE(provider.snapshotCalls, 2);
     QCOMPARE(controller.balance(ACCOUNT_A, true), QStringLiteral("9"));
+
+    controller.disconnect();
+    settings.clear();
+}
+
+void LogosWalletProviderTest::controllerExposesProgressAndCancelsInitialSync()
+{
+    const QString settingsApplication = QStringLiteral("WalletSyncProgressTest");
+    QSettings settings(QStringLiteral("Logos"), settingsApplication);
+    settings.clear();
+
+    FakeWalletProvider provider;
+    provider.deferAsync = true;
+    provider.connectResult.snapshot.accounts = {
+        { ACCOUNT_A, QStringLiteral("5"), true },
+    };
+
+    WalletController controller(provider, settingsApplication);
+    QVERIFY(controller.open());
+    QVERIFY(!controller.state().canSubmit());
+    provider.reportConnectProgress({ true, 100, 500, 400 });
+    QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncCurrentBlock, 100, 1000);
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("syncing"));
+    QCOMPARE(controller.state().syncTargetBlock, 500);
+    QCOMPARE(controller.state().syncRemainingBlocks, 400);
+    QVERIFY(controller.state().syncProgressKnown);
+
+    controller.cancelSync();
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("error"));
+    QCOMPARE(controller.state().syncError, QStringLiteral("sync_cancelled"));
+    QVERIFY(!controller.state().canSubmit());
+    QVERIFY(!controller.state().syncProgressKnown);
+    provider.reportConnectProgress({ true, 200, 500, 300 });
+    provider.finishConnect();
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("error"));
+    QVERIFY(!controller.state().isWalletOpen);
+
+    controller.disconnect();
+
+    settings.clear();
+}
+
+void LogosWalletProviderTest::controllerCreatesWalletBeforeAsyncSyncCompletes()
+{
+    const QString settingsApplication = QStringLiteral("WalletCreationSyncProgressTest");
+    QSettings settings(QStringLiteral("Logos"), settingsApplication);
+    settings.clear();
+
+    FakeWalletProvider provider;
+    provider.deferAsync = true;
+    provider.createWalletResult.mnemonic = QStringLiteral("one two three");
+
+    WalletController controller(provider, settingsApplication);
+    QCOMPARE(controller.createDefaultWallet(QStringLiteral("secret")),
+             QStringLiteral("one two three"));
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("syncing"));
+    QVERIFY(controller.state().isWalletOpen);
+    provider.reportSnapshotProgress({ true, 8, 20, 12 });
+    QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncCurrentBlock, 8, 1000);
+
+    provider.finishSnapshot();
+    QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncStatus,
+                              QStringLiteral("ready"), 1000);
+    QVERIFY(!controller.state().syncProgressKnown);
 
     controller.disconnect();
     settings.clear();
