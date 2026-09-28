@@ -11,15 +11,16 @@ use stablecoin_core::{
     compute_stablecoin_master_holding_pda, math::FIXED_POINT_ONE, Instruction, ProtocolParameters,
     RedemptionPriceState, StabilityFeeAccumulator,
 };
-use token_core::TokenDefinition;
+use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
     accrue_stability_fee_plan, decode_protocol_parameters, decode_redemption_price_state,
-    decode_stability_fee_accumulator, initialize_program_plan, program_info, refresh_globals_plan,
-    update_redemption_rate_plan, AccrueStabilityFeePlanRequest, DecodeProtocolParametersRequest,
-    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
-    InitializeProgramPlanRequest, ProgramInfoRequest, RefreshGlobalsPlanRequest, StablecoinResult,
+    decode_stability_fee_accumulator, initialize_program_plan, open_position_plan, program_info,
+    refresh_globals_plan, update_redemption_rate_plan, AccrueStabilityFeePlanRequest,
+    DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
+    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
+    ProgramInfoRequest, RefreshGlobalsPlanRequest, StablecoinResult,
     UpdateRedemptionRatePlanRequest,
 };
 use crate::account::{account_id_hex, account_read, program_id_bytes};
@@ -299,6 +300,39 @@ fn refresh_request(is_frozen: bool) -> RefreshGlobalsPlanRequest {
         stability_fee_accumulator: poke_accumulator_read(),
         redemption_price_state: poke_redemption_read(POKE_LAST_UPDATE),
         market_price_oracle: poke_oracle_read(FIXED_POINT_ONE, POKE_NOW),
+        clock: poke_clock_read(POKE_NOW),
+    }
+}
+
+fn open_position_request(is_frozen: bool) -> OpenPositionPlanRequest {
+    let collateral_id = id(4);
+    let collateral_definition = TokenDefinition::Fungible {
+        name: String::from("Collateral"),
+        total_supply: u128::MAX,
+        metadata_id: None,
+        authority: None,
+    };
+    OpenPositionPlanRequest {
+        stablecoin_program_id: program_id_hex(),
+        owner_id: account_id_hex(id(20)),
+        position_nonce: u64::MAX.to_string(),
+        initial_collateral_amount: u128::MAX.to_string(),
+        user_collateral_holding_id: account_id_hex(id(21)),
+        user_collateral_holding: account_read(
+            id(21),
+            &account(
+                TOKEN_PROGRAM_ID,
+                Data::from(&TokenHolding::Fungible {
+                    definition_id: collateral_id,
+                    balance: u128::MAX,
+                }),
+            ),
+        ),
+        collateral_definition: account_read(
+            collateral_id,
+            &account(TOKEN_PROGRAM_ID, Data::from(&collateral_definition)),
+        ),
+        protocol_parameters: poke_parameters_read(&poke_parameters(is_frozen)),
         clock: poke_clock_read(POKE_NOW),
     }
 }
@@ -878,4 +912,202 @@ fn poke_plans_reject_invalid_callers_and_hard_account_mismatches() {
     let mut wrong_clock = refresh_request(false);
     wrong_clock.clock.id = account_id_hex(id(33));
     assert_error(refresh_globals_plan(wrong_clock), "invalid_clock");
+}
+
+#[test]
+fn open_position_plan_derives_all_accounts_and_preserves_boundary_values() {
+    let request = open_position_request(false);
+    let owner = account_id_hex(id(20));
+    let holding = request.user_collateral_holding_id.clone();
+    let position = String::from("a87123457e26409c6a787258e4e4620ba51eff2da1623e429ec01ca5862a165d");
+    let vault = String::from("3908984cfc287c2297d95d12559432450ba6f290427c6095af401254097ad19f");
+    let collateral = request.collateral_definition.id.clone();
+    let plan = ok(open_position_plan(request));
+
+    assert_eq!(plan["programId"], program_id_hex());
+    assert_eq!(
+        plan["accountIds"],
+        json!([
+            owner,
+            position,
+            vault,
+            holding,
+            collateral,
+            account_id_hex(compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID)),
+            account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        ])
+    );
+    assert_eq!(
+        plan["signingRequirements"],
+        json!([true, false, false, true, false, false, false])
+    );
+    assert!(matches!(
+        decode_instruction(&plan["instruction"]),
+        Instruction::OpenPosition {
+            position_nonce: u64::MAX,
+            initial_collateral_amount: u128::MAX,
+        }
+    ));
+}
+
+#[test]
+fn open_position_idl_pins_account_flags_and_numeric_argument_types() {
+    let idl: Value = ok(serde_json::from_str(include_str!(
+        "../../../../../artifacts/stablecoin-idl.json"
+    )));
+    let instruction = idl["instructions"]
+        .as_array()
+        .and_then(|instructions| {
+            instructions
+                .iter()
+                .find(|instruction| instruction["name"] == "open_position")
+        })
+        .expect("open_position IDL instruction exists");
+    let accounts = instruction["accounts"]
+        .as_array()
+        .expect("open_position account metadata exists");
+    let contract = accounts
+        .iter()
+        .map(|account| {
+            (
+                account["name"].as_str().expect("account name"),
+                account["writable"].as_bool().expect("writable flag"),
+                account["signer"].as_bool().expect("signer flag"),
+                account["init"].as_bool().expect("init flag"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contract,
+        vec![
+            ("owner", false, true, false),
+            ("position", true, false, true),
+            ("vault", true, false, true),
+            ("user_collateral_holding", true, true, false),
+            ("collateral_definition", false, false, false),
+            ("protocol_parameters", false, false, false),
+            ("clock", false, false, false),
+        ]
+    );
+    assert_eq!(
+        instruction["args"],
+        json!([
+            {"name": "position_nonce", "type": "u64"},
+            {"name": "initial_collateral_amount", "type": "u128"},
+        ])
+    );
+}
+
+#[test]
+fn open_position_plan_rejects_malformed_or_out_of_range_decimal_strings() {
+    for invalid in ["", "-1", "+1", "1.0", "1e3", "18446744073709551616"] {
+        let mut request = open_position_request(false);
+        request.position_nonce = String::from(invalid);
+        assert_error(open_position_plan(request), "invalid_numeric_value");
+    }
+
+    for invalid in [
+        "",
+        "-1",
+        "+1",
+        "1.5",
+        "1e3",
+        "340282366920938463463374607431768211456",
+    ] {
+        let mut request = open_position_request(false);
+        request.initial_collateral_amount = String::from(invalid);
+        assert_error(open_position_plan(request), "invalid_numeric_value");
+    }
+}
+
+#[test]
+fn open_position_plan_checks_freeze_and_all_collateral_bindings() {
+    assert_error(
+        open_position_plan(open_position_request(true)),
+        "protocol_frozen",
+    );
+
+    let mut wrong_collateral_id = open_position_request(false);
+    let collateral_definition = TokenDefinition::Fungible {
+        name: String::from("Other"),
+        total_supply: 1,
+        metadata_id: None,
+        authority: None,
+    };
+    wrong_collateral_id.collateral_definition = account_read(
+        id(22),
+        &account(TOKEN_PROGRAM_ID, Data::from(&collateral_definition)),
+    );
+    assert_error(
+        open_position_plan(wrong_collateral_id),
+        "collateral_definition_mismatch",
+    );
+
+    let mut wrong_holding_definition = open_position_request(false);
+    wrong_holding_definition.user_collateral_holding = account_read(
+        id(21),
+        &account(
+            TOKEN_PROGRAM_ID,
+            Data::from(&TokenHolding::Fungible {
+                definition_id: id(22),
+                balance: 10,
+            }),
+        ),
+    );
+    assert_error(
+        open_position_plan(wrong_holding_definition),
+        "invalid_user_collateral_holding",
+    );
+
+    let mut mismatched_token_program = open_position_request(false);
+    mismatched_token_program.user_collateral_holding = account_read(
+        id(21),
+        &account(
+            ORACLE_PROGRAM_ID,
+            Data::from(&TokenHolding::Fungible {
+                definition_id: id(4),
+                balance: 10,
+            }),
+        ),
+    );
+    assert_error(
+        open_position_plan(mismatched_token_program),
+        "token_program_mismatch",
+    );
+}
+
+#[test]
+fn open_position_plan_requires_valid_public_account_reads_and_clock() {
+    let mut missing_holding = open_position_request(false);
+    missing_holding.user_collateral_holding.status = String::from("not_found");
+    missing_holding.user_collateral_holding.account = None;
+    assert_error(open_position_plan(missing_holding), "account_read_failed");
+
+    let mut wrong_holding_read_id = open_position_request(false);
+    wrong_holding_read_id.user_collateral_holding.id = account_id_hex(id(22));
+    assert_error(
+        open_position_plan(wrong_holding_read_id),
+        "invalid_user_collateral_holding",
+    );
+
+    let mut wrong_clock = open_position_request(false);
+    wrong_clock.clock.id = account_id_hex(id(23));
+    assert_error(open_position_plan(wrong_clock), "invalid_clock");
+
+    let mut wrong_parameters_pda = open_position_request(false);
+    wrong_parameters_pda.protocol_parameters.id = account_id_hex(id(24));
+    assert_error(
+        open_position_plan(wrong_parameters_pda),
+        "protocol_parameters_pda_mismatch",
+    );
+
+    let mut malformed_parameters = open_position_request(false);
+    malformed_parameters.protocol_parameters = account_read(
+        compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID),
+        &account(STABLECOIN_PROGRAM_ID, ok(Data::try_from(vec![0xff_u8]))),
+    );
+    assert_error(
+        open_position_plan(malformed_parameters),
+        "invalid_protocol_parameters_data",
+    );
 }

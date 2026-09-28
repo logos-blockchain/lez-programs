@@ -19,7 +19,7 @@ pub use decode::{
     decode_protocol_parameters, decode_redemption_price_state, decode_stability_fee_accumulator,
 };
 pub use plan::{
-    accrue_stability_fee_plan, initialize_program_plan, refresh_globals_plan,
+    accrue_stability_fee_plan, initialize_program_plan, open_position_plan, refresh_globals_plan,
     update_redemption_rate_plan,
 };
 pub use program::program_info;
@@ -28,8 +28,8 @@ pub use quote::redemption_rate_update_quote;
 pub use request::{
     AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest, DecodeProtocolParametersRequest,
     DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
-    InitializeProgramPlanRequest, ProgramInfoRequest, RedemptionRateUpdateQuoteRequest,
-    RefreshGlobalsPlanRequest, UpdateRedemptionRatePlanRequest,
+    InitializeProgramPlanRequest, OpenPositionPlanRequest, ProgramInfoRequest,
+    RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, UpdateRedemptionRatePlanRequest,
 };
 use serde_json::Value;
 

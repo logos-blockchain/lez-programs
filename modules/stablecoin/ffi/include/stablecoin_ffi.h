@@ -95,6 +95,14 @@ char *stablecoin_refresh_globals_plan(const char *request_json);
 char *stablecoin_initialize_program_plan(const char *request_json);
 
 /**
+ * Builds the exact wallet submission plan for `OpenPosition`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_open_position_plan(const char *request_json);
+
+/**
  * Releases a string returned by a `stablecoin_*` operation.
  *
  * # Safety

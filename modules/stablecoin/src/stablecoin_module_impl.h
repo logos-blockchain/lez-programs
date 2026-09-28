@@ -65,6 +65,12 @@ public:
     /// integers; JSON floats are rejected. Only `adminId` signs.
     LogosMap initializeProgram(const LogosMap& request);
 
+    /// Opens a collateral-only position. `ownerId`, `userCollateralHoldingId`,
+    /// `positionNonce`, and `initialCollateralAmount` are required; amounts
+    /// are exact decimal strings. Owner and source holding must be public
+    /// accounts controlled by the connected wallet and both sign.
+    LogosMap openPosition(const LogosMap& request);
+
 private:
     using StablecoinOperation = char* (*)(const char*);
 
@@ -72,13 +78,18 @@ private:
     nlohmann::json stablecoinProgramInfo(std::string& error);
     std::string normalizeAccountId(const std::string& id);
     bool requireWalletCaller(const std::string& caller_id, std::string& error);
+    bool requireWalletSigners(const std::vector<std::string>& signer_ids,
+                              std::string& error);
     nlohmann::json readPublicAccount(const std::string& account_id);
     bool requireUninitialized(const std::string& account_id, std::string& error);
     LogosMap planAndSubmit(StablecoinOperation planner,
                            const nlohmann::json& request,
                            const std::string& expected_program_id,
-                           std::size_t expected_account_count);
-    LogosMap submitPlan(const nlohmann::json& plan, std::size_t expected_account_count);
+                           std::size_t expected_account_count,
+                           std::vector<std::size_t> expected_signer_indices = {0});
+    LogosMap submitPlan(const nlohmann::json& plan,
+                        std::size_t expected_account_count,
+                        const std::vector<std::size_t>& expected_signer_indices = {0});
 
     bool programInfoResolved_ = false;
     std::string programInfoJson_;

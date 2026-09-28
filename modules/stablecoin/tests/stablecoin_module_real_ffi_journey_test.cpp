@@ -1,5 +1,6 @@
 #include "stablecoin_module_impl.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
@@ -20,6 +21,10 @@
 
 #include "logos_sdk.h"
 
+extern "C" {
+#include "stablecoin_ffi.h"
+}
+
 namespace {
 
 using boost::multiprecision::cpp_int;
@@ -36,6 +41,11 @@ const std::string PROGRAM_OWNER_HEX = PROGRAM_ID_HEX;
 const std::string ORACLE_OWNER_HEX = [] {
     std::string value;
     for (int index = 0; index < 8; ++index) value += "33000000";
+    return value;
+}();
+const std::string TOKEN_OWNER_HEX = [] {
+    std::string value;
+    for (int index = 0; index < 8; ++index) value += "22000000";
     return value;
 }();
 const std::string FIXED_ONE = "1000000000000000000000000000";
@@ -77,6 +87,13 @@ std::string byteHex(unsigned int value) {
     std::string result(2, '0');
     result[0] = digits[(value >> 4) & 0x0f];
     result[1] = digits[value & 0x0f];
+    return result;
+}
+
+std::string bytesHex(const std::string& value) {
+    std::string result;
+    result.reserve(value.size() * 2);
+    for (const unsigned char byte : value) result += byteHex(byte);
     return result;
 }
 
@@ -167,6 +184,16 @@ std::string clockData(std::uint64_t timestamp) {
     return result;
 }
 
+std::string collateralDefinitionData() {
+    const std::string name = "Collateral";
+    return std::string("00") + "0a000000" + bytesHex(name)
+        + u128Le("340282366920938463463374607431768211455") + "00" + "00";
+}
+
+std::string collateralHoldingData(const std::string& balance) {
+    return "00" + idHex(4) + u128Le(balance);
+}
+
 std::string accountResponse(const std::string& owner, const std::string& data) {
     return json{
         {"program_owner", owner},
@@ -174,6 +201,21 @@ std::string accountResponse(const std::string& owner, const std::string& data) {
         {"nonce", std::string(32, '0')},
         {"data", data},
     }.dump();
+}
+
+json accountReadValue(const std::string& account_id,
+                      const std::string& owner,
+                      const std::string& data) {
+    return {
+        {"id", account_id},
+        {"status", "ok"},
+        {"account", {
+            {"program_owner", owner},
+            {"balance", std::string(32, '0')},
+            {"nonce", std::string(32, '0')},
+            {"data", data},
+        }},
+    };
 }
 
 QVariantList accountArgs(const std::string& account_id) {
@@ -197,10 +239,13 @@ void expectMissing(const std::string& account_id) {
 }
 
 QVariantList walletAccounts() {
-    QVariantMap account;
-    account.insert("account_id", QString::fromStdString(CALLER_ID_HEX));
-    account.insert("is_public", true);
-    return {QVariant(account)};
+    QVariantMap owner;
+    owner.insert("account_id", QString::fromStdString(CALLER_ID_HEX));
+    owner.insert("is_public", true);
+    QVariantMap holding;
+    holding.insert("account_id", QString::fromStdString(idHex(8)));
+    holding.insert("is_public", true);
+    return {QVariant(owner), QVariant(holding)};
 }
 
 QVariantList submissionArguments(const std::vector<std::string>& account_ids,
@@ -214,6 +259,33 @@ QVariantList submissionArguments(const std::vector<std::string>& account_ids,
     }
     QByteArray instruction(1, static_cast<char>(instruction_word));
     instruction.append(3, '\0');
+    return {
+        QVariant(ids),
+        QVariant(signers),
+        QVariant(instruction),
+        QVariant(QString::fromStdString(program_id)),
+    };
+}
+
+QVariantList submissionArguments(const json& plan,
+                                 const std::vector<std::size_t>& signer_indices,
+                                 const std::string& program_id) {
+    const std::vector<std::string> account_ids =
+        plan.at("accountIds").get<std::vector<std::string>>();
+    QStringList ids;
+    QVariantList signers;
+    for (std::size_t index = 0; index < account_ids.size(); ++index) {
+        ids.push_back(QString::fromStdString(account_ids[index]));
+        signers.push_back(std::find(signer_indices.begin(), signer_indices.end(), index)
+                          != signer_indices.end());
+    }
+    QByteArray instruction;
+    for (const auto& item : plan.at("instruction")) {
+        const std::uint32_t word = item.get<std::uint32_t>();
+        for (unsigned int shift = 0; shift < 32; shift += 8) {
+            instruction.push_back(static_cast<char>((word >> shift) & 0xff));
+        }
+    }
     return {
         QVariant(ids),
         QVariant(signers),
@@ -372,4 +444,80 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
             3,
             PROGRAM_ID_HEX)));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 3);
+}
+
+LOGOS_TEST(real_ffi_journey_opens_position_with_two_wallet_signers) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const LogosMap info = module.programInfo();
+    assertOk(info);
+    const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+    const std::string clock_id = info["clockIdHex"].get<std::string>();
+    const std::string collateral_id = idHex(4);
+    const std::string holding_id = idHex(8);
+    const std::string protocol = protocolData();
+    const std::string clock = clockData(DUE);
+    const std::string position_nonce = "18446744073709551615";
+    const std::string collateral_amount = "340282366920938463463374607431768211455";
+    const json planner_request = {
+        {"stablecoinProgramId", PROGRAM_ID_HEX},
+        {"ownerId", CALLER_ID_HEX},
+        {"positionNonce", position_nonce},
+        {"initialCollateralAmount", collateral_amount},
+        {"userCollateralHoldingId", holding_id},
+        {"userCollateralHolding",
+         accountReadValue(
+             holding_id,
+             TOKEN_OWNER_HEX,
+             collateralHoldingData("340282366920938463463374607431768211455"))},
+        {"collateralDefinition",
+         accountReadValue(collateral_id, TOKEN_OWNER_HEX, collateralDefinitionData())},
+        {"protocolParameters", accountReadValue(protocol_id, PROGRAM_OWNER_HEX, protocol)},
+        {"clock", accountReadValue(clock_id, PROGRAM_OWNER_HEX, clock)},
+    };
+    const std::string planner_payload = planner_request.dump();
+    std::unique_ptr<char, decltype(&stablecoin_free)> planner_result(
+        stablecoin_open_position_plan(planner_payload.c_str()), &stablecoin_free);
+    LOGOS_ASSERT_TRUE(planner_result != nullptr);
+    const json planner_envelope = json::parse(planner_result.get());
+    LOGOS_ASSERT_TRUE(planner_envelope["ok"].get<bool>());
+    const json plan = planner_envelope["value"];
+    const std::vector<std::string> account_ids =
+        plan.at("accountIds").get<std::vector<std::string>>();
+
+    expectRead(protocol_id, PROGRAM_OWNER_HEX, protocol);
+    expectRead(
+        holding_id,
+        TOKEN_OWNER_HEX,
+        collateralHoldingData("340282366920938463463374607431768211455"));
+    expectRead(collateral_id, TOKEN_OWNER_HEX, collateralDefinitionData());
+    expectRead(clock_id, PROGRAM_OWNER_HEX, clock);
+    expectMissing(account_ids[1]);
+    expectMissing(account_ids[2]);
+    context.mockModule("lez_core", "list_accounts")
+        .returnsVariant(QVariant(walletAccounts()));
+    context.mockModule("lez_core", "send_generic_public_transaction")
+        .returns(successfulTransaction());
+
+    const LogosMap opened = module.openPosition({
+        {"ownerId", CALLER_ID_HEX},
+        {"positionNonce", position_nonce},
+        {"initialCollateralAmount", collateral_amount},
+        {"userCollateralHoldingId", holding_id},
+    });
+
+    assertOk(opened);
+    LOGOS_ASSERT_EQ(opened["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+    LOGOS_ASSERT_EQ(plan["signingRequirements"],
+                    json::array({true, false, false, true, false, false, false}));
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith(
+        "lez_core",
+        "send_generic_public_transaction",
+        submissionArguments(plan, {0, 3}, PROGRAM_ID_HEX)));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
 }
