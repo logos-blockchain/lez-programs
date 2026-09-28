@@ -24,6 +24,11 @@ public:
     /// Success adds `protocolParameters`; failures use stable error codes.
     LogosMap protocolParameters();
 
+    /// Resolves and reads one position from `ownerId` plus exact decimal-string
+    /// `positionNonce`. Success adds `position`. Missing state returns
+    /// `not_found` with the derived position and vault IDs.
+    LogosMap positionAccount(const LogosMap& request);
+
     /// Initializes the stablecoin protocol. Request fields are `adminId`,
     /// `freezeAuthorityId`, `collateralDefinitionId`, `marketPriceOracleId`,
     /// `initialStabilityFeePerMillisecond`,
