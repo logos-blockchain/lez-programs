@@ -87,8 +87,8 @@ function loadManifest() {
   }
   const m = JSON.parse(raw);
   for (const key of [
-    "tokenBin", "tokenIdl", "faucetBin", "faucetIdl", "recipient", "mintAllowance",
-    "userHolding", "tokenDefinition", "mintAuthority", "clock",
+    "tokenProgramId", "tokenIdl", "faucetProgramId", "faucetIdl", "recipient", "mintAllowance",
+    "userHolding", "tokenDefinition", "mintAuthority", "clock", "feePayer", "fundAmount",
   ]) {
     if (!m[key]) throw new Error(`faucet manifest is missing "${key}"`);
   }
@@ -260,23 +260,62 @@ async function saveShot(app, name) {
 // combined stdout+stderr. On a non-zero exit, throws UNLESS the output matches one
 // of `tolerate` (a list of regexes for expected, benign failures on re-runs), in
 // which case it returns the output with `.tolerated = <matched index>` attached.
-function runSpel(args, { tolerate = [] } = {}) {
-  console.log(`    $ spel ${args.join(" ")}`);
+function runSpel(args, { tolerate = [], feePayer } = {}) {
+  // Since LEZ v0.2.5 a non-exempt public transaction is rejected ("Incorrect fee")
+  // unless it carries a fee declaration; spel builds one from --fee-payer. That is a
+  // global, so it goes before the `--` that starts the instruction.
+  const full = [...args];
+  if (feePayer) full.splice(full.indexOf("--"), 0, "--fee-payer", feePayer);
+  console.log(`    $ spel ${full.join(" ")}`);
   const env = { ...process.env, LEE_WALLET_HOME_DIR: WALLET_HOME };
   try {
-    return execFileSync("spel", args, {
+    return execFileSync("spel", full, {
       cwd: REPO_ROOT, env, input: `${WALLET_PASSWORD}\n`, encoding: "utf8",
     });
   } catch (err) {
     const out = `${err.stdout || ""}${err.stderr || ""}`;
     const idx = tolerate.findIndex((re) => re.test(out));
     if (idx >= 0) { const r = new String(out); r.tolerated = idx; return r; }
-    throw new Error(`spel ${args[args.indexOf("--") + 1]} failed:\n${out}`);
+    throw new Error(`spel ${full[full.indexOf("--") + 1]} failed:\n${out}`);
   }
 }
 
 const confirmed = (out) =>
   /Transaction confirmed/i.test(out) && /included in a block/i.test(out);
+
+// The swap is signed by holder2's HOLDING account, and the AMM module submits with
+// the wallet's default payer — the first signing account, i.e. that holding. So it
+// needs a native balance of its own or the sequencer rejects the fee declaration and
+// the UI reports an empty response. setup-amm-testnet.sh can't do this for us: the
+// holding doesn't exist until initializeHolding() creates it, and `initialize_account`
+// asserts the target is still Account::default() (balance AND nonce zero), so the
+// funding has to land after it. Idempotent — a re-run tops up only what fell short.
+function fundHolding(m) {
+  const id = m.userHolding;
+  const target = BigInt(m.fundAmount);
+  const env = { ...process.env, LEE_WALLET_HOME_DIR: WALLET_HOME };
+  const wallet = (args) =>
+    execFileSync("wallet", args, { cwd: REPO_ROOT, env, input: `${WALLET_PASSWORD}\n`, encoding: "utf8" });
+
+  let balance = 0n;
+  try {
+    // A never-funded account simply isn't on chain yet; no match means zero.
+    const match = /"balance":(\d+)/.exec(wallet(["account", "get", "-a", `Public/${id}`]));
+    if (match) balance = BigInt(match[1]);
+  } catch { /* not on chain yet -> zero */ }
+
+  if (balance >= target) {
+    console.log(`    holder2 holding already funded for fees (${balance})`);
+    return;
+  }
+  console.log(`    $ wallet auth-transfer send --from Public/${m.feePayer} --to Public/${id} --amount ${target}`);
+  const out = wallet([
+    "auth-transfer", "send", "--from", `Public/${m.feePayer}`, "--to", `Public/${id}`, "--amount", String(target),
+  ]);
+  if (!confirmed(out) && !/included in block/i.test(out))
+    throw new Error(`funding holder2's holding was not confirmed:\n${out}`);
+  console.log(`    ✅ funded holder2 holding for fees (${target})`);
+}
 
 // Is holder2's token A holding already an initialized TokenHolding on-chain? Read-only
 // `spel inspect`: it exits non-zero when the account is absent/uninitialized (empty
@@ -309,11 +348,11 @@ function initializeHolding(m) {
   }
   const out = runSpel(
     [
-      "--idl", m.tokenIdl, "--program", m.tokenBin, "--", "initialize-account",
+      "--idl", m.tokenIdl, "--program", m.tokenProgramId, "--", "initialize-account",
       "--definition-account", m.tokenDefinition,
       "--account-to-initialize", m.userHolding,
     ],
-    { tolerate: [/Uninitialized accounts can be initialized/i, /already/i] },
+    { tolerate: [/Uninitialized accounts can be initialized/i, /already/i], feePayer: m.feePayer },
   );
   if (out.tolerated !== undefined) {
     console.log("    holder2 token A holding already initialized (race) — continuing");
@@ -354,7 +393,7 @@ function faucetMint(m) {
   }
   const out = runSpel(
     [
-      "--idl", m.faucetIdl, "--program", m.faucetBin, "--", "faucet-mint",
+      "--idl", m.faucetIdl, "--program", m.faucetProgramId, "--", "faucet-mint",
       "--recipient", m.recipient,
       "--mint-allowance", m.mintAllowance,
       "--user-holding", m.userHolding,
@@ -362,7 +401,7 @@ function faucetMint(m) {
       "--mint-authority", m.mintAuthority,
       "--clock", m.clock,
     ],
-    { tolerate: [/cooldown has not elapsed/i] },
+    { tolerate: [/cooldown has not elapsed/i], feePayer: m.feePayer },
   );
   if (out.tolerated !== undefined) {
     console.log("    faucet cooldown active — holder2 was funded by a previous run; continuing");
@@ -400,10 +439,12 @@ test("amm faucet-swap: mint token A to a fresh account, refresh, then swap", asy
   const before = await probeSelectable(app, "swapSellAccountSelector", userHoldingHex);
   console.log(`    holder2 holding selectable before mint: ${before}`);
 
-  // 4. Create holder2's token A holding, then mint into it via the faucet — both
-  //    out of band from the UI. The initialize step is required because the faucet
-  //    only mints into an EXISTING holding (see initializeHolding()).
+  // 4. Create holder2's token A holding, give it a native balance so it can pay its
+  //    own swap fee, then mint into it via the faucet — all out of band from the UI.
+  //    The initialize step is required because the faucet only mints into an EXISTING
+  //    holding (see initializeHolding()), and it must precede the funding.
   initializeHolding(m);
+  fundHolding(m);
   const mintResult = faucetMint(m);
   if (mintResult === "cooldown" && !before) {
     // Cooldown but the account was NOT funded — inconsistent; fail loudly.
