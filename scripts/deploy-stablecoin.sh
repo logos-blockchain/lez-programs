@@ -136,6 +136,11 @@ STABLECOIN_ORACLE_INITIAL_PRICE="${STABLECOIN_ORACLE_INITIAL_PRICE:-$FIXED_POINT
 # Must be >= the TWAP oracle's OBSERVATIONS_CAPACITY (2048).
 STABLECOIN_ORACLE_WINDOW_DURATION="${STABLECOIN_ORACLE_WINDOW_DURATION:-3600000}"
 
+# spel can give up waiting before the next block (they are ~15s apart on a local
+# node) and report a transaction that did land as "NOT confirmed". Each spel step
+# therefore checks the account it creates, polling up to this many seconds.
+CONFIRM_WAIT_SECONDS="${CONFIRM_WAIT_SECONDS:-90}"
+
 # Everything a client, module or test needs to talk to this deployment.
 STABLECOIN_MANIFEST_OUT="${STABLECOIN_MANIFEST_OUT:-target/stablecoin-deployment.json}"
 
@@ -155,45 +160,8 @@ require_cmd()  { command -v "$1" >/dev/null 2>&1 || die "required command not fo
 require_file() { [ -f "$1" ] || die "required file not found: $1 (cwd=$(pwd))"; }
 require_var()  { [ -n "${!1:-}" ] || die "$1 is required (a base58 account id or a wallet label) — see the header"; }
 
-# Run a transaction command, streaming its output, then assert the sequencer
-# confirmation marker is present. Same contract as setup-amm-testnet.sh.
-#   run_tx <strict|soft> "<description>" -- <cmd> [args...]
-run_tx() {
-  local mode="$1"; shift
-  local desc="$1"; shift
-  [ "$1" = "--" ] && shift
-
-  sec "TX: $desc"
-  log "${DIM}\$ $*${RST}"
-  local tmp; tmp="$(mktemp)"
-
-  set +e
-  "$@" 2>&1 | tee "$tmp"
-  local rc=${PIPESTATUS[0]}
-  set -e
-
-  if [ "$rc" -ne 0 ]; then
-    rm -f "$tmp"
-    die "command exited with status $rc — $desc"
-  fi
-
-  if grep -q "Transaction confirmed" "$tmp" && grep -q "included in a block" "$tmp"; then
-    log "${GRN}✅ CONFIRMED — included in a block: ${desc}${RST}"
-    rm -f "$tmp"
-    return 0
-  fi
-
-  rm -f "$tmp"
-  if [ "$mode" = "soft" ]; then
-    log "${YEL}⚠ no '✅ Transaction confirmed — included in a block.' marker for: ${desc}"
-    log "  (continuing — some commands don't print the spel marker; verify manually)${RST}"
-    return 0
-  fi
-  die "NOT CONFIRMED — expected '✅ Transaction confirmed — included in a block.' for: $desc"
-}
-
-# Like run_tx, but reports failure instead of dying: 0 if the sequencer
-# confirmed the transaction, 1 otherwise. For steps whose failure is recoverable.
+# Run a transaction command, streaming its output: 0 if spel printed its
+# sequencer confirmation, 1 otherwise.
 #   try_tx "<description>" -- <cmd> [args...]
 try_tx() {
   local desc="$1"; shift
@@ -221,7 +189,7 @@ try_tx() {
 # non-zero if it is not included in a block — and the sequencer drops failed
 # transactions (e.g. ProgramAlreadyExists) instead of including them. So a zero
 # exit means the program is deployed. (It never prints spel's confirmation line,
-# which is why run_tx is not used here.)
+# which is why try_tx is not used here.)
 deploy_program() {
   local name="$1" bin="$2"
   sec "TX: deploy $name program"
@@ -231,12 +199,27 @@ deploy_program() {
   log "${GRN}✅ DEPLOYED — included in a block: $name${RST}"
 }
 
-# Whether a token definition is initialized on-chain. Relies on `spel inspect`
-# failing for an account that holds no TokenDefinition; if a spel version ever
-# exits 0 there instead, initialize_program still rejects a missing collateral
-# ("Collateral definition account must be initialized"), just one step later.
-token_definition_exists() {
-  spel --idl "$TOKEN_IDL" inspect "$1" --type TokenDefinition >/dev/null 2>&1
+# Whether an account holding <type> exists on-chain, polling for up to
+# CONFIRM_WAIT_SECONDS. Relies on `spel inspect` failing for an account that
+# does not hold that type.
+#   account_exists <idl> <address> <type>
+account_exists() {
+  local idl="$1" addr="$2" type="$3" waited=0
+  while ! spel --idl "$idl" inspect "$addr" --type "$type" >/dev/null 2>&1; do
+    [ "$waited" -ge "$CONFIRM_WAIT_SECONDS" ] && return 1
+    [ "$waited" -eq 0 ] && log "${DIM}  waiting up to ${CONFIRM_WAIT_SECONDS}s for $type @ $addr ...${RST}"
+    sleep 3; waited=$((waited + 3))
+  done
+}
+
+# Run a spel transaction that creates <address>. Succeeds if spel confirms it, or
+# if the account shows up on-chain anyway (spel stopped waiting too early).
+#   create_tx "<description>" <idl> <address> <type> -- <cmd> [args...]
+create_tx() {
+  local desc="$1" idl="$2" addr="$3" type="$4"; shift 4
+  try_tx "$desc" "$@" && return 0
+  account_exists "$idl" "$addr" "$type" || return 1
+  log "${YEL}⚠ spel did not confirm it, but $type @ $addr is on-chain — continuing${RST}"
 }
 
 inspect() {
@@ -353,14 +336,14 @@ if [ -n "$COLLATERAL_HOLDING_ID" ]; then
          --holding-target-account "$COLLATERAL_HOLDING_ID" \
          --mint-authority "$COLLATERAL_MINT_AUTHORITY_ID"; then
     :
-  elif token_definition_exists "$COLLATERAL_DEF"; then
-    log "${YEL}⚠ collateral token already exists at $COLLATERAL_DEF — reusing it${RST}"
+  elif account_exists "$TOKEN_IDL" "$COLLATERAL_DEF" TokenDefinition; then
+    log "${YEL}⚠ spel did not confirm it, but the collateral token is on-chain at $COLLATERAL_DEF (created late, or already existed) — using it${RST}"
   else
     die "could not create the collateral token, and none exists at $COLLATERAL_DEF (see the output above)"
   fi
 else
   sec "Collateral token (existing)"
-  token_definition_exists "$COLLATERAL_DEF" \
+  CONFIRM_WAIT_SECONDS=0 account_exists "$TOKEN_IDL" "$COLLATERAL_DEF" TokenDefinition \
     || die "no token definition at COLLATERAL_DEFINITION=$COLLATERAL_DEF — set COLLATERAL_HOLDING (a wallet account) to create one"
   kv "found" "$COLLATERAL_DEF"
 fi
@@ -400,7 +383,7 @@ done
 # 5. Create the market price oracle account — BEFORE initialize_program, which
 #    requires it to exist and to quote the stablecoin definition derived above.
 ###############################################################################
-run_tx strict "create market price oracle account" -- \
+create_tx "create market price oracle account" "$TWAP_IDL" "$MARKET_PRICE_ORACLE" OraclePriceAccount -- \
   spel --idl "$TWAP_IDL" --program "$TWAP_BIN" -- create-oracle-price-account \
     --oracle-price-account "$MARKET_PRICE_ORACLE" \
     --price-source "$ORACLE_SOURCE" \
@@ -408,14 +391,15 @@ run_tx strict "create market price oracle account" -- \
     --base-asset "$STABLECOIN_DEFINITION" \
     --quote-asset "$COLLATERAL_DEF" \
     --initial-price "$STABLECOIN_ORACLE_INITIAL_PRICE" \
-    --window-duration "$STABLECOIN_ORACLE_WINDOW_DURATION"
+    --window-duration "$STABLECOIN_ORACLE_WINDOW_DURATION" \
+  || die "market price oracle account not created (see the output above and the sequencer log)"
 
 inspect "$TWAP_IDL" "$MARKET_PRICE_ORACLE" "OraclePriceAccount"
 
 ###############################################################################
 # 6. Initialize the stablecoin program
 ###############################################################################
-run_tx strict "initialize stablecoin program" -- \
+create_tx "initialize stablecoin program" "$STABLECOIN_IDL" "$PROTOCOL_PARAMETERS" ProtocolParameters -- \
   spel --idl "$STABLECOIN_IDL" --program "$STABLECOIN_BIN" -- initialize-program \
     --admin "$ADMIN" \
     --protocol-parameters "$PROTOCOL_PARAMETERS" \
@@ -434,7 +418,8 @@ run_tx strict "initialize stablecoin program" -- \
     --minimum-milliseconds-between-rate-updates "$STABLECOIN_MINIMUM_MS_BETWEEN_RATE_UPDATES" \
     --maximum-oracle-price-age-milliseconds "$STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS" \
     --initial-redemption-price "$STABLECOIN_INITIAL_REDEMPTION_PRICE" \
-    --stablecoin-name "$STABLECOIN_NAME"
+    --stablecoin-name "$STABLECOIN_NAME" \
+  || die "stablecoin not initialized (see the output above and the sequencer log)"
 
 ###############################################################################
 # 7. Verify
