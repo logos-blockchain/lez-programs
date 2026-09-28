@@ -161,7 +161,9 @@ require_file() { [ -f "$1" ] || die "required file not found: $1 (cwd=$(pwd))"; 
 require_var()  { [ -n "${!1:-}" ] || die "$1 is required (a base58 account id or a wallet label) — see the header"; }
 
 # Run a transaction command, streaming its output: 0 if spel printed its
-# sequencer confirmation, 1 otherwise.
+# sequencer confirmation, 1 otherwise. Sets TRY_TX_SUBMITTED=1 if spel got as far
+# as submitting — a failure before that (e.g. an argument it cannot serialize)
+# sent nothing, so there is nothing on-chain to wait for.
 #   try_tx "<description>" -- <cmd> [args...]
 try_tx() {
   local desc="$1"; shift
@@ -176,6 +178,8 @@ try_tx() {
   rc=${PIPESTATUS[0]}
   set -e
 
+  TRY_TX_SUBMITTED=0
+  if grep -q "Transaction submitted" "$tmp"; then TRY_TX_SUBMITTED=1; fi
   if [ "$rc" -eq 0 ] && grep -q "Transaction confirmed" "$tmp" && grep -q "included in a block" "$tmp"; then
     rm -f "$tmp"
     log "${GRN}✅ CONFIRMED — included in a block: ${desc}${RST}"
@@ -218,6 +222,7 @@ account_exists() {
 create_tx() {
   local desc="$1" idl="$2" addr="$3" type="$4"; shift 4
   try_tx "$desc" "$@" && return 0
+  [ "$TRY_TX_SUBMITTED" = "1" ] || return 1
   account_exists "$idl" "$addr" "$type" || return 1
   log "${YEL}⚠ spel did not confirm it, but $type @ $addr is on-chain — continuing${RST}"
 }
@@ -329,17 +334,19 @@ fi
 # 3. Collateral token — create it, or confirm the existing one
 ###############################################################################
 if [ -n "$COLLATERAL_HOLDING_ID" ]; then
-  if try_tx "create collateral token: $COLLATERAL_NAME" -- \
+  if ! try_tx "create collateral token: $COLLATERAL_NAME" -- \
        spel --idl "$TOKEN_IDL" --program "$TOKEN_BIN" -- new-fungible-definition \
          --name "$COLLATERAL_NAME" --total-supply "$COLLATERAL_SUPPLY" \
          --definition-target-account "$COLLATERAL_DEF" \
          --holding-target-account "$COLLATERAL_HOLDING_ID" \
          --mint-authority "$COLLATERAL_MINT_AUTHORITY_ID"; then
-    :
-  elif account_exists "$TOKEN_IDL" "$COLLATERAL_DEF" TokenDefinition; then
+    # Not confirmed: it may have landed late, or already existed (a re-run). Only
+    # wait for it if spel actually submitted something.
+    wait_seconds="$CONFIRM_WAIT_SECONDS"
+    [ "$TRY_TX_SUBMITTED" = "1" ] || wait_seconds=0
+    CONFIRM_WAIT_SECONDS="$wait_seconds" account_exists "$TOKEN_IDL" "$COLLATERAL_DEF" TokenDefinition \
+      || die "could not create the collateral token, and none exists at $COLLATERAL_DEF (see the output above)"
     log "${YEL}⚠ spel did not confirm it, but the collateral token is on-chain at $COLLATERAL_DEF (created late, or already existed) — using it${RST}"
-  else
-    die "could not create the collateral token, and none exists at $COLLATERAL_DEF (see the output above)"
   fi
 else
   sec "Collateral token (existing)"
