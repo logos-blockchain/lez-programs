@@ -33,13 +33,20 @@
 #
 # Program IDs and all AMM PDAs (config, pool, vaults, LP, tick) are DERIVED at
 # runtime from the deployed binaries + the token definition accounts, so this
-# script stays correct even if you rebuild the guest binaries (new image id =>
-# new program id => new PDAs).
+# script stays correct even if you rebuild the guest binaries: since LEZ v0.2.5 a
+# program is addressed by the account id of its deployed `ProgramHeader`, which this
+# script creates from a fixed label, so the address survives a rebuild. What a rebuild
+# CAN change is the segment count (bigger binary => more 96 KiB chunks), and segments
+# are write-once, so a re-deploy needs a fresh set of segment accounts.
 #
 # Prerequisites (managed by you, outside this script):
 #   - `wallet` and `spel` on PATH (from the SPEL toolchain)
 #   - a reachable, funded sequencer (set TEST_SEQUENCER_ADDR, or pre-configure
 #     the wallet). Account creation is local, but deploys/mints need funds.
+#     Deploys additionally need a funded PAYER, because v0.2.5 writes them into
+#     freshly-claimed header/segment accounts that cannot self-pay. That is this
+#     wallet's own root account (see DEPLOY_PAYER below); the chain's genesis must
+#     give it a supply.
 #   - `cargo` (to run the amm_pdas example)
 #   - the guest .bin files already built (`make build-programs`)
 #   - the IDL files under artifacts/ (`make idl`)
@@ -65,6 +72,12 @@ cd "$REPO_ROOT"
 # wallet/spel read LEE_WALLET_HOME_DIR (the old NSSA_WALLET_HOME_DIR is unused).
 TEST_WALLET_HOME="${TEST_WALLET_HOME:-$SCRIPT_DIR/.wallet}"
 export LEE_WALLET_HOME_DIR="$TEST_WALLET_HOME"
+
+# Silence the wallet's `Transaction data is {tx:?}` dump, which Debug-prints the whole
+# transaction -- for a deploy that is the entire 96 KiB segment as a byte array, once per
+# segment. The hash and the "included in block" line are printed outside this guard, so
+# nothing needed for diagnosis is lost. Set SHOW_TX_DATA=1 to get the dump back.
+[ "${SHOW_TX_DATA:-0}" = "1" ] || export SUPPRESS_VERBOSE_PRINTS=1
 
 # The deterministic test seed. A wallet restored from this mnemonic yields the
 # same account ids every time, which is why they can be shared/pinned.
@@ -102,6 +115,28 @@ TEST_SEQ_POLL_TIMEOUT="${TEST_SEQ_POLL_TIMEOUT:-3s}"
 # `amm-owner` is a dedicated account that signs `initialize` — the AMM instance's
 # namespace owner. All three are appended last so the existing accounts keep their ids.
 ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding token-d-def token-d-holding holder2 holder2-a-holding amm-owner)
+
+# --- Deploy accounts (LEZ v0.2.5) ---
+# `wallet deploy-program` is gone: a program is now a chain of write-once segment
+# accounts plus a header account, and every one of them is an explicit argument
+# (`wallet program-loader` never generates keys). So each program needs one header
+# account and one account per 96 KiB chunk of its binary.
+#
+# DEPLOY_SEGMENT_SLOTS is a fixed reservation, not the actual count. The count comes
+# from the binary at deploy time; reserving a fixed number of labels keeps every
+# account id in this script deterministic even when a rebuild changes a binary's size.
+# Only the first N slots of each program are passed to the deploy. The protocol cap is
+# MAX_PROGRAM_SEGMENTS = 20; today's binaries need 3-6.
+DEPLOY_PROGRAMS=(token amm twap mint-authority)
+DEPLOY_SEGMENT_SLOTS=10
+
+for _prog in "${DEPLOY_PROGRAMS[@]}"; do
+  ACCOUNT_LABELS+=("${_prog}-header")
+  for _i in $(seq 1 "$DEPLOY_SEGMENT_SLOTS"); do
+    ACCOUNT_LABELS+=("${_prog}-seg-${_i}")
+  done
+done
+unset _prog _i
 
 ###############################################################################
 # CONFIG — non-account parameters (edit freely)
@@ -167,7 +202,9 @@ CUSTOM_TOKEN_CONFIG_OUT="apps/amm/tests/testnet/custom-tokens.json"
 # apps/amm/tests/faucet-swap.mjs needs to (a) submit a FaucetMint via spel and (b)
 # drive the swap from the freshly-funded holder2 account: bin/IDL paths, the six
 # FaucetMint account ids (recipient/allowance/holding/definition/authority/clock),
-# and the token A definition id. Written at the end from the derived values.
+# the token A definition id, and the fee payer every spel submission declares
+# (since v0.2.5 a public transaction without a fee declaration is rejected).
+# Written at the end from the derived values.
 FAUCET_MANIFEST_OUT="apps/amm/tests/testnet/faucet.json"
 
 ###############################################################################
@@ -176,10 +213,14 @@ FAUCET_MANIFEST_OUT="apps/amm/tests/testnet/faucet.json"
 
 BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; CYN=$'\033[36m'; RST=$'\033[0m'
 
-hr()  { printf '%s\n' "${DIM}────────────────────────────────────────────────────────────────────────${RST}"; }
-log() { printf '%s\n' "$*"; }
-sec() { hr; printf '%s\n' "${BOLD}${CYN}==> $*${RST}"; hr; }
-kv()  { printf '  %-22s %s\n' "$1" "$2"; }
+# Diagnostics go to STDERR so a function can return a VALUE on stdout without its
+# own progress output being captured with it -- `deploy_program` prints the header
+# id, and its caller discards that with `>/dev/null`. When these wrote to stdout
+# that redirect swallowed the whole transaction log too, hiding real failures.
+hr()  { printf '%s\n' "${DIM}────────────────────────────────────────────────────────────────────────${RST}" >&2; }
+log() { printf '%s\n' "$*" >&2; }
+sec() { hr; printf '%s\n' "${BOLD}${CYN}==> $*${RST}" >&2; hr; }
+kv()  { printf '  %-22s %s\n' "$1" "$2" >&2; }
 die() { printf '%s\n' "${RED}✗ $*${RST}" >&2; exit 1; }
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found on PATH: $1"; }
@@ -198,7 +239,7 @@ run_tx() {
   local tmp; tmp="$(mktemp)"
 
   set +e
-  "$@" 2>&1 | tee "$tmp"
+  "$@" 2>&1 | tee "$tmp" >&2
   local rc=${PIPESTATUS[0]}
   set -e
 
@@ -207,7 +248,14 @@ run_tx() {
     die "command exited with status $rc — $desc"
   fi
 
-  if grep -q "Transaction confirmed" "$tmp" && grep -q "included in a block" "$tmp"; then
+  # Two tools, two phrasings for the same fact, so accept either:
+  #   spel:   "✅ Transaction confirmed — included in a block."
+  #   wallet: "Transaction is included in block 27"
+  # Recognising only spel's is why the wallet-driven steps (deploy, funding) used to
+  # run `soft` and warn on every success -- which also meant a REAL failure there was
+  # indistinguishable from the usual noise.
+  if { grep -q "Transaction confirmed" "$tmp" && grep -q "included in a block" "$tmp"; } \
+     || grep -q "Transaction is included in block" "$tmp"; then
     log "${GRN}✅ CONFIRMED — included in a block: ${desc}${RST}"
     rm -f "$tmp"
     return 0
@@ -230,24 +278,62 @@ inspect() {
   spel --idl "$idl" inspect "$addr" --type "$type"
 }
 
-# Extract a 64-char hex program id from `spel -- program-id <bin>`.
-program_id() {
-  local bin="$1" out pid
-  out="$(spel -- program-id "$bin" 2>&1)" || { echo "$out" >&2; die "spel program-id failed for $bin"; }
-  pid="$(printf '%s' "$out" | grep -oiE '[0-9a-f]{64}' | head -n1 || true)"
-  [ -n "$pid" ] || { echo "$out" >&2; die "could not parse a 64-char program id from spel output for $bin"; }
-  printf '%s' "$pid"
+# How many 96 KiB segments a binary splits into. Mirrors the wallet's own chunking
+# (`bytecode.chunks(MAX_SEGMENT_DATA_LEN)`), so the --segments list length matches
+# exactly; a mismatch is rejected with SegmentCountMismatch.
+MAX_SEGMENT_DATA_LEN=98304
+segment_count() {
+  local bin="$1" size
+  size="$(wc -c < "$bin" | tr -d ' ')"
+  [ "$size" -gt 0 ] || die "program binary is empty: $bin"
+  printf '%s' $(( (size + MAX_SEGMENT_DATA_LEN - 1) / MAX_SEGMENT_DATA_LEN ))
 }
 
-# Compute the faucet's singleton mint-authority PDA (base58) for a faucet binary.
-# Delegates to the token_mint_authority `mint_authority` example, which decodes the
-# bin, computes its ImageID, and derives compute_mint_authority_pda(). Must be run
-# against the exact bin being deployed — the PDA is ImageID-dependent.
+# Deploy one program and echo its account id (the header account's).
+#
+# Since LEZ v0.2.5 deployment is ordinary program execution against the `program_loader`
+# pseudo-program: upload one write-once segment account per chunk, then create a header
+# pointing at the chain. The header's account id IS the program's address from then on --
+# there is nothing to derive from the binary any more.
+#
+# Segments are write-once and the flow is not resumable: if this fails partway, the
+# segments it did land stay claimed and re-running with the same labels fails.
+# FORCE_BOOTSTRAP=1 does NOT recover from that -- the wallet restores from a FIXED
+# mnemonic, so a re-restore derives the very same ids and lands on the very same claimed
+# accounts. Recovery is to reset the CHAIN (for a local sequencer: stop it, delete its
+# rocksdb-* store, restart so genesis re-applies) or to move the labels to fresh slots.
+#
+# Account arguments are `CliAccountMention`s, whose grammar is `Public/<id>` or `Private/<id>`
+# -- a BARE base58 id fails to parse as an id and is silently retried as a LABEL, so it dies
+# with "No account found for label `<id>`". Hence the `Public/` prefixes below. (`acct_id`
+# deliberately returns the bare form; spel's `--program` wants that one.)
+deploy_program() {
+  local name="$1" bin="$2" header n i segs=()
+  [ -f "$bin" ] || die "program binary not found: $bin (run 'make build-programs')"
+  header="$(acct_id "${name}-header")" || die "missing account label: ${name}-header"
+  n="$(segment_count "$bin")"
+  [ "$n" -le "$DEPLOY_SEGMENT_SLOTS" ] \
+    || die "$name needs $n segments but only $DEPLOY_SEGMENT_SLOTS labels are reserved; raise DEPLOY_SEGMENT_SLOTS"
+  for i in $(seq 1 "$n"); do
+    segs+=("Public/$(acct_id "${name}-seg-${i}")") || die "missing account label: ${name}-seg-${i}"
+  done
+  log "${DIM}  $bin -> $n segment(s), header ${header}${RST}"
+  run_tx strict "deploy $name program" -- wallet program-loader deploy \
+    --elf "$bin" --header "Public/$header" --segments "${segs[@]}" --immutable \
+    --payer "Public/$DEPLOY_PAYER"
+  printf '%s' "$header"
+}
+
+# Compute the faucet's singleton mint-authority PDA (base58) from the faucet program's
+# account id. Delegates to the token_mint_authority `mint_authority` example. Since
+# v0.2.5 PDAs derive from the deployed header's account id, not the binary's ImageID,
+# so this takes an account id and is stable across rebuilds — but changes if the
+# program is deployed to a different header.
 mint_authority_pda() {
-  local bin="$1" out pda
+  local program="$1" out pda
   out="$(RISC0_DEV_MODE=1 RISC0_SKIP_BUILD=1 cargo run -q -p token_mint_authority_program \
-           --example mint_authority -- "$bin" 2>&1)" \
-    || { echo "$out" >&2; die "mint_authority example failed for $bin"; }
+           --example mint_authority -- "$program" 2>&1)" \
+    || { echo "$out" >&2; die "mint_authority example failed for $program"; }
   # The example prints a line like:  base58: <account id>
   pda="$(printf '%s' "$out" | awk -F'base58:[[:space:]]*' 'NF>1 {print $2; exit}' \
            | grep -oE '[1-9A-HJ-NP-Za-km-z]{32,44}' | head -n1 || true)"
@@ -258,13 +344,13 @@ mint_authority_pda() {
 # Compute the faucet's per-(recipient, definition) mint-allowance PDA (base58).
 # Delegates to the token_mint_authority `faucet_allowance` example. This is the
 # rate-limit account FaucetMint claims/reads, and a required instruction input, so
-# it must be derived up front. ImageID-dependent — run against the deployed bin.
-#   mint_allowance_pda <faucet_bin> <recipient_base58> <definition_base58>
+# it must be derived up front. Derives from the faucet's deployed account id.
+#   mint_allowance_pda <faucet_program_id> <recipient_base58> <definition_base58>
 mint_allowance_pda() {
-  local bin="$1" recipient="$2" definition="$3" out pda
+  local program="$1" recipient="$2" definition="$3" out pda
   out="$(RISC0_DEV_MODE=1 RISC0_SKIP_BUILD=1 cargo run -q -p token_mint_authority_program \
-           --example faucet_allowance -- "$bin" "$recipient" "$definition" 2>&1)" \
-    || { echo "$out" >&2; die "faucet_allowance example failed for $bin"; }
+           --example faucet_allowance -- "$program" "$recipient" "$definition" 2>&1)" \
+    || { echo "$out" >&2; die "faucet_allowance example failed for $program"; }
   pda="$(printf '%s' "$out" | awk -F'base58:[[:space:]]*' 'NF>1 {print $2; exit}' \
            | grep -oE '[1-9A-HJ-NP-Za-km-z]{32,44}' | head -n1 || true)"
   [ -n "$pda" ] || { echo "$out" >&2; die "could not parse base58 mint-allowance PDA from example output"; }
@@ -436,25 +522,45 @@ kv "amm-owner"       "$AMM_OWNER"
 ###############################################################################
 # 2. Deploy programs
 ###############################################################################
-run_tx soft "deploy token program"                -- wallet deploy-program "$TOKEN_BIN"
-run_tx soft "deploy amm program"                  -- wallet deploy-program "$AMM_BIN"
-run_tx soft "deploy twap_oracle program"          -- wallet deploy-program "$TWAP_BIN"
-run_tx soft "deploy token-mint-authority program" -- wallet deploy-program "$MINT_AUTHORITY_BIN"
+# The payer for every deploy. Header and segment accounts are freshly claimed and hold
+# no balance, so unlike every other transaction here they cannot self-pay.
+#
+# The default is THIS wallet's root public account (the one with an empty chain index,
+# shown as `/ Public/...` by `wallet account list`) -- the account the wallet already
+# self-pays every other transaction in this script from. It is derived from
+# TEST_MNEMONIC, so it is fixed as long as that is, but it is NOT funded by default:
+# whatever chain this runs against must give it a genesis supply
+# (`genesis[].supply_account` in the sequencer config).
+#
+# Override with TEST_DEPLOY_PAYER when running against a different chain, or if
+# TEST_MNEMONIC is overridden -- a different mnemonic derives a different root account
+# and this constant no longer matches.
+DEPLOY_PAYER="${TEST_DEPLOY_PAYER:-EcduC1KZwTN7Z1LknQg8LUMtayiaJPthAsHCneX5MimP}"
+sec "Deploy payer"
+kv "payer" "$DEPLOY_PAYER"
+
+deploy_program token          "$TOKEN_BIN"          >/dev/null
+deploy_program amm            "$AMM_BIN"            >/dev/null
+deploy_program twap           "$TWAP_BIN"           >/dev/null
+deploy_program mint-authority "$MINT_AUTHORITY_BIN" >/dev/null
 
 ###############################################################################
-# 3. Derive program IDs
+# 3. Program IDs
 ###############################################################################
-sec "Program IDs (derived from the deployed binaries)"
-TOKEN_PID="$(program_id "$TOKEN_BIN")";          kv "token program id"          "$TOKEN_PID"
-AMM_PID="$(program_id "$AMM_BIN")";              kv "amm program id"            "$AMM_PID"
-TWAP_PID="$(program_id "$TWAP_BIN")";            kv "twap program id"           "$TWAP_PID"
-MINT_AUTHORITY_PID="$(program_id "$MINT_AUTHORITY_BIN")"; kv "mint-authority program id" "$MINT_AUTHORITY_PID"
+# A program is addressed by its deployed `ProgramHeader` account, so its id is just
+# the header account this script created and deployed into -- base58, like any other
+# account id, and stable across guest rebuilds.
+sec "Program IDs (the deployed header accounts)"
+TOKEN_PID="$(acct_id token-header)";                     kv "token program id"          "$TOKEN_PID"
+AMM_PID="$(acct_id amm-header)";                         kv "amm program id"            "$AMM_PID"
+TWAP_PID="$(acct_id twap-header)";                       kv "twap program id"           "$TWAP_PID"
+MINT_AUTHORITY_PID="$(acct_id mint-authority-header)";   kv "mint-authority program id" "$MINT_AUTHORITY_PID"
 
 # The faucet's singleton mint-authority PDA is derived from the DEPLOYED faucet
 # binary's ImageID. Every faucet token's definition sets its mint_authority to this
 # PDA, so afterwards only the faucet — via its program seed — can mint more. Derived
 # from the exact bin deployed above, so it stays correct across guest rebuilds.
-MINT_AUTHORITY_PDA="$(mint_authority_pda "$MINT_AUTHORITY_BIN")"
+MINT_AUTHORITY_PDA="$(mint_authority_pda "$MINT_AUTHORITY_PID")"
 kv "faucet mint-authority PDA" "$MINT_AUTHORITY_PDA"
 TOKEN_A_MINT_AUTH="$MINT_AUTHORITY_PDA"; TOKEN_B_MINT_AUTH="$MINT_AUTHORITY_PDA"
 TOKEN_C_MINT_AUTH="$MINT_AUTHORITY_PDA"; TOKEN_D_MINT_AUTH="$MINT_AUTHORITY_PDA"
@@ -462,21 +568,21 @@ TOKEN_C_MINT_AUTH="$MINT_AUTHORITY_PDA"; TOKEN_D_MINT_AUTH="$MINT_AUTHORITY_PDA"
 # The faucet-swap test's FaucetMint needs holder2's per-(recipient, token A) allowance
 # PDA — the rate-limit account it claims on first mint. Derived here (recipient=holder2,
 # definition=token A) so the test can pass it straight to spel without touching cargo.
-HOLDER2_ALLOWANCE_PDA="$(mint_allowance_pda "$MINT_AUTHORITY_BIN" "$HOLDER2" "$TOKEN_A_DEF")"
+HOLDER2_ALLOWANCE_PDA="$(mint_allowance_pda "$MINT_AUTHORITY_PID" "$HOLDER2" "$TOKEN_A_DEF")"
 kv "holder2 allowance PDA" "$HOLDER2_ALLOWANCE_PDA"
 
 ###############################################################################
 # 4. Create token definitions (mint supply to the holding accounts)
 ###############################################################################
 run_tx strict "create fungible definition: $TOKEN_A_NAME" -- \
-  spel --idl "$TOKEN_IDL" --program "$TOKEN_BIN" -- new-fungible-definition \
+  spel --idl "$TOKEN_IDL" --program "$TOKEN_PID" --fee-payer "$DEPLOY_PAYER" -- new-fungible-definition \
     --name "$TOKEN_A_NAME" --total-supply "$TOKEN_A_SUPPLY" \
     --definition-target-account "$TOKEN_A_DEF" \
     --holding-target-account "$TOKEN_A_HOLDING" \
     --mint-authority "$TOKEN_A_MINT_AUTH"
 
 run_tx strict "create fungible definition: $TOKEN_B_NAME" -- \
-  spel --idl "$TOKEN_IDL" --program "$TOKEN_BIN" -- new-fungible-definition \
+  spel --idl "$TOKEN_IDL" --program "$TOKEN_PID" --fee-payer "$DEPLOY_PAYER" -- new-fungible-definition \
     --name "$TOKEN_B_NAME" --total-supply "$TOKEN_B_SUPPLY" \
     --definition-target-account "$TOKEN_B_DEF" \
     --holding-target-account "$TOKEN_B_HOLDING" \
@@ -484,7 +590,7 @@ run_tx strict "create fungible definition: $TOKEN_B_NAME" -- \
 
 # Token C has no seeded pool — the create-pool UI test creates the A/C pool.
 run_tx strict "create fungible definition: $TOKEN_C_NAME" -- \
-  spel --idl "$TOKEN_IDL" --program "$TOKEN_BIN" -- new-fungible-definition \
+  spel --idl "$TOKEN_IDL" --program "$TOKEN_PID" --fee-payer "$DEPLOY_PAYER" -- new-fungible-definition \
     --name "$TOKEN_C_NAME" --total-supply "$TOKEN_C_SUPPLY" \
     --definition-target-account "$TOKEN_C_DEF" \
     --holding-target-account "$TOKEN_C_HOLDING" \
@@ -494,7 +600,7 @@ run_tx strict "create fungible definition: $TOKEN_C_NAME" -- \
 # test pastes its id to add it as a custom token. Its definition must exist on-chain
 # so the app can resolve it.
 run_tx strict "create fungible definition: $TOKEN_D_NAME" -- \
-  spel --idl "$TOKEN_IDL" --program "$TOKEN_BIN" -- new-fungible-definition \
+  spel --idl "$TOKEN_IDL" --program "$TOKEN_PID" --fee-payer "$DEPLOY_PAYER" -- new-fungible-definition \
     --name "$TOKEN_D_NAME" --total-supply "$TOKEN_D_SUPPLY" \
     --definition-target-account "$TOKEN_D_DEF" \
     --holding-target-account "$TOKEN_D_HOLDING" \
@@ -547,7 +653,7 @@ kv "current_tick_account" "$TICK"
 # 7. Initialize the AMM
 ###############################################################################
 run_tx strict "initialize AMM config" -- \
-  spel --idl "$AMM_IDL" --program "$AMM_BIN" -- initialize \
+  spel --idl "$AMM_IDL" --program "$AMM_PID" --fee-payer "$DEPLOY_PAYER" -- initialize \
     --owner "$AMM_OWNER" \
     --config "$CONFIG" \
     --nonce "$AMM_NONCE" \
@@ -561,7 +667,7 @@ run_tx strict "initialize AMM config" -- \
 # 8. Create the pool (seed initial liquidity)
 ###############################################################################
 run_tx strict "create pool + seed liquidity" -- \
-  spel --idl "$AMM_IDL" --program "$AMM_BIN" -- new-definition \
+  spel --idl "$AMM_IDL" --program "$AMM_PID" --fee-payer "$DEPLOY_PAYER" -- new-definition \
     --config "$CONFIG" \
     --pool "$POOL" \
     --vault-a "$VAULT_A" \
@@ -583,7 +689,66 @@ run_tx strict "create pool + seed liquidity" -- \
 inspect "$AMM_IDL" "$POOL" "PoolDefinition"
 
 ###############################################################################
-# 10. Write the UI token config from the deterministic accounts
+# 10. Fund the UI-signing accounts so they can pay transaction fees
+###############################################################################
+# Since LEZ v0.2.5 every public transaction reserves a fee, and the UI submits with
+# an EMPTY payer, which wallet-ffi reads as "self-pay from the first signing
+# account". For a swap that is `user_input_holding` (the only signer -- see
+# modules/amm/ffi/src/api/swap.rs); for add/remove liquidity it is `user_a`. Those
+# are the holding accounts below, and they are created with a zero native balance,
+# so without this step the sequencer refuses the transaction outright
+# ("Incorrect fee" / PayerCannotFund) -- before execution, so nothing reaches a
+# block and the UI just sees a failed submit.
+#
+# This MUST run after section 8: the creating instructions (`new_fungible_definition`,
+# the pool's `new_definition`) assert their targets equal `Account::default()`, and a
+# balance is enough to break that -- permanently, since signing the reverted tx still
+# burns the account's nonce.
+#
+# `holder2-a-holding` is deliberately NOT funded: it does not exist yet. faucet-swap.mjs
+# creates it with the token program's `initialize_account`, which asserts
+# `Account::default()` too. It needs funding between that step and its first swap.
+FUND_AMOUNT="${TEST_FUND_AMOUNT:-1000000000000}"
+FUND_ACCOUNTS=(token-a-holding token-b-holding token-c-holding token-d-holding lp-holding holder2)
+
+# Idempotent: re-running tops up only what has fallen below the target, so repeated
+# setups neither drain the payer nor pile up balance.
+# Prints the account's native balance, or nothing at all when the account does not
+# exist on chain yet (which is the normal state for an account nothing has funded).
+# Careful with `set -euo pipefail` here: a `grep` that matches nothing exits 1, which
+# pipefail promotes to the whole pipeline and `set -e` turns into an aborted run. `sed`
+# alone always exits 0, and the read itself is tolerated with `|| true`, so a missing
+# account yields an empty string rather than killing the script.
+native_balance() {
+  local out
+  out="$(wallet account get -a "Public/$1" 2>/dev/null || true)"
+  printf '%s' "$out" | sed -n 's/.*"balance":\([0-9][0-9]*\).*/\1/p' | head -1
+}
+
+fund_account() {
+  local label="$1" id bal
+  id="$(acct_id "$label")" || die "missing account label: $label"
+  bal="$(native_balance "$id")"
+  bal="${bal:-0}"
+  if [ "$bal" -ge "$FUND_AMOUNT" ] 2>/dev/null; then
+    kv "$label" "$id (already funded: $bal)"
+    return 0
+  fi
+  run_tx strict "fund $label for fees" -- wallet auth-transfer send \
+    --from "Public/$DEPLOY_PAYER" --to "Public/$id" --amount "$FUND_AMOUNT"
+  kv "$label" "$id (funded $FUND_AMOUNT)"
+}
+
+sec "Fund UI-signing accounts (native balance for fees)"
+kv "from payer" "$DEPLOY_PAYER"
+kv "amount each" "$FUND_AMOUNT"
+for _acct in "${FUND_ACCOUNTS[@]}"; do
+  fund_account "$_acct"
+done
+unset _acct
+
+###############################################################################
+# 11. Write the UI token config from the deterministic accounts
 ###############################################################################
 # NOTE: token D is intentionally NOT written here — it is the "custom" token the
 # custom-token.mjs test adds by id, so it must be absent from the known list.
@@ -616,7 +781,7 @@ JSON
 kv "wrote" "$TOKENS_CONFIG_OUT"
 
 ###############################################################################
-# 11. Write the UI known-pools config from the seeded pool(s)
+# 12. Write the UI known-pools config from the seeded pool(s)
 ###############################################################################
 sec "Write UI pools config -> $POOLS_CONFIG_OUT"
 # One row per seeded pool: "SYMBOL_A SYMBOL_B POOL_ID DEF_A DEF_B". The swap fee is
@@ -690,7 +855,7 @@ JSON
 kv "wrote" "$REGISTRY_CONFIG_OUT"
 
 ###############################################################################
-# 12. Initialize the isolated custom-token store (empty)
+# 13. Initialize the isolated custom-token store (empty)
 ###############################################################################
 sec "Write custom-token store -> $CUSTOM_TOKEN_CONFIG_OUT"
 # Initialize the isolated custom-token store empty so a test run starts with no
@@ -699,28 +864,31 @@ printf '%s\n' "[]" > "$CUSTOM_TOKEN_CONFIG_OUT"
 kv "wrote" "$CUSTOM_TOKEN_CONFIG_OUT (empty)"
 
 ###############################################################################
-# 13. Write the faucet manifest for the faucet-swap UI test
+# 14. Write the faucet manifest for the faucet-swap UI test
 ###############################################################################
 sec "Write faucet manifest -> $FAUCET_MANIFEST_OUT"
 # Everything apps/amm/tests/faucet-swap.mjs needs. The six faucet accounts are the
 # exact, ordered FaucetMint inputs (recipient, mint_allowance, user_holding,
-# token_definition, mint_authority, clock). tokenBin/tokenIdl let the test first
+# token_definition, mint_authority, clock). tokenProgramId/tokenIdl let the test first
 # `initialize_account` holder2's token A holding (the faucet only mints into an
 # EXISTING holding — it doesn't sign user_holding, so it can't create a fresh one),
-# then FaucetMint into it. Paths are repo-relative (resolved against the repo root).
+# then FaucetMint into it. Since v0.2.5 spel names a program by its deployed header
+# account id, so the manifest carries ids rather than binary paths; IDL paths stay
+# repo-relative (resolved against the repo root).
 cat > "$FAUCET_MANIFEST_OUT" <<JSON
 {
-  "tokenBin": "$TOKEN_BIN",
+  "tokenProgramId": "$TOKEN_PID",
   "tokenIdl": "$TOKEN_IDL",
-  "faucetBin": "$MINT_AUTHORITY_BIN",
-  "faucetIdl": "$MINT_AUTHORITY_IDL",
   "faucetProgramId": "$MINT_AUTHORITY_PID",
+  "faucetIdl": "$MINT_AUTHORITY_IDL",
   "recipient": "$HOLDER2",
   "mintAllowance": "$HOLDER2_ALLOWANCE_PDA",
   "userHolding": "$HOLDER2_A_HOLDING",
   "tokenDefinition": "$TOKEN_A_DEF",
   "mintAuthority": "$MINT_AUTHORITY_PDA",
   "clock": "$CLOCK_ACCOUNT",
+  "feePayer": "$DEPLOY_PAYER",
+  "fundAmount": "$FUND_AMOUNT",
   "tokenASymbol": "$TOKEN_A_SYMBOL",
   "tokenBSymbol": "$TOKEN_B_SYMBOL"
 }
