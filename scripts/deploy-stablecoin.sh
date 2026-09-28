@@ -2,9 +2,9 @@
 #
 # deploy-stablecoin.sh
 # --------------------
-# Deploy the stablecoin program and bootstrap it — market price oracle account
-# plus `initialize_program` — against whatever sequencer the active `wallet`
-# config points at. Network-agnostic: the same script serves a local dev
+# Deploy the stablecoin program and bootstrap it — collateral token, market price
+# oracle account and `initialize_program` — against whatever sequencer the active
+# `wallet` config points at. Network-agnostic: the same script serves a local dev
 # sequencer, the AMM test environment (setup-amm-testnet.sh calls it), and
 # testnet.
 #
@@ -26,6 +26,14 @@
 # with the TWAP oracle's `publish_price`: that writes Q64.64 (1.0 = 2^64), which
 # the stablecoin currently misreads as ~1.8e-8.
 #
+# COLLATERAL: with COLLATERAL_HOLDING set, the script creates the collateral token
+# at COLLATERAL_DEFINITION (deploying the token program first). If that fails
+# because the token already exists, it is reused: the script confirms the
+# definition is on-chain before skipping, so an unrelated failure (unreachable
+# sequencer, unfunded account, confirmation timeout) still stops the run. Without
+# COLLATERAL_HOLDING it uses an existing token — e.g. a canonical testnet one —
+# and never deploys the token program.
+#
 # Program ids and every PDA are DERIVED at runtime from the binaries, so this
 # stays correct across guest rebuilds (new ImageID => new program id => new PDAs).
 #
@@ -33,7 +41,6 @@
 #   - `wallet` and `spel` on PATH (from the SPEL toolchain), `cargo`
 #   - the wallet (LEE_WALLET_HOME_DIR) configured, funded, and holding the admin
 #     and oracle-source accounts
-#   - the token program deployed and a fungible collateral token definition
 #   - guest binaries built (`make build-programs`) and IDLs present (`make idl`)
 #
 # Required inputs (each accepts a base58 account id or a wallet account label):
@@ -41,13 +48,24 @@
 #   STABLECOIN_ORACLE_SOURCE    signs create_oracle_price_account; owns the price
 #   COLLATERAL_DEFINITION       the fungible collateral token definition
 #
+# Optional:
+#   COLLATERAL_HOLDING          create the collateral token, minting its supply
+#                               here. Both it and COLLATERAL_DEFINITION must then
+#                               be wallet accounts: the token program has both sign.
+#
 # Usage (from anywhere in the repo):
+#   # create (or reuse) a collateral token held by wallet accounts:
+#   STABLECOIN_ADMIN=admin STABLECOIN_ORACLE_SOURCE=oracle-source \
+#     COLLATERAL_DEFINITION=collateral-def COLLATERAL_HOLDING=collateral-holding \
+#     scripts/deploy-stablecoin.sh
+#   # use an existing collateral token:
 #   STABLECOIN_ADMIN=admin STABLECOIN_ORACLE_SOURCE=oracle-source \
 #     COLLATERAL_DEFINITION=<base58> scripts/deploy-stablecoin.sh
 #
 # Everything else has a default; see CONFIG below. Re-running against a sequencer
 # where the stablecoin is already initialized fails at the oracle / initialize
 # step (those PDAs already exist) — rebuild the binary or use a fresh sequencer.
+# The collateral step alone is safe to repeat.
 #
 set -euo pipefail
 
@@ -71,12 +89,23 @@ guest_bin() {
 
 STABLECOIN_BIN="${STABLECOIN_BIN:-$(guest_bin stablecoin)}"
 TWAP_BIN="${TWAP_BIN:-$(guest_bin twap_oracle)}"
+TOKEN_BIN="${TOKEN_BIN:-$(guest_bin token)}"
 STABLECOIN_IDL="${STABLECOIN_IDL:-artifacts/stablecoin-idl.json}"
 TWAP_IDL="${TWAP_IDL:-artifacts/twap_oracle-idl.json}"
+TOKEN_IDL="${TOKEN_IDL:-artifacts/token-idl.json}"
 
 # The twap_oracle program must be deployed before its oracle price account can be
 # created. Callers that already deployed it (setup-amm-testnet.sh) set this to 1.
 SKIP_TWAP_DEPLOY="${SKIP_TWAP_DEPLOY:-0}"
+# Only consulted when the collateral is being created (COLLATERAL_HOLDING set).
+SKIP_TOKEN_DEPLOY="${SKIP_TOKEN_DEPLOY:-0}"
+
+# --- collateral token (created only when COLLATERAL_HOLDING is set) ---
+COLLATERAL_HOLDING="${COLLATERAL_HOLDING:-}"
+COLLATERAL_NAME="${COLLATERAL_NAME:-COLLATERAL}"
+COLLATERAL_SUPPLY="${COLLATERAL_SUPPLY:-1000000000000000000000}"
+# Who may mint more collateral later. Defaults to the admin when unset.
+COLLATERAL_MINT_AUTHORITY="${COLLATERAL_MINT_AUTHORITY:-}"
 
 # Canonical LEZ system clock.
 CLOCK_ACCOUNT="${CLOCK_ACCOUNT:-4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU}"
@@ -163,6 +192,39 @@ run_tx() {
   die "NOT CONFIRMED — expected '✅ Transaction confirmed — included in a block.' for: $desc"
 }
 
+# Like run_tx, but reports failure instead of dying: 0 if the sequencer
+# confirmed the transaction, 1 otherwise. For steps whose failure is recoverable.
+#   try_tx "<description>" -- <cmd> [args...]
+try_tx() {
+  local desc="$1"; shift
+  [ "$1" = "--" ] && shift
+
+  sec "TX: $desc"
+  log "${DIM}\$ $*${RST}"
+  local tmp rc; tmp="$(mktemp)"
+
+  set +e
+  "$@" 2>&1 | tee "$tmp"
+  rc=${PIPESTATUS[0]}
+  set -e
+
+  if [ "$rc" -eq 0 ] && grep -q "Transaction confirmed" "$tmp" && grep -q "included in a block" "$tmp"; then
+    rm -f "$tmp"
+    log "${GRN}✅ CONFIRMED — included in a block: ${desc}${RST}"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+# Whether a token definition is initialized on-chain. Relies on `spel inspect`
+# failing for an account that holds no TokenDefinition; if a spel version ever
+# exits 0 there instead, initialize_program still rejects a missing collateral
+# ("Collateral definition account must be initialized"), just one step later.
+token_definition_exists() {
+  spel --idl "$TOKEN_IDL" inspect "$1" --type TokenDefinition >/dev/null 2>&1
+}
+
 inspect() {
   local idl="$1" addr="$2" type="$3"
   sec "INSPECT: $type @ $addr"
@@ -207,11 +269,13 @@ require_var STABLECOIN_ADMIN
 require_var STABLECOIN_ORACLE_SOURCE
 require_var COLLATERAL_DEFINITION
 require_file "$STABLECOIN_BIN"; require_file "$TWAP_BIN"
-require_file "$STABLECOIN_IDL"; require_file "$TWAP_IDL"
+require_file "$STABLECOIN_IDL"; require_file "$TWAP_IDL"; require_file "$TOKEN_IDL"
+if [ -n "$COLLATERAL_HOLDING" ]; then require_file "$TOKEN_BIN"; fi
 kv "repo root"       "$REPO_ROOT"
 kv "wallet home"     "${LEE_WALLET_HOME_DIR:-<wallet default>}"
 kv "stablecoin bin"  "$STABLECOIN_BIN"
 kv "twap_oracle bin" "$TWAP_BIN"
+if [ -n "$COLLATERAL_HOLDING" ]; then kv "token bin" "$TOKEN_BIN"; fi
 
 ###############################################################################
 # 1. Resolve accounts
@@ -227,6 +291,16 @@ if [ -n "$STABLECOIN_FREEZE_AUTHORITY" ]; then
   FREEZE_AUTHORITY="$(resolve_account "$STABLECOIN_FREEZE_AUTHORITY")" \
     || die "cannot resolve STABLECOIN_FREEZE_AUTHORITY=$STABLECOIN_FREEZE_AUTHORITY"
 fi
+COLLATERAL_HOLDING_ID=""; COLLATERAL_MINT_AUTHORITY_ID=""
+if [ -n "$COLLATERAL_HOLDING" ]; then
+  COLLATERAL_HOLDING_ID="$(resolve_account "$COLLATERAL_HOLDING")" \
+    || die "cannot resolve COLLATERAL_HOLDING=$COLLATERAL_HOLDING"
+  COLLATERAL_MINT_AUTHORITY_ID="$ADMIN"
+  if [ -n "$COLLATERAL_MINT_AUTHORITY" ]; then
+    COLLATERAL_MINT_AUTHORITY_ID="$(resolve_account "$COLLATERAL_MINT_AUTHORITY")" \
+      || die "cannot resolve COLLATERAL_MINT_AUTHORITY=$COLLATERAL_MINT_AUTHORITY"
+  fi
+fi
 for v in ADMIN ORACLE_SOURCE COLLATERAL_DEF FREEZE_AUTHORITY; do
   [ -n "${!v}" ] || die "failed to resolve account id for $v"
 done
@@ -234,17 +308,50 @@ kv "admin"                 "$ADMIN"
 kv "freeze authority"      "$FREEZE_AUTHORITY"
 kv "oracle source"         "$ORACLE_SOURCE"
 kv "collateral definition" "$COLLATERAL_DEF"
+if [ -n "$COLLATERAL_HOLDING_ID" ]; then
+  kv "collateral holding"        "$COLLATERAL_HOLDING_ID"
+  kv "collateral mint authority" "$COLLATERAL_MINT_AUTHORITY_ID"
+fi
 
 ###############################################################################
 # 2. Deploy programs
 ###############################################################################
+# The token program is only needed here to create the collateral; an existing
+# collateral token already lives under its own token program.
+if [ -n "$COLLATERAL_HOLDING_ID" ] && [ "$SKIP_TOKEN_DEPLOY" != "1" ]; then
+  run_tx soft "deploy token program" -- wallet deploy-program "$TOKEN_BIN"
+fi
 if [ "$SKIP_TWAP_DEPLOY" != "1" ]; then
   run_tx soft "deploy twap_oracle program" -- wallet deploy-program "$TWAP_BIN"
 fi
 run_tx soft "deploy stablecoin program" -- wallet deploy-program "$STABLECOIN_BIN"
 
 ###############################################################################
-# 3. Derive program ids and PDAs
+# 3. Collateral token — create it, or confirm the existing one
+###############################################################################
+if [ -n "$COLLATERAL_HOLDING_ID" ]; then
+  if try_tx "create collateral token: $COLLATERAL_NAME" -- \
+       spel --idl "$TOKEN_IDL" --program "$TOKEN_BIN" -- new-fungible-definition \
+         --name "$COLLATERAL_NAME" --total-supply "$COLLATERAL_SUPPLY" \
+         --definition-target-account "$COLLATERAL_DEF" \
+         --holding-target-account "$COLLATERAL_HOLDING_ID" \
+         --mint-authority "$COLLATERAL_MINT_AUTHORITY_ID"; then
+    :
+  elif token_definition_exists "$COLLATERAL_DEF"; then
+    log "${YEL}⚠ collateral token already exists at $COLLATERAL_DEF — reusing it${RST}"
+  else
+    die "could not create the collateral token, and none exists at $COLLATERAL_DEF (see the output above)"
+  fi
+else
+  sec "Collateral token (existing)"
+  token_definition_exists "$COLLATERAL_DEF" \
+    || die "no token definition at COLLATERAL_DEFINITION=$COLLATERAL_DEF — set COLLATERAL_HOLDING (a wallet account) to create one"
+  kv "found" "$COLLATERAL_DEF"
+fi
+inspect "$TOKEN_IDL" "$COLLATERAL_DEF" "TokenDefinition"
+
+###############################################################################
+# 4. Derive program ids and PDAs
 ###############################################################################
 sec "Program ids (derived from the binaries)"
 STABLECOIN_PID="$(program_id "$STABLECOIN_BIN")"; kv "stablecoin program id"  "$STABLECOIN_PID"
@@ -274,7 +381,7 @@ for v in PROTOCOL_PARAMETERS STABILITY_FEE_ACCUMULATOR REDEMPTION_PRICE_STATE \
 done
 
 ###############################################################################
-# 4. Create the market price oracle account — BEFORE initialize_program, which
+# 5. Create the market price oracle account — BEFORE initialize_program, which
 #    requires it to exist and to quote the stablecoin definition derived above.
 ###############################################################################
 run_tx strict "create market price oracle account" -- \
@@ -290,7 +397,7 @@ run_tx strict "create market price oracle account" -- \
 inspect "$TWAP_IDL" "$MARKET_PRICE_ORACLE" "OraclePriceAccount"
 
 ###############################################################################
-# 5. Initialize the stablecoin program
+# 6. Initialize the stablecoin program
 ###############################################################################
 run_tx strict "initialize stablecoin program" -- \
   spel --idl "$STABLECOIN_IDL" --program "$STABLECOIN_BIN" -- initialize-program \
@@ -314,7 +421,7 @@ run_tx strict "initialize stablecoin program" -- \
     --stablecoin-name "$STABLECOIN_NAME"
 
 ###############################################################################
-# 6. Verify
+# 7. Verify
 ###############################################################################
 inspect "$STABLECOIN_IDL" "$PROTOCOL_PARAMETERS"       "ProtocolParameters"
 inspect "$STABLECOIN_IDL" "$STABILITY_FEE_ACCUMULATOR" "StabilityFeeAccumulator"
@@ -322,7 +429,7 @@ inspect "$STABLECOIN_IDL" "$REDEMPTION_PRICE_STATE"    "RedemptionPriceState"
 inspect "$STABLECOIN_IDL" "$STABLECOIN_DEFINITION"     "TokenDefinition"
 
 ###############################################################################
-# 7. Write the deployment manifest
+# 8. Write the deployment manifest
 ###############################################################################
 sec "Write deployment manifest -> $STABLECOIN_MANIFEST_OUT"
 mkdir -p "$(dirname "$STABLECOIN_MANIFEST_OUT")"
@@ -342,6 +449,7 @@ cat > "$STABLECOIN_MANIFEST_OUT" <<JSON
   "stablecoinDefinition": "$STABLECOIN_DEFINITION",
   "stablecoinMasterHolding": "$STABLECOIN_MASTER_HOLDING",
   "collateralDefinition": "$COLLATERAL_DEF",
+  "collateralHolding": "$COLLATERAL_HOLDING_ID",
   "marketPriceOracle": "$MARKET_PRICE_ORACLE",
   "marketPriceOracleSource": "$ORACLE_SOURCE",
   "marketPriceOracleWindowDuration": $STABLECOIN_ORACLE_WINDOW_DURATION,

@@ -548,15 +548,6 @@ run_tx strict "create fungible definition: $TOKEN_D_NAME" -- \
     --holding-target-account "$TOKEN_D_HOLDING" \
     --mint-authority "$TOKEN_D_MINT_AUTH"
 
-if [ "$DEPLOY_STABLECOIN" = "1" ]; then
-  run_tx strict "create fungible definition: $COLLATERAL_NAME" -- \
-    spel --idl "$TOKEN_IDL" --program "$TOKEN_BIN" -- new-fungible-definition \
-      --name "$COLLATERAL_NAME" --total-supply "$COLLATERAL_SUPPLY" \
-      --definition-target-account "$COLLATERAL_DEF" \
-      --holding-target-account "$COLLATERAL_HOLDING" \
-      --mint-authority "$MINT_AUTHORITY_PDA"
-fi
-
 ###############################################################################
 # 5. Verify token definitions & holdings
 ###############################################################################
@@ -568,10 +559,6 @@ inspect "$TOKEN_IDL" "$TOKEN_C_DEF"     "TokenDefinition"
 inspect "$TOKEN_IDL" "$TOKEN_C_HOLDING" "TokenHolding"
 inspect "$TOKEN_IDL" "$TOKEN_D_DEF"     "TokenDefinition"
 inspect "$TOKEN_IDL" "$TOKEN_D_HOLDING" "TokenHolding"
-if [ "$DEPLOY_STABLECOIN" = "1" ]; then
-  inspect "$TOKEN_IDL" "$COLLATERAL_DEF"     "TokenDefinition"
-  inspect "$TOKEN_IDL" "$COLLATERAL_HOLDING" "TokenHolding"
-fi
 
 ###############################################################################
 # 6. Derive AMM PDAs from the program ids + token pair
@@ -792,12 +779,21 @@ kv "wrote" "$FAUCET_MANIFEST_OUT"
 # 14. Deploy and initialize the stablecoin
 ###############################################################################
 # Delegates to scripts/deploy-stablecoin.sh against the same isolated wallet
-# (LEE_WALLET_HOME_DIR is exported above). The twap_oracle program is already
-# deployed in step 2, so it is skipped there.
+# (LEE_WALLET_HOME_DIR is exported above). It creates the collateral token (or
+# reuses it on a re-run) with the faucet as mint authority, like the other test
+# tokens. The token and twap_oracle programs are already deployed in step 2, so
+# it skips both.
 if [ "$DEPLOY_STABLECOIN" = "1" ]; then
   STABLECOIN_ADMIN="$STABLECOIN_ADMIN_ID" \
   STABLECOIN_ORACLE_SOURCE="$STABLECOIN_ORACLE_SOURCE_ID" \
   COLLATERAL_DEFINITION="$COLLATERAL_DEF" \
+  COLLATERAL_HOLDING="$COLLATERAL_HOLDING" \
+  COLLATERAL_NAME="$COLLATERAL_NAME" \
+  COLLATERAL_SUPPLY="$COLLATERAL_SUPPLY" \
+  COLLATERAL_MINT_AUTHORITY="$MINT_AUTHORITY_PDA" \
+  TOKEN_BIN="$TOKEN_BIN" \
+  TOKEN_IDL="$TOKEN_IDL" \
+  SKIP_TOKEN_DEPLOY=1 \
   STABLECOIN_BIN="$STABLECOIN_BIN" \
   STABLECOIN_IDL="$STABLECOIN_IDL" \
   TWAP_BIN="$TWAP_BIN" \
