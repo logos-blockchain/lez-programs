@@ -1,7 +1,4 @@
-use lee_core::{
-    account::{Account, AccountId, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, Data, Nonce};
 use serde_json::{json, Value};
 use token_core::{
     Instruction, MetadataStandard, NewTokenDefinition, TokenDefinition, TokenHolding, TokenMetadata,
@@ -18,11 +15,11 @@ use super::{
     PrintNftPlanRequest, SetAuthorityPlanRequest, SetAuthorityWithAuthorityPlanRequest,
     TransferPlanRequest,
 };
-use crate::account::{account_id_hex, account_read, program_id_bytes};
+use crate::account::{account_id_hex, account_read};
 
-const TOKEN_PROGRAM_ID: ProgramId = [0x11_u32; 8];
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([0x11_u8; 32]);
 
-fn account(owner: ProgramId, data: Data) -> Account {
+fn account(owner: AccountId, data: Data) -> Account {
     Account {
         program_owner: owner,
         balance: 0,
@@ -40,7 +37,7 @@ fn id_hex(seed: u8) -> String {
 }
 
 fn token_program_id_hex() -> String {
-    hex::encode(program_id_bytes(TOKEN_PROGRAM_ID))
+    account_id_hex(TOKEN_PROGRAM_ID)
 }
 
 fn ok<T, E: core::fmt::Display>(result: Result<T, E>) -> T {
@@ -58,9 +55,9 @@ fn assert_error(result: super::TokenResult, expected: &str) {
 }
 
 fn decode_instruction(value: &Value) -> Result<Instruction, String> {
-    let words: Vec<u32> =
+    let bytes: Vec<u8> =
         serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
-    risc0_zkvm::serde::from_slice::<Instruction, u32>(&words).map_err(|error| error.to_string())
+    borsh::from_slice::<Instruction>(&bytes).map_err(|error| error.to_string())
 }
 
 fn assert_plan<const N: usize>(
@@ -354,7 +351,7 @@ fn decode_rejects_wrong_program_owner_failed_reads_and_bad_identifiers() {
             definition: account_read(
                 definition_id(22),
                 &account(
-                    [0x22_u32; 8],
+                    AccountId::new([0x22_u8; 32]),
                     Data::from(&TokenDefinition::Fungible {
                         name: String::from("Wrong"),
                         total_supply: 1,

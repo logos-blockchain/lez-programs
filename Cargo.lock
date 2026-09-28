@@ -741,7 +741,6 @@ dependencies = [
  "borsh",
  "lee_core",
  "risc0-zkvm",
- "serde",
 ]
 
 [[package]]
@@ -7107,7 +7106,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-core"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=fb55f137eb7014025192d9c2932e0d5e1e3ddfe7#fb55f137eb7014025192d9c2932e0d5e1e3ddfe7"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
 dependencies = [
  "base58",
  "borsh",
@@ -7124,7 +7123,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-macros"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=fb55f137eb7014025192d9c2932e0d5e1e3ddfe7#fb55f137eb7014025192d9c2932e0d5e1e3ddfe7"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7213,7 +7212,6 @@ dependencies = [
  "risc0-zkvm",
  "ruint",
  "serde",
- "serde_json",
  "spel-framework-macros",
  "twap_oracle_core",
 ]
@@ -7574,6 +7572,7 @@ dependencies = [
 name = "token_ffi"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "cbindgen",
  "hex",
  "lee_core",

@@ -1,8 +1,5 @@
 use amm_core::{compute_config_pda, AmmConfig};
-use lee_core::{
-    account::{Account, AccountId},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId};
 use serde_json::{json, Value};
 
 use super::{ConfigAccountRequest, ConfigIdRequest};
@@ -56,7 +53,7 @@ pub(super) fn config_account(request: ConfigAccountRequest) -> Result<Value, Str
 /// inputs — the caller-supplied account's id IS the namespace root. Program ownership and a
 /// non-default, parseable account are still enforced.
 pub(super) fn load_config(
-    amm_program: ProgramId,
+    amm_program: AccountId,
     read: &AccountRead,
 ) -> Result<(AccountId, AmmConfig), String> {
     let (id, account) = decode_account(read)?;

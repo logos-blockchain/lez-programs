@@ -8,11 +8,23 @@ use spel_framework_macros::account_type;
 
 /// TWAP Oracle Program Instruction.
 ///
-/// Borsh is the instruction wire format LEZ reads; serde stays for tooling and IDL.
+/// Borsh is the instruction wire format LEZ reads, and deliberately the *only* encoding
+/// this type derives.
+///
+/// `#[lez_program]` generates its guest-side counterpart with serde derives alongside
+/// Borsh, "for IDL/tooling". Nothing uses them: `idl-gen` parses the guest source, the
+/// framework's runtime IDL path deserializes its own types, and `spel-cli` encodes Borsh
+/// straight from the IDL. Carrying them here would only mean a type that accepts either
+/// encoder, which is how the v0.2.5 port silently rotted every instruction-encoding site in
+/// `modules/*/ffi` -- `risc0_zkvm::serde::to_vec` kept compiling and kept producing bytes
+/// the runtime rejects. Without a serde impl that is a compile error instead.
+///
+/// Account-data types below keep serde; the FFI renders them as JSON. This applies to the
+/// instruction enum alone.
 ///
 /// Borsh encodes the variant as a leading tag byte, so variants are append-only:
 /// inserting one shifts the encoding of every variant after it.
-#[derive(Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum Instruction {
     /// Creates and initialises a price observations account for a price source and time window.
     ///

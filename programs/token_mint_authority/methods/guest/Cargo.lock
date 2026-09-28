@@ -1891,7 +1891,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "spel-framework"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=fb55f137eb7014025192d9c2932e0d5e1e3ddfe7#fb55f137eb7014025192d9c2932e0d5e1e3ddfe7"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
 dependencies = [
  "borsh",
  "lee_core",
@@ -1903,7 +1903,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-core"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=fb55f137eb7014025192d9c2932e0d5e1e3ddfe7#fb55f137eb7014025192d9c2932e0d5e1e3ddfe7"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
 dependencies = [
  "base58",
  "borsh",
@@ -1920,7 +1920,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-macros"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=fb55f137eb7014025192d9c2932e0d5e1e3ddfe7#fb55f137eb7014025192d9c2932e0d5e1e3ddfe7"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
 dependencies = [
  "proc-macro2",
  "quote",

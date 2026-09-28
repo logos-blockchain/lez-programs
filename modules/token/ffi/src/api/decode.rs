@@ -1,7 +1,4 @@
-use lee_core::{
-    account::{Account, AccountId},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId};
 use serde_json::{json, Value};
 use token_core::{MetadataStandard, TokenDefinition, TokenHolding, TokenMetadata};
 
@@ -60,7 +57,7 @@ pub fn decode_account(request: DecodeAccountRequest) -> TokenResult {
 
 fn parse_and_validate_account(
     read: &crate::account::AccountRead,
-    token_program_id: ProgramId,
+    token_program_id: AccountId,
 ) -> Result<(AccountId, Account), TokenApiError> {
     let (account_id, account) = decode_wallet_account(read).map_err(map_account_read_error)?;
     if account.program_owner != token_program_id {

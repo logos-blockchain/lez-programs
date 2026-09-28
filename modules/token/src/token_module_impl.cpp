@@ -29,6 +29,15 @@ namespace {
 using json = nlohmann::json;
 
 constexpr char TOKEN_PROGRAM_BIN_ENV[] = "TOKEN_PROGRAM_BIN";
+// LEZ v0.2.5 made public transactions charge a fee, and the wallet FFI grew a
+// `payer_account_id_hex` parameter for it. Empty means "no explicit payer": the
+// module passes a null payer through to wallet-ffi, which falls back to the
+// wallet's own selection -- the transaction's first signing account self-pays.
+// That is the pre-fee behaviour, so these call sites keep it. Note the payer must
+// hold a balance, so a UI flow whose signer is an unfunded account needs a real
+// payer threaded down to here rather than this default.
+constexpr char FEE_PAYER_SELF[] = "";
+
 constexpr char TOKEN_PROGRAM_ID_ENV[] = "TOKEN_PROGRAM_ID";
 std::mutex programInfoMutex;
 
@@ -514,6 +523,7 @@ LogosMap TokenModuleImpl::submitPlan(const nlohmann::json& plan) {
         signers,
         instruction,
         program_id,
+        FEE_PAYER_SELF,
         &call_error);
     if (!call_error.ok()) {
         TOKEN_TRACE("lez_core submission transport failure: " << call_error.code);

@@ -8,6 +8,6 @@ workspace = true
 
 [dependencies]
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
-spel-framework-macros = { git = "https://github.com/0x-r4bbit/spel.git", rev = "fb55f137eb7014025192d9c2932e0d5e1e3ddfe7", package = "spel-framework-macros" }
+spel-framework-macros = { git = "https://github.com/0x-r4bbit/spel.git", rev = "1ba0b6b797957875710c87837f4080d5341e98da", package = "spel-framework-macros" }
 borsh = { version = "1.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }

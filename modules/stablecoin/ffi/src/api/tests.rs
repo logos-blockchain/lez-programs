@@ -1,8 +1,5 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, Data, Nonce};
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
 use stablecoin_core::{
@@ -18,14 +15,14 @@ use super::{
     DecodeProtocolParametersRequest, InitializeProgramPlanRequest, ProgramInfoRequest,
     StablecoinResult,
 };
-use crate::account::{account_id_hex, account_read, program_id_bytes};
+use crate::account::{account_id_hex, account_read};
 
-const STABLECOIN_PROGRAM_ID: ProgramId = [0x11_u32; 8];
-const TOKEN_PROGRAM_ID: ProgramId = [0x22_u32; 8];
-const ORACLE_PROGRAM_ID: ProgramId = [0x33_u32; 8];
-const CLOCK_PROGRAM_ID: ProgramId = [0x44_u32; 8];
+const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([0x11_u8; 32]);
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([0x22_u8; 32]);
+const ORACLE_PROGRAM_ID: AccountId = AccountId::new([0x33_u8; 32]);
+const CLOCK_PROGRAM_ID: AccountId = AccountId::new([0x44_u8; 32]);
 
-fn account(owner: ProgramId, data: Data) -> Account {
+fn account(owner: AccountId, data: Data) -> Account {
     Account {
         program_owner: owner,
         balance: 0,
@@ -39,13 +36,14 @@ fn id(seed: u8) -> AccountId {
 }
 
 fn program_id_hex() -> String {
-    hex::encode(program_id_bytes(STABLECOIN_PROGRAM_ID))
+    account_id_hex(STABLECOIN_PROGRAM_ID)
 }
 
-fn deployable_program_binary() -> (String, ProgramId) {
+fn deployable_program_binary() -> (String, AccountId) {
     let encoded = stablecoin_methods::STABLECOIN_ELF;
     let binary = ok(ProgramBinary::decode(encoded));
-    let image_id = ok(binary.compute_image_id()).into();
+    let image_id: lee_core::program::ProgramId = ok(binary.compute_image_id()).into();
+    let image_id = AccountId::from(image_id);
     (hex::encode(encoded), image_id)
 }
 
@@ -142,8 +140,8 @@ fn initialize_request() -> InitializeProgramPlanRequest {
 }
 
 fn decode_instruction(value: &Value) -> Instruction {
-    let words: Vec<u32> = ok(serde_json::from_value(value.clone()));
-    ok(risc0_zkvm::serde::from_slice::<Instruction, u32>(&words))
+    let bytes: Vec<u8> = ok(serde_json::from_value(value.clone()));
+    ok(borsh::from_slice::<Instruction>(&bytes))
 }
 
 #[test]
@@ -153,7 +151,7 @@ fn program_info_derives_all_singleton_ids_from_program_id() {
         elf: None,
     }));
 
-    let program_account = AccountId::new(program_id_bytes(STABLECOIN_PROGRAM_ID));
+    let program_account = STABLECOIN_PROGRAM_ID;
     assert_eq!(value["programId"], program_account.to_string());
     assert_eq!(value["programIdHex"], account_id_hex(program_account));
     assert_eq!(
@@ -185,7 +183,7 @@ fn program_info_derives_all_singleton_ids_from_program_id() {
 #[test]
 fn program_info_derives_from_binary_and_rejects_mismatched_inputs() {
     let (binary, derived_program_id) = deployable_program_binary();
-    let derived_program_id_hex = hex::encode(program_id_bytes(derived_program_id));
+    let derived_program_id_hex = account_id_hex(derived_program_id);
     let value = ok(program_info(ProgramInfoRequest {
         stablecoin_program_id: None,
         elf: Some(binary.clone()),
@@ -204,10 +202,7 @@ fn program_info_derives_from_binary_and_rejects_mismatched_inputs() {
         stablecoin_program_id: Some(derived_program_id_hex),
         elf: Some(binary),
     }));
-    assert_eq!(
-        value["programIdHex"],
-        hex::encode(program_id_bytes(derived_program_id))
-    );
+    assert_eq!(value["programIdHex"], account_id_hex(derived_program_id));
 }
 
 #[test]
@@ -270,7 +265,7 @@ fn protocol_parameters_decode_rejects_wrong_pda_owner_and_non_exact_data() {
 
     let mut wrong_owner = protocol_request(&parameters);
     if let Some(account) = &mut wrong_owner.protocol_parameters.account {
-        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+        account.program_owner = account_id_hex(TOKEN_PROGRAM_ID);
     }
     assert_error(
         decode_protocol_parameters(wrong_owner),

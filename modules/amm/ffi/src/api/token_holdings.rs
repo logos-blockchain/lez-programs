@@ -40,16 +40,13 @@ pub(super) fn token_holdings(request: TokenHoldingsRequest) -> Result<Value, Str
 #[cfg(test)]
 mod tests {
     use amm_core::{compute_config_pda, AmmConfig};
-    use lee_core::{
-        account::{Account, AccountId, Data},
-        program::ProgramId,
-    };
+    use lee_core::account::{Account, AccountId, Data};
     use token_core::TokenHolding;
 
     use super::*;
     use crate::account::{account_read, AccountRead};
 
-    fn token_program() -> ProgramId {
+    fn token_program() -> AccountId {
         parse_program_id(&"01".repeat(32)).unwrap()
     }
 
@@ -66,7 +63,7 @@ mod tests {
         account_read(id, &account)
     }
 
-    fn config_read(amm: ProgramId) -> AccountRead {
+    fn config_read(amm: AccountId) -> AccountRead {
         let account = Account {
             program_owner: amm,
             data: Data::from(&AmmConfig {

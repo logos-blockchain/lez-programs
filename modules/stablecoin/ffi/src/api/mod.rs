@@ -50,10 +50,12 @@ impl Error for StablecoinApiError {}
 
 fn parse_stablecoin_program_id(
     value: &str,
-) -> Result<lee_core::program::ProgramId, StablecoinApiError> {
+) -> Result<lee_core::account::AccountId, StablecoinApiError> {
     let program_id =
         parse_program_id(value).map_err(|_| StablecoinApiError::new("invalid_program_id"))?;
-    if program_id == [0_u32; 8] {
+    // The all-zero id is DEFAULT_PROGRAM_OWNER, i.e. "no program owns this" -- never a
+    // real program address.
+    if program_id == lee_core::program::DEFAULT_PROGRAM_OWNER {
         return Err(StablecoinApiError::new("invalid_program_id"));
     }
     Ok(program_id)
