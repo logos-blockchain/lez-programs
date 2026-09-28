@@ -1,4 +1,4 @@
-use lee_core::{account::AccountId, program::ProgramId};
+use lee_core::account::AccountId;
 use token_core::TokenHolding;
 
 use crate::account::{decode_account, AccountRead};
@@ -12,7 +12,7 @@ pub(super) struct SelectedHolding {
 
 pub(super) fn wallet_holdings(
     reads: &[AccountRead],
-    token_program: ProgramId,
+    token_program: AccountId,
 ) -> Vec<SelectedHolding> {
     reads
         .iter()
@@ -22,7 +22,7 @@ pub(super) fn wallet_holdings(
 
 pub(super) fn decode_fungible_holding(
     read: &AccountRead,
-    token_program: ProgramId,
+    token_program: AccountId,
 ) -> Result<SelectedHolding, String> {
     let (id, account) = decode_account(read)?;
     if account.program_owner != token_program {

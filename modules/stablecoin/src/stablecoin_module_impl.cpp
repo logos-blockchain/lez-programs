@@ -28,6 +28,15 @@ namespace {
 using json = nlohmann::json;
 
 constexpr char STABLECOIN_PROGRAM_BIN_ENV[] = "STABLECOIN_PROGRAM_BIN";
+// LEZ v0.2.5 made public transactions charge a fee, and the wallet FFI grew a
+// `payer_account_id_hex` parameter for it. Empty means "no explicit payer": the
+// module passes a null payer through to wallet-ffi, which falls back to the
+// wallet's own selection -- the transaction's first signing account self-pays.
+// That is the pre-fee behaviour, so these call sites keep it. Note the payer must
+// hold a balance, so a UI flow whose signer is an unfunded account needs a real
+// payer threaded down to here rather than this default.
+constexpr char FEE_PAYER_SELF[] = "";
+
 constexpr char STABLECOIN_PROGRAM_ID_ENV[] = "STABLECOIN_PROGRAM_ID";
 std::mutex programInfoMutex;
 
@@ -157,23 +166,29 @@ nlohmann::json StablecoinModuleImpl::stablecoinProgramInfo(std::string& error) {
         return json();
     }
 
+    // Since LEZ v0.2.5 only STABLECOIN_PROGRAM_ID names the program (its deployed
+    // header account); a binary yields an ImageID, which is not an address. The FFI
+    // rejects a binary without a program id as config_missing.
     json request = json::object();
+    std::string program_id_hex;
     if (program_id_configured) {
-        const std::string normalized = normalizeAccountId(configured);
-        if (normalized.empty()) {
+        program_id_hex = normalizeAccountId(configured);
+        if (program_id_hex.empty()) {
             error = "invalid_program_id";
             return json();
         }
-        request["stablecoinProgramId"] = normalized;
+        request["stablecoinProgramId"] = program_id_hex;
     }
 
-    if (binary_configured) {
+    // An optional binary is checked against the header deployed at the program id.
+    if (binary_configured && program_id_configured) {
         const std::vector<std::uint8_t> binary = loadStablecoinBinary();
         if (binary.empty()) {
             error = "invalid_program_binary";
             return json();
         }
         request["elf"] = bytesToHex(binary.data(), binary.size());
+        request["programHeader"] = readPublicAccount(program_id_hex);
     }
 
     const FfiResult result = callStablecoin(stablecoin_program_info, request);
@@ -338,6 +353,7 @@ LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
         signing_requirements,
         instruction,
         program_id,
+        FEE_PAYER_SELF,
         &call_error);
     if (!call_error.ok()) {
         STABLECOIN_TRACE(

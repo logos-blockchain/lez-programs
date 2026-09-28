@@ -70,12 +70,12 @@ fn canonical_triples(
 }
 
 /// The tx-submission envelope shared by the create and add plans: the fixed IDL account ids
-/// as hex, their signer flags, and the risc0-encoded instruction words.
+/// as hex, their signer flags, and the borsh-encoded instruction bytes.
 fn plan_response(
     program_id: &str,
     account_ids: impl IntoIterator<Item = AccountId>,
     signing_requirements: &[bool],
-    instruction: Vec<u32>,
+    instruction: Vec<u8>,
 ) -> Value {
     json!({
         "programId": program_id,
@@ -180,7 +180,7 @@ pub(super) fn create_pool_plan(request: CreatePoolPlanRequest) -> Result<Value, 
         return Err(String::from("config_unavailable"));
     };
 
-    let instruction = risc0_zkvm::serde::to_vec(&amm_core::Instruction::NewDefinition {
+    let instruction = borsh::to_vec(&amm_core::Instruction::NewDefinition {
         token_a_amount: canonical_amount_a,
         token_b_amount: canonical_amount_b,
         deadline,
@@ -366,7 +366,7 @@ pub(super) fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> Result<Val
             return Err(String::from("pair_mismatch"));
         };
 
-    let instruction = risc0_zkvm::serde::to_vec(&amm_core::Instruction::AddLiquidity {
+    let instruction = borsh::to_vec(&amm_core::Instruction::AddLiquidity {
         min_amount_liquidity: min_lp,
         max_amount_to_add_token_a: max_pool_a,
         max_amount_to_add_token_b: max_pool_b,
@@ -543,7 +543,7 @@ pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Resu
             return Err(String::from("pair_mismatch"));
         };
 
-    let instruction = risc0_zkvm::serde::to_vec(&amm_core::Instruction::RemoveLiquidity {
+    let instruction = borsh::to_vec(&amm_core::Instruction::RemoveLiquidity {
         remove_liquidity_amount: lp_amount,
         min_amount_to_remove_token_a: min_pool_a,
         min_amount_to_remove_token_b: min_pool_b,
@@ -606,7 +606,7 @@ pub(super) fn sync_reserves_plan(request: SyncReservesPlanRequest) -> Result<Val
         return Err(String::from("no_pool"));
     };
 
-    let instruction = risc0_zkvm::serde::to_vec(&amm_core::Instruction::SyncReserves)
+    let instruction = borsh::to_vec(&amm_core::Instruction::SyncReserves)
         .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
     // Fixed IDL account order for SyncReserves; nothing signs (permissionless keeper op).
@@ -657,12 +657,12 @@ mod tests {
     /// The namespace root (config PDA id) the plan tests derive pools under. A fixed
     /// `(owner, nonce)` instance is enough — the tests only need it to be consistent between
     /// `valid_config` and the expected `compute_pool_pda`.
-    fn config_id(amm: lee_core::program::ProgramId) -> AccountId {
+    fn config_id(amm: AccountId) -> AccountId {
         compute_config_pda(amm, AccountId::new([0x07; 32]), [0; 32])
     }
 
     /// A valid AMM config account read so `derive_pair` succeeds in plan tests.
-    fn valid_config(amm: lee_core::program::ProgramId) -> AccountRead {
+    fn valid_config(amm: AccountId) -> AccountRead {
         let token_program = parse_program_id(&"01".repeat(32)).unwrap();
         let twap_program = parse_program_id(&"02".repeat(32)).unwrap();
         let account = Account {
@@ -829,7 +829,7 @@ mod tests {
         // for THAT token (display token_b), not display token_a's 1_000_000. Comparing
         // against the re-encoded expected instruction proves balances follow their
         // tokens through the swap.
-        let expected = risc0_zkvm::serde::to_vec(&amm_core::Instruction::NewDefinition {
+        let expected = borsh::to_vec(&amm_core::Instruction::NewDefinition {
             token_a_amount: 4_000_000,
             token_b_amount: 1_000_000,
             deadline: 1_000,
@@ -1053,7 +1053,7 @@ mod tests {
         // The instruction the guest must receive: token_a's cap into vault_a (token_a), token_b's
         // cap into vault_b — regardless of the caller's argument order.
         let expected_instruction = {
-            let words = risc0_zkvm::serde::to_vec(&amm_core::Instruction::AddLiquidity {
+            let words = borsh::to_vec(&amm_core::Instruction::AddLiquidity {
                 min_amount_liquidity: 500,
                 max_amount_to_add_token_a: 1_000_000, // token_a's cap
                 max_amount_to_add_token_b: 4_000_000, // token_b's cap
@@ -1345,7 +1345,7 @@ mod tests {
         // The instruction the guest must receive: token_a's floor with vault_a's token,
         // token_b's floor with vault_b's — regardless of the caller's argument order.
         let expected_instruction = {
-            let words = risc0_zkvm::serde::to_vec(&amm_core::Instruction::RemoveLiquidity {
+            let words = borsh::to_vec(&amm_core::Instruction::RemoveLiquidity {
                 remove_liquidity_amount: 100_000,
                 min_amount_to_remove_token_a: 90_000, // token_a's floor
                 min_amount_to_remove_token_b: 180_000, // token_b's floor
@@ -1484,7 +1484,7 @@ mod tests {
             serde_json::json!([false, false, false, false, false, false])
         );
         let expected_instruction = {
-            let words = risc0_zkvm::serde::to_vec(&amm_core::Instruction::SyncReserves).unwrap();
+            let words = borsh::to_vec(&amm_core::Instruction::SyncReserves).unwrap();
             serde_json::json!(words.iter().map(|w| u64::from(*w)).collect::<Vec<u64>>())
         };
         assert_eq!(value["instruction"], expected_instruction);

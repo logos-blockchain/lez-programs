@@ -1,7 +1,4 @@
-use lee_core::{
-    account::{Account, AccountId, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, Data, Nonce};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -37,24 +34,15 @@ pub(crate) fn parse_hex_32(value: &str, label: &str) -> Result<[u8; 32], String>
     Ok(bytes)
 }
 
-pub(crate) fn parse_program_id(value: &str) -> Result<ProgramId, String> {
-    let bytes = parse_hex_32(value, "program id")?;
-    let mut program_id = [0_u32; 8];
-    for (word, chunk) in program_id.iter_mut().zip(bytes.chunks_exact(4)) {
-        let chunk: [u8; 4] = chunk
-            .try_into()
-            .map_err(|_| String::from("program id word has invalid length"))?;
-        *word = u32::from_le_bytes(chunk);
-    }
-    Ok(program_id)
-}
-
-pub(crate) fn program_id_bytes(program_id: ProgramId) -> [u8; 32] {
-    let mut bytes = [0_u8; 32];
-    for (chunk, word) in bytes.chunks_exact_mut(4).zip(program_id) {
-        chunk.copy_from_slice(&word.to_le_bytes());
-    }
-    bytes
+/// Parses a program's account id -- the id of its deployed `ProgramHeader` account.
+///
+/// The wire format is unchanged: 64 lowercase hex characters, the same 32 bytes
+/// callers already pass. Before LEZ v0.2.5 those bytes were reassembled into a
+/// `ProgramId` (`[u32; 8]`, the ImageID); they are now an `AccountId` directly.
+/// `From<ProgramId> for AccountId` expands the words little-endian, so a program
+/// deployed at the image-id bijection address has the same hex as before.
+pub(crate) fn parse_program_id(value: &str) -> Result<AccountId, String> {
+    Ok(AccountId::new(parse_hex_32(value, "program id")?))
 }
 
 pub(crate) fn account_id_from_hex(value: &str, label: &str) -> Result<AccountId, String> {
@@ -66,8 +54,8 @@ pub(crate) fn account_id_hex(account_id: AccountId) -> String {
 }
 
 #[cfg(test)]
-pub(crate) fn program_id_hex(program_id: ProgramId) -> String {
-    hex::encode(program_id_bytes(program_id))
+pub(crate) fn program_id_hex(program_id: AccountId) -> String {
+    account_id_hex(program_id)
 }
 
 fn parse_le_u128(value: &str, label: &str) -> Result<u128, String> {

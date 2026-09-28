@@ -16,9 +16,11 @@ public:
     TokenModuleImpl() = default;
     ~TokenModuleImpl() = default;
 
-    /// Returns `{status,error,programId,programIdHex,networkFingerprint}`.
-    /// Configure TOKEN_PROGRAM_ID or TOKEN_PROGRAM_BIN. If both are set, they
-    /// must identify the same program.
+    /// Returns `{status,error,programId,programIdHex,networkFingerprint,imageIdHex}`.
+    /// TOKEN_PROGRAM_ID names the deployed program (its header account) and is
+    /// required. An optional TOKEN_PROGRAM_BIN must be the bytecode deployed
+    /// there; its ImageID is reported as `imageIdHex` (empty without a binary)
+    /// and is never used as an address.
     LogosMap programInfo();
 
     /// Reads and decodes any public token definition account. `definition_id`
@@ -139,4 +141,5 @@ private:
     bool programInfoResolved_ = false;
     std::string programId_;
     std::string programIdHex_;
+    std::string imageIdHex_;
 };

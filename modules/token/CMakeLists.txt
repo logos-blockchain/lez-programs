@@ -19,6 +19,8 @@ logos_module(
         src/token_module_impl.cpp
         src/token_instruction_words.h
         src/token_instruction_words.cpp
+        src/token_program_binary.h
+        src/token_program_binary.cpp
     EXTERNAL_LIBS
         token_ffi
 )

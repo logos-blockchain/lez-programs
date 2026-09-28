@@ -16,8 +16,10 @@ public:
     ~StablecoinModuleImpl() = default;
 
     /// Returns stablecoin program IDs and all derived singleton account IDs.
-    /// Configure STABLECOIN_PROGRAM_ID or STABLECOIN_PROGRAM_BIN. When both are
-    /// configured, they must identify the same program.
+    /// STABLECOIN_PROGRAM_ID names the deployed program (its header account) and
+    /// is required. An optional STABLECOIN_PROGRAM_BIN must be the bytecode
+    /// deployed there; its ImageID is reported as `imageIdHex` (empty without a
+    /// binary) and is never used as an address.
     LogosMap programInfo();
 
     /// Reads and exactly decodes the singleton ProtocolParameters account.

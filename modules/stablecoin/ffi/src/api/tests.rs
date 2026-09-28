@@ -1,7 +1,7 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
     account::{Account, AccountId, Data, Nonce},
-    program::ProgramId,
+    program::{ProgramHeader, PROGRAM_LOADER_ACCOUNT_ID},
 };
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
@@ -19,14 +19,14 @@ use super::{
     program_info, DecodeProtocolParametersRequest, DecodeStabilityFeeAccumulatorRequest,
     InitializeProgramPlanRequest, ProgramInfoRequest, StablecoinResult,
 };
-use crate::account::{account_id_hex, account_read, program_id_bytes};
+use crate::account::{account_id_hex, account_read, AccountRead};
 
-const STABLECOIN_PROGRAM_ID: ProgramId = [0x11_u32; 8];
-const TOKEN_PROGRAM_ID: ProgramId = [0x22_u32; 8];
-const ORACLE_PROGRAM_ID: ProgramId = [0x33_u32; 8];
-const CLOCK_PROGRAM_ID: ProgramId = [0x44_u32; 8];
+const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([0x11_u8; 32]);
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([0x22_u8; 32]);
+const ORACLE_PROGRAM_ID: AccountId = AccountId::new([0x33_u8; 32]);
+const CLOCK_PROGRAM_ID: AccountId = AccountId::new([0x44_u8; 32]);
 
-fn account(owner: ProgramId, data: Data) -> Account {
+fn account(owner: AccountId, data: Data) -> Account {
     Account {
         program_owner: owner,
         balance: 0,
@@ -40,13 +40,14 @@ fn id(seed: u8) -> AccountId {
 }
 
 fn program_id_hex() -> String {
-    hex::encode(program_id_bytes(STABLECOIN_PROGRAM_ID))
+    account_id_hex(STABLECOIN_PROGRAM_ID)
 }
 
-fn deployable_program_binary() -> (String, ProgramId) {
+fn deployable_program_binary() -> (String, AccountId) {
     let encoded = stablecoin_methods::STABLECOIN_ELF;
     let binary = ok(ProgramBinary::decode(encoded));
-    let image_id = ok(binary.compute_image_id()).into();
+    let image_id: lee_core::program::ProgramId = ok(binary.compute_image_id()).into();
+    let image_id = AccountId::from(image_id);
     (hex::encode(encoded), image_id)
 }
 
@@ -163,8 +164,8 @@ fn initialize_request() -> InitializeProgramPlanRequest {
 }
 
 fn decode_instruction(value: &Value) -> Instruction {
-    let words: Vec<u32> = ok(serde_json::from_value(value.clone()));
-    ok(risc0_zkvm::serde::from_slice::<Instruction, u32>(&words))
+    let bytes: Vec<u8> = ok(serde_json::from_value(value.clone()));
+    ok(borsh::from_slice::<Instruction>(&bytes))
 }
 
 #[test]
@@ -172,9 +173,11 @@ fn program_info_derives_all_singleton_ids_from_program_id() {
     let value = ok(program_info(ProgramInfoRequest {
         stablecoin_program_id: Some(program_id_hex()),
         elf: None,
+        program_header: None,
     }));
+    assert_eq!(value["imageIdHex"], "");
 
-    let program_account = AccountId::new(program_id_bytes(STABLECOIN_PROGRAM_ID));
+    let program_account = STABLECOIN_PROGRAM_ID;
     assert_eq!(value["programId"], program_account.to_string());
     assert_eq!(value["programIdHex"], account_id_hex(program_account));
     assert_eq!(
@@ -203,31 +206,82 @@ fn program_info_derives_all_singleton_ids_from_program_id() {
     );
 }
 
+fn header_data(image_id: AccountId) -> Data {
+    let header = ProgramHeader {
+        image_id: image_id.into(),
+        program_first_segment: id(0x77),
+        immutable: true,
+    };
+    ok(Data::try_from(header.to_bytes()))
+}
+
+/// The header a deployer created at `program_id` for bytecode with `image_id`.
+fn program_header(program_id: AccountId, image_id: AccountId) -> AccountRead {
+    account_read(
+        program_id,
+        &account(PROGRAM_LOADER_ACCOUNT_ID, header_data(image_id)),
+    )
+}
+
 #[test]
-fn program_info_derives_from_binary_and_rejects_mismatched_inputs() {
-    let (binary, derived_program_id) = deployable_program_binary();
-    let derived_program_id_hex = hex::encode(program_id_bytes(derived_program_id));
+fn program_info_checks_a_binary_against_the_deployed_header() {
+    // The program lives at an address unrelated to its ImageID, as any deploy may pick.
+    let (binary, image_id) = deployable_program_binary();
+    assert_ne!(image_id, STABLECOIN_PROGRAM_ID);
     let value = ok(program_info(ProgramInfoRequest {
-        stablecoin_program_id: None,
-        elf: Some(binary.clone()),
+        stablecoin_program_id: Some(program_id_hex()),
+        elf: Some(binary),
+        program_header: Some(program_header(STABLECOIN_PROGRAM_ID, image_id)),
     }));
-    assert_eq!(value["programIdHex"], derived_program_id_hex);
+    assert_eq!(value["programIdHex"], program_id_hex());
+    assert_eq!(value["imageIdHex"], account_id_hex(image_id));
+    assert_eq!(
+        value["protocolParametersIdHex"],
+        account_id_hex(compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID))
+    );
+}
+
+#[test]
+fn program_info_rejects_a_binary_that_is_not_deployed_there() {
+    let (binary, image_id) = deployable_program_binary();
+    let request = |header: Option<AccountRead>| ProgramInfoRequest {
+        stablecoin_program_id: Some(program_id_hex()),
+        elf: Some(binary.clone()),
+        program_header: header,
+    };
 
     assert_error(
-        program_info(ProgramInfoRequest {
-            stablecoin_program_id: Some(program_id_hex()),
-            elf: Some(binary.clone()),
-        }),
-        "program_id_mismatch",
+        program_info(request(Some(program_header(
+            STABLECOIN_PROGRAM_ID,
+            id(0x99),
+        )))),
+        "program_binary_mismatch",
     );
-
-    let value = ok(program_info(ProgramInfoRequest {
-        stablecoin_program_id: Some(derived_program_id_hex),
-        elf: Some(binary),
-    }));
-    assert_eq!(
-        value["programIdHex"],
-        hex::encode(program_id_bytes(derived_program_id))
+    assert_error(program_info(request(None)), "program_header_unavailable");
+    // A header read for another account, one not owned by the program loader, or
+    // undecodable data does not describe the configured program.
+    assert_error(
+        program_info(request(Some(program_header(id(0x55), image_id)))),
+        "program_header_unavailable",
+    );
+    let forged = account_read(
+        STABLECOIN_PROGRAM_ID,
+        &account(TOKEN_PROGRAM_ID, header_data(image_id)),
+    );
+    assert_error(
+        program_info(request(Some(forged))),
+        "program_header_unavailable",
+    );
+    let garbage = account_read(
+        STABLECOIN_PROGRAM_ID,
+        &account(
+            PROGRAM_LOADER_ACCOUNT_ID,
+            ok(Data::try_from(vec![1_u8, 2, 3])),
+        ),
+    );
+    assert_error(
+        program_info(request(Some(garbage))),
+        "program_header_unavailable",
     );
 }
 
@@ -237,6 +291,17 @@ fn program_info_rejects_missing_and_invalid_inputs() {
         program_info(ProgramInfoRequest {
             stablecoin_program_id: None,
             elf: None,
+            program_header: None,
+        }),
+        "config_missing",
+    );
+    // The ImageID is not an address: a binary alone cannot name the program.
+    let (binary, _) = deployable_program_binary();
+    assert_error(
+        program_info(ProgramInfoRequest {
+            stablecoin_program_id: None,
+            elf: Some(binary),
+            program_header: None,
         }),
         "config_missing",
     );
@@ -244,13 +309,15 @@ fn program_info_rejects_missing_and_invalid_inputs() {
         program_info(ProgramInfoRequest {
             stablecoin_program_id: Some(String::from("not-an-id")),
             elf: None,
+            program_header: None,
         }),
         "invalid_program_id",
     );
     assert_error(
         program_info(ProgramInfoRequest {
-            stablecoin_program_id: None,
+            stablecoin_program_id: Some(program_id_hex()),
             elf: Some(String::from("00")),
+            program_header: None,
         }),
         "invalid_program_binary",
     );
@@ -291,7 +358,7 @@ fn protocol_parameters_decode_rejects_wrong_pda_owner_and_non_exact_data() {
 
     let mut wrong_owner = protocol_request(&parameters);
     if let Some(account) = &mut wrong_owner.protocol_parameters.account {
-        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+        account.program_owner = account_id_hex(TOKEN_PROGRAM_ID);
     }
     assert_error(
         decode_protocol_parameters(wrong_owner),
@@ -322,11 +389,11 @@ fn stability_fee_accumulator_decode_preserves_fixed_id_and_boundary_values() {
 
     assert_eq!(
         value["accountId"],
-        "E4tfkjjkPz2g1G3bpgkXQx4M7e7g4Lr2Mr8bxvAsSmzE"
+        "4gA2zUQxomXfgMaPv7WF4YhjNmQHjM3bNNC1sRyF4uQq"
     );
     assert_eq!(
         value["accountIdHex"],
-        "c22718073968c322725e4ba774b270036c294663a547f43285a214614c1c258f"
+        "369aed6f31e8b5a47faba313c65a343b67425e7fa9d4cee387f8e29fb3310e0e"
     );
     assert_eq!(value["accumulatedRateAtLastAccrual"], u128::MAX.to_string());
     assert_eq!(value["lastAccruedAt"], u64::MAX.to_string());
@@ -353,7 +420,7 @@ fn stability_fee_accumulator_decode_rejects_failed_reads_and_wrong_identity() {
 
     let mut wrong_owner = accumulator_request(&accumulator);
     if let Some(account) = &mut wrong_owner.stability_fee_accumulator.account {
-        account.program_owner = hex::encode(program_id_bytes(TOKEN_PROGRAM_ID));
+        account.program_owner = account_id_hex(TOKEN_PROGRAM_ID);
     }
     assert_error(
         decode_stability_fee_accumulator(wrong_owner),

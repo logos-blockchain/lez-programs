@@ -130,23 +130,12 @@ nlohmann::json publicAccountRead(const std::string& account_id,
 std::vector<std::uint8_t> jsonInstructionLeBytes(const nlohmann::json& input) {
     std::vector<std::uint8_t> result;
     if (!input.is_array()) return result;
-    result.reserve(input.size() * sizeof(std::uint32_t));
+    result.reserve(input.size());
     for (const auto& item : input) {
         if (!item.is_number_unsigned() && !item.is_number_integer()) return {};
-        std::uint64_t raw = 0;
-        if (item.is_number_unsigned()) {
-            raw = item.get<std::uint64_t>();
-        } else {
-            const std::int64_t signed_raw = item.get<std::int64_t>();
-            if (signed_raw < 0) return {};
-            raw = static_cast<std::uint64_t>(signed_raw);
-        }
-        if (raw > std::numeric_limits<std::uint32_t>::max()) return {};
-        const auto word = static_cast<std::uint32_t>(raw);
-        result.push_back(static_cast<std::uint8_t>(word & 0xff));
-        result.push_back(static_cast<std::uint8_t>((word >> 8) & 0xff));
-        result.push_back(static_cast<std::uint8_t>((word >> 16) & 0xff));
-        result.push_back(static_cast<std::uint8_t>((word >> 24) & 0xff));
+        std::int64_t raw = item.get<std::int64_t>();
+        if (raw < 0 || raw > std::numeric_limits<std::uint8_t>::max()) return {};
+        result.push_back(static_cast<std::uint8_t>(raw));
     }
     return result;
 }
@@ -168,7 +157,8 @@ std::string stableFfiError(const std::string& error) {
         "invalid_stability_fee_accumulator_data",
         "invalid_stablecoin_name",
         "oracle_asset_mismatch",
-        "program_id_mismatch",
+        "program_binary_mismatch",
+        "program_header_unavailable",
         "protocol_parameters_pda_mismatch",
         "stability_fee_accumulator_pda_mismatch",
         "stablecoin_program_mismatch",

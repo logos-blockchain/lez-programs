@@ -10,6 +10,10 @@ pub struct ProgramInfoRequest {
     pub stablecoin_program_id: Option<String>,
     #[serde(default)]
     pub elf: Option<String>,
+    /// The account read at `stablecoin_program_id`: the deployed `ProgramHeader` that
+    /// `elf` is checked against. Required with `elf`, ignored without it.
+    #[serde(default)]
+    pub program_header: Option<AccountRead>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

@@ -11,7 +11,7 @@ use crate::account::{account_id_from_hex, account_id_hex, parse_program_id};
 /// The tx-submission envelope shared by the two oracle-setup plans: the fixed IDL account ids as
 /// hex, their signer flags (nothing signs — both are chained calls into the TWAP oracle seeded
 /// from validated pool state), and the risc0-encoded instruction words.
-fn plan_response(program_id: &str, account_ids: &[AccountId], instruction: Vec<u32>) -> Value {
+fn plan_response(program_id: &str, account_ids: &[AccountId], instruction: Vec<u8>) -> Value {
     let signing_requirements = vec![false; account_ids.len()];
     json!({
         "programId": program_id,
@@ -58,7 +58,7 @@ pub(super) fn create_price_observations_plan(
     let price_observations =
         compute_price_observations_pda(pair.twap_oracle_program, pair.pool, window);
 
-    let instruction = risc0_zkvm::serde::to_vec(&Instruction::CreatePriceObservations {
+    let instruction = borsh::to_vec(&Instruction::CreatePriceObservations {
         window_duration: window,
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
@@ -94,7 +94,7 @@ pub(super) fn create_oracle_price_account_plan(
     let oracle_price_account =
         compute_oracle_price_account_pda(pair.twap_oracle_program, pair.pool, window);
 
-    let instruction = risc0_zkvm::serde::to_vec(&Instruction::CreateOraclePriceAccount {
+    let instruction = borsh::to_vec(&Instruction::CreateOraclePriceAccount {
         window_duration: window,
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;

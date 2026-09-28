@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use lee_core::{account::AccountId, program::ProgramId};
+use lee_core::account::AccountId;
 use serde_json::{json, Value};
 use token_core::TokenDefinition;
 
@@ -83,7 +83,7 @@ pub(super) fn resolve_tokens(request: ResolveTokensRequest) -> Result<Value, Str
 fn fungible_definition(
     read: Option<&AccountRead>,
     token_id: AccountId,
-    token_program: ProgramId,
+    token_program: AccountId,
 ) -> Option<(String, u128)> {
     let (id, account) = decode_account(read?).ok()?;
     if id != token_id || account.program_owner != token_program {

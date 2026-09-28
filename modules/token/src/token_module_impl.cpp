@@ -1,5 +1,6 @@
 #include "token_module_impl.h"
 #include "token_instruction_words.h"
+#include "token_program_binary.h"
 
 #include <algorithm>
 #include <cctype>
@@ -29,6 +30,15 @@ namespace {
 using json = nlohmann::json;
 
 constexpr char TOKEN_PROGRAM_BIN_ENV[] = "TOKEN_PROGRAM_BIN";
+// LEZ v0.2.5 made public transactions charge a fee, and the wallet FFI grew a
+// `payer_account_id_hex` parameter for it. Empty means "no explicit payer": the
+// module passes a null payer through to wallet-ffi, which falls back to the
+// wallet's own selection -- the transaction's first signing account self-pays.
+// That is the pre-fee behaviour, so these call sites keep it. Note the payer must
+// hold a balance, so a UI flow whose signer is an unfunded account needs a real
+// payer threaded down to here rather than this default.
+constexpr char FEE_PAYER_SELF[] = "";
+
 constexpr char TOKEN_PROGRAM_ID_ENV[] = "TOKEN_PROGRAM_ID";
 std::mutex programInfoMutex;
 
@@ -202,66 +212,66 @@ std::string TokenModuleImpl::loadTokenProgramId() const {
 nlohmann::json TokenModuleImpl::tokenProgramInfo() {
     const std::lock_guard<std::mutex> lock(programInfoMutex);
     if (programInfoResolved_) {
-        return {{"programId", programId_}, {"programIdHex", programIdHex_}};
+        return {{"programId", programId_}, {"programIdHex", programIdHex_},
+                {"imageIdHex", imageIdHex_}};
     }
 
+    // Since LEZ v0.2.5 a program lives at the account its `program_loader` header was
+    // deployed to, chosen at deploy time. Only TOKEN_PROGRAM_ID can name it; the binary
+    // yields an ImageID, which identifies bytecode, not an address.
     const std::string configured_program = loadTokenProgramId();
-    const bool program_id_configured = !configured_program.empty();
     const char* binary_path = std::getenv(TOKEN_PROGRAM_BIN_ENV);
     const bool binary_configured = binary_path != nullptr && *binary_path != '\0';
-    const std::string configured_program_hex = program_id_configured
-        ? normalizeAccountId(configured_program)
-        : std::string();
-    if (program_id_configured && configured_program_hex.empty()) {
+    if (configured_program.empty()) {
+        if (binary_configured) {
+            TOKEN_TRACE("TOKEN_PROGRAM_BIN cannot supply the program address; set "
+                        "TOKEN_PROGRAM_ID to the deployed header account");
+        }
+        return json();
+    }
+    const std::string program_id_hex = normalizeAccountId(configured_program);
+    if (program_id_hex.empty()) {
         TOKEN_TRACE("TOKEN_PROGRAM_ID is not a valid account ID");
         return json();
     }
 
-    const std::vector<std::uint8_t> binary = loadTokenBinary();
-    if (binary_configured && binary.empty()) {
-        TOKEN_TRACE("TOKEN_PROGRAM_BIN is configured but unreadable");
-        return json();
-    }
-
-    std::string derived_program;
-    std::string derived_program_hex;
-    if (!binary.empty()) {
+    // An optional binary is checked against the bytecode actually deployed there.
+    std::string image_id_hex;
+    if (binary_configured) {
+        const std::vector<std::uint8_t> binary = loadTokenBinary();
+        if (binary.empty()) {
+            TOKEN_TRACE("TOKEN_PROGRAM_BIN is configured but unreadable");
+            return json();
+        }
         const FfiResult result = callToken(
             token_program_id,
             {{"elf", bytesToHex(binary.data(), binary.size())}});
         if (!result.ok) return json();
+        image_id_hex = lowercase(jsonString(result.value, "imageId"));
 
-        derived_program_hex = lowercase(jsonString(result.value, "programId"));
-        derived_program = jsonString(result.value, "programIdBase58");
-        if (derived_program.empty() || !isHexLength(derived_program_hex, 64)
-            || isZeroId(derived_program_hex)) {
+        const json header = readPublicAccount(program_id_hex);
+        const auto account = header.find("account");
+        const std::string header_data = jsonString(header, "status") == "ok"
+                && account != header.end() && account->is_object()
+            ? jsonString(*account, "data")
+            : std::string();
+        if (!token_module::detail::binaryMatchesProgramHeader(image_id_hex, header_data)) {
+            TOKEN_TRACE("TOKEN_PROGRAM_BIN is not the bytecode deployed at TOKEN_PROGRAM_ID");
             return json();
         }
     }
 
-    if (!program_id_configured && !binary_configured) return json();
-    if (program_id_configured && binary_configured
-        && configured_program_hex != derived_program_hex) {
-        TOKEN_TRACE("TOKEN_PROGRAM_ID does not match TOKEN_PROGRAM_BIN");
-        return json();
-    }
-
-    const std::string program_id_hex = program_id_configured
-        ? configured_program_hex
-        : derived_program_hex;
-    const std::string program_id = binary_configured
-        ? derived_program
-        : modules().lez_core.account_id_to_base58(program_id_hex);
-    if (program_id.empty() || !isHexLength(program_id_hex, 64) || isZeroId(program_id_hex)) {
-        return json();
-    }
+    const std::string program_id = modules().lez_core.account_id_to_base58(program_id_hex);
+    if (program_id.empty()) return json();
 
     // Cache successful resolution only: an early missing/unreadable
     // configuration may become available later during process startup.
     programId_ = program_id;
     programIdHex_ = program_id_hex;
+    imageIdHex_ = image_id_hex;
     programInfoResolved_ = true;
-    return {{"programId", programId_}, {"programIdHex", programIdHex_}};
+    return {{"programId", programId_}, {"programIdHex", programIdHex_},
+            {"imageIdHex", imageIdHex_}};
 }
 
 std::string TokenModuleImpl::normalizeAccountId(const std::string& id) {
@@ -399,6 +409,7 @@ LogosMap TokenModuleImpl::programInfo() {
         result["programId"] = info["programId"];
         result["programIdHex"] = info["programIdHex"];
         result["networkFingerprint"] = info["programIdHex"];
+        result["imageIdHex"] = info["imageIdHex"];
         return result;
     });
 }
@@ -514,6 +525,7 @@ LogosMap TokenModuleImpl::submitPlan(const nlohmann::json& plan) {
         signers,
         instruction,
         program_id,
+        FEE_PAYER_SELF,
         &call_error);
     if (!call_error.ok()) {
         TOKEN_TRACE("lez_core submission transport failure: " << call_error.code);

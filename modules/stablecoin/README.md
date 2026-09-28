@@ -28,7 +28,8 @@ Failure returns:
 Returns the configured Stablecoin Program ID and the derived singleton account
 IDs for protocol parameters, stability-fee accumulator, redemption-price
 state, stablecoin definition, stablecoin master holding, and `CLOCK_01`. Each
-ID is returned in base58 and lowercase hexadecimal form.
+ID is returned in base58 and lowercase hexadecimal form. `imageIdHex` is the
+configured binary's ImageID, or empty when no binary is configured.
 
 ### `protocolParameters()`
 
@@ -73,15 +74,21 @@ exact value survives parsing. JSON floating-point values are always rejected.
 
 ## Runtime configuration
 
-Set either environment variable on the process hosting the module:
+Set `STABLECOIN_PROGRAM_ID` on the process hosting the module, optionally with
+`STABLECOIN_PROGRAM_BIN` to check the deployed bytecode:
 
 ```bash
 STABLECOIN_PROGRAM_ID=<base58-or-hex-program-id>
 STABLECOIN_PROGRAM_BIN=/absolute/path/to/stablecoin.bin
 ```
 
-When both are set, they must identify the same program. The binary must be the
-exact deployable RISC Zero `.bin`; rebuilding it can change the program ID.
+Since LEZ v0.2.5 a program lives at the account its `program_loader` header
+was deployed to, chosen at deploy time, so only `STABLECOIN_PROGRAM_ID` can
+name it. The binary's RISC Zero ImageID identifies bytecode, not an address:
+when `STABLECOIN_PROGRAM_BIN` is set, the module reads the header at
+`STABLECOIN_PROGRAM_ID` and requires its `image_id` to match
+(`program_binary_mismatch`, or `program_header_unavailable` when there is no
+loader-owned header there). A binary alone leaves the module `config_missing`.
 
 Set `STABLECOIN_DEBUG=1` to emit adapter diagnostics to module stderr.
 
