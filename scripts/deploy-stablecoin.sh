@@ -217,6 +217,16 @@ try_tx() {
   return 1
 }
 
+# Deploy a program; a failure is skipped as "already deployed". Nothing is taken
+# on trust: every program is exercised by a later step that fails loudly if it
+# is missing (token: the collateral definition check; twap_oracle: the oracle
+# account; stablecoin: initialize_program).
+deploy_program() {
+  local name="$1" bin="$2"
+  try_tx "deploy $name program" -- wallet deploy-program "$bin" \
+    || log "${YEL}⚠ deploy failed — assuming $name is already deployed (verified by a later step)${RST}"
+}
+
 # Whether a token definition is initialized on-chain. Relies on `spel inspect`
 # failing for an account that holds no TokenDefinition; if a spel version ever
 # exits 0 there instead, initialize_program still rejects a missing collateral
@@ -319,12 +329,12 @@ fi
 # The token program is only needed here to create the collateral; an existing
 # collateral token already lives under its own token program.
 if [ -n "$COLLATERAL_HOLDING_ID" ] && [ "$SKIP_TOKEN_DEPLOY" != "1" ]; then
-  run_tx soft "deploy token program" -- wallet deploy-program "$TOKEN_BIN"
+  deploy_program token "$TOKEN_BIN"
 fi
 if [ "$SKIP_TWAP_DEPLOY" != "1" ]; then
-  run_tx soft "deploy twap_oracle program" -- wallet deploy-program "$TWAP_BIN"
+  deploy_program twap_oracle "$TWAP_BIN"
 fi
-run_tx soft "deploy stablecoin program" -- wallet deploy-program "$STABLECOIN_BIN"
+deploy_program stablecoin "$STABLECOIN_BIN"
 
 ###############################################################################
 # 3. Collateral token — create it, or confirm the existing one
