@@ -8,9 +8,9 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::api::{
     self, AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest,
     DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
-    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, ProgramInfoRequest,
-    RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, StablecoinResult,
-    UpdateRedemptionRatePlanRequest,
+    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
+    ProgramInfoRequest, RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest,
+    StablecoinResult, UpdateRedemptionRatePlanRequest,
 };
 
 #[derive(Serialize)]
@@ -219,6 +219,16 @@ pub unsafe extern "C" fn stablecoin_initialize_program_plan(
     unsafe { call::<InitializeProgramPlanRequest>(request_json, api::initialize_program_plan) }
 }
 
+#[unsafe(no_mangle)]
+/// Builds the exact wallet submission plan for `OpenPosition`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_open_position_plan(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<OpenPositionPlanRequest>(request_json, api::open_position_plan) }
+}
+
 /// Releases a string returned by a `stablecoin_*` operation.
 ///
 /// # Safety
@@ -319,6 +329,53 @@ mod tests {
             // SAFETY: request is a live NUL-terminated CString for this call.
             let response = unsafe { operation(request.as_ptr()) };
             // SAFETY: response came from the selected poke-plan operation and remains live.
+            unsafe { assert_failure_response(response, "bad_request") };
+        }
+    }
+
+    #[test]
+    fn open_position_requires_decimal_strings_at_the_boundary() {
+        let account_read = serde_json::json!({
+            "id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "status": "ok",
+            "account": {
+                "program_owner": "2222222222222222222222222222222222222222222222222222222222222222",
+                "balance": "00000000000000000000000000000000",
+                "nonce": "00000000000000000000000000000000",
+                "data": ""
+            }
+        });
+        for request in [
+            serde_json::json!({
+                "stablecoinProgramId": "1111111111111111111111111111111111111111111111111111111111111111",
+                "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+                "positionNonce": 1,
+                "initialCollateralAmount": "1",
+                "userCollateralHoldingId": "3333333333333333333333333333333333333333333333333333333333333333",
+                "userCollateralHolding": account_read,
+                "collateralDefinition": account_read,
+                "protocolParameters": account_read,
+                "clock": account_read
+            }),
+            serde_json::json!({
+                "stablecoinProgramId": "1111111111111111111111111111111111111111111111111111111111111111",
+                "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+                "positionNonce": "1",
+                "initialCollateralAmount": 1.5,
+                "userCollateralHoldingId": "3333333333333333333333333333333333333333333333333333333333333333",
+                "userCollateralHolding": account_read,
+                "collateralDefinition": account_read,
+                "protocolParameters": account_read,
+                "clock": account_read
+            }),
+        ] {
+            let request = match CString::new(request.to_string()) {
+                Ok(value) => value,
+                Err(error) => panic!("{error}"),
+            };
+            // SAFETY: request remains a live NUL-terminated string for this call.
+            let response = unsafe { stablecoin_open_position_plan(request.as_ptr()) };
+            // SAFETY: response came from stablecoin_open_position_plan and remains live.
             unsafe { assert_failure_response(response, "bad_request") };
         }
     }

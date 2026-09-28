@@ -3,11 +3,11 @@ use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::account::AccountId;
 use serde_json::{json, Value};
 use stablecoin_core::{
-    compute_protocol_parameters_pda, compute_redemption_price_state_pda,
-    compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda,
-    compute_stablecoin_master_holding_pda, Instruction,
+    compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
+    compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
+    compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda, Instruction,
 };
-use token_core::TokenDefinition;
+use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
@@ -18,9 +18,9 @@ use super::{
     parse_stablecoin_program_id,
     projection::clock_timestamp,
     quote::{redemption_rate_update_quote, validated_market_price_oracle},
-    AccrueStabilityFeePlanRequest, InitializeProgramPlanRequest, RedemptionRateUpdateQuoteRequest,
-    RefreshGlobalsPlanRequest, StablecoinApiError, StablecoinResult,
-    UpdateRedemptionRatePlanRequest,
+    AccrueStabilityFeePlanRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
+    RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, StablecoinApiError,
+    StablecoinResult, UpdateRedemptionRatePlanRequest,
 };
 use crate::account::{
     account_id_from_hex, account_id_hex, decode_account, program_id_bytes, AccountRead,
@@ -101,6 +101,69 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
         ],
         [true, false, false, false, false, false, false, false, false],
         instruction,
+    )
+}
+
+pub fn open_position_plan(request: OpenPositionPlanRequest) -> StablecoinResult {
+    let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
+    let owner = parse_account_id(&request.owner_id)?;
+    let holding_id = parse_account_id(&request.user_collateral_holding_id)?;
+    let position_nonce = parse_decimal_u64(&request.position_nonce)?;
+    let initial_collateral_amount = parse_decimal_u128(&request.initial_collateral_amount)?;
+
+    let (_, parameters) = validated_protocol_parameters(program_id, &request.protocol_parameters)?;
+    if parameters.is_frozen {
+        return Err(StablecoinApiError::new("protocol_frozen"));
+    }
+
+    let (collateral_definition_id, collateral_definition_account) =
+        required_account(&request.collateral_definition)?;
+    if collateral_definition_id != parameters.collateral_definition_id {
+        return Err(StablecoinApiError::new("collateral_definition_mismatch"));
+    }
+    let collateral_definition = TokenDefinition::try_from(&collateral_definition_account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_collateral_definition"))?;
+    if !matches!(collateral_definition, TokenDefinition::Fungible { .. }) {
+        return Err(StablecoinApiError::new("invalid_collateral_definition"));
+    }
+
+    let (read_holding_id, holding_account) = required_account(&request.user_collateral_holding)?;
+    if read_holding_id != holding_id {
+        return Err(StablecoinApiError::new("invalid_user_collateral_holding"));
+    }
+    let holding = TokenHolding::try_from(&holding_account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_user_collateral_holding"))?;
+    if !matches!(
+        holding,
+        TokenHolding::Fungible { definition_id, .. } if definition_id == collateral_definition_id
+    ) {
+        return Err(StablecoinApiError::new("invalid_user_collateral_holding"));
+    }
+    if holding_account.program_owner != collateral_definition_account.program_owner {
+        return Err(StablecoinApiError::new("token_program_mismatch"));
+    }
+
+    let (clock_id, _) = required_account(&request.clock)?;
+    clock_timestamp(&request.clock)?;
+
+    let position_id = compute_position_pda(program_id, owner, position_nonce);
+    let vault_id = compute_position_vault_pda(program_id, position_id);
+    plan_response(
+        program_id,
+        [
+            owner,
+            position_id,
+            vault_id,
+            holding_id,
+            collateral_definition_id,
+            compute_protocol_parameters_pda(program_id),
+            clock_id,
+        ],
+        [true, false, false, true, false, false, false],
+        Instruction::OpenPosition {
+            position_nonce,
+            initial_collateral_amount,
+        },
     )
 }
 
@@ -243,6 +306,24 @@ fn parse_u128(value: &Value) -> Result<u128, StablecoinApiError> {
         }
         _ => Err(StablecoinApiError::new("invalid_numeric_value")),
     }
+}
+
+fn parse_decimal_u128(value: &str) -> Result<u128, StablecoinApiError> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(StablecoinApiError::new("invalid_numeric_value"));
+    }
+    value
+        .parse::<u128>()
+        .map_err(|_| StablecoinApiError::new("invalid_numeric_value"))
+}
+
+fn parse_decimal_u64(value: &str) -> Result<u64, StablecoinApiError> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(StablecoinApiError::new("invalid_numeric_value"));
+    }
+    value
+        .parse::<u64>()
+        .map_err(|_| StablecoinApiError::new("invalid_numeric_value"))
 }
 
 fn parse_u64(value: &Value) -> Result<u64, StablecoinApiError> {

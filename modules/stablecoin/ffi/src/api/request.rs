@@ -104,3 +104,17 @@ pub struct InitializeProgramPlanRequest {
     pub initial_redemption_price: Value,
     pub stablecoin_name: String,
 }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenPositionPlanRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub initial_collateral_amount: String,
+    pub user_collateral_holding_id: String,
+    pub user_collateral_holding: AccountRead,
+    pub collateral_definition: AccountRead,
+    pub protocol_parameters: AccountRead,
+    pub clock: AccountRead,
+}

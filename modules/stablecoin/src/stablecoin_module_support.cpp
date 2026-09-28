@@ -168,16 +168,20 @@ std::string stableFfiError(const std::string& error) {
         "invalid_redemption_price_state_data",
         "invalid_stability_fee_accumulator_data",
         "invalid_stablecoin_name",
+        "invalid_user_collateral_holding",
         "market_price_oracle_mismatch",
         "oracle_price_zero",
         "oracle_stale",
         "oracle_asset_mismatch",
         "program_id_mismatch",
         "protocol_parameters_pda_mismatch",
+        "protocol_frozen",
         "rate_update_too_soon",
         "redemption_price_state_pda_mismatch",
         "stability_fee_accumulator_pda_mismatch",
         "stablecoin_program_mismatch",
+        "collateral_definition_mismatch",
+        "token_program_mismatch",
     };
     return stable.find(error) == stable.end() ? std::string("backend_error") : error;
 }

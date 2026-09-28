@@ -1,9 +1,9 @@
 # Stablecoin core module
 
 `stablecoin_module` is a headless Logos `core` module for the LEZ Stablecoin
-Program. It exposes deployment discovery, protocol-state reads, and protocol
-initialization through the same universal API used by `logoscore` and UI
-modules.
+Program. It exposes deployment discovery, protocol-state reads, protocol
+initialization, and position opening through the same universal API used by
+`logoscore` and UI modules.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
 `stablecoin_ffi` owns exact account decoding, PDA derivation, request
@@ -134,6 +134,31 @@ the exact nine-account instruction. Only `adminId` signs. Success adds
 
 Pass numeric values as decimal strings. JSON integers are accepted when their
 exact value survives parsing. JSON floating-point values are always rejected.
+
+### `openPosition(request)`
+
+Opens a new collateral-only position with no debt. Required request fields:
+
+| Field | Type |
+| --- | --- |
+| `ownerId` | base58 or 64-character hexadecimal account ID |
+| `positionNonce` | exact `u64` decimal string |
+| `initialCollateralAmount` | exact `u128` decimal string |
+| `userCollateralHoldingId` | base58 or 64-character hexadecimal account ID |
+
+The module derives the Position and Vault PDAs from the configured Stablecoin
+Program ID, owner, and nonce. It reads and validates Protocol Parameters,
+collateral definition, source holding, and canonical `CLOCK_01`; rejects a
+frozen protocol or mismatched collateral/token program; and verifies both
+derived accounts are uninitialized. `ownerId` and `userCollateralHoldingId`
+must both be public accounts controlled by the connected wallet, and both
+sign. Submission uses the shared transaction result envelope.
+
+Account order is owner, Position, Vault, source collateral holding, collateral
+definition, Protocol Parameters, `CLOCK_01`. No numeric JSON values are
+accepted for the nonce or collateral amount. Those fields must be decimal
+strings; fractions, signs, malformed digits, and values outside `u64`/`u128`
+return `invalid_numeric_value`.
 
 ## Runtime configuration
 
