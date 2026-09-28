@@ -114,12 +114,17 @@ nix build .#amm-module
 
 ## Runtime configuration
 
-Both are absolute-path env vars set on the **process that hosts the module**
-(the `logoscore` daemon, or Basecamp) — not on the `call`:
+These env vars are set on the **process that hosts the module** (the
+`logoscore` daemon, or Basecamp) — not on the `call`. An app that selects a
+registry network passes the same ids through `setAmmProgramId` / `setConfigId`
+instead:
 
-- `AMM_PROGRAM_BIN` — the deployed `amm.bin`. Required; its ELF determines the
-  program id and every derived PDA. Without it, `resolvePoolAccount` returns
-  `{ status: "error", error: "no_program_bin" }`.
+- `AMM_PROGRAM_ID` — the deployed AMM program's address (base58 or hex): the
+  account its `program_loader` header was deployed to. Required without a
+  registry selection; it determines every derived PDA. Since LEZ v0.2.5 it can't
+  be derived from `amm.bin`, so `AMM_PROGRAM_BIN` is no longer used. Without it,
+  `resolvePoolAccount` returns `{ status: "error", error: "no_program_bin" }`.
+- `AMM_CONFIG_ID` — the AMM instance's config account.
 
 (The token list config `TOKENS_CONFIG` is an **app** concern now — the module no
 longer reads it; see `apps/amm/README.md`.)
@@ -158,9 +163,9 @@ Have all of the following in place before staging the modules dir:
    # output under result/lib/ — copy it aside before building amm-module (both use ./result)
    ```
 
-5. **The deployed `amm.bin`** for `AMM_PROGRAM_BIN` — the exact binary running on
-   your target sequencer (its ELF fixes the program id and every PDA). See
-   `apps/amm/README.md` and the testnet runbook.
+5. **The deployed AMM program id** for `AMM_PROGRAM_ID` (and its config id for
+   `AMM_CONFIG_ID`) — the header account the AMM was deployed to on your target
+   sequencer. See `apps/amm/README.md` and the testnet setup script.
 
 6. **A wallet** at `~/.lee/wallet` (`wallet_config.json` with `sequencer_addr`
    pointing at your sequencer, plus `storage.json` with your accounts), and a
@@ -206,7 +211,8 @@ Start the daemon **with the env vars set on it**, then load the dependency
 first, then the module:
 
 ```bash
-AMM_PROGRAM_BIN=/abs/path/to/amm.bin \
+AMM_PROGRAM_ID=<deployed-amm-program-id> \
+AMM_CONFIG_ID=<amm-config-id> \
 logoscore -D -m ./modules --persistence-path ./data
 
 logoscore load-module lez_core     # dependency first

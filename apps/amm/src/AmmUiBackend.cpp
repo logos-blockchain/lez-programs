@@ -41,8 +41,8 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     setWalletStateReady(false);
 
     // Whenever the known-tokens / known-pools snapshot refreshes: adopt the active
-    // network's AMM program id on the module (empty ⇒ falls back to AMM_PROGRAM_BIN)
-    // so ops target that network without a bin, then bump registryRevision so QML
+    // network's AMM program id on the module (empty ⇒ falls back to AMM_PROGRAM_ID)
+    // so ops target that network without an env var, then bump registryRevision so QML
     // replicas re-fetch tokenList()/poolList()/resolveTokens().
     connect(m_registry.get(), &RegistryLoader::changed, this, [this]() {
         m_logos->amm_module.setAmmProgramId(QVariantMap{

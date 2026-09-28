@@ -44,16 +44,18 @@ nix run .#amm-ui
 nix flake update
 ```
 
-To use the Swap view, also set `AMM_PROGRAM_BIN` (your deployed `amm.bin`) and
-`TOKENS_CONFIG` (your token list) — use absolute paths, from the repo root:
+To use the Swap view, also set `AMM_PROGRAM_ID` (the deployed AMM program's
+address), `AMM_CONFIG_ID` (its config account) and `TOKENS_CONFIG` (your token
+list) — use absolute paths, from the repo root:
 
 ```bash
-AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+AMM_PROGRAM_ID=<deployed-amm-program-id> \
+AMM_CONFIG_ID=<amm-config-id> \
 TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
 nix run .#amm-ui
 ```
 
-See `apps/amm/README.md` for full details on both variables.
+See `apps/amm/README.md` for full details on these variables.
 
 ## Prerequisites
 

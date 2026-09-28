@@ -4,7 +4,6 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
-#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -37,10 +36,9 @@ bool ammDebug() {
         if (ammDebug()) std::cerr << "[amm-debug] " << msg << std::endl;  \
     } while (0)
 
-// Absolute path to the deployed AMM program's compiled binary (amm.bin). The
-// module can't derive this itself: the wallet module's bundled AMM program may
-// differ from whatever is deployed on the target sequencer, and the bytes are
-// what determine the program id (and every PDA derived from it).
+// Path to an AMM binary (amm.bin). Until LEZ v0.2.5 the module derived the program id
+// from it; since then a binary yields only an ImageID, not the program's address (see
+// AMM_PROGRAM_ID_ENV). It is read only to warn a caller who still sets it.
 constexpr char AMM_PROGRAM_BIN_ENV[] = "AMM_PROGRAM_BIN";
 // LEZ v0.2.5 made public transactions charge a fee, and the wallet FFI grew a
 // `payer_account_id_hex` parameter for it. Empty means "no explicit payer": the
@@ -55,6 +53,13 @@ constexpr char FEE_PAYER_SELF[] = "";
 // Account id (base58 or hex) of the active instance's config PDA, for local /
 // headless use when no registry (setConfigId) supplies one.
 constexpr char AMM_CONFIG_ID_ENV[] = "AMM_CONFIG_ID";
+
+// Account id (base58 or hex) of the DEPLOYED AMM program -- its `program_loader`
+// header account. Since LEZ v0.2.5 that account id *is* the program's address and is
+// chosen at deploy time, so it cannot be derived from the binary: AMM_PROGRAM_BIN
+// yields the ImageID, which is no longer an address. Use this for local / headless
+// use when no registry (setAmmProgramId) supplies one.
+constexpr char AMM_PROGRAM_ID_ENV[] = "AMM_PROGRAM_ID";
 
 int hexVal(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -77,17 +82,6 @@ bool isHexEven(const std::string& s) {
     for (const char c : s)
         if (hexVal(c) < 0) return false;
     return true;
-}
-
-std::string toHex(const uint8_t* p, size_t n) {
-    static const char* const kDigits = "0123456789abcdef";
-    std::string s;
-    s.reserve(n * 2);
-    for (size_t i = 0; i < n; ++i) {
-        s.push_back(kDigits[p[i] >> 4]);
-        s.push_back(kDigits[p[i] & 0x0f]);
-    }
-    return s;
 }
 
 // Exception-safe field accessor over a json object: returns "" when the key is
@@ -250,31 +244,35 @@ json publicError(const std::string& code,
 
 }  // namespace
 
-std::vector<uint8_t> AmmModuleImpl::loadAmmElf() {
-    const char* path = std::getenv(AMM_PROGRAM_BIN_ENV);
-    if (path == nullptr || *path == '\0') return {};
-    std::ifstream file(path, std::ios::binary);
-    if (!file) return {};
-    return std::vector<uint8_t>((std::istreambuf_iterator<char>(file)),
-                                std::istreambuf_iterator<char>());
-}
-
 std::string AmmModuleImpl::ammProgramId() {
-    // An app-selected program id (setAmmProgramId) takes precedence; AMM_PROGRAM_BIN
-    // is the fallback for local / headless / no-registry use.
+    // An app-selected program id (setAmmProgramId, i.e. the registry) takes
+    // precedence; AMM_PROGRAM_ID is the fallback for local / headless use.
     if (!m_activeProgramId.empty()) return m_activeProgramId;
 
-    const std::vector<uint8_t> elf = loadAmmElf();
-    if (elf.empty()) return {};
-    // Hand the deployed binary to the amm_ffi program_id op, which decodes it
-    // and computes the Image ID — 64-char lowercase hex, little-endian per u32
-    // word (matches `spel program-id` and the on-chain *_program_id fields).
-    const FfiResult r = call(amm_program_id, json{{"elf", toHex(elf.data(), elf.size())}});
-    if (!r.ok) {
-        AMM_TRACE("ammProgramId: amm_program_id op failed");
-        return {};
+    const char* env_id = std::getenv(AMM_PROGRAM_ID_ENV);
+    if (env_id != nullptr && *env_id != '\0') {
+        const std::string normalized = normalizeAccountId(env_id);
+        if (normalized.empty()) {
+            AMM_TRACE("ammProgramId: " << AMM_PROGRAM_ID_ENV << " is not a valid account id");
+            return {};
+        }
+        return normalized;
     }
-    return jStr(r.value, "programId");
+
+    // Deliberately NOT falling back to the binary. Until LEZ v0.2.5 a program was
+    // addressed by its ImageID, so deriving it from AMM_PROGRAM_BIN worked. v0.2.5
+    // addresses programs by the account their `program_loader` header was deployed to,
+    // chosen at deploy time and not recoverable from the ELF. Deriving an ImageID here
+    // would hand every caller a well-formed id that simply is not where the program
+    // lives -- every PDA off it misses, and the config read fails as though the AMM
+    // were never initialized. Fail loudly instead.
+    const char* bin_path = std::getenv(AMM_PROGRAM_BIN_ENV);
+    if (bin_path != nullptr && *bin_path != '\0') {
+        AMM_TRACE("ammProgramId: " << AMM_PROGRAM_BIN_ENV << " is set but cannot supply a program "
+                  "address since LEZ v0.2.5 (it yields an ImageID). Set "
+                  << AMM_PROGRAM_ID_ENV << " to the deployed header account id, or use a registry.");
+    }
+    return {};
 }
 
 LogosMap AmmModuleImpl::setAmmProgramId(const LogosMap& request) {
@@ -283,7 +281,7 @@ LogosMap AmmModuleImpl::setAmmProgramId(const LogosMap& request) {
     if (!raw.empty() && normalized.empty())
         return LogosMap{{"status", "error"}, {"error", "invalid_account_id"}};
 
-    // Adopt the caller's chosen id (normalized to hex; empty reverts to the bin).
+    // Adopt the caller's chosen id (normalized to hex; empty reverts to AMM_PROGRAM_ID).
     m_activeProgramId = normalized;
     return LogosMap{{"status", "ok"}, {"error", ""}};
 }
@@ -403,12 +401,23 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
 
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
-        // no program id from AMM_PROGRAM_BIN (unset/unreadable/bad).
+        // No program address: no registry id adopted and AMM_PROGRAM_ID unset/invalid.
+        // Kept as `no_program_bin` because the QML surfaces already switch on that code.
         return failed("no_program_bin");
 
     const json config = readConfig();
     if (config.is_null())
         return failed("bad_config");  // no config id configured (setConfigId / AMM_CONFIG_ID unset)
+    // A config id is set but the account could not be READ -- an unopened/empty wallet,
+    // or a sequencer that does not know the account. Distinguished from an
+    // uninitialized-but-readable config below (config_unavailable), because reporting a
+    // dead read as `amm_not_initialized` sends you looking on chain for state that is
+    // actually there.
+    if (jStr(config, "status") != "ok") {
+        AMM_TRACE("resolvePoolAccount: config account read failed for " << ammConfigId()
+                  << " (wallet open? sequencer reachable?)");
+        return failed("config_read_failed");
+    }
 
     // The liquidity view passes base58 ids; the swap card passes hex. Normalize both to hex
     // (idempotent for hex) so the FFI id derivation works either way.
@@ -808,7 +817,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
 
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty()) {
-        AMM_TRACE("swapExactInput: FAIL no program id (AMM_PROGRAM_BIN unset/unreadable)");
+        AMM_TRACE("swapExactInput: FAIL no program id (no registry selection, AMM_PROGRAM_ID unset)");
         return {};
     }
 
@@ -903,7 +912,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
 
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty()) {
-        AMM_TRACE("swapExactOutput: FAIL no program id (AMM_PROGRAM_BIN unset/unreadable)");
+        AMM_TRACE("swapExactOutput: FAIL no program id (no registry selection, AMM_PROGRAM_ID unset)");
         return {};
     }
 
@@ -1030,7 +1039,7 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
         return LogosMap{{"status", "error"}, {"error", err}};
     };
 
-    // config_missing == no program id from AMM_PROGRAM_BIN (same as swapExactInQuote).
+    // config_missing == no program id (registry selection or AMM_PROGRAM_ID; same as swapExactInQuote).
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
         return error("config_missing");
@@ -1181,7 +1190,7 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
         return LogosMap{{"status", "error"}, {"error", err}};
     };
 
-    // config_missing == no program id from AMM_PROGRAM_BIN (same as createPool).
+    // config_missing == no program id (registry selection or AMM_PROGRAM_ID; same as createPool).
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
         return error("config_missing");
@@ -1339,7 +1348,7 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
         return LogosMap{{"status", "error"}, {"error", err}};
     };
 
-    // config_missing == no program id from AMM_PROGRAM_BIN (same as addLiquidity).
+    // config_missing == no program id (registry selection or AMM_PROGRAM_ID; same as addLiquidity).
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
         return error("config_missing");
@@ -1428,7 +1437,7 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
         return LogosMap{{"status", "error"}, {"error", err}};
     };
 
-    // config_missing == no program id from AMM_PROGRAM_BIN (same as the other submits).
+    // config_missing == no program id (registry selection or AMM_PROGRAM_ID; same as the other submits).
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
         return error("config_missing");

@@ -215,8 +215,8 @@ pub struct CreatePoolQuoteRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatePoolPlanRequest {
-    /// Resolved by the module from `AMM_PROGRAM_BIN` (like every id-deriving op) —
-    /// the FFI is stateless and can't read it itself.
+    /// Resolved by the module from the registry selection or `AMM_PROGRAM_ID` (like every
+    /// id-deriving op) — the FFI is stateless and can't read it itself.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
     /// the `current_tick` PDA depends on (same as the swap plan requests).
@@ -257,7 +257,7 @@ pub struct AddLiquidityQuoteRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AddLiquidityPlanRequest {
-    /// Resolved by the module from `AMM_PROGRAM_BIN` (like every id-deriving op).
+    /// Resolved by the module from the registry selection or `AMM_PROGRAM_ID`.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
     /// the `current_tick` PDA depends on (same as the swap / create plan requests).
@@ -297,7 +297,7 @@ pub struct RemoveLiquidityQuoteRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveLiquidityPlanRequest {
-    /// Resolved by the module from `AMM_PROGRAM_BIN` (like every id-deriving op).
+    /// Resolved by the module from the registry selection or `AMM_PROGRAM_ID`.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
     /// the `current_tick` PDA depends on (same as the swap / add plan requests).
@@ -321,7 +321,7 @@ pub struct RemoveLiquidityPlanRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncReservesPlanRequest {
-    /// Resolved by the module from `AMM_PROGRAM_BIN` (like every id-deriving op).
+    /// Resolved by the module from the registry selection or `AMM_PROGRAM_ID`.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
     /// the `current_tick` PDA depends on (same as the swap / liquidity plan requests).
