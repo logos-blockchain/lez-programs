@@ -362,6 +362,12 @@ inspect "$TOKEN_IDL" "$COLLATERAL_DEF" "TokenDefinition"
 sec "Program ids (derived from the binaries)"
 STABLECOIN_PID="$(program_id "$STABLECOIN_BIN")"; kv "stablecoin program id"  "$STABLECOIN_PID"
 TWAP_PID="$(program_id "$TWAP_BIN")";             kv "twap_oracle program id" "$TWAP_PID"
+# Only known when this script created the collateral; an existing collateral
+# token lives under its own token program.
+TOKEN_PID=""
+if [ -n "$COLLATERAL_HOLDING_ID" ]; then
+  TOKEN_PID="$(program_id "$TOKEN_BIN")";          kv "token program id"       "$TOKEN_PID"
+fi
 
 sec "Stablecoin globals (stablecoin_pdas example)"
 log "${DIM}\$ cargo run -q -p stablecoin_program --example stablecoin_pdas -- $STABLECOIN_PID globals${RST}"
@@ -449,6 +455,7 @@ cat > "$STABLECOIN_MANIFEST_OUT" <<JSON
   "twapOracleBin": "$TWAP_BIN",
   "twapOracleIdl": "$TWAP_IDL",
   "twapOracleProgramId": "$TWAP_PID",
+  "tokenProgramId": "$TOKEN_PID",
   "admin": "$ADMIN",
   "freezeAuthority": "$FREEZE_AUTHORITY",
   "protocolParameters": "$PROTOCOL_PARAMETERS",
@@ -458,6 +465,7 @@ cat > "$STABLECOIN_MANIFEST_OUT" <<JSON
   "stablecoinMasterHolding": "$STABLECOIN_MASTER_HOLDING",
   "collateralDefinition": "$COLLATERAL_DEF",
   "collateralHolding": "$COLLATERAL_HOLDING_ID",
+  "collateralMintAuthority": "$COLLATERAL_MINT_AUTHORITY_ID",
   "marketPriceOracle": "$MARKET_PRICE_ORACLE",
   "marketPriceOracleSource": "$ORACLE_SOURCE",
   "marketPriceOracleWindowDuration": $STABLECOIN_ORACLE_WINDOW_DURATION,
@@ -466,16 +474,47 @@ cat > "$STABLECOIN_MANIFEST_OUT" <<JSON
 JSON
 kv "wrote" "$STABLECOIN_MANIFEST_OUT"
 
-sec "Done"
+sec "Done — deployment summary"
 log "${GRN}✅ Stablecoin deployed and initialized.${RST}"
-kv "stablecoin program id" "$STABLECOIN_PID"
-kv "stablecoin definition" "$STABLECOIN_DEFINITION"
-kv "market price oracle"   "$MARKET_PRICE_ORACLE"
 log ""
-log "Point the stablecoin module at this deployment with either of:"
-log "  ${DIM}STABLECOIN_PROGRAM_BIN=$(abs_path "$STABLECOIN_BIN")${RST}"
+log "${BOLD}Programs${RST}"
+kv "stablecoin"                 "$STABLECOIN_PID"
+kv "twap_oracle"                "$TWAP_PID"
+if [ -n "$TOKEN_PID" ]; then kv "token" "$TOKEN_PID"; fi
+log ""
+log "${BOLD}Stablecoin accounts${RST}"
+kv "protocol_parameters"        "$PROTOCOL_PARAMETERS"
+kv "stability_fee_accumulator"  "$STABILITY_FEE_ACCUMULATOR"
+kv "redemption_price_state"     "$REDEMPTION_PRICE_STATE"
+kv "stablecoin_definition"      "$STABLECOIN_DEFINITION"
+kv "stablecoin_master_holding"  "$STABLECOIN_MASTER_HOLDING"
+log ""
+log "${BOLD}Roles${RST}"
+kv "admin"                      "$ADMIN"
+kv "freeze authority"           "$FREEZE_AUTHORITY"
+log ""
+log "${BOLD}Collateral token${RST}"
+kv "definition"                 "$COLLATERAL_DEF"
+if [ -n "$COLLATERAL_HOLDING_ID" ]; then
+  kv "holding"                  "$COLLATERAL_HOLDING_ID"
+  kv "mint authority"           "$COLLATERAL_MINT_AUTHORITY_ID"
+fi
+log ""
+log "${BOLD}Market price oracle${RST}"
+kv "account"                    "$MARKET_PRICE_ORACLE"
+kv "price source"               "$ORACLE_SOURCE"
+kv "window (ms)"                "$STABLECOIN_ORACLE_WINDOW_DURATION"
+kv "initial price"              "$STABLECOIN_ORACLE_INITIAL_PRICE (10^27 = 1.0)"
+kv "stale after (ms)"           "$STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS"
+kv "clock"                      "$CLOCK_ACCOUNT"
+log ""
+kv "all of the above, as JSON"  "$STABLECOIN_MANIFEST_OUT"
+log ""
+log "${BOLD}Stablecoin module${RST} (modules/stablecoin) — it derives every account from"
+log "the program id, so point it at this deployment with either:"
 log "  ${DIM}STABLECOIN_PROGRAM_ID=$STABLECOIN_PID${RST}"
+log "  ${DIM}STABLECOIN_PROGRAM_BIN=$(abs_path "$STABLECOIN_BIN")${RST}"
 log ""
-log "The oracle price is static and goes stale after ${STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS} ms;"
-log "generate_debt rejects it past that. Do not refresh it with the TWAP oracle's"
-log "publish_price — it writes Q64.64, which the stablecoin misreads (see the header)."
+log "${YEL}The oracle price is static: generate_debt rejects it once it is older than"
+log "${STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS} ms. Do not refresh it with the TWAP oracle's publish_price —"
+log "that writes Q64.64, which the stablecoin misreads (see the header).${RST}"
