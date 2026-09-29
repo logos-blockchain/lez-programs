@@ -8,7 +8,8 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::api::{
     self, AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest,
     DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
-    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
+    DecodeStabilityFeeAccumulatorRequest, DepositCollateralPlanRequest,
+    InitializeProgramPlanRequest, OpenPositionPlanRequest, PositionAddressesRequest,
     ProgramInfoRequest, RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest,
     StablecoinResult, UpdateRedemptionRatePlanRequest,
 };
@@ -229,6 +230,28 @@ pub unsafe extern "C" fn stablecoin_open_position_plan(request_json: *const c_ch
     unsafe { call::<OpenPositionPlanRequest>(request_json, api::open_position_plan) }
 }
 
+#[unsafe(no_mangle)]
+/// Derives a position and its collateral vault from owner and nonce.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_position_addresses(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<PositionAddressesRequest>(request_json, api::position_addresses) }
+}
+
+#[unsafe(no_mangle)]
+/// Builds the exact wallet submission plan for `DepositCollateral`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_deposit_collateral_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<DepositCollateralPlanRequest>(request_json, api::deposit_collateral_plan) }
+}
+
 /// Releases a string returned by a `stablecoin_*` operation.
 ///
 /// # Safety
@@ -378,6 +401,47 @@ mod tests {
             // SAFETY: response came from stablecoin_open_position_plan and remains live.
             unsafe { assert_failure_response(response, "bad_request") };
         }
+    }
+
+    #[test]
+    fn deposit_collateral_rejects_float_amounts_and_preserves_decimal_strings() {
+        let not_found = serde_json::json!({
+            "id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "status": "not_found"
+        });
+        let request = serde_json::json!({
+            "stablecoinProgramId": "1111111111111111111111111111111111111111111111111111111111111111",
+            "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+            "positionNonce": "18446744073709551615",
+            "amount": 1.5,
+            "userCollateralHoldingId": "3333333333333333333333333333333333333333333333333333333333333333",
+            "position": not_found,
+            "vault": not_found,
+            "userCollateralHolding": not_found,
+            "protocolParameters": not_found
+        });
+        let request = match CString::new(request.to_string()) {
+            Ok(value) => value,
+            Err(error) => panic!("{error}"),
+        };
+        // SAFETY: request remains a live NUL-terminated string for this call.
+        let response = unsafe { stablecoin_deposit_collateral_plan(request.as_ptr()) };
+        // SAFETY: response came from stablecoin_deposit_collateral_plan and remains live.
+        unsafe { assert_failure_response(response, "invalid_numeric_value") };
+    }
+
+    #[test]
+    fn position_address_derivation_requires_a_decimal_nonce_string() {
+        let request = match CString::new(
+            r#"{"stablecoinProgramId":"1111111111111111111111111111111111111111111111111111111111111111","ownerId":"2222222222222222222222222222222222222222222222222222222222222222","positionNonce":1}"#,
+        ) {
+            Ok(value) => value,
+            Err(error) => panic!("{error}"),
+        };
+        // SAFETY: request remains a live NUL-terminated string for this call.
+        let response = unsafe { stablecoin_position_addresses(request.as_ptr()) };
+        // SAFETY: response came from stablecoin_position_addresses and remains live.
+        unsafe { assert_failure_response(response, "bad_request") };
     }
 
     #[test]

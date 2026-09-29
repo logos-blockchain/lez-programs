@@ -1,12 +1,13 @@
 use stablecoin_ffi::{
     accrue_stability_fee_plan, current_global_state, decode_protocol_parameters,
-    decode_redemption_price_state, decode_stability_fee_accumulator, initialize_program_plan,
-    open_position_plan, program_info, redemption_rate_update_quote, refresh_globals_plan,
-    update_redemption_rate_plan, AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest,
-    DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
-    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
-    ProgramInfoRequest, RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest,
-    StablecoinResult, UpdateRedemptionRatePlanRequest,
+    decode_redemption_price_state, decode_stability_fee_accumulator, deposit_collateral_plan,
+    initialize_program_plan, open_position_plan, position_addresses, program_info,
+    redemption_rate_update_quote, refresh_globals_plan, update_redemption_rate_plan,
+    AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest, DecodeProtocolParametersRequest,
+    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
+    DepositCollateralPlanRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
+    PositionAddressesRequest, ProgramInfoRequest, RedemptionRateUpdateQuoteRequest,
+    RefreshGlobalsPlanRequest, StablecoinResult, UpdateRedemptionRatePlanRequest,
 };
 
 #[test]
@@ -28,4 +29,6 @@ fn crate_root_reexports_stablecoin_surface() {
     let _refresh: fn(RefreshGlobalsPlanRequest) -> StablecoinResult = refresh_globals_plan;
     let _initialize: fn(InitializeProgramPlanRequest) -> StablecoinResult = initialize_program_plan;
     let _open_position: fn(OpenPositionPlanRequest) -> StablecoinResult = open_position_plan;
+    let _position_addresses: fn(PositionAddressesRequest) -> StablecoinResult = position_addresses;
+    let _deposit: fn(DepositCollateralPlanRequest) -> StablecoinResult = deposit_collateral_plan;
 }

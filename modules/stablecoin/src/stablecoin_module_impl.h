@@ -71,6 +71,14 @@ public:
     /// accounts controlled by the connected wallet and both sign.
     LogosMap openPosition(const LogosMap& request);
 
+    /// Deposits collateral into an existing position and reconciles donations
+    /// from the live vault balance. `ownerId`, `positionNonce`,
+    /// `userCollateralHoldingId`, and `amount` are required. Use decimal
+    /// strings for portable exact integers; JSON floats are rejected. Owner
+    /// and source holding must be public accounts controlled by the wallet and
+    /// both sign, including for zero-amount reconciliation.
+    LogosMap depositCollateral(const LogosMap& request);
+
 private:
     using StablecoinOperation = char* (*)(const char*);
 

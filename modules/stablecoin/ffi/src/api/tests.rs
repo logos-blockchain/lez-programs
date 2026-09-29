@@ -6,21 +6,23 @@ use lee_core::{
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
 use stablecoin_core::{
-    compute_protocol_parameters_pda, compute_redemption_price_state_pda,
-    compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda,
-    compute_stablecoin_master_holding_pda, math::FIXED_POINT_ONE, Instruction, ProtocolParameters,
-    RedemptionPriceState, StabilityFeeAccumulator,
+    compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
+    compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
+    compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda,
+    math::FIXED_POINT_ONE, Instruction, Position, ProtocolParameters, RedemptionPriceState,
+    StabilityFeeAccumulator,
 };
 use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
     accrue_stability_fee_plan, decode_protocol_parameters, decode_redemption_price_state,
-    decode_stability_fee_accumulator, initialize_program_plan, open_position_plan, program_info,
-    refresh_globals_plan, update_redemption_rate_plan, AccrueStabilityFeePlanRequest,
-    DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
-    DecodeStabilityFeeAccumulatorRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
-    ProgramInfoRequest, RefreshGlobalsPlanRequest, StablecoinResult,
+    decode_stability_fee_accumulator, deposit_collateral_plan, initialize_program_plan,
+    open_position_plan, position_addresses, program_info, refresh_globals_plan,
+    update_redemption_rate_plan, AccrueStabilityFeePlanRequest, DecodeProtocolParametersRequest,
+    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
+    DepositCollateralPlanRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
+    PositionAddressesRequest, ProgramInfoRequest, RefreshGlobalsPlanRequest, StablecoinResult,
     UpdateRedemptionRatePlanRequest,
 };
 use crate::account::{account_id_hex, account_read, program_id_bytes};
@@ -334,6 +336,57 @@ fn open_position_request(is_frozen: bool) -> OpenPositionPlanRequest {
         ),
         protocol_parameters: poke_parameters_read(&poke_parameters(is_frozen)),
         clock: poke_clock_read(POKE_NOW),
+    }
+}
+
+fn deposit_collateral_request(is_frozen: bool, amount: Value) -> DepositCollateralPlanRequest {
+    let owner = id(20);
+    let position_nonce = u64::MAX;
+    let position_id = compute_position_pda(STABLECOIN_PROGRAM_ID, owner, position_nonce);
+    let vault_id = compute_position_vault_pda(STABLECOIN_PROGRAM_ID, position_id);
+    let collateral_id = id(4);
+    let holding_id = id(21);
+    let position = Position {
+        owner_account_id: owner,
+        position_nonce,
+        vault_account_id: vault_id,
+        // Deliberately differs from the live vault balance to model a donation.
+        collateral_amount: 5,
+        normalized_debt_amount: 42,
+        opened_at: 7,
+    };
+
+    DepositCollateralPlanRequest {
+        stablecoin_program_id: program_id_hex(),
+        owner_id: account_id_hex(owner),
+        position_nonce: position_nonce.to_string(),
+        amount,
+        user_collateral_holding_id: account_id_hex(holding_id),
+        position: account_read(
+            position_id,
+            &account(STABLECOIN_PROGRAM_ID, Data::from(&position)),
+        ),
+        vault: account_read(
+            vault_id,
+            &account(
+                TOKEN_PROGRAM_ID,
+                Data::from(&TokenHolding::Fungible {
+                    definition_id: collateral_id,
+                    balance: 75,
+                }),
+            ),
+        ),
+        user_collateral_holding: account_read(
+            holding_id,
+            &account(
+                TOKEN_PROGRAM_ID,
+                Data::from(&TokenHolding::Fungible {
+                    definition_id: collateral_id,
+                    balance: u128::MAX,
+                }),
+            ),
+        ),
+        protocol_parameters: poke_parameters_read(&poke_parameters(is_frozen)),
     }
 }
 
@@ -1109,5 +1162,280 @@ fn open_position_plan_requires_valid_public_account_reads_and_clock() {
     assert_error(
         open_position_plan(malformed_parameters),
         "invalid_protocol_parameters_data",
+    );
+}
+
+#[test]
+fn position_addresses_match_the_open_position_pdas() {
+    let value = ok(position_addresses(PositionAddressesRequest {
+        stablecoin_program_id: program_id_hex(),
+        owner_id: account_id_hex(id(20)),
+        position_nonce: u64::MAX.to_string(),
+    }));
+
+    assert_eq!(
+        value["positionIdHex"],
+        "a87123457e26409c6a787258e4e4620ba51eff2da1623e429ec01ca5862a165d"
+    );
+    assert_eq!(
+        value["vaultIdHex"],
+        "3908984cfc287c2297d95d12559432450ba6f290427c6095af401254097ad19f"
+    );
+    assert_error(
+        position_addresses(PositionAddressesRequest {
+            stablecoin_program_id: program_id_hex(),
+            owner_id: account_id_hex(id(20)),
+            position_nonce: "18446744073709551616".to_owned(),
+        }),
+        "invalid_numeric_value",
+    );
+}
+
+#[test]
+fn deposit_collateral_plan_derives_accounts_and_allows_frozen_zero_reconciliation() {
+    let request = deposit_collateral_request(true, json!("0"));
+    let owner = request.owner_id.clone();
+    let holding = request.user_collateral_holding_id.clone();
+    let position_id = request.position.id.clone();
+    let vault_id = request.vault.id.clone();
+    let plan = ok(deposit_collateral_plan(request));
+
+    assert_eq!(plan["programId"], program_id_hex());
+    assert_eq!(
+        plan["accountIds"],
+        json!([
+            owner,
+            position_id,
+            vault_id,
+            holding,
+            account_id_hex(compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID)),
+        ])
+    );
+    assert_eq!(
+        plan["signingRequirements"],
+        json!([true, false, false, true, false])
+    );
+    assert!(matches!(
+        decode_instruction(&plan["instruction"]),
+        Instruction::DepositCollateral { amount: 0 }
+    ));
+}
+
+#[test]
+fn deposit_collateral_plan_preserves_full_u128_amount_and_pins_idl_contract() {
+    let mut request = deposit_collateral_request(true, json!(u128::MAX.to_string()));
+    let vault_id = account_id_hex(compute_position_vault_pda(
+        STABLECOIN_PROGRAM_ID,
+        compute_position_pda(STABLECOIN_PROGRAM_ID, id(20), u64::MAX),
+    ));
+    request.vault = account_read(
+        compute_position_vault_pda(
+            STABLECOIN_PROGRAM_ID,
+            compute_position_pda(STABLECOIN_PROGRAM_ID, id(20), u64::MAX),
+        ),
+        &account(
+            TOKEN_PROGRAM_ID,
+            Data::from(&TokenHolding::Fungible {
+                definition_id: id(4),
+                balance: 0,
+            }),
+        ),
+    );
+    let plan = ok(deposit_collateral_plan(request));
+    assert_eq!(plan["accountIds"][2], vault_id);
+    assert!(matches!(
+        decode_instruction(&plan["instruction"]),
+        Instruction::DepositCollateral { amount: u128::MAX }
+    ));
+
+    let mut large_json_integer = deposit_collateral_request(false, json!(u64::MAX));
+    large_json_integer.vault = account_read(
+        compute_position_vault_pda(
+            STABLECOIN_PROGRAM_ID,
+            compute_position_pda(STABLECOIN_PROGRAM_ID, id(20), u64::MAX),
+        ),
+        &account(
+            TOKEN_PROGRAM_ID,
+            Data::from(&TokenHolding::Fungible {
+                definition_id: id(4),
+                balance: 0,
+            }),
+        ),
+    );
+    let large_integer_plan = ok(deposit_collateral_plan(large_json_integer));
+    assert!(matches!(
+        decode_instruction(&large_integer_plan["instruction"]),
+        Instruction::DepositCollateral { amount } if amount == u64::MAX as u128
+    ));
+
+    let idl: Value = ok(serde_json::from_str(include_str!(
+        "../../../../../artifacts/stablecoin-idl.json"
+    )));
+    let instruction = idl["instructions"]
+        .as_array()
+        .and_then(|instructions| {
+            instructions
+                .iter()
+                .find(|instruction| instruction["name"] == "deposit_collateral")
+        })
+        .expect("deposit_collateral IDL instruction exists");
+    let accounts = instruction["accounts"]
+        .as_array()
+        .expect("deposit_collateral account metadata exists");
+    let contract = accounts
+        .iter()
+        .map(|account| {
+            (
+                account["name"].as_str().expect("account name"),
+                account["writable"].as_bool().expect("writable flag"),
+                account["signer"].as_bool().expect("signer flag"),
+                account["init"].as_bool().expect("init flag"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contract,
+        vec![
+            ("owner", false, true, false),
+            ("position", true, false, false),
+            ("vault", true, false, false),
+            ("user_collateral_holding", true, true, false),
+            ("protocol_parameters", false, false, false),
+        ]
+    );
+    assert_eq!(
+        instruction["args"],
+        json!([{"name": "amount", "type": "u128"}])
+    );
+}
+
+#[test]
+fn deposit_collateral_plan_rejects_lossy_amounts_and_inadequate_balances() {
+    for invalid in [
+        json!(1.5),
+        json!(1e3),
+        json!(-1),
+        json!("340282366920938463463374607431768211456"),
+        json!(""),
+    ] {
+        let request = deposit_collateral_request(false, invalid);
+        assert_error(deposit_collateral_plan(request), "invalid_numeric_value");
+    }
+
+    let mut insufficient = deposit_collateral_request(false, json!("1"));
+    let holding_id = id(21);
+    insufficient.user_collateral_holding = account_read(
+        holding_id,
+        &account(
+            TOKEN_PROGRAM_ID,
+            Data::from(&TokenHolding::Fungible {
+                definition_id: id(4),
+                balance: 0,
+            }),
+        ),
+    );
+    assert_error(
+        deposit_collateral_plan(insufficient),
+        "insufficient_collateral_balance",
+    );
+
+    let overflow = deposit_collateral_request(false, json!(u128::MAX.to_string()));
+    assert_error(
+        deposit_collateral_plan(overflow),
+        "collateral_amount_overflow",
+    );
+}
+
+#[test]
+fn deposit_collateral_plan_checks_position_vault_parameters_and_token_bindings() {
+    let mut wrong_position = deposit_collateral_request(false, json!("1"));
+    wrong_position.position.id = account_id_hex(id(22));
+    assert_error(
+        deposit_collateral_plan(wrong_position),
+        "position_pda_mismatch",
+    );
+
+    let mut wrong_owner = deposit_collateral_request(false, json!("1"));
+    let position_id = compute_position_pda(STABLECOIN_PROGRAM_ID, id(20), u64::MAX);
+    wrong_owner.position = account_read(
+        position_id,
+        &account(
+            STABLECOIN_PROGRAM_ID,
+            Data::from(&Position {
+                owner_account_id: id(22),
+                position_nonce: u64::MAX,
+                vault_account_id: compute_position_vault_pda(STABLECOIN_PROGRAM_ID, position_id),
+                collateral_amount: 5,
+                normalized_debt_amount: 42,
+                opened_at: 7,
+            }),
+        ),
+    );
+    assert_error(
+        deposit_collateral_plan(wrong_owner),
+        "position_owner_mismatch",
+    );
+
+    let mut wrong_nonce = deposit_collateral_request(false, json!("1"));
+    wrong_nonce.position = account_read(
+        position_id,
+        &account(
+            STABLECOIN_PROGRAM_ID,
+            Data::from(&Position {
+                owner_account_id: id(20),
+                position_nonce: u64::MAX - 1,
+                vault_account_id: compute_position_vault_pda(STABLECOIN_PROGRAM_ID, position_id),
+                collateral_amount: 5,
+                normalized_debt_amount: 42,
+                opened_at: 7,
+            }),
+        ),
+    );
+    assert_error(
+        deposit_collateral_plan(wrong_nonce),
+        "position_nonce_mismatch",
+    );
+
+    let mut wrong_vault = deposit_collateral_request(false, json!("1"));
+    wrong_vault.vault.id = account_id_hex(id(22));
+    assert_error(deposit_collateral_plan(wrong_vault), "vault_pda_mismatch");
+
+    let mut wrong_token_program = deposit_collateral_request(false, json!("1"));
+    wrong_token_program.user_collateral_holding = account_read(
+        id(21),
+        &account(
+            ORACLE_PROGRAM_ID,
+            Data::from(&TokenHolding::Fungible {
+                definition_id: id(4),
+                balance: u128::MAX,
+            }),
+        ),
+    );
+    assert_error(
+        deposit_collateral_plan(wrong_token_program),
+        "token_program_mismatch",
+    );
+
+    let mut wrong_definition = deposit_collateral_request(false, json!("1"));
+    wrong_definition.vault = account_read(
+        compute_position_vault_pda(STABLECOIN_PROGRAM_ID, position_id),
+        &account(
+            TOKEN_PROGRAM_ID,
+            Data::from(&TokenHolding::Fungible {
+                definition_id: id(22),
+                balance: 75,
+            }),
+        ),
+    );
+    assert_error(
+        deposit_collateral_plan(wrong_definition),
+        "collateral_definition_mismatch",
+    );
+
+    let mut wrong_parameters = deposit_collateral_request(false, json!("1"));
+    wrong_parameters.protocol_parameters.id = account_id_hex(id(22));
+    assert_error(
+        deposit_collateral_plan(wrong_parameters),
+        "protocol_parameters_pda_mismatch",
     );
 }

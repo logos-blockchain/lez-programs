@@ -118,3 +118,25 @@ pub struct OpenPositionPlanRequest {
     pub protocol_parameters: AccountRead,
     pub clock: AccountRead,
 }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionAddressesRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DepositCollateralPlanRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub amount: Value,
+    pub user_collateral_holding_id: String,
+    pub position: AccountRead,
+    pub vault: AccountRead,
+    pub user_collateral_holding: AccountRead,
+    pub protocol_parameters: AccountRead,
+}

@@ -6,6 +6,7 @@ use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
     compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
     compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda, Instruction,
+    Position,
 };
 use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::OraclePriceAccount;
@@ -18,9 +19,10 @@ use super::{
     parse_stablecoin_program_id,
     projection::clock_timestamp,
     quote::{redemption_rate_update_quote, validated_market_price_oracle},
-    AccrueStabilityFeePlanRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
-    RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, StablecoinApiError,
-    StablecoinResult, UpdateRedemptionRatePlanRequest,
+    AccrueStabilityFeePlanRequest, DepositCollateralPlanRequest, InitializeProgramPlanRequest,
+    OpenPositionPlanRequest, PositionAddressesRequest, RedemptionRateUpdateQuoteRequest,
+    RefreshGlobalsPlanRequest, StablecoinApiError, StablecoinResult,
+    UpdateRedemptionRatePlanRequest,
 };
 use crate::account::{
     account_id_from_hex, account_id_hex, decode_account, program_id_bytes, AccountRead,
@@ -164,6 +166,107 @@ pub fn open_position_plan(request: OpenPositionPlanRequest) -> StablecoinResult 
             position_nonce,
             initial_collateral_amount,
         },
+    )
+}
+
+/// Derive a position and its collateral vault from the stablecoin program,
+/// owner, and caller-chosen nonce.
+pub fn position_addresses(request: PositionAddressesRequest) -> StablecoinResult {
+    let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
+    let owner = parse_account_id(&request.owner_id)?;
+    let position_nonce = parse_decimal_u64(&request.position_nonce)?;
+    let position_id = compute_position_pda(program_id, owner, position_nonce);
+    let vault_id = compute_position_vault_pda(program_id, position_id);
+    Ok(json!({
+        "positionId": position_id.to_string(),
+        "positionIdHex": account_id_hex(position_id),
+        "vaultId": vault_id.to_string(),
+        "vaultIdHex": account_id_hex(vault_id),
+    }))
+}
+
+pub fn deposit_collateral_plan(request: DepositCollateralPlanRequest) -> StablecoinResult {
+    let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
+    let owner = parse_account_id(&request.owner_id)?;
+    let position_nonce = parse_decimal_u64(&request.position_nonce)?;
+    let amount = parse_u128(&request.amount)?;
+    let holding_id = parse_account_id(&request.user_collateral_holding_id)?;
+    let (parameters_id, parameters) =
+        validated_protocol_parameters(program_id, &request.protocol_parameters)?;
+
+    let expected_position_id = compute_position_pda(program_id, owner, position_nonce);
+    let (position_id, position_account) = required_account(&request.position)?;
+    if position_id != expected_position_id {
+        return Err(StablecoinApiError::new("position_pda_mismatch"));
+    }
+    if position_account.program_owner != program_id {
+        return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
+    }
+    let position = Position::try_from(&position_account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_position_data"))?;
+    if position.owner_account_id != owner {
+        return Err(StablecoinApiError::new("position_owner_mismatch"));
+    }
+    if position.position_nonce != position_nonce {
+        return Err(StablecoinApiError::new("position_nonce_mismatch"));
+    }
+
+    let expected_vault_id = compute_position_vault_pda(program_id, position_id);
+    if position.vault_account_id != expected_vault_id {
+        return Err(StablecoinApiError::new("position_vault_mismatch"));
+    }
+    let (vault_id, vault_account) = required_account(&request.vault)?;
+    if vault_id != expected_vault_id {
+        return Err(StablecoinApiError::new("vault_pda_mismatch"));
+    }
+    let vault_holding = TokenHolding::try_from(&vault_account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_position_vault"))?;
+    let vault_balance = match vault_holding {
+        TokenHolding::Fungible {
+            definition_id,
+            balance,
+        } if definition_id == parameters.collateral_definition_id => balance,
+        TokenHolding::Fungible { .. } => {
+            return Err(StablecoinApiError::new("collateral_definition_mismatch"));
+        }
+        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
+            return Err(StablecoinApiError::new("invalid_position_vault"));
+        }
+    };
+
+    let (read_holding_id, holding_account) = required_account(&request.user_collateral_holding)?;
+    if read_holding_id != holding_id {
+        return Err(StablecoinApiError::new("invalid_user_collateral_holding"));
+    }
+    if holding_account.program_owner != vault_account.program_owner {
+        return Err(StablecoinApiError::new("token_program_mismatch"));
+    }
+    let holding = TokenHolding::try_from(&holding_account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_user_collateral_holding"))?;
+    let source_balance = match holding {
+        TokenHolding::Fungible {
+            definition_id,
+            balance,
+        } if definition_id == parameters.collateral_definition_id => balance,
+        TokenHolding::Fungible { .. } => {
+            return Err(StablecoinApiError::new("collateral_definition_mismatch"));
+        }
+        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
+            return Err(StablecoinApiError::new("invalid_user_collateral_holding"));
+        }
+    };
+    if source_balance < amount {
+        return Err(StablecoinApiError::new("insufficient_collateral_balance"));
+    }
+    vault_balance
+        .checked_add(amount)
+        .ok_or_else(|| StablecoinApiError::new("collateral_amount_overflow"))?;
+
+    plan_response(
+        program_id,
+        [owner, position_id, vault_id, holding_id, parameters_id],
+        [true, false, false, true, false],
+        Instruction::DepositCollateral { amount },
     )
 }
 

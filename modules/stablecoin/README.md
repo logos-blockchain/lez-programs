@@ -2,8 +2,8 @@
 
 `stablecoin_module` is a headless Logos `core` module for the LEZ Stablecoin
 Program. It exposes deployment discovery, protocol-state reads, protocol
-initialization, and position opening through the same universal API used by
-`logoscore` and UI modules.
+initialization, position opening, and collateral deposits through the same
+universal API used by `logoscore` and UI modules.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
 `stablecoin_ffi` owns exact account decoding, PDA derivation, request
@@ -159,6 +159,42 @@ definition, Protocol Parameters, `CLOCK_01`. No numeric JSON values are
 accepted for the nonce or collateral amount. Those fields must be decimal
 strings; fractions, signs, malformed digits, and values outside `u64`/`u128`
 return `invalid_numeric_value`.
+
+### `depositCollateral(request)`
+
+Deposits collateral into an existing Position. Required request fields:
+
+| Field | Type |
+| --- | --- |
+| `ownerId` | base58 or 64-character hexadecimal account ID |
+| `positionNonce` | exact `u64` decimal string |
+| `userCollateralHoldingId` | base58 or 64-character hexadecimal account ID |
+| `amount` | exact `u128` decimal string or lossless JSON integer |
+
+The module derives the Position and Vault PDAs from the configured Stablecoin
+Program ID, owner, and nonce. It reads Protocol Parameters, Position, Vault,
+and the source holding, then validates their canonical addresses, stored
+Position identity, collateral definition, and Token Program ownership. The
+source holding must have enough balance. `ownerId` and
+`userCollateralHoldingId` must both be public accounts controlled by the
+connected wallet, and both sign, including for zero-amount deposits.
+
+Account order is owner, Position, Vault, source collateral holding, and
+Protocol Parameters. The Position's collateral is reconciled from the live
+Vault balance plus `amount`; it is not incremented from its stored collateral
+field. Thus `amount: "0"` absorbs a direct Vault donation, even while the
+protocol is frozen. The operation does not require an oracle or clock and does
+not apply the collateralization gate. The instruction moves `amount` through
+the chained Token Program transfer and leaves normalized debt unchanged.
+
+Use decimal strings for portable exact integers. JSON floats, negative values,
+malformed decimals, and values outside `u64`/`u128` return
+`invalid_numeric_value`. Other preflight failures use stable errors including
+`position_pda_mismatch`, `position_owner_mismatch`, `position_nonce_mismatch`,
+`position_vault_mismatch`, `vault_pda_mismatch`,
+`invalid_user_collateral_holding`, `collateral_definition_mismatch`,
+`token_program_mismatch`, `insufficient_collateral_balance`, and
+`collateral_amount_overflow`. Failed preflight never submits a transaction.
 
 ## Runtime configuration
 
