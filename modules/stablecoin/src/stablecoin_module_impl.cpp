@@ -220,6 +220,17 @@ std::string StablecoinModuleImpl::normalizeAccountId(const std::string& id) {
 
 bool StablecoinModuleImpl::requireWalletCaller(const std::string& caller_id,
                                                std::string& error) {
+    return requireWalletSigners({caller_id}, error);
+}
+
+bool StablecoinModuleImpl::requireWalletSigners(
+    const std::vector<std::string>& signer_ids,
+    std::string& error) {
+    if (signer_ids.empty()) {
+        error = "backend_error";
+        return false;
+    }
+
     logos::CallError call_error;
     const json accounts = modules().lez_core.list_accounts(&call_error);
     if (!call_error.ok() || !accounts.is_array()) {
@@ -229,6 +240,7 @@ bool StablecoinModuleImpl::requireWalletCaller(const std::string& caller_id,
         return false;
     }
 
+    std::vector<bool> found(signer_ids.size(), false);
     for (const auto& account : accounts) {
         if (!account.is_object()) continue;
         const auto public_field = account.find("is_public");
@@ -236,7 +248,13 @@ bool StablecoinModuleImpl::requireWalletCaller(const std::string& caller_id,
             || !public_field->get<bool>()) {
             continue;
         }
-        if (normalizeAccountId(jsonString(account, "account_id")) == caller_id) return true;
+        const std::string account_id = normalizeAccountId(jsonString(account, "account_id"));
+        for (std::size_t index = 0; index < signer_ids.size(); ++index) {
+            if (account_id == signer_ids[index]) found[index] = true;
+        }
+        if (std::all_of(found.begin(), found.end(), [](bool present) { return present; })) {
+            return true;
+        }
     }
 
     error = "account_read_failed";
@@ -623,7 +641,8 @@ LogosMap StablecoinModuleImpl::planAndSubmit(
     StablecoinOperation planner,
     const nlohmann::json& request,
     const std::string& expected_program_id,
-    std::size_t expected_account_count) {
+    std::size_t expected_account_count,
+    std::vector<std::size_t> expected_signer_indices) {
     const FfiResult planned = callStablecoin(planner, request);
     if (!planned.ok) {
         return publicError(stablecoin_module::detail::stableFfiError(planned.error));
@@ -631,11 +650,12 @@ LogosMap StablecoinModuleImpl::planAndSubmit(
     if (jsonString(planned.value, "programId") != expected_program_id) {
         return publicError("backend_error");
     }
-    return submitPlan(planned.value, expected_account_count);
+    return submitPlan(planned.value, expected_account_count, expected_signer_indices);
 }
 
 LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan,
-                                          std::size_t expected_account_count) {
+                                          std::size_t expected_account_count,
+                                          const std::vector<std::size_t>& expected_signer_indices) {
     const auto accounts_field = plan.find("accountIds");
     const auto signers_field = plan.find("signingRequirements");
     const auto instruction_field = plan.find("instruction");
@@ -653,14 +673,19 @@ LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan,
         signers_field->get<std::vector<bool>>();
     const std::vector<std::uint8_t> instruction =
         stablecoin_module::detail::jsonInstructionLeBytes(*instruction_field);
+    std::vector<bool> expected_signing_requirements(expected_account_count, false);
+    for (const std::size_t signer_index : expected_signer_indices) {
+        if (signer_index >= expected_account_count
+            || expected_signing_requirements[signer_index]) {
+            return publicError("backend_error");
+        }
+        expected_signing_requirements[signer_index] = true;
+    }
     if (expected_account_count == 0 || account_ids.size() != expected_account_count
         || signing_requirements.size() != expected_account_count
         || !std::all_of(account_ids.begin(), account_ids.end(),
                         stablecoin_module::detail::isValidAccountIdHex)
-        || !signing_requirements.front()
-        || !std::all_of(std::next(signing_requirements.begin()),
-                        signing_requirements.end(),
-                        [](bool required) { return !required; })
+        || signing_requirements != expected_signing_requirements
         || instruction.empty()) {
         return publicError("backend_error");
     }
@@ -764,5 +789,96 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
             {"initialRedemptionPrice", request["initialRedemptionPrice"]},
             {"stablecoinName", request["stablecoinName"]},
         }, jsonString(info, "programIdHex"), 9);
+    });
+}
+
+LogosMap StablecoinModuleImpl::openPosition(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!request.is_object()
+            || !hasString(request, "ownerId")
+            || !hasString(request, "positionNonce")
+            || !hasString(request, "initialCollateralAmount")
+            || !hasString(request, "userCollateralHoldingId")) {
+            return publicError("bad_request");
+        }
+
+        std::string error;
+        const json info = stablecoinProgramInfo(error);
+        if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+
+        const std::string owner = normalizeAccountId(jsonString(request, "ownerId"));
+        const std::string holding_id =
+            normalizeAccountId(jsonString(request, "userCollateralHoldingId"));
+        if (owner.empty() || holding_id.empty()) return publicError("invalid_account_id");
+        if (!requireWalletSigners({owner, holding_id}, error)) return publicError(error);
+
+        const json parameters = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
+        const std::string parameters_status = jsonString(parameters, "status");
+        if (parameters_status == "not_found") return publicError("not_initialized");
+        if (parameters_status != "ok") return publicError("account_read_failed");
+
+        const FfiResult decoded_parameters = callStablecoin(
+            stablecoin_decode_protocol_parameters,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"protocolParameters", parameters},
+            });
+        if (!decoded_parameters.ok) {
+            return publicError(
+                stablecoin_module::detail::stableFfiError(decoded_parameters.error));
+        }
+        const std::string collateral_id =
+            jsonString(decoded_parameters.value, "collateralDefinitionIdHex");
+        if (!stablecoin_module::detail::isValidAccountIdHex(collateral_id)) {
+            return publicError("backend_error");
+        }
+
+        const json holding = readPublicAccount(holding_id);
+        const json collateral = readPublicAccount(collateral_id);
+        const json clock = readPublicAccount(jsonString(info, "clockIdHex"));
+        if (jsonString(holding, "status") != "ok"
+            || jsonString(collateral, "status") != "ok"
+            || jsonString(clock, "status") != "ok") {
+            return publicError("account_read_failed");
+        }
+
+        const FfiResult planned = callStablecoin(
+            stablecoin_open_position_plan,
+            {
+                {"stablecoinProgramId", info["programIdHex"]},
+                {"ownerId", owner},
+                {"positionNonce", jsonString(request, "positionNonce")},
+                {"initialCollateralAmount", jsonString(request, "initialCollateralAmount")},
+                {"userCollateralHoldingId", holding_id},
+                {"userCollateralHolding", holding},
+                {"collateralDefinition", collateral},
+                {"protocolParameters", parameters},
+                {"clock", clock},
+            });
+        if (!planned.ok) {
+            return publicError(stablecoin_module::detail::stableFfiError(planned.error));
+        }
+        if (jsonString(planned.value, "programId") != jsonString(info, "programIdHex")) {
+            return publicError("backend_error");
+        }
+
+        const auto account_ids = planned.value.find("accountIds");
+        if (account_ids == planned.value.end() || !account_ids->is_array()
+            || account_ids->size() != 7) {
+            return publicError("backend_error");
+        }
+        for (const auto& account_id : *account_ids) {
+            if (!account_id.is_string()
+                || !stablecoin_module::detail::isValidAccountIdHex(
+                    account_id.get<std::string>())) {
+                return publicError("backend_error");
+            }
+        }
+        if (!requireUninitialized((*account_ids)[1].get<std::string>(), error)
+            || !requireUninitialized((*account_ids)[2].get<std::string>(), error)) {
+            return publicError(error);
+        }
+
+        return submitPlan(planned.value, 7, {0, 3});
     });
 }
