@@ -20,6 +20,7 @@ const std::string PROGRAM_ID_HEX(64, '1');
 const std::string ACCUMULATOR_ID_HEX(64, '2');
 const std::string PROTOCOL_PARAMETERS_ID_HEX(64, '3');
 const std::string REDEMPTION_STATE_ID_HEX(64, '4');
+const std::string ORACLE_ID_HEX(64, '8');
 const std::string CLOCK_ID_HEX(64, '7');
 
 class ScopedEnvironment {
@@ -399,4 +400,162 @@ LOGOS_TEST(current_global_state_preserves_stable_projection_errors) {
     assertError(response, "invalid_clock");
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 4);
     LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_current_global_state"), 1);
+}
+
+LOGOS_TEST(redemption_rate_update_quote_reads_configured_sources_and_returns_flat_quote) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const json decoded_parameters = {{"marketPriceOracleIdHex", ORACLE_ID_HEX}};
+    const json quote = {
+        {"canSubmit", true},
+        {"code", "ready"},
+        {"currentRedemptionPrice", "1000000000000000000000000000"},
+        {"marketPrice", "900000000000000000000000000"},
+        {"elapsedMilliseconds", "300000"},
+        {"nextRedemptionRatePerMillisecond", "1000010000000000000000000000"},
+        {"nextControllerIntegralTerm", "42"},
+        {"clampMetadata", {
+            {"integralMinimum", "-1000000000000000000000000000000000"},
+            {"integralMaximum", "1000000000000000000000000000000000"},
+            {"rateDeltaMinimum", "-10000000000000000000000"},
+            {"rateDeltaMaximum", "10000000000000000000000"},
+        }},
+        {"errors", json::array()},
+        {"warnings", json::array()},
+    };
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::string decoder_response = successEnvelope(decoded_parameters);
+    const std::string quote_response = successEnvelope(quote);
+    context.mockCFunction("stablecoin_program_info")
+        .returns(program_info_response);
+    context.mockCFunction("stablecoin_decode_protocol_parameters")
+        .returns(decoder_response);
+    context.mockCFunction("stablecoin_redemption_rate_update_quote")
+        .returns(quote_response);
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+
+    const LogosMap response = module.redemptionRateUpdateQuote();
+
+    LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(response["error"].get<std::string>(), std::string());
+    for (auto field = quote.begin(); field != quote.end(); ++field) {
+        LOGOS_ASSERT_EQ(response[field.key()], field.value());
+    }
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 4);
+    for (const auto& account_id : {
+             PROTOCOL_PARAMETERS_ID_HEX,
+             REDEMPTION_STATE_ID_HEX,
+             ORACLE_ID_HEX,
+             CLOCK_ID_HEX,
+         }) {
+        LOGOS_ASSERT_TRUE(context.moduleCalledWith(
+            "lez_core",
+            "get_account_public",
+            QVariantList{QVariant(QString::fromStdString(account_id))}));
+    }
+    LOGOS_ASSERT_EQ(
+        context.cFunctionCallCount("stablecoin_decode_protocol_parameters"), 1);
+    LOGOS_ASSERT_EQ(
+        context.cFunctionCallCount("stablecoin_redemption_rate_update_quote"), 1);
+    LOGOS_ASSERT_EQ(
+        context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+}
+
+LOGOS_TEST(redemption_rate_update_quote_keeps_soft_blockers_as_success) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const json decoded_parameters = {{"marketPriceOracleIdHex", ORACLE_ID_HEX}};
+    const json blocker = {
+        {"code", "oracle_price_zero"},
+        {"recoverable", true},
+        {"blockingFields", json::array()},
+        {"details", {{"marketPrice", "0"}}},
+    };
+    const json quote = {
+        {"canSubmit", false},
+        {"code", "blocked"},
+        {"currentRedemptionPrice", "100"},
+        {"marketPrice", "0"},
+        {"elapsedMilliseconds", "9"},
+        {"nextRedemptionRatePerMillisecond", nullptr},
+        {"nextControllerIntegralTerm", nullptr},
+        {"clampMetadata", json::object()},
+        {"errors", json::array({blocker})},
+        {"warnings", json::array()},
+    };
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::string decoder_response = successEnvelope(decoded_parameters);
+    const std::string quote_response = successEnvelope(quote);
+    context.mockCFunction("stablecoin_program_info")
+        .returns(program_info_response);
+    context.mockCFunction("stablecoin_decode_protocol_parameters")
+        .returns(decoder_response);
+    context.mockCFunction("stablecoin_redemption_rate_update_quote")
+        .returns(quote_response);
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+
+    const LogosMap response = module.redemptionRateUpdateQuote();
+
+    LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(response["canSubmit"].get<bool>(), false);
+    LOGOS_ASSERT_TRUE(response["nextRedemptionRatePerMillisecond"].is_null());
+    LOGOS_ASSERT_TRUE(response["nextControllerIntegralTerm"].is_null());
+    LOGOS_ASSERT_EQ(
+        context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+}
+
+LOGOS_TEST(redemption_rate_update_quote_maps_missing_globals_and_hard_ffi_errors) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+
+    {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const std::string program_info_response = successEnvelope(programInfoValue());
+        context.mockCFunction("stablecoin_program_info")
+            .returns(program_info_response);
+        context.mockModule("lez_core", "get_account_public").returns("");
+
+        assertError(module.redemptionRateUpdateQuote(), "not_initialized");
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 1);
+        LOGOS_ASSERT_EQ(
+            context.cFunctionCallCount("stablecoin_decode_protocol_parameters"), 0);
+    }
+
+    {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const json decoded_parameters = {{"marketPriceOracleIdHex", ORACLE_ID_HEX}};
+        const std::string program_info_response = successEnvelope(programInfoValue());
+        const std::string decoder_response = successEnvelope(decoded_parameters);
+        const std::string quote_response =
+            failureEnvelope("market_price_oracle_mismatch");
+        context.mockCFunction("stablecoin_program_info")
+            .returns(program_info_response);
+        context.mockCFunction("stablecoin_decode_protocol_parameters")
+            .returns(decoder_response);
+        context.mockCFunction("stablecoin_redemption_rate_update_quote")
+            .returns(quote_response);
+        context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+
+        assertError(module.redemptionRateUpdateQuote(), "market_price_oracle_mismatch");
+        LOGOS_ASSERT_EQ(
+            context.cFunctionCallCount("stablecoin_redemption_rate_update_quote"), 1);
+        LOGOS_ASSERT_EQ(
+            context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
 }
