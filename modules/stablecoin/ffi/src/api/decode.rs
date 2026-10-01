@@ -1,12 +1,14 @@
 use serde_json::{json, Value};
 use stablecoin_core::{
-    compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda, ProtocolParameters,
+    compute_protocol_parameters_pda, compute_redemption_price_state_pda,
+    compute_stability_fee_accumulator_pda, ProtocolParameters, RedemptionPriceState,
     StabilityFeeAccumulator,
 };
 
 use super::{
     parse_stablecoin_program_id, DecodeProtocolParametersRequest,
-    DecodeStabilityFeeAccumulatorRequest, StablecoinApiError, StablecoinResult,
+    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest, StablecoinApiError,
+    StablecoinResult,
 };
 use crate::account::{account_id_hex, decode_account};
 
@@ -48,6 +50,27 @@ pub fn decode_stability_fee_accumulator(
     Ok(stability_fee_accumulator_value(account_id, &accumulator))
 }
 
+pub fn decode_redemption_price_state(
+    request: DecodeRedemptionPriceStateRequest,
+) -> StablecoinResult {
+    let stablecoin_program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
+    let (account_id, account) = decode_account(&request.redemption_price_state)
+        .map_err(|_| StablecoinApiError::new("account_read_failed"))?;
+
+    if account_id != compute_redemption_price_state_pda(stablecoin_program_id) {
+        return Err(StablecoinApiError::new(
+            "redemption_price_state_pda_mismatch",
+        ));
+    }
+    if account.program_owner != stablecoin_program_id {
+        return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
+    }
+
+    let state = RedemptionPriceState::try_from(&account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_redemption_price_state_data"))?;
+    Ok(redemption_price_state_value(account_id, &state))
+}
+
 fn parameters_value(
     account_id: lee_core::account::AccountId,
     parameters: &ProtocolParameters,
@@ -87,5 +110,19 @@ fn stability_fee_accumulator_value(
         "accumulatedRateAtLastAccrual":
             accumulator.accumulated_rate_at_last_accrual.to_string(),
         "lastAccruedAt": accumulator.last_accrued_at.to_string(),
+    })
+}
+
+fn redemption_price_state_value(
+    account_id: lee_core::account::AccountId,
+    state: &RedemptionPriceState,
+) -> Value {
+    json!({
+        "accountId": account_id.to_string(),
+        "accountIdHex": account_id_hex(account_id),
+        "redemptionPriceAtLastUpdate": state.redemption_price_at_last_update.to_string(),
+        "redemptionRatePerMillisecond": state.redemption_rate_per_millisecond.to_string(),
+        "controllerIntegralTerm": state.controller_integral_term.to_string(),
+        "lastUpdatedAt": state.last_updated_at.to_string(),
     })
 }
