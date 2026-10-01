@@ -11,7 +11,16 @@ use token_core::TokenDefinition;
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
-    parse_stablecoin_program_id, InitializeProgramPlanRequest, StablecoinApiError, StablecoinResult,
+    decode::{
+        validated_protocol_parameters, validated_redemption_price_state,
+        validated_stability_fee_accumulator,
+    },
+    parse_stablecoin_program_id,
+    projection::clock_timestamp,
+    quote::{redemption_rate_update_quote, validated_market_price_oracle},
+    AccrueStabilityFeePlanRequest, InitializeProgramPlanRequest, RedemptionRateUpdateQuoteRequest,
+    RefreshGlobalsPlanRequest, StablecoinApiError, StablecoinResult,
+    UpdateRedemptionRatePlanRequest,
 };
 use crate::account::{
     account_id_from_hex, account_id_hex, decode_account, program_id_bytes, AccountRead,
@@ -93,6 +102,101 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
         [true, false, false, false, false, false, false, false, false],
         instruction,
     )
+}
+
+pub fn accrue_stability_fee_plan(request: AccrueStabilityFeePlanRequest) -> StablecoinResult {
+    let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
+    let caller = parse_account_id(&request.caller_id)?;
+    validated_protocol_parameters(program_id, &request.protocol_parameters)?;
+    validated_stability_fee_accumulator(program_id, &request.stability_fee_accumulator)?;
+    clock_timestamp(&request.clock)?;
+
+    plan_response(
+        program_id,
+        [
+            caller,
+            compute_protocol_parameters_pda(program_id),
+            compute_stability_fee_accumulator_pda(program_id),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        [true, false, false, false],
+        Instruction::AccrueStabilityFee,
+    )
+}
+
+pub fn update_redemption_rate_plan(request: UpdateRedemptionRatePlanRequest) -> StablecoinResult {
+    let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
+    let caller = parse_account_id(&request.caller_id)?;
+    let (_, parameters) = validated_protocol_parameters(program_id, &request.protocol_parameters)?;
+
+    let quote = redemption_rate_update_quote(RedemptionRateUpdateQuoteRequest {
+        stablecoin_program_id: request.stablecoin_program_id,
+        protocol_parameters: request.protocol_parameters,
+        redemption_price_state: request.redemption_price_state,
+        market_price_oracle: request.market_price_oracle,
+        clock: request.clock,
+    })?;
+    require_ready_quote(&quote)?;
+
+    plan_response(
+        program_id,
+        [
+            caller,
+            compute_protocol_parameters_pda(program_id),
+            compute_redemption_price_state_pda(program_id),
+            parameters.market_price_oracle_id,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        [true, false, false, false, false],
+        Instruction::UpdateRedemptionRate,
+    )
+}
+
+pub fn refresh_globals_plan(request: RefreshGlobalsPlanRequest) -> StablecoinResult {
+    let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
+    let caller = parse_account_id(&request.caller_id)?;
+    let (_, parameters) = validated_protocol_parameters(program_id, &request.protocol_parameters)?;
+    validated_stability_fee_accumulator(program_id, &request.stability_fee_accumulator)?;
+    validated_redemption_price_state(program_id, &request.redemption_price_state)?;
+    validated_market_price_oracle(
+        &request.market_price_oracle,
+        parameters.market_price_oracle_id,
+    )?;
+    clock_timestamp(&request.clock)?;
+
+    plan_response(
+        program_id,
+        [
+            caller,
+            compute_protocol_parameters_pda(program_id),
+            compute_stability_fee_accumulator_pda(program_id),
+            compute_redemption_price_state_pda(program_id),
+            parameters.market_price_oracle_id,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        [true, false, false, false, false, false],
+        Instruction::RefreshGlobals,
+    )
+}
+
+fn require_ready_quote(quote: &Value) -> Result<(), StablecoinApiError> {
+    if quote.get("canSubmit").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+
+    let blocker = quote
+        .get("errors")
+        .and_then(Value::as_array)
+        .and_then(|errors| errors.first())
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str);
+    let code = match blocker {
+        Some("oracle_stale") => "oracle_stale",
+        Some("oracle_price_zero") => "oracle_price_zero",
+        Some("rate_update_too_soon") => "rate_update_too_soon",
+        _ => "backend_error",
+    };
+    Err(StablecoinApiError::new(code))
 }
 
 fn required_account(
@@ -177,10 +281,10 @@ fn parse_i128(value: &Value) -> Result<i128, StablecoinApiError> {
     }
 }
 
-fn plan_response(
+fn plan_response<const ACCOUNT_COUNT: usize>(
     program_id: lee_core::program::ProgramId,
-    account_ids: [AccountId; 9],
-    signing_requirements: [bool; 9],
+    account_ids: [AccountId; ACCOUNT_COUNT],
+    signing_requirements: [bool; ACCOUNT_COUNT],
     instruction: Instruction,
 ) -> StablecoinResult {
     let instruction = risc0_zkvm::serde::to_vec(&instruction)
@@ -188,7 +292,7 @@ fn plan_response(
     Ok(json!({
         "programId": hex::encode(program_id_bytes(program_id)),
         "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
+        "signingRequirements": signing_requirements.into_iter().collect::<Vec<_>>(),
         "instruction": instruction,
     }))
 }

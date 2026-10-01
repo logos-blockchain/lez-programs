@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -41,6 +42,18 @@ public:
     /// a transaction; soft gates return `canSubmit: false` with blockers.
     LogosMap redemptionRateUpdateQuote();
 
+    /// Advances the stability-fee accumulator. `caller_id` must identify a
+    /// public account controlled by the connected wallet and is the sole signer.
+    LogosMap accrueStabilityFee(const std::string& caller_id);
+
+    /// Runs one strict redemption-rate controller tick. The live quote preflight
+    /// blocks stale/zero oracle data and updates attempted before the interval.
+    LogosMap updateRedemptionRate(const std::string& caller_id);
+
+    /// Advances the fee accumulator and best-effort redemption-rate state. The
+    /// redemption half may be skipped on soft gates; the transaction still runs.
+    LogosMap refreshGlobals(const std::string& caller_id);
+
     /// Initializes the stablecoin protocol. Request fields are `adminId`,
     /// `freezeAuthorityId`, `collateralDefinitionId`, `marketPriceOracleId`,
     /// `initialStabilityFeePerMillisecond`,
@@ -53,12 +66,19 @@ public:
     LogosMap initializeProgram(const LogosMap& request);
 
 private:
+    using StablecoinOperation = char* (*)(const char*);
+
     std::vector<std::uint8_t> loadStablecoinBinary() const;
     nlohmann::json stablecoinProgramInfo(std::string& error);
     std::string normalizeAccountId(const std::string& id);
+    bool requireWalletCaller(const std::string& caller_id, std::string& error);
     nlohmann::json readPublicAccount(const std::string& account_id);
     bool requireUninitialized(const std::string& account_id, std::string& error);
-    LogosMap submitPlan(const nlohmann::json& plan);
+    LogosMap planAndSubmit(StablecoinOperation planner,
+                           const nlohmann::json& request,
+                           const std::string& expected_program_id,
+                           std::size_t expected_account_count);
+    LogosMap submitPlan(const nlohmann::json& plan, std::size_t expected_account_count);
 
     bool programInfoResolved_ = false;
     std::string programInfoJson_;

@@ -95,7 +95,7 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
     }))
 }
 
-fn validated_market_price_oracle(
+pub(super) fn validated_market_price_oracle(
     read: &crate::AccountRead,
     expected_id: lee_core::account::AccountId,
 ) -> Result<OraclePriceAccount, StablecoinApiError> {
