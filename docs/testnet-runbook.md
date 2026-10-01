@@ -37,6 +37,7 @@ End-to-end steps to deploy the programs, initialize the AMM, and create a pool u
 - [12. Publish a price](#12-publish-a-price)
 - [13. (Admin) Withdraw protocol fees](#13-admin-withdraw-protocol-fees)
 - [14. Faucet: mint additional tokens](#14-faucet-mint-additional-tokens-token-mint-authority)
+- [15. Stablecoin](#15-stablecoin)
 - [Gotchas](#gotchas-we-hit-and-how-to-avoid-them)
 
 ---
@@ -236,7 +237,8 @@ The fixed **clock** account never changes: `4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4e
 | amm | `cargo run -q -p amm_program --example amm_pdas -- <amm_pid> [<twap_pid> <defA> <defB>]` | config; + pool, vault_a/b, pool_definition_lp, lp_lock_holding, current_tick_account |
 | twap_oracle | `cargo run -q -p twap_oracle_program --example twap_oracle_pdas -- <oracle_pid> <price_source> [<window_duration>]` | current_tick_account; + price_observations, oracle_price_account (with a window) |
 | ata | `cargo run -q -p ata_program --example ata_pdas -- <ata_pid> <token_pid> <owner> <definition>` | the ATA address |
-| stablecoin | `cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid> <owner> <collateral_definition>` | position, position_vault |
+| stablecoin | `cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid> globals` | protocol_parameters, stability_fee_accumulator, redemption_price_state, stablecoin_definition, stablecoin_master_holding |
+| stablecoin | `cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid> <owner> <position_nonce>` | position, position_vault |
 
 (The token program has no PDAs.)
 
@@ -641,6 +643,91 @@ spel --idl artifacts/token-idl.json inspect <USER_HOLDING> --type TokenHolding
 > just be a distinct, authorized account. A dedicated throwaway `recipient` keeps the
 > per-recipient cooldown bookkeeping clean.
 
+## 15. Stablecoin
+
+**One command:** `scripts/deploy-stablecoin.sh` does all of the steps below (options in its
+header):
+
+```bash
+STABLECOIN_ADMIN=<ADMIN> STABLECOIN_ORACLE_SOURCE=<ORACLE_SOURCE> \
+  COLLATERAL_DEFINITION=<COLLATERAL_DEF> COLLATERAL_HOLDING=<COLLATERAL_HOLDING> \
+  scripts/deploy-stablecoin.sh
+```
+
+- `COLLATERAL_HOLDING` set: creates the collateral token (or reuses it if it already
+  exists). Omit it to use an existing collateral token.
+- `SKIP_TOKEN_DEPLOY=1` / `SKIP_TWAP_DEPLOY=1` / `SKIP_STABLECOIN_DEPLOY=1`: skip programs
+  that are already deployed.
+- Writes every id and PDA to `target/stablecoin-deployment.json`.
+
+**Order matters.** `initialize_program` needs an oracle price account that already quotes
+the stablecoin definition as its base asset — but `initialize_program` is what creates that
+definition. Its address is a deterministic PDA, so derive it first.
+
+### 15.1 Deploy and derive
+
+Deploy `stablecoin` and `twap_oracle` (step 1), and have a fungible collateral token (step 3).
+Then:
+
+```bash
+cargo run -q -p stablecoin_program --example stablecoin_pdas -- "<STABLECOIN_PROGRAM_ID>" globals
+# prints protocol_parameters, stability_fee_accumulator, redemption_price_state,
+#        stablecoin_definition, stablecoin_master_holding
+
+cargo run -q -p twap_oracle_program --example twap_oracle_pdas -- \
+  "<TWAP_PROGRAM_ID>" <ORACLE_SOURCE> <WINDOW_DURATION>
+# use oracle_price_account
+```
+
+`<ORACLE_SOURCE>` is a wallet account: it signs the next step and owns the price.
+
+### 15.2 Create the market price oracle account
+
+```bash
+spel --idl artifacts/twap_oracle-idl.json \
+     --program programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin \
+     -- create-oracle-price-account \
+     --oracle-price-account <ORACLE_PRICE_ACCOUNT_PDA> \
+     --price-source <ORACLE_SOURCE> \
+     --clock 4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU \
+     --base-asset <STABLECOIN_DEFINITION_PDA> \
+     --quote-asset <COLLATERAL_DEF> \
+     --initial-price 1000000000000000000000000000 \
+     --window-duration <WINDOW_DURATION>
+```
+
+> `--initial-price` is **27-decimal fixed point** (`10^27` = 1.0 collateral per stablecoin),
+> the scale the stablecoin reads. `--window-duration` must be `>= 2048`.
+
+### 15.3 Initialize
+
+```bash
+spel --idl artifacts/stablecoin-idl.json \
+     --program programs/stablecoin/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/stablecoin.bin \
+     -- initialize-program \
+     --admin <ADMIN> \
+     --protocol-parameters <PROTOCOL_PARAMETERS_PDA> \
+     --stability-fee-accumulator <STABILITY_FEE_ACCUMULATOR_PDA> \
+     --redemption-price-state <REDEMPTION_PRICE_STATE_PDA> \
+     --stablecoin-definition <STABLECOIN_DEFINITION_PDA> \
+     --stablecoin-master-holding <STABLECOIN_MASTER_HOLDING_PDA> \
+     --collateral-definition <COLLATERAL_DEF> \
+     --market-price-oracle <ORACLE_PRICE_ACCOUNT_PDA> \
+     --clock 4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU \
+     --freeze-authority-account-id <FREEZE_AUTHORITY> \
+     --initial-stability-fee-per-millisecond 1000000000001500000000000000 \
+     --initial-controller-proportional-gain 1000000000 \
+     --initial-controller-integral-gain 0 \
+     --initial-minimum-collateralization-ratio 1500000000000000000000000000 \
+     --minimum-milliseconds-between-rate-updates 60000 \
+     --maximum-oracle-price-age-milliseconds 86400000 \
+     --initial-redemption-price 1000000000000000000000000000 \
+     --stablecoin-name "LEZ Stablecoin"
+```
+
+> Rates, ratios and prices are 27-decimal fixed point. The values above are the script's
+> defaults: ~5%/year fee, 150% ratio, 1.0 redemption price. `init`, so run it **once**.
+
 ---
 
 ## Gotchas we hit (and how to avoid them)
@@ -663,3 +750,10 @@ spel --idl artifacts/token-idl.json inspect <USER_HOLDING> --type TokenHolding
   **fresh** `user_holding_lp` — the previous one is bound to the old pool's LP token.)
 - **Same `LEE_WALLET_HOME_DIR` everywhere.** Deploying with one wallet home and running
   spel with another points them at different networks/keys.
+- **Stablecoin: oracle account before `initialize_program`.** Initialization rejects a
+  missing oracle account, or one whose base asset isn't the stablecoin definition PDA.
+- **Stablecoin: never `publish_price` into its oracle account.** The TWAP oracle writes
+  Q64.64 (`2^64` = 1.0); the stablecoin reads 27-decimal fixed point (`10^27` = 1.0), so a
+  published 1.0 reads as ~1.8e-8.
+- **Stablecoin: the oracle price goes stale.** `generate_debt` rejects it once it is older
+  than `maximum_oracle_price_age_milliseconds` (at most one day).
