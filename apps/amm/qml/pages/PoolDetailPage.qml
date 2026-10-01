@@ -259,9 +259,11 @@ Item {
     function issueText(code) {
         switch (String(code)) {
         case "no_program_bin":
-            return qsTr("The AMM program binary is not available to the app.")
+            return qsTr("No AMM program address: set AMM_PROGRAM_ID or load a registry.")
         case "amm_not_initialized":
             return qsTr("The AMM config account has not been initialized.")
+        case "config_read_failed":
+            return qsTr("Could not read the AMM config account. Is the wallet open and the sequencer reachable?")
         case "bad_config":
             return qsTr("The AMM app configuration is invalid.")
         case "same_token_pair":

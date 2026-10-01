@@ -41,6 +41,7 @@ public:
     QVariantList submittedSigningRequirements;
     QVariant submittedInstruction;
     QString submittedProgramId;
+    QString submittedPayerAccountId;
 
     int open(const QString& config, const QString& storage, const QString& statistics)
     {
@@ -104,13 +105,15 @@ public:
         const QStringList& accountIds,
         const QVariantList& signingRequirements,
         const QVariant& instruction,
-        const QString& programId)
+        const QString& programId,
+        const QString& payerAccountId)
     {
         ++submitCalls;
         submittedAccountIds = accountIds;
         submittedSigningRequirements = signingRequirements;
         submittedInstruction = instruction;
         submittedProgramId = programId;
+        submittedPayerAccountId = payerAccountId;
         return transactionResponse;
     }
 };

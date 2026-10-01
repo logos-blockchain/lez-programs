@@ -25,8 +25,8 @@ bool isValidAccountIdHex(const std::string& value);
 nlohmann::json publicAccountRead(const std::string& account_id,
                                  const std::string& raw_response);
 
-// Converts a RISC Zero word array to the byte string expected by the wallet
-// module. Empty means malformed input.
+// Converts a plan's borsh `instruction` array (one number per byte) to the byte
+// string expected by the wallet module. Empty means malformed input.
 std::vector<std::uint8_t> jsonInstructionLeBytes(const nlohmann::json& input);
 
 // Preserves only documented FFI error codes at the public module boundary.

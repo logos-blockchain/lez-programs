@@ -11,7 +11,7 @@ use stablecoin_core::{
 use super::{
     parse_stablecoin_program_id, ProgramInfoRequest, StablecoinApiError, StablecoinResult,
 };
-use crate::account::{account_id_hex, program_id_bytes};
+use crate::account::account_id_hex;
 
 pub fn program_info(request: ProgramInfoRequest) -> StablecoinResult {
     let configured = request
@@ -36,21 +36,30 @@ pub fn program_info(request: ProgramInfoRequest) -> StablecoinResult {
     Ok(program_info_value(program_id))
 }
 
-fn program_id_from_binary(value: &str) -> Result<ProgramId, StablecoinApiError> {
+/// The account id a binary's `ProgramHeader` would have **if** deployed at the
+/// image-id bijection address.
+///
+/// Since LEZ v0.2.5 a binary does not determine where its program lives:
+/// `CreateHeader` writes the header into whatever undeployed account the deployer
+/// names. This is therefore a guess, correct only under that convention. When a
+/// caller supplies `stablecoinProgramId` as well, that is the authority; a
+/// disagreement means the header was deployed somewhere other than its bijection
+/// address and is reported as `program_id_mismatch`.
+fn program_id_from_binary(value: &str) -> Result<AccountId, StablecoinApiError> {
     let bytes =
         hex::decode(value).map_err(|_| StablecoinApiError::new("invalid_program_binary"))?;
     let binary = ProgramBinary::decode(&bytes)
         .map_err(|_| StablecoinApiError::new("invalid_program_binary"))?;
-    binary
+    let image_id: ProgramId = binary
         .compute_image_id()
         .map(Into::into)
-        .map_err(|_| StablecoinApiError::new("invalid_program_binary"))
+        .map_err(|_| StablecoinApiError::new("invalid_program_binary"))?;
+    Ok(AccountId::from(image_id))
 }
 
-fn program_info_value(program_id: ProgramId) -> Value {
+fn program_info_value(program_id: AccountId) -> Value {
     let mut result = Map::new();
-    let program_account_id = AccountId::new(program_id_bytes(program_id));
-    insert_id(&mut result, "programId", "programIdHex", program_account_id);
+    insert_id(&mut result, "programId", "programIdHex", program_id);
     insert_id(
         &mut result,
         "protocolParametersId",

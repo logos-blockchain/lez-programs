@@ -17,8 +17,7 @@ use super::{
     SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
 };
 use crate::account::{
-    account_id_from_hex, account_id_hex, decode_account, parse_program_id, program_id_bytes,
-    AccountRead,
+    account_id_from_hex, account_id_hex, decode_account, parse_program_id, AccountRead,
 };
 
 /// Reads the instance-wide swap fee (basis points) from an AMM config account read. Fees moved
@@ -308,8 +307,8 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
 
 /// Builds the `SwapExactInput` submission for a pair: the fixed 8-account IDL
 /// order (vaults from the pool's stored ids, only the user's input holding
-/// signs) and the instruction words (`risc0_zkvm::serde` — the same encoding
-/// the guest decodes). On success returns exactly the tx-submission fields
+/// signs) and the borsh-encoded instruction bytes (the encoding the guest
+/// decodes). On success returns exactly the tx-submission fields
 /// (`programId`, `accountIds`, `signingRequirements`, `instruction`; the
 /// deadline is already baked into the instruction bytes). Every recoverable
 /// domain failure fails CLOSED as `Err` (surfaced through the FFI envelope as
@@ -350,7 +349,7 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
     let min_amount_out = parse_u128(&request.min_out, "minOut")?;
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
 
-    let instruction = risc0_zkvm::serde::to_vec(&amm_core::Instruction::SwapExactInput {
+    let instruction = borsh::to_vec(&amm_core::Instruction::SwapExactInput {
         swap_amount_in,
         min_amount_out,
         deadline,
@@ -422,7 +421,7 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
     let max_amount_in = parse_u128(&request.max_in, "maxIn")?;
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
 
-    let instruction = risc0_zkvm::serde::to_vec(&amm_core::Instruction::SwapExactOutput {
+    let instruction = borsh::to_vec(&amm_core::Instruction::SwapExactOutput {
         exact_amount_out,
         max_amount_in,
         deadline,
@@ -455,9 +454,16 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
     }))
 }
 
-/// Computes the AMM `ProgramId` (RISC Zero Image ID) of a deployed program
-/// binary. `elf` is the hex-encoded `.bin` (a RISC Zero `ProgramBinary`, not a
-/// raw ELF) — decoded, image-id computed, returned as 64-char lowercase hex.
+/// Computes a binary's RISC Zero ImageID. `elf` is the hex-encoded `.bin` (a
+/// `ProgramBinary`, not a raw ELF); the result is 64-char lowercase hex.
+///
+/// Since LEZ v0.2.5 this is **not** the program's address. A program is addressed
+/// by its deployed `ProgramHeader` account, and that account's id is chosen at
+/// deploy time -- `CreateHeader` writes the header into whatever undeployed
+/// account the deployer names. Use this to check that a binary matches a header's
+/// `image_id` field, not to work out where the program lives. The response field
+/// is `imageId` rather than the old `programId` so the distinction is not lost at
+/// the boundary.
 pub(super) fn program_id(request: ProgramIdRequest) -> Result<Value, String> {
     let elf = hex::decode(&request.elf).map_err(|error| format!("invalid elf hex: {error}"))?;
     let binary = ProgramBinary::decode(&elf).map_err(|error| format!("{error:?}"))?;
@@ -465,7 +471,7 @@ pub(super) fn program_id(request: ProgramIdRequest) -> Result<Value, String> {
         .compute_image_id()
         .map_err(|error| format!("{error:?}"))?
         .into();
-    Ok(json!({ "programId": hex::encode(program_id_bytes(image_id)) }))
+    Ok(json!({ "imageId": account_id_hex(AccountId::from(image_id)) }))
 }
 
 #[cfg(test)]

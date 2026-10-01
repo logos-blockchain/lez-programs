@@ -136,16 +136,29 @@ void RegistryLoader::refresh()
     // below carry none, so ops fall back to AMM_PROGRAM_BIN.
     m_activeAmmProgramId.clear();
 
-    // local-replaces-remote: a configured local file wins outright.
-    if (hasLocalSource()) {
-        loadLocal();
-        return;
-    }
-
     // AMM_REGISTRY_URL (e2e / dev) overrides the UI-configured URL.
     QString url = qEnvironmentVariable(REGISTRY_URL_ENV);
     if (url.isEmpty())
         url = m_configuredUrl;
+
+    // local-replaces-remote: a configured local file wins outright.
+    if (hasLocalSource()) {
+        // The local files carry token/pool lists ONLY -- no programIds, no ammConfigId.
+        // So taking this path also drops the ids, leaving ops to fall back to
+        // AMM_PROGRAM_ID. That is easy to hit by accident, because a token list looks
+        // orthogonal to a program address, and the resulting failure surfaces far away
+        // as a config that cannot be read. Say so rather than silently winning.
+        if (!url.isEmpty()) {
+            qWarning().noquote()
+                << "AMM registry:" << REGISTRY_URL_ENV << "/ configured URL is set (" << url
+                << ") but IGNORED because" << TOKENS_CONFIG_ENV << "or" << POOLS_CONFIG_ENV
+                << "is set; local files take precedence and carry no program/config ids."
+                << "Unset them to use the registry.";
+        }
+        loadLocal();
+        return;
+    }
+
     if (url.isEmpty()) {
         m_registryObj = {};  // no registry ⇒ no networks to pick
         publish({}, {}, QStringLiteral("none"), {});

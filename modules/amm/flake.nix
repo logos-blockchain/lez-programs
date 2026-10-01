@@ -9,7 +9,7 @@
     # dependency. Same rev the repo-root flake and the apps/amm flake pin: the
     # 0.4.1-interim build (byte-string fix on a v0.2.4 wallet-ffi). See the root
     # flake.nix for the full rationale.
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=acf0cd501b262c4c15969e3735e85318297b85bf";
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
 
     # The repo-root flake supplies the amm_ffi crate. amm_ffi is a Cargo
     # workspace member (it path-depends on amm_core / token_core /

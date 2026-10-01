@@ -16,7 +16,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
-    program::{PdaSeed, ProgramId},
+    program::PdaSeed,
 };
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
@@ -39,7 +39,24 @@ const MINT_AUTHORITY_PDA_DOMAIN: &[u8] = b"TOKEN_MINT_AUTHORITY__MINT_AUTHORITY"
 const MINT_ALLOWANCE_PDA_DOMAIN: &[u8] = b"TOKEN_MINT_AUTHORITY__MINT_ALLOWANCE";
 
 /// Token-Mint-Authority Program Instruction.
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// Borsh is the instruction wire format LEZ reads, and deliberately the *only* encoding
+/// this type derives.
+///
+/// `#[lez_program]` generates its guest-side counterpart with serde derives alongside
+/// Borsh, "for IDL/tooling". Nothing uses them: `idl-gen` parses the guest source, the
+/// framework's runtime IDL path deserializes its own types, and `spel-cli` encodes Borsh
+/// straight from the IDL. Carrying them here would only mean a type that accepts either
+/// encoder, which is how the v0.2.5 port silently rotted every instruction-encoding site in
+/// `modules/*/ffi` -- `risc0_zkvm::serde::to_vec` kept compiling and kept producing bytes
+/// the runtime rejects. Without a serde impl that is a compile error instead.
+///
+/// Account-data types below keep serde; the FFI renders them as JSON. This applies to the
+/// instruction enum alone.
+///
+/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
+/// inserting one shifts the encoding of every variant after it.
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum Instruction {
     /// Mint [`FAUCET_MINT_AMOUNT`] of the faucet token to the calling recipient,
     /// once per [`MINT_COOLDOWN_MS`] per `(recipient, token definition)`.
@@ -112,7 +129,7 @@ pub fn compute_mint_authority_pda_seed() -> PdaSeed {
 /// Account id of the Token-Mint-Authority's mint-authority PDA under
 /// `token_mint_authority_program_id`.
 #[must_use]
-pub fn compute_mint_authority_pda(token_mint_authority_program_id: ProgramId) -> AccountId {
+pub fn compute_mint_authority_pda(token_mint_authority_program_id: AccountId) -> AccountId {
     AccountId::for_public_pda(
         &token_mint_authority_program_id,
         &compute_mint_authority_pda_seed(),
@@ -144,7 +161,7 @@ pub fn compute_mint_allowance_pda_seed(
 /// under `token_mint_authority_program_id`.
 #[must_use]
 pub fn compute_mint_allowance_pda(
-    token_mint_authority_program_id: ProgramId,
+    token_mint_authority_program_id: AccountId,
     recipient_id: AccountId,
     definition_id: AccountId,
 ) -> AccountId {
@@ -161,7 +178,7 @@ pub fn compute_mint_allowance_pda(
 /// If `mint_authority.account_id` does not match the derived PDA.
 pub fn verify_mint_authority_and_get_seed(
     mint_authority: &AccountWithMetadata,
-    token_mint_authority_program_id: ProgramId,
+    token_mint_authority_program_id: AccountId,
 ) -> PdaSeed {
     let seed = compute_mint_authority_pda_seed();
     let expected_id = AccountId::for_public_pda(&token_mint_authority_program_id, &seed);
@@ -181,7 +198,7 @@ pub fn verify_mint_allowance_and_get_seed(
     mint_allowance: &AccountWithMetadata,
     recipient_id: AccountId,
     definition_id: AccountId,
-    token_mint_authority_program_id: ProgramId,
+    token_mint_authority_program_id: AccountId,
 ) -> PdaSeed {
     let seed = compute_mint_allowance_pda_seed(recipient_id, definition_id);
     let expected_id = AccountId::for_public_pda(&token_mint_authority_program_id, &seed);
@@ -225,7 +242,7 @@ mod tests {
 
     #[test]
     fn authority_pda_is_deterministic_and_singleton() {
-        let program_id: ProgramId = [9u32; 8];
+        let program_id = AccountId::new([9u8; 32]);
         assert_eq!(
             compute_mint_authority_pda(program_id),
             compute_mint_authority_pda(program_id),
@@ -234,7 +251,7 @@ mod tests {
 
     #[test]
     fn allowance_pda_depends_on_recipient_and_definition() {
-        let program_id: ProgramId = [9u32; 8];
+        let program_id = AccountId::new([9u8; 32]);
         let a = AccountId::new([1u8; 32]);
         let b = AccountId::new([2u8; 32]);
         let def = AccountId::new([5u8; 32]);

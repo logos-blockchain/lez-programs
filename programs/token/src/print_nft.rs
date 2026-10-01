@@ -1,13 +1,13 @@
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, Claim},
+    account::{Account, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 use token_core::TokenHolding;
 
 pub fn print_nft(
     master_account: AccountWithMetadata,
     printed_account: AccountWithMetadata,
-) -> Vec<AccountPostState> {
+) -> Vec<AccountStateDiff> {
     assert!(
         master_account.is_authorized,
         "Master NFT Account must be authorized"
@@ -44,17 +44,22 @@ pub fn print_nft(
         .checked_sub(1)
         .expect("print balance must be greater than one after validation");
 
-    let mut master_account_post = master_account.account;
-    master_account_post.data = Data::from(&master_account_data);
-
-    let mut printed_account_post = printed_account.account;
-    printed_account_post.data = Data::from(&TokenHolding::NftPrintedCopy {
-        definition_id,
-        owned: true,
-    });
-
+    // The printed copy is claimed by the write itself. `printed_account.is_authorized` is
+    // asserted above and is now the sole guard: v0.2.5 lets a program write to any
+    // default-owned account without the runtime checking authorization.
     vec![
-        AccountPostState::new(master_account_post),
-        AccountPostState::new_claimed(printed_account_post, Claim::Authorized),
+        AccountStateDiff::new(
+            master_account,
+            BalanceDiff::Add(0),
+            Data::from(&master_account_data),
+        ),
+        AccountStateDiff::new(
+            printed_account,
+            BalanceDiff::Add(0),
+            Data::from(&TokenHolding::NftPrintedCopy {
+                definition_id,
+                owned: true,
+            }),
+        ),
     ]
 }

@@ -119,12 +119,8 @@ LOGOS_TEST(ffi_error_mapping_preserves_only_public_codes) {
 LOGOS_TEST(instruction_words_are_validated_and_encoded_little_endian) {
     const nlohmann::json input = nlohmann::json::array(
         {std::uint64_t{0}, std::uint64_t{1},
-         std::uint64_t{std::numeric_limits<std::uint32_t>::max()}});
-    const std::vector<std::uint8_t> expected = {
-        0x00, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00,
-        0xff, 0xff, 0xff, 0xff,
-    };
+         std::uint64_t{std::numeric_limits<std::uint8_t>::max()}});
+    const std::vector<std::uint8_t> expected = {0x00, 0x01, 0xff};
     const auto actual = stablecoin_module::detail::jsonInstructionLeBytes(input);
     LOGOS_ASSERT_EQ(actual.size(), expected.size());
     for (std::size_t index = 0; index < expected.size(); ++index) {
@@ -136,5 +132,8 @@ LOGOS_TEST(instruction_words_are_validated_and_encoded_little_endian) {
                           .empty());
     LOGOS_ASSERT_TRUE(stablecoin_module::detail::jsonInstructionLeBytes(
                           nlohmann::json::array({1.5}))
+                          .empty());
+    LOGOS_ASSERT_TRUE(stablecoin_module::detail::jsonInstructionLeBytes(
+                          nlohmann::json::array({std::uint64_t{256}}))
                           .empty());
 }

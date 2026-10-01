@@ -35,28 +35,31 @@
     # match the metadata.json `dependencies` entry so the builder can resolve it
     # as a module dependency.
     #
-    # Upstream logos-blockchain/logos-execution-zone-module, pinned to the
-    # `0.4.1-interim` build (acf0cd50) that the package-release repo ships on its
-    # `erhant/lez-core-0.4.1-interim` branch. This is the byte-string-fix rebased
-    # onto a v0.2.4 wallet-ffi: it is the byte-string commit (send_generic_public_
-    # transaction's `instruction` as a byte-string IPC type, see
-    # docs/amm-swap-qtro-serialization-bug.md) PLUS a bump of the transitive
-    # logos-execution-zone (wallet-ffi) to v0.2.4 + an r0 nix-fetch fix
-    # (erhant/0.2.4-with-r0-fix, 9edf4a62 = v0.2.4 + one build-only commit).
+    # Upstream logos-blockchain/logos-execution-zone-module, pinned to the build
+    # whose transitive logos-execution-zone (wallet-ffi) is v0.2.5-rc2, matching
+    # the local `wallet`/`spel` CLIs and the deployed sequencer.
     #
-    # Why this exact pin (vs plain byte-string-fix, or release v0.4.1/0.4.2):
-    #  - Keeps the 4-arg FFI + risc0-word instruction encoding (carried as LE
-    #    bytes), so the currently-deployed guests work with NO Borsh migration
-    #    (issue #351) and NO payer-arg client changes.
-    #  - wallet-ffi is v0.2.4, whose wallet-storage/config schema matches the
-    #    local `wallet`/`spel` CLI and the deployed sequencer — the app loads a
-    #    wallet the v0.2.4 CLI wrote (release v0.4.1/0.4.2 pin a much newer
-    #    wallet-ffi that cannot).
-    # The wallet-ffi and sequencer must agree on the JSON-RPC API and wallet-config
-    # schema, so keep this in sync with the deployed sequencer's version. (Also
-    # builds from the Logos nix cache, so `ring` isn't compiled locally — it fails
-    # under the nix cc-wrapper on Apple Silicon.)
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=acf0cd501b262c4c15969e3735e85318297b85bf";
+    # The wallet-ffi and the sequencer must agree on the JSON-RPC API, the
+    # wallet-storage schema and the key-derivation domains, so this pin moves with
+    # the deployed sequencer's version. v0.2.5 changed all three: `PrivateKeyHolder`
+    # gained `authorization_secret_key`, so a v0.2.4 wallet-ffi cannot even parse a
+    # storage.json the current CLI wrote ("Failed to load storage"), and the key
+    # domains moved to /LEE-Keys/v1/..., so it would derive different account ids
+    # even if it could. The previous `0.4.1-interim` pin (acf0cd50) was a v0.2.4
+    # wallet-ffi held back deliberately to avoid a Borsh migration; that migration
+    # has since happened, so the reason to hold back is gone.
+    #
+    # This is the module's `main`. Do NOT bump to the newer
+    # `marvin/adapt-ffi-program-kind` branch: its C++ is written against a
+    # POST-v0.2.5-rc2 wallet-ffi (it sets `FfiProgramWithDependencies::self_account_id`
+    # / `self_kind` / `self_program_header` / `self_membership_proof`, which
+    # logos-execution-zone#846 adds and rc2 does not have) while its own flake still
+    # pins rc2, so it does not compile. It becomes the right pin once we move off
+    # rc2; until then `main` is the newest coherent combination.
+    #
+    # (Also builds from the Logos nix cache, so `ring` isn't compiled locally — it
+    # fails under the nix cc-wrapper on Apple Silicon.)
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
 
   };
 

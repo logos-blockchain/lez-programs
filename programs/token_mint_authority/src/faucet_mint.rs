@@ -12,8 +12,8 @@
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
-    account::{Account, AccountWithMetadata},
-    program::{AccountPostState, ChainedCall, Claim, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff},
+    program::{AccountStateDiff, ChainedCall},
 };
 use token_core::TokenDefinition;
 use token_mint_authority_core::{
@@ -24,18 +24,25 @@ use token_mint_authority_core::{
 /// Grant [`FAUCET_MINT_AMOUNT`] of the faucet token to `recipient`, at most once
 /// per [`MINT_COOLDOWN_MS`] per `(recipient, token definition)`.
 ///
-/// Returns the six echoed/claimed post-states (in input-account order) and one
-/// chained `Token::MintWithAuthority`.
+/// Returns the six state diffs (in input-account order) and one chained
+/// `Token::MintWithAuthority`.
 ///
-/// The recipient's `user_holding` authorization is deliberately NOT checked
-/// here — the Token Program enforces it downstream: an existing holding is just
-/// written, while a fresh one is claimed via `Claim::Authorized`, which fails
-/// unless the recipient also authorized the holding. So the faucet stays
-/// permissive (mint into any existing holding) without letting anyone create a
-/// holding they don't control.
+/// Topping up an *existing* holding is deliberately permissive — anyone may fund
+/// anyone's holding. Creating a *fresh* one requires `user_holding.is_authorized`.
+///
+/// That split used to be enforced downstream rather than here: v0.2.4's token program
+/// claimed a fresh holding via `Claim::Authorized`, which failed unless the recipient
+/// had authorized it. v0.2.5 removed claims —
+/// `acquire_ownership_on_data_write` fires on any data write to a default-owned
+/// account with no authorization check — so the chained `Token::MintWithAuthority`
+/// would otherwise materialize a holding at *any* unowned address the caller names,
+/// making it token-program-owned permanently and denying it to every other program.
+/// The `else` branch below restores the v0.2.4 rule locally.
+/// See `docs/lez-v0.2.5-changes.md` §4.
 ///
 /// # Panics
 /// - `recipient` is not authorized.
+/// - `user_holding` is uninitialized and not authorized.
 /// - `token_definition` is uninitialized, not a `Fungible`, or its stored `mint_authority` is not
 ///   `mint_authority` / is renounced.
 /// - `mint_authority` / `mint_allowance` do not match their PDA derivations.
@@ -53,8 +60,8 @@ pub fn faucet_mint(
     token_definition: AccountWithMetadata,
     mint_authority: AccountWithMetadata,
     clock: AccountWithMetadata,
-    token_mint_authority_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    token_mint_authority_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(
         recipient.is_authorized,
         "Recipient authorization is missing"
@@ -72,6 +79,13 @@ pub fn faucet_mint(
         assert_eq!(
             user_holding.account.program_owner, token_program_id,
             "User holding must be owned by the same Token Program as the token definition"
+        );
+    } else {
+        // Creating a holding requires consent from the address that will receive it.
+        // Topping up an existing holding stays open to anyone (see the doc comment).
+        assert!(
+            user_holding.is_authorized,
+            "A fresh user holding must be authorized by its owner"
         );
     }
     let definition_id = token_definition.account_id;
@@ -98,7 +112,9 @@ pub fn faucet_mint(
 
     let now = read_clock(&clock);
 
-    let allowance_seed = verify_mint_allowance_and_get_seed(
+    // Called for its address assertion; the seed itself is no longer needed —
+    // ownership of the allowance PDA now comes from writing its data.
+    let _allowance_seed = verify_mint_allowance_and_get_seed(
         &mint_allowance,
         recipient.account_id,
         definition_id,
@@ -128,39 +144,42 @@ pub fn faucet_mint(
         definition_id,
         last_mint_ms: now,
     };
-    let mut allowance_post = mint_allowance.account.clone();
-    allowance_post.data = (&updated).into();
+    // The chained call names its accounts by id, so capture them before the
+    // pre-states are moved into the state diffs below.
+    let user_holding_id = user_holding.account_id;
+    let mint_authority_id = mint_authority.account_id;
 
-    // Post-states mirror the input account order. `user_holding` and
-    // `token_definition` are echoed unchanged here; the chained mint applies the
-    // actual mutation. The allowance PDA is claimed on first use (Claim::Pda) so
-    // this program owns it and its `last_mint_ms` persists, then rewritten. The
-    // authority PDA is only echoed: it never holds state, and a default-state
-    // account is retained by the framework's output filter without a claim — so
-    // this program takes no ownership of it (the seed alone authorizes the mint).
-    let post_states = vec![
-        AccountPostState::new(recipient.account),
-        AccountPostState::new_claimed_if_default(allowance_post, Claim::Pda(allowance_seed)),
-        AccountPostState::new(user_holding.account.clone()),
-        AccountPostState::new(token_definition.account.clone()),
-        AccountPostState::new(mint_authority.account.clone()),
-        AccountPostState::new(clock.account),
+    // Diffs mirror the input account order, and every declared account must
+    // appear: v0.2.5 fails a transaction whose output omits one. `user_holding`
+    // and `token_definition` are echoed unchanged here; the chained mint applies
+    // the actual mutation. Writing data to the allowance PDA *is* the ownership
+    // claim on first use — `Claim::Pda` is gone, ownership is acquired implicitly
+    // by the write — after which `last_mint_ms` persists and is rewritten. The
+    // authority PDA is only echoed: it never holds state, and taking no ownership
+    // of it is deliberate (the seed alone authorizes the mint).
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(recipient),
+        AccountStateDiff::new(mint_allowance, BalanceDiff::Add(0), (&updated).into()),
+        AccountStateDiff::unchanged(user_holding),
+        AccountStateDiff::unchanged(token_definition.clone()),
+        AccountStateDiff::unchanged(mint_authority),
+        AccountStateDiff::unchanged(clock),
     ];
 
     // Delegate the mint to the Token Program under the mint-authority PDA seed.
-    // MintWithAuthority account order: [definition, holding, authority].
-    let mut authority_authorized = mint_authority;
-    authority_authorized.is_authorized = true;
+    // MintWithAuthority account order: [definition, holding, authority]. The
+    // authority is carried by `pda_seeds`, not by an `is_authorized` pre-state
+    // flag — the call ships ids, not accounts.
     let mint_call = ChainedCall::new(
         token_program_id,
-        vec![token_definition, user_holding, authority_authorized],
+        vec![definition_id, user_holding_id, mint_authority_id],
         &token_core::Instruction::MintWithAuthority {
             amount_to_mint: FAUCET_MINT_AMOUNT,
         },
     )
     .with_pda_seeds(vec![authority_seed]);
 
-    (post_states, vec![mint_call])
+    (state_diffs, vec![mint_call])
 }
 
 /// Read the millisecond wall-clock timestamp from the system `CLOCK_01` account.
