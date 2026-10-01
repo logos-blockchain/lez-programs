@@ -142,7 +142,7 @@ void appendU64(std::string& result, std::uint64_t value) {
     }
 }
 
-std::string protocolData() {
+std::string protocolData(bool frozen = false) {
     std::string result;
     for (unsigned int seed = 1; seed <= 5; ++seed) result += idHex(seed);
     result += u128Le((decimal(FIXED_ONE) + decimal("1500000000000000")).convert_to<std::string>());
@@ -151,7 +151,7 @@ std::string protocolData() {
     result += u128Le("1500000000000000000000000000");
     appendU64(result, 300'000);
     appendU64(result, 900'000);
-    result += "00";
+    result += frozen ? "01" : "00";
     return result;
 }
 
@@ -192,6 +192,20 @@ std::string collateralDefinitionData() {
 
 std::string collateralHoldingData(const std::string& balance) {
     return "00" + idHex(4) + u128Le(balance);
+}
+
+std::string positionData(const std::string& owner_id,
+                         const std::string& vault_id,
+                         std::uint64_t position_nonce,
+                         const std::string& collateral_amount,
+                         const std::string& normalized_debt_amount) {
+    std::string result = owner_id;
+    appendU64(result, position_nonce);
+    result += vault_id;
+    result += u128Le(collateral_amount);
+    result += u128Le(normalized_debt_amount);
+    appendU64(result, START);
+    return result;
 }
 
 std::string accountResponse(const std::string& owner, const std::string& data) {
@@ -515,6 +529,92 @@ LOGOS_TEST(real_ffi_journey_opens_position_with_two_wallet_signers) {
     LOGOS_ASSERT_EQ(opened["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
     LOGOS_ASSERT_EQ(plan["signingRequirements"],
                     json::array({true, false, false, true, false, false, false}));
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith(
+        "lez_core",
+        "send_generic_public_transaction",
+        submissionArguments(plan, {0, 3}, PROGRAM_ID_HEX)));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+}
+
+LOGOS_TEST(real_ffi_journey_deposit_collateral_reconciles_frozen_vault_donation) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const LogosMap info = module.programInfo();
+    assertOk(info);
+    const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+    const std::string owner_id = CALLER_ID_HEX;
+    const std::string holding_id = idHex(8);
+    const std::string position_nonce = "18446744073709551615";
+    const json addresses_request = {
+        {"stablecoinProgramId", PROGRAM_ID_HEX},
+        {"ownerId", owner_id},
+        {"positionNonce", position_nonce},
+    };
+    const std::string addresses_payload = addresses_request.dump();
+    std::unique_ptr<char, decltype(&stablecoin_free)> addresses_result(
+        stablecoin_position_addresses(addresses_payload.c_str()), &stablecoin_free);
+    LOGOS_ASSERT_TRUE(addresses_result != nullptr);
+    const json addresses_envelope = json::parse(addresses_result.get());
+    LOGOS_ASSERT_TRUE(addresses_envelope["ok"].get<bool>());
+    const json addresses = addresses_envelope["value"];
+    const std::string position_id = addresses["positionIdHex"].get<std::string>();
+    const std::string vault_id = addresses["vaultIdHex"].get<std::string>();
+    const std::string frozen_protocol = protocolData(true);
+    const std::string position = positionData(
+        owner_id, vault_id, 18446744073709551615ULL, "100", "42");
+    const std::string donated_vault = collateralHoldingData("120");
+    const std::string source_holding = collateralHoldingData("500");
+
+    expectRead(protocol_id, PROGRAM_OWNER_HEX, frozen_protocol);
+    expectRead(position_id, PROGRAM_OWNER_HEX, position);
+    expectRead(vault_id, TOKEN_OWNER_HEX, donated_vault);
+    expectRead(holding_id, TOKEN_OWNER_HEX, source_holding);
+    context.mockModule("lez_core", "list_accounts")
+        .returnsVariant(QVariant(walletAccounts()));
+    context.mockModule("lez_core", "send_generic_public_transaction")
+        .returns(successfulTransaction());
+
+    const LogosMap deposited = module.depositCollateral({
+        {"ownerId", owner_id},
+        {"positionNonce", position_nonce},
+        {"userCollateralHoldingId", holding_id},
+        {"amount", "0"},
+    });
+
+    assertOk(deposited);
+    LOGOS_ASSERT_EQ(deposited["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+    const std::string planner_payload = json{
+        {"stablecoinProgramId", PROGRAM_ID_HEX},
+        {"ownerId", owner_id},
+        {"positionNonce", position_nonce},
+        {"amount", "0"},
+        {"userCollateralHoldingId", holding_id},
+        {"position", accountReadValue(position_id, PROGRAM_OWNER_HEX, position)},
+        {"vault", accountReadValue(vault_id, TOKEN_OWNER_HEX, donated_vault)},
+        {"userCollateralHolding", accountReadValue(holding_id, TOKEN_OWNER_HEX, source_holding)},
+        {"protocolParameters", accountReadValue(protocol_id, PROGRAM_OWNER_HEX, frozen_protocol)},
+    }.dump();
+    std::unique_ptr<char, decltype(&stablecoin_free)> planner_result(
+        stablecoin_deposit_collateral_plan(planner_payload.c_str()), &stablecoin_free);
+    LOGOS_ASSERT_TRUE(planner_result != nullptr);
+    const json planner_envelope = json::parse(planner_result.get());
+    LOGOS_ASSERT_TRUE(planner_envelope["ok"].get<bool>());
+    const json plan = planner_envelope["value"];
+    LOGOS_ASSERT_EQ(
+        plan["accountIds"],
+        json::array({owner_id, position_id, vault_id, holding_id, protocol_id}));
+    LOGOS_ASSERT_EQ(plan["signingRequirements"],
+                    json::array({true, false, false, true, false}));
+    LOGOS_ASSERT_EQ(plan["instruction"].size(), 5);
+    LOGOS_ASSERT_EQ(plan["instruction"][1], 0);
+    LOGOS_ASSERT_EQ(plan["instruction"][2], 0);
+    LOGOS_ASSERT_EQ(plan["instruction"][3], 0);
+    LOGOS_ASSERT_EQ(plan["instruction"][4], 0);
     LOGOS_ASSERT_TRUE(context.moduleCalledWith(
         "lez_core",
         "send_generic_public_transaction",
