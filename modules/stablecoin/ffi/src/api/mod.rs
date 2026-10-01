@@ -10,6 +10,9 @@ mod request;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod journeys;
+
 use std::{error::Error, fmt};
 
 pub use decode::{
