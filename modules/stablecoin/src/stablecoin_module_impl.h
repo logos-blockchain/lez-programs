@@ -91,6 +91,12 @@ public:
     /// Repayment remains available while frozen, including zero amounts.
     LogosMap repayDebt(const LogosMap& request);
 
+    /// Withdraws recorded collateral after a native-compatible health preflight.
+    /// Requires `ownerId`, `positionNonce`, `userCollateralHoldingId`, and
+    /// `amount`. Only the Position owner must be a public wallet signer;
+    /// the destination holding need not belong to the wallet. Frozen calls fail.
+    LogosMap withdrawCollateral(const LogosMap& request);
+
 private:
     using StablecoinOperation = char* (*)(const char*);
 

@@ -436,7 +436,7 @@ fn require_ready_quote(quote: &Value) -> Result<(), StablecoinApiError> {
     Err(StablecoinApiError::new(code))
 }
 
-fn required_account(
+pub(super) fn required_account(
     read: &AccountRead,
 ) -> Result<(AccountId, lee_core::account::Account), StablecoinApiError> {
     decode_account(read).map_err(|_| StablecoinApiError::new("account_read_failed"))
@@ -470,7 +470,7 @@ fn decimal_text(value: &str) -> Result<&str, StablecoinApiError> {
     Ok(unquoted)
 }
 
-fn parse_u128(value: &Value) -> Result<u128, StablecoinApiError> {
+pub(super) fn parse_u128(value: &Value) -> Result<u128, StablecoinApiError> {
     match value {
         Value::Number(number) => number
             .as_u64()
@@ -542,7 +542,7 @@ fn parse_i128(value: &Value) -> Result<i128, StablecoinApiError> {
     }
 }
 
-fn plan_response<const ACCOUNT_COUNT: usize>(
+pub(super) fn plan_response<const ACCOUNT_COUNT: usize>(
     program_id: lee_core::program::ProgramId,
     account_ids: [AccountId; ACCOUNT_COUNT],
     signing_requirements: [bool; ACCOUNT_COUNT],

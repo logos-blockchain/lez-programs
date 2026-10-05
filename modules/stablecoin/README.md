@@ -2,8 +2,9 @@
 
 `stablecoin_module` is a headless Logos `core` module for the LEZ Stablecoin
 Program. It exposes deployment discovery, protocol-state reads, protocol
-initialization, position health, position opening, collateral deposits, and debt repayment through the same
-universal API used by `logoscore` and UI modules.
+initialization, position health, position opening, collateral deposits, debt
+repayment, and collateral withdrawal through the same universal API used by
+`logoscore` and UI modules.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
 `stablecoin_ffi` owns exact account decoding, PDA derivation, request
@@ -286,6 +287,59 @@ Missing initialization returns `not_initialized`; malformed or missing reads
 and missing public wallet signers prevent submission. Success returns
 `{status: "ok", error: "", transactionId: "..."}`. Wallet rejection or transport
 failure returns `wallet_submission_failed`, without a transaction ID or retry.
+
+### `withdrawCollateral(request)`
+
+Accepts `ownerId`, `positionNonce` (exact `u64` decimal string),
+`userCollateralHoldingId`, and `amount` (exact `u128` decimal string or lossless
+JSON integer). Account IDs accept base58 or hexadecimal. Floats, negative
+amounts, malformed decimals and values outside the declared types are rejected.
+
+The module derives Position, Vault and global IDs internally and reads current
+Position, Vault, destination holding, Protocol Parameters, Stability Fee
+Accumulator, Redemption Price State and canonical `CLOCK_01`. It validates
+canonical identities, stablecoin ownership, exact data, stored Position
+owner/nonce/vault identity, and collateral definition/Token Program consistency.
+The destination must differ from the owner and Vault, preserving the runtime's
+distinct-account requirement. Only the Position owner must be a public account
+controlled by the active wallet and signs; the destination holding can be
+outside that wallet. The program
+authorizes the outgoing Token transfer with the Vault PDA seed.
+
+Account order is owner, Position, Vault, destination collateral holding,
+Stability Fee Accumulator, Redemption Price State, Protocol Parameters,
+`CLOCK_01`. All `init` flags are false. Recorded Position collateral bounds the
+amount; a direct vault donation is unavailable until `depositCollateral`
+reconciles it. Preflight also checks live vault availability and destination
+balance overflow, including inconsistent observations from separate RPC reads.
+
+Frozen withdrawals fail, including zero amounts. For nonzero withdrawals with
+nonzero debt, preflight checks the remaining collateral using the program's
+wide projections, canonical clock and seven-day clamp:
+
+```text
+remainingCollateral * FIXED_POINT_ONE^3 >= normalizedDebt
+    * currentAccumulator * currentRedemptionPrice * minimumCollateralizationRatio
+```
+
+Requirement multiplication saturates conservatively in U512. A zero projected
+redemption price is rejected for an indebted, nonzero withdrawal. No nominal
+debt flooring, narrowing to `u128`, market-oracle read or controller gate is
+used. This operation uses the program's conservative wide projection, rather
+than the exact-display requirements of `positionHealth`.
+
+Zero amounts and zero-debt positions skip projections and the health gate, but
+still require valid Position, global, clock and token accounts, an unfrozen
+protocol and the owner's wallet signature. Every call reads current state;
+an earlier health quote does not authorize a later withdrawal.
+
+Stable errors include `protocol_frozen`, `withdraw_amount_exceeds_collateral`,
+`position_undercollateralized`, `redemption_price_zero`,
+`insufficient_vault_balance`, `collateral_amount_overflow` and the existing
+numeric/account/PDA/ownership/token-binding errors. Failed preflight submits
+nothing. Success returns `{status: "ok", error: "", transactionId: "..."}`;
+wallet rejection or transport failure returns `wallet_submission_failed`
+without a successful transaction ID or automatic retry.
 
 ## Runtime configuration
 

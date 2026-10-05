@@ -135,6 +135,14 @@ char *stablecoin_repay_debt_plan(const char *request_json);
 char *stablecoin_position_health(const char *request_json);
 
 /**
+ * Builds a preflighted owner-signed plan for `WithdrawCollateral`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_withdraw_collateral_plan(const char *request_json);
+
+/**
  * Releases a string returned by a `stablecoin_*` operation.
  *
  * # Safety
