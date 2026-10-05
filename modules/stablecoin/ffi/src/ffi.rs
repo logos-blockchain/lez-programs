@@ -309,6 +309,23 @@ pub unsafe extern "C" fn stablecoin_close_position_plan(
 }
 
 #[unsafe(no_mangle)]
+/// Builds the atomic old-rate accrual and replacement plan for the current admin.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_set_stability_fee_per_millisecond_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<api::SetStabilityFeePerMillisecondPlanRequest>(
+            request_json,
+            api::set_stability_fee_per_millisecond_plan,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
 /// Builds the current-admin plan for `SetMinimumCollateralizationRatio`.
 ///
 /// # Safety

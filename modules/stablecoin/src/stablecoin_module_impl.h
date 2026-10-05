@@ -109,6 +109,11 @@ public:
     /// balance must all be zero. Frozen protocols may still close positions.
     LogosMap closePosition(const LogosMap& request);
 
+    /// Accrues the elapsed interval at the old rate, then sets u128 `newRate`
+    /// in the inclusive 1x..2x band. Requires the current public wallet `adminId`.
+    /// Use decimal strings for exact integers. Same-rate and frozen calls submit.
+    LogosMap setStabilityFeePerMillisecond(const LogosMap& request);
+
     /// Sets `newRatio` (u128) in the inclusive native 1.1x..10x band.
     /// `adminId` must be the current public wallet admin. Allowed while frozen.
     LogosMap setMinimumCollateralizationRatio(const LogosMap& request);
@@ -166,7 +171,8 @@ private:
                         const std::vector<std::size_t>& expected_signer_indices = {0});
     LogosMap adminPlanAndSubmit(StablecoinOperation planner,
                                const LogosMap& request,
-                               const std::string& new_oracle_id = {});
+                               const std::string& new_oracle_id = {},
+                               bool accrue_fee = false);
     LogosMap freezeAuthorityPlanAndSubmit(StablecoinOperation planner,
                                          const LogosMap& request);
 

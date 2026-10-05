@@ -98,6 +98,9 @@ extern "C" char* stablecoin_close_position_plan(const char*) {
 extern "C" char* stablecoin_set_minimum_collateralization_ratio_plan(const char*) {
     return copyMockResponse("stablecoin_set_minimum_collateralization_ratio_plan");
 }
+extern "C" char* stablecoin_set_stability_fee_per_millisecond_plan(const char*) {
+    return copyMockResponse("stablecoin_set_stability_fee_per_millisecond_plan");
+}
 extern "C" char* stablecoin_set_controller_gains_plan(const char*) {
     return copyMockResponse("stablecoin_set_controller_gains_plan");
 }

@@ -13,6 +13,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <logos_test.h>
+#include <mock_store.h>
 #include <nlohmann/json.hpp>
 
 #include "logos_sdk.h"
@@ -1151,9 +1152,12 @@ struct AdminSetterCase {
     LogosMap fields;
     const char* preflight_error;
     bool oracle;
+    bool fee = false;
 };
 std::vector<AdminSetterCase> adminSetterCases() {
     return {
+        {&StablecoinModuleImpl::setStabilityFeePerMillisecond, "stablecoin_set_stability_fee_per_millisecond_plan",
+            {{"newRate", "1000000000000000000000000000"}}, "stability_fee_out_of_band", false, true},
         {&StablecoinModuleImpl::setMinimumCollateralizationRatio, "stablecoin_set_minimum_collateralization_ratio_plan",
             {{"newRatio", "1100000000000000000000000000"}}, "collateralization_ratio_out_of_band", false},
         {&StablecoinModuleImpl::setControllerGains, "stablecoin_set_controller_gains_plan",
@@ -1176,6 +1180,10 @@ LogosMap adminRequest(const AdminSetterCase& setter) {
 std::vector<std::string> adminAccounts(const AdminSetterCase& setter) {
     std::vector<std::string> ids = {CALLER_ID_HEX, PROTOCOL_PARAMETERS_ID_HEX};
     if (setter.oracle) ids.push_back(ORACLE_ID_HEX);
+    if (setter.fee) {
+        ids.push_back(ACCUMULATOR_ID_HEX);
+        ids.push_back(CLOCK_ID_HEX);
+    }
     return ids;
 }
 struct AdminReadMocks {
@@ -1359,7 +1367,7 @@ LOGOS_TEST(all_admin_setters_submit_with_only_current_admin_and_minimal_live_rea
         LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
         LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 1);
-        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), setter.oracle ? 2 : 1);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), setter.fee ? 3 : setter.oracle ? 2 : 1);
         LOGOS_ASSERT_EQ(context.cFunctionCallCount(setter.planner), 1);
         LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
             submissionArguments(adminAccounts(setter), 25)));
@@ -1498,6 +1506,83 @@ LOGOS_TEST(all_admin_setters_reject_wallet_failures_without_retry_or_transaction
             LOGOS_ASSERT_TRUE(response.find("transactionId") == response.end());
             LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
         }
+    }
+}
+
+LOGOS_TEST(stability_fee_setter_uses_canonical_live_reads_and_submits_repeated_requests) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+    StablecoinModuleImpl module; attachModules(module, modules);
+    const AdminReadMocks mocks(context);
+    const std::string plan = successEnvelope(submissionPlan(accrueAccounts(), 9));
+    context.mockCFunction("stablecoin_set_stability_fee_per_millisecond_plan").returns(plan);
+    context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+    const LogosMap request = {
+        {"adminId", CALLER_ID_HEX}, {"newRate", "1000000000000000000000000000"},
+        {"stablecoinProgramId", OTHER_CALLER_ID_HEX},
+        {"protocolParameters", nullptr}, {"stabilityFeeAccumulator", nullptr}, {"clock", nullptr},
+        {"stabilityFeeAccumulatorId", OTHER_CALLER_ID_HEX}, {"clockId", OTHER_CALLER_ID_HEX},
+    };
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        const LogosMap response = module.setStabilityFeePerMillisecond(request);
+        LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+        LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+    }
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 6);
+    for (const auto& id : {PROTOCOL_PARAMETERS_ID_HEX, ACCUMULATOR_ID_HEX, CLOCK_ID_HEX}) {
+        LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "get_account_public",
+            QVariantList{QVariant(QString::fromStdString(id))}));
+    }
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_accrue_stability_fee_plan"), 0);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_set_stability_fee_per_millisecond_plan"), 2);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 2);
+}
+
+LOGOS_TEST(stability_fee_setter_rejects_missing_or_unreadable_fee_state_before_planning) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& id : {ACCUMULATOR_ID_HEX, CLOCK_ID_HEX}) {
+        for (const auto& read : {std::string(), std::string("malformed"), UniversalLezCore::transportErrorSentinel()}) {
+            LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+            StablecoinModuleImpl module; attachModules(module, modules);
+            const AdminReadMocks mocks(context);
+            MockStore::instance().when(QStringLiteral("lez_core"), QStringLiteral("get_account_public"))
+                .withArgs(QVariantList{QVariant(QString::fromStdString(id))})
+                .thenReturn(QVariant(QString::fromStdString(read)));
+            assertError(module.setStabilityFeePerMillisecond({{"adminId", CALLER_ID_HEX},
+                {"newRate", "1000000000000000000000000000"}}),
+                id == ACCUMULATOR_ID_HEX && read.empty() ? "not_initialized" : "account_read_failed");
+            LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_set_stability_fee_per_millisecond_plan"), 0);
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+    }
+}
+
+LOGOS_TEST(stability_fee_setter_preserves_fee_errors_and_rejects_replaced_accumulator_or_clock_in_plan) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    const LogosMap request = {{"adminId", CALLER_ID_HEX}, {"newRate", "1000000000000000000000000000"}};
+    for (const std::string& error : {"stability_fee_arithmetic_error", "invalid_clock",
+        "invalid_stability_fee_accumulator_data", "stability_fee_accumulator_pda_mismatch"}) {
+        LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+        StablecoinModuleImpl module; attachModules(module, modules);
+        const AdminReadMocks mocks(context);
+        const std::string failure = failureEnvelope(error);
+        context.mockCFunction("stablecoin_set_stability_fee_per_millisecond_plan").returns(failure);
+        assertError(module.setStabilityFeePerMillisecond(request), error);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
+    for (const std::size_t index : {2, 3}) {
+        LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+        StablecoinModuleImpl module; attachModules(module, modules);
+        const AdminReadMocks mocks(context);
+        json plan = submissionPlan(accrueAccounts(), 9);
+        plan["accountIds"][index] = OTHER_CALLER_ID_HEX;
+        const std::string response = successEnvelope(plan);
+        context.mockCFunction("stablecoin_set_stability_fee_per_millisecond_plan").returns(response);
+        assertError(module.setStabilityFeePerMillisecond(request), "backend_error");
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
 }
 

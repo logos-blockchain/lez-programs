@@ -446,6 +446,58 @@ callers use `stablecoin_close_position_plan` and release its response with
 `stablecoin_free`. Its request additionally contains `stablecoinProgramId` and
 the `position`, `vault`, and `protocolParameters` account-read envelopes.
 
+### `setStabilityFeePerMillisecond(request)`
+
+Accepts `adminId` (base58 or hexadecimal account ID) and `newRate` (an exact
+`u128` fixed-point per-millisecond multiplier). The inclusive native band is
+`FIXED_POINT_ONE <= newRate <= 2 * FIXED_POINT_ONE`. Use decimal strings for
+portable integers above `2^53`; lossless JSON integers are also accepted, while
+floating-point values and values outside `u128` are rejected.
+
+Each call derives and reads current Protocol Parameters, Stability Fee
+Accumulator and canonical `CLOCK_01`. Stablecoin singleton PDAs, ownership and
+exact account data are validated. The supplied admin must match the currently
+stored admin and be a public account controlled by the active wallet. Admin
+rotation takes effect on the next call, including on a reused module instance.
+
+The module submits one `Instruction::SetStabilityFeePerMillisecond { new_rate }`
+with these accounts, all with `init = false`:
+
+| Order | Account | Writable | Signer |
+| --- | --- | --- | --- |
+| 1 | Current admin | No | Yes |
+| 2 | Protocol Parameters | Yes | No |
+| 3 | Stability Fee Accumulator | Yes | No |
+| 4 | Canonical `CLOCK_01` | No | No |
+
+The native instruction first accrues the elapsed interval at the old rate,
+then replaces the rate atomically. Subsequent accrual uses the new rate. The
+module does not submit a preliminary poke. It checks that the old-rate
+projection fits the native `u128` arithmetic before submission, preserving
+saturating elapsed-time subtraction and the seven-day compounding-window
+clamp. Same-time or inverted-time observations accrue no elapsed interval;
+the native instruction still writes the observed clock timestamp as
+`lastAccruedAt`.
+
+This setter remains available while frozen. Setting the existing rate again
+still submits and advances the accumulator. Successful execution preserves
+unrelated parameters and redemption state. A rate inside the allowed band
+does not guarantee that every future accrual will fit `u128`.
+
+Out-of-band rates return `stability_fee_out_of_band`; unrepresentable old-rate
+accrual returns `stability_fee_arithmetic_error`. Current-admin mismatches return
+`admin_mismatch`. Existing numeric, wallet, account-read, PDA, ownership and
+exact-data errors also apply. Failed preflight submits nothing. Success returns
+`{status: "ok", error: "", transactionId: "..."}`; wallet rejection or transport
+failure returns `wallet_submission_failed` without a successful ID or retry.
+
+The Rust API exports
+`set_stability_fee_per_millisecond_plan(SetStabilityFeePerMillisecondPlanRequest)`.
+C callers use `stablecoin_set_stability_fee_per_millisecond_plan`; add
+`stablecoinProgramId` and the `protocolParameters`, `stabilityFeeAccumulator`
+and `clock` account-read envelopes to the public request. Free responses with
+`stablecoin_free`.
+
 ### Admin parameter and role setters
 
 All six methods accept `adminId` (base58 or hexadecimal account ID) and the

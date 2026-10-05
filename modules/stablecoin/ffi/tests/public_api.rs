@@ -13,6 +13,8 @@ use stablecoin_ffi::{
 
 #[test]
 fn crate_root_reexports_stablecoin_surface() {
+    let _set_fee: fn(stablecoin_ffi::SetStabilityFeePerMillisecondPlanRequest) -> StablecoinResult =
+        stablecoin_ffi::set_stability_fee_per_millisecond_plan;
     let _freeze: fn(stablecoin_ffi::FreezeAuthorityPlanRequest) -> StablecoinResult =
         stablecoin_ffi::freeze_plan;
     let _unfreeze: fn(stablecoin_ffi::FreezeAuthorityPlanRequest) -> StablecoinResult =
