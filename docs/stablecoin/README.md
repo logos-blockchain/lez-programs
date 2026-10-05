@@ -344,7 +344,7 @@ pub const FIXED_POINT_ONE: u128 = 10u128.pow(27);
 
 The 27-decimal choice matches MakerDAO / RAI's `RAY` precision and gives enough headroom for rate compounding over years without underflow.
 
-- All multiplications of fixed-point values use `u256` (`i256` for signed) intermediates to avoid overflow; results are reduced back to `u128` / `i128` after dividing by `FIXED_POINT_ONE`.
+- All multiplications of fixed-point values use `u256` (`i256` for signed) intermediates to avoid overflow; results are reduced back to `u128` / `i128` after dividing by `FIXED_POINT_ONE`. The §6.2 collateralization check is the exception: it compares in `u512` and never reduces (§6.2).
 - Rounding direction is chosen per use site to favour the protocol (§ 6.3).
 
 ### 5.2 `compound_rate`
@@ -363,6 +363,15 @@ Edge cases:
 - `per_millisecond_rate = FIXED_POINT_ONE` → returns `FIXED_POINT_ONE` regardless of `milliseconds_elapsed`.
 - `per_millisecond_rate < FIXED_POINT_ONE` → result < `FIXED_POINT_ONE` (compounding decay).
 - Overflow guard: callers clamp the elapsed window to `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` before calling (§5.3). This is load-bearing, not decorative: over an *unbounded* window, any `per_millisecond_rate > FIXED_POINT_ONE` eventually overflows `rate ^ milliseconds_elapsed` regardless of how close to `1.0` it is — the §8 rate bound alone does **not** prevent it.
+- **The clamp bounds the window; it does not make overflow impossible.** At the rate
+  ceilings §8 currently permits, `compound_rate` still overflows `u128` well inside
+  the seven-day window — a redemption rate at `RATE_DELTA_CLAMP` overflows a `1.0`
+  anchor after 2_655_318 ms (~44 minutes), and `stability_fee_per_millisecond` at its
+  `2.0` cap overflows after just **39 ms**. Those ceilings are §15 placeholders, far looser than any
+  realistic rate (see §8). Values that are only ever **compared** therefore use the
+  saturating `u512` projections of §5.3 instead; values that are **stored** (the two
+  pokes' anchors, `generate_debt`'s normalized-debt delta) stay `u128` and will panic
+  at those ceilings.
 
 **In plain English:** this is just `rate ^ milliseconds_elapsed` — what a per-millisecond multiplier becomes after that many milliseconds. The naive way is `milliseconds_elapsed` separate multiplications. Exponentiation-by-squaring does it in `log₂(milliseconds_elapsed)` multiplications instead — for a year's worth of milliseconds (~31.5 billion), that's ~35 muls instead of 31.5 billion.
 
@@ -389,6 +398,17 @@ fn current_redemption_price(state: RedemptionPriceState, now: u64) -> u128 {
 ```
 
 Where `mul_div(a, b, c) = (a * b) / c` computed via u256 to avoid intermediate overflow.
+
+**Wide variants for the §6.2 check.** Both projections above return `u128` and so
+panic at the rate ceilings §8 permits (§5.2). The collateralization check only ever
+*compares* these values, so it consumes `current_accumulated_rate_wide` and
+`current_redemption_price_wide` instead: identical `dt` clamp and compounding, but
+computed in `u512` with **saturating** multiplication rather than panicking. Saturating
+is the safe direction — §6.2's left-hand side cannot exceed `u128::MAX ×
+FIXED_POINT_ONE^3` (~`10^119`), while the smallest value these can saturate to is
+~`10^127`, so a saturated projection always loses the comparison, which is the correct
+answer for debt whose value has outgrown the type. The `u128` versions remain in use
+where the result is **stored** (§10.2, §10.3) or divides a stored amount (§10.7).
 
 **In plain English:** instead of writing "current_accumulator = X" to disk on every block (which would require touching every position's account on every fee tick), we store an **anchor** plus the **per-millisecond rate**, and compute the current value on the fly by rolling the anchor forward via `compound_rate`. Reads are slightly more expensive (one `compound_rate` call); writes happen only on real anchor updates (the pokes in §10.2 / §10.3).
 
@@ -450,7 +470,13 @@ assert position.collateral_amount * FIXED_POINT_ONE^2
        >= nominal_debt * current_redemption_price * minimum_collateralization_ratio
 ```
 
-Both sides computed in u256 to avoid intermediate overflow.
+Both sides computed in `u512`, not `u256`: `collateral_amount × FIXED_POINT_ONE^2`
+alone exceeds `u256` once collateral passes ~115_792 whole tokens at 18 decimals. The
+right-hand side multiplies with **saturating** arithmetic, and the projections arrive
+as the `u512` wide variants of §5.3 — so a projection that has outgrown `u128` yields
+`undercollateralized` rather than a panic. A redemption price that projects to **zero**
+is rejected outright before the comparison: zero would zero the requirement and let an
+indebted position be drained completely.
 
 Applied in: `withdraw_collateral` (post-decrement), `generate_debt` (post-mint).
 NOT applied in: `deposit_collateral` (strictly improves it), `repay_debt` (strictly improves it).
@@ -624,7 +650,7 @@ These are properties the protocol maintains across every state-changing instruct
 | Constant / parameter | Bound | Rationale |
 |---|---|---|
 | `FIXED_POINT_ONE` | `10^27` | RAY precision; standard. |
-| `stability_fee_per_millisecond` | `FIXED_POINT_ONE ≤ x ≤ FIXED_POINT_ONE * 2` | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). Upper bound is an anti-typo sanity cap (≈100%/ms) — it does **not** by itself prevent `compound_rate` overflow; that is handled by clamping the elapsed window (`MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS`, below). Real values are `1 + ε` where `ε ≈ 1.5×10^15` for ~5% annual. |
+| `stability_fee_per_millisecond` | `FIXED_POINT_ONE ≤ x ≤ FIXED_POINT_ONE * 2` | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). Upper bound is an anti-typo sanity cap (≈100%/ms) — it does **not** prevent `compound_rate` overflow, and neither does the elapsed-window clamp: at this cap the `u128` projection overflows after just **39 ms** (§5.2). Only the §6.2 check is immune, via the saturating `u512` projections; `accrue_stability_fee` and `generate_debt`'s debt sizing would panic. Tightening this cap is §15 tuning work. Real values are `1 + ε` where `ε ≈ 1.5×10^15` for ~5% annual. |
 | `minimum_collateralization_ratio` | `FIXED_POINT_ONE * 1.1 ≤ x ≤ FIXED_POINT_ONE * 10` | Lower bound = 110% (any less is liquidation-immediate); upper bound = 1000% (sanity cap). Real values are 130–200%. |
 | `controller_proportional_gain` magnitude | `|x| ≤ FIXED_POINT_ONE * 10^3` | Practical upper bound for rate-explosion guard (RFP R2). Real values are tiny (≈10^6–10^12 raw) because they scale price-error × per-ms rate-output. Rescaled `÷10^3` from the per-second formulation. |
 | `controller_integral_gain` magnitude | `|x| ≤ FIXED_POINT_ONE` | As proportional, but rescaled `÷10^6` (it also multiplies `Δt`, now in ms): real values ≈10^3–10^9 raw. |
@@ -632,7 +658,7 @@ These are properties the protocol maintains across every state-changing instruct
 | `RATE_DELTA_CLAMP` | `± FIXED_POINT_ONE / 100_000` | Max single-update per-ms rate adjustment (≈±0.001%); rescaled `÷10^3` to ms so a ~1/sec keeper cadence still caps near ±1%/s. Constant in v1. |
 | `minimum_milliseconds_between_rate_updates` | `1 ≤ x ≤ 86_400_000` | Min 1 ms (no zero-spam), max 1 day (RFP F2 "rate updates within a small number of blocks"). |
 | `maximum_oracle_price_age_milliseconds` | `1 ≤ x ≤ 86_400_000` | Stale beyond a day is obviously bad; aggressive freshness is a tuning parameter. |
-| `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` | `604_800_000` (7 days) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Seven days is the top of the range the design considered — it maximises tolerance of keeper neglect while staying far from overflow for any realistic rate (a ~5%/yr fee is `1 + 1.5×10^-12` per ms, giving a `1.0009×` factor over the full window; overflow would need a rate above ~`1 + 4×10^-8` per ms). Constant in v1. |
+| `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` | `604_800_000` (7 days) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Seven days is the top of the range the design considered — it maximises tolerance of keeper neglect and stays far from overflow for any *realistic* rate (a ~5%/yr fee is `1 + 1.5×10^-12` per ms, giving a `1.0009×` factor over the full window; overflow needs a rate above ~`1 + 4×10^-8` per ms). **But the ceilings this table permits are far above that threshold** — `RATE_DELTA_CLAMP` allows `1 + 10^-5` per ms, ~250× past it, and `stability_fee_per_millisecond` allows `2.0` — so the clamp does **not** make `compound_rate` overflow-free as written; see §5.2. Reconciling the bands with the type is §15 tuning work. Constant in v1. |
 | `initial_redemption_price` | `> 0` | Must be positive; admin chooses an initial value reflecting the launch peg target. |
 
 All bounds enforced in `initialize_program` and the corresponding `set_*` instruction.
@@ -768,7 +794,7 @@ flowchart TD
 
 **Chained calls:** none.
 
-**Panics if:** `caller.is_authorized = false`; either global uninitialized; overflow in `compound_rate` (prevented by the `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` clamp of §5.3 — without it a within-bounds-but-high rate over a long `dt` would overflow).
+**Panics if:** `caller.is_authorized = false`; either global uninitialized; overflow in `compound_rate`. The `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` clamp of §5.3 bounds `dt` but does **not** rule this out — the new anchor is *stored*, so it must fit `u128`, and `stability_fee_per_millisecond` at its §8 ceiling overflows after 39 ms (§5.2). Unreachable at any realistic fee.
 
 **Note:** `accrue_stability_fee` has no minimum-interval throttle. Accrual is idempotent and lazy (§5.3, §6.1): calling it more or less often doesn't change the result — the read-side projection keeps every position current regardless of cadence — so redundant calls are harmless, self-funded no-ops rather than something to guard against. (The oracle-driven `update_redemption_rate` keeps its throttle, because there frequency *is* a control-cadence choice.)
 
@@ -912,13 +938,13 @@ flowchart TD
 
 **Outputs:**
 
-- `position.collateral_amount` ← `old + amount`.
+- `position.collateral_amount` ← `vault.balance + amount` — **reconciled from the vault, not incremented from the stored field.** The vault is the authority on how much collateral the position actually holds; anyone can donate directly to the vault PDA, so an increment would leave `collateral_amount` permanently understating it. Reconciling folds any donated surplus in on the next deposit.
 - `vault.balance` ← `old + amount` (via chained `Token::Transfer`).
 - `user_collateral_holding.balance` ← `old − amount` (same chained call).
 
 **Chained calls:** `Token::Transfer { amount }` · accounts: `[user_collateral_holding (user-authorized), vault]` · no PDA seeds.
 
-**Panics if:** `owner.is_authorized = false`; `user_collateral_holding.is_authorized = false`; position uninit / wrong owner / PDA mismatch; vault doesn't match `position.vault_account_id`; user holding's `definition_id` mismatch or different Token Program; `position.collateral_amount + amount` overflows. Allowed when frozen.
+**Panics if:** `owner.is_authorized = false`; `user_collateral_holding.is_authorized = false`; position uninit / wrong owner / PDA mismatch; vault doesn't match `position.vault_account_id`; user holding's `definition_id` mismatch or different Token Program; vault uninitialized or holding a token other than `protocol_parameters.collateral_definition_id`; `vault.balance + amount` overflows. Allowed when frozen.
 
 ```mermaid
 flowchart TD
@@ -927,7 +953,7 @@ flowchart TD
         a4[user_collateral_holding<br/>auth + init] ~~~ a5[protocol_parameters<br/>read]
     end
     subgraph Post["Post-state"]
-        p1[position<br/>collateral_amount += amount] ~~~ p2[vault<br/>balance += amount] ~~~ p3[user_collateral_holding<br/>balance -= amount]
+        p1[position<br/>collateral_amount = vault.balance + amount] ~~~ p2[vault<br/>balance += amount] ~~~ p3[user_collateral_holding<br/>balance -= amount]
     end
     In --> Ins((deposit_collateral<br/>amount))
     Ins --> Post
@@ -957,7 +983,7 @@ flowchart TD
 
 **Chained calls:** `Token::Transfer { amount }` · accounts: `[vault (auth via vault PDA seed), user_collateral_holding]` · pda_seeds: `[vault_seed]`.
 
-**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; vault doesn't match `position.vault_account_id`; user holding's `definition_id` mismatch or different Token Program; `protocol_parameters.is_frozen = true`; `amount > position.collateral_amount`; collateralization check (§ 6.2) fails post-decrement.
+**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; vault doesn't match `position.vault_account_id`; user holding's `definition_id` mismatch or different Token Program; `protocol_parameters.is_frozen = true`; `amount > position.collateral_amount`; the redemption price projects to **zero** (§6.2); collateralization check (§ 6.2) fails post-decrement. With `amount = 0` the projections and the check are skipped entirely — the position is unchanged, so there is nothing to re-examine (§11).
 
 ```mermaid
 flowchart TD
@@ -997,7 +1023,7 @@ flowchart TD
 
 **Chained calls:** `Token::Mint { amount_to_mint: amount }` · accounts: `[stablecoin_definition (auth via stablecoin program PDA seed), user_stablecoin_holding]` · pda_seeds: `[stablecoin_definition_seed]`.
 
-**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`; `now − oracle.timestamp > maximum_oracle_price_age_milliseconds`; `protocol_parameters.is_frozen = true`; collateralization check (§ 6.2) fails post-mint; arithmetic overflow.
+**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`; `now − oracle.timestamp > maximum_oracle_price_age_milliseconds`; `oracle.timestamp > now` (a future-dated observation is rejected outright, not treated as fresh); `protocol_parameters.is_frozen = true`; the redemption price projects to **zero** (§6.2); collateralization check (§ 6.2) fails post-mint; arithmetic overflow.
 
 ```mermaid
 flowchart TD
@@ -1064,7 +1090,7 @@ flowchart TD
 
 **Outputs:**
 
-- `position` ← `Account::default()` (cleared; PDA released).
+- `position.data` ← empty; `program_owner` and `nonce` **unchanged**. `Account::default()` is *not* expressible here: LEE's `validate_execution` (rules 3 and 4) forbids a program from changing an account's `program_owner` or `nonce`, so the data is zeroed but the account lingers stablecoin-owned — exactly as the vault does per §12. The PDA is therefore **not released**, and since `open_position` requires an uninitialized position account, the `(owner, position_nonce)` pair cannot be reused: the user must pick a fresh nonce. See §11 and §14.
 - `vault` unchanged — lingers with `balance = 0` (Token Program has no `CloseHolding`; § 14).
 
 **Chained calls:** none.
@@ -1077,7 +1103,7 @@ flowchart TD
         a1[owner<br/>auth] ~~~ a2[position<br/>to clear] ~~~ a3[vault<br/>read, balance must be 0] ~~~ a4[protocol_parameters<br/>read]
     end
     subgraph Post["Post-state"]
-        p1[position<br/>CLEARED to default<br/>PDA released] ~~~ p2[vault<br/>UNCHANGED<br/>lingers as artifact]
+        p1[position<br/>data CLEARED<br/>PDA NOT released, lingers] ~~~ p2[vault<br/>UNCHANGED<br/>lingers as artifact]
     end
     In --> Ins((close_position))
     Ins --> Post
@@ -1326,7 +1352,7 @@ Alice slightly overpaid (211 nominal vs 210.26 owed). The extra 0.74 went to the
 
 | Account | Field | Before | After |
 |---|---|---|---|
-| `position` | (all fields) | `Position{ collateral=0, debt=0, ... }` | `Account::default()` |
+| `position` | data | `Position{ collateral=0, debt=0, ... }` | empty data; `program_owner` = stablecoin and `nonce` UNCHANGED (the PDA is not released — see §10.9) |
 | `vault` | — | TokenHolding with balance=0 | UNCHANGED (lingers as artifact, see §14) |
 
 **Net result over the year:**
