@@ -19,6 +19,13 @@ struct WalletUiState {
     int currentBlockHeight = 0;
     QString sequencerAddress;
     bool sequencerReachable = true;
+    QString syncStatus = QStringLiteral("closed");
+    QString syncError;
+
+    bool canSubmit() const
+    {
+        return isWalletOpen && syncStatus == QStringLiteral("ready");
+    }
 };
 
 class WalletController final : public QObject {
@@ -54,6 +61,7 @@ private:
     QString defaultStoragePath() const;
 
     void openOnStartup();
+    bool beginOpen(const QString& config, const QString& storage);
     void applySnapshot(const WalletSnapshot& snapshot);
     void checkReachability();
 
@@ -64,4 +72,5 @@ private:
     QNetworkAccessManager* m_network;
     QTimer* m_reachabilityTimer;
     bool m_started = false;
+    quint64 m_operationGeneration = 0;
 };
