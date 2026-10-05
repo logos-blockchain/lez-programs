@@ -9,9 +9,16 @@ Popup {
     property string mnemonic: ""
     property string errorText: ""
     property bool busy: false
+    property bool syncing: false
+    property bool syncProgressKnown: false
+    property int syncCurrentBlock: 0
+    property int syncTargetBlock: 0
+    property int syncRemainingBlocks: 0
+    property string syncError: ""
 
     signal createRequested(string password)
     signal copyRequested(string text)
+    signal cancelSyncRequested()
 
     modal: true
     dim: true
@@ -163,6 +170,41 @@ Popup {
                     font.bold: true
                     wrapMode: Text.WordWrap
                 }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                visible: root.syncing || root.syncError.length > 0
+                implicitHeight: syncStatusLabel.implicitHeight + 24
+                color: root.syncError.length > 0 ? "#321b1b" : "#211914"
+                border.color: root.syncError.length > 0 ? "#8f3f3f" : "#6b4329"
+                border.width: 1
+                radius: 6
+
+                Label {
+                    id: syncStatusLabel
+                    objectName: "walletSyncStatus"
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    text: root.syncError.length > 0
+                        ? qsTr("Synchronization failed: %1").arg(root.syncError)
+                        : root.syncProgressKnown && root.syncTargetBlock > 0
+                            ? qsTr("Synchronizing wallet: %1 / %2 (%3 blocks left)")
+                                .arg(root.syncCurrentBlock)
+                                .arg(root.syncTargetBlock)
+                                .arg(root.syncRemainingBlocks)
+                            : qsTr("Synchronizing wallet…")
+                    color: root.syncError.length > 0 ? "#fca5a5" : "#f2d8c7"
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            Button {
+                objectName: "walletCancelSyncButton"
+                Layout.fillWidth: true
+                visible: root.syncing
+                text: qsTr("Cancel synchronization")
+                onClicked: root.cancelSyncRequested()
             }
 
             Button {

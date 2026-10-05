@@ -85,9 +85,9 @@ nix build '.#lgx-portable' --out-link result-lgx-portable
 
 # The core wallet module it depends on. These are the same immutable upstream
 # revisions used by this app's flake, including the merged macOS Metal fix.
-nix build 'github:logos-blockchain/logos-execution-zone-module?rev=d70225ced646934d2294fd9e8f8b03615c104b80#lgx' \
+nix build 'github:logos-blockchain/logos-execution-zone-module?rev=b60be4640c4dc5ba3e0b552ecbe859482d02f2dd#lgx' \
   --override-input logos-execution-zone \
-  'github:logos-blockchain/logos-execution-zone?rev=a7e06a660940a00093b1760560d37ff84aff5a05' \
+  'github:logos-blockchain/logos-execution-zone?rev=70c41652fa129d8a0e0fe74c4caa1b11a6b5de9c' \
   --out-link result-core
 ```
 

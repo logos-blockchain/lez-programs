@@ -3,12 +3,17 @@
 #include <QHash>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QVariant>
 #include <QVariantList>
 
 #include <functional>
 #include <utility>
 #include <vector>
+
+struct Timeout {
+    explicit Timeout(int = 20000) { }
+};
 
 class LogosAPI;
 
@@ -33,6 +38,8 @@ public:
     int openResult = 0;
     int saveResult = 0;
     int syncResult = 0;
+    bool deferSync = false;
+    std::function<void(int)> pendingSync;
     int lastSyncedBlock = 0;
     int currentBlockHeight = 0;
     QString sequencerAddress;
@@ -47,6 +54,7 @@ public:
     int openCalls = 0;
     int versionCalls = 0;
     int saveCalls = 0;
+    int createAsyncCalls = 0;
     int syncCalls = 0;
     int listCalls = 0;
     int publicReadCalls = 0;
@@ -108,6 +116,21 @@ public:
         return mnemonic;
     }
 
+    void create_newAsync(const QString& config,
+                         const QString& storage,
+                         const QString& statistics,
+                         const QString& password,
+                         std::function<void(QString)> callback,
+                         Timeout = Timeout())
+    {
+        ++createAsyncCalls;
+        QTimer::singleShot(0, [this, config, storage, statistics, password,
+                               callback = std::move(callback)]() mutable {
+            deliver(QStringLiteral("create_new"), std::move(callback),
+                    create_new(config, storage, statistics, password));
+        });
+    }
+
     int save()
     {
         ++saveCalls;
@@ -143,7 +166,18 @@ public:
 
     void sync_to_blockAsync(int blockId, std::function<void(int)> callback)
     {
-        deliver(QStringLiteral("sync_to_block"), std::move(callback), sync_to_block(blockId));
+        const int result = sync_to_block(blockId);
+        if (deferSync)
+            pendingSync = std::move(callback);
+        else
+            deliver(QStringLiteral("sync_to_block"), std::move(callback), result);
+    }
+
+    void finishSync()
+    {
+        auto callback = std::move(pendingSync);
+        if (callback)
+            callback(syncResult);
     }
 
     QString get_sequencer_addr() const { return sequencerAddress; }
