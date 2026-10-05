@@ -1,5 +1,6 @@
 //! Transport-independent stablecoin client operations.
 
+mod close;
 mod debt;
 mod decode;
 mod health;
@@ -29,8 +30,12 @@ mod withdraw_tests;
 #[cfg(test)]
 mod debt_tests;
 
+#[cfg(test)]
+mod close_tests;
+
 use std::{error::Error, fmt};
 
+pub use close::close_position_plan;
 pub use debt::generate_debt_plan;
 pub use decode::{
     decode_protocol_parameters, decode_redemption_price_state, decode_stability_fee_accumulator,
@@ -45,12 +50,13 @@ pub use program::program_info;
 pub use projection::current_global_state;
 pub use quote::redemption_rate_update_quote;
 pub use request::{
-    AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest, DecodeProtocolParametersRequest,
-    DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
-    DepositCollateralPlanRequest, GenerateDebtPlanRequest, InitializeProgramPlanRequest,
-    OpenPositionPlanRequest, PositionAddressesRequest, PositionHealthRequest, ProgramInfoRequest,
-    RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, RepayDebtPlanRequest,
-    UpdateRedemptionRatePlanRequest, WithdrawCollateralPlanRequest,
+    AccrueStabilityFeePlanRequest, ClosePositionPlanRequest, CurrentGlobalStateRequest,
+    DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
+    DecodeStabilityFeeAccumulatorRequest, DepositCollateralPlanRequest, GenerateDebtPlanRequest,
+    InitializeProgramPlanRequest, OpenPositionPlanRequest, PositionAddressesRequest,
+    PositionHealthRequest, ProgramInfoRequest, RedemptionRateUpdateQuoteRequest,
+    RefreshGlobalsPlanRequest, RepayDebtPlanRequest, UpdateRedemptionRatePlanRequest,
+    WithdrawCollateralPlanRequest,
 };
 use serde_json::Value;
 pub use withdraw::withdraw_collateral_plan;

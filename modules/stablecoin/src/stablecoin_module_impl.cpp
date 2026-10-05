@@ -538,6 +538,66 @@ LogosMap StablecoinModuleImpl::redemptionRateUpdateQuote() {
     });
 }
 
+LogosMap StablecoinModuleImpl::closePosition(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!request.is_object() || !hasString(request, "ownerId")
+            || !hasString(request, "positionNonce")) {
+            return publicError("bad_request");
+        }
+        std::string error;
+        const json info = stablecoinProgramInfo(error);
+        if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+        const std::string owner = normalizeAccountId(jsonString(request, "ownerId"));
+        if (owner.empty()) return publicError("invalid_account_id");
+        if (!requireWalletCaller(owner, error)) return publicError(error);
+        const FfiResult addresses = callStablecoin(stablecoin_position_addresses, {
+            {"stablecoinProgramId", info["programIdHex"]}, {"ownerId", owner},
+            {"positionNonce", jsonString(request, "positionNonce")},
+        });
+        if (!addresses.ok) {
+            return publicError(stablecoin_module::detail::stableFfiError(addresses.error));
+        }
+        const std::string position_id = jsonString(addresses.value, "positionIdHex");
+        const std::string vault_id = jsonString(addresses.value, "vaultIdHex");
+        const std::string parameters_id = jsonString(info, "protocolParametersIdHex");
+        for (const auto& account_id : {position_id, vault_id, parameters_id}) {
+            if (!stablecoin_module::detail::isValidAccountIdHex(account_id)) {
+                return publicError("backend_error");
+            }
+        }
+        const json parameters = readPublicAccount(parameters_id);
+        if (jsonString(parameters, "status") == "not_found") return publicError("not_initialized");
+        if (jsonString(parameters, "status") != "ok") return publicError("account_read_failed");
+        const json position = readPublicAccount(position_id);
+        const json vault = readPublicAccount(vault_id);
+        if (jsonString(position, "status") != "ok" || jsonString(vault, "status") != "ok") {
+            return publicError("account_read_failed");
+        }
+        const FfiResult planned = callStablecoin(stablecoin_close_position_plan, {
+            {"stablecoinProgramId", info["programIdHex"]}, {"ownerId", owner},
+            {"positionNonce", jsonString(request, "positionNonce")},
+            {"position", position}, {"vault", vault}, {"protocolParameters", parameters},
+        });
+        if (!planned.ok) return publicError(stablecoin_module::detail::stableFfiError(planned.error));
+        if (jsonString(planned.value, "programId") != jsonString(info, "programIdHex")) {
+            return publicError("backend_error");
+        }
+        const std::vector<std::string> expected = {owner, position_id, vault_id, parameters_id};
+        const auto account_ids = planned.value.find("accountIds");
+        if (account_ids == planned.value.end() || !account_ids->is_array()
+            || account_ids->size() != expected.size()) {
+            return publicError("backend_error");
+        }
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            if (!(*account_ids)[index].is_string()
+                || (*account_ids)[index].get<std::string>() != expected[index]) {
+                return publicError("backend_error");
+            }
+        }
+        return submitPlan(planned.value, expected.size());
+    });
+}
+
 LogosMap StablecoinModuleImpl::generateDebt(const LogosMap& request) {
     return guarded([&]() -> LogosMap {
         if (!request.is_object() || !hasString(request, "ownerId")

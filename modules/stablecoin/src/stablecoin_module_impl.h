@@ -103,6 +103,12 @@ public:
     /// signs; the destination holding need not belong to the wallet.
     LogosMap generateDebt(const LogosMap& request);
 
+    /// Clears a settled Position's data without releasing its PDA or vault.
+    /// Requires `ownerId` and exact decimal-string `positionNonce`; only the
+    /// public wallet owner signs. Debt, recorded collateral, and actual vault
+    /// balance must all be zero. Frozen protocols may still close positions.
+    LogosMap closePosition(const LogosMap& request);
+
 private:
     using StablecoinOperation = char* (*)(const char*);
 

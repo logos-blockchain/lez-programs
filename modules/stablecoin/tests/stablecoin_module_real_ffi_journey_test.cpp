@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -329,6 +330,101 @@ void assertOk(const LogosMap& response) {
 }
 
 }  // namespace
+
+LOGOS_TEST(real_ffi_close_position_pins_submission_and_rejects_donations_and_repeat_close) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const bool frozen : {false, true}) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const LogosMap info = module.programInfo();
+        assertOk(info);
+        const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+        const std::string address_payload = json{
+            {"stablecoinProgramId", PROGRAM_ID_HEX}, {"ownerId", CALLER_ID_HEX},
+            {"positionNonce", "18446744073709551615"},
+        }.dump();
+        std::unique_ptr<char, decltype(&stablecoin_free)> addresses(
+            stablecoin_position_addresses(address_payload.c_str()), &stablecoin_free);
+        LOGOS_ASSERT_TRUE(addresses != nullptr);
+        const json address_envelope = json::parse(addresses.get());
+        LOGOS_ASSERT_TRUE(address_envelope["ok"].get<bool>());
+        const std::string position_id = address_envelope["value"]["positionIdHex"];
+        const std::string vault_id = address_envelope["value"]["vaultIdHex"];
+        const std::string position = positionData(CALLER_ID_HEX, vault_id, UINT64_MAX, "0", "0");
+        std::string parameters = protocolData(frozen);
+        parameters.replace(128, 64, info["stablecoinDefinitionIdHex"].get<std::string>());
+        expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+        expectRead(position_id, PROGRAM_OWNER_HEX, position);
+        expectRead(vault_id, TOKEN_OWNER_HEX, collateralHoldingData("1"));
+        QVariantMap owner;
+        owner.insert("account_id", QString::fromStdString(CALLER_ID_HEX));
+        owner.insert("is_public", true);
+        context.mockModule("lez_core", "list_accounts")
+            .returnsVariant(QVariant(QVariantList{QVariant(owner)}));
+        context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+        LogosMap request = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "18446744073709551615"}};
+        const LogosMap donated = module.closePosition(request);
+        LOGOS_ASSERT_EQ(donated["error"].get<std::string>(), std::string("vault_not_empty"));
+        LOGOS_ASSERT_TRUE(donated.find("transactionId") == donated.end());
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+
+        // Only a separately emptied vault permits closure; closePosition itself
+        // does not reconcile or withdraw the donation.
+        const std::string vault = collateralHoldingData("0");
+        expectRead(vault_id, TOKEN_OWNER_HEX, vault);
+        const LogosMap closed = module.closePosition(request);
+        assertOk(closed);
+        LOGOS_ASSERT_EQ(closed["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 6);
+        const std::string planner_payload = json{
+            {"stablecoinProgramId", PROGRAM_ID_HEX}, {"ownerId", CALLER_ID_HEX},
+            {"positionNonce", "18446744073709551615"},
+            {"position", accountReadValue(position_id, PROGRAM_OWNER_HEX, position)},
+            {"vault", accountReadValue(vault_id, TOKEN_OWNER_HEX, vault)},
+            {"protocolParameters", accountReadValue(protocol_id, PROGRAM_OWNER_HEX, parameters)},
+        }.dump();
+        std::unique_ptr<char, decltype(&stablecoin_free)> planned(
+            stablecoin_close_position_plan(planner_payload.c_str()), &stablecoin_free);
+        LOGOS_ASSERT_TRUE(planned != nullptr);
+        const json envelope = json::parse(planned.get());
+        LOGOS_ASSERT_TRUE(envelope["ok"].get<bool>());
+        const json plan = envelope["value"];
+        LOGOS_ASSERT_EQ(plan["accountIds"], json::array({CALLER_ID_HEX, position_id, vault_id, protocol_id}));
+        LOGOS_ASSERT_EQ(plan["signingRequirements"], json::array({true, false, false, false}));
+        LOGOS_ASSERT_EQ(plan["instruction"].size(), 1);
+        LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
+            submissionArguments(plan, std::vector<std::size_t>{0}, PROGRAM_ID_HEX)));
+
+        // Keep the stablecoin owner and nonzero account nonce after clearing
+        // data. This is not a missing or default account.
+        json cleared = json::parse(accountResponse(PROGRAM_OWNER_HEX, ""));
+        cleared["nonce"] = u128Le("7");
+        MockStore::instance().when(QStringLiteral("lez_core"), QStringLiteral("get_account_public"))
+            .withArgs(accountArgs(position_id))
+            .thenReturn(QVariant(QString::fromStdString(cleared.dump())));
+        const LogosMap repeated = module.closePosition(request);
+        LOGOS_ASSERT_EQ(repeated["error"].get<std::string>(), std::string("invalid_position_data"));
+        LOGOS_ASSERT_TRUE(repeated.find("transactionId") == repeated.end());
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+        request["positionNonce"] = 1.5;
+        LOGOS_ASSERT_EQ(module.closePosition(request)["error"].get<std::string>(), std::string("bad_request"));
+        request["positionNonce"] = "18446744073709551616";
+        LOGOS_ASSERT_EQ(module.closePosition(request)["error"].get<std::string>(), std::string("invalid_numeric_value"));
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+
+        expectRead(position_id, PROGRAM_OWNER_HEX, position);
+        request["positionNonce"] = "18446744073709551615";
+        expectMissing(vault_id);
+        LOGOS_ASSERT_EQ(module.closePosition(request)["error"].get<std::string>(), std::string("account_read_failed"));
+        expectRead(vault_id, TOKEN_OWNER_HEX, vault);
+        expectMissing(position_id);
+        LOGOS_ASSERT_EQ(module.closePosition(request)["error"].get<std::string>(), std::string("account_read_failed"));
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+    }
+}
 
 LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
