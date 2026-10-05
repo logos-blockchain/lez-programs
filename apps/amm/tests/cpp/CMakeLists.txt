@@ -58,8 +58,15 @@ add_test(NAME amm_wallet_polling COMMAND amm_wallet_polling_test)
 qt_add_executable(amm_swap_confirmation_test
     tst_SwapConfirmation.cpp
     ../../src/SwapConfirmation.cpp
+    ../../../shared/wallet/src/WalletController.cpp
+    ../../../shared/wallet/src/WalletAccountModel.cpp
+    ../../../shared/wallet/src/WalletProvider.cpp
 )
 target_compile_features(amm_swap_confirmation_test PRIVATE cxx_std_17)
-target_include_directories(amm_swap_confirmation_test PRIVATE ../../src)
-target_link_libraries(amm_swap_confirmation_test PRIVATE Qt6::Core Qt6::Test)
+target_include_directories(amm_swap_confirmation_test PRIVATE
+    ../../src
+    ../../../shared/wallet/src
+    ../../../shared/wallet/tests/support
+)
+target_link_libraries(amm_swap_confirmation_test PRIVATE Qt6::Core Qt6::Network Qt6::Test)
 add_test(NAME amm_swap_confirmation COMMAND amm_swap_confirmation_test)
