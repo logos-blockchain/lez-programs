@@ -34,6 +34,11 @@ class AmmUiBackend
     // The registry's declared networks as [{ id, name }] for the network picker
     // (empty for local / none sources). Auto-syncs on each registry refresh / pick.
     PROP(QVariantList networks READONLY)
+    // Atomic provenance/status for Settings: source identifies the published
+    // snapshot; snapshotUrl its origin; effectiveUrl the current request target.
+    // override names the environment variables taking precedence over registryUrl.
+    // loading and error describe revalidation, independently of the snapshot.
+    PROP(QVariantMap registryStatus READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
