@@ -77,6 +77,7 @@ private:
     void openOnStartup();
     bool beginOpen(const QString& config, const QString& storage);
     void applySnapshot(const WalletSnapshot& snapshot);
+    void startRefresh();
     void checkReachability();
     void stopReachability();
     QString walletSettingsGroup() const;

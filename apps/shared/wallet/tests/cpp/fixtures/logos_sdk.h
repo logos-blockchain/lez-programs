@@ -7,11 +7,38 @@
 #include <QVariantList>
 
 #include <functional>
+#include <utility>
 
 class LogosAPI;
 
 class FakeExecutionZone {
 public:
+    enum class AsyncOperation {
+        None, Open, LastSyncedBlock, CurrentBlockHeight, Sync,
+        SequencerAddress, ListAccounts, PublicAccount, Balance,
+    };
+    AsyncOperation deferredOperation = AsyncOperation::None;
+    QList<std::function<void()>> pendingCallbacks;
+
+    template<typename Value>
+    void complete(AsyncOperation operation, std::function<void(Value)> callback, Value value)
+    {
+        if (operation == deferredOperation) {
+            pendingCallbacks.append([callback = std::move(callback), value = std::move(value)]() mutable {
+                callback(std::move(value));
+            });
+        } else {
+            callback(std::move(value));
+        }
+    }
+
+    void finishPending()
+    {
+        const auto callbacks = std::exchange(pendingCallbacks, {});
+        for (const auto& callback : callbacks)
+            callback();
+    }
+
     int openResult = 0;
     int saveResult = 0;
     int syncResult = 0;
@@ -58,7 +85,7 @@ public:
                    const QString& statistics,
                    std::function<void(int)> callback)
     {
-        callback(open(config, storage, statistics));
+        complete(AsyncOperation::Open, std::move(callback), open(config, storage, statistics));
     }
 
     QString create_new(const QString& config,
@@ -90,11 +117,11 @@ public:
     int get_current_block_height() const { return currentBlockHeight; }
     void get_last_synced_blockAsync(std::function<void(int)> callback)
     {
-        callback(get_last_synced_block());
+        complete(AsyncOperation::LastSyncedBlock, std::move(callback), get_last_synced_block());
     }
     void get_current_block_heightAsync(std::function<void(int)> callback)
     {
-        callback(get_current_block_height());
+        complete(AsyncOperation::CurrentBlockHeight, std::move(callback), get_current_block_height());
     }
 
     int sync_to_block(quint64)
@@ -104,13 +131,13 @@ public:
     }
     void sync_to_blockAsync(int blockId, std::function<void(int)> callback)
     {
-        callback(sync_to_block(static_cast<quint64>(blockId)));
+        complete(AsyncOperation::Sync, std::move(callback), sync_to_block(static_cast<quint64>(blockId)));
     }
 
     QString get_sequencer_addr() const { return sequencerAddress; }
     void get_sequencer_addrAsync(std::function<void(QString)> callback)
     {
-        callback(get_sequencer_addr());
+        complete(AsyncOperation::SequencerAddress, std::move(callback), get_sequencer_addr());
     }
 
     QVariantList list_accounts()
@@ -120,7 +147,7 @@ public:
     }
     void list_accountsAsync(std::function<void(QVariantList)> callback)
     {
-        callback(list_accounts());
+        complete(AsyncOperation::ListAccounts, std::move(callback), list_accounts());
     }
 
     QString get_account_public(const QString& accountId)
@@ -131,7 +158,7 @@ public:
     void get_account_publicAsync(const QString& accountId,
                                 std::function<void(QString)> callback)
     {
-        callback(get_account_public(accountId));
+        complete(AsyncOperation::PublicAccount, std::move(callback), get_account_public(accountId));
     }
 
     QString get_balance(const QString& accountId, bool) const
@@ -142,7 +169,7 @@ public:
                          bool isPublic,
                          std::function<void(QString)> callback)
     {
-        callback(get_balance(accountId, isPublic));
+        complete(AsyncOperation::Balance, std::move(callback), get_balance(accountId, isPublic));
     }
 
     QString send_generic_public_transaction(

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <QDir>
 #include <QFileInfo>
+#include <QPointer>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -234,6 +235,7 @@ WalletSession LogosWalletProvider::connect(const WalletPaths& paths)
 
 void LogosWalletProvider::connectAsync(const WalletPaths& paths, SessionCallback callback)
 {
+    const QPointer<LogosWalletProvider> guard(this);
     clearSnapshot();
     const quint64 generation = ++m_generation;
     if (!m_impl->logos) {
@@ -243,9 +245,9 @@ void LogosWalletProvider::connectAsync(const WalletPaths& paths, SessionCallback
         return;
     }
 
-    auto finishOpen = [this, generation, callback = std::move(callback)](
+    auto finishOpen = [this, guard, generation, callback = std::move(callback)](
                           bool adopted, WalletFailure failure) mutable {
-        if (generation != m_generation)
+        if (!guard || generation != m_generation)
             return;
         if (failure != WalletFailure::None) {
             callback(failedSession(failure));
@@ -253,9 +255,9 @@ void LogosWalletProvider::connectAsync(const WalletPaths& paths, SessionCallback
         }
         m_connected = true;
         loadSnapshotAsync(generation,
-            [this, generation, adopted, callback = std::move(callback)](
+            [this, guard, generation, adopted, callback = std::move(callback)](
                 WalletSnapshot snapshot) mutable {
-                if (generation != m_generation)
+                if (!guard || generation != m_generation)
                     return;
                 WalletSession session;
                 session.adopted = adopted;
@@ -265,8 +267,8 @@ void LogosWalletProvider::connectAsync(const WalletPaths& paths, SessionCallback
             });
     };
 
-    auto openStored = [this, generation, paths, finishOpen]() mutable {
-        if (generation != m_generation)
+    auto openStored = [this, guard, generation, paths, finishOpen]() mutable {
+        if (!guard || generation != m_generation)
             return;
         if (!QFileInfo::exists(paths.storage)) {
             finishOpen(false, WalletFailure::WalletMissing);
@@ -274,8 +276,8 @@ void LogosWalletProvider::connectAsync(const WalletPaths& paths, SessionCallback
         }
         m_impl->logos->lez_core.openAsync(
             paths.config, paths.storage, paths.statistics,
-            [this, generation, finishOpen](int result) mutable {
-                if (generation != m_generation)
+            [this, guard, generation, finishOpen](int result) mutable {
+                if (!guard || generation != m_generation)
                     return;
                 finishOpen(false, result == WALLET_FFI_SUCCESS
                     ? WalletFailure::None : WalletFailure::OpenFailed);
@@ -283,8 +285,8 @@ void LogosWalletProvider::connectAsync(const WalletPaths& paths, SessionCallback
     };
 
     m_impl->logos->lez_core.get_sequencer_addrAsync(
-        [this, generation, finishOpen, openStored](QString address) mutable {
-            if (generation != m_generation)
+        [this, guard, generation, finishOpen, openStored](QString address) mutable {
+            if (!guard || generation != m_generation)
                 return;
             if (!address.isEmpty()) {
                 finishOpen(true, WalletFailure::None);
@@ -389,6 +391,7 @@ WalletAccountCreation LogosWalletProvider::createAccount(bool isPublic)
         return creation;
     }
 
+    ++m_generation;
     if (isPublic)
         creation.publicAccount = readPublicAccount(creation.accountId);
     if (m_snapshotReady) {
@@ -397,6 +400,10 @@ WalletAccountCreation LogosWalletProvider::createAccount(bool isPublic)
         account.displayAddress =
             m_impl->logos->lez_core.account_id_to_base58(creation.accountId);
         account.isPublic = isPublic;
+        if (isPublic)
+            applyPublicRead(account, creation.publicAccount);
+        else
+            account.readStatus = QStringLiteral("private");
         if (isPublic && creation.publicAccount.ok()) {
             account.balance = littleEndianU128ToDecimal(creation.publicAccount.balanceHex);
             auto read = std::find_if(
@@ -530,14 +537,15 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback
     if (!m_impl->logos || generation != m_generation)
         return;
 
+    const QPointer<LogosWalletProvider> guard(this);
     m_impl->logos->lez_core.get_current_block_heightAsync(
-        [this, generation, callback = std::move(callback)](int currentHeight) mutable {
-            if (generation != m_generation)
+        [this, guard, generation, callback = std::move(callback)](int currentHeight) mutable {
+            if (!guard || generation != m_generation)
                 return;
 
-            auto afterSync = [this, generation, currentHeight,
+            auto afterSync = [this, guard, generation, currentHeight,
                               callback = std::move(callback)](int syncResult) mutable {
-                if (generation != m_generation)
+                if (!guard || generation != m_generation)
                     return;
                 if (syncResult != WALLET_FFI_SUCCESS) {
                     WalletSnapshot failed;
@@ -547,21 +555,21 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback
                 }
 
                 m_impl->logos->lez_core.get_last_synced_blockAsync(
-                    [this, generation, currentHeight,
+                    [this, guard, generation, currentHeight,
                      callback = std::move(callback)](int lastSynced) mutable {
-                        if (generation != m_generation)
+                        if (!guard || generation != m_generation)
                             return;
                         m_impl->logos->lez_core.get_sequencer_addrAsync(
-                            [this, generation, currentHeight, lastSynced,
+                            [this, guard, generation, currentHeight, lastSynced,
                              callback = std::move(callback)](QString address) mutable {
-                                if (generation != m_generation)
+                                if (!guard || generation != m_generation)
                                     return;
                                 m_impl->logos->lez_core.list_accountsAsync(
-                                    [this, generation, currentHeight, lastSynced,
+                                    [this, guard, generation, currentHeight, lastSynced,
                                      address = std::move(address),
                                      callback = std::move(callback)](
                                         QVariantList entries) mutable {
-                                        if (generation != m_generation)
+                                        if (!guard || generation != m_generation)
                                             return;
 
                                         struct SnapshotState {
@@ -605,8 +613,8 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback
                                         }
 
                                         auto finishOne = std::make_shared<std::function<void()>>();
-                                        *finishOne = [this, generation, state]() mutable {
-                                            if (generation != m_generation || --state->remaining > 0)
+                                        *finishOne = [this, guard, generation, state]() mutable {
+                                            if (!guard || generation != m_generation || --state->remaining > 0)
                                                 return;
                                             for (qsizetype index = 0;
                                                  index < state->publicReads.size(); ++index) {
@@ -642,8 +650,10 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback
 
                                             m_impl->logos->lez_core.get_account_publicAsync(
                                                 account.address,
-                                                [this, state, finishOne, index,
+                                                [this, guard, generation, state, finishOne, index,
                                                  accountId = account.address](QString payload) {
+                                                    if (!guard || generation != m_generation)
+                                                        return;
                                                     const WalletAccountRead read =
                                                         parsePublicAccount(accountId, payload);
                                                     state->publicReads[index] = read;

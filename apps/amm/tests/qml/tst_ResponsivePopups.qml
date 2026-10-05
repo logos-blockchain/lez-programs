@@ -4,6 +4,7 @@ import QtQuick
 import QtTest
 
 import "../../qml/components/liquidity" as Liquidity
+import "../../qml/components/shared" as Shared
 
 TestCase {
     id: testCase
@@ -26,7 +27,7 @@ TestCase {
     Component {
         id: tokenSelectorComponent
 
-        Liquidity.TokenSelectorModal {
+        Shared.TokenSelectorModal {
             theme: theme
         }
     }

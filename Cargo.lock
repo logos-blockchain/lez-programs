@@ -1094,7 +1094,7 @@ name = "bridge_core"
 version = "0.1.0"
 source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4#47eba256479f6f785acbd138834340703cd03401"
 dependencies = [
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "risc0-zkvm",
  "serde",
 ]
@@ -1369,7 +1369,7 @@ dependencies = [
  "clock_core",
  "hex",
  "lee",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "log",
  "logos-blockchain-common-http-client",
  "programs",
@@ -2191,7 +2191,7 @@ name = "faucet_core"
 version = "0.1.0"
 source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4#47eba256479f6f785acbd138834340703cd03401"
 dependencies = [
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "serde",
 ]
 
@@ -3420,7 +3420,7 @@ dependencies = [
  "itertools 0.14.0",
  "k256",
  "lee",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "ml-kem",
  "rand 0.8.7",
  "serde",
@@ -7356,7 +7356,7 @@ dependencies = [
  "bridge_core",
  "clock_core",
  "faucet_core",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "programs",
 ]
 
@@ -7556,7 +7556,7 @@ name = "token_mint_authority_core"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "risc0-zkvm",
  "serde",
  "serde_json",
@@ -7569,7 +7569,7 @@ version = "0.1.0"
 dependencies = [
  "clock_core",
  "hex",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.4)",
  "risc0-binfmt",
  "risc0-zkvm",
  "token_core",

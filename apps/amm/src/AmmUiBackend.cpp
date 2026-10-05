@@ -297,16 +297,25 @@ void AmmUiBackend::refreshPortfolio()
 {
     if (!m_portfolio)
         return;
-    if (!m_walletController->state().isWalletOpen) {
+    const WalletUiState& walletState = m_walletController->state();
+    if (!walletState.isWalletOpen) {
         setAssets({});
         setAssetStatus(QStringLiteral("idle"));
         setAssetError({});
         return;
     }
+    if (walletState.syncStatus == QStringLiteral("error")) {
+        // The controller retains its last successful snapshot after a failed
+        // sync. Do not publish those cached balances as current holdings.
+        setAssets({});
+        setAssetStatus(QStringLiteral("error"));
+        setAssetError(walletState.syncError);
+        return;
+    }
 
     QString networkStatus = m_networkProbe->snapshot().status;
     const QStringList tokenIds = knownTokenIds();
-    if (!walletStateReady())
+    if (walletState.syncStatus != QStringLiteral("ready"))
         networkStatus = QStringLiteral("loading");
     else if (!resolveProgramIds() || tokenIds.isEmpty()
              || networkStatus == QStringLiteral("config_missing"))
