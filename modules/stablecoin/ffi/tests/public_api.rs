@@ -13,6 +13,8 @@ use stablecoin_ffi::{
 
 #[test]
 fn crate_root_reexports_stablecoin_surface() {
+    let _withdraw: fn(stablecoin_ffi::WithdrawCollateralPlanRequest) -> StablecoinResult =
+        stablecoin_ffi::withdraw_collateral_plan;
     let _health: fn(stablecoin_ffi::PositionHealthRequest) -> StablecoinResult =
         stablecoin_ffi::position_health;
     let _program_info: fn(ProgramInfoRequest) -> StablecoinResult = program_info;

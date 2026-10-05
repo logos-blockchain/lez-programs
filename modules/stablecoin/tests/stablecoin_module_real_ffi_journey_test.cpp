@@ -536,6 +536,103 @@ LOGOS_TEST(real_ffi_journey_opens_position_with_two_wallet_signers) {
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
 }
 
+LOGOS_TEST(real_ffi_withdrawal_rechecks_health_and_accepts_external_destination) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+    const LogosMap info = module.programInfo();
+    assertOk(info);
+    const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+    const std::string accumulator_id = info["stabilityFeeAccumulatorIdHex"].get<std::string>();
+    const std::string redemption_id = info["redemptionPriceStateIdHex"].get<std::string>();
+    const std::string clock_id = info["clockIdHex"].get<std::string>();
+    const std::string destination_id = idHex(8);
+    const std::string nonce = "18446744073709551615";
+    const std::string payload = json{{"stablecoinProgramId", PROGRAM_ID_HEX},
+        {"ownerId", CALLER_ID_HEX}, {"positionNonce", nonce}}.dump();
+    std::unique_ptr<char, decltype(&stablecoin_free)> addresses_result(
+        stablecoin_position_addresses(payload.c_str()), &stablecoin_free);
+    LOGOS_ASSERT_TRUE(addresses_result != nullptr);
+    const json addresses = json::parse(addresses_result.get()).at("value");
+    const std::string position_id = addresses["positionIdHex"].get<std::string>();
+    const std::string vault_id = addresses["vaultIdHex"].get<std::string>();
+    std::string parameters = protocolData(false);
+    parameters.replace(128, 64, info["stablecoinDefinitionIdHex"].get<std::string>());
+    const std::string position = positionData(CALLER_ID_HEX, vault_id, UINT64_MAX, "180", "100");
+    const std::string vault = collateralHoldingData("190");
+    const std::string destination = collateralHoldingData("10");
+    const std::string accumulator = accumulatorData(FIXED_ONE, DUE);
+    const std::string redemption = redemptionData(FIXED_ONE, FIXED_ONE, "0", DUE);
+    const std::string clock = clockData(DUE);
+    expectRead(position_id, PROGRAM_OWNER_HEX, position);
+    expectRead(vault_id, TOKEN_OWNER_HEX, vault);
+    expectRead(destination_id, TOKEN_OWNER_HEX, destination);
+    expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    expectRead(accumulator_id, PROGRAM_OWNER_HEX, accumulator);
+    expectRead(redemption_id, PROGRAM_OWNER_HEX, redemption);
+    expectRead(clock_id, PROGRAM_OWNER_HEX, clock);
+    QVariantMap owner;
+    owner.insert("account_id", QString::fromStdString(CALLER_ID_HEX));
+    owner.insert("is_public", true);
+    context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(QVariantList{QVariant(owner)}));
+    context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+    const LogosMap earlier_quote = module.positionHealth({{"ownerId", CALLER_ID_HEX}, {"positionNonce", nonce}});
+    assertOk(earlier_quote);
+    LOGOS_ASSERT_TRUE(earlier_quote["isCollateralized"].get<bool>());
+    LogosMap request = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", nonce},
+        {"userCollateralHoldingId", destination_id}, {"amount", "30"}};
+    const LogosMap withdrawn = module.withdrawCollateral(request);
+    assertOk(withdrawn);
+    LOGOS_ASSERT_EQ(withdrawn["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+    const std::string planner_payload = json{
+        {"stablecoinProgramId",PROGRAM_ID_HEX},{"ownerId",CALLER_ID_HEX},{"positionNonce",nonce},{"amount","30"},
+        {"userCollateralHoldingId",destination_id},{"position",accountReadValue(position_id,PROGRAM_OWNER_HEX,position)},
+        {"vault",accountReadValue(vault_id,TOKEN_OWNER_HEX,vault)},
+        {"userCollateralHolding",accountReadValue(destination_id,TOKEN_OWNER_HEX,destination)},
+        {"stabilityFeeAccumulator",accountReadValue(accumulator_id,PROGRAM_OWNER_HEX,accumulator)},
+        {"redemptionPriceState",accountReadValue(redemption_id,PROGRAM_OWNER_HEX,redemption)},
+        {"protocolParameters",accountReadValue(protocol_id,PROGRAM_OWNER_HEX,parameters)},
+        {"clock",accountReadValue(clock_id,PROGRAM_OWNER_HEX,clock)},
+    }.dump();
+    std::unique_ptr<char,decltype(&stablecoin_free)> planned(stablecoin_withdraw_collateral_plan(planner_payload.c_str()),&stablecoin_free);
+    LOGOS_ASSERT_TRUE(planned != nullptr);
+    const json plan = json::parse(planned.get()).at("value");
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core","send_generic_public_transaction", submissionArguments(plan,std::vector<std::size_t>{0},PROGRAM_ID_HEX)));
+    LOGOS_ASSERT_EQ(plan["signingRequirements"], json::array({true,false,false,false,false,false,false,false}));
+
+    // Feed the first withdrawal's state forward, then accrue fees. An earlier
+    // healthy quote cannot authorize a withdrawal against this new state.
+    expectRead(position_id,PROGRAM_OWNER_HEX,positionData(CALLER_ID_HEX,vault_id,UINT64_MAX,"150","100"));
+    expectRead(vault_id,TOKEN_OWNER_HEX,collateralHoldingData("160"));
+    expectRead(destination_id,TOKEN_OWNER_HEX,collateralHoldingData("40"));
+    expectRead(accumulator_id,PROGRAM_OWNER_HEX,accumulatorData("2000000000000000000000000000",DUE));
+    request["amount"] = "1";
+    const LogosMap rejected = module.withdrawCollateral(request);
+    LOGOS_ASSERT_EQ(rejected["error"].get<std::string>(), std::string("position_undercollateralized"));
+    LOGOS_ASSERT_TRUE(rejected.find("transactionId") == rejected.end());
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),1);
+
+    const std::string maximum = "340282366920938463463374607431768211455";
+    expectRead(position_id,PROGRAM_OWNER_HEX,positionData(CALLER_ID_HEX,vault_id,UINT64_MAX,maximum,"0"));
+    expectRead(vault_id,TOKEN_OWNER_HEX,collateralHoldingData(maximum));
+    expectRead(destination_id,TOKEN_OWNER_HEX,collateralHoldingData("0"));
+    expectRead(clock_id,PROGRAM_OWNER_HEX,clockData(DUE + 60'000'000));
+    parameters.replace(320,32,u128Le("2000000000000000000000000000"));
+    expectRead(protocol_id,PROGRAM_OWNER_HEX,parameters);
+    request["amount"] = maximum;
+    assertOk(module.withdrawCollateral(request)); // Zero debt skips even enormous fee projections.
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","get_account_public"),26);
+    request["amount"] = 1.5;
+    LOGOS_ASSERT_EQ(module.withdrawCollateral(request)["error"].get<std::string>(),std::string("invalid_numeric_value"));
+    request["amount"] = "340282366920938463463374607431768211456";
+    LOGOS_ASSERT_EQ(module.withdrawCollateral(request)["error"].get<std::string>(),std::string("invalid_numeric_value"));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
+}
+
 LOGOS_TEST(real_ffi_position_health_rechecks_fractional_debt_while_frozen) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);

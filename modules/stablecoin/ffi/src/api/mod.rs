@@ -8,6 +8,7 @@ mod program;
 mod projection;
 mod quote;
 mod request;
+mod withdraw;
 
 #[cfg(test)]
 mod tests;
@@ -20,6 +21,9 @@ mod repay_tests;
 
 #[cfg(test)]
 mod health_tests;
+
+#[cfg(test)]
+mod withdraw_tests;
 
 use std::{error::Error, fmt};
 
@@ -41,9 +45,10 @@ pub use request::{
     DepositCollateralPlanRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
     PositionAddressesRequest, PositionHealthRequest, ProgramInfoRequest,
     RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, RepayDebtPlanRequest,
-    UpdateRedemptionRatePlanRequest,
+    UpdateRedemptionRatePlanRequest, WithdrawCollateralPlanRequest,
 };
 use serde_json::Value;
+pub use withdraw::withdraw_collateral_plan;
 
 use crate::account::parse_program_id;
 

@@ -272,6 +272,20 @@ pub unsafe extern "C" fn stablecoin_position_health(request_json: *const c_char)
     unsafe { call::<api::PositionHealthRequest>(request_json, api::position_health) }
 }
 
+#[unsafe(no_mangle)]
+/// Builds a preflighted owner-signed plan for `WithdrawCollateral`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_withdraw_collateral_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<api::WithdrawCollateralPlanRequest>(request_json, api::withdraw_collateral_plan)
+    }
+}
+
 /// Releases a string returned by a `stablecoin_*` operation.
 ///
 /// # Safety
