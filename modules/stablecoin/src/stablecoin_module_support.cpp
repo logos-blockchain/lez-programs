@@ -159,6 +159,8 @@ std::string stableFfiError(const std::string& error) {
         "collateralization_ratio_out_of_band",
         "controller_gains_out_of_band",
         "timing_parameters_out_of_band",
+        "stability_fee_out_of_band",
+        "stability_fee_arithmetic_error",
         "backend_error",
         "bad_request",
         "config_missing",

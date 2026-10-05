@@ -1,18 +1,21 @@
+use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{account::AccountId, program::ProgramId};
 use stablecoin_core::{math::FIXED_POINT_ONE, Instruction, ProtocolParameters};
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
-    decode::validated_protocol_parameters,
+    debt::checked_accumulator,
+    decode::{validated_protocol_parameters, validated_stability_fee_accumulator},
     parse_stablecoin_program_id,
     plan::{
         parse_account_id, parse_account_id_value, parse_i128, parse_u128, parse_u64, plan_response,
         required_account,
     },
+    projection::clock_timestamp,
     AdminPlanContext, SetAdminPlanRequest, SetControllerGainsPlanRequest,
     SetFreezeAuthorityPlanRequest, SetMarketPriceOraclePlanRequest,
-    SetMinimumCollateralizationRatioPlanRequest, SetTimingParametersPlanRequest,
-    StablecoinApiError, StablecoinResult,
+    SetMinimumCollateralizationRatioPlanRequest, SetStabilityFeePerMillisecondPlanRequest,
+    SetTimingParametersPlanRequest, StablecoinApiError, StablecoinResult,
 };
 
 struct ValidatedAdmin {
@@ -47,6 +50,41 @@ impl ValidatedAdmin {
             instruction,
         )
     }
+}
+
+/// Plan one atomic old-rate accrual and replacement by the current admin.
+/// Frozen and unchanged-rate requests remain valid and still submit.
+pub fn set_stability_fee_per_millisecond_plan(
+    request: SetStabilityFeePerMillisecondPlanRequest,
+) -> StablecoinResult {
+    let context = ValidatedAdmin::read(&request.context)?;
+    let new_rate = parse_u128(&request.new_rate)?;
+    if !(FIXED_POINT_ONE..=FIXED_POINT_ONE * 2).contains(&new_rate) {
+        return Err(StablecoinApiError::new("stability_fee_out_of_band"));
+    }
+    let (accumulator_id, accumulator) = validated_stability_fee_accumulator(
+        context.program_id,
+        &request.stability_fee_accumulator,
+    )?;
+    let now = clock_timestamp(&request.clock)?;
+    checked_accumulator(
+        accumulator.accumulated_rate_at_last_accrual,
+        context.parameters.stability_fee_per_millisecond,
+        accumulator.last_accrued_at,
+        now,
+    )
+    .ok_or_else(|| StablecoinApiError::new("stability_fee_arithmetic_error"))?;
+    plan_response(
+        context.program_id,
+        [
+            context.admin,
+            context.parameters_id,
+            accumulator_id,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        [true, false, false, false],
+        Instruction::SetStabilityFeePerMillisecond { new_rate },
+    )
 }
 
 /// Plan a ratio update by the currently stored admin, including while frozen.

@@ -39,6 +39,9 @@ mod close_tests;
 mod admin_tests;
 
 #[cfg(test)]
+mod fee_setter_tests;
+
+#[cfg(test)]
 mod freeze_tests;
 
 use std::{error::Error, fmt};
@@ -46,7 +49,7 @@ use std::{error::Error, fmt};
 pub use admin::{
     set_admin_plan, set_controller_gains_plan, set_freeze_authority_plan,
     set_market_price_oracle_plan, set_minimum_collateralization_ratio_plan,
-    set_timing_parameters_plan,
+    set_stability_fee_per_millisecond_plan, set_timing_parameters_plan,
 };
 pub use close::close_position_plan;
 pub use debt::generate_debt_plan;
@@ -72,7 +75,8 @@ pub use request::{
     RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, RepayDebtPlanRequest,
     SetAdminPlanRequest, SetControllerGainsPlanRequest, SetFreezeAuthorityPlanRequest,
     SetMarketPriceOraclePlanRequest, SetMinimumCollateralizationRatioPlanRequest,
-    SetTimingParametersPlanRequest, UpdateRedemptionRatePlanRequest, WithdrawCollateralPlanRequest,
+    SetStabilityFeePerMillisecondPlanRequest, SetTimingParametersPlanRequest,
+    UpdateRedemptionRatePlanRequest, WithdrawCollateralPlanRequest,
 };
 use serde_json::Value;
 pub use withdraw::withdraw_collateral_plan;

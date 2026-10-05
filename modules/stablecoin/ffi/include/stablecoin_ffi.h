@@ -159,6 +159,14 @@ char *stablecoin_generate_debt_plan(const char *request_json);
 char *stablecoin_close_position_plan(const char *request_json);
 
 /**
+ * Builds the atomic old-rate accrual and replacement plan for the current admin.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_stability_fee_per_millisecond_plan(const char *request_json);
+
+/**
  * Builds the current-admin plan for `SetMinimumCollateralizationRatio`.
  *
  * # Safety

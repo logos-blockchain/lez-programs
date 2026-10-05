@@ -580,6 +580,13 @@ LogosMap StablecoinModuleImpl::freezeAuthorityPlanAndSubmit(StablecoinOperation 
     return submitPlan(planned.value, expected.size());
 }
 
+LogosMap StablecoinModuleImpl::setStabilityFeePerMillisecond(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!request.is_object() || request.find("newRate") == request.end()) return publicError("bad_request");
+        return adminPlanAndSubmit(stablecoin_set_stability_fee_per_millisecond_plan, request, {}, true);
+    });
+}
+
 LogosMap StablecoinModuleImpl::setMinimumCollateralizationRatio(const LogosMap& request) {
     return guarded([&]() -> LogosMap {
         if (!request.is_object() || request.find("newRatio") == request.end()) return publicError("bad_request");
@@ -628,7 +635,8 @@ LogosMap StablecoinModuleImpl::setMarketPriceOracle(const LogosMap& request) {
 
 LogosMap StablecoinModuleImpl::adminPlanAndSubmit(StablecoinOperation planner,
                                                  const LogosMap& request,
-                                                 const std::string& new_oracle_id) {
+                                                 const std::string& new_oracle_id,
+                                                 bool accrue_fee) {
     if (!request.is_object() || !hasString(request, "adminId")) return publicError("bad_request");
     std::string error;
     const json info = stablecoinProgramInfo(error);
@@ -652,6 +660,20 @@ LogosMap StablecoinModuleImpl::adminPlanAndSubmit(StablecoinOperation planner,
     planner_request["adminId"] = admin;
     planner_request["protocolParameters"] = parameters;
     std::vector<std::string> expected = {admin, parameters_id};
+    if (accrue_fee) {
+        const std::string accumulator_id = jsonString(info, "stabilityFeeAccumulatorIdHex");
+        const std::string clock_id = jsonString(info, "clockIdHex");
+        const json accumulator = readPublicAccount(accumulator_id);
+        const json clock = readPublicAccount(clock_id);
+        if (jsonString(accumulator, "status") == "not_found") return publicError("not_initialized");
+        if (jsonString(accumulator, "status") != "ok" || jsonString(clock, "status") != "ok") {
+            return publicError("account_read_failed");
+        }
+        planner_request["stabilityFeeAccumulator"] = accumulator;
+        planner_request["clock"] = clock;
+        expected.push_back(accumulator_id);
+        expected.push_back(clock_id);
+    }
     if (!new_oracle_id.empty()) {
         const json oracle = readPublicAccount(new_oracle_id);
         if (jsonString(oracle, "status") != "ok") return publicError("account_read_failed");

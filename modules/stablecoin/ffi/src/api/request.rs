@@ -169,6 +169,16 @@ pub struct FreezeAuthorityPlanRequest {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct SetStabilityFeePerMillisecondPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_rate: Value,
+    pub stability_fee_accumulator: AccountRead,
+    pub clock: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct SetMinimumCollateralizationRatioPlanRequest {
     #[serde(flatten)]
     pub context: AdminPlanContext,
