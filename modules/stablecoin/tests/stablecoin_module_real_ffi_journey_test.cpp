@@ -194,6 +194,13 @@ std::string collateralHoldingData(const std::string& balance) {
     return "00" + idHex(4) + u128Le(balance);
 }
 
+std::string mintDefinitionData(const std::string& definition_id,const std::string& supply) {
+    return "00" + std::string("04000000") + bytesHex("Coin") + u128Le(supply) + "00" + "01" + definition_id;
+}
+std::string stablecoinHoldingData(const std::string& definition_id,const std::string& balance) {
+    return "00" + definition_id + u128Le(balance);
+}
+
 std::string positionData(const std::string& owner_id,
                          const std::string& vault_id,
                          std::uint64_t position_nonce,
@@ -534,6 +541,93 @@ LOGOS_TEST(real_ffi_journey_opens_position_with_two_wallet_signers) {
         "send_generic_public_transaction",
         submissionArguments(plan, {0, 3}, PROGRAM_ID_HEX)));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+}
+
+LOGOS_TEST(real_ffi_borrowing_rechecks_oracle_binding_and_preserves_full_width_amounts) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID",PROGRAM_ID_HEX.c_str());ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN",nullptr);
+    LogosTestContext context("stablecoin_module");LogosModules modules(context.api());StablecoinModuleImpl module;attachModules(module,modules);
+    const LogosMap info=module.programInfo();assertOk(info);
+    const std::string protocol_id=info["protocolParametersIdHex"].get<std::string>();
+    const std::string accumulator_id=info["stabilityFeeAccumulatorIdHex"].get<std::string>();
+    const std::string redemption_id=info["redemptionPriceStateIdHex"].get<std::string>();
+    const std::string definition_id=info["stablecoinDefinitionIdHex"].get<std::string>();
+    const std::string clock_id=info["clockIdHex"].get<std::string>();
+    const std::string destination_id=idHex(8),oracle_id=idHex(5),rotated_oracle_id=idHex(10);
+    const std::string nonce="18446744073709551615";
+    const std::string address_payload=json{{"stablecoinProgramId",PROGRAM_ID_HEX},{"ownerId",CALLER_ID_HEX},{"positionNonce",nonce}}.dump();
+    std::unique_ptr<char,decltype(&stablecoin_free)> addresses_result(stablecoin_position_addresses(address_payload.c_str()),&stablecoin_free);
+    LOGOS_ASSERT_TRUE(addresses_result!=nullptr);
+    const json addresses=json::parse(addresses_result.get()).at("value");
+    const std::string position_id=addresses["positionIdHex"].get<std::string>(),vault_id=addresses["vaultIdHex"].get<std::string>();
+    std::string parameters=protocolData(false);parameters.replace(128,64,definition_id);
+    const std::string position=positionData(CALLER_ID_HEX,vault_id,UINT64_MAX,"10","0");
+    const std::string definition=mintDefinitionData(definition_id,"100"),destination=stablecoinHoldingData(definition_id,"5");
+    const std::string accumulator=accumulatorData("1500000000000000000000000000",DUE);
+    const std::string redemption=redemptionData(FIXED_ONE,FIXED_ONE,"0",DUE),clock=clockData(DUE);
+    std::string oracle=oracleData("0",DUE);oracle.replace(0,64,definition_id);
+    expectRead(protocol_id,PROGRAM_OWNER_HEX,parameters);expectRead(position_id,PROGRAM_OWNER_HEX,position);
+    expectRead(definition_id,TOKEN_OWNER_HEX,definition);expectRead(destination_id,TOKEN_OWNER_HEX,destination);
+    expectRead(accumulator_id,PROGRAM_OWNER_HEX,accumulator);expectRead(redemption_id,PROGRAM_OWNER_HEX,redemption);
+    expectRead(oracle_id,ORACLE_OWNER_HEX,oracle);expectRead(clock_id,PROGRAM_OWNER_HEX,clock);
+    QVariantMap owner;owner.insert("account_id",QString::fromStdString(CALLER_ID_HEX));owner.insert("is_public",true);
+    context.mockModule("lez_core","list_accounts").returnsVariant(QVariant(QVariantList{QVariant(owner)}));
+    context.mockModule("lez_core","send_generic_public_transaction").returns(successfulTransaction());
+    LogosMap request={{"ownerId",CALLER_ID_HEX},{"positionNonce",nonce},{"userStablecoinHoldingId",destination_id},{"amount","4"}};
+    const LogosMap borrowed=module.generateDebt(request);assertOk(borrowed);
+    LOGOS_ASSERT_EQ(borrowed["transactionId"].get<std::string>(),TRANSACTION_ID_HEX);
+    const std::string planner_payload=json{
+        {"stablecoinProgramId",PROGRAM_ID_HEX},{"ownerId",CALLER_ID_HEX},{"positionNonce",nonce},{"amount","4"},
+        {"userStablecoinHoldingId",destination_id},{"position",accountReadValue(position_id,PROGRAM_OWNER_HEX,position)},
+        {"stablecoinDefinition",accountReadValue(definition_id,TOKEN_OWNER_HEX,definition)},
+        {"userStablecoinHolding",accountReadValue(destination_id,TOKEN_OWNER_HEX,destination)},
+        {"stabilityFeeAccumulator",accountReadValue(accumulator_id,PROGRAM_OWNER_HEX,accumulator)},
+        {"redemptionPriceState",accountReadValue(redemption_id,PROGRAM_OWNER_HEX,redemption)},
+        {"marketPriceOracle",accountReadValue(oracle_id,ORACLE_OWNER_HEX,oracle)},
+        {"protocolParameters",accountReadValue(protocol_id,PROGRAM_OWNER_HEX,parameters)},
+        {"clock",accountReadValue(clock_id,PROGRAM_OWNER_HEX,clock)},
+    }.dump();
+    std::unique_ptr<char,decltype(&stablecoin_free)> planned(stablecoin_generate_debt_plan(planner_payload.c_str()),&stablecoin_free);
+    LOGOS_ASSERT_TRUE(planned!=nullptr);const json plan=json::parse(planned.get()).at("value");
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core","send_generic_public_transaction",
+        submissionArguments(plan,std::vector<std::size_t>{0},PROGRAM_ID_HEX)));
+    LOGOS_ASSERT_EQ(plan["signingRequirements"],json::array({true,false,false,false,false,false,false,false,false}));
+
+    // Carry the first mint forward, then rotate the configured oracle. The old
+    // fresh oracle must not authorize borrowing after the rotation.
+    expectRead(position_id,PROGRAM_OWNER_HEX,positionData(CALLER_ID_HEX,vault_id,UINT64_MAX,"10","3"));
+    expectRead(definition_id,TOKEN_OWNER_HEX,mintDefinitionData(definition_id,"104"));
+    expectRead(destination_id,TOKEN_OWNER_HEX,stablecoinHoldingData(definition_id,"9"));
+    parameters.replace(256,64,rotated_oracle_id);expectRead(protocol_id,PROGRAM_OWNER_HEX,parameters);
+    std::string stale=oracleData("0",DUE);stale.replace(0,64,definition_id);
+    // DUE is below the normal age limit, so use a canonical clock later than
+    // the observation to cross the exact freshness boundary.
+    expectRead(clock_id,PROGRAM_OWNER_HEX,clockData(DUE+900'001));
+    expectRead(rotated_oracle_id,ORACLE_OWNER_HEX,stale);
+    request["amount"]="1";
+    LOGOS_ASSERT_EQ(module.generateDebt(request)["error"].get<std::string>(),std::string("oracle_stale"));
+    std::string future=oracleData("0",DUE+900'002);future.replace(0,64,definition_id);
+    expectRead(rotated_oracle_id,ORACLE_OWNER_HEX,future);
+    LOGOS_ASSERT_EQ(module.generateDebt(request)["error"].get<std::string>(),std::string("oracle_future"));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),1);
+
+    const std::uint64_t later=DUE+1'000'000;
+    const std::string maximum="340282366920938463463374607431768211455";
+    std::string repaired=oracleData("0",later);repaired.replace(0,64,definition_id);
+    expectRead(rotated_oracle_id,ORACLE_OWNER_HEX,repaired);
+    expectRead(clock_id,PROGRAM_OWNER_HEX,clockData(later));
+    expectRead(position_id,PROGRAM_OWNER_HEX,positionData(CALLER_ID_HEX,vault_id,UINT64_MAX,maximum,"0"));
+    expectRead(definition_id,TOKEN_OWNER_HEX,mintDefinitionData(definition_id,"0"));
+    expectRead(destination_id,TOKEN_OWNER_HEX,stablecoinHoldingData(definition_id,"0"));
+    expectRead(accumulator_id,PROGRAM_OWNER_HEX,accumulatorData("1500000000000000000000000000",later));
+    expectRead(redemption_id,PROGRAM_OWNER_HEX,redemptionData("500000000000000000000000000",FIXED_ONE,"0",later));
+    request["amount"]=maximum;assertOk(module.generateDebt(request));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","get_account_public"),32);
+    request["amount"]=1.5;
+    LOGOS_ASSERT_EQ(module.generateDebt(request)["error"].get<std::string>(),std::string("invalid_numeric_value"));
+    request["amount"]="340282366920938463463374607431768211456";
+    LOGOS_ASSERT_EQ(module.generateDebt(request)["error"].get<std::string>(),std::string("invalid_numeric_value"));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
 }
 
 LOGOS_TEST(real_ffi_withdrawal_rechecks_health_and_accepts_external_destination) {

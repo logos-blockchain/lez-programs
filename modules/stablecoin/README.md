@@ -3,7 +3,7 @@
 `stablecoin_module` is a headless Logos `core` module for the LEZ Stablecoin
 Program. It exposes deployment discovery, protocol-state reads, protocol
 initialization, position health, position opening, collateral deposits, debt
-repayment, and collateral withdrawal through the same universal API used by
+repayment, collateral withdrawal, and debt generation through the same universal API used by
 `logoscore` and UI modules.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
@@ -340,6 +340,60 @@ numeric/account/PDA/ownership/token-binding errors. Failed preflight submits
 nothing. Success returns `{status: "ok", error: "", transactionId: "..."}`;
 wallet rejection or transport failure returns `wallet_submission_failed`
 without a successful transaction ID or automatic retry.
+
+### `generateDebt(request)`
+
+Accepts `ownerId`, `positionNonce` (exact `u64` decimal string),
+`userStablecoinHoldingId`, and `amount` (exact `u128` decimal string or lossless
+JSON integer). Account IDs accept base58/hex; floats, negative amounts,
+malformed decimals and out-of-range values are rejected. Only the Position
+owner must be a public account in the active wallet and signs. The destination
+holding can be outside that wallet and cannot alias owner or definition.
+
+The module reads current Position, stablecoin definition, destination holding,
+Stability Fee Accumulator, Redemption Price State, configured market-price
+oracle, Protocol Parameters, and canonical `CLOCK_01`. Position and global IDs
+are derived internally; definition and oracle come from validated parameters.
+It validates identities, stablecoin ownership, exact data, token bindings,
+the definition's canonical PDA/self-mint authority, and mint balance/supply
+capacity. The stablecoin instruction authorizes its chained Token mint with
+the definition PDA seed; no client-issued mint or wallet authority signer is
+used.
+
+Account order is owner, Position, stablecoin definition, destination stablecoin
+holding, Stability Fee Accumulator, Redemption Price State, market-price
+oracle, Protocol Parameters, `CLOCK_01`. All `init` flags are false.
+
+Borrowing rejects frozen state. The oracle is a liveness gate only: future
+observations fail, and age equal to `maximumOraclePriceAgeMilliseconds` is
+accepted. Its price is not used in debt/health math; a fresh zero-price oracle
+is allowed. No producer-program, asset-pair or controller-update-interval gate
+is added beyond the native instruction's checks.
+
+Debt pricing uses the native narrow accumulator algorithm, including each
+`u128` compounding step, saturating elapsed time and seven-day clamp:
+
+```text
+normalizedDebtDelta = ceil(amount * FIXED_POINT_ONE / currentAccumulator)
+newNormalizedDebt = oldNormalizedDebt + normalizedDebtDelta
+```
+
+Checked, non-panicking arithmetic reports unrepresentable pricing and debt
+addition through stable errors. The wide projected redemption price must be
+nonzero, and post-mint health uses the shared fractional-debt/U512 requirement
+saturation comparison. No nominal debt is floored before that comparison.
+Zero amounts still require unfrozen state, a fresh oracle, valid pricing,
+nonzero projected redemption price, health, token accounts and authorization.
+Every invocation re-reads current parameters, oracle binding and accounts.
+
+Stable errors include `protocol_frozen`, `oracle_stale`, `oracle_future`,
+`debt_pricing_arithmetic_error`, `normalized_debt_overflow`,
+`redemption_price_zero`, `position_undercollateralized`,
+`invalid_stablecoin_mint_authority`, `stablecoin_supply_overflow`,
+`stablecoin_balance_overflow` and the existing numeric/identity/token errors.
+Failed preflight submits nothing. Success returns
+`{status: "ok", error: "", transactionId: "..."}`; wallet rejection or transport
+failure returns `wallet_submission_failed` without a successful ID or retry.
 
 ## Runtime configuration
 

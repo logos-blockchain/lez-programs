@@ -97,6 +97,12 @@ public:
     /// the destination holding need not belong to the wallet. Frozen calls fail.
     LogosMap withdrawCollateral(const LogosMap& request);
 
+    /// Borrows stablecoins after upward-rounded debt pricing, oracle freshness
+    /// and post-mint health validation. Requires `ownerId`, `positionNonce`,
+    /// `userStablecoinHoldingId`, and `amount`. Only the public wallet owner
+    /// signs; the destination holding need not belong to the wallet.
+    LogosMap generateDebt(const LogosMap& request);
+
 private:
     using StablecoinOperation = char* (*)(const char*);
 

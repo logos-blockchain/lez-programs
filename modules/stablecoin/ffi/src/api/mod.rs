@@ -1,5 +1,6 @@
 //! Transport-independent stablecoin client operations.
 
+mod debt;
 mod decode;
 mod health;
 mod plan;
@@ -25,8 +26,12 @@ mod health_tests;
 #[cfg(test)]
 mod withdraw_tests;
 
+#[cfg(test)]
+mod debt_tests;
+
 use std::{error::Error, fmt};
 
+pub use debt::generate_debt_plan;
 pub use decode::{
     decode_protocol_parameters, decode_redemption_price_state, decode_stability_fee_accumulator,
 };
@@ -42,8 +47,8 @@ pub use quote::redemption_rate_update_quote;
 pub use request::{
     AccrueStabilityFeePlanRequest, CurrentGlobalStateRequest, DecodeProtocolParametersRequest,
     DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
-    DepositCollateralPlanRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
-    PositionAddressesRequest, PositionHealthRequest, ProgramInfoRequest,
+    DepositCollateralPlanRequest, GenerateDebtPlanRequest, InitializeProgramPlanRequest,
+    OpenPositionPlanRequest, PositionAddressesRequest, PositionHealthRequest, ProgramInfoRequest,
     RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, RepayDebtPlanRequest,
     UpdateRedemptionRatePlanRequest, WithdrawCollateralPlanRequest,
 };
