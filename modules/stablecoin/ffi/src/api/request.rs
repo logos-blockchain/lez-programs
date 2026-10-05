@@ -140,6 +140,17 @@ pub struct PositionAddressesRequest {
     pub position_nonce: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosePositionPlanRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub position: AccountRead,
+    pub vault: AccountRead,
+    pub protocol_parameters: AccountRead,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DepositCollateralPlanRequest {

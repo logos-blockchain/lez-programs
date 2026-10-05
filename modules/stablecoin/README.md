@@ -3,8 +3,8 @@
 `stablecoin_module` is a headless Logos `core` module for the LEZ Stablecoin
 Program. It exposes deployment discovery, protocol-state reads, protocol
 initialization, position health, position opening, collateral deposits, debt
-repayment, collateral withdrawal, and debt generation through the same universal API used by
-`logoscore` and UI modules.
+repayment, collateral withdrawal, debt generation, and position closure through
+the same universal API used by `logoscore` and UI modules.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
 `stablecoin_ffi` owns exact account decoding, PDA derivation, request
@@ -394,6 +394,55 @@ Stable errors include `protocol_frozen`, `oracle_stale`, `oracle_future`,
 Failed preflight submits nothing. Success returns
 `{status: "ok", error: "", transactionId: "..."}`; wallet rejection or transport
 failure returns `wallet_submission_failed` without a successful ID or retry.
+
+### `closePosition(request)`
+
+Accepts `ownerId` (base58 or hexadecimal account ID) and `positionNonce` (exact
+`u64` decimal string). Decimal strings preserve values above `2^53`, including
+`u64::MAX`; JSON numbers, floats, negative values, malformed decimals and
+out-of-range nonces are rejected. Only the Position owner must be a public
+account controlled by the active wallet and signs.
+
+The module derives Position, Vault and Protocol Parameters IDs, reads those
+three accounts, and validates their canonical identities, Position/parameters
+program ownership, exact data, stored owner/nonce/vault fields and fungible
+vault balance. Closure requires zero normalized debt, zero recorded collateral
+and zero actual vault balance. It is allowed while frozen and needs no clock,
+oracle, accumulator, redemption-price projection or destination holding.
+
+The planner encodes the zero-argument `Instruction::ClosePosition`, without a
+nonce payload. Its account contract matches the guest and IDL:
+
+| Account order | Writable | Signer | Init |
+| --- | --- | --- | --- |
+| owner | No | Yes | No |
+| Position | Yes | No | No |
+| Vault | No | No | No |
+| Protocol Parameters | No | No | No |
+
+Only Position data is cleared. Its program ownership, account nonce and native
+balance remain unchanged; the empty Token vault remains intact. Neither account
+is released. The same `(owner, positionNonce)` cannot be reopened; choose a new
+nonce for a new position. A second closure fails preflight with
+`invalid_position_data`, without another submission or fabricated transaction ID.
+
+A direct vault donation blocks closure even if recorded collateral is zero.
+`closePosition` does not repay debt, reconcile collateral, sweep donations or
+submit any preliminary transactions. Use the separate `depositCollateral`
+zero-amount reconciliation and `withdrawCollateral` workflow to recover a
+donation first; withdrawal requires the protocol to be unfrozen.
+
+Stable closure errors are `position_has_debt`, `position_has_collateral` and
+`vault_not_empty`, plus the existing numeric, account-read, PDA, ownership and
+exact-data errors. Failed preflight submits nothing. Success returns
+`{status: "ok", error: "", transactionId: "..."}`; wallet rejection or transport
+failure returns `wallet_submission_failed` without a successful ID or retry.
+Every invocation checks current wallet ownership and reads current state again.
+
+The pure Rust API exports `close_position_plan(ClosePositionPlanRequest)`; C
+callers use `stablecoin_close_position_plan` and release its response with
+`stablecoin_free`. Its request additionally contains `stablecoinProgramId` and
+the `position`, `vault`, and `protocolParameters` account-read envelopes.
 
 ## Runtime configuration
 

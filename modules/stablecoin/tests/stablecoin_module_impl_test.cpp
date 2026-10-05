@@ -1120,6 +1120,177 @@ struct GenerateReadMocks {
 };
 }
 
+namespace {
+std::vector<std::string> closeAccounts() {
+    return {CALLER_ID_HEX, std::string(64, 'c'), std::string(64, 'd'), PROTOCOL_PARAMETERS_ID_HEX};
+}
+LogosMap closeRequest() {
+    return {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "18446744073709551615"}};
+}
+struct CloseReadMocks {
+    // C mocks retain pointers; these buffers must outlive every module call.
+    const std::string info = successEnvelope(programInfoValue());
+    const std::string addresses = successEnvelope({
+        {"positionIdHex", std::string(64, 'c')}, {"vaultIdHex", std::string(64, 'd')},
+    });
+    explicit CloseReadMocks(LogosTestContext& context) {
+        context.mockCFunction("stablecoin_program_info").returns(info);
+        context.mockCFunction("stablecoin_position_addresses").returns(addresses);
+        context.mockModule("lez_core", "list_accounts")
+            .returnsVariant(QVariant(walletAccounts(CALLER_ID_HEX)));
+        context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+    }
+};
+}  // namespace
+
+LOGOS_TEST(close_position_reads_only_three_accounts_and_signs_only_owner) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+    const CloseReadMocks mocks(context);
+    const std::string plan = successEnvelope(submissionPlan(closeAccounts(), 16));
+    context.mockCFunction("stablecoin_close_position_plan").returns(plan);
+    context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const LogosMap response = module.closePosition(closeRequest());
+        LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+        LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+    }
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 2);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 6);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_close_position_plan"), 2);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 2);
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
+        submissionArguments(closeAccounts(), 16)));
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_current_global_state"), 0);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_deposit_collateral_plan"), 0);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_repay_debt_plan"), 0);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_withdraw_collateral_plan"), 0);
+}
+
+LOGOS_TEST(close_position_rejects_missing_private_or_unreadable_wallet_owner) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (int mutation = 0; mutation < 3; ++mutation) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const CloseReadMocks mocks(context);
+        QVariantList accounts = walletAccounts(mutation == 0 ? OTHER_CALLER_ID_HEX : CALLER_ID_HEX);
+        if (mutation == 1) {
+            QVariantMap account = accounts.front().toMap();
+            account.insert("is_public", false);
+            accounts[0] = QVariant(account);
+        }
+        if (mutation == 2) {
+            context.mockModule("lez_core", "list_accounts")
+                .returnsVariant(QVariant(QVariantList{
+                    QVariant(QString::fromStdString(UniversalLezCore::transportErrorSentinel())),
+                }));
+        } else {
+            context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(accounts));
+        }
+        assertError(module.closePosition(closeRequest()), mutation == 2 ? "backend_error" : "account_read_failed");
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 0);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
+}
+
+LOGOS_TEST(close_position_validates_requests_and_preserves_preflight_errors) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (int mutation = 0; mutation < 4; ++mutation) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        LogosMap request = closeRequest();
+        if (mutation == 0) request.erase("ownerId");
+        if (mutation == 1) request.erase("positionNonce");
+        if (mutation == 2) request["positionNonce"] = 1.5;
+        if (mutation == 3) request = json::array();
+        assertError(module.closePosition(request), "bad_request");
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 0);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
+    for (const std::string& error : {"position_has_debt", "position_has_collateral", "vault_not_empty",
+        "position_owner_mismatch", "position_nonce_mismatch", "position_pda_mismatch",
+        "position_vault_mismatch", "vault_pda_mismatch", "invalid_position_data",
+        "invalid_position_vault", "invalid_protocol_parameters_data", "stablecoin_program_mismatch",
+        "protocol_parameters_pda_mismatch", "invalid_numeric_value"}) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const CloseReadMocks mocks(context);
+        const std::string failure = failureEnvelope(error);
+        context.mockCFunction("stablecoin_close_position_plan").returns(failure);
+        assertError(module.closePosition(closeRequest()), error);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
+    for (const std::string& read : {std::string(), std::string("malformed"),
+        UniversalLezCore::transportErrorSentinel()}) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const CloseReadMocks mocks(context);
+        context.mockModule("lez_core", "get_account_public").returns(read);
+        assertError(module.closePosition(closeRequest()), read.empty() ? "not_initialized" : "account_read_failed");
+        LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_close_position_plan"), 0);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
+}
+
+LOGOS_TEST(close_position_validates_plan_identity_signing_and_instruction_words) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (int mutation = 0; mutation < 6; ++mutation) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const CloseReadMocks mocks(context);
+        json plan = submissionPlan(closeAccounts(), 16);
+        if (mutation == 0) plan["accountIds"][2] = CLOCK_ID_HEX;
+        if (mutation == 1) plan["accountIds"].erase(3);
+        if (mutation == 2) plan["signingRequirements"][2] = true;
+        if (mutation == 3) plan["signingRequirements"][0] = false;
+        if (mutation == 4) plan["programId"] = ORACLE_ID_HEX;
+        if (mutation == 5) plan["instruction"][0] = 1.5;
+        const std::string response = successEnvelope(plan);
+        context.mockCFunction("stablecoin_close_position_plan").returns(response);
+        assertError(module.closePosition(closeRequest()), "backend_error");
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
+}
+
+LOGOS_TEST(close_position_never_retries_or_fabricates_a_wallet_transaction_id) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const std::string& wallet_response : {
+        json{{"success", false}, {"tx_hash", TRANSACTION_ID_HEX}}.dump(),
+        json{{"success", true}, {"tx_hash", "not-a-hash"}}.dump(),
+        UniversalLezCore::transportErrorSentinel(), std::string("malformed")}) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const CloseReadMocks mocks(context);
+        const std::string plan = successEnvelope(submissionPlan(closeAccounts(), 16));
+        context.mockCFunction("stablecoin_close_position_plan").returns(plan);
+        context.mockModule("lez_core", "send_generic_public_transaction").returns(wallet_response);
+        const LogosMap response = module.closePosition(closeRequest());
+        assertError(response, "wallet_submission_failed");
+        LOGOS_ASSERT_TRUE(response.find("transactionId") == response.end());
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+    }
+}
+
 LOGOS_TEST(generate_debt_reads_live_accounts_and_signs_only_owner) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID",PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN",nullptr);

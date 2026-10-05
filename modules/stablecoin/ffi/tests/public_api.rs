@@ -13,6 +13,8 @@ use stablecoin_ffi::{
 
 #[test]
 fn crate_root_reexports_stablecoin_surface() {
+    let _close: fn(stablecoin_ffi::ClosePositionPlanRequest) -> StablecoinResult =
+        stablecoin_ffi::close_position_plan;
     let _borrow: fn(stablecoin_ffi::GenerateDebtPlanRequest) -> StablecoinResult =
         stablecoin_ffi::generate_debt_plan;
     let _withdraw: fn(stablecoin_ffi::WithdrawCollateralPlanRequest) -> StablecoinResult =

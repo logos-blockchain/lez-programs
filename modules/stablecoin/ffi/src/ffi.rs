@@ -296,6 +296,18 @@ pub unsafe extern "C" fn stablecoin_generate_debt_plan(request_json: *const c_ch
     unsafe { call::<api::GenerateDebtPlanRequest>(request_json, api::generate_debt_plan) }
 }
 
+#[unsafe(no_mangle)]
+/// Builds an owner-signed, zero-argument plan for closing a settled Position.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_close_position_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<api::ClosePositionPlanRequest>(request_json, api::close_position_plan) }
+}
+
 /// Releases a string returned by a `stablecoin_*` operation.
 ///
 /// # Safety
@@ -492,5 +504,32 @@ mod tests {
     fn null_free_is_safe() {
         // SAFETY: null is explicitly allowed by the function contract.
         unsafe { stablecoin_free(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn close_position_rejects_null_malformed_and_nonstring_nonce_requests() {
+        // SAFETY: null is explicitly supported by the boundary contract.
+        let response = unsafe { stablecoin_close_position_plan(std::ptr::null()) };
+        // SAFETY: response is an unfreed pointer returned by this library.
+        unsafe { assert_failure_response(response, "bad_request") };
+        for nonce in [serde_json::json!(1), serde_json::json!(1.5)] {
+            let missing = serde_json::json!({"id": "", "status": "not_found"});
+            let payload = serde_json::json!({
+                "stablecoinProgramId": "1111111111111111111111111111111111111111111111111111111111111111",
+                "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+                "positionNonce": nonce, "position": missing, "vault": missing,
+                "protocolParameters": missing,
+            });
+            let request = CString::new(payload.to_string()).expect("JSON has no NUL");
+            // SAFETY: request remains a live NUL-terminated string for this call.
+            let response = unsafe { stablecoin_close_position_plan(request.as_ptr()) };
+            // SAFETY: response is an unfreed pointer returned by this library.
+            unsafe { assert_failure_response(response, "bad_request") };
+        }
+        let request = CString::new("{").expect("no NUL");
+        // SAFETY: request remains a live NUL-terminated string for this call.
+        let response = unsafe { stablecoin_close_position_plan(request.as_ptr()) };
+        // SAFETY: response is an unfreed pointer returned by this library.
+        unsafe { assert_failure_response(response, "bad_request") };
     }
 }
