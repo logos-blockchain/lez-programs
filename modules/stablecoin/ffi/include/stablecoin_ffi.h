@@ -127,6 +127,14 @@ char *stablecoin_deposit_collateral_plan(const char *request_json);
 char *stablecoin_repay_debt_plan(const char *request_json);
 
 /**
+ * Quotes position health using validated live state and wide arithmetic.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_position_health(const char *request_json);
+
+/**
  * Releases a string returned by a `stablecoin_*` operation.
  *
  * # Safety

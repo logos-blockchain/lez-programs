@@ -262,6 +262,16 @@ pub unsafe extern "C" fn stablecoin_repay_debt_plan(request_json: *const c_char)
     unsafe { call::<RepayDebtPlanRequest>(request_json, api::repay_debt_plan) }
 }
 
+#[unsafe(no_mangle)]
+/// Quotes position health using validated live state and wide arithmetic.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_position_health(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<api::PositionHealthRequest>(request_json, api::position_health) }
+}
+
 /// Releases a string returned by a `stablecoin_*` operation.
 ///
 /// # Safety

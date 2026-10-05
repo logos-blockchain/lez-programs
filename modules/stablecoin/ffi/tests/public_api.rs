@@ -13,6 +13,8 @@ use stablecoin_ffi::{
 
 #[test]
 fn crate_root_reexports_stablecoin_surface() {
+    let _health: fn(stablecoin_ffi::PositionHealthRequest) -> StablecoinResult =
+        stablecoin_ffi::position_health;
     let _program_info: fn(ProgramInfoRequest) -> StablecoinResult = program_info;
     let _decode: fn(DecodeProtocolParametersRequest) -> StablecoinResult =
         decode_protocol_parameters;

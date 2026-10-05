@@ -165,23 +165,65 @@ pub fn compute_current_redemption_price(
 /// build is `u128::MAX × FIXED_POINT_ONE^3`, about `10^119`. Any saturated
 /// factor is already past that before the debt, accumulator and ratio scale it.
 fn compound_rate_wide(per_millisecond_rate: u128, milliseconds_elapsed: u64) -> U512 {
+    compound_rate_wide_result(per_millisecond_rate, milliseconds_elapsed).0
+}
+
+fn compound_rate_wide_result(
+    per_millisecond_rate: u128,
+    milliseconds_elapsed: u64,
+) -> (U512, bool) {
     let one = U512::from(FIXED_POINT_ONE);
     if milliseconds_elapsed == 0 || per_millisecond_rate == FIXED_POINT_ONE {
-        return one;
+        return (one, false);
     }
     let mut result = one;
     let mut base = U512::from(per_millisecond_rate);
     let mut exponent = milliseconds_elapsed;
+    let mut saturated = false;
     while exponent > 0 {
         if exponent & 1 == 1 {
-            result = result.saturating_mul(base) / one;
+            let (product, overflowed) = wide_product(result, base);
+            saturated |= overflowed;
+            result = product / one;
         }
         exponent >>= 1;
         if exponent > 0 {
-            base = base.saturating_mul(base) / one;
+            let (product, overflowed) = wide_product(base, base);
+            saturated |= overflowed;
+            base = product / one;
         }
     }
-    result
+    (result, saturated)
+}
+
+fn wide_product(lhs: U512, rhs: U512) -> (U512, bool) {
+    match lhs.checked_mul(rhs) {
+        Some(product) => (product, false),
+        None => (U512::MAX, true),
+    }
+}
+
+/// Exact U512 projection for quotes, returning None if any intermediate saturated.
+///
+/// Uses the program's wide compounding path, saturating timestamp subtraction,
+/// and seven-day window clamp. Quotes must not label a bounded projection exact.
+#[must_use]
+pub fn try_project_rate_wide(
+    anchor: u128,
+    rate: u128,
+    last_updated_at: u64,
+    now: u64,
+) -> Option<U512> {
+    let elapsed = now
+        .saturating_sub(last_updated_at)
+        .min(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS);
+    let (factor, saturated) = compound_rate_wide_result(rate, elapsed);
+    if saturated {
+        return None;
+    }
+    U512::from(anchor)
+        .checked_mul(factor)
+        .map(|product| product / U512::from(FIXED_POINT_ONE))
 }
 
 /// Project `anchor` forward to `now` in `U512`, without panicking.
