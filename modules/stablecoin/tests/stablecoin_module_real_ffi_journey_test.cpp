@@ -331,6 +331,147 @@ void assertOk(const LogosMap& response) {
 
 }  // namespace
 
+namespace {
+using RealAdminMethod = LogosMap (StablecoinModuleImpl::*)(const LogosMap&);
+struct RealAdminCase {
+    RealAdminMethod method;
+    char* (*planner)(const char*);
+    LogosMap fields;
+    const char* invalid_field;
+    json invalid_value;
+    const char* error;
+    bool oracle;
+};
+std::vector<RealAdminCase> realAdminCases() {
+    return {
+        {&StablecoinModuleImpl::setMinimumCollateralizationRatio, stablecoin_set_minimum_collateralization_ratio_plan,
+            {{"newRatio", "10000000000000000000000000000"}}, "newRatio", "10000000000000000000000000001", "collateralization_ratio_out_of_band", false},
+        {&StablecoinModuleImpl::setControllerGains, stablecoin_set_controller_gains_plan,
+            {{"newProportionalGain", "-9007199254740993"}, {"newIntegralGain", UINT64_MAX}}, "newProportionalGain", 1.5, "invalid_numeric_value", false},
+        {&StablecoinModuleImpl::setTimingParameters, stablecoin_set_timing_parameters_plan,
+            {{"newMinimumMillisecondsBetweenRateUpdates", "1"}, {"newMaximumOraclePriceAgeMilliseconds", "86400000"}}, "newMaximumOraclePriceAgeMilliseconds", "86400001", "timing_parameters_out_of_band", false},
+        {&StablecoinModuleImpl::setAdmin, stablecoin_set_admin_plan,
+            {{"newAdminId", idHex(8)}}, "newAdminId", "invalid-id", "invalid_account_id", false},
+        {&StablecoinModuleImpl::setFreezeAuthority, stablecoin_set_freeze_authority_plan,
+            {{"newFreezeAuthorityId", CALLER_ID_HEX}}, "newFreezeAuthorityId", "invalid-id", "invalid_account_id", false},
+        {&StablecoinModuleImpl::setMarketPriceOracle, stablecoin_set_market_price_oracle_plan,
+            {{"newOracleId", idHex(8)}}, nullptr, nullptr, "oracle_asset_mismatch", true},
+    };
+}
+QVariantList singleWalletAccount(const std::string& account_id) {
+    QVariantMap account;
+    account.insert("account_id", QString::fromStdString(account_id));
+    account.insert("is_public", true);
+    return {QVariant(account)};
+}
+}  // namespace
+
+LOGOS_TEST(real_ffi_all_six_admin_setters_use_exact_plans_while_frozen_and_fail_preflight_without_resubmission) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& setter : realAdminCases()) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const LogosMap info = module.programInfo();
+        assertOk(info);
+        const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+        std::string parameters = protocolData(true);
+        parameters.replace(0, 64, CALLER_ID_HEX);
+        parameters.replace(128, 64, info["stablecoinDefinitionIdHex"].get<std::string>());
+        expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+        std::string oracle = oracleData("0", 0);
+        oracle.replace(0, 64, info["stablecoinDefinitionIdHex"].get<std::string>());
+        if (setter.oracle) expectRead(idHex(8), TOKEN_OWNER_HEX, oracle);
+        context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(singleWalletAccount(CALLER_ID_HEX)));
+        context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+        LogosMap request = setter.fields;
+        request["adminId"] = CALLER_ID_HEX;
+        const LogosMap response = (module.*setter.method)(request);
+        assertOk(response);
+        LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), setter.oracle ? 2 : 1);
+        json planner_request = request;
+        planner_request["stablecoinProgramId"] = PROGRAM_ID_HEX;
+        planner_request["protocolParameters"] = accountReadValue(protocol_id, PROGRAM_OWNER_HEX, parameters);
+        if (setter.oracle) planner_request["newOracle"] = accountReadValue(idHex(8), TOKEN_OWNER_HEX, oracle);
+        const std::string payload = planner_request.dump();
+        std::unique_ptr<char, decltype(&stablecoin_free)> planned(setter.planner(payload.c_str()), &stablecoin_free);
+        LOGOS_ASSERT_TRUE(planned != nullptr);
+        const json envelope = json::parse(planned.get());
+        LOGOS_ASSERT_TRUE(envelope["ok"].get<bool>());
+        const json plan = envelope["value"];
+        json expected_ids = json::array({CALLER_ID_HEX, protocol_id});
+        json expected_signers = json::array({true, false});
+        if (setter.oracle) { expected_ids.push_back(idHex(8)); expected_signers.push_back(false); }
+        LOGOS_ASSERT_EQ(plan["accountIds"], expected_ids);
+        LOGOS_ASSERT_EQ(plan["signingRequirements"], expected_signers);
+        LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
+            submissionArguments(plan, std::vector<std::size_t>{0}, PROGRAM_ID_HEX)));
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+        if (setter.oracle) {
+            // Same initialized producer; change only the bound quote asset.
+            oracle.replace(64, 64, idHex(99));
+            expectRead(idHex(8), TOKEN_OWNER_HEX, oracle);
+        } else {
+            request[setter.invalid_field] = setter.invalid_value;
+        }
+        const LogosMap rejected = (module.*setter.method)(request);
+        LOGOS_ASSERT_EQ(rejected["error"].get<std::string>(), std::string(setter.error));
+        LOGOS_ASSERT_TRUE(rejected.find("transactionId") == rejected.end());
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+    }
+}
+
+LOGOS_TEST(real_ffi_admin_rotation_rereads_authority_on_the_same_module_and_freeze_authority_cannot_rotate_itself) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+    const LogosMap info = module.programInfo();
+    assertOk(info);
+    const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+    std::string parameters = protocolData(true);
+    parameters.replace(0, 64, CALLER_ID_HEX);
+    parameters.replace(128, 64, info["stablecoinDefinitionIdHex"].get<std::string>());
+    expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+    context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(singleWalletAccount(idHex(2))));
+    const LogosMap freeze_only = module.setFreezeAuthority({{"adminId", idHex(2)}, {"newFreezeAuthorityId", idHex(2)}});
+    LOGOS_ASSERT_EQ(freeze_only["error"].get<std::string>(), std::string("admin_mismatch"));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+
+    context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(singleWalletAccount(CALLER_ID_HEX)));
+    const LogosMap old_success = module.setTimingParameters({{"adminId", CALLER_ID_HEX},
+        {"newMinimumMillisecondsBetweenRateUpdates", "1"}, {"newMaximumOraclePriceAgeMilliseconds", "86400000"}});
+    assertOk(old_success);
+    // No wallet control or account read for the new holder is required here.
+    const LogosMap rotation = module.setAdmin({{"adminId", CALLER_ID_HEX}, {"newAdminId", idHex(8)}});
+    assertOk(rotation);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 2);
+    // Feed the native SetAdmin field change into live RPC state, then make both
+    // public signers available so rejection proves authority, not wallet absence.
+    parameters.replace(0, 64, idHex(8));
+    expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(walletAccounts()));
+    const LogosMap lost_authority = module.setControllerGains({{"adminId", CALLER_ID_HEX},
+        {"newProportionalGain", "-42"}, {"newIntegralGain", "7"}});
+    LOGOS_ASSERT_EQ(lost_authority["error"].get<std::string>(), std::string("admin_mismatch"));
+    LOGOS_ASSERT_TRUE(lost_authority.find("transactionId") == lost_authority.end());
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 2);
+    const LogosMap new_success = module.setControllerGains({{"adminId", idHex(8)},
+        {"newProportionalGain", "-42"}, {"newIntegralGain", "7"}});
+    assertOk(new_success);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 3);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 5);
+    const LogosMap freeze_disabled = module.setFreezeAuthority({{"adminId", idHex(8)}, {"newFreezeAuthorityId", std::string(64, '0')}});
+    assertOk(freeze_disabled);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 4);
+}
+
 LOGOS_TEST(real_ffi_close_position_pins_submission_and_rejects_donations_and_repeat_close) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);

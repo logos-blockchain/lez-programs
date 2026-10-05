@@ -308,6 +308,92 @@ pub unsafe extern "C" fn stablecoin_close_position_plan(
     unsafe { call::<api::ClosePositionPlanRequest>(request_json, api::close_position_plan) }
 }
 
+#[unsafe(no_mangle)]
+/// Builds the current-admin plan for `SetMinimumCollateralizationRatio`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_set_minimum_collateralization_ratio_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<api::SetMinimumCollateralizationRatioPlanRequest>(
+            request_json,
+            api::set_minimum_collateralization_ratio_plan,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Builds a paired signed-gain plan for `SetControllerGains`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_set_controller_gains_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<api::SetControllerGainsPlanRequest>(request_json, api::set_controller_gains_plan)
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Builds a paired timing plan for `SetTimingParameters`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_set_timing_parameters_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<api::SetTimingParametersPlanRequest>(request_json, api::set_timing_parameters_plan)
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Builds a one-step plan for `SetAdmin`, without a new-admin signer.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_set_admin_plan(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<api::SetAdminPlanRequest>(request_json, api::set_admin_plan) }
+}
+
+#[unsafe(no_mangle)]
+/// Builds an admin-authorized plan for `SetFreezeAuthority`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_set_freeze_authority_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<api::SetFreezeAuthorityPlanRequest>(request_json, api::set_freeze_authority_plan)
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Builds a zero-argument oracle-replacement plan with the replacement as account three.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_set_market_price_oracle_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe {
+        call::<api::SetMarketPriceOraclePlanRequest>(
+            request_json,
+            api::set_market_price_oracle_plan,
+        )
+    }
+}
+
 /// Releases a string returned by a `stablecoin_*` operation.
 ///
 /// # Safety

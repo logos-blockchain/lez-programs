@@ -159,6 +159,54 @@ char *stablecoin_generate_debt_plan(const char *request_json);
 char *stablecoin_close_position_plan(const char *request_json);
 
 /**
+ * Builds the current-admin plan for `SetMinimumCollateralizationRatio`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_minimum_collateralization_ratio_plan(const char *request_json);
+
+/**
+ * Builds a paired signed-gain plan for `SetControllerGains`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_controller_gains_plan(const char *request_json);
+
+/**
+ * Builds a paired timing plan for `SetTimingParameters`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_timing_parameters_plan(const char *request_json);
+
+/**
+ * Builds a one-step plan for `SetAdmin`, without a new-admin signer.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_admin_plan(const char *request_json);
+
+/**
+ * Builds an admin-authorized plan for `SetFreezeAuthority`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_freeze_authority_plan(const char *request_json);
+
+/**
+ * Builds a zero-argument oracle-replacement plan with the replacement as account three.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_set_market_price_oracle_plan(const char *request_json);
+
+/**
  * Releases a string returned by a `stablecoin_*` operation.
  *
  * # Safety

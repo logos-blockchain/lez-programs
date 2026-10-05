@@ -109,6 +109,32 @@ public:
     /// balance must all be zero. Frozen protocols may still close positions.
     LogosMap closePosition(const LogosMap& request);
 
+    /// Sets `newRatio` (u128) in the inclusive native 1.1x..10x band.
+    /// `adminId` must be the current public wallet admin. Allowed while frozen.
+    LogosMap setMinimumCollateralizationRatio(const LogosMap& request);
+
+    /// Sets signed i128 `newProportionalGain` and `newIntegralGain` atomically,
+    /// without resetting redemption state. Requires the current `adminId`.
+    LogosMap setControllerGains(const LogosMap& request);
+
+    /// Sets u64 `newMinimumMillisecondsBetweenRateUpdates` and
+    /// `newMaximumOraclePriceAgeMilliseconds` together, each 1..86400000.
+    /// Requires the current `adminId`; globals are not automatically advanced.
+    LogosMap setTimingParameters(const LogosMap& request);
+
+    /// Immediately replaces the current `adminId` with `newAdminId`.
+    /// Only the current admin signs; the replacement need not be in the wallet.
+    LogosMap setAdmin(const LogosMap& request);
+
+    /// Admin-authorized one-step rotation to `newFreezeAuthorityId`.
+    /// The existing freeze authority is not sufficient to authorize rotation.
+    LogosMap setFreezeAuthority(const LogosMap& request);
+
+    /// Replaces the oracle with `newOracleId`, whose exact data must match the
+    /// bound asset pair. No producer, price-freshness or nonzero-price gate.
+    /// Only the current `adminId` signs; frozen state does not block the setter.
+    LogosMap setMarketPriceOracle(const LogosMap& request);
+
 private:
     using StablecoinOperation = char* (*)(const char*);
 
@@ -128,6 +154,9 @@ private:
     LogosMap submitPlan(const nlohmann::json& plan,
                         std::size_t expected_account_count,
                         const std::vector<std::size_t>& expected_signer_indices = {0});
+    LogosMap adminPlanAndSubmit(StablecoinOperation planner,
+                               const LogosMap& request,
+                               const std::string& new_oracle_id = {});
 
     bool programInfoResolved_ = false;
     std::string programInfoJson_;

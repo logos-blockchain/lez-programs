@@ -538,6 +538,98 @@ LogosMap StablecoinModuleImpl::redemptionRateUpdateQuote() {
     });
 }
 
+LogosMap StablecoinModuleImpl::setMinimumCollateralizationRatio(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!request.is_object() || request.find("newRatio") == request.end()) return publicError("bad_request");
+        return adminPlanAndSubmit(stablecoin_set_minimum_collateralization_ratio_plan, request);
+    });
+}
+
+LogosMap StablecoinModuleImpl::setControllerGains(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!request.is_object() || request.find("newProportionalGain") == request.end()
+            || request.find("newIntegralGain") == request.end()) return publicError("bad_request");
+        return adminPlanAndSubmit(stablecoin_set_controller_gains_plan, request);
+    });
+}
+
+LogosMap StablecoinModuleImpl::setTimingParameters(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!request.is_object() || request.find("newMinimumMillisecondsBetweenRateUpdates") == request.end()
+            || request.find("newMaximumOraclePriceAgeMilliseconds") == request.end()) return publicError("bad_request");
+        return adminPlanAndSubmit(stablecoin_set_timing_parameters_plan, request);
+    });
+}
+
+LogosMap StablecoinModuleImpl::setAdmin(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!hasString(request, "newAdminId")) return publicError("bad_request");
+        return adminPlanAndSubmit(stablecoin_set_admin_plan, request);
+    });
+}
+
+LogosMap StablecoinModuleImpl::setFreezeAuthority(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!hasString(request, "newFreezeAuthorityId")) return publicError("bad_request");
+        return adminPlanAndSubmit(stablecoin_set_freeze_authority_plan, request);
+    });
+}
+
+LogosMap StablecoinModuleImpl::setMarketPriceOracle(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!hasString(request, "newOracleId")) return publicError("bad_request");
+        const std::string oracle_id = normalizeAccountId(jsonString(request, "newOracleId"));
+        if (oracle_id.empty()) return publicError("invalid_account_id");
+        return adminPlanAndSubmit(stablecoin_set_market_price_oracle_plan, request, oracle_id);
+    });
+}
+
+LogosMap StablecoinModuleImpl::adminPlanAndSubmit(StablecoinOperation planner,
+                                                 const LogosMap& request,
+                                                 const std::string& new_oracle_id) {
+    if (!request.is_object() || !hasString(request, "adminId")) return publicError("bad_request");
+    std::string error;
+    const json info = stablecoinProgramInfo(error);
+    if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+    const std::string admin = normalizeAccountId(jsonString(request, "adminId"));
+    if (admin.empty()) return publicError("invalid_account_id");
+    if (!requireWalletCaller(admin, error)) return publicError(error);
+    const std::string parameters_id = jsonString(info, "protocolParametersIdHex");
+    const json parameters = readPublicAccount(parameters_id);
+    if (jsonString(parameters, "status") == "not_found") return publicError("not_initialized");
+    if (jsonString(parameters, "status") != "ok") return publicError("account_read_failed");
+    const FfiResult decoded = callStablecoin(stablecoin_decode_protocol_parameters, {
+        {"stablecoinProgramId", info["programIdHex"]}, {"protocolParameters", parameters},
+    });
+    if (!decoded.ok) return publicError(stablecoin_module::detail::stableFfiError(decoded.error));
+    if (!hasString(decoded.value, "adminIdHex")) return publicError("backend_error");
+    if (jsonString(decoded.value, "adminIdHex") != admin) return publicError("admin_mismatch");
+
+    json planner_request = request;
+    planner_request["stablecoinProgramId"] = info["programIdHex"];
+    planner_request["adminId"] = admin;
+    planner_request["protocolParameters"] = parameters;
+    std::vector<std::string> expected = {admin, parameters_id};
+    if (!new_oracle_id.empty()) {
+        const json oracle = readPublicAccount(new_oracle_id);
+        if (jsonString(oracle, "status") != "ok") return publicError("account_read_failed");
+        planner_request["newOracleId"] = new_oracle_id;
+        planner_request["newOracle"] = oracle;
+        expected.push_back(new_oracle_id);
+    }
+    const FfiResult planned = callStablecoin(planner, planner_request);
+    if (!planned.ok) return publicError(stablecoin_module::detail::stableFfiError(planned.error));
+    if (jsonString(planned.value, "programId") != jsonString(info, "programIdHex")) return publicError("backend_error");
+    const auto account_ids = planned.value.find("accountIds");
+    if (account_ids == planned.value.end() || !account_ids->is_array()
+        || account_ids->size() != expected.size()) return publicError("backend_error");
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        if (!(*account_ids)[index].is_string()
+            || (*account_ids)[index].get<std::string>() != expected[index]) return publicError("backend_error");
+    }
+    return submitPlan(planned.value, expected.size());
+}
+
 LogosMap StablecoinModuleImpl::closePosition(const LogosMap& request) {
     return guarded([&]() -> LogosMap {
         if (!request.is_object() || !hasString(request, "ownerId")

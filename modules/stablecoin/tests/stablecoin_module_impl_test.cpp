@@ -1143,6 +1143,211 @@ struct CloseReadMocks {
 };
 }  // namespace
 
+namespace {
+using AdminMethod = LogosMap (StablecoinModuleImpl::*)(const LogosMap&);
+struct AdminSetterCase {
+    AdminMethod method;
+    const char* planner;
+    LogosMap fields;
+    const char* preflight_error;
+    bool oracle;
+};
+std::vector<AdminSetterCase> adminSetterCases() {
+    return {
+        {&StablecoinModuleImpl::setMinimumCollateralizationRatio, "stablecoin_set_minimum_collateralization_ratio_plan",
+            {{"newRatio", "1100000000000000000000000000"}}, "collateralization_ratio_out_of_band", false},
+        {&StablecoinModuleImpl::setControllerGains, "stablecoin_set_controller_gains_plan",
+            {{"newProportionalGain", "-9007199254740993"}, {"newIntegralGain", "9007199254740993"}}, "controller_gains_out_of_band", false},
+        {&StablecoinModuleImpl::setTimingParameters, "stablecoin_set_timing_parameters_plan",
+            {{"newMinimumMillisecondsBetweenRateUpdates", "1"}, {"newMaximumOraclePriceAgeMilliseconds", "86400000"}}, "timing_parameters_out_of_band", false},
+        {&StablecoinModuleImpl::setAdmin, "stablecoin_set_admin_plan",
+            {{"newAdminId", OTHER_CALLER_ID_HEX}}, "invalid_account_id", false},
+        {&StablecoinModuleImpl::setFreezeAuthority, "stablecoin_set_freeze_authority_plan",
+            {{"newFreezeAuthorityId", CALLER_ID_HEX}}, "invalid_account_id", false},
+        {&StablecoinModuleImpl::setMarketPriceOracle, "stablecoin_set_market_price_oracle_plan",
+            {{"newOracleId", ORACLE_ID_HEX}}, "oracle_asset_mismatch", true},
+    };
+}
+LogosMap adminRequest(const AdminSetterCase& setter) {
+    LogosMap request = setter.fields;
+    request["adminId"] = CALLER_ID_HEX;
+    return request;
+}
+std::vector<std::string> adminAccounts(const AdminSetterCase& setter) {
+    std::vector<std::string> ids = {CALLER_ID_HEX, PROTOCOL_PARAMETERS_ID_HEX};
+    if (setter.oracle) ids.push_back(ORACLE_ID_HEX);
+    return ids;
+}
+struct AdminReadMocks {
+    const std::string info = successEnvelope(programInfoValue());
+    const std::string decoded = successEnvelope({{"adminIdHex", CALLER_ID_HEX}, {"isFrozen", true}});
+    explicit AdminReadMocks(LogosTestContext& context) {
+        context.mockCFunction("stablecoin_program_info").returns(info);
+        context.mockCFunction("stablecoin_decode_protocol_parameters").returns(decoded);
+        context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(walletAccounts(CALLER_ID_HEX)));
+        context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+    }
+};
+}  // namespace
+
+LOGOS_TEST(all_admin_setters_submit_with_only_current_admin_and_minimal_live_reads) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& setter : adminSetterCases()) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const AdminReadMocks mocks(context);
+        const std::string plan = successEnvelope(submissionPlan(adminAccounts(setter), 25));
+        context.mockCFunction(setter.planner).returns(plan);
+        context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+        const LogosMap response = (module.*setter.method)(adminRequest(setter));
+        LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+        LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 1);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), setter.oracle ? 2 : 1);
+        LOGOS_ASSERT_EQ(context.cFunctionCallCount(setter.planner), 1);
+        LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
+            submissionArguments(adminAccounts(setter), 25)));
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+        LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_current_global_state"), 0);
+        LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_refresh_globals_plan"), 0);
+    }
+}
+
+LOGOS_TEST(all_admin_setters_reject_missing_fields_missing_or_private_wallet_admin) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& setter : adminSetterCases()) {
+        const LogosMap complete = adminRequest(setter);
+        for (const auto& field : complete.items()) {
+            LogosTestContext context("stablecoin_module");
+            LogosModules modules(context.api());
+            StablecoinModuleImpl module;
+            attachModules(module, modules);
+            LogosMap request = complete;
+            request.erase(field.key());
+            assertError((module.*setter.method)(request), "bad_request");
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+        for (int mutation = 0; mutation < 3; ++mutation) {
+            LogosTestContext context("stablecoin_module");
+            LogosModules modules(context.api());
+            StablecoinModuleImpl module;
+            attachModules(module, modules);
+            const AdminReadMocks mocks(context);
+            QVariantList accounts = walletAccounts(mutation == 0 ? OTHER_CALLER_ID_HEX : CALLER_ID_HEX);
+            if (mutation == 1) {
+                QVariantMap account = accounts.front().toMap(); account.insert("is_public", false);
+                accounts[0] = QVariant(account);
+            }
+            if (mutation == 2) {
+                accounts = {QVariant(QString::fromStdString(UniversalLezCore::transportErrorSentinel()))};
+            }
+            context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(accounts));
+            assertError((module.*setter.method)(complete), mutation == 2 ? "backend_error" : "account_read_failed");
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 0);
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+    }
+}
+
+LOGOS_TEST(all_admin_setters_validate_current_admin_and_parameter_reads_before_planning) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& setter : adminSetterCases()) {
+        for (const std::string& decoded : {
+            successEnvelope({{"adminIdHex", OTHER_CALLER_ID_HEX}, {"isFrozen", true}}),
+            failureEnvelope("invalid_protocol_parameters_data"),
+            failureEnvelope("stablecoin_program_mismatch"),
+            failureEnvelope("protocol_parameters_pda_mismatch")}) {
+            LogosTestContext context("stablecoin_module");
+            LogosModules modules(context.api());
+            StablecoinModuleImpl module;
+            attachModules(module, modules);
+            const AdminReadMocks mocks(context);
+            context.mockCFunction("stablecoin_decode_protocol_parameters").returns(decoded);
+            const json envelope = json::parse(decoded);
+            assertError((module.*setter.method)(adminRequest(setter)),
+                envelope["ok"].get<bool>() ? "admin_mismatch" : envelope["error"].get<std::string>());
+            LOGOS_ASSERT_EQ(context.cFunctionCallCount(setter.planner), 0);
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 1);
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+        for (const std::string& read : {std::string(), std::string("malformed"), UniversalLezCore::transportErrorSentinel()}) {
+            LogosTestContext context("stablecoin_module");
+            LogosModules modules(context.api());
+            StablecoinModuleImpl module;
+            attachModules(module, modules);
+            const AdminReadMocks mocks(context);
+            context.mockModule("lez_core", "get_account_public").returns(read);
+            assertError((module.*setter.method)(adminRequest(setter)), read.empty() ? "not_initialized" : "account_read_failed");
+            LOGOS_ASSERT_EQ(context.cFunctionCallCount(setter.planner), 0);
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+    }
+}
+
+LOGOS_TEST(all_admin_setters_preserve_stable_preflight_errors_and_validate_plan_identity) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& setter : adminSetterCases()) {
+        for (const std::string& error : {std::string(setter.preflight_error), std::string("invalid_numeric_value")}) {
+            LogosTestContext context("stablecoin_module");
+            LogosModules modules(context.api());
+            StablecoinModuleImpl module;
+            attachModules(module, modules);
+            const AdminReadMocks mocks(context);
+            const std::string failure = failureEnvelope(error);
+            context.mockCFunction(setter.planner).returns(failure);
+            assertError((module.*setter.method)(adminRequest(setter)), error);
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+        for (int mutation = 0; mutation < 5; ++mutation) {
+            LogosTestContext context("stablecoin_module");
+            LogosModules modules(context.api());
+            StablecoinModuleImpl module;
+            attachModules(module, modules);
+            const AdminReadMocks mocks(context);
+            json plan = submissionPlan(adminAccounts(setter), 25);
+            if (mutation == 0) plan["programId"] = OTHER_CALLER_ID_HEX;
+            if (mutation == 1) plan["accountIds"][1] = ORACLE_ID_HEX;
+            if (mutation == 2) plan["accountIds"].erase(1);
+            if (mutation == 3) plan["signingRequirements"][1] = true;
+            if (mutation == 4) plan["instruction"][0] = 1.5;
+            const std::string response = successEnvelope(plan);
+            context.mockCFunction(setter.planner).returns(response);
+            assertError((module.*setter.method)(adminRequest(setter)), "backend_error");
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+    }
+}
+
+LOGOS_TEST(all_admin_setters_reject_wallet_failures_without_retry_or_transaction_id) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& setter : adminSetterCases()) {
+        for (const std::string& wallet_response : {
+            json{{"success", false}, {"tx_hash", TRANSACTION_ID_HEX}}.dump(),
+            json{{"success", true}, {"tx_hash", "invalid"}}.dump(),
+            UniversalLezCore::transportErrorSentinel()}) {
+            LogosTestContext context("stablecoin_module");
+            LogosModules modules(context.api());
+            StablecoinModuleImpl module;
+            attachModules(module, modules);
+            const AdminReadMocks mocks(context);
+            const std::string plan = successEnvelope(submissionPlan(adminAccounts(setter), 25));
+            context.mockCFunction(setter.planner).returns(plan);
+            context.mockModule("lez_core", "send_generic_public_transaction").returns(wallet_response);
+            const LogosMap response = (module.*setter.method)(adminRequest(setter));
+            assertError(response, "wallet_submission_failed");
+            LOGOS_ASSERT_TRUE(response.find("transactionId") == response.end());
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+        }
+    }
+}
+
 LOGOS_TEST(close_position_reads_only_three_accounts_and_signs_only_owner) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);

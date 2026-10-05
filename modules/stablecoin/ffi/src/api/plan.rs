@@ -443,18 +443,24 @@ pub(super) fn required_account(
 }
 
 pub(super) fn parse_account_id(value: &str) -> Result<AccountId, StablecoinApiError> {
+    let account_id = parse_account_id_value(value)?;
+    if account_id.value() == &[0_u8; 32] {
+        return Err(StablecoinApiError::new("invalid_account_id"));
+    }
+    Ok(account_id)
+}
+
+// Role setters accept any AccountId value, including zero, just like the native
+// instruction. Account inputs still use parse_account_id's nonzero requirement.
+pub(super) fn parse_account_id_value(value: &str) -> Result<AccountId, StablecoinApiError> {
     let value = value.trim();
-    let account_id = account_id_from_hex(&value.to_ascii_lowercase(), "account id")
+    account_id_from_hex(&value.to_ascii_lowercase(), "account id")
         .or_else(|_| {
             value
                 .parse::<AccountId>()
                 .map_err(|error| error.to_string())
         })
-        .map_err(|_| StablecoinApiError::new("invalid_account_id"))?;
-    if account_id.value() == &[0_u8; 32] {
-        return Err(StablecoinApiError::new("invalid_account_id"));
-    }
-    Ok(account_id)
+        .map_err(|_| StablecoinApiError::new("invalid_account_id"))
 }
 
 fn decimal_text(value: &str) -> Result<&str, StablecoinApiError> {
@@ -506,7 +512,7 @@ pub(super) fn parse_decimal_u64(value: &str) -> Result<u64, StablecoinApiError> 
         .map_err(|_| StablecoinApiError::new("invalid_numeric_value"))
 }
 
-fn parse_u64(value: &Value) -> Result<u64, StablecoinApiError> {
+pub(super) fn parse_u64(value: &Value) -> Result<u64, StablecoinApiError> {
     match value {
         Value::Number(number) => number
             .as_u64()
@@ -523,11 +529,12 @@ fn parse_u64(value: &Value) -> Result<u64, StablecoinApiError> {
     }
 }
 
-fn parse_i128(value: &Value) -> Result<i128, StablecoinApiError> {
+pub(super) fn parse_i128(value: &Value) -> Result<i128, StablecoinApiError> {
     match value {
         Value::Number(number) => number
             .as_i64()
             .map(i128::from)
+            .or_else(|| number.as_u64().map(i128::from))
             .ok_or_else(|| StablecoinApiError::new("invalid_numeric_value")),
         Value::String(raw) => {
             let raw = decimal_text(raw)?;
