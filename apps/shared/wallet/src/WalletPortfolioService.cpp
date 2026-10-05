@@ -265,6 +265,30 @@ WalletPortfolioResult WalletPortfolioService::refresh(
 
             if (program.key() == request.tokenProgramId
                 && account.typeName == QStringLiteral("TokenHolding")) {
+                const QJsonObject nftMaster = enumFields(
+                    account.value, QStringLiteral("NftMaster"));
+                const QJsonObject nftCopy = enumFields(
+                    account.value, QStringLiteral("NftPrintedCopy"));
+                if (!nftMaster.isEmpty() || !nftCopy.isEmpty()) {
+                    const bool isMaster = !nftMaster.isEmpty();
+                    const QJsonObject& nft = isMaster ? nftMaster : nftCopy;
+                    const QString definitionId = account.accountIds.value(
+                        nft.value(QStringLiteral("definition_id")).toString());
+                    const bool validState = isMaster
+                        ? !decimalAdd(QStringLiteral("0"),
+                                      nft.value(QStringLiteral("print_balance")).toString()).isEmpty()
+                        : nft.value(QStringLiteral("owned")).isBool();
+                    if (account.status != QStringLiteral("decoded")
+                        || definitionId.isEmpty() || !validState) {
+                        tokenHoldingFailure = true;
+                    }
+                    presentation.kind = QStringLiteral("nft_holding");
+                    presentation.definitionId = definitionId;
+                    presentation.semanticName = isMaster
+                        ? QStringLiteral("NFT master") : QStringLiteral("NFT printed copy");
+                    result.presentations.append(std::move(presentation));
+                    continue;
+                }
                 const QJsonObject fungible = enumFields(account.value, QStringLiteral("Fungible"));
                 const QString encodedDefinitionId = fungible.value(
                     QStringLiteral("definition_id")).toString();

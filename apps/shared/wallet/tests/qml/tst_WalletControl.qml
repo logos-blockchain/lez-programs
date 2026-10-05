@@ -220,6 +220,7 @@ Item {
         function accountData(account) {
             return {
                 name: account.name || "Account",
+                canPayFees: account.canPayFees === true,
                 alias: account.alias || "",
                 address: account.address || "",
                 displayAddress: account.displayAddress || account.address || "",
@@ -1045,6 +1046,17 @@ Item {
             tryVerify(function() { return warning && warning.visible })
         }
 
+        function verifyInsideMenu(window, menu, item, what) {
+            const position = item.mapToItem(window.contentItem, 0, 0)
+            const menuTop = menu.parent.mapToItem(window.contentItem, 0, menu.y).y
+            verify(position.y >= menuTop, what + " top: " + position.y + ", menu top: " + menuTop)
+            verify(position.y + item.height <= menuTop + menu.height,
+                   what + " bottom: " + (position.y + item.height)
+                   + ", menu bottom: " + (menuTop + menu.height))
+            verify(position.y + item.height <= window.height,
+                   what + " bottom: " + (position.y + item.height) + ", window: " + window.height)
+        }
+
         function test_feePayerSelectorReachableInShortWindow() {
             const backend = createTemporaryObject(backendComponent, root, {
                 isWalletOpen: true,
@@ -1053,13 +1065,13 @@ Item {
             const model = createTemporaryObject(modelComponent, root)
             verify(backend && model, "Wallet fixture exists")
             for (let index = 0; index < 6; ++index) {
-                model.append({
+                model.append(accountData({
                     name: "Account " + index,
                     address: String(index).repeat(64),
                     balance: "1000000000",
                     isPublic: true,
                     canPayFees: true
-                })
+                }))
             }
 
             // The smallest supported standalone window.

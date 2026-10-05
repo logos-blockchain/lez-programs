@@ -469,10 +469,14 @@ QString WalletController::createAccount(bool isPublic)
                    << walletFailureCode(creation.failure);
         return {};
     }
+    ++m_operationGeneration;
     if (creation.snapshot.ok()) {
-        m_state.syncStatus = QStringLiteral("ready");
-        m_state.syncError.clear();
+        // Account creation updates the cache but cannot complete an in-flight sync.
+        const bool wasSyncing = m_refreshInFlight;
+        m_refreshInFlight = false;
         applySnapshot(creation.snapshot);
+        if (wasSyncing)
+            refreshSnapshot();
     } else {
         qWarning() << "WalletController: account refresh failed"
                    << walletFailureCode(creation.snapshot.failure);

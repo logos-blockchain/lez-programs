@@ -259,6 +259,7 @@ Item {
     }
 
     function finishOpen() {
+        root.waitingForWallet = false
         root.openPending = false
         root.busy = false
     }
@@ -295,6 +296,8 @@ Item {
         if (!root.wallet || root.busy || root.walletOpening)
             return
         root.busy = true
+        root.waitingForWallet = true
+        root.cancellationRequested = false
         root.openPending = true
         try {
             root.watchResult(root.wallet.openExisting(), function(ok) {

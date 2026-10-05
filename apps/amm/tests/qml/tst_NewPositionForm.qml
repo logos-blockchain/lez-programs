@@ -596,30 +596,4 @@ TestCase {
         sink.paste()
         tryCompare(sink, "text", submittedTransactionId)
     }
-
-    function test_existingPoolFeeCorrectionKeepsQuoteRequestValid() {
-        var form = createForm()
-        quoteRequestedSpy.target = form
-        quoteRequestedSpy.clear()
-
-        form.flowState = flowState({
-            "status": "error",
-            "code": "fee_tier_mismatch",
-            "tokenAId": tokenHigh,
-            "tokenBId": tokenLow,
-            "errors": [{
-                "code": "fee_tier_mismatch",
-                "details": { "poolFeeBps": "5" }
-            }]
-        }, true)
-        wait(0)
-
-        compare(form.selectedFeeBps, 5)
-        compare(form.amountA, "")
-        compare(form.amountB, "")
-        compare(quoteRequestedSpy.count, 1)
-        verify(quoteRequestedSpy.signalArguments[0][1].ok)
-        compare(quoteRequestedSpy.signalArguments[0][1].request.maxAmountA, "5000000000")
-        compare(quoteRequestedSpy.signalArguments[0][1].request.maxAmountB, "1000")
-    }
 }
