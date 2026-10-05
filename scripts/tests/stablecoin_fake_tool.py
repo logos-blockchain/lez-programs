@@ -106,7 +106,14 @@ def main():
         if args[:3] == ["account", "new", "public"]:
             label = args[args.index("--label") + 1]
             storage["labels"][label] = address(label)
+            state.setdefault("owned_accounts", []).append(address(label))
             storage_path.write_text(json.dumps(storage))
+        elif args[:2] == ["account", "get"]:
+            assert args[2] == "--account-id" and args[4:] == ["--keys"]
+            if args[3].removeprefix("Public/") not in state.get("owned_accounts", []):
+                print("Public account not found in storage", file=sys.stderr)
+                sys.exit(1)
+            print("Public key: test public key")
         elif args[:2] == ["account", "id"]:
             print(storage["labels"][args[-1]])
             print(f"Stored statistics at {home / 'statistics.json'}")
@@ -124,9 +131,13 @@ def main():
             return
         save()
     elif tool == "spel":
-        if args[0] == "inspect":
-            print("ImageID:", PROGRAMS[Path(args[1]).read_text()])
+        if args[:4] == ["--format", "hex", "--", "program-id"]:
+            assert len(args) == 5
+            print(PROGRAMS[Path(args[4]).read_text()])
             return
+        if args[0] == "inspect":
+            print("Account inspection requires --idl <IDL_FILE>", file=sys.stderr)
+            sys.exit(1)
         if "inspect" in args:
             data = bytes.fromhex(args[args.index("--data") + 1])
             if data == bytes(33) + (2**100).to_bytes(16, "little"):
@@ -177,6 +188,15 @@ def main():
             key.removeprefix("--").replace("-", "_"): value
             for key, value in zip(keys, values)
         }
+        schema = json.loads(Path(args[1]).read_text())
+        instruction = next(
+            item for item in schema["instructions"]
+            if item["name"] == name.replace("-", "_")
+        )
+        for account in instruction["accounts"]:
+            if account["signer"] and options[account["name"]] not in state.get("owned_accounts", []):
+                print(f"Wallet cannot sign for {account['name']}", file=sys.stderr)
+                sys.exit(1)
         transaction(name)
         if name == "new-fungible-definition":
             definition = options["definition_target_account"]

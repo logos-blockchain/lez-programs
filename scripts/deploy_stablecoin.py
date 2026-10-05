@@ -520,7 +520,7 @@ class Deployment:
             if exc.code != -32601:
                 raise
             discovered = {}
-        available = {id_bytes(pid).hex() for pid in discovered.values()}
+        self.available_programs = {id_bytes(pid).hex() for pid in discovered.values()}
         selected = {}
         binaries = {}
         for name in PROGRAMS:
@@ -555,38 +555,39 @@ class Deployment:
         if binaries:
             self.run([self.make, "build-programs"])
             for name, binary in binaries.items():
-                # Both older and pinned SPEL accept inspect <binary>. Parse its
-                # ImageID, never the differently formatted u32 program-id line.
-                output = self.capture([self.spel, "inspect", binary])
-                matches = [
-                    pid.lower() for pid in re.findall(r"\b[0-9a-fA-F]{64}\b", output)
-                ]
-                if len(set(matches)) != 1:
+                output = self.capture(
+                    [self.spel, "--format", "hex", "--", "program-id", binary]
+                ).strip()
+                if not re.fullmatch(r"[0-9a-fA-F]{64}", output):
                     raise DeploymentError(
                         f"Could not extract one ImageID from {binary}"
                     )
-                pid = matches[0].lower()
+                pid = output.lower()
                 if selected[name]["id"] and selected[name]["id"] != pid:
                     raise DeploymentError(
                         f"{name}: configured program ID does not match binary"
                     )
                 selected[name].update(id=pid, binary=str(binary))
                 self.inspected_binaries.add(name)
+        for name, entry in selected.items():
+            if os.environ.get(f"{name.upper()}_PROGRAM_ID") or entry["id"] in self.available_programs:
+                # Explicit IDs designate deployed programs even if account
+                # preflight later fails; retries must not rebuild replacements.
+                entry["ready"] = True
+        self.programs.update(selected)
+        self.checkpoint()
+
+    def deploy_programs(self):
+        """Submit only after bootstrap accounts and signers passed preflight."""
         for name in PROGRAMS:
-            saved = self.programs.get(name, {})
-            entry = selected[name]
-            self.programs[name] = entry
+            entry = self.programs[name]
             step = f"deploy-{name}"
-            if saved and saved.get("ready"):
+            if entry.get("ready"):
                 if step in self.transactions:
                     self.confirm(step)  # Detect stale receipts after a chain reset.
                 print(f"Reuse {name}: {entry['id']}")
             elif step in self.transactions:
                 self.confirm(step)
-            elif (
-                os.environ.get(f"{name.upper()}_PROGRAM_ID") or entry["id"] in available
-            ):
-                print(f"Reuse {name}: {entry['id']}")
             else:
                 self.checkpoint()
                 tx_hash = deployment_hash(Path(entry["binary"]))
@@ -674,11 +675,29 @@ class Deployment:
         self.checkpoint()
         return value
 
-    def wallet_account(self, role):
+    def require_signer(self, role, value):
+        # Unlike `account id` or labels, --keys resolves the actual signing key.
+        # The pinned wallet prints only its public key. Keep all output private
+        # and fail closed if either account lookup or key lookup fails.
+        result = subprocess.run(
+            [self.wallet, "account", "get", "--account-id", f"Public/{value}", "--keys"],
+            cwd=self.root, env=self.env, text=True, capture_output=True, check=False,
+        )
+        if result.returncode:
+            raise DeploymentError(
+                f"{role}: current wallet cannot sign for this account or account lookup failed"
+            )
+
+    def wallet_account(self, role, signer=False, persist=True):
         explicit = os.environ.get(f"{role.upper()}_ID")
         if explicit:
-            return self.bind_account(role, explicit)
+            value = account_id(explicit)
+            if signer:
+                self.require_signer(role, value)
+            return self.bind_account(role, value) if persist else value
         if role in self.accounts:
+            if signer:
+                self.require_signer(role, self.accounts[role])
             return self.accounts[role]
         label = f"stablecoin-{self.programs['stablecoin']['id'][:12]}-{role.replace('_', '-')}"
         storage = json.loads(
@@ -698,14 +717,35 @@ class Deployment:
             raise DeploymentError(
                 f"wallet account id did not return one account for {label}"
             )
-        return self.bind_account(role, candidates[0])
+        if signer:
+            self.require_signer(role, candidates[0])
+        return self.bind_account(role, candidates[0]) if persist else candidates[0]
 
-    def external_account(self, role):
+    def external_account(self, role, verify):
+        """Validate an explicit account before persisting its binding/ownership."""
+        explicit = os.environ.get(f"{role.upper()}_ID")
         external = self.manifest.setdefault("externalAccounts", [])
-        if os.environ.get(f"{role.upper()}_ID") and role not in external:
+        if not explicit:
+            return role in external
+        value = account_id(explicit)
+        previous = self.accounts.get(role)
+        if previous is not None and previous != value:
+            raise DeploymentError(
+                f"{role}: account differs from manifest; use a different DEPLOYMENT_DIR"
+            )
+        self.accounts[role] = value
+        try:
+            verify()
+        except BaseException:
+            if previous is None:
+                del self.accounts[role]
+            else:
+                self.accounts[role] = previous
+            raise
+        if role not in external:
             external.append(role)
-            self.checkpoint()
-        return role in external
+        self.checkpoint()
+        return True
 
     def instruction(self, program, name, accounts, arguments):
         # All calls are public, so reused program IDs do not need local binaries.
@@ -789,21 +829,23 @@ class Deployment:
             self.verify_globals(states, fresh=False)
             self.verify_collateral()
             self.verify_oracle()
+            self.deploy_programs()
             return
 
         if self.manifest.get("settingsOrigin") == "adopted":
             raise DeploymentError(
                 "Previously adopted protocol is missing from this sequencer"
             )
-        admin = self.wallet_account("admin")
+        admin = self.wallet_account("admin", signer=True)
         self.bind_account(
             "freeze_authority",
             os.environ.get(
                 "FREEZE_AUTHORITY_ID", self.accounts.get("freeze_authority", admin)
             ),
         )
-        self.wallet_account("collateral_definition")
-        external_collateral = self.external_account("collateral_definition")
+        external_collateral = self.external_account("collateral_definition", self.verify_collateral)
+        if not external_collateral:
+            self.wallet_account("collateral_definition")
         collateral = self.decode(
             "collateral_definition", "TokenDefinition", "token", pids["token"]
         )
@@ -812,33 +854,25 @@ class Deployment:
                 raise DeploymentError(
                     "Configured collateral definition is uninitialized"
                 )
-            holding = self.wallet_account("collateral_holding")
+            self.require_signer("collateral_definition", self.accounts["collateral_definition"])
+            holding = self.wallet_account("collateral_holding", signer=True)
             if not self.raw_account(holding)[3]:
                 raise DeploymentError(
                     "Collateral holding is occupied but definition is uninitialized"
                 )
-            self.instruction(
-                "token",
-                "new-fungible-definition",
-                {
-                    "definition_target_account": self.accounts["collateral_definition"],
-                    "holding_target_account": holding,
-                },
-                {
-                    "name": self.values["collateral_name"],
-                    "total_supply": self.values["collateral_supply"],
-                    "mint_authority": admin,
-                },
-            )
-        self.verify_collateral()
-
-        if os.environ.get("MARKET_PRICE_ORACLE_ID"):
             self.bind_account(
-                "market_price_oracle", os.environ["MARKET_PRICE_ORACLE_ID"]
+                "collateral_mint_authority",
+                os.environ.get(
+                    "COLLATERAL_MINT_AUTHORITY_ID",
+                    self.accounts.get("collateral_mint_authority", admin),
+                ),
             )
-        external_oracle = self.external_account("market_price_oracle")
+        else:
+            self.verify_collateral()
+
+        external_oracle = self.external_account("market_price_oracle", self.verify_oracle)
         if not external_oracle:
-            source = self.wallet_account("oracle_source")
+            source = self.wallet_account("oracle_source", persist=False)
             pdas = self.example(
                 "twap_oracle_program",
                 "twap_oracle_pdas",
@@ -846,6 +880,9 @@ class Deployment:
                 source,
                 self.values["oracle_window_milliseconds"],
             )
+            if self.raw_account(pdas["oracle_price_account"])[3]:
+                self.require_signer("oracle_source", source)
+            self.bind_account("oracle_source", source)
             self.bind_account("market_price_oracle", pdas["oracle_price_account"])
         oracle = self.decode(
             "market_price_oracle",
@@ -856,6 +893,28 @@ class Deployment:
         if oracle is None:
             if external_oracle:
                 raise DeploymentError("Configured market price oracle is uninitialized")
+        else:
+            self.verify_oracle()
+
+        # Every required signer and reused account is validated before the first
+        # program deployment, collateral mint, oracle seed, or initialization.
+        self.deploy_programs()
+        if collateral is None:
+            self.instruction(
+                "token",
+                "new-fungible-definition",
+                {
+                    "definition_target_account": self.accounts["collateral_definition"],
+                    "holding_target_account": self.accounts["collateral_holding"],
+                },
+                {
+                    "name": self.values["collateral_name"],
+                    "total_supply": self.values["collateral_supply"],
+                    "mint_authority": self.accounts["collateral_mint_authority"],
+                },
+            )
+        self.verify_collateral()
+        if oracle is None:
             self.instruction(
                 "twap_oracle",
                 "create-oracle-price-account",
@@ -910,12 +969,18 @@ class Deployment:
             raise DeploymentError(
                 "Collateral must be an initialized fungible token definition"
             )
+        authority = os.environ.get(
+            "COLLATERAL_MINT_AUTHORITY_ID",
+            self.accounts.get("collateral_mint_authority", self.accounts["admin"]),
+        )
+        if "COLLATERAL_MINT_AUTHORITY_ID" in os.environ:
+            self.require_fields(token["Fungible"], {"authority": account_id(authority)}, "collateral_definition")
         if "collateral_holding" in self.accounts:
             self.require_fields(
                 token["Fungible"],
                 {
                     "name": self.values["collateral_name"],
-                    "authority": self.accounts["admin"],
+                    "authority": account_id(authority),
                 },
                 "collateral_definition",
             )
@@ -938,6 +1003,8 @@ class Deployment:
             "twap_oracle",
             self.programs["twap_oracle"]["id"],
         )
+        if oracle is None:
+            raise DeploymentError("Configured market price oracle is uninitialized")
         self.require_fields(
             oracle,
             {
@@ -1077,6 +1144,7 @@ def main():
   {TOKEN,TWAP_ORACLE,STABLECOIN}_PROGRAM_BIN  Binary to inspect after make build-programs
   ADMIN_ID, FREEZE_AUTHORITY_ID             Public account IDs (freeze authority defaults to admin)
   COLLATERAL_DEFINITION_ID                  Reuse initialized collateral
+  COLLATERAL_MINT_AUTHORITY_ID              Managed collateral mint authority (default: admin; PDA allowed)
   COLLATERAL_HOLDING_ID, ORACLE_SOURCE_ID    Public accounts controlled by current wallet
   MARKET_PRICE_ORACLE_ID                    Reuse initialized TWAP price account
 
@@ -1105,6 +1173,7 @@ settings are unknown and omitted from the manifest.
         "ADMIN_ID",
         "FREEZE_AUTHORITY_ID",
         "COLLATERAL_DEFINITION_ID",
+        "COLLATERAL_MINT_AUTHORITY_ID",
         "COLLATERAL_HOLDING_ID",
         "ORACLE_SOURCE_ID",
         "MARKET_PRICE_ORACLE_ID",

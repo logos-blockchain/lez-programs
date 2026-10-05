@@ -417,6 +417,8 @@ class DeploymentTests(unittest.TestCase):
             DEPLOYMENT_DIR=str(self.root / "external assets"),
             COLLATERAL_DEFINITION_ID=accounts["collateral_definition"],
             MARKET_PRICE_ORACLE_ID=accounts["market_price_oracle"],
+            COLLATERAL_HOLDING_ID=address("unused unowned holding"),
+            ORACLE_SOURCE_ID=address("unused unowned source"),
             **{name.upper() + "_PROGRAM_ID": pid for name, pid in PROGRAMS.items()},
         )
         self.assertEqual(
@@ -425,6 +427,130 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(
             sum("create-oracle-price-account" in c for c in self.tx_calls()), 1
         )
+
+    def assert_unowned_signer_rejected(self, role):
+        bad_id = address("unowned override")
+        result = self.run_script(success=False, **{role.upper() + "_ID": bad_id})
+        self.assertIn(f"{role}: current wallet cannot sign", result.stdout)
+        self.assertEqual(self.tx_calls(), [])
+        self.assertNotEqual(self.manifest()["accounts"].get(role), bad_id)
+        self.run_script()
+        self.assertTrue(self.manifest()["complete"])
+
+    def test_unowned_admin_rejected_before_transactions(self):
+        self.assert_unowned_signer_rejected("admin")
+
+    def test_unowned_collateral_holding_rejected_before_transactions(self):
+        self.assert_unowned_signer_rejected("collateral_holding")
+
+    def test_unowned_oracle_source_rejected_before_transactions(self):
+        self.assert_unowned_signer_rejected("oracle_source")
+
+    def test_signer_preflight_failure_preserves_explicit_program_reuse(self):
+        self.run_script(success=False, ADMIN_ID=address("unowned admin"), **{
+            name.upper() + "_PROGRAM_ID": pid for name, pid in PROGRAMS.items()
+        })
+        self.assertEqual(self.tx_calls(), [])
+        self.run_script()
+        self.assertTrue(self.manifest()["complete"])
+        self.assertFalse(any(call[0] == "make" for call in self.state()["calls"]))
+
+    def test_owned_signer_overrides_do_not_require_wallet_labels(self):
+        roles = ("admin", "collateral_holding", "oracle_source")
+        owned = {role: address("imported " + role) for role in roles}
+        self.change(owned_accounts=list(owned.values()))
+        self.run_script(**{role.upper() + "_ID": value for role, value in owned.items()})
+        self.assertTrue(self.manifest()["complete"])
+        self.assertEqual({role: self.manifest()["accounts"][role] for role in roles}, owned)
+        labels = json.loads((self.home / "storage.json").read_text())["labels"]
+        self.assertTrue(all(value not in labels.values() for value in owned.values()))
+
+    def assert_invalid_external_override_rejected(self, role, wrong_owner=False, data=None):
+        bad_id = address("invalid external override")
+        if wrong_owner or data is not None:
+            accounts = self.state()["accounts"]
+            program = "token" if role == "collateral_definition" else "twap_oracle"
+            owner = bytes.fromhex(PROGRAMS[program])
+            accounts[bad_id] = {
+                **DEFAULT_ACCOUNT,
+                "program_owner": [1] * 8 if wrong_owner else [
+                    int.from_bytes(owner[index:index + 4], "little") for index in range(0, 32, 4)
+                ],
+                "data": list(json.dumps(data or {}).encode()),
+            }
+            self.change(accounts=accounts)
+        result = self.run_script(success=False, **{role.upper() + "_ID": bad_id})
+        expected = "unexpected program owner" if wrong_owner else (
+            "conflicts" if data is not None and role == "market_price_oracle" else "initialized"
+        )
+        self.assertIn(expected, result.stdout)
+        self.assertNotEqual(self.manifest()["accounts"].get(role), bad_id)
+        self.assertNotIn(role, self.manifest().get("externalAccounts", []))
+        self.assertEqual(self.tx_calls(), [])
+        self.run_script()
+        self.assertTrue(self.manifest()["complete"])
+
+    def test_uninitialized_external_collateral_does_not_poison_resume(self):
+        self.assert_invalid_external_override_rejected("collateral_definition")
+
+    def test_wrong_owner_external_collateral_does_not_poison_resume(self):
+        self.assert_invalid_external_override_rejected("collateral_definition", True)
+
+    def test_uninitialized_external_oracle_does_not_poison_resume(self):
+        self.assert_invalid_external_override_rejected("market_price_oracle")
+
+    def test_wrong_owner_external_oracle_does_not_poison_resume(self):
+        self.assert_invalid_external_override_rejected("market_price_oracle", True)
+
+    def test_nonfungible_external_collateral_does_not_poison_resume(self):
+        self.assert_invalid_external_override_rejected("collateral_definition", data={"NonFungible": {}})
+
+    def test_wrong_pair_external_oracle_does_not_poison_resume(self):
+        self.assert_invalid_external_override_rejected("market_price_oracle", data={
+            "base_asset": address("wrong base"),
+            "quote_asset": address("wrong quote"),
+            "price": "1", "timestamp": "1700000000000",
+        })
+
+    def test_uninitialized_managed_oracle_override_does_not_change_ownership(self):
+        self.change(fail_before="create-oracle-price-account")
+        self.run_script(success=False)
+        before = self.manifest()
+        self.change(fail_before=None)
+        result = self.run_script(success=False, MARKET_PRICE_ORACLE_ID=before["accounts"]["market_price_oracle"])
+        self.assertIn("Configured market price oracle is uninitialized", result.stdout)
+        self.assertEqual(self.manifest()["externalAccounts"], before["externalAccounts"])
+        self.assertEqual(self.manifest()["accounts"], before["accounts"])
+        self.run_script()
+        self.assertTrue(self.manifest()["complete"])
+
+    def test_faucet_mint_authority_does_not_need_wallet_signer(self):
+        authority = address("faucet PDA")
+        self.run_script(COLLATERAL_MINT_AUTHORITY_ID=authority)
+        manifest = self.manifest()
+        self.assertEqual(manifest["accounts"]["collateral_mint_authority"], authority)
+        definition = self.state()["accounts"][manifest["accounts"]["collateral_definition"]]
+        self.assertEqual(json.loads(bytes(definition["data"]))["Fungible"]["authority"], authority)
+        self.assertNotIn(authority, self.state()["owned_accounts"])
+        self.run_script()
+        self.assertEqual(len(self.tx_calls()), 6)
+        before = self.manifest()["accounts"]
+        result = self.run_script(success=False, COLLATERAL_MINT_AUTHORITY_ID=address("other faucet"))
+        self.assertIn("collateral_definition", result.stdout)
+        self.assertEqual(self.manifest()["accounts"], before)
+
+    def test_read_only_adoption_does_not_require_wallet_signers(self):
+        self.run_script()
+        accounts = self.manifest()["accounts"]
+        self.change(owned_accounts=[])
+        self.run_script(
+            DEPLOYMENT_DIR=str(self.root / "read only adoption"),
+            ADMIN_ID=accounts["admin"],
+            COLLATERAL_HOLDING_ID=address("unused holding"),
+            ORACLE_SOURCE_ID=address("unused source"),
+            **{name.upper() + "_PROGRAM_ID": pid for name, pid in PROGRAMS.items()},
+        )
+        self.assertEqual(len(self.tx_calls()), 6)
 
     def test_changed_redemption_price_is_not_silently_ignored(self):
         self.run_script()

@@ -1,7 +1,8 @@
-# AMM on testnet — spel runbook
+# AMM and stablecoin on testnet — spel runbook
 
 End-to-end steps to deploy the programs, initialize the AMM, and create a pool using
-`spel`, in the order they must happen. Follow top to bottom; nothing here can be skipped.
+`spel`, in the order they must happen. Follow the AMM steps top to bottom. The
+[stablecoin bootstrap](#15-stablecoin-bootstrap) can also run independently.
 
 > **Live addresses.** The current testnet deployment's ProgramIds, PDAs, token
 > definitions, and the faucet mint-authority PDA are recorded in
@@ -37,6 +38,7 @@ End-to-end steps to deploy the programs, initialize the AMM, and create a pool u
 - [12. Publish a price](#12-publish-a-price)
 - [13. (Admin) Withdraw protocol fees](#13-admin-withdraw-protocol-fees)
 - [14. Faucet: mint additional tokens](#14-faucet-mint-additional-tokens-token-mint-authority)
+- [15. Stablecoin bootstrap](#15-stablecoin-bootstrap)
 - [Gotchas](#gotchas-we-hit-and-how-to-avoid-them)
 
 ---
@@ -44,28 +46,30 @@ End-to-end steps to deploy the programs, initialize the AMM, and create a pool u
 ## 0. Prerequisites
 
 - **Docker running** (guest builds cross-compile through it).
-- **`spel` / `wallet`** built from the
-  [`refactor/lez-v020-compat`](https://github.com/0x-r4bbit/spel/tree/refactor/lez-v020-compat)
-  branch (`github.com/0x-r4bbit/spel`). This is required for: the `program-id` command, the
-  `--` subcommand separator, the public-tx signing scheme, and the `account_id` argument
-  fix.
+- **`spel` / `wallet`** built from the revisions selected by this workspace:
+  ```bash
+  make setup-workspace-tools
+  source scripts/workspace-env.sh
+  ```
+  This builds the compatible commands under `target/debug` and puts them first on
+  `PATH`. Source the environment helper again when switching checkouts.
+- **Python 3** for deployment scripts and JSON manifests.
 - **Wallet home** exported in every shell you use (deploy *and* spel must point at the
   same wallet/network):
   ```bash
   export LEE_WALLET_HOME_DIR="$HOME/.lee/wallet"
   ```
 - Wallet configured to reach your sequencer (`wallet_config.json`), with the accounts you
-  need created (`wallet account ...`).
-  ```bash
-  wallet config set sequencer_addr https://testnet.lez.logos.co/
-  ```
+  need created (`wallet account ...`). The current config stores connections in its
+  `sequencers` list. The stablecoin bootstrap also accepts `SEQUENCER_ADDR` for a
+  temporary connection override.
 
 ### Argument formats (used throughout)
 
 | Kind | Accepted forms |
 |---|---|
 | **account id** (PDAs, holdings, authority) | base58 (e.g. `9qbX…`) **or** `0x`-prefixed 32-byte hex. **No** `account_id( … )` wrapper. |
-| **program id** | 8 comma-separated u32 limbs, a bare 64-char ImageID hex, a `0x`-prefixed ImageID hex, **or** a base58 ImageID. (`spel program-id` prints the limbs and the bare hex; base58 is computed by the `*_pdas` helpers / yourself.) |
+| **program id** | 8 comma-separated u32 limbs, a bare 64-char ImageID hex, a `0x`-prefixed ImageID hex, **or** a base58 ImageID. Use `spel --format hex -- program-id <binary>` to print ImageID hex. |
 
 ---
 
@@ -77,25 +81,23 @@ Build and deploy **token**, **twap_oracle**, and **amm** (order doesn't matter f
 but you need all three before initializing the AMM):
 
 ```bash
-# repeat for: token, twap_oracle, amm
-cargo risczero build --manifest-path programs/<prog>/methods/guest/Cargo.toml
-wallet deploy-program programs/<prog>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<prog>.bin
+make build-programs
+# Repeat deployment for: token, twap_oracle, amm.
+wallet deploy-program target/guest/<prog>.bin
 ```
 
-Binary path convention: `programs/<prog>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<prog>.bin`
+Binary path convention: `target/guest/<prog>.bin`
 
 ### Record the ProgramIds
 
 ```bash
-spel -- program-id programs/<prog>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<prog>.bin
+spel --format hex -- program-id target/guest/<prog>.bin
 ```
 
 Record each ProgramId in whatever form you'll pass it — the forms are interchangeable
-(see the arg-format table above). `spel program-id` prints both the **decimal limbs** and
-the **64-char ImageID hex**; both are accepted by spel and the `*_pdas` helpers, and the
-ImageID hex is usually the easiest to copy. **base58 is also accepted as input**, but
-nothing in the toolchain prints it — base58-encode the 32 ImageID bytes yourself if you
-want that form. Fill in:
+(see the arg-format table above). `--format hex` selects the exact 64-character
+ImageID used in manifests; the default display format is different. Use `program-id`
+for binary identity and `inspect <account> --type <type>` for account data. Fill in:
 
 | program | ProgramId (limbs, ImageID hex, or base58) |
 |---|---|
@@ -149,7 +151,7 @@ Next, create the token definitions and holdings:
 
 ```bash
 spel --idl artifacts/token-idl.json \
-     --program programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin \
+     --program target/guest/token.bin \
      -- new-fungible-definition \
      --name "TOKEN A" --total-supply 1000000000000000000000 \
      --definition-target-account <DEF_A> \
@@ -180,7 +182,7 @@ with `initialize-account` (the new holding is a **signer** — your wallet must 
 
 ```bash
 spel --idl artifacts/token-idl.json \
-     --program programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin \
+     --program target/guest/token.bin \
      -- initialize-account \
      --definition-account <DEF> \
      --account-to-initialize <NEW_HOLDING>
@@ -191,7 +193,7 @@ whole token at 18 decimals):
 
 ```bash
 spel --idl artifacts/token-idl.json \
-     --program programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin \
+     --program target/guest/token.bin \
      -- transfer \
      --sender <SENDER_HOLDING> \
      --recipient <RECIPIENT_HOLDING> \
@@ -236,7 +238,8 @@ The fixed **clock** account never changes: `4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4e
 | amm | `cargo run -q -p amm_program --example amm_pdas -- <amm_pid> [<twap_pid> <defA> <defB>]` | config; + pool, vault_a/b, pool_definition_lp, lp_lock_holding, current_tick_account |
 | twap_oracle | `cargo run -q -p twap_oracle_program --example twap_oracle_pdas -- <oracle_pid> <price_source> [<window_duration>]` | current_tick_account; + price_observations, oracle_price_account (with a window) |
 | ata | `cargo run -q -p ata_program --example ata_pdas -- <ata_pid> <token_pid> <owner> <definition>` | the ATA address |
-| stablecoin | `cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid> <owner> <collateral_definition>` | position, position_vault |
+| stablecoin | `cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid>` | protocol_parameters, stability_fee_accumulator, redemption_price_state, stablecoin_definition, stablecoin_master_holding, clock |
+| stablecoin | `cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid> <owner> <position_nonce>` | position, position_vault |
 
 (The token program has no PDAs.)
 
@@ -253,7 +256,7 @@ here** and apply to every pool in the namespace — they are no longer per-pool 
 
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program target/guest/amm.bin \
      -- initialize \
      --owner <OWNER> \
      --config <CONFIG_PDA> \
@@ -284,7 +287,7 @@ Amounts must satisfy `isqrt(token_a_amount * token_b_amount) > 1000` (MINIMUM_LI
 
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program target/guest/amm.bin \
      -- new-definition \
      --config <CONFIG_PDA> \
      --pool <POOL_PDA> \
@@ -330,7 +333,7 @@ cargo run -q -p twap_oracle_program --example twap_oracle_pdas -- \
 
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program target/guest/amm.bin \
      -- create-price-observations \
      --config <CONFIG_PDA> \
      --pool <POOL_PDA> \
@@ -361,7 +364,7 @@ spending).
 
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program target/guest/amm.bin \
      -- swap-exact-input \
      --config <CONFIG_PDA> \
      --pool <POOL_PDA> \
@@ -407,7 +410,7 @@ Run a swap (step 9) first so `current_tick_account` holds a fresh tick, then:
 
 ```bash
 spel --idl artifacts/twap_oracle-idl.json \
-     --program programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin \
+     --program target/guest/twap_oracle.bin \
      -- record-tick \
      --price-observations <PRICE_OBSERVATIONS_PDA> \
      --current-tick-account <CURRENT_TICK_PDA> \
@@ -446,7 +449,7 @@ cargo run -q -p twap_oracle_program --example twap_oracle_pdas -- \
 
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program target/guest/amm.bin \
      -- create-oracle-price-account \
      --config <CONFIG_PDA> \
      --pool <POOL_PDA> \
@@ -470,7 +473,7 @@ tick) and writes it to the `oracle_price_account`. **Direct TWAP oracle call, pe
 
 ```bash
 spel --idl artifacts/twap_oracle-idl.json \
-     --program programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin \
+     --program target/guest/twap_oracle.bin \
      -- publish-price \
      --price-observations <PRICE_OBSERVATIONS_PDA> \
      --oracle-price-account <ORACLE_PRICE_ACCOUNT_PDA> \
@@ -507,7 +510,7 @@ Withdraw `<AMOUNT>` (raw base units) of that token to `<DESTINATION>` — an **a
 holding of the **same** token:
 ```bash
 spel --idl artifacts/amm-idl.json \
-     --program programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+     --program target/guest/amm.bin \
      -- withdraw-protocol-fees \
      --config <CONFIG_PDA> \
      --protocol-fee-holding <PROTOCOL_FEE_PDA> \
@@ -543,11 +546,11 @@ Build and deploy like the other programs, then derive its mint-authority PDA **f
 exact binary you deployed** (the PDA is a function of the ImageID):
 
 ```bash
-cargo risczero build --manifest-path programs/token_mint_authority/methods/guest/Cargo.toml
-wallet deploy-program programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin
+make build-programs
+wallet deploy-program target/guest/token_mint_authority.bin
 
 cargo run -q -p token_mint_authority_program --example mint_authority -- \
-  programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin
+  target/guest/token_mint_authority.bin
 # prints the base58 <FAUCET_PDA>
 ```
 
@@ -640,6 +643,135 @@ spel --idl artifacts/token-idl.json inspect <USER_HOLDING> --type TokenHolding
 > is only the signer / rate-limit subject — it does not need to own `user_holding`. It must
 > just be a distinct, authorized account. A dedicated throwaway `recipient` keeps the
 > per-recipient cooldown bookkeeping clean.
+
+---
+
+## 15. Stablecoin bootstrap
+
+### Standalone deployment
+
+Use an existing wallet configured for the destination sequencer. The bootstrap uses
+its keys without restoring or replacing the wallet:
+
+```bash
+make setup-workspace-tools
+source scripts/workspace-env.sh
+export LEE_WALLET_HOME_DIR="$HOME/.lee/wallet"
+make deploy-stablecoin
+
+# Optional endpoint override applies to this invocation only:
+SEQUENCER_ADDR=http://127.0.0.1:3040 make deploy-stablecoin
+```
+
+The script builds and inspects release binaries when program IDs have not been
+selected, reuses matching deployed programs, derives the stablecoin global PDAs,
+creates dedicated collateral and a seed oracle, then initializes and verifies the
+protocol. The oracle must exist before initialization; its base asset is the
+deterministic stablecoin definition PDA that initialization will create.
+
+Explicit `TOKEN_PROGRAM_ID`, `TWAP_ORACLE_PROGRAM_ID`, and `STABLECOIN_PROGRAM_ID`
+select already deployed programs compatible with the repository IDLs. Supplying all
+three avoids guest builds. `COLLATERAL_DEFINITION_ID` or `MARKET_PRICE_ORACLE_ID`
+select **already initialized** assets, whose ownership and bindings must match.
+Omit them to generate fresh assets. `ADMIN_ID`, `ORACLE_SOURCE_ID`, and any fresh
+collateral accounts must belong to the selected wallet. `COLLATERAL_MINT_AUTHORITY_ID`
+defaults to the admin and can instead be a faucet PDA.
+
+Default settings are 1.0 stability fee per millisecond (no interest), zero controller
+gains, a 150% minimum collateralization ratio, 1.0 redemption price, 300,000 ms between
+rate updates, and a 900,000 ms maximum oracle age. Collateral supply is `10^21` units
+and the oracle window is 300,000 ms. Protocol values use `10^27` fixed point; the
+oracle seed uses Q64.64 (`2^64` = 1.0). Nonzero controller gains are rejected because
+the protocol does not yet convert the oracle's price units for its controller.
+
+This is bootstrap state, not a live market feed. The seed becomes stale after the
+configured maximum age, and debt generation then fails. A production deployment
+needs a suitable price source, ongoing publication, and the price-unit conversion
+resolved before enabling the controller. Display every supported override with:
+
+```bash
+apps/stablecoin/tests/testnet/setup-stablecoin-testnet.sh --help
+```
+
+### Deployment records and recovery
+
+Successful runs print paths to `deployment.json` and `deployment.env`, by default
+under `target/deployments/stablecoin/<channel-id>/`. JSON records program IDs, account
+IDs, submitted transaction hashes, settings, and verified on-chain state. The shell
+file exports the same IDs for subsequent commands:
+
+```bash
+source target/deployments/stablecoin/<channel-id>/deployment.env
+spel --idl artifacts/stablecoin-idl.json inspect "$PROTOCOL_PARAMETERS_ID" --type ProtocolParameters
+```
+
+Repeat the same bootstrap command to resume an interrupted deployment or verify a
+completed one. It confirms saved submissions before proceeding and does not repeat a
+confirmed collateral mint. A pending transaction requires confirmation before the
+run can continue. Overrides that conflict with recorded bindings or bootstrap
+settings fail rather than silently reconfigure the protocol. `DEPLOYMENT_DIR` selects
+a different record directory; a directory from another channel is rejected.
+Changing this directory does not create another protocol: global accounts are
+singletons derived from the stablecoin program ID. Reusing that ID on the same
+channel adopts the same on-chain protocol, whose bindings must still match.
+Adopted protocols record current verified state without inventing historical settings.
+
+### Integrated AMM and faucet setup
+
+The isolated AMM test setup enables stablecoin bootstrap by default:
+
+```bash
+make setup-workspace-tools
+source scripts/workspace-env.sh
+make build-programs
+TEST_SEQUENCER_ADDR=http://127.0.0.1:3040 \
+  apps/amm/tests/testnet/setup-amm-testnet.sh
+
+# Prepare only AMM state:
+DEPLOY_STABLECOIN=0 TEST_SEQUENCER_ADDR=http://127.0.0.1:3040 \
+  apps/amm/tests/testnet/setup-amm-testnet.sh
+```
+
+This setup uses a public deterministic test mnemonic. Use it only with disposable
+test funds. Its wallet defaults to `apps/amm/tests/testnet/.wallet`; it does not use
+the standalone wallet. The AMM setup is intended for a fresh test deployment, while
+the delegated stablecoin bootstrap supports resuming its own recorded work.
+
+Token and oracle program IDs come from the AMM deployment. Stablecoin gets dedicated
+collateral, leaving token A–D balances intact, and its mint authority is the same
+faucet PDA used by the AMM tokens. Existing AMM account indexes remain unchanged;
+stablecoin admin/oracle roles are appended only when enabled. The bootstrap retains
+the channel-scoped output directory unless `STABLECOIN_DEPLOYMENT_DIR` is supplied.
+Both entry points write the same manifest schema and print its paths.
+
+When stablecoin is enabled, the AMM setup first saves the four selected AMM/faucet
+binaries under `target/deployments/amm-testnet/binaries/<content-hash>/`. Deployment,
+PDA derivation, the faucet manifest, and the printed AMM launch command all use these
+snapshots. A later stablecoin build can replace shared guest outputs or remove
+legacy build directories without changing the binaries recorded for this deployment.
+
+To mint more collateral into the bootstrap's existing holding, use that deployment's
+environment file and the faucet manifest produced by the same AMM run:
+
+```bash
+export LEE_WALLET_HOME_DIR="$PWD/apps/amm/tests/testnet/.wallet"
+source target/deployments/stablecoin/<channel-id>/deployment.env
+FAUCET_MANIFEST=apps/amm/tests/testnet/faucet.json
+FAUCET_PROGRAM_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["faucetProgramId"])' "$FAUCET_MANIFEST")
+FAUCET_BIN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["faucetBin"])' "$FAUCET_MANIFEST")
+MINT_ALLOWANCE_ID=$(RISC0_SKIP_BUILD=1 cargo run -q -p token_mint_authority_program \
+  --example faucet_allowance -- "$FAUCET_BIN" "$ADMIN_ID" "$COLLATERAL_DEFINITION_ID" \
+  | awk '/^base58:/ {print $2}')
+
+spel --idl artifacts/token_mint_authority-idl.json --program-id "$FAUCET_PROGRAM_ID" faucet-mint \
+  --recipient "$ADMIN_ID" --mint-allowance "$MINT_ALLOWANCE_ID" \
+  --user-holding "$COLLATERAL_HOLDING_ID" --token-definition "$COLLATERAL_DEFINITION_ID" \
+  --mint-authority "$COLLATERAL_MINT_AUTHORITY_ID" --clock "$CLOCK_ID"
+```
+
+The admin signs; the distinct collateral holding already exists. The faucet's
+per-recipient/token cooldown still applies. For another recipient/holding, initialize
+its collateral holding first and derive the matching allowance as in §14.3.
 
 ---
 
