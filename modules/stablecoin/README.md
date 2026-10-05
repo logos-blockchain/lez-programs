@@ -5,7 +5,8 @@ Program. It exposes deployment discovery, protocol-state reads, protocol
 initialization, position health, position opening, collateral deposits, debt
 repayment, collateral withdrawal, debt generation, and position closure through
 the same universal API used by `logoscore` and UI modules. Admin parameter and
-role setters use the same current-state authorization and transaction path.
+role setters and emergency freeze controls use the same current-state
+authorization and transaction path.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
 `stablecoin_ffi` owns exact account decoding, PDA derivation, request
@@ -512,6 +513,48 @@ replacement also needs the `newOracle` account-read envelope. C entrypoints are
 `stablecoin_set_admin_plan`, `stablecoin_set_freeze_authority_plan`, and
 `stablecoin_set_market_price_oracle_plan`. Release response allocations with
 `stablecoin_free`.
+
+### `freeze(request)` and `unfreeze(request)`
+
+Accept `freezeAuthorityId` (base58 or hexadecimal account ID), with no numeric
+arguments or caller-selected boolean. The module derives the Protocol Parameters
+PDA, reads current parameters for every operation, verifies stablecoin ownership
+and exact data, and requires the currently stored freeze authority to be a
+public account controlled by the active wallet. Admin status alone is not
+sufficient; a shared admin/freeze handle is accepted because it matches the
+stored freeze-authority binding. Role rotation is picked up on the next call,
+even on a reused module instance.
+
+`freeze` encodes the zero-argument `Instruction::Freeze`; `unfreeze` encodes
+`Instruction::Unfreeze`. Both use freeze authority (read-only, signer) followed
+by Protocol Parameters (writable, nonsigner), with every `init` flag false.
+Only `is_frozen` changes. No clock, oracle, Position, projection or chained Token
+call is involved, and callers cannot select another parameters-account ID.
+
+Both operations are idempotent on-chain: repeated freeze of a frozen protocol
+and repeated unfreeze of an unfrozen protocol remain valid. Each request still
+validates live authority/state and submits once, returning the wallet's actual
+transaction result. The module never fabricates an ID for a local no-op and
+does not treat the frozen flag as a submission blocker for these operations.
+
+While frozen, `openPosition`, `withdrawCollateral` and `generateDebt` fail with
+`protocol_frozen`, including zero-amount calls. `depositCollateral`, `repayDebt`,
+`closePosition` and permissionless maintenance remain available when their own
+preconditions are met. Unfreeze restores the gated paths; it does not bypass
+their ordinary account, balance, health, oracle or wallet checks.
+
+Wrong role binding returns `freeze_authority_mismatch`. Missing parameters
+return `not_initialized`; failed reads return `account_read_failed`. Existing
+request, account-ID, PDA, ownership and exact-data errors remain
+stable. Failed preflight submits nothing. Success returns
+`{status: "ok", error: "", transactionId: "..."}`; wallet rejection or transport
+failure returns `wallet_submission_failed`, without a successful ID or retry.
+
+The Rust API exports `freeze_plan` and `unfreeze_plan`, sharing
+`FreezeAuthorityPlanRequest`. C callers use `stablecoin_freeze_plan` and
+`stablecoin_unfreeze_plan`; add `stablecoinProgramId` and the canonical
+`protocolParameters` account-read envelope to the public request, and free
+responses with `stablecoin_free`.
 
 ## Runtime configuration
 

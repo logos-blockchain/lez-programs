@@ -13,6 +13,10 @@ use stablecoin_ffi::{
 
 #[test]
 fn crate_root_reexports_stablecoin_surface() {
+    let _freeze: fn(stablecoin_ffi::FreezeAuthorityPlanRequest) -> StablecoinResult =
+        stablecoin_ffi::freeze_plan;
+    let _unfreeze: fn(stablecoin_ffi::FreezeAuthorityPlanRequest) -> StablecoinResult =
+        stablecoin_ffi::unfreeze_plan;
     let _ratio: fn(
         stablecoin_ffi::SetMinimumCollateralizationRatioPlanRequest,
     ) -> StablecoinResult = stablecoin_ffi::set_minimum_collateralization_ratio_plan;

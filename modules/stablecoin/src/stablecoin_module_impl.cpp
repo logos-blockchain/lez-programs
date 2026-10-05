@@ -538,6 +538,48 @@ LogosMap StablecoinModuleImpl::redemptionRateUpdateQuote() {
     });
 }
 
+LogosMap StablecoinModuleImpl::freeze(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        return freezeAuthorityPlanAndSubmit(stablecoin_freeze_plan, request);
+    });
+}
+
+LogosMap StablecoinModuleImpl::unfreeze(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        return freezeAuthorityPlanAndSubmit(stablecoin_unfreeze_plan, request);
+    });
+}
+
+LogosMap StablecoinModuleImpl::freezeAuthorityPlanAndSubmit(StablecoinOperation planner,
+                                                          const LogosMap& request) {
+    if (!request.is_object() || !hasString(request, "freezeAuthorityId")) return publicError("bad_request");
+    std::string error;
+    const json info = stablecoinProgramInfo(error);
+    if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
+    const std::string authority = normalizeAccountId(jsonString(request, "freezeAuthorityId"));
+    if (authority.empty()) return publicError("invalid_account_id");
+    if (!requireWalletCaller(authority, error)) return publicError(error);
+    const std::string parameters_id = jsonString(info, "protocolParametersIdHex");
+    const json parameters = readPublicAccount(parameters_id);
+    if (jsonString(parameters, "status") == "not_found") return publicError("not_initialized");
+    if (jsonString(parameters, "status") != "ok") return publicError("account_read_failed");
+    const FfiResult planned = callStablecoin(planner, {
+        {"stablecoinProgramId", info["programIdHex"]}, {"freezeAuthorityId", authority},
+        {"protocolParameters", parameters},
+    });
+    if (!planned.ok) return publicError(stablecoin_module::detail::stableFfiError(planned.error));
+    if (jsonString(planned.value, "programId") != jsonString(info, "programIdHex")) return publicError("backend_error");
+    const std::vector<std::string> expected = {authority, parameters_id};
+    const auto account_ids = planned.value.find("accountIds");
+    if (account_ids == planned.value.end() || !account_ids->is_array()
+        || account_ids->size() != expected.size()) return publicError("backend_error");
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        if (!(*account_ids)[index].is_string()
+            || (*account_ids)[index].get<std::string>() != expected[index]) return publicError("backend_error");
+    }
+    return submitPlan(planned.value, expected.size());
+}
+
 LogosMap StablecoinModuleImpl::setMinimumCollateralizationRatio(const LogosMap& request) {
     return guarded([&]() -> LogosMap {
         if (!request.is_object() || request.find("newRatio") == request.end()) return publicError("bad_request");

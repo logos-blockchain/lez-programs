@@ -114,6 +114,13 @@ extern "C" char* stablecoin_set_market_price_oracle_plan(const char*) {
     return copyMockResponse("stablecoin_set_market_price_oracle_plan");
 }
 
+extern "C" char* stablecoin_freeze_plan(const char*) {
+    return copyMockResponse("stablecoin_freeze_plan");
+}
+extern "C" char* stablecoin_unfreeze_plan(const char*) {
+    return copyMockResponse("stablecoin_unfreeze_plan");
+}
+
 extern "C" void stablecoin_free(char* value) {
     LOGOS_CMOCK_RECORD("stablecoin_free");
     std::free(value);

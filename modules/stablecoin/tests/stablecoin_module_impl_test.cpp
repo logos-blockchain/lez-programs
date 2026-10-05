@@ -1190,6 +1190,159 @@ struct AdminReadMocks {
 };
 }  // namespace
 
+namespace {
+using FreezeMethod = LogosMap (StablecoinModuleImpl::*)(const LogosMap&);
+struct FreezeCase { FreezeMethod method; const char* planner; };
+const std::vector<FreezeCase> FREEZE_CASES = {
+    {&StablecoinModuleImpl::freeze, "stablecoin_freeze_plan"},
+    {&StablecoinModuleImpl::unfreeze, "stablecoin_unfreeze_plan"},
+};
+struct FreezeReadMocks {
+    const std::string info = successEnvelope(programInfoValue());
+    explicit FreezeReadMocks(LogosTestContext& context) {
+        context.mockCFunction("stablecoin_program_info").returns(info);
+        context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(walletAccounts(CALLER_ID_HEX)));
+        context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+    }
+};
+std::vector<std::string> freezeAccounts() { return {CALLER_ID_HEX, PROTOCOL_PARAMETERS_ID_HEX}; }
+LogosMap freezeRequest() { return {{"freezeAuthorityId", CALLER_ID_HEX}}; }
+}  // namespace
+
+LOGOS_TEST(freeze_and_unfreeze_repeat_submit_once_each_and_only_read_canonical_parameters) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& operation : FREEZE_CASES) {
+        LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+        StablecoinModuleImpl module; attachModules(module, modules);
+        const FreezeReadMocks mocks(context);
+        const std::string plan = successEnvelope(submissionPlan(freezeAccounts(), 29));
+        context.mockCFunction(operation.planner).returns(plan);
+        context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+        LogosMap request = freezeRequest();
+        request["isFrozen"] = false; request["protocolParametersId"] = OTHER_CALLER_ID_HEX;
+        for (int repeat = 0; repeat < 2; ++repeat) {
+            const LogosMap response = (module.*operation.method)(request);
+            LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+            LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+        }
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 2);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 2);
+        LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "get_account_public",
+            QVariantList{QVariant(QString::fromStdString(PROTOCOL_PARAMETERS_ID_HEX))}));
+        LOGOS_ASSERT_EQ(context.cFunctionCallCount(operation.planner), 2);
+        LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction", submissionArguments(freezeAccounts(), 29)));
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 2);
+    }
+}
+
+LOGOS_TEST(freeze_operations_validate_requests_and_public_wallet_authority_before_reads) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& operation : FREEZE_CASES) {
+        for (const LogosMap& request : {LogosMap::object(), LogosMap::array(), LogosMap{{"freezeAuthorityId", 1.5}}}) {
+            LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+            StablecoinModuleImpl module; attachModules(module, modules);
+            assertError((module.*operation.method)(request), "bad_request");
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 0);
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+        for (int mutation = 0; mutation < 3; ++mutation) {
+            LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+            StablecoinModuleImpl module; attachModules(module, modules);
+            const FreezeReadMocks mocks(context);
+            QVariantList accounts = walletAccounts(mutation == 0 ? OTHER_CALLER_ID_HEX : CALLER_ID_HEX);
+            if (mutation == 1) { QVariantMap account = accounts.front().toMap(); account.insert("is_public", false); accounts[0] = QVariant(account); }
+            if (mutation == 2) accounts = {QVariant(QString::fromStdString(UniversalLezCore::transportErrorSentinel()))};
+            context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(accounts));
+            assertError((module.*operation.method)(freezeRequest()), mutation == 2 ? "backend_error" : "account_read_failed");
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 0);
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+    }
+}
+
+LOGOS_TEST(freeze_operations_normalize_base58_and_reject_malformed_or_zero_ids) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& operation : FREEZE_CASES) {
+        LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+        StablecoinModuleImpl module; attachModules(module, modules);
+        const FreezeReadMocks mocks(context);
+        const std::string plan = successEnvelope(submissionPlan(freezeAccounts(), 29));
+        context.mockCFunction(operation.planner).returns(plan);
+        context.mockModule("lez_core", "account_id_from_base58").returns(CALLER_ID_HEX);
+        context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+        const LogosMap response = (module.*operation.method)({{"freezeAuthorityId", "authority-base58"}});
+        LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+        LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction", submissionArguments(freezeAccounts(), 29)));
+        context.mockModule("lez_core", "account_id_from_base58").returns(std::string());
+        for (const std::string& invalid : {std::string("invalid-id"), std::string(64, '0')}) {
+            assertError((module.*operation.method)({{"freezeAuthorityId", invalid}}), "invalid_account_id");
+        }
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+    }
+}
+
+LOGOS_TEST(freeze_operations_preserve_preflight_errors_and_refuse_bad_parameter_reads) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& operation : FREEZE_CASES) {
+        for (const std::string& error : {"freeze_authority_mismatch", "invalid_protocol_parameters_data",
+            "stablecoin_program_mismatch", "protocol_parameters_pda_mismatch"}) {
+            LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+            StablecoinModuleImpl module; attachModules(module, modules);
+            const FreezeReadMocks mocks(context);
+            const std::string failure = failureEnvelope(error);
+            context.mockCFunction(operation.planner).returns(failure);
+            assertError((module.*operation.method)(freezeRequest()), error);
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+        for (const std::string& read : {std::string(), std::string("malformed"), UniversalLezCore::transportErrorSentinel()}) {
+            LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+            StablecoinModuleImpl module; attachModules(module, modules);
+            const FreezeReadMocks mocks(context);
+            context.mockModule("lez_core", "get_account_public").returns(read);
+            assertError((module.*operation.method)(freezeRequest()), read.empty() ? "not_initialized" : "account_read_failed");
+            LOGOS_ASSERT_EQ(context.cFunctionCallCount(operation.planner), 0);
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+    }
+}
+
+LOGOS_TEST(freeze_operations_validate_plan_contract_and_never_retry_wallet_failures) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const auto& operation : FREEZE_CASES) {
+        for (int mutation = 0; mutation < 5; ++mutation) {
+            LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+            StablecoinModuleImpl module; attachModules(module, modules);
+            const FreezeReadMocks mocks(context);
+            json plan = submissionPlan(freezeAccounts(), 29);
+            if (mutation == 0) plan["programId"] = OTHER_CALLER_ID_HEX;
+            if (mutation == 1) plan["accountIds"][1] = ORACLE_ID_HEX;
+            if (mutation == 2) plan["accountIds"].erase(1);
+            if (mutation == 3) plan["signingRequirements"][1] = true;
+            if (mutation == 4) plan["instruction"][0] = 1.5;
+            const std::string response = successEnvelope(plan); context.mockCFunction(operation.planner).returns(response);
+            assertError((module.*operation.method)(freezeRequest()), "backend_error");
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+        }
+        for (const std::string& wallet_response : {json{{"success", false}, {"tx_hash", TRANSACTION_ID_HEX}}.dump(),
+            json{{"success", true}, {"tx_hash", "invalid"}}.dump(), UniversalLezCore::transportErrorSentinel()}) {
+            LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+            StablecoinModuleImpl module; attachModules(module, modules);
+            const FreezeReadMocks mocks(context);
+            const std::string plan = successEnvelope(submissionPlan(freezeAccounts(), 29)); context.mockCFunction(operation.planner).returns(plan);
+            context.mockModule("lez_core", "send_generic_public_transaction").returns(wallet_response);
+            const LogosMap response = (module.*operation.method)(freezeRequest());
+            assertError(response, "wallet_submission_failed");
+            LOGOS_ASSERT_TRUE(response.find("transactionId") == response.end());
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+        }
+    }
+}
+
 LOGOS_TEST(all_admin_setters_submit_with_only_current_admin_and_minimal_live_reads) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);

@@ -135,6 +135,16 @@ public:
     /// Only the current `adminId` signs; frozen state does not block the setter.
     LogosMap setMarketPriceOracle(const LogosMap& request);
 
+    /// Sets the emergency flag using the currently bound `freezeAuthorityId`.
+    /// Only that public wallet authority signs. Repeated freeze still submits
+    /// once and returns the wallet's actual transaction result.
+    LogosMap freeze(const LogosMap& request);
+
+    /// Clears the emergency flag using the currently bound `freezeAuthorityId`.
+    /// Allowed while frozen; repeated unfreeze still validates and submits.
+    /// Admin status alone is not sufficient for either freeze operation.
+    LogosMap unfreeze(const LogosMap& request);
+
 private:
     using StablecoinOperation = char* (*)(const char*);
 
@@ -157,6 +167,8 @@ private:
     LogosMap adminPlanAndSubmit(StablecoinOperation planner,
                                const LogosMap& request,
                                const std::string& new_oracle_id = {});
+    LogosMap freezeAuthorityPlanAndSubmit(StablecoinOperation planner,
+                                         const LogosMap& request);
 
     bool programInfoResolved_ = false;
     std::string programInfoJson_;
