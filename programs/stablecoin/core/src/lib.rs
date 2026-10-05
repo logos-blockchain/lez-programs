@@ -2,6 +2,8 @@
 
 pub mod controller;
 
+pub mod collateralization;
+
 pub mod math;
 
 pub mod protocol_parameters;

@@ -2,7 +2,7 @@
 
 `stablecoin_module` is a headless Logos `core` module for the LEZ Stablecoin
 Program. It exposes deployment discovery, protocol-state reads, protocol
-initialization, position opening, collateral deposits, and debt repayment through the same
+initialization, position health, position opening, collateral deposits, and debt repayment through the same
 universal API used by `logoscore` and UI modules.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
@@ -65,6 +65,52 @@ The result contains `accumulatedRateAtLastAccrual`, `lastAccruedAt`,
 `currentRedemptionPrice`, and `projectedAt`. Every value is an exact decimal
 string. Projection uses saturating timestamp subtraction and the on-chain
 seven-day compounding-window clamp. The method accepts no caller-provided time.
+
+### `positionHealth(request)`
+
+Accepts `ownerId` (base58 or hexadecimal account ID) and `positionNonce` (an
+exact `u64` decimal string). It derives Position/Vault IDs and reads the Position,
+Protocol Parameters, Stability Fee Accumulator, Redemption Price State, and
+canonical `CLOCK_01`. It validates canonical identities, stablecoin ownership,
+exact decoding, and stored Position owner/nonce/vault fields. Quotes work while
+frozen, without wallet ownership or signatures, oracle/controller gates, vault
+balance reads, or transaction submission. Stored Position collateral is used;
+direct vault donations are reconciled through `depositCollateral`.
+
+Success adds these fields to `{status: "ok", error: ""}`:
+
+- `ownerId`, `ownerIdHex`, `positionId`, `positionIdHex`, `vaultId`, `vaultIdHex`.
+- Exact decimal strings: `positionNonce`, `collateralAmount`,
+  `normalizedDebtAmount`, `openedAt`, `currentAccumulatedRate`,
+  `currentRedemptionPrice`, `minimumCollateralizationRatio`, `projectedAt`,
+  `nominalDebt`, `collateralValue`, and `requiredCollateralValue`.
+- Booleans: `isCollateralized` and `requirementSaturated`.
+
+The program's exact fractional-debt comparison is shared with the quote:
+
+```text
+collateralValue = collateralAmount * FIXED_POINT_ONE^3
+requiredCollateralValue = normalizedDebtAmount * currentAccumulatedRate
+    * currentRedemptionPrice * minimumCollateralizationRatio
+isCollateralized = collateralValue >= requiredCollateralValue
+```
+
+`nominalDebt` floors `normalizedDebtAmount * currentAccumulatedRate /
+FIXED_POINT_ONE` for display only; it is never used in the comparison. Zero debt
+has a zero requirement. Wide projections preserve saturating elapsed-time
+subtraction and the seven-day clamp, and can exceed `u128`. A saturated
+requirement is returned as the decimal `U512::MAX` with
+`requirementSaturated: true`; it is conservatively undercollateralized because
+all possible collateral values are below that cap.
+
+Unrepresentable projection intermediates return `health_projection_overflow`;
+an unrepresentable display calculation returns `health_arithmetic_overflow`.
+These errors prevent a bounded projection from being reported as exact.
+Absent Positions return `position_not_found` with the derived Position/Vault
+IDs. Missing globals return `not_initialized`; failed reads return
+`account_read_failed`. Numeric, ownership, PDA, stored-identity, and exact-data
+validation reuse the existing stable error codes. Every call reads current
+state again, including after an earlier successful quote.
 
 ### `redemptionRateUpdateQuote()`
 

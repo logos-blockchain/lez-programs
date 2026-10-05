@@ -536,6 +536,75 @@ LOGOS_TEST(real_ffi_journey_opens_position_with_two_wallet_signers) {
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
 }
 
+LOGOS_TEST(real_ffi_position_health_rechecks_fractional_debt_while_frozen) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+    const LogosMap info = module.programInfo();
+    assertOk(info);
+    const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+    const std::string accumulator_id = info["stabilityFeeAccumulatorIdHex"].get<std::string>();
+    const std::string redemption_id = info["redemptionPriceStateIdHex"].get<std::string>();
+    const std::string clock_id = info["clockIdHex"].get<std::string>();
+    const std::string nonce = "18446744073709551615";
+    const std::string payload = json{{"stablecoinProgramId", PROGRAM_ID_HEX},
+        {"ownerId", CALLER_ID_HEX}, {"positionNonce", nonce}}.dump();
+    std::unique_ptr<char, decltype(&stablecoin_free)> addresses_result(
+        stablecoin_position_addresses(payload.c_str()), &stablecoin_free);
+    LOGOS_ASSERT_TRUE(addresses_result != nullptr);
+    const json addresses = json::parse(addresses_result.get()).at("value");
+    const std::string position_id = addresses["positionIdHex"].get<std::string>();
+    const std::string vault_id = addresses["vaultIdHex"].get<std::string>();
+    expectRead(position_id, PROGRAM_OWNER_HEX, positionData(CALLER_ID_HEX, vault_id, UINT64_MAX, "3", "2"));
+    std::string parameters = protocolData(true);
+    parameters.replace(128, 64, info["stablecoinDefinitionIdHex"].get<std::string>());
+    expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    expectRead(accumulator_id, PROGRAM_OWNER_HEX, accumulatorData(FIXED_ONE, DUE));
+    expectRead(redemption_id, PROGRAM_OWNER_HEX, redemptionData(FIXED_ONE, FIXED_ONE, "0", DUE));
+    expectRead(clock_id, PROGRAM_OWNER_HEX, clockData(DUE));
+    const LogosMap request = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", nonce}};
+    const LogosMap healthy = module.positionHealth(request);
+    assertOk(healthy);
+    LOGOS_ASSERT_TRUE(healthy["isCollateralized"].get<bool>());
+    LOGOS_ASSERT_EQ(healthy["positionNonce"].get<std::string>(), nonce);
+    LOGOS_ASSERT_EQ(healthy["collateralValue"], healthy["requiredCollateralValue"]);
+
+    expectRead(position_id, PROGRAM_OWNER_HEX, positionData(CALLER_ID_HEX, vault_id, UINT64_MAX, "2", "1"));
+    expectRead(accumulator_id, PROGRAM_OWNER_HEX, accumulatorData("1900000000000000000000000000", DUE));
+    const LogosMap fractional = module.positionHealth(request);
+    assertOk(fractional);
+    LOGOS_ASSERT_EQ(fractional["nominalDebt"].get<std::string>(), std::string("1"));
+    LOGOS_ASSERT_TRUE(!fractional["isCollateralized"].get<bool>());
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 10);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 0);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+
+    const std::string maximum = "340282366920938463463374607431768211455";
+    expectRead(position_id, PROGRAM_OWNER_HEX, positionData(CALLER_ID_HEX, vault_id, UINT64_MAX, maximum, maximum));
+    const LogosMap wide = module.positionHealth(request);
+    assertOk(wide);
+    LOGOS_ASSERT_EQ(wide["collateralAmount"].get<std::string>(), maximum);
+    LOGOS_ASSERT_EQ(wide["normalizedDebtAmount"].get<std::string>(), maximum);
+    LOGOS_ASSERT_EQ(wide["nominalDebt"].get<std::string>(), (decimal(maximum) * 19 / 10).convert_to<std::string>());
+    LOGOS_ASSERT_EQ(wide["collateralValue"].get<std::string>(),
+        (decimal(maximum) * decimal(FIXED_ONE) * decimal(FIXED_ONE) * decimal(FIXED_ONE)).convert_to<std::string>());
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 15);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 0);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+
+    expectMissing(position_id);
+    const LogosMap absent = module.positionHealth(request);
+    LOGOS_ASSERT_EQ(absent["error"].get<std::string>(), std::string("position_not_found"));
+    LOGOS_ASSERT_EQ(absent["positionIdHex"].get<std::string>(), position_id);
+    LOGOS_ASSERT_EQ(absent["vaultIdHex"].get<std::string>(), vault_id);
+    LogosMap invalid = request;
+    invalid["positionNonce"] = "18446744073709551616";
+    LOGOS_ASSERT_EQ(module.positionHealth(invalid)["error"].get<std::string>(), std::string("invalid_numeric_value"));
+}
+
 LOGOS_TEST(real_ffi_repay_debt_preserves_large_amounts_and_frozen_preflight) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);

@@ -7,7 +7,7 @@ use stablecoin_core::{
     compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
     compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda,
     math::{compute_current_accumulated_rate, mul_div, FIXED_POINT_ONE},
-    Instruction, Position,
+    Instruction,
 };
 use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::OraclePriceAccount;
@@ -18,6 +18,7 @@ use super::{
         validated_stability_fee_accumulator,
     },
     parse_stablecoin_program_id,
+    position::validated_position,
     projection::clock_timestamp,
     quote::{redemption_rate_update_quote, validated_market_price_oracle},
     AccrueStabilityFeePlanRequest, DepositCollateralPlanRequest, InitializeProgramPlanRequest,
@@ -195,22 +196,8 @@ pub fn deposit_collateral_plan(request: DepositCollateralPlanRequest) -> Stablec
     let (parameters_id, parameters) =
         validated_protocol_parameters(program_id, &request.protocol_parameters)?;
 
-    let expected_position_id = compute_position_pda(program_id, owner, position_nonce);
-    let (position_id, position_account) = required_account(&request.position)?;
-    if position_id != expected_position_id {
-        return Err(StablecoinApiError::new("position_pda_mismatch"));
-    }
-    if position_account.program_owner != program_id {
-        return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
-    }
-    let position = Position::try_from(&position_account.data)
-        .map_err(|_| StablecoinApiError::new("invalid_position_data"))?;
-    if position.owner_account_id != owner {
-        return Err(StablecoinApiError::new("position_owner_mismatch"));
-    }
-    if position.position_nonce != position_nonce {
-        return Err(StablecoinApiError::new("position_nonce_mismatch"));
-    }
+    let (position_id, position) =
+        validated_position(program_id, owner, position_nonce, &request.position)?;
 
     let expected_vault_id = compute_position_vault_pda(program_id, position_id);
     if position.vault_account_id != expected_vault_id {
@@ -281,21 +268,8 @@ pub fn repay_debt_plan(request: RepayDebtPlanRequest) -> StablecoinResult {
     let (parameters_id, parameters) =
         validated_protocol_parameters(program_id, &request.protocol_parameters)?;
 
-    let (position_id, position_account) = required_account(&request.position)?;
-    if position_id != compute_position_pda(program_id, owner, position_nonce) {
-        return Err(StablecoinApiError::new("position_pda_mismatch"));
-    }
-    if position_account.program_owner != program_id {
-        return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
-    }
-    let position = Position::try_from(&position_account.data)
-        .map_err(|_| StablecoinApiError::new("invalid_position_data"))?;
-    if position.owner_account_id != owner {
-        return Err(StablecoinApiError::new("position_owner_mismatch"));
-    }
-    if position.position_nonce != position_nonce {
-        return Err(StablecoinApiError::new("position_nonce_mismatch"));
-    }
+    let (position_id, position) =
+        validated_position(program_id, owner, position_nonce, &request.position)?;
 
     let (definition_id, definition_account) = required_account(&request.stablecoin_definition)?;
     if definition_id != parameters.stablecoin_definition_id {
@@ -468,8 +442,14 @@ fn required_account(
     decode_account(read).map_err(|_| StablecoinApiError::new("account_read_failed"))
 }
 
-fn parse_account_id(value: &str) -> Result<AccountId, StablecoinApiError> {
-    let account_id = account_id_from_hex(value, "account id")
+pub(super) fn parse_account_id(value: &str) -> Result<AccountId, StablecoinApiError> {
+    let value = value.trim();
+    let account_id = account_id_from_hex(&value.to_ascii_lowercase(), "account id")
+        .or_else(|_| {
+            value
+                .parse::<AccountId>()
+                .map_err(|error| error.to_string())
+        })
         .map_err(|_| StablecoinApiError::new("invalid_account_id"))?;
     if account_id.value() == &[0_u8; 32] {
         return Err(StablecoinApiError::new("invalid_account_id"));
@@ -517,7 +497,7 @@ fn parse_decimal_u128(value: &str) -> Result<u128, StablecoinApiError> {
         .map_err(|_| StablecoinApiError::new("invalid_numeric_value"))
 }
 
-fn parse_decimal_u64(value: &str) -> Result<u64, StablecoinApiError> {
+pub(super) fn parse_decimal_u64(value: &str) -> Result<u64, StablecoinApiError> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(StablecoinApiError::new("invalid_numeric_value"));
     }

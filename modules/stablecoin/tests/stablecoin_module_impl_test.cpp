@@ -1077,6 +1077,92 @@ LOGOS_TEST(deposit_collateral_rejects_unexpected_plan_accounts_and_wallet_failur
     }
 }
 
+LOGOS_TEST(position_health_reads_live_state_without_signers_or_submission) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+    const std::string info = successEnvelope(programInfoValue());
+    const std::string addresses = successEnvelope({{"positionIdHex", std::string(64, 'c')}, {"vaultIdHex", std::string(64, 'd')}});
+    const std::string health = successEnvelope({{"isCollateralized", false}, {"requirementSaturated", true},
+        {"nominalDebt", "340282366920938463463374607431768211455"}});
+    context.mockCFunction("stablecoin_program_info").returns(info);
+    context.mockCFunction("stablecoin_position_addresses").returns(addresses);
+    context.mockCFunction("stablecoin_position_health").returns(health);
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+    const LogosMap request = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "18446744073709551615"}};
+    for (int call = 0; call < 2; ++call) {
+        const LogosMap response = module.positionHealth(request);
+        LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+        LOGOS_ASSERT_EQ(response["nominalDebt"].get<std::string>(), std::string("340282366920938463463374607431768211455"));
+        LOGOS_ASSERT_TRUE(!response["isCollateralized"].get<bool>());
+        LOGOS_ASSERT_TRUE(response["requirementSaturated"].get<bool>());
+    }
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 10);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_position_health"), 2);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 0);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+}
+
+LOGOS_TEST(position_health_preserves_absent_position_identity_and_read_errors) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const std::string& read : {std::string(), std::string("corrupt")}) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const std::string info = successEnvelope(programInfoValue());
+        const std::string addresses = successEnvelope({{"positionIdHex", std::string(64, 'c')}, {"vaultIdHex", std::string(64, 'd')}});
+        context.mockCFunction("stablecoin_program_info").returns(info);
+        context.mockCFunction("stablecoin_position_addresses").returns(addresses);
+        context.mockModule("lez_core", "get_account_public").returns(read);
+        const LogosMap response = module.positionHealth({{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"}});
+        assertError(response, read.empty() ? "position_not_found" : "account_read_failed");
+        if (read.empty()) {
+            LOGOS_ASSERT_EQ(response["positionIdHex"].get<std::string>(), std::string(64, 'c'));
+            LOGOS_ASSERT_EQ(response["vaultIdHex"].get<std::string>(), std::string(64, 'd'));
+        }
+        LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_position_health"), 0);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 0);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
+}
+
+LOGOS_TEST(position_health_rejects_bad_requests_and_passes_stable_quote_errors) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const LogosMap& request : {LogosMap{{"ownerId", CALLER_ID_HEX}},
+        LogosMap{{"ownerId", CALLER_ID_HEX}, {"positionNonce", 1.5}},
+        LogosMap{{"positionNonce", "7"}}}) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        assertError(module.positionHealth(request), "bad_request");
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 0);
+    }
+    for (const std::string& error : {"health_projection_overflow", "health_arithmetic_overflow",
+        "invalid_position_data", "position_vault_mismatch", "invalid_clock"}) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const std::string info = successEnvelope(programInfoValue());
+        const std::string addresses = successEnvelope({{"positionIdHex", std::string(64, 'c')}, {"vaultIdHex", std::string(64, 'd')}});
+        const std::string failure = failureEnvelope(error);
+        context.mockCFunction("stablecoin_program_info").returns(info);
+        context.mockCFunction("stablecoin_position_addresses").returns(addresses);
+        context.mockCFunction("stablecoin_position_health").returns(failure);
+        context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+        assertError(module.positionHealth({{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"}}), error);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "list_accounts"), 0);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+    }
+}
+
 LOGOS_TEST(repay_debt_reads_six_live_accounts_and_submits_both_signers) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);

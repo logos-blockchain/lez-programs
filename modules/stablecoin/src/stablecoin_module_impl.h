@@ -37,6 +37,11 @@ public:
     /// at the canonical CLOCK_01 timestamp.
     LogosMap currentGlobalState();
 
+    /// Quotes stored Position health at CLOCK_01, using wide fractional-debt
+    /// arithmetic. Requires `ownerId` and exact decimal-string `positionNonce`.
+    /// No signer, wallet ownership, oracle, or transaction is required.
+    LogosMap positionHealth(const LogosMap& request);
+
     /// Quotes the next redemption-rate controller tick from live protocol,
     /// redemption-price, configured oracle, and CLOCK_01 state. Never submits
     /// a transaction; soft gates return `canSubmit: false` with blockers.

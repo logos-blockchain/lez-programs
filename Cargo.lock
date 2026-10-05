@@ -7160,6 +7160,7 @@ dependencies = [
 name = "stablecoin_ffi"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "borsh",
  "cbindgen",
  "clock_core",

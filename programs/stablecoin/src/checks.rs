@@ -10,7 +10,10 @@ use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::ProgramId,
 };
-use stablecoin_core::{math::FIXED_POINT_ONE, Position, ProtocolParameters};
+use stablecoin_core::{
+    collateralization::collateralization_values, math::FIXED_POINT_ONE, Position,
+    ProtocolParameters,
+};
 
 /// Assert that `position` satisfies the collateralization invariant from spec §6.2:
 ///
@@ -64,20 +67,15 @@ pub fn assert_position_is_collateralized(
         return;
     }
 
-    let one = U512::from(FIXED_POINT_ONE);
-
-    // No division anywhere: `/ FIXED_POINT_ONE` on the debt side is carried as an
-    // extra `× FIXED_POINT_ONE` on the collateral side, keeping the check exact.
-    // `U512` holds this product outright — `u128::MAX × FIXED_POINT_ONE^3` is
-    // about `10^119` — so only the right-hand side needs to saturate.
-    let collateral_value = U512::from(position.collateral_amount) * one * one * one;
-    let required_collateral_value = U512::from(position.normalized_debt_amount)
-        .saturating_mul(current_accumulator)
-        .saturating_mul(current_redemption_price)
-        .saturating_mul(U512::from(minimum_collateralization_ratio));
-
+    let values = collateralization_values(
+        position.collateral_amount,
+        position.normalized_debt_amount,
+        current_accumulator,
+        current_redemption_price,
+        minimum_collateralization_ratio,
+    );
     assert!(
-        collateral_value >= required_collateral_value,
+        values.is_collateralized(),
         "Position is undercollateralized"
     );
 }
