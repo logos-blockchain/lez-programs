@@ -288,9 +288,7 @@ Item {
             summary: swapConfirmationSummary
 
             onConfirmed: function(snapshot) {
-                // The dialog only shows a preview snapshot; the actual
-                // on-chain swap runs here, against SwapCard's live state.
-                swapCard.executeSwap()
+                swapCard.executeSwap(snapshot)
             }
         }
     }

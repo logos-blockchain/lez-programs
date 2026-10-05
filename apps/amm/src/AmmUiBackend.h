@@ -72,6 +72,7 @@ public slots:
     QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                              QString userOutputHoldingHex, QString amountOutDecimal,
                              QString maxInDecimal, QString deadlineDecimal) override;
+    QVariantMap confirmedSwap(QVariantMap request) override;
     // Current RegistryLoader token snapshot: local files, fetched registry, disk
     // cache, or no source. See .rep tokenList() for precedence and trust limits;
     // source-provided labels and ids are not checked against chain state here.
