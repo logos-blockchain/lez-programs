@@ -349,20 +349,30 @@ WalletCreation LogosWalletProvider::createWallet(const WalletPaths& paths,
         return failedCreation(WalletFailure::CreateFailed);
     }
 
-    WalletCreation creation;
+    struct CreationState {
+        QString mnemonic;
+        bool finished = false;
+    };
+    const auto state = std::make_shared<CreationState>();
+    const QPointer<QObject> alive(m_impl->callbackContext.get());
     QEventLoop waitForCreation;
-    bool creationFinished = false;
+    QObject::connect(m_impl->callbackContext.get(), &QObject::destroyed,
+                     &waitForCreation, &QEventLoop::quit);
     m_impl->logos->lez_core.create_newAsync(
         paths.config, paths.storage, paths.statistics, password,
-        [&creation, &creationFinished, &waitForCreation](QString mnemonic) {
-            creation.mnemonic = std::move(mnemonic);
-            creationFinished = true;
-            if (waitForCreation.isRunning())
-                waitForCreation.quit();
+        [state, waiting = QPointer<QEventLoop>(&waitForCreation)](QString mnemonic) {
+            state->mnemonic = std::move(mnemonic);
+            state->finished = true;
+            if (waiting)
+                waiting->quit();
         }, Timeout(WALLET_CREATE_TIMEOUT_MS));
-    if (!creationFinished)
+    if (alive && !state->finished)
         waitForCreation.exec();
+    if (!alive)
+        return failedCreation(WalletFailure::WalletUnavailable);
 
+    WalletCreation creation;
+    creation.mnemonic = std::move(state->mnemonic);
     if (creation.mnemonic.isEmpty())
         return failedCreation(WalletFailure::CreateFailed);
 

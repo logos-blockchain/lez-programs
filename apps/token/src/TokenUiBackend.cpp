@@ -1,6 +1,7 @@
 #include "TokenUiBackend.h"
 
 #include <QMap>
+#include <QPointer>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -107,15 +108,21 @@ QString TokenUiBackend::getBalance(QString accountIdHex, bool isPublic)
 
 QString TokenUiBackend::createNewDefault(QString password)
 {
+    const QPointer<TokenUiBackend> guard(this);
     const QString mnemonic = m_walletController->createDefaultWallet(password);
+    if (!guard)
+        return {};
     syncWalletState();
     return mnemonic;
 }
 
 QString TokenUiBackend::createNew(QString configPath, QString storagePath, QString password)
 {
+    const QPointer<TokenUiBackend> guard(this);
     const QString mnemonic = m_walletController->createWallet(
         configPath, storagePath, password);
+    if (!guard)
+        return {};
     syncWalletState();
     return mnemonic;
 }
