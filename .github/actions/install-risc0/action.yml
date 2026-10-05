@@ -4,9 +4,10 @@ runs:
   using: "composite"
   steps:
     - name: Install risc0
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         curl -L https://risczero.com/install | bash
         /home/runner/.risc0/bin/rzup install
       shell: bash
-
 
