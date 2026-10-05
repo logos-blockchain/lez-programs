@@ -1,4 +1,5 @@
 #include "SwapConfirmation.h"
+#include "WalletController.h"
 
 #include <QMetaType>
 
@@ -27,6 +28,17 @@ bool revisionMatches(const QVariant& revision, int currentRevision)
 }
 
 } // namespace
+
+bool SwapConfirmation::walletContextChanged(const WalletUiState& previous,
+                                            const WalletUiState& current)
+{
+    return previous.sessionRevision != current.sessionRevision
+        || previous.isWalletOpen != current.isWalletOpen
+        || previous.configPath != current.configPath
+        || previous.storagePath != current.storagePath
+        || previous.walletHome != current.walletHome
+        || previous.sequencerAddress != current.sequencerAddress;
+}
 
 QVariantMap SwapConfirmation::submit(const QVariantMap& request, int currentRevision,
                                      bool walletOpen, const Submit& dispatch)

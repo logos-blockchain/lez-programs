@@ -13,11 +13,11 @@
 #include "rep_AmmUiBackend_source.h"
 
 #include "WalletAccountModel.h"
+#include "WalletController.h"
 
 class LogosAPI;
 struct LogosModules;
 class LogosWalletProvider;
-class WalletController;
 class RegistryLoader;
 
 // Source-side implementation of the AmmUiBackend .rep interface.
@@ -133,6 +133,7 @@ private:
     std::unique_ptr<LogosModules> m_logos;
     std::unique_ptr<LogosWalletProvider> m_wallet;
     std::unique_ptr<WalletController> m_walletController;
+    WalletUiState m_lastWalletState;
     // Known-tokens / known-pools snapshot source (local files now; remote later).
     std::unique_ptr<RegistryLoader> m_registry;
 };

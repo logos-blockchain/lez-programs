@@ -150,13 +150,10 @@ void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
 
-    if (isWalletOpen() != state.isWalletOpen
-        || configPath() != state.configPath
-        || storagePath() != state.storagePath
-        || walletHome() != state.walletHome
-        || sequencerAddr() != state.sequencerAddress) {
+    if (SwapConfirmation::walletContextChanged(m_lastWalletState, state)) {
         setSwapContextRevision(swapContextRevision() + 1);
     }
+    m_lastWalletState = state;
 
     setIsWalletOpen(state.isWalletOpen);
     setWalletExists(state.walletExists);

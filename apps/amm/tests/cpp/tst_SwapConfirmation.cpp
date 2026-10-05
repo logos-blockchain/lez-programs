@@ -1,5 +1,9 @@
 #include "SwapConfirmation.h"
+#include "FakeWalletProvider.h"
+#include "WalletController.h"
 
+#include <QSettings>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include <limits>
@@ -27,6 +31,12 @@ class SwapConfirmationTest : public QObject {
     Q_OBJECT
 
 private slots:
+    void initTestCase();
+    void changedWalletSessionRejectsSamePathConfirmation_data();
+    void changedWalletSessionRejectsSamePathConfirmation();
+    void balanceAndAccountOrderChangesPreserveConfirmation();
+    void walletCreationStartsSession();
+    void failedConnectionPreservesSession();
     void staleBackendContextRejectsBeforeReplicaUpdate();
     void invalidRevision_data();
     void invalidRevision();
@@ -36,7 +46,124 @@ private slots:
     void invalidEnvelope_data();
     void invalidEnvelope();
     void emptySubmissionResultIsError();
+
+private:
+    QTemporaryDir m_settingsDirectory;
 };
+
+void SwapConfirmationTest::initTestCase()
+{
+    QVERIFY(m_settingsDirectory.isValid());
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                       m_settingsDirectory.path());
+}
+
+void SwapConfirmationTest::changedWalletSessionRejectsSamePathConfirmation_data()
+{
+    QTest::addColumn<QString>("change");
+    QTest::newRow("observed-shared-wallet-restore") << QStringLiteral("restore");
+    QTest::newRow("shared-wallet-adoption") << QStringLiteral("adopt");
+    QTest::newRow("disconnect-reconnect") << QStringLiteral("reconnect");
+}
+
+void SwapConfirmationTest::changedWalletSessionRejectsSamePathConfirmation()
+{
+    QFETCH(QString, change);
+    FakeWalletProvider provider;
+    provider.connectResult.adopted = true;
+    provider.connectResult.snapshot.accounts = {
+        {QString(64, QLatin1Char('c')), QStringLiteral("10"), true},
+    };
+    WalletController controller(provider, QStringLiteral("SwapConfirmationTest"));
+    QVERIFY(controller.open());
+    const WalletUiState initialState = controller.state();
+    WalletUiState sourceState = initialState;
+    int sourceRevision = 7;
+    // Use the same controller notification and source comparison as AmmUiBackend.
+    connect(&controller, &WalletController::stateChanged, this, [&]() {
+        if (SwapConfirmation::walletContextChanged(sourceState, controller.state()))
+            ++sourceRevision;
+        sourceState = controller.state();
+    });
+    const QVariantMap pending = confirmedRequest();
+
+    if (change == QStringLiteral("restore")) {
+        // The pinned core's restore_storage replaces its key chain in place.
+        // A refresh observes different accounts without changing paths/open state.
+        provider.snapshotResult = provider.connectResult.snapshot;
+        provider.snapshotResult.accounts.front().address = QString(64, QLatin1Char('e'));
+        controller.refresh();
+        QVERIFY(provider.lastForceRefresh);
+    } else {
+        if (change == QStringLiteral("reconnect"))
+            controller.disconnect();
+        QVERIFY(controller.open());
+    }
+
+    QCOMPARE(controller.state().isWalletOpen, initialState.isWalletOpen);
+    QCOMPARE(controller.state().configPath, initialState.configPath);
+    QCOMPARE(controller.state().storagePath, initialState.storagePath);
+    QCOMPARE(controller.state().walletHome, initialState.walletHome);
+    QCOMPARE(controller.state().sequencerAddress, initialState.sequencerAddress);
+    QVERIFY(controller.state().sessionRevision != initialState.sessionRevision);
+    int dispatches = 0;
+    const QVariantMap result = SwapConfirmation::submit(pending, sourceRevision, true,
+        [&](const SwapConfirmation::Request&) {
+            ++dispatches;
+            return QStringLiteral("unexpected-submission");
+        });
+    QCOMPARE(dispatches, 0);
+    QCOMPARE(result.value(QStringLiteral("error")).toString(), QStringLiteral("swap_context_changed"));
+}
+
+void SwapConfirmationTest::balanceAndAccountOrderChangesPreserveConfirmation()
+{
+    FakeWalletProvider provider;
+    provider.connectResult.snapshot.accounts = {
+        {QString(64, QLatin1Char('c')), QStringLiteral("10"), true},
+        {QString(64, QLatin1Char('d')), QStringLiteral("20"), false},
+    };
+    WalletController controller(provider, QStringLiteral("SwapConfirmationTest"));
+    QVERIFY(controller.open());
+    const WalletUiState initialState = controller.state();
+    provider.snapshotResult = provider.connectResult.snapshot;
+    provider.snapshotResult.accounts.front().balance = QStringLiteral("30");
+    provider.snapshotResult.accounts.swapItemsAt(0, 1);
+    provider.snapshotResult.lastSyncedBlock = 8;
+    provider.snapshotResult.currentBlockHeight = 9;
+    controller.refresh();
+    QCOMPARE(controller.state().sessionRevision, initialState.sessionRevision);
+    QVERIFY(!SwapConfirmation::walletContextChanged(initialState, controller.state()));
+    int dispatches = 0;
+    const QVariantMap result = SwapConfirmation::submit(confirmedRequest(), 7, true,
+        [&](const SwapConfirmation::Request&) {
+            ++dispatches;
+            return QStringLiteral("confirmed-submission");
+        });
+    QCOMPARE(dispatches, 1);
+    QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+}
+
+void SwapConfirmationTest::walletCreationStartsSession()
+{
+    FakeWalletProvider provider;
+    provider.createWalletResult.mnemonic = QStringLiteral("test mnemonic");
+    WalletController controller(provider, QStringLiteral("SwapConfirmationTest"));
+    const quint64 initialRevision = controller.state().sessionRevision;
+    QCOMPARE(controller.createDefaultWallet({}), QStringLiteral("test mnemonic"));
+    QVERIFY(controller.state().sessionRevision != initialRevision);
+}
+
+void SwapConfirmationTest::failedConnectionPreservesSession()
+{
+    FakeWalletProvider provider;
+    provider.connectResult.failure = WalletFailure::OpenFailed;
+    WalletController controller(provider, QStringLiteral("SwapConfirmationTest"));
+    const quint64 initialRevision = controller.state().sessionRevision;
+    QVERIFY(!controller.open());
+    QCOMPARE(controller.state().sessionRevision, initialRevision);
+}
 
 void SwapConfirmationTest::staleBackendContextRejectsBeforeReplicaUpdate()
 {
