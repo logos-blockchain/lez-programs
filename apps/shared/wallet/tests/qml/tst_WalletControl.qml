@@ -225,6 +225,44 @@ Item {
             tryCompare(fixture.control, "syncFailed", false)
         }
 
+        function test_retrySyncReceivesPointer_data() {
+            return [
+                { tag: "connected-desktop", connected: true, compact: false },
+                { tag: "connected-compact", connected: true, compact: true },
+                { tag: "disconnected-desktop", connected: false, compact: false },
+                { tag: "disconnected-compact", connected: false, compact: true }
+            ]
+        }
+
+        function test_retrySyncReceivesPointer(data) {
+            const fixture = createControl({
+                isWalletOpen: data.connected,
+                syncStatus: data.connected ? "ready" : "closed"
+            }, [])
+            fixture.control.compact = data.compact
+            fixture.backend.syncError = "read_failed"
+            fixture.backend.syncStatus = "error"
+
+            const retryButton = findChild(fixture.control, "walletSyncErrorButton")
+            const connectButton = findChild(fixture.control, "walletConnectButton")
+            const accountButton = findChild(fixture.control, "walletAccountButton")
+            const menu = findChild(fixture.control, "walletMenu")
+            verify(retryButton.visible)
+            verify(!connectButton.visible)
+            verify(!accountButton.visible)
+
+            mouseClick(retryButton)
+            compare(fixture.backend.refreshCalls, data.connected ? 1 : 0)
+            compare(fixture.backend.openCalls, data.connected ? 0 : 1)
+            compare(menu.opened, false)
+            tryCompare(retryButton, "visible", false)
+
+            fixture.backend.syncStatus = "ready"
+            tryCompare(accountButton, "visible", true)
+            tryCompare(accountButton, "enabled", true)
+            compare(connectButton.visible, false)
+        }
+
         function test_creationShowsSyncProgressAndCancellation() {
             const fixture = createControl({
                 walletExists: false,

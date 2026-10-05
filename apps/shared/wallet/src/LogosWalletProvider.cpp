@@ -767,8 +767,9 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation,
 
                     reportSyncProgress(*progressCallback, starting, target);
                     const auto syncNext = std::make_shared<std::function<void(quint64)>>();
+                    const std::weak_ptr<std::function<void(quint64)>> weakSyncNext = syncNext;
                     *syncNext = [this, alive, generation, currentHeight, target, failed,
-                                 loadAccounts, progressCallback, syncNext](quint64 current) {
+                                 loadAccounts, progressCallback, weakSyncNext](quint64 current) {
                         if (!alive || generation != m_generation)
                             return;
                         if (current >= target) {
@@ -777,10 +778,11 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation,
                         }
 
                         const quint64 next = qMin(target, current + SNAPSHOT_SYNC_CHUNK_BLOCKS);
+                        // Keep recursion alive only while the SDK owns a pending callback.
                         m_impl->logos->lez_core.sync_to_blockAsync(
                             static_cast<int>(next),
                             [this, alive, generation, target, next, failed,
-                             progressCallback, syncNext](int result) {
+                             progressCallback, syncNext = weakSyncNext.lock()](int result) {
                                 if (!alive || generation != m_generation)
                                     return;
                                 if (result != WALLET_FFI_SUCCESS) {

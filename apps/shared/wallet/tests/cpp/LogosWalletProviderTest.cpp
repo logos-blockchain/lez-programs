@@ -55,6 +55,8 @@ private slots:
     void retriesCapabilityWarmupBeforeReadingWallet();
     void boundsPersistentCapabilityWarmupFailure();
     void reportsProgressDuringAsyncSync();
+    void releasesAsyncSyncProgress_data();
+    void releasesAsyncSyncProgress();
     void opensConfiguredWalletWhenNoSharedSessionExists();
     void createsAndPersistsWallet();
     void cancelsCapabilityRetryOnDestruction();
@@ -218,6 +220,74 @@ void LogosWalletProviderTest::reportsProgressDuringAsyncSync()
     QCOMPARE(progress.last().remainingBlocks, quint64(0));
     for (qsizetype index = 1; index < progress.size(); ++index)
         QVERIFY(progress.at(index - 1).currentBlock < progress.at(index).currentBlock);
+}
+
+void LogosWalletProviderTest::releasesAsyncSyncProgress_data()
+{
+    QTest::addColumn<bool>("deferred");
+    QTest::addColumn<bool>("fails");
+    QTest::addColumn<bool>("cancelled");
+    QTest::newRow("immediate-success") << false << false << false;
+    QTest::newRow("deferred-success") << true << false << false;
+    QTest::newRow("deferred-error") << true << true << false;
+    QTest::newRow("deferred-disconnect") << true << false << true;
+}
+
+void LogosWalletProviderTest::releasesAsyncSyncProgress()
+{
+    QFETCH(bool, deferred);
+    QFETCH(bool, fails);
+    QFETCH(bool, cancelled);
+
+    LogosModules modules;
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.currentBlockHeight = 1024;
+    modules.lez_core.deferSync = deferred;
+    modules.lez_core.syncResult = fails ? -1 : 0;
+
+    std::weak_ptr<int> lifetime;
+    int completed = 0;
+    QVector<WalletSyncProgress> progress;
+    WalletSession result;
+    {
+        LogosWalletProvider provider(&modules);
+        auto token = std::make_shared<int>(42);
+        lifetime = token;
+        provider.connectAsync({},
+            [&completed, &result](WalletSession session) {
+                ++completed;
+                result = std::move(session);
+            },
+            [token, &progress](WalletSyncProgress update) {
+                progress.append(update);
+            });
+        token.reset();
+
+        if (deferred) {
+            QCOMPARE(completed, 0);
+            QCOMPARE(modules.lez_core.syncCalls, 1);
+            QVERIFY(!lifetime.expired());
+            if (cancelled)
+                provider.disconnect();
+            modules.lez_core.finishSync();
+            if (!fails && !cancelled) {
+                QCOMPARE(completed, 0);
+                QCOMPARE(modules.lez_core.syncCalls, 2);
+                QVERIFY(!lifetime.expired());
+                modules.lez_core.finishSync();
+            }
+        }
+
+        QCOMPARE(completed, cancelled ? 0 : 1);
+        QCOMPARE(modules.lez_core.syncCalls, fails || cancelled ? 1 : 2);
+        QCOMPARE(progress.size(), fails || cancelled ? 1 : 3);
+        if (!cancelled)
+            QCOMPARE(result.failure, fails ? WalletFailure::ReadFailed : WalletFailure::None);
+        // Only progress owns this token, isolating the recursive sync callback.
+        QVERIFY(lifetime.expired());
+        QVERIFY(!modules.lez_core.pendingSync);
+    }
+    QVERIFY(lifetime.expired());
 }
 
 void LogosWalletProviderTest::opensConfiguredWalletWhenNoSharedSessionExists()

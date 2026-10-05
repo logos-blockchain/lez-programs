@@ -38,6 +38,8 @@ public:
     int openResult = 0;
     int saveResult = 0;
     int syncResult = 0;
+    bool deferSync = false;
+    std::function<void(int)> pendingSync;
     int lastSyncedBlock = 0;
     int currentBlockHeight = 0;
     QString sequencerAddress;
@@ -163,7 +165,18 @@ public:
 
     void sync_to_blockAsync(int blockId, std::function<void(int)> callback)
     {
-        deliver(QStringLiteral("sync_to_block"), std::move(callback), sync_to_block(blockId));
+        const int result = sync_to_block(blockId);
+        if (deferSync)
+            pendingSync = std::move(callback);
+        else
+            deliver(QStringLiteral("sync_to_block"), std::move(callback), result);
+    }
+
+    void finishSync()
+    {
+        auto callback = std::move(pendingSync);
+        if (callback)
+            callback(syncResult);
     }
 
     QString get_sequencer_addr() const { return sequencerAddress; }

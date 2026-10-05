@@ -290,7 +290,7 @@ Item {
         objectName: "walletConnectButton"
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        visible: !root.connected && !root.synchronizing
+        visible: !root.connected && !root.synchronizing && !root.syncFailed
         enabled: root.wallet !== null && !root.busy
         implicitHeight: 40
         implicitWidth: root.compactLayout ? 40 : 108
@@ -340,7 +340,7 @@ Item {
         objectName: "walletAccountButton"
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        visible: root.connected && !root.synchronizing
+        visible: root.connected && !root.synchronizing && !root.syncFailed
         enabled: !root.busy && !root.synchronizing
         implicitHeight: 40
         implicitWidth: root.compactLayout ? 44 : Math.max(140, accountButtonLabel.implicitWidth + 58)
