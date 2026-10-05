@@ -286,6 +286,16 @@ pub unsafe extern "C" fn stablecoin_withdraw_collateral_plan(
     }
 }
 
+#[unsafe(no_mangle)]
+/// Builds a preflighted owner-signed plan for `GenerateDebt`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_generate_debt_plan(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<api::GenerateDebtPlanRequest>(request_json, api::generate_debt_plan) }
+}
+
 /// Releases a string returned by a `stablecoin_*` operation.
 ///
 /// # Safety
