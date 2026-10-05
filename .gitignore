@@ -1,4 +1,5 @@
 target/
+__pycache__/
 *.bin
 # Nix build symlinks (result, result-mcp, result-core, result-lgx, …) at any depth
 result

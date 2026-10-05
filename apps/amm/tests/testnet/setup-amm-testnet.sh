@@ -8,7 +8,8 @@
 # prerequisite state the AMM UI tests exercise: swap.mjs swaps against the seeded
 # A/B pool, create-pool.mjs creates the (deliberately unseeded) A/C pool, and
 # custom-token.mjs adds token D by id. Run it once, then launch the UI / run the
-# tests.
+# tests. Stablecoin bootstrap runs afterward with its own faucet-mintable
+# collateral token; set DEPLOY_STABLECOIN=0 to prepare only the AMM.
 #
 # FAUCET MINT AUTHORITY: every test token's `mint_authority` is set — at
 # NewFungibleDefinition time — to the token-mint-authority (faucet) program's
@@ -48,6 +49,7 @@
 #   apps/amm/tests/testnet/setup-amm-testnet.sh
 #   TEST_SEQUENCER_ADDR=http://127.0.0.1:8080 apps/amm/tests/testnet/setup-amm-testnet.sh
 #   FORCE_BOOTSTRAP=1 ...        # re-restore the test wallet (rewrites its storage)
+#   DEPLOY_STABLECOIN=0 ...      # omit stablecoin accounts and deployment
 #
 set -euo pipefail
 
@@ -56,6 +58,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || (cd "$SCRIPT_DIR/../../../.." && pwd))}"
 cd "$REPO_ROOT"
+if [[ -f "$REPO_ROOT/scripts/workspace-env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/scripts/workspace-env.sh"
+fi
+
+DEPLOY_STABLECOIN="${DEPLOY_STABLECOIN:-1}"
+case "$DEPLOY_STABLECOIN" in
+  0|1) ;;
+  *) printf '%s\n' 'DEPLOY_STABLECOIN must be 0 or 1' >&2; exit 1 ;;
+esac
 
 ###############################################################################
 # TEST WALLET — isolated + deterministic
@@ -102,18 +114,28 @@ TEST_SEQ_POLL_TIMEOUT="${TEST_SEQ_POLL_TIMEOUT:-3s}"
 # `amm-owner` is a dedicated account that signs `initialize` — the AMM instance's
 # namespace owner. All three are appended last so the existing accounts keep their ids.
 ACCOUNT_LABELS=(token-a-def token-a-holding token-b-def token-b-holding lp-holding token-c-def token-c-holding token-d-def token-d-holding holder2 holder2-a-holding amm-owner)
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  # Append roles so existing AMM account indexes do not change. The stablecoin
+  # bootstrap creates its collateral accounts separately from tokens A-D.
+  ACCOUNT_LABELS+=(stablecoin-admin stablecoin-oracle-source)
+fi
 
 ###############################################################################
 # CONFIG — non-account parameters (edit freely)
 ###############################################################################
 
 # --- Program binaries (docker release builds; image ids must match deployment) ---
-TOKEN_BIN="programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin"
-AMM_BIN="programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin"
-TWAP_BIN="programs/twap_oracle/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/twap_oracle.bin"
+guest_bin() {
+  local program="$1" shared="target/guest/$1.bin"
+  local legacy="programs/$program/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/$program.bin"
+  if [ -f "$shared" ] || [ ! -f "$legacy" ]; then printf '%s' "$shared"; else printf '%s' "$legacy"; fi
+}
+TOKEN_BIN="${TOKEN_BIN:-$(guest_bin token)}"
+AMM_BIN="${AMM_BIN:-$(guest_bin amm)}"
+TWAP_BIN="${TWAP_BIN:-$(guest_bin twap_oracle)}"
 # The faucet (token-mint-authority) binary. Its ImageID determines the mint-authority
 # PDA every test token is minted against, so it MUST be the exact bin deployed below.
-MINT_AUTHORITY_BIN="programs/token_mint_authority/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token_mint_authority.bin"
+MINT_AUTHORITY_BIN="${MINT_AUTHORITY_BIN:-$(guest_bin token_mint_authority)}"
 
 # --- IDLs ---
 TOKEN_IDL="artifacts/token-idl.json"
@@ -184,6 +206,34 @@ die() { printf '%s\n' "${RED}✗ $*${RST}" >&2; exit 1; }
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found on PATH: $1"; }
 require_file(){ [ -f "$1" ] || die "required file not found: $1 (cwd=$(pwd))"; }
+abs_path() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s' "$REPO_ROOT/$1" ;; esac; }
+
+# Stablecoin bootstrap may rebuild all guests and remove legacy build targets.
+# Preserve exactly the bytes deployed here, outside both build output trees.
+snapshot_binary() {
+  python3 - "$1" "$2" <<'PY'
+import hashlib
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+data = Path(sys.argv[1]).read_bytes()
+directory = Path("target/deployments/amm-testnet/binaries") / hashlib.sha256(data).hexdigest()
+directory.mkdir(parents=True, exist_ok=True)
+destination = directory / (sys.argv[2] + ".bin")
+with tempfile.NamedTemporaryFile(dir=directory, delete=False) as stream:
+    temporary = Path(stream.name)
+    try:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+print(destination.resolve())
+PY
+}
 
 # Run a transaction command, streaming its output live, then assert the
 # sequencer confirmation marker is present.
@@ -230,13 +280,13 @@ inspect() {
   spel --idl "$idl" inspect "$addr" --type "$type"
 }
 
-# Extract a 64-char hex program id from `spel -- program-id <bin>`.
+# Request the pinned CLI's machine-readable ImageID, including for binary paths
+# whose names contain hex strings. Do not parse the human-readable inspect view.
 program_id() {
-  local bin="$1" out pid
-  out="$(spel -- program-id "$bin" 2>&1)" || { echo "$out" >&2; die "spel program-id failed for $bin"; }
-  pid="$(printf '%s' "$out" | grep -oiE '[0-9a-f]{64}' | head -n1 || true)"
-  [ -n "$pid" ] || { echo "$out" >&2; die "could not parse a 64-char program id from spel output for $bin"; }
-  printf '%s' "$pid"
+  local bin="$1" out
+  out="$(spel --format hex -- program-id "$bin")" || die "spel program-id failed for $bin"
+  [[ "$out" =~ ^[0-9a-fA-F]{64}$ ]] || die "spel returned an invalid ImageID for $bin"
+  printf '%s' "$out"
 }
 
 # Compute the faucet's singleton mint-authority PDA (base58) for a faucet binary.
@@ -360,8 +410,16 @@ sec "Preflight"
 require_cmd wallet
 require_cmd spel
 require_cmd cargo
+require_cmd python3
 require_file "$TOKEN_BIN"; require_file "$AMM_BIN"; require_file "$TWAP_BIN"; require_file "$MINT_AUTHORITY_BIN"
 require_file "$TOKEN_IDL"; require_file "$AMM_IDL"; require_file "$MINT_AUTHORITY_IDL"
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  require_file "$REPO_ROOT/apps/stablecoin/tests/testnet/setup-stablecoin-testnet.sh"
+  TOKEN_BIN="$(snapshot_binary "$TOKEN_BIN" token)"
+  AMM_BIN="$(snapshot_binary "$AMM_BIN" amm)"
+  TWAP_BIN="$(snapshot_binary "$TWAP_BIN" twap_oracle)"
+  MINT_AUTHORITY_BIN="$(snapshot_binary "$MINT_AUTHORITY_BIN" token_mint_authority)"
+fi
 kv "repo root"        "$REPO_ROOT"
 kv "token bin" "$TOKEN_BIN"; kv "amm bin" "$AMM_BIN"; kv "twap bin" "$TWAP_BIN"
 kv "mint-authority bin" "$MINT_AUTHORITY_BIN"
@@ -406,6 +464,10 @@ HOLDER2="$(acct_id holder2)"                 || die "holder2 not registered — 
 HOLDER2_A_HOLDING="$(acct_id holder2-a-holding)" || die "holder2-a-holding not registered"
 # `amm-owner` signs initialize — the AMM instance's namespace owner.
 AMM_OWNER="$(acct_id amm-owner)"            || die "amm-owner not registered"
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  STABLECOIN_ADMIN_ID="$(acct_id stablecoin-admin)" || die "stablecoin-admin not registered"
+  STABLECOIN_ORACLE_SOURCE_ID="$(acct_id stablecoin-oracle-source)" || die "stablecoin-oracle-source not registered"
+fi
 for v in TOKEN_A_DEF TOKEN_A_HOLDING TOKEN_B_DEF TOKEN_B_HOLDING USER_HOLDING_LP TOKEN_C_DEF TOKEN_C_HOLDING TOKEN_D_DEF TOKEN_D_HOLDING HOLDER2 HOLDER2_A_HOLDING AMM_OWNER; do
   [ -n "${!v}" ] || die "failed to resolve account id for $v"
 done
@@ -707,25 +769,44 @@ sec "Write faucet manifest -> $FAUCET_MANIFEST_OUT"
 # token_definition, mint_authority, clock). tokenBin/tokenIdl let the test first
 # `initialize_account` holder2's token A holding (the faucet only mints into an
 # EXISTING holding — it doesn't sign user_holding, so it can't create a fresh one),
-# then FaucetMint into it. Paths are repo-relative (resolved against the repo root).
-cat > "$FAUCET_MANIFEST_OUT" <<JSON
-{
-  "tokenBin": "$TOKEN_BIN",
-  "tokenIdl": "$TOKEN_IDL",
-  "faucetBin": "$MINT_AUTHORITY_BIN",
-  "faucetIdl": "$MINT_AUTHORITY_IDL",
-  "faucetProgramId": "$MINT_AUTHORITY_PID",
-  "recipient": "$HOLDER2",
-  "mintAllowance": "$HOLDER2_ALLOWANCE_PDA",
-  "userHolding": "$HOLDER2_A_HOLDING",
-  "tokenDefinition": "$TOKEN_A_DEF",
-  "mintAuthority": "$MINT_AUTHORITY_PDA",
-  "clock": "$CLOCK_ACCOUNT",
-  "tokenASymbol": "$TOKEN_A_SYMBOL",
-  "tokenBSymbol": "$TOKEN_B_SYMBOL"
-}
-JSON
+# then FaucetMint into it. Binary snapshots use absolute paths; other paths can
+# be repo-relative (resolved against the repo root).
+python3 - "$FAUCET_MANIFEST_OUT" \
+  tokenBin "$TOKEN_BIN" tokenIdl "$TOKEN_IDL" \
+  faucetBin "$MINT_AUTHORITY_BIN" faucetIdl "$MINT_AUTHORITY_IDL" \
+  faucetProgramId "$MINT_AUTHORITY_PID" recipient "$HOLDER2" \
+  mintAllowance "$HOLDER2_ALLOWANCE_PDA" userHolding "$HOLDER2_A_HOLDING" \
+  tokenDefinition "$TOKEN_A_DEF" mintAuthority "$MINT_AUTHORITY_PDA" \
+  clock "$CLOCK_ACCOUNT" tokenASymbol "$TOKEN_A_SYMBOL" tokenBSymbol "$TOKEN_B_SYMBOL" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(json.dumps(dict(zip(sys.argv[2::2], sys.argv[3::2])), indent=2) + "\n")
+PY
 kv "wrote" "$FAUCET_MANIFEST_OUT"
+
+###############################################################################
+# 14. Bootstrap stablecoin with dedicated faucet-mintable collateral
+###############################################################################
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  sec "Bootstrap stablecoin"
+  (
+    # Keep this invocation on the same isolated wallet and network. Inherited
+    # standalone asset overrides must not replace the dedicated test collateral.
+    unset SEQUENCER_ADDR DEPLOYMENT_DIR COLLATERAL_DEFINITION_ID COLLATERAL_HOLDING_ID MARKET_PRICE_ORACLE_ID
+    export TOKEN_PROGRAM_ID="$TOKEN_PID" TWAP_ORACLE_PROGRAM_ID="$TWAP_PID"
+    export ADMIN_ID="$STABLECOIN_ADMIN_ID" ORACLE_SOURCE_ID="$STABLECOIN_ORACLE_SOURCE_ID"
+    export FREEZE_AUTHORITY_ID="$STABLECOIN_ADMIN_ID" COLLATERAL_MINT_AUTHORITY_ID="$MINT_AUTHORITY_PDA"
+    # Explicit IDs reuse the token/oracle programs just deployed above. Their
+    # binaries need not be rebuilt or independently selected by the bootstrap.
+    unset TOKEN_PROGRAM_BIN TWAP_ORACLE_PROGRAM_BIN
+    if [ -n "${STABLECOIN_DEPLOYMENT_DIR:-}" ]; then
+      export DEPLOYMENT_DIR="$STABLECOIN_DEPLOYMENT_DIR"
+    fi
+    "$REPO_ROOT/apps/stablecoin/tests/testnet/setup-stablecoin-testnet.sh"
+  ) || die "stablecoin deployment failed"
+fi
 
 sec "Done"
 log "${GRN}✅ Setup complete.${RST}"
@@ -744,7 +825,7 @@ log "${YEL}AMM_CONFIG_ID is required on this path:${RST} the local token/pool fi
 log "namespace, so without it the app has no AMM instance to derive pool, vault and"
 log "holding PDAs from — balances and positions come up empty and swap stays disabled."
 log "  ${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME \\${RST}"
-log "  ${DIM}  AMM_PROGRAM_BIN=$REPO_ROOT/$AMM_BIN \\${RST}"
+log "  ${DIM}  AMM_PROGRAM_BIN=$(abs_path "$AMM_BIN") \\${RST}"
 log "  ${DIM}  AMM_CONFIG_ID=$CONFIG \\${RST}"
 log "  ${DIM}  TOKENS_CONFIG=$REPO_ROOT/$TOKENS_CONFIG_OUT \\${RST}"
 log "  ${DIM}  AMM_POOLS_CONFIG=$REPO_ROOT/$POOLS_CONFIG_OUT \\${RST}"
@@ -769,3 +850,9 @@ log "                   or:     ${DIM}node apps/amm/tests/faucet-swap.mjs${RST} 
 log ""
 log "The faucet-swap test reads ${DIM}$FAUCET_MANIFEST_OUT${RST} and needs ${DIM}spel${RST} +"
 log "${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME${RST} in its environment (same isolated wallet)."
+if [ "$DEPLOY_STABLECOIN" = "1" ]; then
+  log ""
+  log "Stablecoin uses dedicated collateral with the faucet mint authority. Its"
+  log "deployment.json and deployment.env paths are printed by the bootstrap above."
+  log "Its seeded oracle is static; fresh market prices require a separate keeper."
+fi
