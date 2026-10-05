@@ -395,7 +395,8 @@ fn borrowing_rounds_up_and_executes_the_pda_authorized_token_mint() {
 fn oracle_freshness_is_inclusive_and_not_a_controller_quote_gate() {
     let mut fixture = Fixture::new(100, 0);
     fixture.oracle.timestamp = START - 50;
-    execute(&fixture, 1, 1); // Fresh zero-market-price oracle and too-soon controller update are allowed.
+    // Fresh zero-market-price oracle and a too-soon controller update are allowed.
+    execute(&fixture, 1, 1);
     fixture.oracle.timestamp -= 1;
     error(fixture.request(json!("0")), "oracle_stale");
     fixture.oracle.timestamp = START + 1;
