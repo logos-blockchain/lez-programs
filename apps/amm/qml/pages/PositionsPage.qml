@@ -10,9 +10,9 @@ import "../components/shared/TokenVisuals.js" as TokenVisuals
 
 // The wallet's liquidity positions. The program has no "list my positions" read
 // and an LP definition id can't be reversed back to its pool, so positions are
-// discovered the other way round: resolve every pool in AMM_POOLS_CONFIG, then
-// match each pool's lpDefinitionId against the wallet's token holdings. A pool
-// the config doesn't list therefore can't surface here, however many LP tokens
+// discovered the other way round: resolve every pool in the registry snapshot,
+// then match each pool's lpDefinitionId against the wallet's token holdings. A
+// pool the snapshot doesn't list therefore can't surface here, however many LP tokens
 // the wallet holds for it.
 Item {
     id: root
