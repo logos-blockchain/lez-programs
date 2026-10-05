@@ -46,3 +46,7 @@ logos_module(
     LINK_TARGETS
         logos_wallet_access
 )
+
+if(BUILD_TESTING)
+    add_subdirectory(tests/cpp)
+endif()

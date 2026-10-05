@@ -56,6 +56,11 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
         setRegistryRevision(m_registry->revision());
     });
 
+    connect(m_registry.get(), &RegistryLoader::statusChanged, this, [this]() {
+        setRegistryStatus(m_registry->status());
+    });
+    setRegistryStatus(m_registry->status());
+
     // Seed the configured registry URL from the persisted global setting so the
     // first refresh() and the config field both see it (AMM_REGISTRY_URL overrides).
     const QString configuredUrl = loadRegistryUrlSetting();
