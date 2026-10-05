@@ -151,6 +151,65 @@ pub struct ClosePositionPlanRequest {
     pub protocol_parameters: AccountRead,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminPlanContext {
+    pub stablecoin_program_id: String,
+    pub admin_id: String,
+    pub protocol_parameters: AccountRead,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMinimumCollateralizationRatioPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_ratio: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetControllerGainsPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_proportional_gain: Value,
+    pub new_integral_gain: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTimingParametersPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_minimum_milliseconds_between_rate_updates: Value,
+    pub new_maximum_oracle_price_age_milliseconds: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAdminPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_admin_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetFreezeAuthorityPlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_freeze_authority_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMarketPriceOraclePlanRequest {
+    #[serde(flatten)]
+    pub context: AdminPlanContext,
+    pub new_oracle_id: String,
+    pub new_oracle: AccountRead,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DepositCollateralPlanRequest {

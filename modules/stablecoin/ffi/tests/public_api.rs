@@ -13,6 +13,19 @@ use stablecoin_ffi::{
 
 #[test]
 fn crate_root_reexports_stablecoin_surface() {
+    let _ratio: fn(
+        stablecoin_ffi::SetMinimumCollateralizationRatioPlanRequest,
+    ) -> StablecoinResult = stablecoin_ffi::set_minimum_collateralization_ratio_plan;
+    let _gains: fn(stablecoin_ffi::SetControllerGainsPlanRequest) -> StablecoinResult =
+        stablecoin_ffi::set_controller_gains_plan;
+    let _timing: fn(stablecoin_ffi::SetTimingParametersPlanRequest) -> StablecoinResult =
+        stablecoin_ffi::set_timing_parameters_plan;
+    let _admin: fn(stablecoin_ffi::SetAdminPlanRequest) -> StablecoinResult =
+        stablecoin_ffi::set_admin_plan;
+    let _freeze: fn(stablecoin_ffi::SetFreezeAuthorityPlanRequest) -> StablecoinResult =
+        stablecoin_ffi::set_freeze_authority_plan;
+    let _oracle: fn(stablecoin_ffi::SetMarketPriceOraclePlanRequest) -> StablecoinResult =
+        stablecoin_ffi::set_market_price_oracle_plan;
     let _close: fn(stablecoin_ffi::ClosePositionPlanRequest) -> StablecoinResult =
         stablecoin_ffi::close_position_plan;
     let _borrow: fn(stablecoin_ffi::GenerateDebtPlanRequest) -> StablecoinResult =

@@ -95,6 +95,25 @@ extern "C" char* stablecoin_close_position_plan(const char*) {
     return copyMockResponse("stablecoin_close_position_plan");
 }
 
+extern "C" char* stablecoin_set_minimum_collateralization_ratio_plan(const char*) {
+    return copyMockResponse("stablecoin_set_minimum_collateralization_ratio_plan");
+}
+extern "C" char* stablecoin_set_controller_gains_plan(const char*) {
+    return copyMockResponse("stablecoin_set_controller_gains_plan");
+}
+extern "C" char* stablecoin_set_timing_parameters_plan(const char*) {
+    return copyMockResponse("stablecoin_set_timing_parameters_plan");
+}
+extern "C" char* stablecoin_set_admin_plan(const char*) {
+    return copyMockResponse("stablecoin_set_admin_plan");
+}
+extern "C" char* stablecoin_set_freeze_authority_plan(const char*) {
+    return copyMockResponse("stablecoin_set_freeze_authority_plan");
+}
+extern "C" char* stablecoin_set_market_price_oracle_plan(const char*) {
+    return copyMockResponse("stablecoin_set_market_price_oracle_plan");
+}
+
 extern "C" void stablecoin_free(char* value) {
     LOGOS_CMOCK_RECORD("stablecoin_free");
     std::free(value);

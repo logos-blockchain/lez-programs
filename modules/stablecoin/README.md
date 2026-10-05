@@ -4,7 +4,8 @@
 Program. It exposes deployment discovery, protocol-state reads, protocol
 initialization, position health, position opening, collateral deposits, debt
 repayment, collateral withdrawal, debt generation, and position closure through
-the same universal API used by `logoscore` and UI modules.
+the same universal API used by `logoscore` and UI modules. Admin parameter and
+role setters use the same current-state authorization and transaction path.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
 `stablecoin_ffi` owns exact account decoding, PDA derivation, request
@@ -443,6 +444,74 @@ The pure Rust API exports `close_position_plan(ClosePositionPlanRequest)`; C
 callers use `stablecoin_close_position_plan` and release its response with
 `stablecoin_free`. Its request additionally contains `stablecoinProgramId` and
 the `position`, `vault`, and `protocolParameters` account-read envelopes.
+
+### Admin parameter and role setters
+
+All six methods accept `adminId` (base58 or hexadecimal account ID) and the
+additional fields below. Numeric fields accept exact decimal strings or
+lossless JSON integers; floating-point values and out-of-type values are
+rejected. Decimal strings are the portable format for integers above `2^53`,
+including the full `u128`/`i128` domain before the native bands are applied.
+
+| Method | Additional fields | Native limits / behavior |
+| --- | --- | --- |
+| `setMinimumCollateralizationRatio(request)` | `newRatio` (`u128`) | Inclusive `1.1 * FIXED_POINT_ONE ..= 10 * FIXED_POINT_ONE` |
+| `setControllerGains(request)` | `newProportionalGain`, `newIntegralGain` (`i128`) | Either sign; magnitude caps `1000 * FIXED_POINT_ONE` and `FIXED_POINT_ONE` respectively |
+| `setTimingParameters(request)` | `newMinimumMillisecondsBetweenRateUpdates`, `newMaximumOraclePriceAgeMilliseconds` (`u64`) | Each inclusive `1 ..= 86_400_000` milliseconds |
+| `setAdmin(request)` | `newAdminId` (account ID) | Immediate one-step rotation; new holder is an instruction value, not a signer |
+| `setFreezeAuthority(request)` | `newFreezeAuthorityId` (account ID) | Authorized by the admin, not merely the current freeze authority |
+| `setMarketPriceOracle(request)` | `newOracleId` (account ID) | Initialized exact `OraclePriceAccount` with the bound stablecoin/collateral asset pair |
+
+Each invocation reads current Protocol Parameters, verifies canonical PDA,
+stablecoin ownership and exact data, and requires the currently stored admin to
+be a public signer in the active wallet. Only that admin signs. All six setters
+remain available while frozen and read no clock, accumulator or redemption
+state. They do not automatically advance globals.
+
+Account order for the first five setters is admin (read-only, signer), Protocol
+Parameters (writable, nonsigner). Oracle replacement appends the replacement
+oracle as the third read-only, nonsigner account and uses the zero-argument
+`SetMarketPriceOracle` instruction, not an oracle-ID payload. Every `init` flag
+is false. A replacement oracle cannot alias the admin input because public
+transaction account IDs must be distinct.
+
+Both gains change atomically without resetting the controller integral or
+redemption state. Both timing values also change atomically. Each setter changes
+only its named fields, preserving unrelated parameters. Tightening the ratio
+does not scan existing positions or prevent the update; affected positions may
+need deposits or repayment before borrowing or withdrawing again.
+
+Role replacement IDs accept base58/hex, need not belong to the current wallet,
+and are not read or required to co-sign. Admin and freeze-authority handles may
+be equal. The new role is effective immediately once committed; subsequent
+calls re-read parameters, so the old admin cannot keep authorizing operations.
+There is no confirmation or rollback step. Verify the replacement carefully:
+an incorrect or unusable handle can permanently remove control. Native role
+setters accept the all-zero account-ID value too; the module does not add a
+nonzero restriction to these instruction values.
+
+Oracle replacement is producer-agnostic. It does not pin the replacement's
+program owner or impose freshness, future-timestamp, nonzero-price or
+controller-update-interval gates. A well-formed matching pair from another
+producer, including a stale or zero observation, is accepted. Wrong asset pairs,
+missing or malformed account data fail preflight.
+
+Stable errors include `admin_mismatch`, `collateralization_ratio_out_of_band`,
+`controller_gains_out_of_band`, `timing_parameters_out_of_band`, and existing
+numeric, account-read, PDA, ownership and oracle-data/asset errors. Failed
+preflight submits nothing. Success returns
+`{status: "ok", error: "", transactionId: "..."}`. Wallet rejection or transport
+failure returns `wallet_submission_failed` without a successful ID or retry.
+
+The Rust API exports six `set_*_plan` functions and their typed `Set*PlanRequest`
+types, sharing `AdminPlanContext`. The JSON C ABI request is flat: add
+`stablecoinProgramId` and `protocolParameters` to the public request; oracle
+replacement also needs the `newOracle` account-read envelope. C entrypoints are
+`stablecoin_set_minimum_collateralization_ratio_plan`,
+`stablecoin_set_controller_gains_plan`, `stablecoin_set_timing_parameters_plan`,
+`stablecoin_set_admin_plan`, `stablecoin_set_freeze_authority_plan`, and
+`stablecoin_set_market_price_oracle_plan`. Release response allocations with
+`stablecoin_free`.
 
 ## Runtime configuration
 

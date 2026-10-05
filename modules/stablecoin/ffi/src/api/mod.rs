@@ -1,5 +1,6 @@
 //! Transport-independent stablecoin client operations.
 
+mod admin;
 mod close;
 mod debt;
 mod decode;
@@ -33,8 +34,16 @@ mod debt_tests;
 #[cfg(test)]
 mod close_tests;
 
+#[cfg(test)]
+mod admin_tests;
+
 use std::{error::Error, fmt};
 
+pub use admin::{
+    set_admin_plan, set_controller_gains_plan, set_freeze_authority_plan,
+    set_market_price_oracle_plan, set_minimum_collateralization_ratio_plan,
+    set_timing_parameters_plan,
+};
 pub use close::close_position_plan;
 pub use debt::generate_debt_plan;
 pub use decode::{
@@ -50,13 +59,15 @@ pub use program::program_info;
 pub use projection::current_global_state;
 pub use quote::redemption_rate_update_quote;
 pub use request::{
-    AccrueStabilityFeePlanRequest, ClosePositionPlanRequest, CurrentGlobalStateRequest,
-    DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
+    AccrueStabilityFeePlanRequest, AdminPlanContext, ClosePositionPlanRequest,
+    CurrentGlobalStateRequest, DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
     DecodeStabilityFeeAccumulatorRequest, DepositCollateralPlanRequest, GenerateDebtPlanRequest,
     InitializeProgramPlanRequest, OpenPositionPlanRequest, PositionAddressesRequest,
     PositionHealthRequest, ProgramInfoRequest, RedemptionRateUpdateQuoteRequest,
-    RefreshGlobalsPlanRequest, RepayDebtPlanRequest, UpdateRedemptionRatePlanRequest,
-    WithdrawCollateralPlanRequest,
+    RefreshGlobalsPlanRequest, RepayDebtPlanRequest, SetAdminPlanRequest,
+    SetControllerGainsPlanRequest, SetFreezeAuthorityPlanRequest, SetMarketPriceOraclePlanRequest,
+    SetMinimumCollateralizationRatioPlanRequest, SetTimingParametersPlanRequest,
+    UpdateRedemptionRatePlanRequest, WithdrawCollateralPlanRequest,
 };
 use serde_json::Value;
 pub use withdraw::withdraw_collateral_plan;

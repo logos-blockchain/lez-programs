@@ -154,6 +154,10 @@ std::vector<std::uint8_t> jsonInstructionLeBytes(const nlohmann::json& input) {
 std::string stableFfiError(const std::string& error) {
     static const std::set<std::string> stable = {
         "account_read_failed",
+        "admin_mismatch",
+        "collateralization_ratio_out_of_band",
+        "controller_gains_out_of_band",
+        "timing_parameters_out_of_band",
         "backend_error",
         "bad_request",
         "config_missing",
