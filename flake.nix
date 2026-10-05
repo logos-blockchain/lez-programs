@@ -237,7 +237,12 @@
         src = ./apps/token;
         configFile = ./apps/token/metadata.json;
         flakeInputs = inputs // { token_module = tokenModuleOutputs; };
-        externalLibInputs = { };
+        externalLibInputs = {
+          wallet_idl_decoder = {
+            input = self;
+            packages.default = "wallet_idl_decoder";
+          };
+        };
         preConfigure = ''
           cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${./apps/shared/wallet}")
           cmakeFlagsArray+=("-DLOGOS_WALLET_GENERATED_DIR=$PWD/generated_code/include")
