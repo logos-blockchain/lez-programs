@@ -18,13 +18,13 @@ import { readFile, writeFile } from "node:fs/promises";
 
 const fwRoot =
   process.env.LOGOS_QT_MCP ||
-  new URL("../result-mcp", import.meta.url).pathname;
+  new URL("../../result-mcp", import.meta.url).pathname;
 const { test, run } = await import(resolve(fwRoot, "test-framework/framework.mjs"));
 
 // The token config the app was launched with (same file the setup script writes).
 const TOKENS_CONFIG =
   process.env.TOKENS_CONFIG ||
-  new URL("./testnet/amm-tokens.json", import.meta.url).pathname;
+  new URL("../testnet/amm-tokens.json", import.meta.url).pathname;
 
 // Deposit added for token A (raw base units — the form treats amounts as raw). The
 // seeded A/B pool is 10000/10000, so 1000 mints a nonzero LP and is trivially funded.

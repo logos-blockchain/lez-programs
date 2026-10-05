@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include "WalletProvider.h"
 
 class FakeWalletProvider final : public WalletProvider {
@@ -23,12 +25,25 @@ public:
     bool lastAccountWasPublic = false;
     WalletPaths lastPaths;
     WalletTransaction lastTransaction;
+    bool deferAsync = false;
+    SessionCallback pendingConnectCallback;
+    SnapshotCallback pendingSnapshotCallback;
 
     WalletSession connect(const WalletPaths& paths) override
     {
         ++connectCalls;
         lastPaths = paths;
         return connectResult;
+    }
+
+    void connectAsync(const WalletPaths& paths, SessionCallback callback) override
+    {
+        ++connectCalls;
+        lastPaths = paths;
+        if (deferAsync)
+            pendingConnectCallback = std::move(callback);
+        else
+            callback(connectResult);
     }
 
     WalletCreation createWallet(const WalletPaths& paths,
@@ -44,6 +59,16 @@ public:
         ++snapshotCalls;
         lastForceRefresh = forceRefresh;
         return snapshotResult;
+    }
+
+    void snapshotAsync(bool forceRefresh, SnapshotCallback callback) override
+    {
+        ++snapshotCalls;
+        lastForceRefresh = forceRefresh;
+        if (deferAsync)
+            pendingSnapshotCallback = std::move(callback);
+        else
+            callback(snapshotResult);
     }
 
     void clearSnapshot() override { ++clearCalls; }
@@ -72,4 +97,19 @@ public:
     }
 
     void disconnect() override { ++disconnectCalls; }
+
+    void finishConnect()
+    {
+        SessionCallback callback = std::move(pendingConnectCallback);
+        if (callback)
+            callback(connectResult);
+    }
+
+    void finishSnapshot()
+    {
+        SnapshotCallback callback = std::move(pendingSnapshotCallback);
+        if (callback)
+            callback(snapshotResult);
+    }
+
 };

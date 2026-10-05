@@ -15,7 +15,10 @@ Popup {
     x: parent ? Math.max(0, Math.round((parent.width - width) / 2)) : 0
     y: parent ? Math.max(0, Math.round((parent.height - height) / 2)) : 0
     padding: 20
+    focus: true
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+    onOpened: Qt.callLater(function() { closeButton.forceActiveFocus() })
 
     background: Rectangle {
         color: "#18181b"
@@ -44,6 +47,8 @@ Popup {
         }
 
         Button {
+            id: closeButton
+
             Layout.alignment: Qt.AlignRight
             text: qsTr("Close")
             onClicked: root.close()

@@ -8,6 +8,8 @@ endif()
 option(LOGOS_WALLET_BUILD_QML "Build the Logos.Wallet QML module" ON)
 option(LOGOS_WALLET_BUILD_ACCESS "Build the generated-SDK wallet adapter" ON)
 set(LOGOS_WALLET_GENERATED_DIR "" CACHE PATH "Path to generated Logos SDK sources")
+set(LOGOS_WALLET_IDL_DECODER_LIBRARY "" CACHE FILEPATH
+    "wallet_idl_decoder library required by logos_wallet_access")
 
 if(LOGOS_WALLET_BUILD_ACCESS
    AND NOT EXISTS "${LOGOS_WALLET_GENERATED_DIR}/logos_sdk.h"
@@ -24,6 +26,28 @@ endif()
 set(CMAKE_AUTOMOC ON)
 
 if(LOGOS_WALLET_BUILD_ACCESS)
+    if(NOT LOGOS_WALLET_IDL_DECODER_LIBRARY)
+        find_library(LOGOS_WALLET_IDL_DECODER_LIBRARY
+            NAMES wallet_idl_decoder
+            HINTS "$ENV{LOGOS_EXT_ROOT_WALLET_IDL_DECODER}/lib"
+        )
+    endif()
+    if(NOT LOGOS_WALLET_IDL_DECODER_INCLUDE_DIR)
+        find_path(LOGOS_WALLET_IDL_DECODER_INCLUDE_DIR
+            NAMES wallet_idl_decoder.h
+            HINTS
+                "$ENV{LOGOS_EXT_ROOT_WALLET_IDL_DECODER}/include"
+                "${CMAKE_SOURCE_DIR}/include"
+                "${CMAKE_SOURCE_DIR}/lib"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../../../tools/wallet-idl-decoder/include"
+        )
+    endif()
+    if(NOT LOGOS_WALLET_IDL_DECODER_LIBRARY
+       OR NOT LOGOS_WALLET_IDL_DECODER_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "logos_wallet_access requires wallet_idl_decoder library and headers"
+        )
+    endif()
     add_library(logos_wallet_access STATIC
         src/WalletProvider.h
         src/WalletProvider.cpp
@@ -33,6 +57,16 @@ if(LOGOS_WALLET_BUILD_ACCESS)
         src/WalletAccountModel.cpp
         src/WalletController.h
         src/WalletController.cpp
+        src/WalletIdlDecoder.h
+        src/WalletIdlDecoder.cpp
+        src/SequencerNetworkContext.h
+        src/SequencerNetworkContext.cpp
+        src/SequencerNetworkSettings.h
+        src/SequencerNetworkSettings.cpp
+        src/SequencerIdentityProbe.h
+        src/SequencerIdentityProbe.cpp
+        src/WalletPortfolioService.h
+        src/WalletPortfolioService.cpp
     )
     set_target_properties(logos_wallet_access PROPERTIES
         AUTOMOC ON
@@ -45,10 +79,18 @@ if(LOGOS_WALLET_BUILD_ACCESS)
         PRIVATE
             "${LOGOS_WALLET_GENERATED_DIR}"
             "${LOGOS_WALLET_GENERATED_DIR}/include"
+            "${LOGOS_WALLET_IDL_DECODER_INCLUDE_DIR}"
     )
     target_link_libraries(logos_wallet_access
         PUBLIC Qt6::Core
-        PRIVATE Qt6::Network
+        PRIVATE
+            Qt6::Network
+            "${LOGOS_WALLET_IDL_DECODER_LIBRARY}"
+    )
+    qt_add_resources(logos_wallet_access logos_wallet_access_network_data
+        PREFIX "/wallet"
+        FILES
+            config/networks.json
     )
 endif()
 
@@ -59,13 +101,13 @@ if(LOGOS_WALLET_BUILD_QML)
     set(wallet_qml_output_dir "${CMAKE_CURRENT_BINARY_DIR}/qml/Logos/Wallet")
     set(wallet_internal_qml
         qml/internal/WalletIconButton.qml
-        qml/internal/CopyButton.qml
         qml/internal/AccountDelegate.qml
         qml/internal/CreateAccountDialog.qml
         qml/internal/CreateWalletDialog.qml
         qml/internal/WalletMessageDialog.qml
     )
     set(wallet_public_qml
+        qml/internal/CopyButton.qml
         qml/WalletControl.qml
         qml/ProgramAccountSelector.qml
         qml/TransactionConfirmationDialog.qml
@@ -160,6 +202,94 @@ if(BUILD_TESTING)
     )
     add_test(NAME logos_wallet_access COMMAND logos_wallet_access_test)
 
+    if(LOGOS_WALLET_BUILD_ACCESS)
+        add_executable(logos_wallet_idl_decoder_link_test
+            tests/cpp/WalletIdlDecoderLinkTest.cpp
+        )
+        target_compile_features(logos_wallet_idl_decoder_link_test PRIVATE cxx_std_17)
+        target_link_libraries(logos_wallet_idl_decoder_link_test PRIVATE
+            Qt6::Core
+            Qt6::Test
+            logos_wallet_access
+        )
+        add_test(NAME logos_wallet_idl_decoder_link
+                 COMMAND logos_wallet_idl_decoder_link_test)
+    endif()
+
+    add_executable(logos_wallet_sequencer_network_context_test
+        tests/cpp/SequencerNetworkContextTest.cpp
+        src/SequencerNetworkContext.h
+        src/SequencerNetworkContext.cpp
+    )
+    set_target_properties(logos_wallet_sequencer_network_context_test PROPERTIES AUTOMOC ON)
+    target_compile_features(logos_wallet_sequencer_network_context_test PRIVATE cxx_std_17)
+    target_include_directories(logos_wallet_sequencer_network_context_test PRIVATE src)
+    target_link_libraries(logos_wallet_sequencer_network_context_test PRIVATE
+        Qt6::Core
+        Qt6::Test
+    )
+    add_test(NAME logos_wallet_sequencer_network_context
+             COMMAND logos_wallet_sequencer_network_context_test)
+
+    add_executable(logos_wallet_sequencer_network_settings_test
+        tests/cpp/SequencerNetworkSettingsTest.cpp
+        src/SequencerNetworkContext.h
+        src/SequencerNetworkContext.cpp
+        src/SequencerNetworkSettings.h
+        src/SequencerNetworkSettings.cpp
+    )
+    set_target_properties(logos_wallet_sequencer_network_settings_test PROPERTIES AUTOMOC ON)
+    target_compile_features(logos_wallet_sequencer_network_settings_test PRIVATE cxx_std_17)
+    target_include_directories(logos_wallet_sequencer_network_settings_test PRIVATE src)
+    target_link_libraries(logos_wallet_sequencer_network_settings_test PRIVATE
+        Qt6::Core
+        Qt6::Test
+    )
+    qt_add_resources(logos_wallet_sequencer_network_settings_test
+        logos_wallet_access_network_data
+        PREFIX "/wallet"
+        FILES
+            config/networks.json
+    )
+    add_test(NAME logos_wallet_sequencer_network_settings
+             COMMAND logos_wallet_sequencer_network_settings_test)
+
+    add_executable(logos_wallet_sequencer_identity_probe_test
+        tests/cpp/SequencerIdentityProbeTest.cpp
+        src/SequencerIdentityProbe.h
+        src/SequencerIdentityProbe.cpp
+        src/SequencerNetworkContext.h
+        src/SequencerNetworkContext.cpp
+    )
+    set_target_properties(logos_wallet_sequencer_identity_probe_test PROPERTIES AUTOMOC ON)
+    target_compile_features(logos_wallet_sequencer_identity_probe_test PRIVATE cxx_std_17)
+    target_include_directories(logos_wallet_sequencer_identity_probe_test PRIVATE src)
+    target_link_libraries(logos_wallet_sequencer_identity_probe_test PRIVATE
+        Qt6::Core
+        Qt6::Network
+        Qt6::Test
+    )
+    add_test(NAME logos_wallet_sequencer_identity_probe
+             COMMAND logos_wallet_sequencer_identity_probe_test)
+
+    add_executable(logos_wallet_portfolio_service_test
+        tests/cpp/WalletPortfolioServiceTest.cpp
+        src/WalletPortfolioService.h
+        src/WalletPortfolioService.cpp
+        src/WalletProvider.cpp
+    )
+    set_target_properties(logos_wallet_portfolio_service_test PROPERTIES AUTOMOC ON)
+    target_compile_features(logos_wallet_portfolio_service_test PRIVATE cxx_std_17)
+    target_include_directories(logos_wallet_portfolio_service_test PRIVATE
+        src
+    )
+    target_link_libraries(logos_wallet_portfolio_service_test PRIVATE
+        Qt6::Core
+        Qt6::Test
+    )
+    add_test(NAME logos_wallet_portfolio_service
+             COMMAND logos_wallet_portfolio_service_test)
+
     if(LOGOS_WALLET_BUILD_QML)
         find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
         add_executable(logos_wallet_qml_test tests/qml/main.cpp)
@@ -169,8 +299,16 @@ if(BUILD_TESTING)
         target_link_libraries(logos_wallet_qml_test PRIVATE Qt6::QuickTest)
         add_dependencies(logos_wallet_qml_test logos_wallet_qmlplugin)
         add_test(NAME logos_wallet_qml COMMAND logos_wallet_qml_test)
+        get_target_property(wallet_qml_library Qt6::Qml IMPORTED_LOCATION)
+        get_filename_component(wallet_qml_library_dir "${wallet_qml_library}" DIRECTORY)
+        get_filename_component(wallet_qml_prefix "${wallet_qml_library_dir}" DIRECTORY)
+        set(wallet_qml_test_import_paths
+            "${CMAKE_CURRENT_BINARY_DIR}/qml"
+            "${wallet_qml_prefix}/${QT6_INSTALL_QML}"
+        )
+        string(JOIN ":" wallet_qml_test_import_path ${wallet_qml_test_import_paths})
         set_tests_properties(logos_wallet_qml PROPERTIES ENVIRONMENT
-            "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QML2_IMPORT_PATH=${CMAKE_CURRENT_BINARY_DIR}/qml;QML_IMPORT_PATH=${CMAKE_CURRENT_BINARY_DIR}/qml"
+            "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QML2_IMPORT_PATH=${wallet_qml_test_import_path};QML_IMPORT_PATH=${wallet_qml_test_import_path}"
         )
     endif()
 endif()
