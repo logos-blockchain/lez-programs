@@ -5,8 +5,8 @@ import "../shared"
 import "../../state"
 
 // The real swap UI: two token inputs (sell/buy), a token picker (backed by
-// AmmUiBackend::tokenList()/TOKENS_CONFIG via SwapPage). Editing either side
-// server-quotes that direction (swapExactInQuote / swapExactOutQuote) and the
+// AmmUiBackend::tokenList()'s current registry snapshot via SwapPage). Editing
+// either side server-quotes that direction (swapExactInQuote / swapExactOutQuote) and the
 // matching submit slot (swapExactInput / swapExactOutput) runs on confirm — see
 // apps/amm/src/AmmUiBackend.rep for the exact contract.
 Rectangle {

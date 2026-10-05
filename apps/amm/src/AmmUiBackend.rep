@@ -57,9 +57,10 @@ class AmmUiBackend
     SLOT(void disconnectWallet())
 
     // AMM
-    // Derives the AMM pool PDA for (defAHex, defBHex) from the deployed AMM program
-    // binary (see AMM_PROGRAM_BIN — a RISC Zero ProgramBinary .bin, not a raw ELF)
-    // and reads/decodes the pool account. On success `{ status:"ok", error:"", poolId,
+    // Derives the AMM pool PDA for (defAHex, defBHex) using the active registry's
+    // AMM program id, falling back to AMM_PROGRAM_BIN when no id is selected
+    // (a RISC Zero ProgramBinary .bin, not a raw ELF). Reads/decodes the pool
+    // account. On success `{ status:"ok", error:"", poolId,
     // defAHex, defBHex, vaultAId, vaultBId, lpDefinitionId, reserveA, reserveB,
     // liquiditySupply, feeBps }` (A/B oriented to the requested order); otherwise
     // `{ status:"error", error:<code> }` — `no_pool` for the ordinary "no pool /
@@ -89,7 +90,8 @@ class AmmUiBackend
     // timestamp in MILLISECONDS (matches amm_core's SwapExactInput deadline —
     // passing seconds would expire the swap immediately once deadline handling
     // is enforced). Returns the tx hash, or an empty string on failure
-    // (no pool, unreadable AMM_PROGRAM_BIN, bad inputs, or a failed tx).
+    // (no pool, no program id from either the registry or AMM_PROGRAM_BIN,
+    // bad inputs, or a failed tx).
     SLOT(QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountInDecimal, QString minOutDecimal, QString deadlineDecimal))
     // Server-side SwapExactInput preview for (tokenInHex, tokenOutHex): reads the
     // pool and returns { status:"ok", error:"", expectedOut, minReceived,
