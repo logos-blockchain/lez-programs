@@ -109,7 +109,9 @@ bool WalletController::beginOpen(const QString& config, const QString& storage)
         }
     });
 
-    m_wallet.connectAsync({ config, storage },
+    const QString statistics = QFileInfo(config).absolutePath()
+        + QStringLiteral("/statistics.json");
+    m_wallet.connectAsync({ config, storage, statistics },
         [this, generation, config, storage](WalletSession session) {
             if (generation != m_operationGeneration)
                 return;
@@ -151,8 +153,10 @@ QString WalletController::createWallet(const QString& configPath,
 {
     const QString config = toLocalPath(configPath);
     const QString storage = toLocalPath(storagePath);
+    const QString statistics = QFileInfo(config).absolutePath()
+        + QStringLiteral("/statistics.json");
     const WalletCreation creation = m_wallet.createWallet(
-        { config, storage }, password);
+        { config, storage, statistics }, password);
     if (creation.mnemonic.isEmpty()) {
         qWarning() << "WalletController: wallet creation failed"
                    << walletFailureCode(creation.failure);

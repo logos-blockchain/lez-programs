@@ -151,6 +151,8 @@ void AmmUiBackend::syncWalletState()
     setCurrentBlockHeight(state.currentBlockHeight);
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
+    setSyncError(state.syncError);
+    setSyncStatus(state.syncStatus);
 }
 
 QVariantMap AmmUiBackend::resolvePoolAccount(QString defAHex, QString defBHex)
