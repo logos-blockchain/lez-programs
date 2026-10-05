@@ -207,6 +207,22 @@ char *stablecoin_set_freeze_authority_plan(const char *request_json);
 char *stablecoin_set_market_price_oracle_plan(const char *request_json);
 
 /**
+ * Builds the idempotent, current-authority plan for the unit `Freeze` instruction.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_freeze_plan(const char *request_json);
+
+/**
+ * Builds the idempotent, current-authority plan for the unit `Unfreeze` instruction.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_unfreeze_plan(const char *request_json);
+
+/**
  * Releases a string returned by a `stablecoin_*` operation.
  *
  * # Safety

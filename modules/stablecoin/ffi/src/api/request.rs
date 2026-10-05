@@ -159,6 +159,14 @@ pub struct AdminPlanContext {
     pub protocol_parameters: AccountRead,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FreezeAuthorityPlanRequest {
+    pub stablecoin_program_id: String,
+    pub freeze_authority_id: String,
+    pub protocol_parameters: AccountRead,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SetMinimumCollateralizationRatioPlanRequest {

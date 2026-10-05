@@ -4,6 +4,7 @@ mod admin;
 mod close;
 mod debt;
 mod decode;
+mod freeze;
 mod health;
 mod plan;
 mod position;
@@ -37,6 +38,9 @@ mod close_tests;
 #[cfg(test)]
 mod admin_tests;
 
+#[cfg(test)]
+mod freeze_tests;
+
 use std::{error::Error, fmt};
 
 pub use admin::{
@@ -49,6 +53,7 @@ pub use debt::generate_debt_plan;
 pub use decode::{
     decode_protocol_parameters, decode_redemption_price_state, decode_stability_fee_accumulator,
 };
+pub use freeze::{freeze_plan, unfreeze_plan};
 pub use health::position_health;
 pub use plan::{
     accrue_stability_fee_plan, deposit_collateral_plan, initialize_program_plan,
@@ -61,13 +66,13 @@ pub use quote::redemption_rate_update_quote;
 pub use request::{
     AccrueStabilityFeePlanRequest, AdminPlanContext, ClosePositionPlanRequest,
     CurrentGlobalStateRequest, DecodeProtocolParametersRequest, DecodeRedemptionPriceStateRequest,
-    DecodeStabilityFeeAccumulatorRequest, DepositCollateralPlanRequest, GenerateDebtPlanRequest,
-    InitializeProgramPlanRequest, OpenPositionPlanRequest, PositionAddressesRequest,
-    PositionHealthRequest, ProgramInfoRequest, RedemptionRateUpdateQuoteRequest,
-    RefreshGlobalsPlanRequest, RepayDebtPlanRequest, SetAdminPlanRequest,
-    SetControllerGainsPlanRequest, SetFreezeAuthorityPlanRequest, SetMarketPriceOraclePlanRequest,
-    SetMinimumCollateralizationRatioPlanRequest, SetTimingParametersPlanRequest,
-    UpdateRedemptionRatePlanRequest, WithdrawCollateralPlanRequest,
+    DecodeStabilityFeeAccumulatorRequest, DepositCollateralPlanRequest, FreezeAuthorityPlanRequest,
+    GenerateDebtPlanRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
+    PositionAddressesRequest, PositionHealthRequest, ProgramInfoRequest,
+    RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest, RepayDebtPlanRequest,
+    SetAdminPlanRequest, SetControllerGainsPlanRequest, SetFreezeAuthorityPlanRequest,
+    SetMarketPriceOraclePlanRequest, SetMinimumCollateralizationRatioPlanRequest,
+    SetTimingParametersPlanRequest, UpdateRedemptionRatePlanRequest, WithdrawCollateralPlanRequest,
 };
 use serde_json::Value;
 pub use withdraw::withdraw_collateral_plan;

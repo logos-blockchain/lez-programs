@@ -394,6 +394,26 @@ pub unsafe extern "C" fn stablecoin_set_market_price_oracle_plan(
     }
 }
 
+#[unsafe(no_mangle)]
+/// Builds the idempotent, current-authority plan for the unit `Freeze` instruction.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_freeze_plan(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<api::FreezeAuthorityPlanRequest>(request_json, api::freeze_plan) }
+}
+
+#[unsafe(no_mangle)]
+/// Builds the idempotent, current-authority plan for the unit `Unfreeze` instruction.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_unfreeze_plan(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<api::FreezeAuthorityPlanRequest>(request_json, api::unfreeze_plan) }
+}
+
 /// Releases a string returned by a `stablecoin_*` operation.
 ///
 /// # Safety

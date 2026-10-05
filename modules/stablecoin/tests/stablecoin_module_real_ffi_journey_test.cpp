@@ -366,6 +366,133 @@ QVariantList singleWalletAccount(const std::string& account_id) {
 }
 }  // namespace
 
+LOGOS_TEST(real_ffi_freeze_repeat_unfreeze_repeat_and_live_authority_rotation_use_one_module) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+    StablecoinModuleImpl module; attachModules(module, modules);
+    const LogosMap info = module.programInfo(); assertOk(info);
+    const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+    std::string parameters = protocolData(false);
+    parameters.replace(64, 64, CALLER_ID_HEX);
+    parameters.replace(128, 64, info["stablecoinDefinitionIdHex"].get<std::string>());
+    expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    QVariantList inventory = walletAccounts();
+    inventory.append(singleWalletAccount(idHex(1)).front());
+    context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(inventory));
+    context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+    const LogosMap decoded = module.protocolParameters(); assertOk(decoded);
+    const std::string base58 = decoded["protocolParameters"]["freezeAuthorityId"].get<std::string>();
+    context.mockModule("lez_core", "account_id_from_base58").returns(CALLER_ID_HEX);
+    int submissions = 0;
+    for (const bool frozen : {true, true, false, false}) {
+        const std::string payload = json{{"stablecoinProgramId", PROGRAM_ID_HEX},
+            {"freezeAuthorityId", CALLER_ID_HEX},
+            {"protocolParameters", accountReadValue(protocol_id, PROGRAM_OWNER_HEX, parameters)}}.dump();
+        std::unique_ptr<char, decltype(&stablecoin_free)> planned(
+            (frozen ? stablecoin_freeze_plan : stablecoin_unfreeze_plan)(payload.c_str()), &stablecoin_free);
+        LOGOS_ASSERT_TRUE(planned != nullptr);
+        const json envelope = json::parse(planned.get()); LOGOS_ASSERT_TRUE(envelope["ok"].get<bool>());
+        const json plan = envelope["value"];
+        LOGOS_ASSERT_EQ(plan["accountIds"], json::array({CALLER_ID_HEX, protocol_id}));
+        LOGOS_ASSERT_EQ(plan["signingRequirements"], json::array({true, false}));
+        LOGOS_ASSERT_EQ(plan["instruction"].size(), 1);
+        const int reads_before = context.moduleCallCount("lez_core", "get_account_public");
+        const LogosMap request = {{"freezeAuthorityId", submissions % 2 == 0 ? CALLER_ID_HEX : base58},
+            {"isFrozen", !frozen}, {"protocolParametersId", idHex(99)}};
+        const LogosMap response = frozen ? module.freeze(request) : module.unfreeze(request);
+        assertOk(response); LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), reads_before + 1);
+        LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
+            submissionArguments(plan, std::vector<std::size_t>{0}, PROGRAM_ID_HEX)));
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), ++submissions);
+        // Feed only the native flag assignment forward. All other parameters
+        // keep their exact bytes, including on idempotent repeat operations.
+        parameters.replace(parameters.size() - 2, 2, frozen ? "01" : "00");
+        expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    }
+    const LogosMap admin_only = module.freeze({{"freezeAuthorityId", idHex(1)}});
+    LOGOS_ASSERT_EQ(admin_only["error"].get<std::string>(), std::string("freeze_authority_mismatch"));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 4);
+    assertOk(module.setFreezeAuthority({{"adminId", idHex(1)}, {"newFreezeAuthorityId", idHex(8)}}));
+    parameters.replace(64, 64, idHex(8)); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    const LogosMap old_authority = module.freeze({{"freezeAuthorityId", CALLER_ID_HEX}});
+    LOGOS_ASSERT_EQ(old_authority["error"].get<std::string>(), std::string("freeze_authority_mismatch"));
+    LOGOS_ASSERT_TRUE(old_authority.find("transactionId") == old_authority.end());
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 5);
+    assertOk(module.unfreeze({{"freezeAuthorityId", idHex(8)}}));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 6);
+    assertOk(module.setFreezeAuthority({{"adminId", idHex(1)}, {"newFreezeAuthorityId", idHex(1)}}));
+    parameters.replace(64, 64, idHex(1)); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    assertOk(module.freeze({{"freezeAuthorityId", idHex(1)}}));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 8);
+}
+
+LOGOS_TEST(real_ffi_freeze_blocks_risk_increases_but_recovery_and_pokes_work_and_unfreeze_restores_gates) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
+    StablecoinModuleImpl module; attachModules(module, modules);
+    const LogosMap info = module.programInfo(); assertOk(info);
+    const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+    const std::string definition_id = info["stablecoinDefinitionIdHex"].get<std::string>();
+    std::string parameters = protocolData(false);
+    parameters.replace(64, 64, CALLER_ID_HEX); parameters.replace(128, 64, definition_id);
+    expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    auto addresses = [&](const std::string& nonce) {
+        const std::string payload = json{{"stablecoinProgramId", PROGRAM_ID_HEX},
+            {"ownerId", CALLER_ID_HEX}, {"positionNonce", nonce}}.dump();
+        std::unique_ptr<char, decltype(&stablecoin_free)> result(stablecoin_position_addresses(payload.c_str()), &stablecoin_free);
+        LOGOS_ASSERT_TRUE(result != nullptr);
+        const json envelope = json::parse(result.get()); LOGOS_ASSERT_TRUE(envelope["ok"].get<bool>());
+        return envelope["value"];
+    };
+    const json position = addresses("7"); const json settled = addresses("6"); const json fresh = addresses("8");
+    for (const auto& entry : {std::make_pair(position, 7), std::make_pair(settled, 6)}) {
+        const std::string position_id = entry.first["positionIdHex"];
+        const std::string vault_id = entry.first["vaultIdHex"];
+        expectRead(position_id, PROGRAM_OWNER_HEX, positionData(CALLER_ID_HEX, vault_id, entry.second, "0", "0"));
+        expectRead(vault_id, TOKEN_OWNER_HEX, collateralHoldingData("0"));
+    }
+    expectMissing(fresh["positionIdHex"].get<std::string>());
+    expectMissing(fresh["vaultIdHex"].get<std::string>());
+    expectRead(idHex(4), TOKEN_OWNER_HEX, collateralDefinitionData());
+    expectRead(idHex(8), TOKEN_OWNER_HEX, collateralHoldingData("0"));
+    expectRead(definition_id, TOKEN_OWNER_HEX, mintDefinitionData(definition_id, "0"));
+    expectRead(idHex(9), TOKEN_OWNER_HEX, stablecoinHoldingData(definition_id, "0"));
+    expectRead(info["stabilityFeeAccumulatorIdHex"].get<std::string>(), PROGRAM_OWNER_HEX, accumulatorData(FIXED_ONE, START));
+    expectRead(info["redemptionPriceStateIdHex"].get<std::string>(), PROGRAM_OWNER_HEX, redemptionData(FIXED_ONE, FIXED_ONE, "0", START));
+    expectRead(info["clockIdHex"].get<std::string>(), PROGRAM_OWNER_HEX, clockData(DUE));
+    std::string oracle = oracleData(FIXED_ONE, DUE); oracle.replace(0, 64, definition_id);
+    expectRead(idHex(5), ORACLE_OWNER_HEX, oracle);
+    QVariantList inventory = walletAccounts(); inventory.append(singleWalletAccount(idHex(9)).front());
+    context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(inventory));
+    context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+    const LogosMap open = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "8"},
+        {"initialCollateralAmount", "0"}, {"userCollateralHoldingId", idHex(8)}};
+    const LogosMap collateral = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"},
+        {"amount", "0"}, {"userCollateralHoldingId", idHex(8)}};
+    const LogosMap debt = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"},
+        {"amount", "0"}, {"userStablecoinHoldingId", idHex(9)}};
+    assertOk(module.freeze({{"freezeAuthorityId", CALLER_ID_HEX}}));
+    parameters.replace(parameters.size() - 2, 2, "01"); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    LOGOS_ASSERT_EQ(module.openPosition(open)["error"].get<std::string>(), std::string("protocol_frozen"));
+    LOGOS_ASSERT_EQ(module.withdrawCollateral(collateral)["error"].get<std::string>(), std::string("protocol_frozen"));
+    LOGOS_ASSERT_EQ(module.generateDebt(debt)["error"].get<std::string>(), std::string("protocol_frozen"));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+    assertOk(module.depositCollateral(collateral)); assertOk(module.repayDebt(debt));
+    assertOk(module.accrueStabilityFee(CALLER_ID_HEX)); assertOk(module.updateRedemptionRate(CALLER_ID_HEX));
+    assertOk(module.refreshGlobals(CALLER_ID_HEX));
+    // Close a distinct settled Position; restored borrowing/withdrawal uses
+    // the still-open main Position, not the account whose data was cleared.
+    assertOk(module.closePosition({{"ownerId", CALLER_ID_HEX}, {"positionNonce", "6"}}));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 7);
+    assertOk(module.unfreeze({{"freezeAuthorityId", CALLER_ID_HEX}}));
+    parameters.replace(parameters.size() - 2, 2, "00"); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    assertOk(module.openPosition(open)); assertOk(module.withdrawCollateral(collateral)); assertOk(module.generateDebt(debt));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 11);
+}
+
 LOGOS_TEST(real_ffi_all_six_admin_setters_use_exact_plans_while_frozen_and_fail_preflight_without_resubmission) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
