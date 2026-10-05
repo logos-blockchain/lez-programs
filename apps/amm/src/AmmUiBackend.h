@@ -70,6 +70,7 @@ public slots:
     QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                              QString userOutputHoldingHex, QString amountOutDecimal,
                              QString maxInDecimal, QString deadlineDecimal) override;
+    QVariantMap confirmedSwap(QVariantMap request) override;
     // Reads the token list from TOKENS_CONFIG app-side (like poolList reads
     // AMM_POOLS_CONFIG) so the Swap UI's token picker is config-driven.
     QVariantList tokenList() override;

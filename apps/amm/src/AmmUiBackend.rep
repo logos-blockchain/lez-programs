@@ -22,6 +22,8 @@ class AmmUiBackend
     // re-fetch tokenList()/poolList()/resolveTokens(). Starts at 0; the backend
     // sets it once the initial snapshot has loaded (and again on each refresh).
     PROP(int registryRevision READONLY)
+    // Fences swap confirmations across wallet, sequencer and registry changes.
+    PROP(int swapContextRevision READONLY)
     // The user-configured registry URL, persisted as a global (per-user) setting
     // and edited in the wallet config UI. The env AMM_REGISTRY_URL overrides it when
     // set (e2e / dev); empty means no registry is configured. Bound by the config
@@ -114,6 +116,12 @@ class AmmUiBackend
     // deadlineDecimal is a decimal-string u64 unix timestamp in MILLISECONDS.
     // Same return contract as swapExactInput (tx hash, empty string on failure).
     SLOT(QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountOutDecimal, QString maxInDecimal, QString deadlineDecimal))
+    // Submits the exact confirmed intent: { contextRevision, swapMode,
+    // sellDefinitionId, buyDefinitionId, sellHoldingId, buyHoldingId, amount,
+    // bound, deadline }. Rejects a changed source-side context even when its
+    // new revision has not reached the QML replica yet. Returns {status, error,
+    // txHash}; swap_context_changed requires a fresh preview and confirmation.
+    SLOT(QVariantMap confirmedSwap(QVariantMap request))
     // Reads the token list config at TOKENS_CONFIG (absolute path, JSON array
     // of { symbol, name, definitionId, holding, decimals }) and returns it as
     // a QVariantList of QVariantMap entries. Read app-side (like poolList); ids
