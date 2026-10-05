@@ -451,6 +451,33 @@ class DeploymentTests(unittest.TestCase):
         self.run_script()
         self.assertTrue(self.manifest()["complete"])
 
+    def test_rejected_oracle_override_preserves_managed_bootstrap_resume(self):
+        self.change(fail_before="create-oracle-price-account")
+        interrupted = self.run_script(success=False)
+        self.assertIn(
+            "create-oracle-price-account exited with status 1", interrupted.stdout
+        )
+        before = self.manifest()
+        self.assertNotIn("market_price_oracle", before["externalAccounts"])
+        self.assertNotIn(
+            before["accounts"]["market_price_oracle"], self.state()["accounts"]
+        )
+        calls = self.tx_calls()
+
+        self.change(fail_before=None)
+        rejected = self.run_script(success=False, MARKET_PRICE_ORACLE_ID="ab" * 32)
+        self.assertIn(
+            "market_price_oracle: account differs from manifest", rejected.stdout
+        )
+        self.assertEqual(self.manifest()["accounts"], before["accounts"])
+        self.assertEqual(self.manifest()["externalAccounts"], before["externalAccounts"])
+        self.assertEqual(self.tx_calls(), calls)
+
+        self.run_script()
+        self.assertTrue(self.manifest()["complete"])
+        self.assertNotIn("market_price_oracle", self.manifest()["externalAccounts"])
+        self.assertEqual(self.manifest()["accounts"], before["accounts"])
+
     def test_rejected_protocol_override_does_not_poison_next_resume(self):
         self.run_script()
         before = self.manifest()

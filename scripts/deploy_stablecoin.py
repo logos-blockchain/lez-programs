@@ -832,15 +832,12 @@ class Deployment:
             )
         self.verify_collateral()
 
-        external_oracle = self.external_account("market_price_oracle")
-        if external_oracle:
+        if os.environ.get("MARKET_PRICE_ORACLE_ID"):
             self.bind_account(
-                "market_price_oracle",
-                os.environ.get(
-                    "MARKET_PRICE_ORACLE_ID", self.accounts.get("market_price_oracle")
-                ),
+                "market_price_oracle", os.environ["MARKET_PRICE_ORACLE_ID"]
             )
-        else:
+        external_oracle = self.external_account("market_price_oracle")
+        if not external_oracle:
             source = self.wallet_account("oracle_source")
             pdas = self.example(
                 "twap_oracle_program",
