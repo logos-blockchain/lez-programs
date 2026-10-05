@@ -22,6 +22,7 @@ public:
 
     Q_INVOKABLE bool openExisting()
     {
+        deliverProperty("initialSync", true);
         deliverProperty("syncStatus", QStringLiteral("opening"));
         return true;
     }
@@ -30,6 +31,7 @@ public:
     {
         deliverProperty("syncError", error);
         deliverProperty("isWalletOpen", success);
+        deliverProperty("initialSync", false);
         deliverProperty("syncStatus", success ? QStringLiteral("ready")
                                                : QStringLiteral("error"));
     }

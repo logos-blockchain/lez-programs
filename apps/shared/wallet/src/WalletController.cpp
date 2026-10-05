@@ -9,6 +9,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QSettings>
 #include <QTimer>
 #include <QUrl>
@@ -185,8 +186,11 @@ QString WalletController::createWallet(const QString& configPath,
     const QString storage = toLocalPath(storagePath);
     const QString statistics = QFileInfo(config).absolutePath()
         + QStringLiteral("/statistics.json");
+    const QPointer<WalletController> alive(this);
     const WalletCreation creation = m_wallet.createWallet(
         { config, storage, statistics }, password);
+    if (!alive)
+        return {};
     if (creation.mnemonic.isEmpty()) {
         qWarning() << "WalletController: wallet creation failed"
                    << walletFailureCode(creation.failure);

@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QJsonValue>
+#include <QPointer>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
@@ -89,15 +90,21 @@ WalletAccountModel* AmmUiBackend::accountModel() const
 
 QString AmmUiBackend::createNewDefault(QString password)
 {
+    const QPointer<AmmUiBackend> guard(this);
     const QString mnemonic = m_walletController->createDefaultWallet(password);
+    if (!guard)
+        return {};
     syncWalletState();
     return mnemonic;
 }
 
 QString AmmUiBackend::createNew(QString configPath, QString storagePath, QString password)
 {
+    const QPointer<AmmUiBackend> guard(this);
     const QString mnemonic =
         m_walletController->createWallet(configPath, storagePath, password);
+    if (!guard)
+        return {};
     syncWalletState();
     return mnemonic;
 }

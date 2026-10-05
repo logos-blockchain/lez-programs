@@ -126,7 +126,8 @@ public:
         ++createAsyncCalls;
         QTimer::singleShot(0, [this, config, storage, statistics, password,
                                callback = std::move(callback)]() mutable {
-            callback(create_new(config, storage, statistics, password));
+            deliver(QStringLiteral("create_new"), std::move(callback),
+                    create_new(config, storage, statistics, password));
         });
     }
 

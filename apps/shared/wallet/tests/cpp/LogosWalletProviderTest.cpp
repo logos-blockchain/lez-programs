@@ -59,6 +59,9 @@ private slots:
     void releasesAsyncSyncProgress();
     void opensConfiguredWalletWhenNoSharedSessionExists();
     void createsAndPersistsWallet();
+    void cancelsWalletCreationOnDestruction_data();
+    void cancelsWalletCreationOnDestruction();
+    void cancelsControllerCreationOnDestruction();
     void cancelsCapabilityRetryOnDestruction();
     void cancelsPendingReplyOnDestruction_data();
     void cancelsPendingReplyOnDestruction();
@@ -363,6 +366,59 @@ void LogosWalletProviderTest::createsAndPersistsWallet()
     QCOMPARE(unsaved.mnemonic, unsavedModules.lez_core.mnemonic);
 }
 
+void LogosWalletProviderTest::cancelsWalletCreationOnDestruction_data()
+{
+    QTest::addColumn<bool>("lateReply");
+    QTest::newRow("queued-reply") << false;
+    QTest::newRow("reply-after-return") << true;
+}
+
+void LogosWalletProviderTest::cancelsWalletCreationOnDestruction()
+{
+    QFETCH(bool, lateReply);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    LogosModules modules;
+    if (lateReply)
+        modules.lez_core.deferredMethod = QStringLiteral("create_new");
+    auto provider = std::make_unique<LogosWalletProvider>(&modules);
+    QTimer::singleShot(0, [&provider] { provider.reset(); });
+    const WalletCreation creation = provider->createWallet({
+        directory.filePath(QStringLiteral("config.json")),
+        directory.filePath(QStringLiteral("storage.json")),
+        directory.filePath(QStringLiteral("statistics.json")),
+    }, QStringLiteral("secret"));
+    QVERIFY(!provider);
+    QCOMPARE(creation.failure, WalletFailure::WalletUnavailable);
+    QVERIFY(creation.mnemonic.isEmpty());
+    QCOMPARE(modules.lez_core.saveCalls, 0);
+    // The SDK can deliver its reply after the canceled call has returned.
+    QTest::qWait(1);
+    if (lateReply) {
+        QCOMPARE(modules.lez_core.pendingReplies.size(), size_t(1));
+        modules.lez_core.completePendingReplies();
+    }
+}
+
+void LogosWalletProviderTest::cancelsControllerCreationOnDestruction()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    LogosModules modules;
+    LogosWalletProvider provider(&modules);
+    auto controller = std::make_unique<WalletController>(
+        provider, QStringLiteral("WalletCreationTeardownTest"));
+    QTimer::singleShot(0, [&controller] { controller.reset(); });
+    const QString mnemonic = controller->createWallet(
+        directory.filePath(QStringLiteral("config.json")),
+        directory.filePath(QStringLiteral("storage.json")),
+        QStringLiteral("secret"));
+    QVERIFY(!controller);
+    QVERIFY(mnemonic.isEmpty());
+    QCOMPARE(modules.lez_core.createAsyncCalls, 1);
+    QCOMPARE(modules.lez_core.listCalls, 0);
+}
+
 void LogosWalletProviderTest::cancelsCapabilityRetryOnDestruction()
 {
     LogosModules modules;
@@ -396,6 +452,10 @@ void LogosWalletProviderTest::cancelsPendingReplyOnDestruction_data()
     }
     QTest::newRow("snapshot-address") << QStringLiteral("get_sequencer_addr")
                                       << 2 << true << true << false;
+    QTest::newRow("second-sync-chunk") << QStringLiteral("sync_to_block")
+                                      << 2 << true << true << false;
+    QTest::newRow("snapshot-last-synced") << QStringLiteral("get_last_synced_block")
+                                         << 2 << true << true << false;
     QTest::newRow("snapshot-accounts") << QStringLiteral("list_accounts")
                                        << 2 << true << true << false;
     QTest::newRow("public-account") << QStringLiteral("get_account_public")
@@ -420,7 +480,7 @@ void LogosWalletProviderTest::cancelsPendingReplyOnDestruction()
     QVERIFY(storage.open(QIODevice::WriteOnly));
     storage.close();
     LogosModules modules;
-    modules.lez_core.currentBlockHeight = 1;
+    modules.lez_core.currentBlockHeight = 1024;
     modules.lez_core.deferredMethod = method;
     modules.lez_core.deferredOccurrence = occurrence;
     if (sharedSession) {
@@ -433,17 +493,20 @@ void LogosWalletProviderTest::cancelsPendingReplyOnDestruction()
     bool completed = false;
     auto retained = std::make_shared<int>(0);
     const std::weak_ptr<int> weak = retained;
+    auto retainedProgress = std::make_shared<int>(0);
+    const std::weak_ptr<int> weakProgress = retainedProgress;
     auto provider = std::make_unique<LogosWalletProvider>(&modules);
     provider->connectAsync({ {}, storage.fileName(), {} },
                            [&completed, retained = std::move(retained)](WalletSession) {
         completed = true;
-    });
+    }, [retainedProgress = std::move(retainedProgress)](WalletSyncProgress) {});
     QCOMPARE(modules.lez_core.pendingReplies.size(), size_t(1));
     QVERIFY(!completed);
     provider.reset();
     modules.lez_core.completePendingReplies();
     QVERIFY(!completed);
     QVERIFY(weak.expired());
+    QVERIFY(weakProgress.expired());
     QVERIFY(modules.lez_core.pendingReplies.empty());
 }
 
