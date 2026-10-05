@@ -281,6 +281,38 @@ fn health_projection_and_display_overflow_return_stable_errors_without_panics() 
 }
 
 #[test]
+fn decayed_zero_price_does_not_hide_nominal_debt_display_overflow() {
+    let mut fixture = Fixture::new(u128::MAX, u128::MAX);
+    fixture.position.opened_at = START;
+    fixture.parameters.stablecoin_definition_id =
+        stablecoin_core::compute_stablecoin_definition_pda(PROGRAM);
+    fixture.parameters.stability_fee_per_millisecond = FIXED_POINT_ONE * 2;
+    fixture.redemption.redemption_price_at_last_update = 1;
+    fixture.redemption.redemption_rate_per_millisecond =
+        FIXED_POINT_ONE - RATE_DELTA_CLAMP.unsigned_abs();
+    fixture.now = START + 310;
+    let accumulator = try_project_rate_wide(
+        fixture.accumulator.accumulated_rate_at_last_accrual,
+        fixture.parameters.stability_fee_per_millisecond,
+        START,
+        fixture.now,
+    )
+    .expect("accumulator projection is exact");
+    assert!(U512::from(fixture.position.normalized_debt_amount)
+        .checked_mul(accumulator)
+        .is_none());
+    let price = try_project_rate_wide(
+        fixture.redemption.redemption_price_at_last_update,
+        fixture.redemption.redemption_rate_per_millisecond,
+        START,
+        fixture.now,
+    )
+    .expect("price projection is exact");
+    assert_eq!(price, U512::ZERO);
+    error(fixture.request(), "health_arithmetic_overflow");
+}
+
+#[test]
 fn health_clamps_long_gaps_and_saturates_inverted_timestamps_like_the_program() {
     let mut fixture = Fixture::new(110, 100);
     fixture.parameters.stability_fee_per_millisecond = FIXED_POINT_ONE + 1_500_000_000_000_000;

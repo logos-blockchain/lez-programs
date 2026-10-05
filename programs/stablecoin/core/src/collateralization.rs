@@ -27,6 +27,7 @@ impl CollateralizationValues {
 ///
 /// A zero normalized debt produces a zero requirement. Saturating the requirement
 /// is conservative because even maximum collateral is far below U512::MAX.
+/// Once a multiplication overflows, the cap remains even if a later operand is zero.
 #[must_use]
 pub fn collateralization_values(
     collateral_amount: u128,
@@ -44,13 +45,14 @@ pub fn collateralization_values(
         current_redemption_price,
         U512::from(minimum_collateralization_ratio),
     ] {
-        required = match required.checked_mul(operand) {
-            Some(product) => product,
+        match required.checked_mul(operand) {
+            Some(product) => required = product,
             None => {
+                required = U512::MAX;
                 requirement_saturated = true;
-                U512::MAX
+                break;
             }
-        };
+        }
     }
     CollateralizationValues {
         collateral_value,
@@ -100,5 +102,36 @@ mod tests {
         let zero = collateralization_values(0, 0, U512::MAX, U512::MAX, FIXED_POINT_ONE * 11 / 10);
         assert_eq!(zero.required_collateral_value, U512::ZERO);
         assert!(zero.is_collateralized());
+    }
+
+    #[test]
+    fn requirement_saturation_cannot_be_cleared_by_a_later_zero_operand() {
+        // Exercise the public helper contract directly. The quote rejects this
+        // overflowing nominal-debt product before calling the helper, and risk
+        // transactions separately reject a zero projected redemption price.
+        let values = collateralization_values(
+            u128::MAX,
+            u128::MAX,
+            U512::MAX,
+            U512::ZERO,
+            FIXED_POINT_ONE * 11 / 10,
+        );
+        assert!(values.requirement_saturated);
+        assert_eq!(values.required_collateral_value, U512::MAX);
+        assert!(!values.is_collateralized());
+    }
+
+    #[test]
+    fn zero_redemption_price_without_prior_overflow_has_no_saturated_requirement() {
+        let values = collateralization_values(
+            0,
+            1,
+            U512::from(FIXED_POINT_ONE),
+            U512::ZERO,
+            FIXED_POINT_ONE * 11 / 10,
+        );
+        assert!(!values.requirement_saturated);
+        assert_eq!(values.required_collateral_value, U512::ZERO);
+        assert!(values.is_collateralized());
     }
 }
