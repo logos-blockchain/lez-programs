@@ -46,15 +46,23 @@ QtObject {
         onTriggered: root.requestQuoteNow(root.quoteSerial)
     }
 
-    onWalletStateReadyChanged: root.invalidateQuote()
+    onWalletStateReadyChanged: {
+        root.invalidateQuote()
+        if (root.walletStateReady)
+            Qt.callLater(root.refreshQuoteIfReady)
+    }
 
     onActiveChanged: {
-        if (!root.active)
-            return
-        Qt.callLater(function() {
-            if (root.active && root.walletStateReady)
-                root.quoteRefreshRequested(true)
-        })
+        root.invalidateQuote()
+        if (root.active)
+            Qt.callLater(root.refreshQuoteIfReady)
+    }
+
+    function refreshQuoteIfReady() {
+        // Coalesce activation and wallet recovery after all bindings have settled.
+        if (root.active && root.walletStateReady && root.quoteStale
+                && !root.quoteLoading && !root.submitting)
+            root.quoteRefreshRequested(true)
     }
 
     function scheduleQuote(immediate, quoteRequest) {
