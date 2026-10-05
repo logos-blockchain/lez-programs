@@ -9,11 +9,11 @@ import "../components/shared"
 import "../components/liquidity/AmountMath.js" as AmountMath
 import "../components/shared/TokenVisuals.js" as TokenVisuals
 
-// Detail view for a single pool, opened from PoolsPage. The pair, fee tier and
-// token definition ids come from the clicked pool row (AMM_POOLS_CONFIG); the
-// live numbers come from AmmUiBackend::resolvePoolAccount(), which is the only
-// pool read the program exposes. Volume and transaction history are deliberately
-// absent: the AMM stores no history, so there is nothing to chart.
+// Detail view for a single pool, opened from PoolsPage. The pair and token
+// definition ids come from the clicked row in the current registry snapshot;
+// reserves and the config-derived fee come from AmmUiBackend::resolvePoolAccount(),
+// which is the only pool read the program exposes. Volume and transaction history
+// are deliberately absent: the AMM stores no history, so there is nothing to chart.
 Item {
     id: root
 
@@ -24,7 +24,7 @@ Item {
     property var backend: null
     property var runtime: null
 
-    // The pool row that was activated in PoolsPage: { tokenA, tokenB, feeBps,
+    // The pool row that was activated in PoolsPage: { tokenA, tokenB,
     // poolId, tokenADefinitionId, tokenBDefinitionId }. Null when nothing is open.
     property var pool: null
 

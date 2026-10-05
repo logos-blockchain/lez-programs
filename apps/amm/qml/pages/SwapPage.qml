@@ -12,9 +12,9 @@ Item {
     // Real backend replica (logos.module("amm_ui")), wired from Main.qml.
     property var backend: null
 
-    // Config-driven token list, loaded from AmmUiBackend::tokenList() (which
-    // reads the TOKENS_CONFIG JSON file — see apps/amm/README.md). Empty
-    // until the backend is ready and the call resolves.
+    // Current registry token snapshot from AmmUiBackend::tokenList() (local,
+    // remote or cache — see apps/amm/README.md). Empty until the backend is
+    // ready and the call resolves, or when no tokens are available.
     property var tokens: []
 
     // The wallet's token holdings (backend.tokenHoldings()), fed to the swap card's

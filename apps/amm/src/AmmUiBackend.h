@@ -70,8 +70,9 @@ public slots:
     QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                              QString userOutputHoldingHex, QString amountOutDecimal,
                              QString maxInDecimal, QString deadlineDecimal) override;
-    // Reads the token list from TOKENS_CONFIG app-side (like poolList reads
-    // AMM_POOLS_CONFIG) so the Swap UI's token picker is config-driven.
+    // Current RegistryLoader token snapshot: local files, fetched registry, disk
+    // cache, or no source. See .rep tokenList() for precedence and trust limits;
+    // source-provided labels and ids are not checked against chain state here.
     QVariantList tokenList() override;
     // Create-pool preview (createPoolQuote, read-only) and submit (createPool). The caller
     // supplies lpHoldingId in the request — a fresh account it created via
@@ -92,8 +93,8 @@ public slots:
     QVariantMap removeLiquidity(QVariantMap request) override;
     // Lists the wallet's fungible token holdings for the account selector.
     QVariantList tokenHoldings() override;
-    // Reads the known-pools list from AMM_POOLS_CONFIG (app config JSON, read
-    // here rather than in the amm_module — pool discovery is an app detail).
+    // Current RegistryLoader pool snapshot; same sources and trust limits as
+    // tokenList(). This slot performs no file/network/chain read.
     QVariantList poolList() override;
     // The AMM's supported fee tiers (raw bps) for the fee selector.
     QVariantList feeTiers() override;

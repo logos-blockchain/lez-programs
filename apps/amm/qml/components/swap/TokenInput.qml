@@ -14,11 +14,11 @@ Rectangle {
     // The wallet's token holdings (backend.tokenHoldings()); the selector narrows
     // them to this slot's token. The chosen holding id is exposed as selectedHoldingId.
     property var holdings: []
-    // The token's definitionId as configured (TOKENS_CONFIG passes it through
+    // The token's definitionId from the current registry snapshot (passed through
     // as-is — base58 or hex). tokenHoldings emits both encodings per holding, so
     // match on whichever this id is: a 64-char hex string filters the holding's
     // definitionIdHex, otherwise the base58 definitionId. (Filtering on a single
-    // fixed encoding shows "No funds" whenever the config uses the other one.)
+    // fixed encoding shows "No funds" whenever the registry uses the other one.)
     readonly property string tokenDefinitionId: root.token ? String(root.token.definitionId || "") : ""
     readonly property bool tokenIdIsHex: /^[0-9a-fA-F]{64}$/.test(root.tokenDefinitionId)
     readonly property string selectedHoldingId: accountSelector.selectedAccountId
