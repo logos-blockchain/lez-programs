@@ -5,8 +5,9 @@ use serde_json::{json, Value};
 use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
     compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
-    compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda, Instruction,
-    Position,
+    compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda,
+    math::{compute_current_accumulated_rate, mul_div, FIXED_POINT_ONE},
+    Instruction, Position,
 };
 use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::OraclePriceAccount;
@@ -21,7 +22,7 @@ use super::{
     quote::{redemption_rate_update_quote, validated_market_price_oracle},
     AccrueStabilityFeePlanRequest, DepositCollateralPlanRequest, InitializeProgramPlanRequest,
     OpenPositionPlanRequest, PositionAddressesRequest, RedemptionRateUpdateQuoteRequest,
-    RefreshGlobalsPlanRequest, StablecoinApiError, StablecoinResult,
+    RefreshGlobalsPlanRequest, RepayDebtPlanRequest, StablecoinApiError, StablecoinResult,
     UpdateRedemptionRatePlanRequest,
 };
 use crate::account::{
@@ -267,6 +268,102 @@ pub fn deposit_collateral_plan(request: DepositCollateralPlanRequest) -> Stablec
         [owner, position_id, vault_id, holding_id, parameters_id],
         [true, false, false, true, false],
         Instruction::DepositCollateral { amount },
+    )
+}
+
+/// Preflight the program's fee-aware, downward-rounded repayment without changing state.
+pub fn repay_debt_plan(request: RepayDebtPlanRequest) -> StablecoinResult {
+    let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
+    let owner = parse_account_id(&request.owner_id)?;
+    let position_nonce = parse_decimal_u64(&request.position_nonce)?;
+    let amount = parse_u128(&request.amount)?;
+    let holding_id = parse_account_id(&request.user_stablecoin_holding_id)?;
+    let (parameters_id, parameters) =
+        validated_protocol_parameters(program_id, &request.protocol_parameters)?;
+
+    let (position_id, position_account) = required_account(&request.position)?;
+    if position_id != compute_position_pda(program_id, owner, position_nonce) {
+        return Err(StablecoinApiError::new("position_pda_mismatch"));
+    }
+    if position_account.program_owner != program_id {
+        return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
+    }
+    let position = Position::try_from(&position_account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_position_data"))?;
+    if position.owner_account_id != owner {
+        return Err(StablecoinApiError::new("position_owner_mismatch"));
+    }
+    if position.position_nonce != position_nonce {
+        return Err(StablecoinApiError::new("position_nonce_mismatch"));
+    }
+
+    let (definition_id, definition_account) = required_account(&request.stablecoin_definition)?;
+    if definition_id != parameters.stablecoin_definition_id {
+        return Err(StablecoinApiError::new("stablecoin_definition_mismatch"));
+    }
+    let definition = TokenDefinition::try_from(&definition_account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_stablecoin_definition"))?;
+    if !matches!(definition, TokenDefinition::Fungible { .. }) {
+        return Err(StablecoinApiError::new("invalid_stablecoin_definition"));
+    }
+
+    let (read_holding_id, holding_account) = required_account(&request.user_stablecoin_holding)?;
+    if read_holding_id != holding_id {
+        return Err(StablecoinApiError::new("invalid_user_stablecoin_holding"));
+    }
+    if holding_account.program_owner != definition_account.program_owner {
+        return Err(StablecoinApiError::new("token_program_mismatch"));
+    }
+    let holding = TokenHolding::try_from(&holding_account.data)
+        .map_err(|_| StablecoinApiError::new("invalid_user_stablecoin_holding"))?;
+    let balance = match holding {
+        TokenHolding::Fungible {
+            definition_id: holding_definition,
+            balance,
+        } if holding_definition == definition_id => balance,
+        TokenHolding::Fungible { .. } => {
+            return Err(StablecoinApiError::new("stablecoin_definition_mismatch"));
+        }
+        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
+            return Err(StablecoinApiError::new("invalid_user_stablecoin_holding"));
+        }
+    };
+    if amount > balance {
+        return Err(StablecoinApiError::new("insufficient_stablecoin_balance"));
+    }
+
+    let (accumulator_id, accumulator) =
+        validated_stability_fee_accumulator(program_id, &request.stability_fee_accumulator)?;
+    let now = clock_timestamp(&request.clock)?;
+    // Use the exact narrow arithmetic executed by repay_debt, including its time
+    // clamp. Convert its unrepresentable projections into a fallible API result.
+    let debt_delta = std::panic::catch_unwind(|| {
+        let current_accumulator = compute_current_accumulated_rate(
+            accumulator.accumulated_rate_at_last_accrual,
+            parameters.stability_fee_per_millisecond,
+            accumulator.last_accrued_at,
+            now,
+        );
+        mul_div(amount, FIXED_POINT_ONE, current_accumulator)
+    })
+    .map_err(|_| StablecoinApiError::new("repayment_arithmetic_error"))?;
+    if debt_delta > position.normalized_debt_amount {
+        return Err(StablecoinApiError::new("repay_amount_exceeds_debt"));
+    }
+
+    plan_response(
+        program_id,
+        [
+            owner,
+            position_id,
+            definition_id,
+            holding_id,
+            accumulator_id,
+            parameters_id,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        [true, false, false, true, false, false, false],
+        Instruction::RepayDebt { amount },
     )
 }
 

@@ -75,6 +75,10 @@ extern "C" char* stablecoin_deposit_collateral_plan(const char*) {
     return copyMockResponse("stablecoin_deposit_collateral_plan");
 }
 
+extern "C" char* stablecoin_repay_debt_plan(const char*) {
+    return copyMockResponse("stablecoin_repay_debt_plan");
+}
+
 extern "C" void stablecoin_free(char* value) {
     LOGOS_CMOCK_RECORD("stablecoin_free");
     std::free(value);

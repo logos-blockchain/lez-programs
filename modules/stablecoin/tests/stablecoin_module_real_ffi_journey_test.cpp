@@ -536,6 +536,81 @@ LOGOS_TEST(real_ffi_journey_opens_position_with_two_wallet_signers) {
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
 }
 
+LOGOS_TEST(real_ffi_repay_debt_preserves_large_amounts_and_frozen_preflight) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const LogosMap info = module.programInfo();
+    assertOk(info);
+    const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+    const std::string accumulator_id = info["stabilityFeeAccumulatorIdHex"].get<std::string>();
+    const std::string clock_id = info["clockIdHex"].get<std::string>();
+    const std::string definition_id = idHex(3);
+    const std::string holding_id = idHex(8);
+    const std::string maximum = "340282366920938463463374607431768211455";
+    const std::string address_payload = json{{"stablecoinProgramId", PROGRAM_ID_HEX},
+        {"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"}}.dump();
+    std::unique_ptr<char, decltype(&stablecoin_free)> address_result(
+        stablecoin_position_addresses(address_payload.c_str()), &stablecoin_free);
+    LOGOS_ASSERT_TRUE(address_result != nullptr);
+    const json addresses = json::parse(address_result.get()).at("value");
+    const std::string position_id = addresses["positionIdHex"].get<std::string>();
+    const std::string vault_id = addresses["vaultIdHex"].get<std::string>();
+    const std::string definition = "00" + std::string("04000000") + bytesHex("Coin")
+        + u128Le(maximum) + "00" + "00";
+    const std::string holding = "00" + definition_id + u128Le(maximum);
+    const std::string position = positionData(CALLER_ID_HEX, vault_id, 7, "1000", maximum);
+    const std::string protocol = protocolData(true);
+    const std::string accumulator = accumulatorData("1500000000000000000000000000", DUE);
+    const std::string clock = clockData(DUE);
+    expectRead(protocol_id, PROGRAM_OWNER_HEX, protocol);
+    expectRead(position_id, PROGRAM_OWNER_HEX, position);
+    expectRead(definition_id, TOKEN_OWNER_HEX, definition);
+    expectRead(holding_id, TOKEN_OWNER_HEX, holding);
+    expectRead(accumulator_id, PROGRAM_OWNER_HEX, accumulator);
+    expectRead(clock_id, PROGRAM_OWNER_HEX, clock);
+    context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(walletAccounts()));
+    context.mockModule("lez_core", "send_generic_public_transaction").returns(successfulTransaction());
+
+    LogosMap request = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"},
+                       {"userStablecoinHoldingId", holding_id}, {"amount", maximum}};
+    const LogosMap repaid = module.repayDebt(request);
+    assertOk(repaid);
+    LOGOS_ASSERT_EQ(repaid["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+    const json planner_request = {
+        {"stablecoinProgramId", PROGRAM_ID_HEX}, {"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"},
+        {"userStablecoinHoldingId", holding_id}, {"amount", maximum},
+        {"position", accountReadValue(position_id, PROGRAM_OWNER_HEX, position)},
+        {"stablecoinDefinition", accountReadValue(definition_id, TOKEN_OWNER_HEX, definition)},
+        {"userStablecoinHolding", accountReadValue(holding_id, TOKEN_OWNER_HEX, holding)},
+        {"stabilityFeeAccumulator", accountReadValue(accumulator_id, PROGRAM_OWNER_HEX, accumulator)},
+        {"protocolParameters", accountReadValue(protocol_id, PROGRAM_OWNER_HEX, protocol)},
+        {"clock", accountReadValue(clock_id, PROGRAM_OWNER_HEX, clock)},
+    };
+    const std::string payload = planner_request.dump();
+    std::unique_ptr<char, decltype(&stablecoin_free)> planned(
+        stablecoin_repay_debt_plan(payload.c_str()), &stablecoin_free);
+    LOGOS_ASSERT_TRUE(planned != nullptr);
+    const json plan = json::parse(planned.get()).at("value");
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
+        submissionArguments(plan, {0, 3}, PROGRAM_ID_HEX)));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 6);
+
+    // Each invocation reads current state again; neither earlier success nor
+    // the frozen protocol bypasses request parsing and preflight validation.
+    for (const json& amount : {json(1.5), json(1.0), json(-1), json("340282366920938463463374607431768211456")}) {
+        request["amount"] = amount;
+        const LogosMap rejected = module.repayDebt(request);
+        LOGOS_ASSERT_EQ(rejected["error"].get<std::string>(), std::string("invalid_numeric_value"));
+        LOGOS_ASSERT_TRUE(rejected.find("transactionId") == rejected.end());
+    }
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+}
+
 LOGOS_TEST(real_ffi_journey_deposit_collateral_reconciles_frozen_vault_donation) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);

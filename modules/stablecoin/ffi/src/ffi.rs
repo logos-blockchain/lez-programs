@@ -11,7 +11,7 @@ use crate::api::{
     DecodeStabilityFeeAccumulatorRequest, DepositCollateralPlanRequest,
     InitializeProgramPlanRequest, OpenPositionPlanRequest, PositionAddressesRequest,
     ProgramInfoRequest, RedemptionRateUpdateQuoteRequest, RefreshGlobalsPlanRequest,
-    StablecoinResult, UpdateRedemptionRatePlanRequest,
+    RepayDebtPlanRequest, StablecoinResult, UpdateRedemptionRatePlanRequest,
 };
 
 #[derive(Serialize)]
@@ -250,6 +250,16 @@ pub unsafe extern "C" fn stablecoin_deposit_collateral_plan(
 ) -> *mut c_char {
     // SAFETY: Forwarded from this function's caller contract.
     unsafe { call::<DepositCollateralPlanRequest>(request_json, api::deposit_collateral_plan) }
+}
+
+#[unsafe(no_mangle)]
+/// Builds a preflighted wallet submission plan for `RepayDebt`.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_repay_debt_plan(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<RepayDebtPlanRequest>(request_json, api::repay_debt_plan) }
 }
 
 /// Releases a string returned by a `stablecoin_*` operation.

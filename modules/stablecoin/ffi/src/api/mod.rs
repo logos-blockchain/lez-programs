@@ -13,6 +13,9 @@ mod tests;
 #[cfg(test)]
 mod journeys;
 
+#[cfg(test)]
+mod repay_tests;
+
 use std::{error::Error, fmt};
 
 pub use decode::{
@@ -20,7 +23,8 @@ pub use decode::{
 };
 pub use plan::{
     accrue_stability_fee_plan, deposit_collateral_plan, initialize_program_plan,
-    open_position_plan, position_addresses, refresh_globals_plan, update_redemption_rate_plan,
+    open_position_plan, position_addresses, refresh_globals_plan, repay_debt_plan,
+    update_redemption_rate_plan,
 };
 pub use program::program_info;
 pub use projection::current_global_state;
@@ -30,7 +34,7 @@ pub use request::{
     DecodeRedemptionPriceStateRequest, DecodeStabilityFeeAccumulatorRequest,
     DepositCollateralPlanRequest, InitializeProgramPlanRequest, OpenPositionPlanRequest,
     PositionAddressesRequest, ProgramInfoRequest, RedemptionRateUpdateQuoteRequest,
-    RefreshGlobalsPlanRequest, UpdateRedemptionRatePlanRequest,
+    RefreshGlobalsPlanRequest, RepayDebtPlanRequest, UpdateRedemptionRatePlanRequest,
 };
 use serde_json::Value;
 
