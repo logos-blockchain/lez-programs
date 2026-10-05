@@ -2,7 +2,7 @@
 
 `stablecoin_module` is a headless Logos `core` module for the LEZ Stablecoin
 Program. It exposes deployment discovery, protocol-state reads, protocol
-initialization, position opening, and collateral deposits through the same
+initialization, position opening, collateral deposits, and debt repayment through the same
 universal API used by `logoscore` and UI modules.
 
 The Qt-free C++ adapter handles live wallet reads and transaction submission.
@@ -195,6 +195,51 @@ malformed decimals, and values outside `u64`/`u128` return
 `invalid_user_collateral_holding`, `collateral_definition_mismatch`,
 `token_program_mismatch`, `insufficient_collateral_balance`, and
 `collateral_amount_overflow`. Failed preflight never submits a transaction.
+
+### `repayDebt(request)`
+
+Burns the requested stablecoins and reduces an existing Position's normalized
+debt. Required request fields:
+
+| Field | Type |
+| --- | --- |
+| `ownerId` | base58 or 64-character hexadecimal account ID |
+| `positionNonce` | exact `u64` decimal string |
+| `userStablecoinHoldingId` | base58 or 64-character hexadecimal account ID |
+| `amount` | exact `u128` decimal string or lossless JSON integer |
+
+The module derives the Position and global account addresses from the configured
+program ID, reads current Protocol Parameters, Position, stablecoin definition,
+source holding, Stability Fee Accumulator, and canonical `CLOCK_01`, and validates
+their identities, owners, exact data, and token bindings. Both `ownerId` and
+`userStablecoinHoldingId` must be public accounts controlled by the active wallet;
+both sign, including for zero amounts. The source holding must cover `amount`.
+
+Account order is owner, Position, stablecoin definition, source stablecoin
+holding, Stability Fee Accumulator, Protocol Parameters, `CLOCK_01`. The program
+burns exactly `amount` and reduces normalized debt by
+`floor(amount * FIXED_POINT_ONE / current_accumulator)`. The accumulator uses
+the current canonical clock, saturating elapsed time and the seven-day window
+clamp. The floored reduction must not exceed remaining normalized debt.
+Repayment remains available while frozen and reads no redemption price,
+collateral vault, or market-price oracle.
+
+A positive burn can reduce normalized debt by zero; it is not rejected as dust
+or rounded up. The API does not cap the amount to a separately floored nominal
+debt value and does not offer automatic repay-all behavior. Decimal strings are
+the portable exact format. Floats, negative amounts, malformed decimals, and
+values outside `u64`/`u128` are rejected.
+
+Preflight errors include `invalid_numeric_value`, `position_pda_mismatch`,
+`position_owner_mismatch`, `position_nonce_mismatch`,
+`stablecoin_definition_mismatch`, `invalid_stablecoin_definition`,
+`invalid_user_stablecoin_holding`, `token_program_mismatch`,
+`insufficient_stablecoin_balance`, `repay_amount_exceeds_debt`, and
+`repayment_arithmetic_error` for unrepresentable program arithmetic.
+Missing initialization returns `not_initialized`; malformed or missing reads
+and missing public wallet signers prevent submission. Success returns
+`{status: "ok", error: "", transactionId: "..."}`. Wallet rejection or transport
+failure returns `wallet_submission_failed`, without a transaction ID or retry.
 
 ## Runtime configuration
 

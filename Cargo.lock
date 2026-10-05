@@ -7173,6 +7173,7 @@ dependencies = [
  "stablecoin_core",
  "stablecoin_program",
  "token_core",
+ "token_program",
  "twap_oracle_core",
 ]
 

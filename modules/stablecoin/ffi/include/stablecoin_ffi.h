@@ -119,6 +119,14 @@ char *stablecoin_position_addresses(const char *request_json);
 char *stablecoin_deposit_collateral_plan(const char *request_json);
 
 /**
+ * Builds a preflighted wallet submission plan for `RepayDebt`.
+ *
+ * # Safety
+ * `request_json` must be null or point to a live NUL-terminated byte string.
+ */
+char *stablecoin_repay_debt_plan(const char *request_json);
+
+/**
  * Releases a string returned by a `stablecoin_*` operation.
  *
  * # Safety

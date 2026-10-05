@@ -140,3 +140,19 @@ pub struct DepositCollateralPlanRequest {
     pub user_collateral_holding: AccountRead,
     pub protocol_parameters: AccountRead,
 }
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepayDebtPlanRequest {
+    pub stablecoin_program_id: String,
+    pub owner_id: String,
+    pub position_nonce: String,
+    pub amount: Value,
+    pub user_stablecoin_holding_id: String,
+    pub position: AccountRead,
+    pub stablecoin_definition: AccountRead,
+    pub user_stablecoin_holding: AccountRead,
+    pub stability_fee_accumulator: AccountRead,
+    pub protocol_parameters: AccountRead,
+    pub clock: AccountRead,
+}
