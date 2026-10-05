@@ -49,9 +49,13 @@ Item {
             return;
         }
 
+        var selectedIdentity = store.canonicalIdentifier(selectedId);
         for (var index = 0; index < matches.length; ++index) {
-            if (matches[index].id === selectedId)
+            if (matches[index].id === selectedId
+                    || (selectedIdentity && store.definitionIdentity(matches[index]) === selectedIdentity)) {
+                selectedId = matches[index].id;
                 return;
+            }
         }
 
         if (selectedId.length === 0 && typeFilter === "all" && query.length === 0) {
