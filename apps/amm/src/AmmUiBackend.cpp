@@ -157,6 +157,8 @@ void AmmUiBackend::syncWalletState()
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
     setFeePayerId(state.feePayerId);
+    setSyncError(state.syncError);
+    setSyncStatus(state.syncStatus);
 }
 
 bool AmmUiBackend::setFeePayer(QString accountId)

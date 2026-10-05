@@ -23,6 +23,9 @@ class AmmUiBackend
     // fee_payer_required (an empty hash for the swaps). Defaults to the
     // best-funded account.
     PROP(QString feePayerId READONLY)
+    // Wallet startup and refresh state, including asynchronous open failures.
+    PROP(QString syncStatus READONLY)
+    PROP(QString syncError READONLY)
     // Bumps on every known-tokens / known-pools registry refresh so QML replicas
     // re-fetch tokenList()/poolList()/resolveTokens(). Starts at 0; the backend
     // sets it once the initial snapshot has loaded (and again on each refresh).

@@ -8,6 +8,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QObject>
+#include <QPointer>
 #include <QThread>
 #include <QTimer>
 #include <QVariantList>
@@ -138,6 +140,9 @@ struct LogosWalletProvider::Impl {
     {
     }
 
+    // SDK replies can outlive this provider. Invalidate their guards before
+    // saving or releasing the module caller during teardown.
+    std::unique_ptr<QObject> callbackContext = std::make_unique<QObject>();
     std::unique_ptr<LogosModules> ownedLogos;
     LogosModules* logos = nullptr;
 };
@@ -154,6 +159,7 @@ LogosWalletProvider::LogosWalletProvider(LogosModules* logos)
 
 LogosWalletProvider::~LogosWalletProvider()
 {
+    m_impl->callbackContext.reset();
     if (m_connected)
         save();
 }
@@ -172,7 +178,7 @@ WalletSession LogosWalletProvider::connect(const WalletPaths& paths)
     } else {
         if (!QFileInfo::exists(paths.storage))
             return failedSession(WalletFailure::WalletMissing);
-        if (m_impl->logos->lez_core.open(paths.config, paths.storage)
+        if (m_impl->logos->lez_core.open(paths.config, paths.storage, paths.statistics)
             != WALLET_FFI_SUCCESS) {
             return failedSession(WalletFailure::OpenFailed);
         }
@@ -192,7 +198,7 @@ void LogosWalletProvider::connectAsync(const WalletPaths& paths,
     const quint64 generation = m_generation;
     const auto sharedCallback = std::make_shared<SessionCallback>(std::move(callback));
     if (!m_impl->logos) {
-        QTimer::singleShot(0, [sharedCallback]() {
+        QTimer::singleShot(0, m_impl->callbackContext.get(), [sharedCallback]() {
             (*sharedCallback)(failedSession(WalletFailure::WalletUnavailable));
         });
         return;
@@ -210,9 +216,10 @@ void LogosWalletProvider::retryCapabilityAsync(
     if (generation != m_generation)
         return;
 
+    const QPointer<QObject> alive(m_impl->callbackContext.get());
     m_impl->logos->lez_core.versionAsync(
-        [this, paths, attempt, generation, callback](QString version) {
-            if (generation != m_generation)
+        [this, alive, paths, attempt, generation, callback](QString version) {
+            if (!alive || generation != m_generation)
                 return;
             if (version.isEmpty()) {
                 if (attempt >= CAPABILITY_WARMUP_MAX_ATTEMPTS) {
@@ -220,6 +227,7 @@ void LogosWalletProvider::retryCapabilityAsync(
                     return;
                 }
                 QTimer::singleShot(CAPABILITY_WARMUP_RETRY_MS,
+                                   m_impl->callbackContext.get(),
                                    [this, paths, attempt, generation, callback]() {
                     retryCapabilityAsync(paths, attempt + 1, generation, callback);
                 });
@@ -238,9 +246,10 @@ void LogosWalletProvider::openAfterCapabilityAsync(
     if (generation != m_generation)
         return;
 
+    const QPointer<QObject> alive(m_impl->callbackContext.get());
     const auto finishOpen = std::make_shared<std::function<void(bool, WalletFailure)>>();
-    *finishOpen = [this, generation, callback](bool adopted, WalletFailure failure) {
-        if (generation != m_generation)
+    *finishOpen = [this, alive, generation, callback](bool adopted, WalletFailure failure) {
+        if (!alive || generation != m_generation)
             return;
         if (failure != WalletFailure::None) {
             (*callback)(failedSession(failure));
@@ -249,8 +258,8 @@ void LogosWalletProvider::openAfterCapabilityAsync(
 
         m_connected = true;
         loadSnapshotAsync(generation,
-            [this, generation, adopted, callback](WalletSnapshot snapshot) {
-                if (generation != m_generation)
+            [this, alive, generation, adopted, callback](WalletSnapshot snapshot) {
+                if (!alive || generation != m_generation)
                     return;
                 WalletSession session;
                 session.adopted = adopted;
@@ -260,17 +269,17 @@ void LogosWalletProvider::openAfterCapabilityAsync(
             });
     };
 
-    const auto openStored = [this, generation, paths, finishOpen]() {
-        if (generation != m_generation)
+    const auto openStored = [this, alive, generation, paths, finishOpen]() {
+        if (!alive || generation != m_generation)
             return;
         if (!QFileInfo::exists(paths.storage)) {
             (*finishOpen)(false, WalletFailure::WalletMissing);
             return;
         }
         m_impl->logos->lez_core.openAsync(
-            paths.config, paths.storage,
-            [this, generation, finishOpen](int result) {
-                if (generation != m_generation)
+            paths.config, paths.storage, paths.statistics,
+            [this, alive, generation, finishOpen](int result) {
+                if (!alive || generation != m_generation)
                     return;
                 (*finishOpen)(false, result == WALLET_FFI_SUCCESS
                     ? WalletFailure::None : WalletFailure::OpenFailed);
@@ -278,16 +287,16 @@ void LogosWalletProvider::openAfterCapabilityAsync(
     };
 
     m_impl->logos->lez_core.get_sequencer_addrAsync(
-        [this, generation, finishOpen, openStored](QString address) {
-            if (generation != m_generation)
+        [this, alive, generation, finishOpen, openStored](QString address) {
+            if (!alive || generation != m_generation)
                 return;
             if (!address.isEmpty()) {
                 (*finishOpen)(true, WalletFailure::None);
                 return;
             }
             m_impl->logos->lez_core.list_accountsAsync(
-                [this, generation, finishOpen, openStored](QVariantList accounts) {
-                    if (generation != m_generation)
+                [this, alive, generation, finishOpen, openStored](QVariantList accounts) {
+                    if (!alive || generation != m_generation)
                         return;
                     if (!accounts.isEmpty())
                         (*finishOpen)(true, WalletFailure::None);
@@ -313,7 +322,7 @@ WalletCreation LogosWalletProvider::createWallet(const WalletPaths& paths,
 
     WalletCreation creation;
     creation.mnemonic = m_impl->logos->lez_core.create_new(
-        paths.config, paths.storage, password);
+        paths.config, paths.storage, paths.statistics, password);
     if (creation.mnemonic.isEmpty())
         return failedCreation(WalletFailure::CreateFailed);
 
@@ -351,7 +360,8 @@ void LogosWalletProvider::snapshotAsync(bool forceRefresh, SnapshotCallback call
 {
     if (m_snapshotReady && !forceRefresh) {
         const WalletSnapshot snapshot = m_snapshot;
-        QTimer::singleShot(0, [callback = std::move(callback), snapshot]() mutable {
+        QTimer::singleShot(0, m_impl->callbackContext.get(),
+                           [callback = std::move(callback), snapshot]() mutable {
             callback(snapshot);
         });
         return;
@@ -359,7 +369,8 @@ void LogosWalletProvider::snapshotAsync(bool forceRefresh, SnapshotCallback call
     if (!m_connected) {
         WalletSnapshot snapshot;
         snapshot.failure = WalletFailure::WalletUnavailable;
-        QTimer::singleShot(0, [callback = std::move(callback), snapshot]() mutable {
+        QTimer::singleShot(0, m_impl->callbackContext.get(),
+                           [callback = std::move(callback), snapshot]() mutable {
             callback(snapshot);
         });
         return;
@@ -564,14 +575,15 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback
     if (!m_impl->logos || generation != m_generation)
         return;
 
+    const QPointer<QObject> alive(m_impl->callbackContext.get());
     m_impl->logos->lez_core.get_current_block_heightAsync(
-        [this, generation, callback = std::move(callback)](int currentHeight) mutable {
-            if (generation != m_generation)
+        [this, alive, generation, callback = std::move(callback)](int currentHeight) mutable {
+            if (!alive || generation != m_generation)
                 return;
 
-            auto afterSync = [this, generation, currentHeight,
+            auto afterSync = [this, alive, generation, currentHeight,
                               callback = std::move(callback)](int syncResult) mutable {
-                if (generation != m_generation)
+                if (!alive || generation != m_generation)
                     return;
                 if (syncResult != WALLET_FFI_SUCCESS) {
                     WalletSnapshot failed;
@@ -581,21 +593,21 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback
                 }
 
                 m_impl->logos->lez_core.get_last_synced_blockAsync(
-                    [this, generation, currentHeight,
+                    [this, alive, generation, currentHeight,
                      callback = std::move(callback)](int lastSynced) mutable {
-                        if (generation != m_generation)
+                        if (!alive || generation != m_generation)
                             return;
                         m_impl->logos->lez_core.get_sequencer_addrAsync(
-                            [this, generation, currentHeight, lastSynced,
+                            [this, alive, generation, currentHeight, lastSynced,
                              callback = std::move(callback)](QString address) mutable {
-                                if (generation != m_generation)
+                                if (!alive || generation != m_generation)
                                     return;
                                 m_impl->logos->lez_core.list_accountsAsync(
-                                    [this, generation, currentHeight, lastSynced,
+                                    [this, alive, generation, currentHeight, lastSynced,
                                      address = std::move(address),
                                      callback = std::move(callback)](
                                         QVariantList entries) mutable {
-                                        if (generation != m_generation)
+                                        if (!alive || generation != m_generation)
                                             return;
 
                                         struct SnapshotState {
@@ -636,8 +648,8 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback
                                         }
 
                                         auto finishOne = std::make_shared<std::function<void()>>();
-                                        *finishOne = [this, generation, state, finishOne]() mutable {
-                                            if (generation != m_generation || --state->remaining > 0)
+                                        *finishOne = [this, alive, generation, state]() mutable {
+                                            if (!alive || generation != m_generation || --state->remaining > 0)
                                                 return;
                                             for (qsizetype index = 0;
                                                  index < state->publicReads.size(); ++index) {
@@ -646,8 +658,8 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback
                                                         state->publicReads.at(index));
                                             }
                                             m_impl->logos->lez_core.saveAsync(
-                                                [this, generation, state](int result) mutable {
-                                                    if (generation != m_generation)
+                                                [this, alive, generation, state](int result) mutable {
+                                                    if (!alive || generation != m_generation)
                                                         return;
                                                     if (result != WALLET_FFI_SUCCESS)
                                                         state->snapshot.failure = WalletFailure::SaveFailed;
@@ -680,8 +692,10 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation, SnapshotCallback
 
                                             m_impl->logos->lez_core.get_account_publicAsync(
                                                 account.address,
-                                                [this, state, finishOne, index,
+                                                [this, alive, generation, state, finishOne, index,
                                                  accountId = account.address](QString payload) {
+                                                    if (!alive || generation != m_generation)
+                                                        return;
                                                     const WalletAccountRead read =
                                                         parsePublicAccount(accountId, payload);
                                                     state->publicReads[index] = read;
