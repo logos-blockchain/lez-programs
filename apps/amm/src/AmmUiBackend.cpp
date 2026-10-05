@@ -262,11 +262,10 @@ QString AmmUiBackend::swapExactOutput(QString defAHex, QString defBHex, QString 
 
 QVariantList AmmUiBackend::tokenList()
 {
-    // Config-driven token list, read straight from TOKENS_CONFIG (like poolList
-    // reads AMM_POOLS_CONFIG). Token discovery is an app concern, so this stays
-    // in the backend rather than the amm_module; the swap/quote module methods
-    // normalize the ids (base58 or hex) at their boundary. Served from the
-    // RegistryLoader snapshot (re-fetched when registryRevision changes).
+    // Read the already-published RegistryLoader snapshot, not its source. Local
+    // files, fetched registry and disk cache share this path; metadata is not
+    // checked against chain state here. See the .rep for precedence/trust limits.
+    // QML re-fetches this snapshot when registryRevision changes.
     return m_registry->tokens();
 }
 
@@ -341,10 +340,9 @@ QVariantList AmmUiBackend::tokenHoldings()
 
 QVariantList AmmUiBackend::poolList()
 {
-    // Config-driven known pools. Read straight from AMM_POOLS_CONFIG on every
-    // call (the UI fetches this once on load); adding more pairs is a config
-    // edit, no app change. Pool discovery is an app concern, so this stays in
-    // the backend rather than the amm_module. Served from the RegistryLoader snapshot.
+    // Read the already-published RegistryLoader snapshot, with the same sources
+    // and trust limits as tokenList(). Pool labels and ids are source-provided;
+    // this slot performs no file/network/chain read.
     return m_registry->pools();
 }
 
@@ -357,7 +355,7 @@ QVariantList AmmUiBackend::feeTiers()
 
 QVariantList AmmUiBackend::resolveTokens()
 {
-    // The app owns the token set: the configured tokens (TOKENS_CONFIG) and the user's
+    // The app owns the token set: the current registry token snapshot and the user's
     // persisted custom ids — the same "known list" shape the swap side shows. Tokens the
     // wallet merely holds are NOT auto-listed here; to provide liquidity with an unlisted
     // token the user adds it by id (addCustomToken). The module still annotates
@@ -380,7 +378,7 @@ QVariantList AmmUiBackend::resolveTokens()
     QVariantList rows = m_logos->amm_module.resolveTokens(request, wallet_open);
 
     // The module resolves on-chain fields (definitionId/name/holding/balance) but
-    // not the UI-only `symbol`, which lives in TOKENS_CONFIG. Re-attach it here so
+    // not the source-provided UI-only `symbol` in the registry snapshot. Re-attach it so
     // the liquidity token picker derives the same colored avatars as the swap side
     // (TokenVisuals derives color/letter from the symbol). Custom ids not in the
     // config keep no symbol; the picker falls back to the name for those.
