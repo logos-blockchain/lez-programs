@@ -53,9 +53,11 @@ fn parse_stablecoin_program_id(
 ) -> Result<lee_core::account::AccountId, StablecoinApiError> {
     let program_id =
         parse_program_id(value).map_err(|_| StablecoinApiError::new("invalid_program_id"))?;
-    // The all-zero id is DEFAULT_PROGRAM_OWNER, i.e. "no program owns this" -- never a
-    // real program address.
-    if program_id == lee_core::program::DEFAULT_PROGRAM_OWNER {
+    // The all-zero id is `NATIVE_TOKEN_PROGRAM_ID`, the program whose shard holds
+    // every account's balance -- a real program, and never this one. v0.2.5 rejected
+    // the same value as `DEFAULT_PROGRAM_OWNER` ("no program owns this"), which is
+    // gone along with ownership itself.
+    if program_id == lee_core::native_token::NATIVE_TOKEN_PROGRAM_ID {
         return Err(StablecoinApiError::new("invalid_program_id"));
     }
     Ok(program_id)

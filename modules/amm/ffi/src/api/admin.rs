@@ -1,8 +1,13 @@
-use amm_core::{compute_protocol_fee_pda, Instruction};
-use serde_json::{json, Value};
+use amm_core::{compute_protocol_fee_pda, ConfigFacts, Instruction};
+use serde_json::Value;
+use token_core::{TokenDescriptor, TokenKind};
 
-use super::{config::load_config, TransferOwnershipPlanRequest, WithdrawProtocolFeesPlanRequest};
-use crate::account::{account_id_from_hex, account_id_hex, parse_program_id};
+use super::{
+    config::load_config,
+    envelope::{plan_response, signer, slot},
+    TransferOwnershipPlanRequest, WithdrawProtocolFeesPlanRequest,
+};
+use crate::account::{account_id_from_hex, parse_program_id};
 
 /// Builds the `UpdateConfig` submission that transfers the AMM's admin authority. The current
 /// admin — the config's stored `authority`, decoded from `config` — is the sole signer;
@@ -20,18 +25,15 @@ pub(super) fn transfer_ownership_plan(
     let instruction = borsh::to_vec(&Instruction::UpdateConfig { new_authority })
         .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
-    // Fixed IDL account order for UpdateConfig: the config account (mut, updated in place, not a
+    // Fixed IDL slot order for UpdateConfig: the config account (mut, updated in place, not a
     // signer) and the current admin authority (signs). `new_authority` is instruction data, not
-    // an account.
-    let account_ids = [config_id, config.authority];
-    let signing_requirements = [false, true];
+    // an account. The authority slot is signature-only, so it names the program being called.
+    let slots = [
+        slot(config_id, amm_program),
+        signer(config.authority, amm_program),
+    ];
 
-    Ok(json!({
-        "programId": request.amm_program_id,
-        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
-        "instruction": instruction,
-    }))
+    Ok(plan_response(&request.amm_program_id, &slots, instruction))
 }
 
 /// Builds the `WithdrawProtocolFees` submission that moves `amount` of accrued protocol fees for
@@ -54,24 +56,35 @@ pub(super) fn withdraw_protocol_fees_plan(
         return Err(String::from("config_unavailable"));
     };
 
-    let instruction = borsh::to_vec(&Instruction::WithdrawProtocolFees { amount })
-        .map_err(|error| format!("instruction serialization failed: {error}"))?;
+    // The two holding reads v0.2.5 made are gone: `descriptor` rides on the chained
+    // transfer, so the Token Program refuses the call unless *both* the protocol-fee
+    // holding and the destination hold exactly this asset -- the whole of what those
+    // reads used to establish. Protocol fees accrue in a fungible token.
+    let instruction = borsh::to_vec(&Instruction::WithdrawProtocolFees {
+        amount,
+        facts: ConfigFacts {
+            token_program_id: config.token_program_id,
+            twap_oracle_program_id: config.twap_oracle_program_id,
+            authority: config.authority,
+            swap_fee_bps: config.swap_fee_bps,
+            protocol_fee_bps: config.protocol_fee_bps,
+        },
+        descriptor: TokenDescriptor {
+            definition_id: token_definition,
+            kind: TokenKind::Fungible,
+        },
+    })
+    .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
-    // Fixed IDL account order for WithdrawProtocolFees: config, the protocol-fee holding PDA (mut),
+    // Fixed IDL slot order for WithdrawProtocolFees: config, the protocol-fee holding PDA (mut),
     // the destination holding (mut), and the admin authority (signs). `amount` is instruction data.
     let protocol_fee_holding = compute_protocol_fee_pda(amm_program, config_id, token_definition);
-    let account_ids = [
-        config_id,
-        protocol_fee_holding,
-        destination,
-        config.authority,
+    let slots = [
+        slot(config_id, amm_program),
+        slot(protocol_fee_holding, config.token_program_id),
+        slot(destination, config.token_program_id),
+        signer(config.authority, amm_program),
     ];
-    let signing_requirements = [false, false, false, true];
 
-    Ok(json!({
-        "programId": request.amm_program_id,
-        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
-        "instruction": instruction,
-    }))
+    Ok(plan_response(&request.amm_program_id, &slots, instruction))
 }

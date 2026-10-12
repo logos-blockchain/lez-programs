@@ -1,223 +1,177 @@
+//! `Instruction::GenerateDebt` (spec §10.7).
+
 use alloy_primitives::U512;
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, ProgramShardSelector, ShardData},
+    program::{AccountMeta, ChainedCall},
 };
 use stablecoin_core::{
-    compute_protocol_parameters_pda, compute_redemption_price_state_pda,
-    compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda_seed,
-    math::{
-        compute_current_accumulated_rate, compute_current_redemption_price_wide, mul_div_ceil,
-        FIXED_POINT_ONE,
-    },
-    verify_position_and_get_seed, Position, ProtocolParameters, RedemptionPriceState,
-    StabilityFeeAccumulator,
+    compute_stablecoin_definition_pda_seed,
+    math::{mul_div_ceil, FIXED_POINT_ONE},
+    CollateralizationInputs, GenerateDebt, Position, ProtocolParameters,
 };
-use token_core::TokenHolding;
 
-/// Mint `amount` stablecoins against `position`, increasing its debt (spec §10.7).
+/// Plan half: check the addresses, gate on freshness and the freeze flag, and
+/// chain the `Token::Mint`.
 ///
-/// Emits a chained `Token::Mint` authorized by the stablecoin definition's PDA
-/// seed — `initialize_program` set the definition as its own mint authority.
-/// The position's `normalized_debt_amount` grows by
-/// `⌈amount × FIXED_POINT_ONE / current_accumulator⌉`, rounded **up** per §6.3 so
-/// the borrower's nominal debt grows by at least `amount`.
-///
-/// The §6.2 collateralization invariant is checked *after* the mint, against the
-/// accumulator and redemption price projected forward to the clock timestamp.
-/// The oracle is read for its staleness gate only; its price is not used.
+/// The oracle is a liveness gate only — §10.7 never consumes its price — and that
+/// gate moves *into the plan*, which is where it now belongs: the observation is
+/// declared, pinned exactly by its own guard, and `now` is pinned by the clock
+/// guard, so comparing them needs no account data.
 ///
 /// # Panics
-/// - `owner` is not authorized.
-/// - `position` is uninitialized, not owned by `stablecoin_program_id`, does not decode, or is not
-///   at its `(owner, position_nonce)` PDA.
-/// - `protocol_parameters`, `stability_fee_accumulator` or `redemption_price_state` is
-///   uninitialized, wrongly owned, not at its canonical PDA, or does not decode.
-/// - `protocol_parameters.is_frozen` is set.
-/// - `stablecoin_definition.account_id` does not match
-///   `protocol_parameters.stablecoin_definition_id`, or it is uninitialized.
-/// - `market_price_oracle` does not match `protocol_parameters.market_price_oracle_id`, or its
-///   observation is older than `maximum_oracle_price_age_milliseconds`.
-/// - `user_stablecoin_holding` is uninitialized, owned by a different Token Program than the
-///   definition, or holds a different definition.
-/// - `clock` is not the initialized system `CLOCK_01` account.
-/// - The debt addition overflows, or §6.2 fails post-mint.
-#[allow(
+/// - `owner` did not sign.
+/// - any global is not at its canonical PDA, or the clock is not `CLOCK_01`.
+/// - the protocol is frozen.
+/// - `stablecoin_definition` is not the bound definition, or any token slot does not select the
+///   bound Token Program's shard.
+/// - the oracle is not the bound handle.
+/// - the observation is dated in the future, or older than `maximum_oracle_price_age_milliseconds`.
+/// - `position` is not at its `(owner, position_nonce)` PDA.
+#[expect(
     clippy::too_many_arguments,
-    reason = "the nine account inputs mirror the spec §10.7 ABI"
+    reason = "the account inputs mirror the spec §10.7 ABI, plus the declared globals and clock"
 )]
-pub fn generate_debt(
-    owner: AccountWithMetadata,
-    position: AccountWithMetadata,
-    stablecoin_definition: AccountWithMetadata,
-    user_stablecoin_holding: AccountWithMetadata,
-    stability_fee_accumulator: AccountWithMetadata,
-    redemption_price_state: AccountWithMetadata,
-    market_price_oracle: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    clock: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
+#[must_use]
+pub fn plan_generate_debt(
+    owner: &AccountMeta,
+    position: &AccountMeta,
+    stablecoin_definition: &AccountMeta,
+    user_stablecoin_holding: &AccountMeta,
+    stability_fee_accumulator: &AccountMeta,
+    redemption_price_state: &AccountMeta,
+    market_price_oracle: &AccountMeta,
+    protocol_parameters: &AccountMeta,
+    clock: &AccountMeta,
+    parameters: &ProtocolParameters,
+    oracle_timestamp: u64,
+    now: u64,
+    position_nonce: u64,
     amount: u128,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
+    stablecoin_program_id: AccountId,
+) -> ChainedCall {
     assert!(owner.is_authorized, "Owner authorization is missing");
-
-    assert_ne!(
-        position.account,
-        Account::default(),
-        "Position account must be initialized"
-    );
-    assert_eq!(
-        position.account.program_owner, stablecoin_program_id,
-        "Position is not owned by this stablecoin program"
-    );
-    let position_data = Position::try_from(&position.account.data)
-        .expect("Position account must hold valid Position state");
-    let _position_seed = verify_position_and_get_seed(
-        &position,
-        &owner,
-        position_data.position_nonce,
-        stablecoin_program_id,
-    );
-    assert_eq!(
-        position_data.owner_account_id, owner.account_id,
-        "Position owner_account_id does not match the owner account"
-    );
-
-    let parameters = ProtocolParameters::try_from(&crate::checks::decode_global(
-        &protocol_parameters,
-        compute_protocol_parameters_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "ProtocolParameters",
-    ))
-    .expect("ProtocolParameters must decode");
+    crate::shared::assert_parameters_slot(protocol_parameters, stablecoin_program_id);
+    crate::shared::assert_accumulator_slot(stability_fee_accumulator, stablecoin_program_id);
+    crate::shared::assert_redemption_slot(redemption_price_state, stablecoin_program_id);
+    crate::shared::assert_canonical_clock(clock);
     assert!(!parameters.is_frozen, "Protocol is frozen");
-
-    let accumulator = StabilityFeeAccumulator::try_from(&crate::checks::decode_global(
-        &stability_fee_accumulator,
-        compute_stability_fee_accumulator_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "StabilityFeeAccumulator",
-    ))
-    .expect("StabilityFeeAccumulator must decode");
-
-    let redemption = RedemptionPriceState::try_from(&crate::checks::decode_global(
-        &redemption_price_state,
-        compute_redemption_price_state_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "RedemptionPriceState",
-    ))
-    .expect("RedemptionPriceState must decode");
-
-    let now = crate::accrue_stability_fee::read_clock(&clock);
-
-    // The oracle is a liveness gate only — spec §10.7 never consumes its price.
-    let oracle = crate::update_redemption_rate::decode_oracle(&market_price_oracle, &parameters);
-    // A saturating subtraction would report age 0 for a future-dated observation,
-    // reading as maximally fresh and defeating the gate. Reject it outright.
-    let oracle_age = now
-        .checked_sub(oracle.timestamp)
-        .expect("Market price oracle observation is dated in the future");
-    assert!(
-        oracle_age <= parameters.maximum_oracle_price_age_milliseconds,
-        "Market price oracle observation is stale"
-    );
-
     assert_eq!(
         stablecoin_definition.account_id, parameters.stablecoin_definition_id,
         "Stablecoin definition does not match the one bound at initialize_program"
     );
-    assert_ne!(
-        stablecoin_definition.account,
-        Account::default(),
-        "Stablecoin definition account must be initialized"
+    crate::shared::assert_token_program(stablecoin_definition, parameters, "Stablecoin definition");
+    crate::shared::assert_token_program(
+        user_stablecoin_holding,
+        parameters,
+        "User stablecoin holding",
     );
+    crate::shared::assert_bound_oracle(market_price_oracle, parameters);
+    assert_oracle_is_fresh(oracle_timestamp, now, parameters);
+    crate::shared::assert_position_slot(position, owner, position_nonce, stablecoin_program_id);
 
-    assert_ne!(
-        user_stablecoin_holding.account,
-        Account::default(),
-        "User stablecoin holding must be initialized"
-    );
-    let token_program_id = stablecoin_definition.account.program_owner;
-    assert_eq!(
-        user_stablecoin_holding.account.program_owner, token_program_id,
-        "User stablecoin holding must be owned by the same Token Program as the definition"
-    );
-    let user_holding = TokenHolding::try_from(&user_stablecoin_holding.account.data)
-        .expect("User stablecoin holding must hold a valid TokenHolding");
-    assert_eq!(
-        user_holding.definition_id(),
+    mint_call(
+        parameters,
         stablecoin_definition.account_id,
-        "User stablecoin holding does not match the stablecoin definition"
-    );
+        user_stablecoin_holding.account_id,
+        amount,
+    )
+}
 
-    let current_accumulator = compute_current_accumulated_rate(
-        accumulator.accumulated_rate_at_last_accrual,
-        parameters.stability_fee_per_millisecond,
-        accumulator.last_accrued_at,
-        now,
+/// The oracle observation must be no older than the configured bound.
+///
+/// # Panics
+/// If the observation is dated in the future, or is stale. A saturating
+/// subtraction would report age 0 for a future-dated observation, reading as
+/// maximally fresh and defeating the gate, so that case is rejected outright.
+pub fn assert_oracle_is_fresh(oracle_timestamp: u64, now: u64, parameters: &ProtocolParameters) {
+    let age = now
+        .checked_sub(oracle_timestamp)
+        .expect("Market price oracle observation is dated in the future");
+    assert!(
+        age <= parameters.maximum_oracle_price_age_milliseconds,
+        "Market price oracle observation is stale"
     );
-    // Round UP (§6.3): the borrower receives exactly `amount`, so nominal debt
-    // must grow by at least `amount`. The remainder stays with the protocol.
-    let debt_delta = mul_div_ceil(amount, FIXED_POINT_ONE, current_accumulator);
-    let new_debt = position_data
+}
+
+/// The chained `Token::Mint`, authorized by the stablecoin definition's PDA
+/// seed — `initialize_program` made the definition its own mint authority.
+#[must_use]
+fn mint_call(
+    parameters: &ProtocolParameters,
+    stablecoin_definition_id: AccountId,
+    user_stablecoin_holding_id: AccountId,
+    amount: u128,
+) -> ChainedCall {
+    let token_program_id = parameters.token_program_id;
+    ChainedCall::new(
+        token_program_id,
+        vec![
+            ProgramShardSelector::new(stablecoin_definition_id, token_program_id),
+            ProgramShardSelector::new(user_stablecoin_holding_id, token_program_id),
+        ],
+        &token_core::Instruction::Mint {
+            amount_to_mint: amount,
+        },
+    )
+    .with_pda_seeds(vec![compute_stablecoin_definition_pda_seed()])
+}
+
+/// Apply half: grow the position's normalized debt and re-check §6.2.
+///
+/// The delta is `⌈amount × FIXED_POINT_ONE / current_accumulator⌉`, rounded **up**
+/// per §6.3: the borrower receives exactly `amount`, so nominal debt must grow by
+/// at least `amount` and the remainder stays with the protocol.
+///
+/// Every input the check needs beyond the position lives in three other accounts
+/// and arrives declared — see [`CollateralizationInputs`]. This apply is the one
+/// place that sees all of them together, which is why the check lives here
+/// rather than in the plan.
+///
+/// # Panics
+/// - the shard is not a valid [`Position`], or its identity differs from the declared one.
+/// - the debt addition overflows.
+/// - the projected redemption price is zero. A rate below 1.0 decays it to zero over a long enough
+///   gap, which would zero the required collateral and let any mint through.
+/// - §6.2 fails after the mint.
+#[must_use]
+pub fn position_after_generate(pre_data: &ShardData, effect: &GenerateDebt) -> ShardData {
+    let position = crate::shared::position_of(pre_data, &effect.expected);
+    let current_accumulator = effect.inputs.fee.current_rate();
+    let debt_delta = mul_div_ceil(effect.amount, FIXED_POINT_ONE, current_accumulator);
+    let normalized_debt_amount = position
         .normalized_debt_amount
         .checked_add(debt_delta)
         .expect("Position normalized_debt_amount overflow");
 
-    let updated_position = Position {
-        normalized_debt_amount: new_debt,
-        ..position_data
+    let updated = Position {
+        normalized_debt_amount,
+        ..position
     };
-    // Projected in `U512`: a redemption rate at the controller's permitted limit
-    // outgrows `u128` about 45 minutes out, and this value is only ever compared,
-    // never stored. `current_accumulator` stays narrow — it divides `amount`
-    // above, so a debt delta it cannot express is not a mint we can price.
-    let current_redemption_price = compute_current_redemption_price_wide(
-        redemption.redemption_price_at_last_update,
-        redemption.redemption_rate_per_millisecond,
-        redemption.last_updated_at,
-        now,
-    );
-    // A rate below 1.0 decays the projected price to zero over a long enough
-    // gap, which would zero the required collateral and let any mint through.
+    assert_collateralized(&updated, &effect.inputs);
+    ShardData::from(&updated)
+}
+
+/// The §6.2 invariant, against the accumulator and redemption price projected to
+/// the pinned `now` (§5.3).
+///
+/// `current_accumulator` stays narrow — it divides `amount` above, so a debt delta
+/// it cannot express is not a mint we can price — while the redemption price is
+/// projected in `U512`, since a rate at the controller's permitted limit outgrows
+/// `u128` about 45 minutes out and this value is only ever compared.
+///
+/// # Panics
+/// If the projected redemption price is zero, or §6.2 fails.
+pub fn assert_collateralized(position: &Position, inputs: &CollateralizationInputs) {
+    let current_redemption_price = inputs.current_redemption_price_wide();
     assert!(
         !current_redemption_price.is_zero(),
         "Redemption price projected to zero"
     );
     crate::checks::assert_position_is_collateralized(
-        &updated_position,
-        U512::from(current_accumulator),
+        position,
+        U512::from(inputs.fee.current_rate()),
         current_redemption_price,
-        parameters.minimum_collateralization_ratio,
+        inputs.minimum_collateralization_ratio,
     );
-
-    // Captured before the accounts move into the diffs -- the call names them by id.
-    let stablecoin_definition_id = stablecoin_definition.account_id;
-    let user_stablecoin_holding_id = user_stablecoin_holding.account_id;
-
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(owner),
-        AccountStateDiff::new(position, BalanceDiff::Add(0), Data::from(&updated_position)),
-        AccountStateDiff::unchanged(stablecoin_definition),
-        AccountStateDiff::unchanged(user_stablecoin_holding),
-        AccountStateDiff::unchanged(stability_fee_accumulator),
-        AccountStateDiff::unchanged(redemption_price_state),
-        AccountStateDiff::unchanged(market_price_oracle),
-        AccountStateDiff::unchanged(protocol_parameters),
-        AccountStateDiff::unchanged(clock),
-    ];
-
-    // `initialize_program` made the definition its own mint authority, so the
-    // chained call authorizes it with the definition's PDA seed -- the call ships
-    // bare ids, not an `is_authorized` pre-state flag.
-    let mint_call = ChainedCall::new(
-        token_program_id,
-        vec![stablecoin_definition_id, user_stablecoin_holding_id],
-        &token_core::Instruction::Mint {
-            amount_to_mint: amount,
-        },
-    )
-    .with_pda_seeds(vec![compute_stablecoin_definition_pda_seed()]);
-
-    (state_diffs, vec![mint_call])
 }

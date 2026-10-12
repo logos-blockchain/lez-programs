@@ -7,7 +7,7 @@
       "accounts": [
         {
           "name": "owner",
-          "writable": true,
+          "writable": false,
           "signer": false,
           "init": false
         },
@@ -28,6 +28,18 @@
         {
           "name": "token_program_id",
           "type": "account_id"
+        },
+        {
+          "name": "kind",
+          "type": {
+            "defined": "TokenKind"
+          }
+        },
+        {
+          "name": "contents",
+          "type": {
+            "defined": "AtaContents"
+          }
         }
       ]
     },
@@ -37,7 +49,7 @@
         {
           "name": "owner",
           "writable": false,
-          "signer": true,
+          "signer": false,
           "init": false
         },
         {
@@ -59,6 +71,12 @@
           "type": "account_id"
         },
         {
+          "name": "descriptor",
+          "type": {
+            "defined": "TokenDescriptor"
+          }
+        },
+        {
           "name": "amount",
           "type": "u128"
         }
@@ -70,7 +88,7 @@
         {
           "name": "owner",
           "writable": false,
-          "signer": true,
+          "signer": false,
           "init": false
         },
         {
@@ -90,6 +108,12 @@
         {
           "name": "token_program_id",
           "type": "account_id"
+        },
+        {
+          "name": "descriptor",
+          "type": {
+            "defined": "TokenDescriptor"
+          }
         },
         {
           "name": "amount",
@@ -229,6 +253,21 @@
   ],
   "types": [
     {
+      "name": "AtaContents",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Empty"
+        },
+        {
+          "name": "Intended"
+        },
+        {
+          "name": "Squatted"
+        }
+      ]
+    },
+    {
       "name": "MetadataStandard",
       "kind": "enum",
       "variants": [
@@ -237,6 +276,37 @@
         },
         {
           "name": "Expanded"
+        }
+      ]
+    },
+    {
+      "name": "TokenDescriptor",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "definition_id",
+          "type": "account_id"
+        },
+        {
+          "name": "kind",
+          "type": {
+            "defined": "TokenKind"
+          }
+        }
+      ]
+    },
+    {
+      "name": "TokenKind",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Fungible"
+        },
+        {
+          "name": "NftMaster"
+        },
+        {
+          "name": "NftPrintedCopy"
         }
       ]
     }

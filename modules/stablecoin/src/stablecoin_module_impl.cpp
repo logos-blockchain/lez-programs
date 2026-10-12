@@ -206,6 +206,8 @@ nlohmann::json StablecoinModuleImpl::stablecoinProgramInfo(std::string& error) {
         "stablecoinMasterHoldingIdHex",
         "clockId",
         "clockIdHex",
+        "clockProgramId",
+        "clockProgramIdHex",
     };
     if (std::any_of(std::begin(required_fields), std::end(required_fields), [&](const char* key) {
             return !hasString(result.value, key) || jsonString(result.value, key).empty();
@@ -239,9 +241,37 @@ nlohmann::json StablecoinModuleImpl::readPublicAccount(const std::string& accoun
     return stablecoin_module::detail::publicAccountRead(account_id, raw);
 }
 
+nlohmann::json StablecoinModuleImpl::readPublicAccountShard(const std::string& account_id,
+                                                            const std::string& program_id) {
+    // Projected here rather than by the node: wallet-ffi has
+    // `wallet_ffi_get_account_view(account_id, program_account_id)`, but lez_core
+    // does not surface it yet, so there is no narrower read to call. Dropping the
+    // other shards locally gives the decoders the same answer; what it does not
+    // give is the protection a server-side projection would -- a third party can
+    // still write shards at the same address and push the response past the size
+    // cap. Swap the underlying read for the view when lez_core exposes it.
+    json read = readPublicAccount(account_id);
+    if (jsonString(read, "status") != "ok") return read;
+    json& data = read["account"]["data"];
+    const auto shards = data.find("shards");
+    const std::string shard =
+        shards == data.end() ? std::string() : jsonString(*shards, program_id.c_str());
+    if (shard.empty()) {
+        // The named program stored nothing here -- the successor to v0.2.5's
+        // `program_owner != program_id`, reported the way an absent account is.
+        return {{"id", account_id}, {"status", "not_found"}};
+    }
+    read["account"]["data"]["shards"] = {{program_id, shard}};
+    return read;
+}
+
 bool StablecoinModuleImpl::requireUninitialized(const std::string& account_id,
+                                                const std::string& program_id,
                                                 std::string& error) {
-    const json read = readPublicAccount(account_id);
+    // "Uninitialized" is now a question about one program's shard, not about the
+    // address: another program may hold state here and the slot is still free for
+    // the one that is about to write it.
+    const json read = readPublicAccountShard(account_id, program_id);
     const std::string status = jsonString(read, "status");
     if (status == "not_found") return true;
     error = status == "ok" ? "already_initialized" : "account_read_failed";
@@ -268,7 +298,8 @@ LogosMap StablecoinModuleImpl::protocolParameters() {
         const json info = stablecoinProgramInfo(error);
         if (!info.is_object()) return publicError(error.empty() ? "backend_error" : error);
 
-        const json read = readPublicAccount(jsonString(info, "protocolParametersIdHex"));
+        const json read = readPublicAccountShard(jsonString(info, "protocolParametersIdHex"),
+                                                 jsonString(info, "programIdHex"));
         const std::string status = jsonString(read, "status");
         if (status == "not_found") return publicError("not_initialized");
         if (status != "ok") return publicError("account_read_failed");
@@ -289,10 +320,12 @@ LogosMap StablecoinModuleImpl::protocolParameters() {
 
 LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
     const auto accounts_field = plan.find("accountIds");
+    const auto program_accounts_field = plan.find("programAccountIds");
     const auto signers_field = plan.find("signingRequirements");
     const auto instruction_field = plan.find("instruction");
     const std::string program_id = jsonString(plan, "programId");
     if (accounts_field == plan.end() || !accounts_field->is_array()
+        || program_accounts_field == plan.end() || !program_accounts_field->is_array()
         || signers_field == plan.end() || !signers_field->is_array()
         || instruction_field == plan.end()
         || !stablecoin_module::detail::isValidAccountIdHex(program_id)) {
@@ -301,12 +334,21 @@ LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
 
     const std::vector<std::string> account_ids =
         accounts_field->get<std::vector<std::string>>();
+    // New in v0.3.0: a transaction names shards, so each slot carries the program
+    // whose shard it selects, index-aligned with accountIds and the signer flags.
+    // `initialize_program` spans four programs across its nine slots, so unlike
+    // the signer pattern below there is no single expected value to assert.
+    const std::vector<std::string> program_account_ids =
+        program_accounts_field->get<std::vector<std::string>>();
     const std::vector<bool> signing_requirements =
         signers_field->get<std::vector<bool>>();
     const std::vector<std::uint8_t> instruction =
         stablecoin_module::detail::jsonInstructionLeBytes(*instruction_field);
     if (account_ids.size() != 9 || signing_requirements.size() != 9
+        || program_account_ids.size() != 9
         || !std::all_of(account_ids.begin(), account_ids.end(),
+                        stablecoin_module::detail::isValidAccountIdHex)
+        || !std::all_of(program_account_ids.begin(), program_account_ids.end(),
                         stablecoin_module::detail::isValidAccountIdHex)
         || signing_requirements != std::vector<bool>({true, false, false, false, false,
                                                       false, false, false, false})
@@ -321,6 +363,11 @@ LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
         instruction,
         program_id,
         FEE_PAYER_SELF,
+        // Last, after the fee payer: lez_core takes one entry per account, where
+        // "" would mean the called program's own shard. The planner always names
+        // the program explicitly, so the Rust side stays the single authority on
+        // which shard each slot selects.
+        program_account_ids,
         &call_error);
     if (!call_error.ok()) {
         STABLECOIN_TRACE(
@@ -343,6 +390,14 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
                  "freezeAuthorityId",
                  "collateralDefinitionId",
                  "marketPriceOracleId",
+                 // New in v0.3.0: the protocol binds not just *which* accounts it
+                 // trusts but whose shards they are, so the caller must name the
+                 // Token Program the collateral lives under and the program that
+                 // publishes the oracle. Each is needed twice over -- it says which
+                 // shard to decode here, and it is the binding the protocol records
+                 // and checks every later slot against.
+                 "tokenProgramId",
+                 "marketPriceOracleProgramId",
                  "stablecoinName",
              }) {
             if (!hasString(request, key)) return publicError("bad_request");
@@ -370,23 +425,39 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
             normalizeAccountId(jsonString(request, "collateralDefinitionId"));
         const std::string oracle =
             normalizeAccountId(jsonString(request, "marketPriceOracleId"));
-        if (admin.empty() || freeze_authority.empty() || collateral.empty() || oracle.empty()) {
+        const std::string token_program =
+            normalizeAccountId(jsonString(request, "tokenProgramId"));
+        const std::string oracle_program =
+            normalizeAccountId(jsonString(request, "marketPriceOracleProgramId"));
+        if (admin.empty() || freeze_authority.empty() || collateral.empty() || oracle.empty()
+            || token_program.empty() || oracle_program.empty()) {
             return publicError("invalid_account_id");
         }
 
-        for (const char* key : {
-                 "protocolParametersIdHex",
-                 "stabilityFeeAccumulatorIdHex",
-                 "redemptionPriceStateIdHex",
-                 "stablecoinDefinitionIdHex",
-                 "stablecoinMasterHoldingIdHex",
+        const std::string self_program = jsonString(info, "programIdHex");
+        // Which program each slot must still be free of. The first three are this
+        // program's own records; the stablecoin definition and its master holding
+        // are written by the Token Program through the chained
+        // `NewFungibleDefinition`, so they are its shards that must be empty.
+        for (const auto& [key, program] : {
+                 std::pair<const char*, std::string>{"protocolParametersIdHex", self_program},
+                 {"stabilityFeeAccumulatorIdHex", self_program},
+                 {"redemptionPriceStateIdHex", self_program},
+                 {"stablecoinDefinitionIdHex", token_program},
+                 {"stablecoinMasterHoldingIdHex", token_program},
              }) {
-            if (!requireUninitialized(jsonString(info, key), error)) return publicError(error);
+            if (!requireUninitialized(jsonString(info, key), program, error)) {
+                return publicError(error);
+            }
         }
 
-        const json collateral_read = readPublicAccount(collateral);
-        const json oracle_read = readPublicAccount(oracle);
-        const json clock_read = readPublicAccount(jsonString(info, "clockIdHex"));
+        // Each read asks for exactly the shard the plan will decode: the collateral
+        // definition is the Token Program's, the oracle its publisher's, and the
+        // clock the Clock Program's.
+        const json collateral_read = readPublicAccountShard(collateral, token_program);
+        const json oracle_read = readPublicAccountShard(oracle, oracle_program);
+        const json clock_read = readPublicAccountShard(jsonString(info, "clockIdHex"),
+                                                       jsonString(info, "clockProgramIdHex"));
         if (jsonString(collateral_read, "status") != "ok"
             || jsonString(oracle_read, "status") != "ok"
             || jsonString(clock_read, "status") != "ok") {
@@ -397,6 +468,8 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
             {"stablecoinProgramId", info["programIdHex"]},
             {"adminId", admin},
             {"freezeAuthorityId", freeze_authority},
+            {"tokenProgramId", token_program},
+            {"marketPriceOracleProgramId", oracle_program},
             {"collateralDefinition", collateral_read},
             {"marketPriceOracle", oracle_read},
             {"clock", clock_read},

@@ -1,4386 +1,2872 @@
 #![cfg(test)]
-#![expect(
+#![allow(
     clippy::arithmetic_side_effects,
     clippy::integer_division,
-    reason = "test fixtures use fixed values to lock AMM math boundaries"
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::wildcard_enum_match_arm,
+    reason = "fixtures use fixed values to lock AMM math boundaries, index fixed-length call lists, assert panics deliberately, and match one chained-call variant against a borsh-only instruction enum"
 )]
 
-use std::num::NonZero;
+//! Unit tests for the AMM's two phases.
+//!
+//! Each instruction is now two testable pieces rather than one: a `plan_*`
+//! function over `AccountMeta`s, and one or more apply halves over a single
+//! shard's bytes. The split is visible in the test names — `plan_*` tests drive
+//! the first, `pool_after_*` / `check_*` tests the second.
+//!
+//! Three families of v0.2.5 test have no successor, each because the thing they
+//! asserted no longer exists:
+//!
+//! * `returns_*_post_states_unchanged` / `*_is_echoed` — a handler no longer returns a diff per
+//!   declared account. "Unchanged" is the *absence* of an effect, so there is nothing to assert on;
+//!   a guard's apply returning `None` is the surviving form of the claim, and the runtime rejects a
+//!   guard that writes.
+//! * `config_not_owned_by_amm_panics` / `*_owned_by_foreign_program_panics` — a shard is keyed by
+//!   the program that wrote it, so provenance is structural. Emitting an effect on `shards[self]`
+//!   *is* the old ownership assertion, and `SpelOutput::guard` refuses a slot that does not select
+//!   the program it names.
+//! * `*_vault_balance_below_reserve_panics` (outside `SyncReserves`) — the vault reads those tests
+//!   exercised are gone, not relocated: only this program can debit a vault. `SyncReserves` still
+//!   reads them and keeps its versions.
+//!
+//! What replaces them is a new family: every value that used to be read is now
+//! declared, so each one has a test that it is *pinned* — `check_config`,
+//! `check_pool`, `check_vault_balance`, `check_oracle_tick`, and the bounds
+//! inside each `pool_after_*`.
+
+use std::num::NonZeroU128;
 
 use amm_core::{
-    compute_config_pda, compute_liquidity_token_pda, compute_liquidity_token_pda_seed,
-    compute_lp_lock_holding_pda, compute_lp_lock_holding_pda_seed, compute_pool_pda,
-    compute_pool_pda_seed, compute_protocol_fee_pda, compute_protocol_fee_pda_seed,
-    compute_vault_pda, compute_vault_pda_seed, isqrt_product, mul_div_floor, protocol_fee_amount,
-    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR,
-    FEE_TIER_BPS_30, MINIMUM_LIQUIDITY,
+    check_config, check_vault_balance, compute_config_pda, compute_liquidity_token_pda,
+    compute_lp_lock_holding_pda, compute_pool_pda, compute_protocol_fee_pda, compute_vault_pda,
+    isqrt_product, mul_div_floor, protocol_fee_amount, quote_add_liquidity, quote_remove_liquidity,
+    spot_price_q64_64, swap_exact_in_amounts, swap_exact_out_amounts, AddLiquidity, AmmConfig,
+    CheckPoolPrice, CheckVaultBalance, ConfigFacts, PoolDefinition, PoolIdentity, RemoveLiquidity,
+    RotateAuthority, SwapBinding, SyncReserves, FEE_BPS_DENOMINATOR, FEE_TIER_BPS_30,
+    MINIMUM_LIQUIDITY,
 };
+use clock_core::{clock_account_id, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ChainedCall,
+    account::{AccountId, ShardData},
+    program::AccountMeta,
 };
-use token_core::{TokenDefinition, TokenHolding};
+use token_core::{TokenDescriptor, TokenHolding, TokenKind};
+use twap_oracle_core::{
+    compute_current_tick_account_pda, compute_oracle_price_account_pda,
+    compute_price_observations_pda, CurrentTickAccount, OBSERVATIONS_CAPACITY,
+};
 
 use crate::{
-    add::add_liquidity,
-    new_definition::new_definition,
-    remove::remove_liquidity,
-    swap::{swap_exact_input, swap_exact_output},
-    sync::sync_reserves,
-    StateDiffExt,
+    add::{add_liquidity, plan_add_liquidity},
+    create_oracle_price_account::{check_pool_price, plan_create_oracle_price_account},
+    create_price_observations::{check_oracle_tick, plan_create_price_observations},
+    initialize::plan_initialize,
+    new_definition::plan_new_definition,
+    remove::{plan_remove_liquidity, remove_liquidity},
+    shared::{assert_canonical_clock, create, pool_of},
+    swap::{plan_swap, swap_exact_in, swap_exact_out},
+    sync::{plan_sync_reserves, sync_reserves},
+    update_config::{plan_update_config, rotate_authority},
+    withdraw_protocol_fees::plan_withdraw_protocol_fees,
 };
 
-const TOKEN_PROGRAM_ID: AccountId = AccountId::new([15u8; 32]);
+// ─── fixtures ───────────────────────────────────────────────────────────────
+
 const AMM_PROGRAM_ID: AccountId = AccountId::new([42u8; 32]);
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([15u8; 32]);
 const TWAP_ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
-const MALICIOUS_TOKEN_PROGRAM_ID: AccountId = AccountId::new([99u8; 32]);
-/// Canonical test namespace: the owner that signs Initialize and the default (all-zero) nonce.
-/// Every pool/vault/config fixture derives from `IdForTests::config_id()`, the config PDA of this
-/// `(owner, nonce)` instance.
-const TEST_NONCE: [u8; 32] = [0; 32];
+/// Stands in for any program that is not the one a slot is supposed to name.
+const FOREIGN_PROGRAM_ID: AccountId = AccountId::new([99u8; 32]);
 
-struct BalanceForTests;
-struct ChainedCallForTests;
-struct IdForTests;
-struct AccountWithMetadataForTests;
-type AccountForTests = AccountWithMetadataForTests;
+/// The canonical test namespace: this owner, and the default all-zero nonce.
+const NONCE: [u8; 32] = [0; 32];
+const NOW: u64 = 1_700_000_000_000;
+const WINDOW: u64 = 3_600_000;
+const SWAP_FEE_BPS: u128 = FEE_TIER_BPS_30;
+/// Half the swap fee goes to the protocol.
+const PROTOCOL_FEE_BPS: u128 = 5_000;
 
-impl BalanceForTests {
-    fn fee_tier() -> u128 {
-        FEE_TIER_BPS_30
-    }
+const RESERVE_A: u128 = 5_000;
+const RESERVE_B: u128 = 10_000;
+const LP_SUPPLY: u128 = 7_071;
 
-    /// 50% of the swap fee goes to the protocol (used by protocol-fee behavior tests).
-    fn protocol_fee_tier() -> u128 {
-        5_000
-    }
+fn owner_id() -> AccountId {
+    AccountId::new([1u8; 32])
+}
+fn authority_id() -> AccountId {
+    AccountId::new([2u8; 32])
+}
+fn other_authority_id() -> AccountId {
+    AccountId::new([3u8; 32])
+}
+fn definition_a() -> AccountId {
+    AccountId::new([10u8; 32])
+}
+fn definition_b() -> AccountId {
+    AccountId::new([11u8; 32])
+}
+fn definition_c() -> AccountId {
+    AccountId::new([12u8; 32])
+}
+fn user_a_id() -> AccountId {
+    AccountId::new([20u8; 32])
+}
+fn user_b_id() -> AccountId {
+    AccountId::new([21u8; 32])
+}
+fn user_lp_id() -> AccountId {
+    AccountId::new([22u8; 32])
+}
+fn destination_id() -> AccountId {
+    AccountId::new([23u8; 32])
+}
 
-    fn vault_a_reserve_init() -> u128 {
-        5_000
-    }
+fn config_id() -> AccountId {
+    compute_config_pda(AMM_PROGRAM_ID, owner_id(), NONCE)
+}
+fn pool_id() -> AccountId {
+    compute_pool_pda(AMM_PROGRAM_ID, config_id(), definition_a(), definition_b())
+}
+fn vault_a_id() -> AccountId {
+    compute_vault_pda(AMM_PROGRAM_ID, pool_id(), definition_a())
+}
+fn vault_b_id() -> AccountId {
+    compute_vault_pda(AMM_PROGRAM_ID, pool_id(), definition_b())
+}
+fn lp_definition_id() -> AccountId {
+    compute_liquidity_token_pda(AMM_PROGRAM_ID, pool_id())
+}
+fn lp_lock_id() -> AccountId {
+    compute_lp_lock_holding_pda(AMM_PROGRAM_ID, pool_id())
+}
+fn current_tick_id() -> AccountId {
+    compute_current_tick_account_pda(TWAP_ORACLE_PROGRAM_ID, pool_id())
+}
+fn protocol_fee_id(definition_id: AccountId) -> AccountId {
+    compute_protocol_fee_pda(AMM_PROGRAM_ID, config_id(), definition_id)
+}
 
-    fn vault_b_reserve_init() -> u128 {
-        2_500
-    }
-
-    fn vault_a_reserve_low() -> u128 {
-        10
-    }
-
-    fn vault_b_reserve_low() -> u128 {
-        10
-    }
-
-    fn vault_a_reserve_high() -> u128 {
-        500_000
-    }
-
-    fn vault_b_reserve_high() -> u128 {
-        500_000
-    }
-
-    fn user_token_a_balance() -> u128 {
-        10_000
-    }
-
-    fn user_token_b_balance() -> u128 {
-        10_000
-    }
-
-    fn user_token_lp_balance() -> u128 {
-        100
-    }
-
-    fn remove_min_amount_a() -> u128 {
-        50
-    }
-
-    fn remove_min_amount_b() -> u128 {
-        100
-    }
-
-    fn remove_actual_a_successful() -> u128 {
-        141
-    }
-
-    fn remove_min_amount_b_low() -> u128 {
-        50
-    }
-
-    fn remove_amount_lp() -> u128 {
-        100
-    }
-
-    fn remove_amount_lp_1() -> u128 {
-        30
-    }
-
-    fn add_max_amount_a() -> u128 {
-        500
-    }
-
-    fn add_max_amount_b() -> u128 {
-        200
-    }
-
-    fn effective_swap_in_a() -> u128 {
-        BalanceForTests::add_max_amount_a() * (FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
-            / FEE_BPS_DENOMINATOR
-    }
-
-    fn effective_swap_in_b() -> u128 {
-        BalanceForTests::add_max_amount_b() * (FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier())
-            / FEE_BPS_DENOMINATOR
-    }
-
-    fn add_max_amount_a_low() -> u128 {
-        10
-    }
-
-    fn add_max_amount_b_low() -> u128 {
-        10
-    }
-
-    fn add_min_amount_lp() -> u128 {
-        20
-    }
-
-    fn lp_supply_init() -> u128 {
-        // sqrt(vault_a_reserve_init * vault_b_reserve_init) = sqrt(5000 * 2500) = 3535
-        (BalanceForTests::vault_a_reserve_init() * BalanceForTests::vault_b_reserve_init()).isqrt()
-    }
-
-    fn lp_user_init() -> u128 {
-        BalanceForTests::lp_supply_init() - MINIMUM_LIQUIDITY
-    }
-
-    fn vault_a_swap_test_1() -> u128 {
-        BalanceForTests::vault_a_reserve_init() + BalanceForTests::add_max_amount_a()
-    }
-
-    fn vault_a_swap_test_2() -> u128 {
-        BalanceForTests::vault_a_reserve_init() - BalanceForTests::swap_amount_out_a()
-    }
-
-    fn vault_b_swap_test_1() -> u128 {
-        BalanceForTests::vault_b_reserve_init() - BalanceForTests::swap_amount_out_b()
-    }
-
-    fn vault_b_swap_test_2() -> u128 {
-        BalanceForTests::vault_b_reserve_init() + BalanceForTests::add_max_amount_b()
-    }
-
-    fn min_amount_out() -> u128 {
-        200
-    }
-
-    fn min_amount_out_too_high() -> u128 {
-        BalanceForTests::swap_amount_out_b() + 1
-    }
-
-    fn vault_a_add_successful() -> u128 {
-        BalanceForTests::vault_a_reserve_init() + BalanceForTests::add_successful_amount_a()
-    }
-
-    fn vault_b_add_successful() -> u128 {
-        BalanceForTests::vault_b_reserve_init() + BalanceForTests::add_successful_amount_b()
-    }
-
-    fn add_successful_amount_a() -> u128 {
-        (BalanceForTests::vault_a_reserve_init() * BalanceForTests::add_max_amount_b())
-            / BalanceForTests::vault_b_reserve_init()
-    }
-
-    fn add_successful_amount_b() -> u128 {
-        BalanceForTests::add_max_amount_b()
-    }
-
-    fn max_amount_in() -> u128 {
-        166
-    }
-
-    fn vault_a_remove_successful() -> u128 {
-        BalanceForTests::vault_a_reserve_init() - BalanceForTests::remove_actual_a_successful()
-    }
-
-    fn vault_b_remove_successful() -> u128 {
-        BalanceForTests::vault_b_reserve_init() - BalanceForTests::remove_actual_b_successful()
-    }
-
-    fn swap_amount_out_b() -> u128 {
-        (BalanceForTests::vault_b_reserve_init() * BalanceForTests::effective_swap_in_a())
-            / (BalanceForTests::vault_a_reserve_init() + BalanceForTests::effective_swap_in_a())
-    }
-
-    fn swap_amount_out_a() -> u128 {
-        (BalanceForTests::vault_a_reserve_init() * BalanceForTests::effective_swap_in_b())
-            / (BalanceForTests::vault_b_reserve_init() + BalanceForTests::effective_swap_in_b())
-    }
-
-    fn add_delta_lp_successful() -> u128 {
-        std::cmp::min(
-            BalanceForTests::lp_supply_init() * BalanceForTests::add_successful_amount_a()
-                / BalanceForTests::vault_a_reserve_init(),
-            BalanceForTests::lp_supply_init() * BalanceForTests::add_successful_amount_b()
-                / BalanceForTests::vault_b_reserve_init(),
-        )
-    }
-
-    fn remove_actual_b_successful() -> u128 {
-        (BalanceForTests::vault_b_reserve_init() * BalanceForTests::remove_amount_lp())
-            / BalanceForTests::lp_supply_init()
-    }
-
-    fn add_lp_supply_successful() -> u128 {
-        BalanceForTests::lp_supply_init() + BalanceForTests::add_delta_lp_successful()
-    }
-
-    fn remove_lp_supply_successful() -> u128 {
-        BalanceForTests::lp_supply_init() - BalanceForTests::remove_amount_lp()
+fn facts() -> ConfigFacts {
+    ConfigFacts {
+        token_program_id: TOKEN_PROGRAM_ID,
+        twap_oracle_program_id: TWAP_ORACLE_PROGRAM_ID,
+        authority: authority_id(),
+        swap_fee_bps: SWAP_FEE_BPS,
+        protocol_fee_bps: PROTOCOL_FEE_BPS,
     }
 }
 
-impl ChainedCallForTests {
-    fn cc_swap_token_a_test_1() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_a().account_id,
-                AccountWithMetadataForTests::vault_a_init().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::add_max_amount_a(),
-            },
-        )
-    }
+fn config_data() -> ShardData {
+    ShardData::from(&AmmConfig {
+        token_program_id: TOKEN_PROGRAM_ID,
+        twap_oracle_program_id: TWAP_ORACLE_PROGRAM_ID,
+        authority: authority_id(),
+        swap_fee_bps: SWAP_FEE_BPS,
+        protocol_fee_bps: PROTOCOL_FEE_BPS,
+    })
+}
 
-    fn cc_swap_token_b_test_1() -> ChainedCall {
-        let swap_amount = BalanceForTests::swap_amount_out_b();
-
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::vault_b_init().account_id,
-                AccountWithMetadataForTests::user_holding_b().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: swap_amount,
-            },
-        )
-        .with_pda_seeds(vec![compute_vault_pda_seed(
-            IdForTests::pool_definition_id(),
-            IdForTests::token_b_definition_id(),
-        )])
-    }
-
-    fn cc_swap_token_a_test_2() -> ChainedCall {
-        let swap_amount = BalanceForTests::swap_amount_out_a();
-
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::vault_a_init().account_id,
-                AccountWithMetadataForTests::user_holding_a().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: swap_amount,
-            },
-        )
-        .with_pda_seeds(vec![compute_vault_pda_seed(
-            IdForTests::pool_definition_id(),
-            IdForTests::token_a_definition_id(),
-        )])
-    }
-
-    fn cc_swap_token_b_test_2() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_b().account_id,
-                AccountWithMetadataForTests::vault_b_init().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::add_max_amount_b(),
-            },
-        )
-    }
-
-    fn cc_swap_exact_output_token_a_test_1() -> ChainedCall {
-        // reserve_in=1000, amount_out=166, fee=30bps
-        // required_effective_in = ceil(1000 * 166 / 334) = 498
-        // deposit = ceil(498 * 10000 / 9970) = 500
-        let swap_amount: u128 = 500;
-
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_a().account_id,
-                AccountWithMetadataForTests::vault_a_init().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: swap_amount,
-            },
-        )
-    }
-
-    fn cc_swap_exact_output_token_b_test_1() -> ChainedCall {
-        let swap_amount: u128 = 166;
-
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::vault_b_init().account_id,
-                AccountWithMetadataForTests::user_holding_b().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: swap_amount,
-            },
-        )
-        .with_pda_seeds(vec![compute_vault_pda_seed(
-            IdForTests::pool_definition_id(),
-            IdForTests::token_b_definition_id(),
-        )])
-    }
-
-    fn cc_swap_exact_output_token_a_test_2() -> ChainedCall {
-        let swap_amount: u128 = 285;
-
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::vault_a_init().account_id,
-                AccountWithMetadataForTests::user_holding_a().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: swap_amount,
-            },
-        )
-        .with_pda_seeds(vec![compute_vault_pda_seed(
-            IdForTests::pool_definition_id(),
-            IdForTests::token_a_definition_id(),
-        )])
-    }
-
-    fn cc_swap_exact_output_token_b_test_2() -> ChainedCall {
-        // reserve_in=500, amount_out=285, fee=30bps
-        // required_effective_in = ceil(500 * 285 / 715) = 200
-        // deposit = ceil(200 * 10000 / 9970) = 201
-        let swap_amount: u128 = 201;
-
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_b().account_id,
-                AccountWithMetadataForTests::vault_b_init().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: swap_amount,
-            },
-        )
-    }
-
-    fn cc_swap_rounding_boundary_token_a_in() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_a().account_id,
-                AccountWithMetadataForTests::vault_a_init().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: 3,
-            },
-        )
-    }
-
-    fn cc_swap_rounding_boundary_token_b_out() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::vault_b_init().account_id,
-                AccountWithMetadataForTests::user_holding_b().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: 1,
-            },
-        )
-        .with_pda_seeds(vec![compute_vault_pda_seed(
-            IdForTests::pool_definition_id(),
-            IdForTests::token_b_definition_id(),
-        )])
-    }
-
-    fn cc_add_token_a() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_a().account_id,
-                AccountWithMetadataForTests::vault_a_init().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::add_successful_amount_a(),
-            },
-        )
-    }
-
-    fn cc_add_token_b() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_b().account_id,
-                AccountWithMetadataForTests::vault_b_init().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::add_successful_amount_b(),
-            },
-        )
-    }
-
-    fn cc_add_pool_lp() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::pool_lp_init().account_id,
-                AccountWithMetadataForTests::user_holding_lp_init().account_id,
-            ],
-            &token_core::Instruction::Mint {
-                amount_to_mint: BalanceForTests::add_delta_lp_successful(),
-            },
-        )
-        .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
-            IdForTests::pool_definition_id(),
-        )])
-    }
-
-    fn cc_remove_token_a() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::vault_a_init().account_id,
-                AccountWithMetadataForTests::user_holding_a().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::remove_actual_a_successful(),
-            },
-        )
-        .with_pda_seeds(vec![compute_vault_pda_seed(
-            IdForTests::pool_definition_id(),
-            IdForTests::token_a_definition_id(),
-        )])
-    }
-
-    fn cc_remove_token_b() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::vault_b_init().account_id,
-                AccountWithMetadataForTests::user_holding_b().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::remove_actual_b_successful(),
-            },
-        )
-        .with_pda_seeds(vec![compute_vault_pda_seed(
-            IdForTests::pool_definition_id(),
-            IdForTests::token_b_definition_id(),
-        )])
-    }
-
-    fn cc_remove_pool_lp() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::pool_lp_init().account_id,
-                AccountWithMetadataForTests::user_holding_lp_init().account_id,
-            ],
-            &token_core::Instruction::Burn {
-                amount_to_burn: BalanceForTests::remove_amount_lp(),
-            },
-        )
-        .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
-            IdForTests::pool_definition_id(),
-        )])
-    }
-
-    fn cc_new_definition_token_a() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_a().account_id,
-                AccountWithMetadataForTests::vault_a_init().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::vault_a_reserve_init(),
-            },
-        )
-        .with_pda_seeds(vec![compute_vault_pda_seed(
-            IdForTests::pool_definition_id(),
-            IdForTests::token_a_definition_id(),
-        )])
-    }
-
-    fn cc_new_definition_token_b() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountWithMetadataForTests::user_holding_b().account_id,
-                AccountWithMetadataForTests::vault_b_init().account_id,
-            ],
-            &token_core::Instruction::Transfer {
-                amount_to_transfer: BalanceForTests::vault_b_reserve_init(),
-            },
-        )
-        .with_pda_seeds(vec![compute_vault_pda_seed(
-            IdForTests::pool_definition_id(),
-            IdForTests::token_b_definition_id(),
-        )])
-    }
-
-    fn cc_new_definition_token_lp_lock() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountForTests::pool_lp_uninit().account_id,
-                AccountForTests::lp_lock_holding_uninit().account_id,
-            ],
-            &token_core::Instruction::NewFungibleDefinition {
-                name: String::from("LP Token"),
-                total_supply: MINIMUM_LIQUIDITY,
-                mint_authority: Some(AccountForTests::pool_lp_uninit().account_id),
-            },
-        )
-        .with_pda_seeds(vec![
-            compute_liquidity_token_pda_seed(IdForTests::pool_definition_id()),
-            compute_lp_lock_holding_pda_seed(IdForTests::pool_definition_id()),
-        ])
-    }
-
-    fn cc_new_definition_token_lp_user() -> ChainedCall {
-        ChainedCall::new(
-            TOKEN_PROGRAM_ID,
-            vec![
-                AccountForTests::pool_lp_created_after_lock().account_id,
-                AccountForTests::user_holding_lp_uninit().account_id,
-            ],
-            &token_core::Instruction::Mint {
-                amount_to_mint: BalanceForTests::lp_user_init(),
-            },
-        )
-        .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
-            IdForTests::pool_definition_id(),
-        )])
-    }
-
-    fn cc_new_definition_create_current_tick() -> ChainedCall {
-        // The oracle reads the pool as the price source. A chained call names it by id and
-        // the runtime resolves the post-claim state from the transaction's diff, so the test
-        // no longer has to predict it.
-        let initial_price = amm_core::spot_price_q64_64(
-            BalanceForTests::vault_a_reserve_init(),
-            BalanceForTests::vault_b_reserve_init(),
-        );
-
-        ChainedCall::new(
-            TWAP_ORACLE_PROGRAM_ID,
-            vec![
-                AccountForTests::current_tick_account_uninit().account_id,
-                AccountForTests::pool_definition_init().account_id,
-                AccountForTests::clock().account_id,
-            ],
-            &twap_oracle_core::Instruction::CreateCurrentTickAccount { initial_price },
-        )
-        .with_pda_seeds(vec![compute_pool_pda_seed(
-            IdForTests::config_id(),
-            IdForTests::token_a_definition_id(),
-            IdForTests::token_b_definition_id(),
-        )])
+fn identity() -> PoolIdentity {
+    PoolIdentity {
+        definition_token_a_id: definition_a(),
+        definition_token_b_id: definition_b(),
+        vault_a_id: vault_a_id(),
+        vault_b_id: vault_b_id(),
+        liquidity_pool_id: lp_definition_id(),
     }
 }
 
-impl IdForTests {
-    fn amm_owner() -> AccountId {
-        AccountId::new([200; 32])
-    }
-
-    fn config_id() -> AccountId {
-        compute_config_pda(AMM_PROGRAM_ID, IdForTests::amm_owner(), TEST_NONCE)
-    }
-
-    fn token_a_definition_id() -> AccountId {
-        AccountId::new([42; 32])
-    }
-
-    fn token_b_definition_id() -> AccountId {
-        AccountId::new([43; 32])
-    }
-
-    fn token_lp_definition_id() -> AccountId {
-        compute_liquidity_token_pda(AMM_PROGRAM_ID, IdForTests::pool_definition_id())
-    }
-
-    fn lp_lock_holding_id() -> AccountId {
-        compute_lp_lock_holding_pda(AMM_PROGRAM_ID, IdForTests::pool_definition_id())
-    }
-
-    fn user_token_a_id() -> AccountId {
-        AccountId::new([45; 32])
-    }
-
-    fn user_token_b_id() -> AccountId {
-        AccountId::new([46; 32])
-    }
-
-    fn user_token_lp_id() -> AccountId {
-        AccountId::new([47; 32])
-    }
-
-    fn pool_definition_id() -> AccountId {
-        compute_pool_pda(
-            AMM_PROGRAM_ID,
-            IdForTests::config_id(),
-            IdForTests::token_a_definition_id(),
-            IdForTests::token_b_definition_id(),
-        )
-    }
-
-    fn vault_a_id() -> AccountId {
-        compute_vault_pda(
-            AMM_PROGRAM_ID,
-            IdForTests::pool_definition_id(),
-            IdForTests::token_a_definition_id(),
-        )
-    }
-
-    fn vault_b_id() -> AccountId {
-        compute_vault_pda(
-            AMM_PROGRAM_ID,
-            IdForTests::pool_definition_id(),
-            IdForTests::token_b_definition_id(),
-        )
-    }
-
-    fn protocol_fee_holding_a_id() -> AccountId {
-        compute_protocol_fee_pda(
-            AMM_PROGRAM_ID,
-            IdForTests::config_id(),
-            IdForTests::token_a_definition_id(),
-        )
-    }
-
-    fn protocol_fee_holding_b_id() -> AccountId {
-        compute_protocol_fee_pda(
-            AMM_PROGRAM_ID,
-            IdForTests::config_id(),
-            IdForTests::token_b_definition_id(),
-        )
+fn pool(reserve_a: u128, reserve_b: u128, liquidity_pool_supply: u128) -> PoolDefinition {
+    PoolDefinition {
+        definition_token_a_id: definition_a(),
+        definition_token_b_id: definition_b(),
+        vault_a_id: vault_a_id(),
+        vault_b_id: vault_b_id(),
+        liquidity_pool_id: lp_definition_id(),
+        liquidity_pool_supply,
+        reserve_a,
+        reserve_b,
     }
 }
 
-impl AccountWithMetadataForTests {
-    fn config_init() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&AmmConfig {
-                    token_program_id: TOKEN_PROGRAM_ID,
-                    twap_oracle_program_id: TWAP_ORACLE_PROGRAM_ID,
-                    authority: AccountId::new([9; 32]),
-                    swap_fee_bps: BalanceForTests::fee_tier(),
-                    protocol_fee_bps: 0,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: false,
-            account_id: IdForTests::config_id(),
-        }
-    }
+fn live_pool() -> PoolDefinition {
+    pool(RESERVE_A, RESERVE_B, LP_SUPPLY)
+}
 
-    /// Like `config_init`, but with a 50% protocol fee so swaps divert part of the swap fee to the
-    /// protocol-fee holding. Used by the protocol-fee behavior tests.
-    fn config_init_with_protocol_fee() -> AccountWithMetadata {
-        let mut config = AccountWithMetadataForTests::config_init();
-        let mut data = AmmConfig::try_from(&config.account.data).expect("valid config");
-        data.protocol_fee_bps = BalanceForTests::protocol_fee_tier();
-        config.account.data = Data::from(&data);
-        config
-    }
+fn pool_data(p: &PoolDefinition) -> ShardData {
+    ShardData::from(p)
+}
 
-    /// Config PDA owned by the AMM Program but never initialized (empty data), so it fails to parse
-    /// as an `AmmConfig` — the "AMM Program must be initialized before use" case.
-    fn config_uninit() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                ..Account::default()
-            },
-            is_authorized: false,
-            account_id: IdForTests::config_id(),
-        }
-    }
+fn empty() -> ShardData {
+    ShardData::default()
+}
 
-    /// An otherwise-valid config account that is not owned by the AMM Program, exercising the
-    /// program-owner gate (`must be owned by the AMM Program`).
-    fn config_not_owned_by_amm() -> AccountWithMetadata {
-        let mut config = AccountWithMetadataForTests::config_init();
-        config.account.program_owner = AccountId::default();
-        config
-    }
+fn holding(definition_id: AccountId, balance: u128) -> ShardData {
+    ShardData::from(&TokenHolding::Fungible {
+        definition_id,
+        balance,
+    })
+}
 
-    /// The pool's TWAP current-tick PDA, uninitialized (created by `new_definition`).
-    fn current_tick_account_uninit() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: false,
-            account_id: twap_oracle_core::compute_current_tick_account_pda(
-                TWAP_ORACLE_PROGRAM_ID,
-                IdForTests::pool_definition_id(),
-            ),
-        }
+fn descriptor(definition_id: AccountId) -> TokenDescriptor {
+    TokenDescriptor {
+        definition_id,
+        kind: TokenKind::Fungible,
     }
+}
 
-    /// The canonical 1-block LEZ clock account.
-    fn clock() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: false,
-            account_id: clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
-        }
-    }
+/// A slot selecting one of this program's own shards.
+fn ours(account_id: AccountId) -> AccountMeta {
+    AccountMeta::new(account_id, false, AMM_PROGRAM_ID)
+}
+/// A slot selecting a Token Program shard.
+fn token_slot(account_id: AccountId) -> AccountMeta {
+    AccountMeta::new(account_id, false, TOKEN_PROGRAM_ID)
+}
+/// A signed slot selecting a Token Program shard.
+fn signed_token_slot(account_id: AccountId) -> AccountMeta {
+    AccountMeta::new(account_id, true, TOKEN_PROGRAM_ID)
+}
+/// A slot selecting a TWAP oracle shard.
+fn oracle_slot(account_id: AccountId) -> AccountMeta {
+    AccountMeta::new(account_id, false, TWAP_ORACLE_PROGRAM_ID)
+}
+fn clock_slot() -> AccountMeta {
+    AccountMeta::new(CLOCK_01_PROGRAM_ACCOUNT_ID, false, clock_account_id())
+}
 
-    fn user_holding_a() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_a_definition_id(),
-                    balance: BalanceForTests::user_token_a_balance(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::user_token_a_id(),
-        }
-    }
+// ─── PDA derivation ─────────────────────────────────────────────────────────
 
-    fn user_holding_b() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_b_definition_id(),
-                    balance: BalanceForTests::user_token_b_balance(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::user_token_b_id(),
-        }
-    }
-
-    /// The instance-wide protocol-fee holding for token A. Swap tests default to a zero protocol
-    /// fee (see `config_init`), so no fee is diverted and the account is only PDA-validated; it is
-    /// created lazily by the first fee-bearing swap in production.
-    fn protocol_fee_holding_a() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: false,
-            account_id: IdForTests::protocol_fee_holding_a_id(),
-        }
-    }
-
-    fn protocol_fee_holding_b() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: false,
-            account_id: IdForTests::protocol_fee_holding_b_id(),
-        }
-    }
-
-    fn vault_a_init() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_a_definition_id(),
-                    balance: BalanceForTests::vault_a_reserve_init(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::vault_a_id(),
-        }
-    }
-
-    fn vault_b_init() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_b_definition_id(),
-                    balance: BalanceForTests::vault_b_reserve_init(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::vault_b_id(),
-        }
-    }
-
-    fn vault_a_init_high() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_a_definition_id(),
-                    balance: BalanceForTests::vault_a_reserve_high(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::vault_a_id(),
-        }
-    }
-
-    fn vault_b_init_high() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_b_definition_id(),
-                    balance: BalanceForTests::vault_b_reserve_high(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::vault_b_id(),
-        }
-    }
-
-    fn vault_a_init_low() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_a_definition_id(),
-                    balance: BalanceForTests::vault_a_reserve_low(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::vault_a_id(),
-        }
-    }
-
-    fn vault_b_init_low() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_b_definition_id(),
-                    balance: BalanceForTests::vault_b_reserve_low(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::vault_b_id(),
-        }
-    }
-
-    fn vault_a_init_zero() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_a_definition_id(),
-                    balance: 0,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::vault_a_id(),
-        }
-    }
-
-    fn vault_b_init_zero() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_b_definition_id(),
-                    balance: 0,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::vault_b_id(),
-        }
-    }
-
-    fn pool_lp_init() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: BalanceForTests::lp_supply_init(),
-                    metadata_id: None,
-                    authority: Some(IdForTests::token_lp_definition_id()),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::token_lp_definition_id(),
-        }
-    }
-
-    fn pool_lp_uninit() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: true,
-            account_id: IdForTests::token_lp_definition_id(),
-        }
-    }
-
-    fn pool_lp_created_after_lock() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("LP Token"),
-                    total_supply: MINIMUM_LIQUIDITY,
-                    metadata_id: None,
-                    authority: Some(IdForTests::token_lp_definition_id()),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::token_lp_definition_id(),
-        }
-    }
-
-    fn pool_lp_with_wrong_id() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: BalanceForTests::lp_supply_init(),
-                    metadata_id: None,
-                    authority: Some(IdForTests::token_lp_definition_id()),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::vault_a_id(),
-        }
-    }
-
-    fn user_holding_lp_uninit() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_lp_definition_id(),
-                    balance: 0,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::user_token_lp_id(),
-        }
-    }
-
-    fn user_holding_lp_init() -> AccountWithMetadata {
-        AccountForTests::user_holding_lp_with_balance(BalanceForTests::user_token_lp_balance())
-    }
-
-    fn user_holding_lp_with_balance(balance: u128) -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_lp_definition_id(),
-                    balance,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::user_token_lp_id(),
-        }
-    }
-
-    fn lp_lock_holding_uninit() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: false,
-            account_id: IdForTests::lp_lock_holding_id(),
-        }
-    }
-
-    fn lp_lock_holding_with_wrong_id() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: false,
-            account_id: IdForTests::vault_a_id(),
-        }
-    }
-
-    fn pool_definition_init() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: BalanceForTests::vault_a_reserve_init(),
-                    reserve_b: BalanceForTests::vault_b_reserve_init(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_uninit() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    /// A smaller pool (reserve_a=1_000, reserve_b=500) used exclusively by
-    /// swap-exact-output tests, whose hardcoded expected values were computed
-    /// against these reserves.  vault_a_init/vault_b_init still satisfy the
-    /// balance ≥ reserve check (5_000 ≥ 1_000, 2_500 ≥ 500).
-    fn pool_definition_swap_exact_output_init() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: 1_000,
-                    reserve_b: 500,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_swap_rounding_boundary_init() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: MINIMUM_LIQUIDITY,
-                    reserve_a: 1_000,
-                    reserve_b: 1_000,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_init_reserve_a_zero() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: 0,
-                    reserve_b: BalanceForTests::vault_b_reserve_init(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_init_reserve_b_zero() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: BalanceForTests::vault_a_reserve_init(),
-                    reserve_b: 0,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_init_reserve_a_low() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::vault_a_reserve_low(),
-                    reserve_a: BalanceForTests::vault_a_reserve_low(),
-                    reserve_b: BalanceForTests::vault_b_reserve_high(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_init_reserve_b_low() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::vault_a_reserve_high(),
-                    reserve_a: BalanceForTests::vault_a_reserve_high(),
-                    reserve_b: BalanceForTests::vault_b_reserve_low(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_swap_test_1() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: BalanceForTests::vault_a_swap_test_1(),
-                    reserve_b: BalanceForTests::vault_b_swap_test_1(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_swap_test_2() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: BalanceForTests::vault_a_swap_test_2(),
-                    reserve_b: BalanceForTests::vault_b_swap_test_2(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_swap_exact_output_test_1() -> AccountWithMetadata {
-        // swap token_a in for 166 token_b out, fee=30bps
-        // reserve_a: 1000 + 500 = 1500 (gross deposit, see
-        // cc_swap_exact_output_token_a_test_1) reserve_b: 500  - 166 = 334
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0_u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: 1500_u128,
-                    reserve_b: 334_u128,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_swap_exact_output_test_2() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0_u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: 715_u128,
-                    reserve_b: 701_u128,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_swap_rounding_boundary_post() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0_u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: MINIMUM_LIQUIDITY,
-                    reserve_a: 1003_u128,
-                    reserve_b: 999_u128,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_add_zero_lp() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::vault_a_reserve_low(),
-                    reserve_a: BalanceForTests::vault_a_reserve_init(),
-                    reserve_b: BalanceForTests::vault_b_reserve_init(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_add_successful() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::add_lp_supply_successful(),
-                    reserve_a: BalanceForTests::vault_a_add_successful(),
-                    reserve_b: BalanceForTests::vault_b_add_successful(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_init_low_balances() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: MINIMUM_LIQUIDITY,
-                    reserve_a: BalanceForTests::vault_a_reserve_low(),
-                    reserve_b: BalanceForTests::vault_b_reserve_low(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_remove_successful() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::remove_lp_supply_successful(),
-                    reserve_a: BalanceForTests::vault_a_remove_successful(),
-                    reserve_b: BalanceForTests::vault_b_remove_successful(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_below_minimum_liquidity() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: MINIMUM_LIQUIDITY - 1,
-                    reserve_a: BalanceForTests::vault_a_reserve_init(),
-                    reserve_b: BalanceForTests::vault_b_reserve_init(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn pool_definition_with_wrong_id() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: BalanceForTests::lp_supply_init(),
-                    reserve_a: BalanceForTests::vault_a_reserve_init(),
-                    reserve_b: BalanceForTests::vault_b_reserve_init(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: AccountId::new([4; 32]),
-        }
-    }
-
-    fn vault_a_with_wrong_id() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_a_definition_id(),
-                    balance: BalanceForTests::vault_a_reserve_init(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: AccountId::new([4; 32]),
-        }
-    }
-
-    fn vault_b_with_wrong_id() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_b_definition_id(),
-                    balance: BalanceForTests::vault_b_reserve_init(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: AccountId::new([4; 32]),
-        }
-    }
-
-    fn user_holding_a_wrong_program() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: MALICIOUS_TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_a_definition_id(),
-                    balance: BalanceForTests::user_token_a_balance(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::user_token_a_id(),
-        }
-    }
-
-    fn user_holding_b_wrong_program() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: MALICIOUS_TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::token_b_definition_id(),
-                    balance: BalanceForTests::user_token_b_balance(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::user_token_b_id(),
-        }
-    }
-
-    /// Legacy/corrupted pool state whose reported supply has already been drained down to the
-    /// permanent lock (liquidity_pool_supply == MINIMUM_LIQUIDITY).
-    fn pool_definition_at_minimum_liquidity() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AMM_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&PoolDefinition {
-                    definition_token_a_id: IdForTests::token_a_definition_id(),
-                    definition_token_b_id: IdForTests::token_b_definition_id(),
-                    vault_a_id: IdForTests::vault_a_id(),
-                    vault_b_id: IdForTests::vault_b_id(),
-                    liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                    liquidity_pool_supply: MINIMUM_LIQUIDITY,
-                    reserve_a: BalanceForTests::vault_a_reserve_init(),
-                    reserve_b: BalanceForTests::vault_b_reserve_init(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
+#[test]
+fn pool_pda_is_unique_per_token_pair_and_order_insensitive() {
+    // The seed sorts the pair, so one pool serves a pair regardless of the order
+    // it is named in — but a different pair is a different pool.
+    let ab = compute_pool_pda(AMM_PROGRAM_ID, config_id(), definition_a(), definition_b());
+    let ba = compute_pool_pda(AMM_PROGRAM_ID, config_id(), definition_b(), definition_a());
+    let ac = compute_pool_pda(AMM_PROGRAM_ID, config_id(), definition_a(), definition_c());
+    assert_eq!(ab, ba);
+    assert_ne!(ab, ac);
 }
 
 #[test]
-fn test_pool_pda_produces_unique_id_for_token_pair() {
-    assert!(
-        amm_core::compute_pool_pda(
-            AMM_PROGRAM_ID,
-            IdForTests::config_id(),
-            IdForTests::token_a_definition_id(),
-            IdForTests::token_b_definition_id()
-        ) == compute_pool_pda(
-            AMM_PROGRAM_ID,
-            IdForTests::config_id(),
-            IdForTests::token_b_definition_id(),
-            IdForTests::token_a_definition_id()
-        )
+fn pool_pda_is_unique_per_config_namespace() {
+    let other_config = compute_config_pda(AMM_PROGRAM_ID, owner_id(), [7u8; 32]);
+    assert_ne!(
+        compute_pool_pda(AMM_PROGRAM_ID, config_id(), definition_a(), definition_b()),
+        compute_pool_pda(AMM_PROGRAM_ID, other_config, definition_a(), definition_b()),
     );
 }
 
-#[should_panic(expected = "Vault A was not provided")]
-#[test]
-fn test_call_add_liquidity_vault_a_omitted() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_with_wrong_id(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vault B was not provided")]
-#[test]
-fn test_call_add_liquidity_vault_b_omitted() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_with_wrong_id(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "LP definition mismatch")]
-#[test]
-fn test_call_add_liquidity_lp_definition_mismatch() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_with_wrong_id(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-// A pool with the right token pair but an id NOT derived under config_init's namespace
-// (pool_definition_with_wrong_id uses a bogus account id) must be rejected, so a config
-// from one instance can't be paired with a pool from another.
-#[should_panic(expected = "pool account is not derived under this config's namespace")]
-#[test]
-fn test_call_add_liquidity_pool_outside_config_namespace() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_with_wrong_id(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Both max-balances must be nonzero")]
-#[test]
-fn test_call_add_liquidity_zero_balance_1() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        0,
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Both max-balances must be nonzero")]
-#[test]
-fn test_call_add_liquidity_zero_balance_2() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        0,
-        BalanceForTests::add_max_amount_a(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vaults' balances must be at least the reserve amounts")]
-#[test]
-fn test_call_add_liquidity_vault_a_balance_below_reserve() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init_low(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vaults' balances must be at least the reserve amounts")]
-#[test]
-fn test_call_add_liquidity_vault_b_balance_below_reserve() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init_low(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vaults' balances must be at least the reserve amounts")]
-#[test]
-fn test_call_add_liquidity_vault_insufficient_balance_1() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init_zero(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vaults' balances must be at least the reserve amounts")]
-#[test]
-fn test_call_add_liquidity_vault_insufficient_balance_2() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init_zero(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "A trade amount is 0")]
-#[test]
-fn test_call_add_liquidity_actual_amount_zero_1() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init_reserve_a_low(),
-        AccountWithMetadataForTests::vault_a_init_low(),
-        AccountWithMetadataForTests::vault_b_init_high(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "A trade amount is 0")]
-#[test]
-fn test_call_add_liquidity_actual_amount_zero_2() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init_reserve_b_low(),
-        AccountWithMetadataForTests::vault_a_init_high(),
-        AccountWithMetadataForTests::vault_b_init_low(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a_low(),
-        BalanceForTests::add_max_amount_b_low(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Reserves must be nonzero")]
-#[test]
-fn test_call_add_liquidity_reserves_zero_1() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init_reserve_a_zero(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Reserves must be nonzero")]
-#[test]
-fn test_call_add_liquidity_reserves_zero_2() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init_reserve_b_zero(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Payable LP must be nonzero")]
-#[test]
-fn test_call_add_liquidity_payable_lp_zero() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_add_zero_lp(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a_low(),
-        BalanceForTests::add_max_amount_b_low(),
-        AMM_PROGRAM_ID,
-    );
-}
+// ─── Initialize ─────────────────────────────────────────────────────────────
 
 #[test]
-fn test_call_add_liquidity_chained_call_successsful() {
-    let (post_states, chained_calls) = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_post = post_states[1].clone();
-
-    assert_eq!(
-        AccountWithMetadataForTests::pool_definition_add_successful().account,
-        pool_post.post_account(AMM_PROGRAM_ID)
-    );
-
-    let chained_call_lp = chained_calls[0].clone();
-    let chained_call_b = chained_calls[1].clone();
-    let chained_call_a = chained_calls[2].clone();
-
-    assert!(chained_call_a == ChainedCallForTests::cc_add_token_a());
-    assert!(chained_call_b == ChainedCallForTests::cc_add_token_b());
-    assert!(chained_call_lp == ChainedCallForTests::cc_add_pool_lp());
-
-    // The fourth chained call refreshes the pool's TWAP current tick from the post-add price.
-    assert_eq!(chained_calls.len(), 4);
-    assert_update_tick_call(&chained_calls, &post_states[1].post_account(AMM_PROGRAM_ID));
-
-    // The config account is echoed back unchanged as the first post-state.
-    assert_eq!(
-        post_states[0].post_account(AMM_PROGRAM_ID),
-        AccountWithMetadataForTests::config_init().account
-    );
-}
-
-#[should_panic(expected = "AMM Program must be initialized before use")]
-#[test]
-fn test_call_add_liquidity_uninitialized_config_panics() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_uninit(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "must be owned by the AMM Program")]
-#[test]
-fn test_call_add_liquidity_config_not_owned_by_amm_panics() {
-    let _post_states = add_liquidity(
-        AccountWithMetadataForTests::config_not_owned_by_amm(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).unwrap(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vault A was not provided")]
-#[test]
-fn test_call_remove_liquidity_vault_a_omitted() {
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_with_wrong_id(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-// A pool with the right token pair but an id NOT derived under config_init's namespace
-// must be rejected, so a config from one instance can't be paired with a pool from another.
-#[should_panic(expected = "pool account is not derived under this config's namespace")]
-#[test]
-fn test_call_remove_liquidity_pool_outside_config_namespace() {
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_with_wrong_id(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vault B was not provided")]
-#[test]
-fn test_call_remove_liquidity_vault_b_omitted() {
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_with_wrong_id(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "LP definition mismatch")]
-#[test]
-fn test_call_remove_liquidity_lp_def_mismatch() {
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_with_wrong_id(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Invalid liquidity account provided")]
-#[test]
-fn test_call_remove_liquidity_insufficient_liquidity_amount() {
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(), /* different token account than lp to
-                                               * create desired
-                                               * error */
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(
-    expected = "Insufficient minimal withdraw amount (Token A) provided for liquidity amount"
-)]
-#[test]
-fn test_call_remove_liquidity_insufficient_balance_1() {
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp_1()).unwrap(),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Pool only contains locked liquidity")]
-#[test]
-fn test_call_remove_liquidity_pool_at_minimum_liquidity() {
-    // Removing from a legacy/corrupted pool that is already at the locked floor must be rejected.
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_at_minimum_liquidity(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_with_balance(MINIMUM_LIQUIDITY),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(MINIMUM_LIQUIDITY).unwrap(),
-        1,
-        1,
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Cannot remove locked minimum liquidity")]
-#[test]
-fn test_call_remove_liquidity_exceeds_unlocked_supply() {
-    // Model corrupted ownership by giving the caller the full LP supply even though the lock
-    // account should permanently hold MINIMUM_LIQUIDITY. The guard must still refuse to burn
-    // through the permanent floor.
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_with_balance(BalanceForTests::lp_supply_init()),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::lp_supply_init()).unwrap(),
-        1,
-        1,
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(
-    expected = "Insufficient minimal withdraw amount (Token B) provided for liquidity amount"
-)]
-#[test]
-fn test_call_remove_liquidity_insufficient_balance_2() {
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Minimum withdraw amount must be nonzero")]
-#[test]
-fn test_call_remove_liquidity_min_bal_zero_1() {
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
-        0,
-        BalanceForTests::remove_min_amount_b(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Minimum withdraw amount must be nonzero")]
-#[test]
-fn test_call_remove_liquidity_min_bal_zero_2() {
-    let _post_states = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
-        BalanceForTests::remove_min_amount_a(),
-        0,
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[test]
-fn test_call_remove_liquidity_chained_call_successful() {
-    let (post_states, chained_calls) = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).unwrap(),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b_low(),
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_post = post_states[1].clone();
-
-    assert_eq!(
-        AccountWithMetadataForTests::pool_definition_remove_successful().account,
-        pool_post.post_account(AMM_PROGRAM_ID)
-    );
-
-    let chained_call_lp = chained_calls[0].clone();
-    let chained_call_b = chained_calls[1].clone();
-    let chained_call_a = chained_calls[2].clone();
-
-    assert!(chained_call_a == ChainedCallForTests::cc_remove_token_a());
-    assert!(chained_call_b == ChainedCallForTests::cc_remove_token_b());
-    assert!(chained_call_lp == ChainedCallForTests::cc_remove_pool_lp());
-
-    // The fourth chained call refreshes the pool's TWAP current tick from the post-removal price.
-    assert_eq!(chained_calls.len(), 4);
-    assert_update_tick_call(&chained_calls, &post_states[1].post_account(AMM_PROGRAM_ID));
-}
-
-#[should_panic(expected = "Balances must be nonzero")]
-#[test]
-fn test_call_new_definition_with_zero_balance_1() {
-    let _post_states = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(0).expect("Balances must be nonzero"),
-        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Balances must be nonzero")]
-#[test]
-fn test_call_new_definition_with_zero_balance_2() {
-    let _post_states = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
-        NonZero::new(0).expect("Balances must be nonzero"),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Cannot set up a swap for a token with itself")]
-#[test]
-fn test_call_new_definition_same_token_definition() {
-    let _post_states = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
-        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Liquidity pool Token Definition Account ID does not match PDA")]
-#[test]
-fn test_call_new_definition_wrong_liquidity_id() {
-    let _post_states = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_with_wrong_id(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
-        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "LP lock holding Account ID does not match PDA")]
-#[test]
-fn test_call_new_definition_wrong_lp_lock_holding_id() {
-    let _post_states = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::lp_lock_holding_with_wrong_id(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
-        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Pool Definition Account ID does not match PDA")]
-#[test]
-fn test_call_new_definition_wrong_pool_id() {
-    let _post_states = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_with_wrong_id(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
-        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vault ID does not match PDA")]
-#[test]
-fn test_call_new_definition_wrong_vault_id_1() {
-    let _post_states = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_with_wrong_id(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
-        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vault ID does not match PDA")]
-#[test]
-fn test_call_new_definition_wrong_vault_id_2() {
-    let _post_states = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_with_wrong_id(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
-        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Pool account must be uninitialized")]
-#[test]
-fn test_call_new_definition_rejects_initialized_pool() {
-    // Verify that new_definition fails if passed an already-initialized pool
-    let _post_states = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_uninit(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
-        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Initial liquidity must exceed minimum liquidity lock")]
-#[test]
-fn test_call_new_definition_initial_lp_too_small() {
-    // isqrt(1000 * 1000) = 1000 == MINIMUM_LIQUIDITY, so the assertion fires.
-    let _post_states = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_uninit(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_uninit(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(MINIMUM_LIQUIDITY).unwrap(),
-        NonZero::new(MINIMUM_LIQUIDITY).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[test]
-fn test_call_new_definition_chained_call_successful() {
-    let (post_states, chained_calls) = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_uninit(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_uninit(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
-        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_post = post_states[1].clone();
-
-    // The pool write is itself the claim on its PDA in v0.2.5, so the acquired ownership is
-    // part of the post-state rather than a separate claim to inspect.
-    assert_eq!(
-        pool_post.post_data(),
-        &AccountWithMetadataForTests::pool_definition_init()
-            .account
-            .data
-    );
-    assert_eq!(pool_post.post_owner(AMM_PROGRAM_ID), AMM_PROGRAM_ID);
-
-    let chained_call_lp_lock = chained_calls[0].clone();
-    let chained_call_lp_user = chained_calls[1].clone();
-    let chained_call_b = chained_calls[2].clone();
-    let chained_call_a = chained_calls[3].clone();
-
-    assert!(chained_call_a == ChainedCallForTests::cc_new_definition_token_a());
-    assert!(chained_call_b == ChainedCallForTests::cc_new_definition_token_b());
-    assert!(chained_call_lp_lock == ChainedCallForTests::cc_new_definition_token_lp_lock());
-    assert!(chained_call_lp_user == ChainedCallForTests::cc_new_definition_token_lp_user());
-
-    // The fifth chained call creates the pool's TWAP current-tick account, seeding the tick from
-    // the opening reserves.
-    assert_eq!(chained_calls.len(), 5);
-    assert!(chained_calls[4] == ChainedCallForTests::cc_new_definition_create_current_tick());
-
-    // Two extra post-states (current-tick + clock) are echoed back unchanged.
-    assert_eq!(post_states.len(), 11);
-}
-
-// A pool with the right token pair but an id NOT derived under config_init's namespace
-// must be rejected, so a config from one instance can't be paired with a pool from another.
-#[should_panic(expected = "pool account is not derived under this config's namespace")]
-#[test]
-fn test_call_swap_pool_outside_config_namespace() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_with_wrong_id(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Swap exact input: input holding token is not part of the pool")]
-#[test]
-fn test_call_swap_incorrect_token_type() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vault A was not provided")]
-#[test]
-fn test_call_swap_vault_a_omitted() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_with_wrong_id(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vault B was not provided")]
-#[test]
-fn test_call_swap_vault_b_omitted() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_with_wrong_id(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Reserve for Token A exceeds vault balance")]
-#[test]
-fn test_call_swap_reserves_vault_mismatch_1() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init_low(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Reserve for Token B exceeds vault balance")]
-#[test]
-fn test_call_swap_reserves_vault_mismatch_2() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init_low(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Pool liquidity supply is below minimum liquidity")]
-#[test]
-fn test_call_swap_below_minimum_liquidity() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_below_minimum_liquidity(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Withdraw amount is less than minimal amount out")]
-#[test]
-fn test_call_swap_below_min_out() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out_too_high(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Effective swap amount should be nonzero")]
-#[test]
-fn test_call_swap_effective_amount_zero() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        1,
-        0,
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Withdraw amount should be nonzero")]
-#[test]
-fn test_call_swap_output_rounds_to_zero() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init_low_balances(),
-        AccountWithMetadataForTests::vault_a_init_low(),
-        AccountWithMetadataForTests::vault_b_init_low(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        2,
-        0,
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Withdraw amount is less than minimal amount out")]
-#[test]
-fn test_call_swap_exact_input_rejects_amount_that_rounds_down_below_target_output() {
-    let _post_states = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        2,
-        1,
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[test]
-fn test_call_swap_exact_input_accepts_smallest_amount_for_rounded_boundary() {
-    let (post_states, chained_calls) = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        3,
-        1,
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_post = post_states[1].clone();
-
-    assert_eq!(
-        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_post().account,
-        pool_post.post_account(AMM_PROGRAM_ID)
-    );
-
-    let chained_call_a = chained_calls[0].clone();
-    let chained_call_b = chained_calls[1].clone();
-
-    assert_eq!(
-        chained_call_a,
-        ChainedCallForTests::cc_swap_rounding_boundary_token_a_in()
-    );
-    assert_eq!(
-        chained_call_b,
-        ChainedCallForTests::cc_swap_rounding_boundary_token_b_out()
-    );
-}
-
-/// Asserts the last chained call is the oracle UpdateCurrentTick, carrying the post-operation
-/// spot price. The pool is named by id: the runtime resolves its post-operation state from the
-/// transaction's diff, so the price the call carries is the only thing left to check here.
-fn assert_update_tick_call(chained_calls: &[ChainedCall], pool_post_account: &Account) {
-    let pool_def = PoolDefinition::try_from(&pool_post_account.data)
-        .expect("pool post-state must hold a valid PoolDefinition");
-    let expected = ChainedCall::new(
+fn plan_initialize_builds_the_config_record() {
+    let data = plan_initialize(
+        &AccountMeta::new(owner_id(), true, AMM_PROGRAM_ID),
+        &ours(config_id()),
+        NONCE,
+        TOKEN_PROGRAM_ID,
         TWAP_ORACLE_PROGRAM_ID,
-        vec![
-            AccountWithMetadataForTests::current_tick_account_uninit().account_id,
-            IdForTests::pool_definition_id(),
-            AccountWithMetadataForTests::clock().account_id,
-        ],
-        &twap_oracle_core::Instruction::UpdateCurrentTick {
-            price: amm_core::spot_price_q64_64(pool_def.reserve_a, pool_def.reserve_b),
-        },
-    )
-    .with_pda_seeds(vec![compute_pool_pda_seed(
-        IdForTests::config_id(),
-        IdForTests::token_a_definition_id(),
-        IdForTests::token_b_definition_id(),
-    )]);
-    assert_eq!(
-        *chained_calls
-            .last()
-            .expect("expected an UpdateCurrentTick chained call"),
-        expected
+        authority_id(),
+        SWAP_FEE_BPS,
+        PROTOCOL_FEE_BPS,
+        AMM_PROGRAM_ID,
     );
+    let config = AmmConfig::try_from(&data).unwrap();
+    assert_eq!(config.token_program_id, TOKEN_PROGRAM_ID);
+    assert_eq!(config.twap_oracle_program_id, TWAP_ORACLE_PROGRAM_ID);
+    assert_eq!(config.authority, authority_id());
+    assert_eq!(config.swap_fee_bps, SWAP_FEE_BPS);
+    assert_eq!(config.protocol_fee_bps, PROTOCOL_FEE_BPS);
 }
 
 #[test]
-fn test_call_swap_chained_call_successful_1() {
-    let (post_states, chained_calls) = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_a_low(),
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_post = post_states[1].clone();
-
-    assert_eq!(
-        AccountWithMetadataForTests::pool_definition_swap_test_1().account,
-        pool_post.post_account(AMM_PROGRAM_ID)
-    );
-
-    let chained_call_a = chained_calls[0].clone();
-    let chained_call_b = chained_calls[1].clone();
-
-    assert_eq!(
-        chained_call_a,
-        ChainedCallForTests::cc_swap_token_a_test_1()
-    );
-    assert_eq!(
-        chained_call_b,
-        ChainedCallForTests::cc_swap_token_b_test_1()
-    );
-
-    assert_eq!(chained_calls.len(), 3);
-    assert_update_tick_call(&chained_calls, &pool_post.post_account(AMM_PROGRAM_ID));
+fn plan_initialize_accepts_any_fee_below_one_hundred_percent() {
+    for fee in [0, 1, 5, 30, 100, FEE_BPS_DENOMINATOR - 1] {
+        let data = plan_initialize(
+            &AccountMeta::new(owner_id(), true, AMM_PROGRAM_ID),
+            &ours(config_id()),
+            NONCE,
+            TOKEN_PROGRAM_ID,
+            TWAP_ORACLE_PROGRAM_ID,
+            authority_id(),
+            fee,
+            0,
+            AMM_PROGRAM_ID,
+        );
+        assert_eq!(AmmConfig::try_from(&data).unwrap().swap_fee_bps, fee);
+    }
 }
 
 #[test]
-fn test_call_swap_chained_call_successful_2() {
-    let (post_states, chained_calls) = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_b(),
-        BalanceForTests::add_max_amount_b(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_post = post_states[1].clone();
-
-    assert_eq!(
-        AccountWithMetadataForTests::pool_definition_swap_test_2().account,
-        pool_post.post_account(AMM_PROGRAM_ID)
-    );
-
-    let chained_call_a = chained_calls[1].clone();
-    let chained_call_b = chained_calls[0].clone();
-
-    assert_eq!(
-        chained_call_a,
-        ChainedCallForTests::cc_swap_token_a_test_2()
-    );
-    assert_eq!(
-        chained_call_b,
-        ChainedCallForTests::cc_swap_token_b_test_2()
-    );
-
-    assert_eq!(chained_calls.len(), 3);
-    assert_update_tick_call(&chained_calls, &pool_post.post_account(AMM_PROGRAM_ID));
-}
-
-/// With a nonzero protocol fee, a token-A-in exact-input swap emits a fourth chained call: the
-/// protocol's cut of the swap fee, moved from the input (Token A) vault to Token A's protocol-fee
-/// holding under both the vault seed (to debit) and the protocol-fee seed (to create/credit).
-#[test]
-fn test_swap_exact_input_diverts_protocol_fee() {
-    let (post_states, chained_calls) = swap_exact_input(
-        AccountWithMetadataForTests::config_init_with_protocol_fee(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
-    );
-
-    // [deposit, withdraw, protocol-fee, update-tick].
-    assert_eq!(chained_calls.len(), 4);
-
-    // Expected protocol cut: swap_fee = amount_in - floor(amount_in * (1 - fee)); then a 50% cut.
-    let amount_in = BalanceForTests::add_max_amount_a();
-    let reserve_a_init = BalanceForTests::vault_a_reserve_init();
-    let reserve_b_init = BalanceForTests::vault_b_reserve_init();
-    let (effective_in, withdraw_b) = swap_exact_in_amounts(
-        amount_in,
-        reserve_a_init,
-        reserve_b_init,
-        BalanceForTests::fee_tier(),
-    );
-    let swap_fee = amount_in - effective_in;
-    let expected_protocol_fee = protocol_fee_amount(swap_fee, BalanceForTests::protocol_fee_tier());
-    assert!(
-        expected_protocol_fee > 0,
-        "test setup must produce a nonzero protocol fee"
-    );
-
-    // Reserve accounting: the input reserve grows by the input NET of the protocol fee (the cut
-    // left the vault to the protocol holding), while the output reserve and the trader's output are
-    // unchanged by the protocol fee. This is what keeps reserve == vault and leaves LPs only
-    // `swap_fee - protocol_fee`.
-    let pool_post = PoolDefinition::try_from(post_states[1].post_data())
-        .expect("pool post-state must hold a valid PoolDefinition");
-    assert_eq!(
-        pool_post.reserve_a,
-        reserve_a_init + amount_in - expected_protocol_fee
-    );
-    assert_eq!(pool_post.reserve_b, reserve_b_init - withdraw_b);
-
-    let protocol_call = &chained_calls[2];
-    // Source is the Token A (input) vault; destination is Token A's protocol-fee holding.
-    assert_eq!(protocol_call.pre_state_ids[0], IdForTests::vault_a_id());
-    // The vault's authority is the seed below; a call carries bare ids, not flags.
-    assert_eq!(
-        protocol_call.pre_state_ids[1],
-        IdForTests::protocol_fee_holding_a_id()
-    );
-    // Authorized by the vault seed (debit) and the protocol-fee seed (create/credit).
-    assert_eq!(
-        protocol_call.pda_seeds,
-        vec![
-            compute_vault_pda_seed(
-                IdForTests::pool_definition_id(),
-                IdForTests::token_a_definition_id()
-            ),
-            compute_protocol_fee_pda_seed(
-                IdForTests::config_id(),
-                IdForTests::token_a_definition_id()
-            ),
-        ]
-    );
-    let expected = ChainedCall::new(
+#[should_panic(expected = "owner account must sign")]
+fn plan_initialize_rejects_an_unauthorized_owner() {
+    let _ = plan_initialize(
+        &AccountMeta::new(owner_id(), false, AMM_PROGRAM_ID),
+        &ours(config_id()),
+        NONCE,
         TOKEN_PROGRAM_ID,
-        protocol_call.pre_state_ids.clone(),
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: expected_protocol_fee,
-        },
-    );
-    assert_eq!(protocol_call.instruction_data, expected.instruction_data);
-}
-
-/// A zero protocol fee (the default config) diverts nothing: no fourth call, exactly the three
-/// pre-existing chained calls. Guards against emitting an empty protocol transfer.
-#[test]
-fn test_swap_exact_input_zero_protocol_fee_emits_no_protocol_call() {
-    let (_post_states, chained_calls) = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_a_low(),
-        AMM_PROGRAM_ID,
-    );
-
-    assert_eq!(chained_calls.len(), 3);
-}
-
-/// The protocol-fee holding must be the input token's protocol PDA. Passing Token B's holding for a
-/// Token-A-in swap is rejected — a caller cannot redirect the protocol cut to an arbitrary account.
-#[should_panic(
-    expected = "Swap exact input: protocol-fee holding does not match the input token's protocol PDA"
-)]
-#[test]
-fn test_swap_exact_input_rejects_mismatched_protocol_holding() {
-    let _ = swap_exact_input(
-        AccountWithMetadataForTests::config_init_with_protocol_fee(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        // Wrong token's protocol holding for a Token-A input.
-        AccountWithMetadataForTests::protocol_fee_holding_b(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
+        TWAP_ORACLE_PROGRAM_ID,
+        authority_id(),
+        SWAP_FEE_BPS,
+        PROTOCOL_FEE_BPS,
         AMM_PROGRAM_ID,
     );
 }
 
-/// Exact-output counterpart of `test_swap_exact_input_diverts_protocol_fee`: with a nonzero
-/// protocol fee, a token-A-in exact-output swap emits the protocol-fee transfer (input Token A
-/// vault → Token A's protocol-fee holding) and the input reserve grows by the required input NET
-/// of the protocol cut, while the output reserve drops by exactly the requested output.
 #[test]
-fn test_swap_exact_output_diverts_protocol_fee() {
-    // Matches `pool_definition_swap_exact_output_init` (reserve_a = 1000, reserve_b = 500).
-    let reserve_a_init = 1_000u128;
-    let reserve_b_init = 500u128;
-    let exact_out = BalanceForTests::max_amount_in();
-
-    let (post_states, chained_calls) = swap_exact_output(
-        AccountWithMetadataForTests::config_init_with_protocol_fee(),
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        exact_out,
-        BalanceForTests::vault_b_reserve_init(),
-        AMM_PROGRAM_ID,
-    );
-
-    // [deposit, withdraw, protocol-fee, update-tick].
-    assert_eq!(chained_calls.len(), 4);
-
-    // Required input for the exact output, then the protocol's cut of its swap fee.
-    let (effective_in, required_in) = swap_exact_out_amounts(
-        exact_out,
-        reserve_a_init,
-        reserve_b_init,
-        BalanceForTests::fee_tier(),
-    )
-    .expect("exact-output amounts must be fulfillable");
-    let swap_fee = required_in - effective_in;
-    let expected_protocol_fee = protocol_fee_amount(swap_fee, BalanceForTests::protocol_fee_tier());
-    assert!(
-        expected_protocol_fee > 0,
-        "test setup must produce a nonzero protocol fee"
-    );
-
-    // Reserve accounting: input reserve grows by required_in NET of the protocol cut; the output
-    // reserve falls by exactly the requested output (the protocol fee is taken on the input side).
-    let pool_post = PoolDefinition::try_from(post_states[1].post_data())
-        .expect("pool post-state must hold a valid PoolDefinition");
-    assert_eq!(
-        pool_post.reserve_a,
-        reserve_a_init + required_in - expected_protocol_fee
-    );
-    assert_eq!(pool_post.reserve_b, reserve_b_init - exact_out);
-
-    let protocol_call = &chained_calls[2];
-    assert_eq!(protocol_call.pre_state_ids[0], IdForTests::vault_a_id());
-    // The vault's authority is the seed below; a call carries bare ids, not flags.
-    assert_eq!(
-        protocol_call.pre_state_ids[1],
-        IdForTests::protocol_fee_holding_a_id()
-    );
-    assert_eq!(
-        protocol_call.pda_seeds,
-        vec![
-            compute_vault_pda_seed(
-                IdForTests::pool_definition_id(),
-                IdForTests::token_a_definition_id()
-            ),
-            compute_protocol_fee_pda_seed(
-                IdForTests::config_id(),
-                IdForTests::token_a_definition_id()
-            ),
-        ]
-    );
-    let expected = ChainedCall::new(
+#[should_panic(expected = "does not match namespaced PDA")]
+fn plan_initialize_rejects_a_config_outside_the_namespace() {
+    let _ = plan_initialize(
+        &AccountMeta::new(owner_id(), true, AMM_PROGRAM_ID),
+        &ours(AccountId::new([0xAAu8; 32])),
+        NONCE,
         TOKEN_PROGRAM_ID,
-        protocol_call.pre_state_ids.clone(),
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: expected_protocol_fee,
-        },
-    );
-    assert_eq!(protocol_call.instruction_data, expected.instruction_data);
-}
-
-/// Exact-output counterpart of the mismatch guard: the protocol-fee holding must be the input
-/// token's protocol PDA. Passing Token B's holding for a Token-A-in exact-output swap is rejected.
-#[should_panic(
-    expected = "Swap exact output: protocol-fee holding does not match the input token's protocol PDA"
-)]
-#[test]
-fn test_swap_exact_output_rejects_mismatched_protocol_holding() {
-    let _ = swap_exact_output(
-        AccountWithMetadataForTests::config_init_with_protocol_fee(),
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        // Wrong token's protocol holding for a Token-A input.
-        AccountWithMetadataForTests::protocol_fee_holding_b(),
-        BalanceForTests::max_amount_in(),
-        BalanceForTests::vault_b_reserve_init(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Swap exact output: input holding token is not part of the pool")]
-#[test]
-fn call_swap_exact_output_incorrect_token_type() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::max_amount_in(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vault A was not provided")]
-#[test]
-fn call_swap_exact_output_vault_a_omitted() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_with_wrong_id(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::max_amount_in(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Vault B was not provided")]
-#[test]
-fn call_swap_exact_output_vault_b_omitted() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_with_wrong_id(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::max_amount_in(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Reserve for Token A exceeds vault balance")]
-#[test]
-fn call_swap_exact_output_reserves_vault_mismatch_1() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init_low(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::max_amount_in(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Reserve for Token B exceeds vault balance")]
-#[test]
-fn call_swap_exact_output_reserves_vault_mismatch_2() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init_low(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::max_amount_in(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Pool liquidity supply is below minimum liquidity")]
-#[test]
-fn call_swap_exact_output_below_minimum_liquidity() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_below_minimum_liquidity(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::max_amount_in(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Required input exceeds maximum amount in")]
-#[test]
-fn call_swap_exact_output_exceeds_max_in() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        166_u128,
-        100_u128,
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Exact amount out must be nonzero")]
-#[test]
-fn call_swap_exact_output_zero() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        0_u128,
-        500_u128,
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Exact amount out exceeds reserve")]
-#[test]
-fn call_swap_exact_output_exceeds_reserve() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::vault_b_reserve_init(),
-        BalanceForTests::max_amount_in(),
+        TWAP_ORACLE_PROGRAM_ID,
+        authority_id(),
+        SWAP_FEE_BPS,
+        PROTOCOL_FEE_BPS,
         AMM_PROGRAM_ID,
     );
 }
 
 #[test]
-fn call_swap_exact_output_chained_call_successful() {
-    let (post_states, chained_calls) = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::max_amount_in(),
-        BalanceForTests::vault_b_reserve_init(),
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_post = post_states[1].clone();
-
-    assert_eq!(
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_test_1().account,
-        pool_post.post_account(AMM_PROGRAM_ID)
-    );
-
-    let chained_call_a = chained_calls[0].clone();
-    let chained_call_b = chained_calls[1].clone();
-
-    assert_eq!(
-        chained_call_a,
-        ChainedCallForTests::cc_swap_exact_output_token_a_test_1()
-    );
-    assert_eq!(
-        chained_call_b,
-        ChainedCallForTests::cc_swap_exact_output_token_b_test_1()
-    );
-}
-
-#[test]
-fn call_swap_exact_output_chained_call_successful_2() {
-    let (post_states, chained_calls) = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_b(),
-        285,
-        300,
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_post = post_states[1].clone();
-
-    assert_eq!(
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_test_2().account,
-        pool_post.post_account(AMM_PROGRAM_ID)
-    );
-
-    let chained_call_a = chained_calls[1].clone();
-    let chained_call_b = chained_calls[0].clone();
-
-    assert_eq!(
-        chained_call_a,
-        ChainedCallForTests::cc_swap_exact_output_token_a_test_2()
-    );
-    assert_eq!(
-        chained_call_b,
-        ChainedCallForTests::cc_swap_exact_output_token_b_test_2()
-    );
-}
-
-// The minimum effective input for exact_amount_out=166 on the 1000/500 pool is 498.
-// After fee rounding, the true minimum gross input is 500, so 499 must be rejected.
-#[should_panic(expected = "Required input exceeds maximum amount in")]
-#[test]
-fn call_swap_exact_output_fee_enforced() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        166_u128, // exact_amount_out: token_b
-        499_u128, // max_amount_in: still one short after fee rounding
-        AMM_PROGRAM_ID,
-    );
-}
-
-// On a 1000/1000 pool at 0.3%, exact_amount_out = 1 requires gross input 3.
-// max_amount_in = 2 must be rejected because the exact-input path would round
-// 2 down to effective_in = 1 and still produce 0 output.
-#[should_panic(expected = "Required input exceeds maximum amount in")]
-#[test]
-fn call_swap_exact_output_rejects_max_in_that_rounds_down_below_target_output() {
-    let _post_states = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        1,
-        2,
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[test]
-fn call_swap_exact_output_accepts_smallest_max_in_for_rounded_boundary() {
-    let (post_states, chained_calls) = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        1,
-        3,
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_post = post_states[1].clone();
-
-    assert_eq!(
-        AccountWithMetadataForTests::pool_definition_swap_rounding_boundary_post().account,
-        pool_post.post_account(AMM_PROGRAM_ID)
-    );
-
-    let chained_call_a = chained_calls[0].clone();
-    let chained_call_b = chained_calls[1].clone();
-
-    assert_eq!(
-        chained_call_a,
-        ChainedCallForTests::cc_swap_rounding_boundary_token_a_in()
-    );
-    assert_eq!(
-        chained_call_b,
-        ChainedCallForTests::cc_swap_rounding_boundary_token_b_out()
-    );
-}
-
-// Without widening, `reserve_a * exact_amount_out` silently wraps to 0 in release mode, making
-// `deposit_amount = 0`, so an attacker would receive `exact_amount_out` tokens while paying
-// nothing. Under Option A the product is computed in U256, so the true (enormous) required input
-// is computed exactly and the slippage check `deposit_amount <= max_amount_in` correctly rejects
-// the attacker's tiny `max_amount_in`.
-#[should_panic(expected = "Required input exceeds maximum amount in")]
-#[test]
-fn swap_exact_output_overflow_protection() {
-    // reserve_a chosen so that reserve_a * 2 overflows u128:
-    //   (u128::MAX / 2 + 1) * 2 = u128::MAX + 1 → wraps to 0
-    let large_reserve: u128 = u128::MAX / 2 + 1;
-    let reserve_b: u128 = 1_000;
-
-    let pool = AccountWithMetadata {
-        account: Account {
-            program_owner: AccountId::default(),
-            balance: 0,
-            data: Data::from(&PoolDefinition {
-                definition_token_a_id: IdForTests::token_a_definition_id(),
-                definition_token_b_id: IdForTests::token_b_definition_id(),
-                vault_a_id: IdForTests::vault_a_id(),
-                vault_b_id: IdForTests::vault_b_id(),
-                liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                liquidity_pool_supply: MINIMUM_LIQUIDITY,
-                reserve_a: large_reserve,
-                reserve_b,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: true,
-        account_id: IdForTests::pool_definition_id(),
-    };
-
-    let vault_a = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::token_a_definition_id(),
-                balance: large_reserve,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: true,
-        account_id: IdForTests::vault_a_id(),
-    };
-
-    let vault_b = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::token_b_definition_id(),
-                balance: reserve_b,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: true,
-        account_id: IdForTests::vault_b_id(),
-    };
-
-    let _result = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        pool,
-        vault_a,
-        vault_b,
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        2, // exact_amount_out: small, valid (< reserve_b)
-        1, // max_amount_in: tiny — real deposit would be enormous, but
-        // overflow wraps it to 0, making 0 <= 1 pass silently
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[test]
-fn test_new_definition_lp_asymmetric_amounts() {
-    let (post_states, chained_calls) = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_uninit(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_uninit(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::vault_a_reserve_init()).unwrap(),
-        NonZero::new(BalanceForTests::vault_b_reserve_init()).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-
-    // check the minted LP amount
-    let pool_post = post_states[1].clone();
-    let pool_def = PoolDefinition::try_from(pool_post.post_data()).unwrap();
-    assert_eq!(
-        pool_def.liquidity_pool_supply,
-        BalanceForTests::lp_supply_init()
-    );
-
-    let chained_call_lp_lock = chained_calls[0].clone();
-    let chained_call_lp_user = chained_calls[1].clone();
-    assert!(chained_call_lp_lock == ChainedCallForTests::cc_new_definition_token_lp_lock());
-    assert!(chained_call_lp_user == ChainedCallForTests::cc_new_definition_token_lp_user());
-}
-
-#[test]
-fn test_new_definition_lp_symmetric_amounts() {
-    // token_a=2000, token_b=2000 → LP=sqrt(4_000_000)=2000
-    let token_a_amount = 2_000u128;
-    let token_b_amount = 2_000u128;
-    let expected_lp = (token_a_amount * token_b_amount).isqrt();
-    assert_eq!(expected_lp, 2_000);
-
-    let (post_states, chained_calls) = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_uninit(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_uninit(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(token_a_amount).unwrap(),
-        NonZero::new(token_b_amount).unwrap(),
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_post = post_states[1].clone();
-    let pool_def = PoolDefinition::try_from(pool_post.post_data()).unwrap();
-    assert_eq!(pool_def.liquidity_pool_supply, expected_lp);
-
-    let chained_call_lp_lock = chained_calls[0].clone();
-    let chained_call_lp_user = chained_calls[1].clone();
-
-    let expected_lp_lock_call = ChainedCall::new(
+#[should_panic(expected = "Swap fee must be below")]
+fn plan_initialize_rejects_a_swap_fee_at_one_hundred_percent() {
+    let _ = plan_initialize(
+        &AccountMeta::new(owner_id(), true, AMM_PROGRAM_ID),
+        &ours(config_id()),
+        NONCE,
         TOKEN_PROGRAM_ID,
-        vec![
-            AccountForTests::pool_lp_uninit().account_id,
-            AccountForTests::lp_lock_holding_uninit().account_id,
-        ],
-        &token_core::Instruction::NewFungibleDefinition {
-            name: String::from("LP Token"),
-            total_supply: MINIMUM_LIQUIDITY,
-            mint_authority: Some(AccountForTests::pool_lp_uninit().account_id),
-        },
-    )
-    .with_pda_seeds(vec![
-        compute_liquidity_token_pda_seed(IdForTests::pool_definition_id()),
-        compute_lp_lock_holding_pda_seed(IdForTests::pool_definition_id()),
-    ]);
-
-    let expected_lp_user_call = ChainedCall::new(
-        TOKEN_PROGRAM_ID,
-        vec![
-            AccountForTests::pool_lp_created_after_lock().account_id,
-            AccountForTests::user_holding_lp_uninit().account_id,
-        ],
-        &token_core::Instruction::Mint {
-            amount_to_mint: expected_lp - MINIMUM_LIQUIDITY,
-        },
-    )
-    .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
-        IdForTests::pool_definition_id(),
-    )]);
-
-    assert_eq!(chained_call_lp_lock, expected_lp_lock_call);
-    assert_eq!(chained_call_lp_user, expected_lp_user_call);
+        TWAP_ORACLE_PROGRAM_ID,
+        authority_id(),
+        FEE_BPS_DENOMINATOR,
+        0,
+        AMM_PROGRAM_ID,
+    );
 }
 
 #[test]
-fn test_new_definition_large_18_decimal_amounts_no_overflow() {
-    // 100e18 and 200e18 (1e20 / 2e20). The naive `token_a * token_b` product is 2e40, which
-    // overflows u128 (max ~3.4e38) and previously panicked. `isqrt_product` widens the product
-    // to U256, so this must now succeed. Expected LP = floor(sqrt(2e40)).
-    let token_a_amount = 100_000_000_000_000_000_000u128; // 1e20
-    let token_b_amount = 200_000_000_000_000_000_000u128; // 2e20
-    let expected_lp = isqrt_product(token_a_amount, token_b_amount);
-    assert_eq!(expected_lp, 141_421_356_237_309_504_880);
-
-    let (post_states, _chained_calls) = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_uninit(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_uninit(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(token_a_amount).unwrap(),
-        NonZero::new(token_b_amount).unwrap(),
+#[should_panic(expected = "Protocol fee must be at most")]
+fn plan_initialize_rejects_a_protocol_fee_above_the_whole_swap_fee() {
+    let _ = plan_initialize(
+        &AccountMeta::new(owner_id(), true, AMM_PROGRAM_ID),
+        &ours(config_id()),
+        NONCE,
+        TOKEN_PROGRAM_ID,
+        TWAP_ORACLE_PROGRAM_ID,
+        authority_id(),
+        SWAP_FEE_BPS,
+        FEE_BPS_DENOMINATOR + 1,
         AMM_PROGRAM_ID,
     );
-
-    let pool_post = post_states[1].clone();
-    let pool_def = PoolDefinition::try_from(pool_post.post_data()).unwrap();
-    assert_eq!(pool_def.reserve_a, token_a_amount);
-    assert_eq!(pool_def.reserve_b, token_b_amount);
-    assert_eq!(pool_def.liquidity_pool_supply, expected_lp);
-    assert!(pool_def.liquidity_pool_supply > MINIMUM_LIQUIDITY);
 }
 
 #[test]
-fn test_minimum_liquidity_lock_and_remove_all_user_lp() {
-    let pool_uninitialized = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: IdForTests::pool_definition_id(),
-    };
-    let token_a_amount = BalanceForTests::vault_a_reserve_init();
-    let token_b_amount = BalanceForTests::vault_b_reserve_init();
-    let initial_lp = (token_a_amount * token_b_amount).isqrt();
-    let user_lp = initial_lp - MINIMUM_LIQUIDITY;
-
-    let (post_states, chained_calls) = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        pool_uninitialized,
-        AccountForTests::vault_a_init(),
-        AccountForTests::vault_b_init(),
-        AccountForTests::pool_lp_uninit(),
-        AccountForTests::lp_lock_holding_uninit(),
-        AccountForTests::user_holding_a(),
-        AccountForTests::user_holding_b(),
-        AccountForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(token_a_amount).unwrap(),
-        NonZero::new(token_b_amount).unwrap(),
-        AMM_PROGRAM_ID,
+fn a_distinct_nonce_yields_a_distinct_instance() {
+    let other = compute_config_pda(AMM_PROGRAM_ID, owner_id(), [9u8; 32]);
+    assert_ne!(config_id(), other);
+    // And the same nonce under a different owner is a third instance.
+    assert_ne!(
+        config_id(),
+        compute_config_pda(AMM_PROGRAM_ID, authority_id(), NONCE)
     );
-
-    let expected_lock_call = ChainedCall::new(
-        TOKEN_PROGRAM_ID,
-        vec![
-            AccountForTests::pool_lp_uninit().account_id,
-            AccountForTests::lp_lock_holding_uninit().account_id,
-        ],
-        &token_core::Instruction::NewFungibleDefinition {
-            name: String::from("LP Token"),
-            total_supply: MINIMUM_LIQUIDITY,
-            mint_authority: Some(AccountForTests::pool_lp_uninit().account_id),
-        },
-    )
-    .with_pda_seeds(vec![
-        compute_liquidity_token_pda_seed(IdForTests::pool_definition_id()),
-        compute_lp_lock_holding_pda_seed(IdForTests::pool_definition_id()),
-    ]);
-    let expected_user_call = ChainedCall::new(
-        TOKEN_PROGRAM_ID,
-        vec![
-            AccountForTests::pool_lp_created_after_lock().account_id,
-            AccountForTests::user_holding_lp_uninit().account_id,
-        ],
-        &token_core::Instruction::Mint {
-            amount_to_mint: user_lp,
-        },
-    )
-    .with_pda_seeds(vec![compute_liquidity_token_pda_seed(
-        IdForTests::pool_definition_id(),
-    )]);
-    assert_eq!(chained_calls[0], expected_lock_call);
-    assert_eq!(chained_calls[1], expected_user_call);
-
-    let pool_post = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
-    assert_eq!(pool_post.liquidity_pool_supply, initial_lp);
-
-    let pool_for_remove = AccountWithMetadata {
-        account: post_states[1].post_account(AMM_PROGRAM_ID),
-        is_authorized: true,
-        account_id: IdForTests::pool_definition_id(),
-    };
-    let (remove_post_states, _) = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        pool_for_remove,
-        AccountForTests::vault_a_init(),
-        AccountForTests::vault_b_init(),
-        AccountForTests::pool_lp_init(),
-        AccountForTests::user_holding_a(),
-        AccountForTests::user_holding_b(),
-        AccountForTests::user_holding_lp_with_balance(user_lp),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(user_lp).unwrap(),
-        1,
-        1,
-        AMM_PROGRAM_ID,
-    );
-
-    let pool_after_remove = PoolDefinition::try_from(remove_post_states[1].post_data()).unwrap();
-    assert_eq!(pool_after_remove.liquidity_pool_supply, MINIMUM_LIQUIDITY);
-    assert!(pool_after_remove.reserve_a > 0);
-    assert!(pool_after_remove.reserve_b > 0);
 }
 
 #[test]
-fn test_sync_reserves_with_donation() {
-    let pool = AccountWithMetadataForTests::pool_definition_init();
-    let donation_a = 111u128;
+fn create_writes_into_an_empty_shard() {
+    assert_eq!(create(&empty(), config_data()), config_data());
+}
 
-    let mut donated_vault_a = AccountWithMetadataForTests::vault_a_init();
-    donated_vault_a.account.data = Data::from(&TokenHolding::Fungible {
-        definition_id: IdForTests::token_a_definition_id(),
-        balance: BalanceForTests::vault_a_reserve_init() + donation_a,
+#[test]
+#[should_panic(expected = "must not already hold data")]
+fn create_refuses_to_write_a_populated_shard() {
+    // Strict rather than `write_once`: re-running an `Initialize` or a
+    // `NewDefinition` against a live account is a mistake worth reporting, even
+    // when the bytes would be identical.
+    let _ = create(&config_data(), config_data());
+}
+
+// ─── UpdateConfig ───────────────────────────────────────────────────────────
+
+#[test]
+fn rotate_authority_transfers_admin_control() {
+    let data = rotate_authority(
+        &config_data(),
+        &RotateAuthority {
+            expected_authority: authority_id(),
+            new_authority: other_authority_id(),
+        },
+    );
+    let config = AmmConfig::try_from(&data).unwrap();
+    assert_eq!(config.authority, other_authority_id());
+    // The immutable deployment parameters are untouched.
+    assert_eq!(config.token_program_id, TOKEN_PROGRAM_ID);
+    assert_eq!(config.twap_oracle_program_id, TWAP_ORACLE_PROGRAM_ID);
+    assert_eq!(config.swap_fee_bps, SWAP_FEE_BPS);
+}
+
+#[test]
+#[should_panic(expected = "not the configured admin authority")]
+fn rotate_authority_rejects_a_caller_who_is_not_the_admin() {
+    let _ = rotate_authority(
+        &config_data(),
+        &RotateAuthority {
+            expected_authority: other_authority_id(),
+            new_authority: other_authority_id(),
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "must be initialized before use")]
+fn rotate_authority_rejects_an_uninitialized_config() {
+    let _ = rotate_authority(
+        &empty(),
+        &RotateAuthority {
+            expected_authority: authority_id(),
+            new_authority: other_authority_id(),
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "must authorize the update")]
+fn plan_update_config_rejects_an_unauthorized_admin() {
+    plan_update_config(&ours(authority_id()));
+}
+
+#[test]
+fn plan_update_config_accepts_a_signed_admin() {
+    plan_update_config(&AccountMeta::new(authority_id(), true, AMM_PROGRAM_ID));
+}
+
+// ─── the shared config guard ────────────────────────────────────────────────
+
+#[test]
+fn check_config_accepts_the_stored_facts() {
+    check_config(&config_data(), &facts());
+}
+
+#[test]
+#[should_panic(expected = "must be initialized before use")]
+fn check_config_rejects_an_empty_config_shard() {
+    check_config(&empty(), &facts());
+}
+
+#[test]
+#[should_panic(expected = "Declared AMM config does not match")]
+fn check_config_rejects_a_forged_token_program() {
+    check_config(
+        &config_data(),
+        &ConfigFacts {
+            token_program_id: FOREIGN_PROGRAM_ID,
+            ..facts()
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "Declared AMM config does not match")]
+fn check_config_rejects_a_forged_swap_fee() {
+    // The whole fact set travels under one assertion, so a true program id
+    // cannot be paired with a cheaper fee.
+    check_config(
+        &config_data(),
+        &ConfigFacts {
+            swap_fee_bps: 0,
+            ..facts()
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "Declared AMM config does not match")]
+fn check_config_rejects_a_forged_authority() {
+    check_config(
+        &config_data(),
+        &ConfigFacts {
+            authority: other_authority_id(),
+            ..facts()
+        },
+    );
+}
+
+// ─── the shared pool guard ──────────────────────────────────────────────────
+
+#[test]
+fn pool_of_accepts_the_stored_identity() {
+    let stored = pool_of(&pool_data(&live_pool()), &identity(), "test");
+    assert_eq!(stored.reserve_a, RESERVE_A);
+    assert_eq!(stored.reserve_b, RESERVE_B);
+}
+
+#[test]
+#[should_panic(expected = "valid Pool Definition Account")]
+fn pool_of_rejects_an_empty_pool_shard() {
+    pool_of(&empty(), &identity(), "test");
+}
+
+#[test]
+#[should_panic(expected = "Declared pool identity does not match")]
+fn pool_of_rejects_a_forged_vault() {
+    pool_of(
+        &pool_data(&live_pool()),
+        &PoolIdentity {
+            vault_a_id: user_a_id(),
+            ..identity()
+        },
+        "test",
+    );
+}
+
+#[test]
+#[should_panic(expected = "Declared pool identity does not match")]
+fn pool_of_rejects_a_forged_lp_definition() {
+    pool_of(
+        &pool_data(&live_pool()),
+        &PoolIdentity {
+            liquidity_pool_id: user_lp_id(),
+            ..identity()
+        },
+        "test",
+    );
+}
+
+#[test]
+#[should_panic(expected = "Declared pool identity does not match")]
+fn pool_of_rejects_a_forged_token_pair() {
+    pool_of(
+        &pool_data(&live_pool()),
+        &PoolIdentity {
+            definition_token_b_id: definition_c(),
+            ..identity()
+        },
+        "test",
+    );
+}
+
+// ─── the clock slot ─────────────────────────────────────────────────────────
+
+#[test]
+fn assert_canonical_clock_accepts_the_clock_programs_shard() {
+    assert_canonical_clock(&clock_slot(), "test");
+}
+
+#[test]
+#[should_panic(expected = "canonical 1-block LEZ clock account")]
+fn assert_canonical_clock_rejects_another_address() {
+    assert_canonical_clock(
+        &AccountMeta::new(AccountId::new([0xCCu8; 32]), false, clock_account_id()),
+        "test",
+    );
+}
+
+#[test]
+#[should_panic(expected = "must select the clock program's shard")]
+fn assert_canonical_clock_rejects_a_foreign_shard_at_the_clock_address() {
+    // The address alone is not the identity: a shard is keyed by its writer, so
+    // this selector would hand a guard bytes a stranger authored.
+    assert_canonical_clock(
+        &AccountMeta::new(CLOCK_01_PROGRAM_ACCOUNT_ID, false, FOREIGN_PROGRAM_ID),
+        "test",
+    );
+}
+
+// ─── helpers for the chained-call assertions ────────────────────────────────
+
+fn observations_id() -> AccountId {
+    compute_price_observations_pda(TWAP_ORACLE_PROGRAM_ID, pool_id(), WINDOW)
+}
+fn oracle_price_id() -> AccountId {
+    compute_oracle_price_account_pda(TWAP_ORACLE_PROGRAM_ID, pool_id(), WINDOW)
+}
+
+fn selector_ids(call: &lee_core::program::ChainedCall) -> Vec<AccountId> {
+    call.shard_selectors.iter().map(|s| s.account_id).collect()
+}
+
+fn oracle_instruction(call: &lee_core::program::ChainedCall) -> twap_oracle_core::Instruction {
+    borsh::from_slice(&call.instruction_data)
+        .expect("chained instruction must decode as a twap_oracle_core::Instruction")
+}
+
+fn token_instruction(call: &lee_core::program::ChainedCall) -> token_core::Instruction {
+    borsh::from_slice(&call.instruction_data)
+        .expect("chained instruction must decode as a token_core::Instruction")
+}
+
+/// `(from, to, definition_id, amount)` of a chained fungible transfer.
+fn transfer_parts(
+    call: &lee_core::program::ChainedCall,
+) -> (AccountId, AccountId, AccountId, u128) {
+    let ids = selector_ids(call);
+    match token_instruction(call) {
+        token_core::Instruction::Transfer {
+            amount_to_transfer,
+            descriptor,
+        } => {
+            assert_eq!(descriptor.kind, TokenKind::Fungible);
+            (ids[0], ids[1], descriptor.definition_id, amount_to_transfer)
+        }
+        _ => panic!("expected a Transfer"),
+    }
+}
+
+// ─── CreatePriceObservations ────────────────────────────────────────────────
+
+fn plan_observations(initial_tick: i32) -> lee_core::program::ChainedCall {
+    plan_create_price_observations(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &oracle_slot(current_tick_id()),
+        &oracle_slot(observations_id()),
+        &clock_slot(),
+        WINDOW,
+        &facts(),
+        &identity(),
+        initial_tick,
+        NOW,
+        AMM_PROGRAM_ID,
+    )
+}
+
+#[test]
+fn plan_observations_delegates_to_the_configured_oracle() {
+    let call = plan_observations(-120);
+    assert_eq!(call.program_account_id, TWAP_ORACLE_PROGRAM_ID);
+    match oracle_instruction(&call) {
+        twap_oracle_core::Instruction::CreatePriceObservations {
+            initial_tick,
+            window_duration,
+            now,
+        } => {
+            assert_eq!(initial_tick, -120);
+            assert_eq!(window_duration, WINDOW);
+            assert_eq!(now, NOW, "the AMM forwards `now` for the oracle to pin");
+        }
+        _ => panic!("expected CreatePriceObservations"),
+    }
+}
+
+/// `[observations, pool, clock]`, and the pool's seed is the AMM's authority.
+#[test]
+fn plan_observations_names_the_oracle_accounts_and_authorizes_the_pool() {
+    let call = plan_observations(0);
+    assert_eq!(
+        selector_ids(&call),
+        vec![observations_id(), pool_id(), CLOCK_01_PROGRAM_ACCOUNT_ID]
+    );
+    assert_eq!(
+        call.pda_seeds,
+        vec![amm_core::compute_pool_pda_seed(
+            config_id(),
+            definition_a(),
+            definition_b()
+        )]
+    );
+}
+
+#[test]
+#[should_panic(expected = "canonical 1-block LEZ clock account")]
+fn plan_observations_rejects_a_non_canonical_clock() {
+    let _ = plan_create_price_observations(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &oracle_slot(current_tick_id()),
+        &oracle_slot(observations_id()),
+        &AccountMeta::new(AccountId::new([0xCCu8; 32]), false, clock_account_id()),
+        WINDOW,
+        &facts(),
+        &identity(),
+        0,
+        NOW,
+        AMM_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "not derived under this config's namespace")]
+fn plan_observations_rejects_a_forged_pool() {
+    let _ = plan_create_price_observations(
+        &ours(config_id()),
+        &ours(AccountId::new([0xAAu8; 32])),
+        &oracle_slot(current_tick_id()),
+        &oracle_slot(observations_id()),
+        &clock_slot(),
+        WINDOW,
+        &facts(),
+        &identity(),
+        0,
+        NOW,
+        AMM_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "current tick Account ID does not match PDA")]
+fn plan_observations_rejects_a_forged_current_tick_account() {
+    let _ = plan_create_price_observations(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &oracle_slot(AccountId::new([0xBBu8; 32])),
+        &oracle_slot(observations_id()),
+        &clock_slot(),
+        WINDOW,
+        &facts(),
+        &identity(),
+        0,
+        NOW,
+        AMM_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "price observations Account ID does not match PDA")]
+fn plan_observations_rejects_a_wrong_observations_pda() {
+    let _ = plan_create_price_observations(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &oracle_slot(current_tick_id()),
+        &oracle_slot(AccountId::new([0xBBu8; 32])),
+        &clock_slot(),
+        WINDOW,
+        &facts(),
+        &identity(),
+        0,
+        NOW,
+        AMM_PROGRAM_ID,
+    );
+}
+
+#[test]
+fn different_windows_produce_distinct_observation_pdas() {
+    assert_ne!(
+        compute_price_observations_pda(TWAP_ORACLE_PROGRAM_ID, pool_id(), WINDOW),
+        compute_price_observations_pda(TWAP_ORACLE_PROGRAM_ID, pool_id(), WINDOW * 2),
+    );
+}
+
+#[test]
+fn check_oracle_tick_accepts_the_stored_tick() {
+    let shard = ShardData::from(&CurrentTickAccount {
+        tick: -120,
+        last_updated: NOW,
     });
-
-    let pool_pre = PoolDefinition::try_from(&pool.account.data).unwrap();
-    assert_eq!(pool_pre.reserve_a, BalanceForTests::vault_a_reserve_init());
-
-    let (post_states, chained_calls) = sync_reserves(
-        AccountWithMetadataForTests::config_init(),
-        pool,
-        donated_vault_a,
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AMM_PROGRAM_ID,
-    );
-    let pool_post = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
-    assert_eq!(
-        pool_post.reserve_a,
-        BalanceForTests::vault_a_reserve_init() + donation_a
-    );
-    assert_eq!(pool_post.reserve_b, BalanceForTests::vault_b_reserve_init());
-
-    // Sync refreshes the pool's TWAP current tick via a chained call carrying the synced spot
-    // price, with the synced pool authorized as the price source.
-    assert_eq!(chained_calls.len(), 1);
-    assert_update_tick_call(&chained_calls, &post_states[1].post_account(AMM_PROGRAM_ID));
-}
-
-// A pool with the right token pair but an id NOT derived under config_init's namespace
-// must be rejected, so any AMM-owned config can't be paired with an arbitrary pool.
-#[should_panic(expected = "pool account is not derived under this config's namespace")]
-#[test]
-fn test_sync_reserves_pool_outside_config_namespace() {
-    let _ = sync_reserves(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_with_wrong_id(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Sync reserves: vault A balance is less than its reserve")]
-#[test]
-fn test_sync_reserves_panics_when_vault_a_under_collateralized() {
-    let _ = sync_reserves(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init_low(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Sync reserves: vault B balance is less than its reserve")]
-#[test]
-fn test_sync_reserves_panics_when_vault_b_under_collateralized() {
-    let _ = sync_reserves(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init_low(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AMM_PROGRAM_ID,
-    );
-}
-
-#[should_panic(expected = "Pool liquidity supply is below minimum liquidity")]
-#[test]
-fn test_sync_reserves_rejects_pool_below_minimum_liquidity() {
-    let _ = sync_reserves(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_below_minimum_liquidity(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AMM_PROGRAM_ID,
-    );
+    check_oracle_tick(&shard, -120);
 }
 
 #[test]
-fn test_donation_then_add_liquidity_sync_mitigates_mispricing() {
-    let donation_a = 100u128;
-
-    let mut donated_vault_a = AccountWithMetadataForTests::vault_a_init();
-    donated_vault_a.account.data = Data::from(&TokenHolding::Fungible {
-        definition_id: IdForTests::token_a_definition_id(),
-        balance: BalanceForTests::vault_a_reserve_init() + donation_a,
+#[should_panic(expected = "Declared initial tick does not match")]
+fn check_oracle_tick_rejects_a_forged_seed_tick() {
+    // The whole point of the guard: the seed is the oracle's tick, not the
+    // caller's claim about it.
+    let shard = ShardData::from(&CurrentTickAccount {
+        tick: -120,
+        last_updated: NOW,
     });
-    let donated_vault_b = AccountWithMetadataForTests::vault_b_init();
+    check_oracle_tick(&shard, 5_000);
+}
 
-    let (post_unsynced, _) = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        donated_vault_a.clone(),
-        donated_vault_b.clone(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(1).unwrap(),
-        100,
-        50,
+#[test]
+#[should_panic(expected = "valid CurrentTickAccount")]
+fn check_oracle_tick_rejects_an_uninitialized_current_tick_account() {
+    check_oracle_tick(&empty(), 0);
+}
+
+// ─── CreateOraclePriceAccount ───────────────────────────────────────────────
+
+fn price_guard(reserve_a: u128, reserve_b: u128) -> CheckPoolPrice {
+    CheckPoolPrice {
+        identity: identity(),
+        reserve_a,
+        reserve_b,
+    }
+}
+
+fn plan_price_account(window: u64, guard: &CheckPoolPrice) -> lee_core::program::ChainedCall {
+    plan_create_oracle_price_account(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &oracle_slot(compute_oracle_price_account_pda(
+            TWAP_ORACLE_PROGRAM_ID,
+            pool_id(),
+            window,
+        )),
+        &clock_slot(),
+        window,
+        &facts(),
+        guard,
+        NOW,
+        AMM_PROGRAM_ID,
+    )
+}
+
+#[test]
+fn plan_price_account_seeds_the_pair_and_spot_price_from_the_pinned_reserves() {
+    let call = plan_price_account(WINDOW, &price_guard(RESERVE_A, RESERVE_B));
+    assert_eq!(call.program_account_id, TWAP_ORACLE_PROGRAM_ID);
+    match oracle_instruction(&call) {
+        twap_oracle_core::Instruction::CreateOraclePriceAccount {
+            base_asset,
+            quote_asset,
+            initial_price,
+            window_duration,
+            now,
+        } => {
+            assert_eq!(base_asset, definition_a());
+            assert_eq!(quote_asset, definition_b());
+            assert_eq!(initial_price, spot_price_q64_64(RESERVE_A, RESERVE_B));
+            assert_eq!(window_duration, WINDOW);
+            assert_eq!(now, NOW);
+        }
+        _ => panic!("expected CreateOraclePriceAccount"),
+    }
+    assert_eq!(
+        selector_ids(&call),
+        vec![oracle_price_id(), pool_id(), CLOCK_01_PROGRAM_ACCOUNT_ID]
+    );
+}
+
+#[test]
+#[should_panic(expected = "canonical 1-block LEZ clock account")]
+fn plan_price_account_rejects_a_non_canonical_clock() {
+    let _ = plan_create_oracle_price_account(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &oracle_slot(oracle_price_id()),
+        &AccountMeta::new(AccountId::new([0xCCu8; 32]), false, clock_account_id()),
+        WINDOW,
+        &facts(),
+        &price_guard(RESERVE_A, RESERVE_B),
+        NOW,
         AMM_PROGRAM_ID,
     );
-    let unsynced_pool_post = PoolDefinition::try_from(post_unsynced[1].post_data()).unwrap();
-    let unsynced_delta_lp =
-        unsynced_pool_post.liquidity_pool_supply - BalanceForTests::lp_supply_init();
+}
 
-    let donated_vault_a_for_synced_add = donated_vault_a.clone();
-    let donated_vault_b_for_synced_add = donated_vault_b.clone();
-
-    let (sync_post, _) = sync_reserves(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        donated_vault_a,
-        donated_vault_b,
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
+#[test]
+#[should_panic(expected = "not derived under this config's namespace")]
+fn plan_price_account_rejects_a_forged_pool() {
+    let _ = plan_create_oracle_price_account(
+        &ours(config_id()),
+        &ours(AccountId::new([0xAAu8; 32])),
+        &oracle_slot(oracle_price_id()),
+        &clock_slot(),
+        WINDOW,
+        &facts(),
+        &price_guard(RESERVE_A, RESERVE_B),
+        NOW,
         AMM_PROGRAM_ID,
     );
-    let synced_pool = AccountWithMetadata {
-        account: sync_post[1].post_account(AMM_PROGRAM_ID),
-        is_authorized: true,
-        account_id: IdForTests::pool_definition_id(),
-    };
+}
 
-    let (post_synced, _) = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        synced_pool,
-        donated_vault_a_for_synced_add,
-        donated_vault_b_for_synced_add,
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(1).unwrap(),
-        100,
-        50,
+#[test]
+#[should_panic(expected = "oracle price Account ID does not match PDA")]
+fn plan_price_account_rejects_a_wrong_price_account_pda() {
+    let _ = plan_create_oracle_price_account(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &oracle_slot(AccountId::new([0xBBu8; 32])),
+        &clock_slot(),
+        WINDOW,
+        &facts(),
+        &price_guard(RESERVE_A, RESERVE_B),
+        NOW,
         AMM_PROGRAM_ID,
     );
-    let synced_pool_post = PoolDefinition::try_from(post_synced[1].post_data()).unwrap();
-    let synced_delta_lp = synced_pool_post.liquidity_pool_supply
-        - PoolDefinition::try_from(sync_post[1].post_data())
+}
+
+#[test]
+#[should_panic(expected = "window_duration must be >= OBSERVATIONS_CAPACITY")]
+fn plan_price_account_rejects_a_window_below_the_observations_capacity() {
+    let window = u64::from(OBSERVATIONS_CAPACITY) - 1;
+    plan_price_account(window, &price_guard(RESERVE_A, RESERVE_B));
+}
+
+#[test]
+fn plan_price_account_accepts_a_window_equal_to_the_observations_capacity() {
+    let window = u64::from(OBSERVATIONS_CAPACITY);
+    let call = plan_price_account(window, &price_guard(RESERVE_A, RESERVE_B));
+    assert_eq!(call.program_account_id, TWAP_ORACLE_PROGRAM_ID);
+}
+
+#[test]
+#[should_panic(expected = "spot price must be non-zero")]
+fn plan_price_account_rejects_a_zero_quote_reserve() {
+    plan_price_account(WINDOW, &price_guard(RESERVE_A, 0));
+}
+
+#[test]
+#[should_panic(expected = "spot price must be non-zero")]
+fn plan_price_account_rejects_a_quote_reserve_that_floors_the_price_to_zero() {
+    // `reserve_b << 64 / reserve_a` floors to zero when the quote side is
+    // negligible, and zero is the sentinel consumers read as "no price".
+    plan_price_account(WINDOW, &price_guard(1u128 << 100, 1));
+}
+
+#[test]
+fn different_windows_produce_distinct_price_account_pdas() {
+    assert_ne!(
+        compute_oracle_price_account_pda(TWAP_ORACLE_PROGRAM_ID, pool_id(), WINDOW),
+        compute_oracle_price_account_pda(TWAP_ORACLE_PROGRAM_ID, pool_id(), WINDOW * 2),
+    );
+}
+
+#[test]
+fn check_pool_price_accepts_the_stored_reserves() {
+    check_pool_price(&pool_data(&live_pool()), &price_guard(RESERVE_A, RESERVE_B));
+}
+
+#[test]
+#[should_panic(expected = "Declared pool reserves do not match")]
+fn check_pool_price_rejects_forged_reserves() {
+    // Exact, unlike the mutating instructions' bounds: a seeded price is read by
+    // consumers, so a stale-by-one-swap seed is not acceptable.
+    check_pool_price(
+        &pool_data(&live_pool()),
+        &price_guard(RESERVE_A, RESERVE_B + 1),
+    );
+}
+
+// ─── NewDefinition ──────────────────────────────────────────────────────────
+
+struct NewDefinitionSlots {
+    pool: AccountMeta,
+    vault_a: AccountMeta,
+    vault_b: AccountMeta,
+    lp_definition: AccountMeta,
+    lp_lock: AccountMeta,
+    current_tick: AccountMeta,
+}
+
+impl Default for NewDefinitionSlots {
+    fn default() -> Self {
+        Self {
+            pool: ours(pool_id()),
+            vault_a: token_slot(vault_a_id()),
+            vault_b: token_slot(vault_b_id()),
+            lp_definition: token_slot(lp_definition_id()),
+            lp_lock: token_slot(lp_lock_id()),
+            current_tick: oracle_slot(current_tick_id()),
+        }
+    }
+}
+
+fn plan_definition(
+    slots: &NewDefinitionSlots,
+    token_a_amount: u128,
+    token_b_amount: u128,
+    definition_token_a_id: AccountId,
+    definition_token_b_id: AccountId,
+) -> (ShardData, Vec<lee_core::program::ChainedCall>) {
+    plan_new_definition(
+        &ours(config_id()),
+        &slots.pool,
+        &slots.vault_a,
+        &slots.vault_b,
+        &slots.lp_definition,
+        &slots.lp_lock,
+        &signed_token_slot(user_a_id()),
+        &signed_token_slot(user_b_id()),
+        &token_slot(user_lp_id()),
+        &slots.current_tick,
+        &clock_slot(),
+        NonZeroU128::new(token_a_amount).unwrap(),
+        NonZeroU128::new(token_b_amount).unwrap(),
+        &facts(),
+        definition_token_a_id,
+        definition_token_b_id,
+        NOW,
+        AMM_PROGRAM_ID,
+    )
+}
+
+fn plan_definition_ok() -> (ShardData, Vec<lee_core::program::ChainedCall>) {
+    plan_definition(
+        &NewDefinitionSlots::default(),
+        RESERVE_A,
+        RESERVE_B,
+        definition_a(),
+        definition_b(),
+    )
+}
+
+#[test]
+fn plan_new_definition_builds_the_pool_record() {
+    let (data, _) = plan_definition_ok();
+    let built = PoolDefinition::try_from(&data).unwrap();
+    assert_eq!(built.definition_token_a_id, definition_a());
+    assert_eq!(built.definition_token_b_id, definition_b());
+    assert_eq!(built.vault_a_id, vault_a_id());
+    assert_eq!(built.vault_b_id, vault_b_id());
+    assert_eq!(built.liquidity_pool_id, lp_definition_id());
+    assert_eq!(built.reserve_a, RESERVE_A);
+    assert_eq!(built.reserve_b, RESERVE_B);
+    assert_eq!(
+        built.liquidity_pool_supply,
+        isqrt_product(RESERVE_A, RESERVE_B)
+    );
+    // The record the pool is created with is the identity every later
+    // instruction pins its declaration against.
+    assert_eq!(PoolIdentity::from(&built), identity());
+}
+
+/// LP definition, LP mint, token B, token A, current-tick creation.
+#[test]
+fn plan_new_definition_chains_five_calls_in_order() {
+    let (_, calls) = plan_definition_ok();
+    assert_eq!(calls.len(), 5);
+
+    match token_instruction(&calls[0]) {
+        token_core::Instruction::NewFungibleDefinition {
+            total_supply,
+            mint_authority,
+            ..
+        } => {
+            assert_eq!(total_supply, MINIMUM_LIQUIDITY, "the lock is permanent");
+            assert_eq!(
+                mint_authority,
+                Some(lp_definition_id()),
+                "the LP token is self-authoritative: only the pool can mint it"
+            );
+        }
+        _ => panic!("expected NewFungibleDefinition"),
+    }
+    assert_eq!(
+        selector_ids(&calls[0]),
+        vec![lp_definition_id(), lp_lock_id()]
+    );
+
+    match token_instruction(&calls[1]) {
+        token_core::Instruction::Mint { amount_to_mint } => assert_eq!(
+            amount_to_mint,
+            isqrt_product(RESERVE_A, RESERVE_B) - MINIMUM_LIQUIDITY,
+            "the caller gets the initial LP minus the lock"
+        ),
+        _ => panic!("expected Mint"),
+    }
+
+    assert_eq!(
+        transfer_parts(&calls[2]),
+        (user_b_id(), vault_b_id(), definition_b(), RESERVE_B)
+    );
+    assert_eq!(
+        transfer_parts(&calls[3]),
+        (user_a_id(), vault_a_id(), definition_a(), RESERVE_A)
+    );
+
+    match oracle_instruction(&calls[4]) {
+        twap_oracle_core::Instruction::CreateCurrentTickAccount { initial_price, now } => {
+            assert_eq!(
+                initial_price,
+                spot_price_q64_64(RESERVE_A, RESERVE_B),
+                "the opening tick comes from the pool's own reserves"
+            );
+            assert_eq!(now, NOW);
+        }
+        _ => panic!("expected CreateCurrentTickAccount"),
+    }
+}
+
+/// Each chained transfer carries the declared pair as its descriptor, which is
+/// what makes the Token Program refuse a trader holding of some other asset.
+#[test]
+fn plan_new_definition_pins_the_declared_pair_through_the_transfer_descriptors() {
+    let (_, calls) = plan_definition_ok();
+    let (_, _, definition_in_b, _) = transfer_parts(&calls[2]);
+    let (_, _, definition_in_a, _) = transfer_parts(&calls[3]);
+    assert_eq!(definition_in_b, definition_b());
+    assert_eq!(definition_in_a, definition_a());
+}
+
+#[test]
+#[should_panic(expected = "Cannot set up a swap for a token with itself")]
+fn plan_new_definition_rejects_a_pair_of_one_token() {
+    plan_definition(
+        &NewDefinitionSlots::default(),
+        RESERVE_A,
+        RESERVE_B,
+        definition_a(),
+        definition_a(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Pool Definition Account ID does not match PDA")]
+fn plan_new_definition_rejects_a_wrong_pool_id() {
+    let _ = plan_definition(
+        &NewDefinitionSlots {
+            pool: ours(AccountId::new([0xAAu8; 32])),
+            ..NewDefinitionSlots::default()
+        },
+        RESERVE_A,
+        RESERVE_B,
+        definition_a(),
+        definition_b(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Vault ID does not match PDA")]
+fn plan_new_definition_rejects_a_wrong_vault_a_id() {
+    let _ = plan_definition(
+        &NewDefinitionSlots {
+            vault_a: token_slot(AccountId::new([0xAAu8; 32])),
+            ..NewDefinitionSlots::default()
+        },
+        RESERVE_A,
+        RESERVE_B,
+        definition_a(),
+        definition_b(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Vault ID does not match PDA")]
+fn plan_new_definition_rejects_a_wrong_vault_b_id() {
+    let _ = plan_definition(
+        &NewDefinitionSlots {
+            vault_b: token_slot(AccountId::new([0xAAu8; 32])),
+            ..NewDefinitionSlots::default()
+        },
+        RESERVE_A,
+        RESERVE_B,
+        definition_a(),
+        definition_b(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Liquidity pool Token Definition Account ID does not match PDA")]
+fn plan_new_definition_rejects_a_wrong_lp_definition_id() {
+    let _ = plan_definition(
+        &NewDefinitionSlots {
+            lp_definition: token_slot(AccountId::new([0xAAu8; 32])),
+            ..NewDefinitionSlots::default()
+        },
+        RESERVE_A,
+        RESERVE_B,
+        definition_a(),
+        definition_b(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "LP lock holding Account ID does not match PDA")]
+fn plan_new_definition_rejects_a_wrong_lp_lock_id() {
+    let _ = plan_definition(
+        &NewDefinitionSlots {
+            lp_lock: token_slot(AccountId::new([0xAAu8; 32])),
+            ..NewDefinitionSlots::default()
+        },
+        RESERVE_A,
+        RESERVE_B,
+        definition_a(),
+        definition_b(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "current tick Account ID does not match PDA")]
+fn plan_new_definition_rejects_a_wrong_current_tick_id() {
+    let _ = plan_definition(
+        &NewDefinitionSlots {
+            current_tick: oracle_slot(AccountId::new([0xAAu8; 32])),
+            ..NewDefinitionSlots::default()
+        },
+        RESERVE_A,
+        RESERVE_B,
+        definition_a(),
+        definition_b(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "must exceed minimum liquidity lock")]
+fn plan_new_definition_rejects_liquidity_at_the_lock_floor() {
+    // isqrt(1_000 * 1_000) == MINIMUM_LIQUIDITY exactly, leaving the caller
+    // nothing.
+    let _ = plan_definition(
+        &NewDefinitionSlots::default(),
+        MINIMUM_LIQUIDITY,
+        MINIMUM_LIQUIDITY,
+        definition_a(),
+        definition_b(),
+    );
+}
+
+#[test]
+fn plan_new_definition_handles_asymmetric_and_large_amounts() {
+    // Asymmetric: LP is the geometric mean, not either leg.
+    let (data, _) = plan_definition(
+        &NewDefinitionSlots::default(),
+        1_000_000,
+        4,
+        definition_a(),
+        definition_b(),
+    );
+    assert_eq!(
+        PoolDefinition::try_from(&data)
             .unwrap()
-            .liquidity_pool_supply;
+            .liquidity_pool_supply,
+        2_000
+    );
 
-    assert!(synced_delta_lp < unsynced_delta_lp);
+    // Realistic 18-decimal amounts: the product is widened to U256 before the
+    // sqrt, so nothing overflows u128 on the way.
+    let big = 1_000_000_000u128 * 10u128.pow(18);
+    let (data, _) = plan_definition(
+        &NewDefinitionSlots::default(),
+        big,
+        big,
+        definition_a(),
+        definition_b(),
+    );
+    assert_eq!(
+        PoolDefinition::try_from(&data)
+            .unwrap()
+            .liquidity_pool_supply,
+        big
+    );
 }
 
-// Under Option A the `token_a * token_b` product is computed in U256, so a product that exceeds
-// u128 no longer panics: it is square-rooted exactly. Here `large_amount * 2 = 2^128`, whose
-// integer sqrt is `2^64`. Previously this multiplication overflowed u128 and panicked.
-#[test]
-fn new_definition_overflow_protection() {
-    let large_amount = u128::MAX / 2 + 1; // 2^127
+// ─── AddLiquidity ───────────────────────────────────────────────────────────
 
-    let (post_states, _chained_calls) = new_definition(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_uninit(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_uninit(),
-        AccountWithMetadataForTests::lp_lock_holding_uninit(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_uninit(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(large_amount).unwrap(),
-        NonZero::new(2).unwrap(),
+const MAX_ADD_A: u128 = 500;
+const MAX_ADD_B: u128 = 1_000;
+
+/// The declaration a caller builds from the live pool: the shared quote, plus the
+/// post-add price the pool pins exactly.
+fn add_effect(p: &PoolDefinition, max_a: u128, max_b: u128, min_lp: u128) -> AddLiquidity {
+    let (amount_a, amount_b, delta_lp) = quote_add_liquidity(p, max_a, max_b);
+    AddLiquidity {
+        identity: identity(),
+        new_price: spot_price_q64_64(p.reserve_a + amount_a, p.reserve_b + amount_b),
+        amount_a,
+        amount_b,
+        delta_lp,
+        min_amount_liquidity: min_lp,
+        max_amount_a: max_a,
+        max_amount_b: max_b,
+    }
+}
+
+fn plan_add(effect: &AddLiquidity) -> Vec<lee_core::program::ChainedCall> {
+    plan_add_liquidity(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &token_slot(vault_a_id()),
+        &token_slot(vault_b_id()),
+        &token_slot(lp_definition_id()),
+        &signed_token_slot(user_a_id()),
+        &signed_token_slot(user_b_id()),
+        &token_slot(user_lp_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        effect,
+        NOW,
+        AMM_PROGRAM_ID,
+    )
+}
+
+#[test]
+fn quote_add_liquidity_matches_the_pools_ratio() {
+    let (amount_a, amount_b, delta_lp) = quote_add_liquidity(&live_pool(), MAX_ADD_A, MAX_ADD_B);
+    assert_eq!((amount_a, amount_b), (500, 1_000));
+    assert_eq!(delta_lp, 707);
+}
+
+#[test]
+fn quote_add_liquidity_is_capped_by_the_scarcer_side() {
+    // Offering twice as much A as the ratio wants deposits only what B can match.
+    let (amount_a, amount_b, _) = quote_add_liquidity(&live_pool(), 1_000, MAX_ADD_B);
+    assert_eq!((amount_a, amount_b), (500, 1_000));
+}
+
+/// LP mint, token B, token A, tick refresh.
+#[test]
+fn plan_add_liquidity_chains_four_calls_in_order() {
+    let effect = add_effect(&live_pool(), MAX_ADD_A, MAX_ADD_B, 1);
+    let calls = plan_add(&effect);
+    assert_eq!(calls.len(), 4);
+
+    match token_instruction(&calls[0]) {
+        token_core::Instruction::Mint { amount_to_mint } => {
+            assert_eq!(amount_to_mint, effect.delta_lp);
+        }
+        _ => panic!("expected Mint"),
+    }
+    assert_eq!(
+        selector_ids(&calls[0]),
+        vec![lp_definition_id(), user_lp_id()]
+    );
+    assert_eq!(
+        transfer_parts(&calls[1]),
+        (user_b_id(), vault_b_id(), definition_b(), effect.amount_b)
+    );
+    assert_eq!(
+        transfer_parts(&calls[2]),
+        (user_a_id(), vault_a_id(), definition_a(), effect.amount_a)
+    );
+    match oracle_instruction(&calls[3]) {
+        twap_oracle_core::Instruction::UpdateCurrentTick { price, now } => {
+            assert_eq!(price, effect.new_price);
+            assert_eq!(now, NOW);
+        }
+        _ => panic!("expected UpdateCurrentTick"),
+    }
+}
+
+#[test]
+#[should_panic(expected = "Vault A was not provided")]
+fn plan_add_liquidity_rejects_a_wrong_vault_a_slot() {
+    let effect = add_effect(&live_pool(), MAX_ADD_A, MAX_ADD_B, 1);
+    let _ = plan_add_liquidity(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &token_slot(AccountId::new([0xAAu8; 32])),
+        &token_slot(vault_b_id()),
+        &token_slot(lp_definition_id()),
+        &signed_token_slot(user_a_id()),
+        &signed_token_slot(user_b_id()),
+        &token_slot(user_lp_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        &effect,
+        NOW,
         AMM_PROGRAM_ID,
     );
-
-    let pool_def = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
-    // floor(sqrt(2^127 * 2)) = floor(sqrt(2^128)) = 2^64.
-    assert_eq!(pool_def.liquidity_pool_supply, 1u128 << 64);
-    assert_eq!(pool_def.reserve_a, large_amount);
-    assert_eq!(pool_def.reserve_b, 2);
 }
 
-// Under Option A the `reserve * max_amount` and `supply * actual` products are computed in U256, so
-// realistic large reserves no longer overflow u128. Here every product (reserve_a * max_b,
-// supply * actual, etc.) is `1e30 * 1e30 = 1e60`, far beyond u128 (max ~3.4e38), yet the add
-// succeeds and computes the correct widened results. Previously these multiplications panicked.
 #[test]
-fn add_liquidity_overflow_protection() {
-    let large: u128 = 1_000_000_000_000_000_000_000_000_000_000; // 1e30
-
-    let pool = AccountWithMetadata {
-        account: Account {
-            program_owner: AccountId::default(),
-            balance: 0,
-            data: Data::from(&PoolDefinition {
-                definition_token_a_id: IdForTests::token_a_definition_id(),
-                definition_token_b_id: IdForTests::token_b_definition_id(),
-                vault_a_id: IdForTests::vault_a_id(),
-                vault_b_id: IdForTests::vault_b_id(),
-                liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                liquidity_pool_supply: large,
-                reserve_a: large,
-                reserve_b: large,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: true,
-        account_id: IdForTests::pool_definition_id(),
-    };
-
-    let vault_a = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::token_a_definition_id(),
-                balance: large,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: false,
-        account_id: IdForTests::vault_a_id(),
-    };
-
-    let vault_b = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::token_b_definition_id(),
-                balance: large,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: false,
-        account_id: IdForTests::vault_b_id(),
-    };
-
-    let (post_states, _chained_calls) = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        pool,
-        vault_a,
-        vault_b,
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(1).unwrap(),
-        large, // max_amount_a
-        large, // max_amount_b
+#[should_panic(expected = "Vault B was not provided")]
+fn plan_add_liquidity_rejects_a_wrong_vault_b_slot() {
+    let effect = add_effect(&live_pool(), MAX_ADD_A, MAX_ADD_B, 1);
+    let _ = plan_add_liquidity(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &token_slot(vault_a_id()),
+        &token_slot(AccountId::new([0xAAu8; 32])),
+        &token_slot(lp_definition_id()),
+        &signed_token_slot(user_a_id()),
+        &signed_token_slot(user_b_id()),
+        &token_slot(user_lp_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        &effect,
+        NOW,
         AMM_PROGRAM_ID,
     );
-
-    let pool_def = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
-    // Balanced add of `1e30` to each `1e30` reserve mints `delta_lp = 1e30`.
-    assert_eq!(pool_def.reserve_a, large + large);
-    assert_eq!(pool_def.reserve_b, large + large);
-    assert_eq!(pool_def.liquidity_pool_supply, large + large);
 }
 
-// Under Option A the `reserve * remove_amount` product is computed in U256, so a product that
-// exceeds u128 no longer panics: `large_reserve * 2 = 2^128` is divided down to a valid u128
-// withdraw. Previously this multiplication overflowed u128 and panicked.
 #[test]
-fn remove_liquidity_overflow_protection() {
-    let large_reserve: u128 = u128::MAX / 2 + 1; // 2^127
-    let reserve_b: u128 = 1_000;
-    let lp_supply: u128 = 1_002; // must exceed MINIMUM_LIQUIDITY so remove_amount=2 passes the lock
-                                 // check
-
-    let pool = AccountWithMetadata {
-        account: Account {
-            program_owner: AccountId::default(),
-            balance: 0,
-            data: Data::from(&PoolDefinition {
-                definition_token_a_id: IdForTests::token_a_definition_id(),
-                definition_token_b_id: IdForTests::token_b_definition_id(),
-                vault_a_id: IdForTests::vault_a_id(),
-                vault_b_id: IdForTests::vault_b_id(),
-                liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                liquidity_pool_supply: lp_supply,
-                reserve_a: large_reserve,
-                reserve_b,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: true,
-        account_id: IdForTests::pool_definition_id(),
-    };
-
-    let vault_a = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::token_a_definition_id(),
-                balance: large_reserve,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: false,
-        account_id: IdForTests::vault_a_id(),
-    };
-
-    let vault_b = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::token_b_definition_id(),
-                balance: reserve_b,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: false,
-        account_id: IdForTests::vault_b_id(),
-    };
-
-    let user_lp = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::token_lp_definition_id(),
-                balance: 2,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: true,
-        account_id: IdForTests::user_token_lp_id(),
-    };
-
-    let (post_states, _chained_calls) = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        pool,
-        vault_a,
-        vault_b,
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        user_lp,
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(2).unwrap(), // remove_amount=2 → reserve_a * 2 = 2^128 (widened to U256)
-        1,
-        1,
+#[should_panic(expected = "LP definition mismatch")]
+fn plan_add_liquidity_rejects_a_wrong_lp_definition_slot() {
+    let effect = add_effect(&live_pool(), MAX_ADD_A, MAX_ADD_B, 1);
+    let _ = plan_add_liquidity(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &token_slot(vault_a_id()),
+        &token_slot(vault_b_id()),
+        &token_slot(AccountId::new([0xAAu8; 32])),
+        &signed_token_slot(user_a_id()),
+        &signed_token_slot(user_b_id()),
+        &token_slot(user_lp_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        &effect,
+        NOW,
         AMM_PROGRAM_ID,
     );
-
-    // withdraw_a = floor(reserve_a * 2 / supply); withdraw_b = floor(1000 * 2 / 1002) = 1.
-    let expected_withdraw_a = mul_div_floor(large_reserve, 2, lp_supply);
-    let expected_withdraw_b = mul_div_floor(reserve_b, 2, lp_supply);
-    let pool_def = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
-    assert_eq!(pool_def.reserve_a, large_reserve - expected_withdraw_a);
-    assert_eq!(pool_def.reserve_b, reserve_b - expected_withdraw_b);
-    assert_eq!(pool_def.liquidity_pool_supply, lp_supply - 2);
 }
 
-// Under Option A the `reserve_out * effective_amount_in` product is computed in U256, so a product
-// that exceeds u128 no longer panics: `reserve_b * 2 = 2^128` is divided down to a valid u128
-// withdraw. Previously this multiplication overflowed u128 and panicked.
 #[test]
-fn swap_exact_input_overflow_protection() {
-    let large_reserve: u128 = u128::MAX / 2 + 1; // 2^127
-    let reserve_b: u128 = 1_000;
-
-    let pool = AccountWithMetadata {
-        account: Account {
-            program_owner: AccountId::default(),
-            balance: 0,
-            data: Data::from(&PoolDefinition {
-                definition_token_a_id: IdForTests::token_a_definition_id(),
-                definition_token_b_id: IdForTests::token_b_definition_id(),
-                vault_a_id: IdForTests::vault_a_id(),
-                vault_b_id: IdForTests::vault_b_id(),
-                liquidity_pool_id: IdForTests::token_lp_definition_id(),
-                liquidity_pool_supply: MINIMUM_LIQUIDITY,
-                reserve_a: 1_000,
-                reserve_b: large_reserve,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: true,
-        account_id: IdForTests::pool_definition_id(),
-    };
-
-    let vault_a = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::token_a_definition_id(),
-                balance: reserve_b,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: true,
-        account_id: IdForTests::vault_a_id(),
-    };
-
-    let vault_b = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::token_b_definition_id(),
-                balance: large_reserve,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: true,
-        account_id: IdForTests::vault_b_id(),
-    };
-
-    // Swap token_a in: withdraw_amount = reserve_b * effective_amount_in / (reserve_a +
-    // effective_amount_in). With fee_bps=30: effective_amount_in = floor(3 * 9970 / 10000) = 2.
-    // reserve_b is large, so `reserve_b * 2 = 2^128` is widened to U256 rather than overflowing.
-    let (post_states, _chained_calls) = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        pool,
-        vault_a,
-        vault_b,
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        3,
-        1,
+#[should_panic(expected = "not derived under this config's namespace")]
+fn plan_add_liquidity_rejects_a_pool_outside_the_config_namespace() {
+    let effect = add_effect(&live_pool(), MAX_ADD_A, MAX_ADD_B, 1);
+    let _ = plan_add_liquidity(
+        &ours(config_id()),
+        &ours(AccountId::new([0xAAu8; 32])),
+        &token_slot(vault_a_id()),
+        &token_slot(vault_b_id()),
+        &token_slot(lp_definition_id()),
+        &signed_token_slot(user_a_id()),
+        &signed_token_slot(user_b_id()),
+        &token_slot(user_lp_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        &effect,
+        NOW,
         AMM_PROGRAM_ID,
     );
-
-    let fee_multiplier = FEE_BPS_DENOMINATOR - BalanceForTests::fee_tier();
-    let effective_amount_in = mul_div_floor(3, fee_multiplier, FEE_BPS_DENOMINATOR);
-    let expected_withdraw = mul_div_floor(
-        large_reserve,
-        effective_amount_in,
-        1_000 + effective_amount_in,
-    );
-    let pool_def = PoolDefinition::try_from(post_states[1].post_data()).unwrap();
-    // token_a in: reserve_a grows by the full swap_amount_in (3); reserve_b shrinks by the
-    // withdraw.
-    assert_eq!(pool_def.reserve_a, 1_000 + 3);
-    assert_eq!(pool_def.reserve_b, large_reserve - expected_withdraw);
 }
 
-// --- Token program ownership validation tests ---
-
-#[should_panic(expected = "User Token A holding must be owned by the configured Token Program")]
 #[test]
-fn test_add_liquidity_rejects_user_holding_a_wrong_program() {
+#[should_panic(expected = "Both max-balances must be nonzero")]
+fn plan_add_liquidity_rejects_a_zero_max_a() {
+    let mut effect = add_effect(&live_pool(), MAX_ADD_A, MAX_ADD_B, 1);
+    effect.max_amount_a = 0;
+    let _ = plan_add(&effect);
+}
+
+#[test]
+#[should_panic(expected = "Both max-balances must be nonzero")]
+fn plan_add_liquidity_rejects_a_zero_max_b() {
+    let mut effect = add_effect(&live_pool(), MAX_ADD_A, MAX_ADD_B, 1);
+    effect.max_amount_b = 0;
+    let _ = plan_add(&effect);
+}
+
+#[test]
+fn pool_after_add_records_the_deposit() {
+    let p = live_pool();
+    let effect = add_effect(&p, MAX_ADD_A, MAX_ADD_B, 707);
+    let post = PoolDefinition::try_from(&add_liquidity(&pool_data(&p), &effect)).unwrap();
+    assert_eq!(post.reserve_a, RESERVE_A + 500);
+    assert_eq!(post.reserve_b, RESERVE_B + 1_000);
+    assert_eq!(post.liquidity_pool_supply, LP_SUPPLY + 707);
+    // The identity is carried through untouched.
+    assert_eq!(PoolIdentity::from(&post), identity());
+}
+
+/// The bound is one-directional on purpose: under-claiming LP leaves the surplus
+/// with the existing providers, so it is accepted.
+#[test]
+fn pool_after_add_accepts_less_lp_than_the_deposit_bought() {
+    let p = live_pool();
+    let mut effect = add_effect(&p, MAX_ADD_A, MAX_ADD_B, 1);
+    effect.delta_lp -= 100;
+    let post = PoolDefinition::try_from(&add_liquidity(&pool_data(&p), &effect)).unwrap();
+    assert_eq!(post.liquidity_pool_supply, LP_SUPPLY + 607);
+}
+
+#[test]
+#[should_panic(expected = "exceeds the pro-rata share of the deposit")]
+fn pool_after_add_rejects_more_lp_than_the_deposit_bought() {
+    let p = live_pool();
+    let mut effect = add_effect(&p, MAX_ADD_A, MAX_ADD_B, 1);
+    effect.delta_lp += 1;
+    let _ = add_liquidity(&pool_data(&p), &effect);
+}
+
+/// The reason the bound checks *both* sides: a lopsided deposit must be priced by
+/// its scarcer leg, or one token could buy LP against the other's reserve.
+#[test]
+#[should_panic(expected = "exceeds the pro-rata share of the deposit")]
+fn pool_after_add_prices_a_lopsided_deposit_by_its_scarcer_side() {
+    let p = live_pool();
+    let effect = AddLiquidity {
+        identity: identity(),
+        new_price: spot_price_q64_64(RESERVE_A + 500, RESERVE_B + 1),
+        amount_a: 500,
+        amount_b: 1,
+        // What side A alone would have bought.
+        delta_lp: 707,
+        min_amount_liquidity: 1,
+        max_amount_a: 500,
+        max_amount_b: 1,
+    };
+    let _ = add_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+#[should_panic(expected = "Payable LP is less than provided minimum")]
+fn pool_after_add_rejects_lp_below_the_callers_floor() {
+    let p = live_pool();
+    let mut effect = add_effect(&p, MAX_ADD_A, MAX_ADD_B, 708);
+    effect.delta_lp = 707;
+    let _ = add_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+#[should_panic(expected = "Actual trade amounts cannot exceed max_amounts")]
+fn pool_after_add_rejects_a_deposit_above_the_callers_ceiling() {
+    let p = live_pool();
+    let mut effect = add_effect(&p, MAX_ADD_A, MAX_ADD_B, 1);
+    effect.amount_a += 1;
+    let _ = add_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+#[should_panic(expected = "Payable LP must be nonzero")]
+fn pool_after_add_rejects_a_zero_lp_mint() {
+    let p = live_pool();
+    let mut effect = add_effect(&p, MAX_ADD_A, MAX_ADD_B, 0);
+    effect.delta_lp = 0;
+    let _ = add_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+#[should_panic(expected = "A trade amount is 0")]
+fn pool_after_add_rejects_a_zero_deposit() {
+    let p = live_pool();
+    let mut effect = add_effect(&p, MAX_ADD_A, MAX_ADD_B, 1);
+    effect.amount_b = 0;
+    let _ = add_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+#[should_panic(expected = "Reserves must be nonzero")]
+fn pool_after_add_rejects_a_pool_with_a_zero_reserve() {
+    let effect = add_effect(&live_pool(), MAX_ADD_A, MAX_ADD_B, 1);
+    let _ = add_liquidity(&pool_data(&pool(0, RESERVE_B, LP_SUPPLY)), &effect);
+}
+
+#[test]
+#[should_panic(expected = "Declared post-add price does not match")]
+fn pool_after_add_rejects_a_forged_post_price() {
+    let p = live_pool();
+    let mut effect = add_effect(&p, MAX_ADD_A, MAX_ADD_B, 1);
+    effect.new_price += 1;
+    let _ = add_liquidity(&pool_data(&p), &effect);
+}
+
+/// The price is pinned exactly, so a pool that moved between the quote and the
+/// add is a retry rather than a stale tick.
+#[test]
+#[should_panic(expected = "Declared post-add price does not match")]
+fn pool_after_add_rejects_a_declaration_quoted_against_stale_reserves() {
+    let effect = add_effect(&live_pool(), MAX_ADD_A, MAX_ADD_B, 1);
+    // A swap landed first: same identity, and reserves that still satisfy the LP
+    // bound (a smaller input reserve buys *more* LP per unit), but a ratio the
+    // declared price no longer describes.
     let _ = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a_wrong_program(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).expect("test value must be nonzero"),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
+        &pool_data(&pool(RESERVE_A - 50, RESERVE_B, LP_SUPPLY)),
+        &effect,
     );
 }
 
-#[should_panic(expected = "User Token B holding must be owned by the configured Token Program")]
 #[test]
-fn test_add_liquidity_rejects_user_holding_b_wrong_program() {
-    let _ = add_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b_wrong_program(),
-        AccountWithMetadataForTests::user_holding_lp_init(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::add_min_amount_lp()).expect("test value must be nonzero"),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::add_max_amount_b(),
-        AMM_PROGRAM_ID,
-    );
+#[should_panic(expected = "Declared pool identity does not match")]
+fn pool_after_add_rejects_a_forged_identity() {
+    let p = live_pool();
+    let mut effect = add_effect(&p, MAX_ADD_A, MAX_ADD_B, 1);
+    effect.identity.vault_a_id = user_a_id();
+    let _ = add_liquidity(&pool_data(&p), &effect);
 }
 
-#[should_panic(expected = "User Token A holding must be owned by the configured Token Program")]
 #[test]
-fn test_remove_liquidity_rejects_user_holding_a_wrong_program() {
-    let _ = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a_wrong_program(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_with_balance(
-            BalanceForTests::remove_amount_lp(),
+fn pool_after_add_survives_realistic_eighteen_decimal_amounts() {
+    let big = 1_000_000u128 * 10u128.pow(18);
+    let p = pool(big, big, big);
+    let effect = add_effect(&p, big / 2, big / 2, 1);
+    let post = PoolDefinition::try_from(&add_liquidity(&pool_data(&p), &effect)).unwrap();
+    assert_eq!(post.reserve_a, big + big / 2);
+    assert_eq!(post.liquidity_pool_supply, big + big / 2);
+}
+
+// ─── RemoveLiquidity ────────────────────────────────────────────────────────
+
+const REMOVE_LP: u128 = 707;
+
+fn remove_effect(p: &PoolDefinition, remove: u128, min_a: u128, min_b: u128) -> RemoveLiquidity {
+    let (withdraw_amount_a, withdraw_amount_b) = quote_remove_liquidity(p, remove);
+    RemoveLiquidity {
+        identity: identity(),
+        new_price: spot_price_q64_64(
+            p.reserve_a - withdraw_amount_a,
+            p.reserve_b - withdraw_amount_b,
         ),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).expect("test value must be nonzero"),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b_low(),
+        remove_liquidity_amount: remove,
+        withdraw_amount_a,
+        withdraw_amount_b,
+        min_amount_to_remove_token_a: min_a,
+        min_amount_to_remove_token_b: min_b,
+    }
+}
+
+fn plan_remove(effect: &RemoveLiquidity) -> Vec<lee_core::program::ChainedCall> {
+    plan_remove_liquidity(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &token_slot(vault_a_id()),
+        &token_slot(vault_b_id()),
+        &token_slot(lp_definition_id()),
+        &token_slot(user_a_id()),
+        &token_slot(user_b_id()),
+        &signed_token_slot(user_lp_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        effect,
+        NOW,
+        AMM_PROGRAM_ID,
+    )
+}
+
+#[test]
+fn quote_remove_liquidity_is_the_pro_rata_share() {
+    let (a, b) = quote_remove_liquidity(&live_pool(), REMOVE_LP);
+    assert_eq!((a, b), (499, 999)); // floored
+}
+
+/// LP burn, token B, token A, tick refresh. Each withdrawal rides on its vault's
+/// seed, which is the whole of the AMM's authority over that vault.
+#[test]
+fn plan_remove_liquidity_chains_four_calls_in_order() {
+    let effect = remove_effect(&live_pool(), REMOVE_LP, 1, 1);
+    let calls = plan_remove(&effect);
+    assert_eq!(calls.len(), 4);
+
+    match token_instruction(&calls[0]) {
+        token_core::Instruction::Burn {
+            amount_to_burn,
+            kind,
+        } => {
+            assert_eq!(amount_to_burn, REMOVE_LP);
+            assert_eq!(kind, TokenKind::Fungible);
+        }
+        _ => panic!("expected Burn"),
+    }
+    // The burn names the LP definition first, which is what pins the burner's
+    // holding to the pool's own LP token.
+    assert_eq!(
+        selector_ids(&calls[0]),
+        vec![lp_definition_id(), user_lp_id()]
+    );
+
+    assert_eq!(
+        transfer_parts(&calls[1]),
+        (
+            vault_b_id(),
+            user_b_id(),
+            definition_b(),
+            effect.withdraw_amount_b
+        )
+    );
+    assert_eq!(
+        calls[1].pda_seeds,
+        vec![amm_core::compute_vault_pda_seed(pool_id(), definition_b())]
+    );
+    assert_eq!(
+        transfer_parts(&calls[2]),
+        (
+            vault_a_id(),
+            user_a_id(),
+            definition_a(),
+            effect.withdraw_amount_a
+        )
+    );
+    assert_eq!(
+        calls[2].pda_seeds,
+        vec![amm_core::compute_vault_pda_seed(pool_id(), definition_a())]
+    );
+
+    match oracle_instruction(&calls[3]) {
+        twap_oracle_core::Instruction::UpdateCurrentTick { price, now } => {
+            assert_eq!(price, effect.new_price);
+            assert_eq!(now, NOW);
+        }
+        _ => panic!("expected UpdateCurrentTick"),
+    }
+}
+
+#[test]
+#[should_panic(expected = "Vault A was not provided")]
+fn plan_remove_liquidity_rejects_a_wrong_vault_a_slot() {
+    let effect = remove_effect(&live_pool(), REMOVE_LP, 1, 1);
+    let _ = plan_remove_liquidity(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &token_slot(AccountId::new([0xAAu8; 32])),
+        &token_slot(vault_b_id()),
+        &token_slot(lp_definition_id()),
+        &token_slot(user_a_id()),
+        &token_slot(user_b_id()),
+        &signed_token_slot(user_lp_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        &effect,
+        NOW,
         AMM_PROGRAM_ID,
     );
 }
 
-#[should_panic(expected = "User Token B holding must be owned by the configured Token Program")]
 #[test]
-fn test_remove_liquidity_rejects_user_holding_b_wrong_program() {
-    let _ = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b_wrong_program(),
-        AccountWithMetadataForTests::user_holding_lp_with_balance(
-            BalanceForTests::remove_amount_lp(),
+#[should_panic(expected = "Vault B was not provided")]
+fn plan_remove_liquidity_rejects_a_wrong_vault_b_slot() {
+    let effect = remove_effect(&live_pool(), REMOVE_LP, 1, 1);
+    let _ = plan_remove_liquidity(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &token_slot(vault_a_id()),
+        &token_slot(AccountId::new([0xAAu8; 32])),
+        &token_slot(lp_definition_id()),
+        &token_slot(user_a_id()),
+        &token_slot(user_b_id()),
+        &signed_token_slot(user_lp_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        &effect,
+        NOW,
+        AMM_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "LP definition mismatch")]
+fn plan_remove_liquidity_rejects_a_wrong_lp_definition_slot() {
+    let effect = remove_effect(&live_pool(), REMOVE_LP, 1, 1);
+    let _ = plan_remove_liquidity(
+        &ours(config_id()),
+        &ours(pool_id()),
+        &token_slot(vault_a_id()),
+        &token_slot(vault_b_id()),
+        &token_slot(AccountId::new([0xAAu8; 32])),
+        &token_slot(user_a_id()),
+        &token_slot(user_b_id()),
+        &signed_token_slot(user_lp_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        &effect,
+        NOW,
+        AMM_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "not derived under this config's namespace")]
+fn plan_remove_liquidity_rejects_a_pool_outside_the_config_namespace() {
+    let effect = remove_effect(&live_pool(), REMOVE_LP, 1, 1);
+    let _ = plan_remove_liquidity(
+        &ours(config_id()),
+        &ours(AccountId::new([0xAAu8; 32])),
+        &token_slot(vault_a_id()),
+        &token_slot(vault_b_id()),
+        &token_slot(lp_definition_id()),
+        &token_slot(user_a_id()),
+        &token_slot(user_b_id()),
+        &signed_token_slot(user_lp_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        &effect,
+        NOW,
+        AMM_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Minimum withdraw amount must be nonzero")]
+fn plan_remove_liquidity_rejects_a_zero_minimum_for_token_a() {
+    let effect = remove_effect(&live_pool(), REMOVE_LP, 0, 1);
+    let _ = plan_remove(&effect);
+}
+
+#[test]
+#[should_panic(expected = "Minimum withdraw amount must be nonzero")]
+fn plan_remove_liquidity_rejects_a_zero_minimum_for_token_b() {
+    let effect = remove_effect(&live_pool(), REMOVE_LP, 1, 0);
+    let _ = plan_remove(&effect);
+}
+
+#[test]
+fn pool_after_remove_records_the_withdrawal() {
+    let p = live_pool();
+    let effect = remove_effect(&p, REMOVE_LP, 1, 1);
+    let post = PoolDefinition::try_from(&remove_liquidity(&pool_data(&p), &effect)).unwrap();
+    assert_eq!(post.reserve_a, RESERVE_A - 499);
+    assert_eq!(post.reserve_b, RESERVE_B - 999);
+    assert_eq!(post.liquidity_pool_supply, LP_SUPPLY - REMOVE_LP);
+}
+
+/// One-directional on purpose: withdrawing less than the share leaves the
+/// surplus with the remaining providers.
+#[test]
+fn pool_after_remove_accepts_less_than_the_pro_rata_share() {
+    let p = live_pool();
+    let mut effect = remove_effect(&p, REMOVE_LP, 1, 1);
+    effect.withdraw_amount_a -= 10;
+    effect.new_price = spot_price_q64_64(
+        RESERVE_A - effect.withdraw_amount_a,
+        RESERVE_B - effect.withdraw_amount_b,
+    );
+    let post = PoolDefinition::try_from(&remove_liquidity(&pool_data(&p), &effect)).unwrap();
+    assert_eq!(post.reserve_a, RESERVE_A - 489);
+}
+
+#[test]
+#[should_panic(expected = "Withdrawal (Token A) exceeds the burner's pro-rata share")]
+fn pool_after_remove_rejects_more_than_the_pro_rata_share() {
+    let p = live_pool();
+    let mut effect = remove_effect(&p, REMOVE_LP, 1, 1);
+    effect.withdraw_amount_a += 1;
+    effect.new_price = spot_price_q64_64(
+        RESERVE_A - effect.withdraw_amount_a,
+        RESERVE_B - effect.withdraw_amount_b,
+    );
+    let _ = remove_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+#[should_panic(expected = "Insufficient minimal withdraw amount (Token B)")]
+fn pool_after_remove_rejects_a_withdrawal_below_the_callers_floor() {
+    let p = live_pool();
+    let effect = remove_effect(&p, REMOVE_LP, 1, 1_000);
+    let _ = remove_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+#[should_panic(expected = "Pool liquidity supply is below minimum liquidity")]
+fn pool_after_remove_rejects_a_pool_below_the_lock_floor() {
+    let p = pool(RESERVE_A, RESERVE_B, MINIMUM_LIQUIDITY - 1);
+    let effect = remove_effect(&p, 1, 1, 1);
+    let _ = remove_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+#[should_panic(expected = "Pool only contains locked liquidity")]
+fn pool_after_remove_rejects_a_pool_at_exactly_the_lock_floor() {
+    let p = pool(RESERVE_A, RESERVE_B, MINIMUM_LIQUIDITY);
+    let effect = remove_effect(&p, 1, 1, 1);
+    let _ = remove_liquidity(&pool_data(&p), &effect);
+}
+
+/// The lock is enforced here rather than by reading the lock holding, which this
+/// instruction never sees.
+#[test]
+#[should_panic(expected = "Cannot remove locked minimum liquidity")]
+fn pool_after_remove_refuses_to_burn_through_the_permanent_lock() {
+    let p = live_pool();
+    let effect = remove_effect(&p, LP_SUPPLY - MINIMUM_LIQUIDITY + 1, 1, 1);
+    let _ = remove_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+fn pool_after_remove_allows_burning_exactly_the_unlocked_supply() {
+    let p = live_pool();
+    let effect = remove_effect(&p, LP_SUPPLY - MINIMUM_LIQUIDITY, 1, 1);
+    let post = PoolDefinition::try_from(&remove_liquidity(&pool_data(&p), &effect)).unwrap();
+    assert_eq!(post.liquidity_pool_supply, MINIMUM_LIQUIDITY);
+    // The lock keeps its backing: reserves are never drained to zero.
+    assert!(post.reserve_a > 0 && post.reserve_b > 0);
+}
+
+#[test]
+#[should_panic(expected = "Remove amount must be nonzero")]
+fn pool_after_remove_rejects_a_zero_burn() {
+    let p = live_pool();
+    let mut effect = remove_effect(&p, REMOVE_LP, 1, 1);
+    effect.remove_liquidity_amount = 0;
+    let _ = remove_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+#[should_panic(expected = "Declared post-removal price does not match")]
+fn pool_after_remove_rejects_a_forged_post_price() {
+    let p = live_pool();
+    let mut effect = remove_effect(&p, REMOVE_LP, 1, 1);
+    effect.new_price += 1;
+    let _ = remove_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+#[should_panic(expected = "Declared pool identity does not match")]
+fn pool_after_remove_rejects_a_forged_identity() {
+    let p = live_pool();
+    let mut effect = remove_effect(&p, REMOVE_LP, 1, 1);
+    effect.identity.liquidity_pool_id = user_lp_id();
+    let _ = remove_liquidity(&pool_data(&p), &effect);
+}
+
+#[test]
+fn pool_after_remove_survives_realistic_eighteen_decimal_amounts() {
+    let big = 1_000_000u128 * 10u128.pow(18);
+    let p = pool(big, big, big);
+    let effect = remove_effect(&p, big / 2, 1, 1);
+    let post = PoolDefinition::try_from(&remove_liquidity(&pool_data(&p), &effect)).unwrap();
+    assert_eq!(post.liquidity_pool_supply, big / 2);
+    assert_eq!(post.reserve_a, big / 2);
+}
+
+/// Add then remove the whole unlocked supply: the lock is what stops the pool
+/// being emptied, and the reserves it keeps are what back it.
+#[test]
+fn the_minimum_liquidity_lock_survives_removing_every_user_lp() {
+    let (data, _) = plan_definition_ok();
+    let created = PoolDefinition::try_from(&data).unwrap();
+    let user_lp = created.liquidity_pool_supply - MINIMUM_LIQUIDITY;
+    let effect = remove_effect(&created, user_lp, 1, 1);
+    let post = PoolDefinition::try_from(&remove_liquidity(&data, &effect)).unwrap();
+    assert_eq!(post.liquidity_pool_supply, MINIMUM_LIQUIDITY);
+    assert!(post.reserve_a > 0 && post.reserve_b > 0);
+}
+
+// ─── Swaps ──────────────────────────────────────────────────────────────────
+
+const SWAP_IN: u128 = 1_000;
+
+/// The post-swap price the pool recomputes, given a binding's amounts.
+fn repriced(p: &PoolDefinition, binding: &SwapBinding) -> u128 {
+    let (input, output) = p.sides(binding.definition_id_in).unwrap();
+    let (reserve_a, reserve_b) = p.reserves_in_ab_order(
+        binding.definition_id_in,
+        input.reserve + binding.amount_in - binding.protocol_fee,
+        output.reserve - binding.amount_out,
+    );
+    spot_price_q64_64(reserve_a, reserve_b)
+}
+
+/// The declaration a caller builds for an exact-input swap: the shared quote,
+/// plus the fee split and post-swap price the pool pins.
+fn swap_in_binding(
+    p: &PoolDefinition,
+    definition_id_in: AccountId,
+    amount_in: u128,
+    min_amount_out: u128,
+) -> SwapBinding {
+    let (input, output) = p.sides(definition_id_in).unwrap();
+    let (effective, amount_out) =
+        swap_exact_in_amounts(amount_in, input.reserve, output.reserve, SWAP_FEE_BPS);
+    let protocol_fee = protocol_fee_amount(amount_in - effective, PROTOCOL_FEE_BPS);
+    let mut binding = SwapBinding {
+        identity: identity(),
+        definition_id_in,
+        amount_in,
+        amount_out,
+        protocol_fee,
+        new_price: 0,
+        swap_fee_bps: SWAP_FEE_BPS,
+        protocol_fee_bps: PROTOCOL_FEE_BPS,
+        limit: min_amount_out,
+    };
+    binding.new_price = repriced(p, &binding);
+    binding
+}
+
+/// The mirror for an exact-output swap: `limit` is the ceiling on the input.
+fn swap_out_binding(
+    p: &PoolDefinition,
+    definition_id_in: AccountId,
+    amount_out: u128,
+    max_amount_in: u128,
+) -> SwapBinding {
+    let (input, output) = p.sides(definition_id_in).unwrap();
+    let (effective, amount_in) =
+        swap_exact_out_amounts(amount_out, input.reserve, output.reserve, SWAP_FEE_BPS).unwrap();
+    let protocol_fee = protocol_fee_amount(amount_in - effective, PROTOCOL_FEE_BPS);
+    let mut binding = SwapBinding {
+        identity: identity(),
+        definition_id_in,
+        amount_in,
+        amount_out,
+        protocol_fee,
+        new_price: 0,
+        swap_fee_bps: SWAP_FEE_BPS,
+        protocol_fee_bps: PROTOCOL_FEE_BPS,
+        limit: max_amount_in,
+    };
+    binding.new_price = repriced(p, &binding);
+    binding
+}
+
+struct SwapSlots {
+    pool: AccountMeta,
+    vault_a: AccountMeta,
+    vault_b: AccountMeta,
+    user_in: AccountMeta,
+    user_out: AccountMeta,
+    current_tick: AccountMeta,
+    protocol_fee: AccountMeta,
+}
+
+impl SwapSlots {
+    /// The slots for a swap entering via `definition_id_in`.
+    fn for_input(definition_id_in: AccountId) -> Self {
+        Self {
+            pool: ours(pool_id()),
+            vault_a: token_slot(vault_a_id()),
+            vault_b: token_slot(vault_b_id()),
+            user_in: signed_token_slot(user_a_id()),
+            user_out: token_slot(user_b_id()),
+            current_tick: oracle_slot(current_tick_id()),
+            protocol_fee: token_slot(protocol_fee_id(definition_id_in)),
+        }
+    }
+}
+
+fn plan_swap_with(slots: &SwapSlots, binding: &SwapBinding) -> Vec<lee_core::program::ChainedCall> {
+    plan_swap(
+        &ours(config_id()),
+        &slots.pool,
+        &slots.vault_a,
+        &slots.vault_b,
+        &slots.user_in,
+        &slots.user_out,
+        &slots.current_tick,
+        &clock_slot(),
+        &slots.protocol_fee,
+        &facts(),
+        binding,
+        NOW,
+        AMM_PROGRAM_ID,
+    )
+}
+
+// ── plan half ──
+
+/// Input transfer, output transfer, protocol fee, tick refresh.
+#[test]
+fn plan_swap_chains_four_calls_when_a_protocol_fee_is_taken() {
+    let binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    assert!(binding.protocol_fee > 0, "fixture must take a protocol fee");
+    let calls = plan_swap_with(&SwapSlots::for_input(definition_a()), &binding);
+    assert_eq!(calls.len(), 4);
+
+    assert_eq!(
+        transfer_parts(&calls[0]),
+        (user_a_id(), vault_a_id(), definition_a(), SWAP_IN),
+        "the trader pays the full input, protocol fee included"
+    );
+    assert!(
+        calls[0].pda_seeds.is_empty(),
+        "debiting the trader is authorized by their own signature, not a seed"
+    );
+
+    assert_eq!(
+        transfer_parts(&calls[1]),
+        (
+            vault_b_id(),
+            user_b_id(),
+            definition_b(),
+            binding.amount_out
+        )
+    );
+    assert_eq!(
+        calls[1].pda_seeds,
+        vec![amm_core::compute_vault_pda_seed(pool_id(), definition_b())]
+    );
+
+    assert_eq!(
+        transfer_parts(&calls[2]),
+        (
+            vault_a_id(),
+            protocol_fee_id(definition_a()),
+            definition_a(),
+            binding.protocol_fee
         ),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).expect("test value must be nonzero"),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b_low(),
-        AMM_PROGRAM_ID,
+        "the protocol's cut is taken in the input token"
+    );
+    assert_eq!(
+        calls[2].pda_seeds,
+        vec![
+            amm_core::compute_vault_pda_seed(pool_id(), definition_a()),
+            amm_core::compute_protocol_fee_pda_seed(config_id(), definition_a()),
+        ],
+        "the vault's seed debits, the protocol holding's seed creates it on first use"
+    );
+
+    match oracle_instruction(&calls[3]) {
+        twap_oracle_core::Instruction::UpdateCurrentTick { price, now } => {
+            assert_eq!(price, binding.new_price);
+            assert_eq!(now, NOW);
+        }
+        _ => panic!("expected UpdateCurrentTick"),
+    }
+}
+
+#[test]
+fn plan_swap_omits_the_protocol_transfer_when_the_fee_rounds_to_zero() {
+    let mut binding = swap_in_binding(&live_pool(), definition_a(), 100, 1);
+    binding.protocol_fee = 0;
+    binding.new_price = repriced(&live_pool(), &binding);
+    let calls = plan_swap_with(&SwapSlots::for_input(definition_a()), &binding);
+    assert_eq!(calls.len(), 3);
+}
+
+/// Direction is declared, so the plan resolves the vaults from the declaration
+/// rather than from the trader's holding.
+#[test]
+fn plan_swap_resolves_the_vaults_from_the_declared_direction() {
+    let binding = swap_in_binding(&live_pool(), definition_b(), SWAP_IN, 1);
+    let mut slots = SwapSlots::for_input(definition_b());
+    slots.user_in = signed_token_slot(user_b_id());
+    slots.user_out = token_slot(user_a_id());
+    let calls = plan_swap_with(&slots, &binding);
+    assert_eq!(
+        transfer_parts(&calls[0]),
+        (user_b_id(), vault_b_id(), definition_b(), SWAP_IN),
+        "entering via token B debits vault B"
+    );
+    assert_eq!(
+        transfer_parts(&calls[1]).0,
+        vault_a_id(),
+        "and pays out of vault A"
     );
 }
 
-#[should_panic(expected = "Remove amount exceeds user LP balance")]
 #[test]
-fn test_remove_liquidity_rejects_amount_exceeding_user_lp_balance() {
-    let lp_balance = BalanceForTests::remove_amount_lp() - 1;
-    let _ = remove_liquidity(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::pool_lp_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::user_holding_lp_with_balance(lp_balance),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        NonZero::new(BalanceForTests::remove_amount_lp()).expect("test value must be nonzero"),
-        BalanceForTests::remove_min_amount_a(),
-        BalanceForTests::remove_min_amount_b_low(),
-        AMM_PROGRAM_ID,
+#[should_panic(expected = "AccountId is not a token type for the pool")]
+fn plan_swap_rejects_a_direction_outside_the_pair() {
+    let mut binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    binding.definition_id_in = definition_c();
+    let _ = plan_swap_with(&SwapSlots::for_input(definition_c()), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Vault A was not provided")]
+fn plan_swap_rejects_a_wrong_vault_a_slot() {
+    let binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    let mut slots = SwapSlots::for_input(definition_a());
+    slots.vault_a = token_slot(AccountId::new([0xAAu8; 32]));
+    let _ = plan_swap_with(&slots, &binding);
+}
+
+#[test]
+#[should_panic(expected = "Vault B was not provided")]
+fn plan_swap_rejects_a_wrong_vault_b_slot() {
+    let binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    let mut slots = SwapSlots::for_input(definition_a());
+    slots.vault_b = token_slot(AccountId::new([0xAAu8; 32]));
+    let _ = plan_swap_with(&slots, &binding);
+}
+
+#[test]
+#[should_panic(expected = "not derived under this config's namespace")]
+fn plan_swap_rejects_a_pool_outside_the_config_namespace() {
+    let binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    let mut slots = SwapSlots::for_input(definition_a());
+    slots.pool = ours(AccountId::new([0xAAu8; 32]));
+    let _ = plan_swap_with(&slots, &binding);
+}
+
+#[test]
+#[should_panic(expected = "must authorize the transfer that debits it")]
+fn plan_swap_rejects_an_unsigned_input_holding() {
+    let binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    let mut slots = SwapSlots::for_input(definition_a());
+    slots.user_in = token_slot(user_a_id());
+    let _ = plan_swap_with(&slots, &binding);
+}
+
+/// A trader holding that is also a vault would turn a self-transfer into free
+/// funding, or a payout the reserves never backed.
+#[test]
+#[should_panic(expected = "a trader holding cannot be a pool vault")]
+fn plan_swap_rejects_an_input_holding_that_is_a_vault() {
+    let binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    let mut slots = SwapSlots::for_input(definition_a());
+    slots.user_in = signed_token_slot(vault_a_id());
+    let _ = plan_swap_with(&slots, &binding);
+}
+
+#[test]
+#[should_panic(expected = "a trader holding cannot be a pool vault")]
+fn plan_swap_rejects_an_output_holding_that_is_a_vault() {
+    let binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    let mut slots = SwapSlots::for_input(definition_a());
+    slots.user_out = token_slot(vault_b_id());
+    let _ = plan_swap_with(&slots, &binding);
+}
+
+#[test]
+#[should_panic(expected = "protocol-fee holding does not match the input token's protocol PDA")]
+fn plan_swap_rejects_a_protocol_holding_for_the_wrong_token() {
+    let binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    let mut slots = SwapSlots::for_input(definition_a());
+    slots.protocol_fee = token_slot(protocol_fee_id(definition_b()));
+    let _ = plan_swap_with(&slots, &binding);
+}
+
+#[test]
+#[should_panic(expected = "current tick Account ID does not match PDA")]
+fn plan_swap_rejects_a_wrong_current_tick_slot() {
+    let binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    let mut slots = SwapSlots::for_input(definition_a());
+    slots.current_tick = oracle_slot(AccountId::new([0xAAu8; 32]));
+    let _ = plan_swap_with(&slots, &binding);
+}
+
+// ── apply half, exact input ──
+
+#[test]
+fn pool_after_swap_in_records_the_trade() {
+    let p = live_pool();
+    let binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    let post = PoolDefinition::try_from(&swap_exact_in(&pool_data(&p), &binding)).unwrap();
+    assert_eq!(
+        post.reserve_a,
+        RESERVE_A + SWAP_IN - binding.protocol_fee,
+        "reserves grow by the input net of the fee that left the vault"
+    );
+    assert_eq!(post.reserve_b, RESERVE_B - binding.amount_out);
+    assert_eq!(post.liquidity_pool_supply, LP_SUPPLY, "a swap mints no LP");
+}
+
+/// The constant product grows: the providers' share of the swap fee accrues as
+/// invariant growth rather than as a separate balance.
+#[test]
+fn pool_after_swap_in_grows_the_invariant() {
+    let p = live_pool();
+    let binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    let post = PoolDefinition::try_from(&swap_exact_in(&pool_data(&p), &binding)).unwrap();
+    assert!(post.reserve_a * post.reserve_b > RESERVE_A * RESERVE_B);
+}
+
+#[test]
+fn pool_after_swap_in_works_in_both_directions() {
+    let p = live_pool();
+    let binding = swap_in_binding(&p, definition_b(), SWAP_IN, 1);
+    let post = PoolDefinition::try_from(&swap_exact_in(&pool_data(&p), &binding)).unwrap();
+    assert_eq!(post.reserve_b, RESERVE_B + SWAP_IN - binding.protocol_fee);
+    assert_eq!(post.reserve_a, RESERVE_A - binding.amount_out);
+}
+
+/// The bound, not an equality: an under-claimed output leaves the surplus in the
+/// pool, and that is what makes a stale quote safe rather than fatal.
+#[test]
+fn pool_after_swap_in_accepts_less_output_than_the_live_quote() {
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    binding.amount_out -= 10;
+    binding.new_price = repriced(&p, &binding);
+    let post = PoolDefinition::try_from(&swap_exact_in(&pool_data(&p), &binding)).unwrap();
+    assert_eq!(post.reserve_b, RESERVE_B - binding.amount_out);
+}
+
+#[test]
+#[should_panic(expected = "cannot afford this offer at its live price")]
+fn pool_after_swap_in_rejects_more_output_than_the_live_quote() {
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    binding.amount_out += 1;
+    binding.new_price = repriced(&p, &binding);
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+/// The whole reason the bound is evaluated here: a quote taken against larger
+/// reserves than the pool now holds is refused rather than paid out.
+#[test]
+#[should_panic(expected = "cannot afford this offer at its live price")]
+fn pool_after_swap_in_rejects_an_offer_quoted_against_richer_reserves() {
+    let quoted_against = pool(RESERVE_A, RESERVE_B * 2, LP_SUPPLY);
+    let binding = swap_in_binding(&quoted_against, definition_a(), SWAP_IN, 1);
+    let _ = swap_exact_in(&pool_data(&live_pool()), &binding);
+}
+
+#[test]
+#[should_panic(expected = "less than minimal amount out")]
+fn pool_after_swap_in_rejects_output_below_the_callers_floor() {
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    binding.limit = binding.amount_out + 1;
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Declared protocol fee does not match")]
+fn pool_after_swap_in_rejects_an_understated_protocol_fee() {
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    binding.protocol_fee -= 1;
+    binding.new_price = repriced(&p, &binding);
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Declared protocol fee does not match")]
+fn pool_after_swap_in_rejects_an_overstated_protocol_fee() {
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    binding.protocol_fee += 1;
+    binding.new_price = repriced(&p, &binding);
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+/// The fee tiers travel in the binding, but they are copied from the declared
+/// `ConfigFacts` — so a cheaper fee here is a fact the config guard refuses, and
+/// on its own it does not even price a better trade.
+#[test]
+#[should_panic(expected = "cannot afford this offer at its live price")]
+fn pool_after_swap_in_prices_with_the_fee_the_binding_carries() {
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    // The output was quoted at a 0-bps fee; the binding still declares 30.
+    let zero_fee = SwapBinding {
+        swap_fee_bps: 0,
+        ..binding
+    };
+    let (_, bigger_out) =
+        swap_exact_in_amounts(SWAP_IN, RESERVE_A, RESERVE_B, zero_fee.swap_fee_bps);
+    binding.amount_out = bigger_out;
+    binding.new_price = repriced(&p, &binding);
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Swap amounts must be nonzero")]
+fn pool_after_swap_in_rejects_a_zero_output() {
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), SWAP_IN, 0);
+    binding.amount_out = 0;
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Effective swap amount should be nonzero")]
+fn pool_after_swap_in_rejects_an_input_that_rounds_away_entirely() {
+    // 1 unit at 30 bps: `1 * 9970 / 10000` floors to zero effective input.
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), 1, 0);
+    binding.amount_out = 1;
+    binding.protocol_fee = 0;
+    binding.new_price = repriced(&p, &binding);
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Swap output exhausts the reserve")]
+fn pool_after_swap_in_rejects_draining_the_output_reserve() {
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    binding.amount_out = RESERVE_B;
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Pool reserves must be nonzero")]
+fn pool_after_swap_in_rejects_a_pool_with_a_zero_reserve() {
+    let binding = swap_in_binding(&live_pool(), definition_a(), SWAP_IN, 1);
+    let _ = swap_exact_in(&pool_data(&pool(0, RESERVE_B, LP_SUPPLY)), &binding);
+}
+
+#[test]
+#[should_panic(expected = "below minimum liquidity")]
+fn pool_after_swap_in_rejects_a_pool_below_the_lock_floor() {
+    let p = pool(RESERVE_A, RESERVE_B, MINIMUM_LIQUIDITY - 1);
+    let binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Declared post-swap price does not match")]
+fn pool_after_swap_in_rejects_a_forged_post_price() {
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    binding.new_price += 1;
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Declared pool identity does not match")]
+fn pool_after_swap_in_rejects_a_forged_identity() {
+    let p = live_pool();
+    let mut binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    binding.identity.vault_b_id = user_b_id();
+    let _ = swap_exact_in(&pool_data(&p), &binding);
+}
+
+#[test]
+fn pool_after_swap_in_survives_realistic_eighteen_decimal_amounts() {
+    let big = 1_000_000u128 * 10u128.pow(18);
+    let p = pool(big, big, big);
+    let binding = swap_in_binding(&p, definition_a(), big / 1_000, 1);
+    let post = PoolDefinition::try_from(&swap_exact_in(&pool_data(&p), &binding)).unwrap();
+    assert!(post.reserve_a > big && post.reserve_b < big);
+}
+
+// ── apply half, exact output ──
+
+#[test]
+fn pool_after_swap_out_records_the_trade() {
+    let p = live_pool();
+    let binding = swap_out_binding(&p, definition_a(), 1_662, u128::MAX);
+    let post = PoolDefinition::try_from(&swap_exact_out(&pool_data(&p), &binding)).unwrap();
+    assert_eq!(post.reserve_b, RESERVE_B - 1_662, "the output is exact");
+    assert_eq!(
+        post.reserve_a,
+        RESERVE_A + binding.amount_in - binding.protocol_fee
     );
 }
 
-#[should_panic(expected = "User Token A holding must be owned by the configured Token Program")]
 #[test]
-fn test_swap_exact_input_rejects_user_holding_a_wrong_program() {
-    let _ = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a_wrong_program(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
+fn pool_after_swap_out_works_in_both_directions() {
+    let p = live_pool();
+    let binding = swap_out_binding(&p, definition_b(), 400, u128::MAX);
+    let post = PoolDefinition::try_from(&swap_exact_out(&pool_data(&p), &binding)).unwrap();
+    assert_eq!(post.reserve_a, RESERVE_A - 400);
+}
+
+/// The mirror bound: paying *more* than the curve demands is safe for the pool.
+#[test]
+fn pool_after_swap_out_accepts_more_input_than_the_live_quote() {
+    let p = live_pool();
+    let mut binding = swap_out_binding(&p, definition_a(), 1_662, u128::MAX);
+    binding.amount_in += 50;
+    binding.protocol_fee = protocol_fee_amount(
+        binding.amount_in
+            - swap_exact_out_amounts(binding.amount_out, RESERVE_A, RESERVE_B, SWAP_FEE_BPS)
+                .unwrap()
+                .0,
+        PROTOCOL_FEE_BPS,
+    );
+    binding.new_price = repriced(&p, &binding);
+    let post = PoolDefinition::try_from(&swap_exact_out(&pool_data(&p), &binding)).unwrap();
+    assert_eq!(
+        post.reserve_a,
+        RESERVE_A + binding.amount_in - binding.protocol_fee
     );
 }
 
-#[should_panic(expected = "User Token B holding must be owned by the configured Token Program")]
 #[test]
-fn test_swap_exact_input_rejects_user_holding_b_wrong_program() {
-    let _ = swap_exact_input(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b_wrong_program(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        BalanceForTests::add_max_amount_a(),
-        BalanceForTests::min_amount_out(),
-        AMM_PROGRAM_ID,
+#[should_panic(expected = "below what the pool's live price demands")]
+fn pool_after_swap_out_rejects_less_input_than_the_live_quote() {
+    let p = live_pool();
+    let mut binding = swap_out_binding(&p, definition_a(), 1_662, u128::MAX);
+    binding.amount_in -= 1;
+    binding.new_price = repriced(&p, &binding);
+    let _ = swap_exact_out(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "below what the pool's live price demands")]
+fn pool_after_swap_out_rejects_a_quote_taken_against_richer_reserves() {
+    let quoted_against = pool(RESERVE_A, RESERVE_B * 2, LP_SUPPLY);
+    let binding = swap_out_binding(&quoted_against, definition_a(), 1_662, u128::MAX);
+    let _ = swap_exact_out(&pool_data(&live_pool()), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Required input exceeds maximum amount in")]
+fn pool_after_swap_out_rejects_input_above_the_callers_ceiling() {
+    let p = live_pool();
+    let binding = swap_out_binding(&p, definition_a(), 1_662, 100);
+    let _ = swap_exact_out(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Swap output exhausts the reserve")]
+fn pool_after_swap_out_rejects_draining_the_output_reserve() {
+    let p = live_pool();
+    let mut binding = swap_out_binding(&p, definition_a(), 1_662, u128::MAX);
+    binding.amount_out = RESERVE_B;
+    let _ = swap_exact_out(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Swap amounts must be nonzero")]
+fn pool_after_swap_out_rejects_a_zero_output() {
+    let p = live_pool();
+    let mut binding = swap_out_binding(&p, definition_a(), 1_662, u128::MAX);
+    binding.amount_out = 0;
+    let _ = swap_exact_out(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Declared protocol fee does not match")]
+fn pool_after_swap_out_rejects_a_forged_protocol_fee() {
+    let p = live_pool();
+    let mut binding = swap_out_binding(&p, definition_a(), 1_662, u128::MAX);
+    binding.protocol_fee += 1;
+    binding.new_price = repriced(&p, &binding);
+    let _ = swap_exact_out(&pool_data(&p), &binding);
+}
+
+#[test]
+#[should_panic(expected = "Declared post-swap price does not match")]
+fn pool_after_swap_out_rejects_a_forged_post_price() {
+    let p = live_pool();
+    let mut binding = swap_out_binding(&p, definition_a(), 1_662, u128::MAX);
+    binding.new_price += 1;
+    let _ = swap_exact_out(&pool_data(&p), &binding);
+}
+
+#[test]
+fn pool_after_swap_out_survives_realistic_eighteen_decimal_amounts() {
+    let big = 1_000_000u128 * 10u128.pow(18);
+    let p = pool(big, big, big);
+    let binding = swap_out_binding(&p, definition_a(), big / 1_000, u128::MAX);
+    let post = PoolDefinition::try_from(&swap_exact_out(&pool_data(&p), &binding)).unwrap();
+    assert_eq!(post.reserve_b, big - big / 1_000);
+}
+
+/// The two modes agree: an exact-output swap for what an exact-input swap would
+/// have yielded demands at most the same input back.
+#[test]
+fn the_two_swap_modes_are_consistent() {
+    let p = live_pool();
+    let forward = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    let backward = swap_out_binding(&p, definition_a(), forward.amount_out, u128::MAX);
+    assert!(
+        backward.amount_in <= forward.amount_in,
+        "exact-output rounding never asks for more than the exact-input leg paid"
     );
 }
 
-#[should_panic(expected = "User Token A holding must be owned by the configured Token Program")]
-#[test]
-fn test_swap_exact_output_rejects_user_holding_a_wrong_program() {
-    let _ = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a_wrong_program(),
-        AccountWithMetadataForTests::user_holding_b(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        166,
-        BalanceForTests::max_amount_in(),
+// ─── SyncReserves ───────────────────────────────────────────────────────────
+
+fn sync_effect(vault_a_balance: u128, vault_b_balance: u128) -> SyncReserves {
+    SyncReserves {
+        identity: identity(),
+        vault_a_balance,
+        vault_b_balance,
+    }
+}
+
+fn plan_sync(
+    pool_slot: &AccountMeta,
+    effect: &SyncReserves,
+) -> (
+    TokenDescriptor,
+    TokenDescriptor,
+    Vec<lee_core::program::ChainedCall>,
+) {
+    plan_sync_reserves(
+        &ours(config_id()),
+        pool_slot,
+        &token_slot(vault_a_id()),
+        &token_slot(vault_b_id()),
+        &oracle_slot(current_tick_id()),
+        &clock_slot(),
+        &facts(),
+        effect,
+        NOW,
         AMM_PROGRAM_ID,
+    )
+}
+
+#[test]
+fn plan_sync_reserves_derives_the_tick_from_the_pinned_balances() {
+    let effect = sync_effect(RESERVE_A + 500, RESERVE_B);
+    let (descriptor_a, descriptor_b, calls) = plan_sync(&ours(pool_id()), &effect);
+    assert_eq!(descriptor_a, descriptor(definition_a()));
+    assert_eq!(descriptor_b, descriptor(definition_b()));
+    assert_eq!(calls.len(), 1);
+    match oracle_instruction(&calls[0]) {
+        twap_oracle_core::Instruction::UpdateCurrentTick { price, now } => {
+            assert_eq!(price, spot_price_q64_64(RESERVE_A + 500, RESERVE_B));
+            assert_eq!(now, NOW);
+        }
+        _ => panic!("expected UpdateCurrentTick"),
+    }
+    assert_eq!(
+        calls[0].pda_seeds,
+        vec![amm_core::compute_pool_pda_seed(
+            config_id(),
+            definition_a(),
+            definition_b()
+        )]
     );
 }
 
-#[should_panic(expected = "User Token B holding must be owned by the configured Token Program")]
 #[test]
-fn test_swap_exact_output_rejects_user_holding_b_wrong_program() {
-    let _ = swap_exact_output(
-        AccountWithMetadataForTests::config_init(),
-        AccountWithMetadataForTests::pool_definition_swap_exact_output_init(),
-        AccountWithMetadataForTests::vault_a_init(),
-        AccountWithMetadataForTests::vault_b_init(),
-        AccountWithMetadataForTests::user_holding_a(),
-        AccountWithMetadataForTests::user_holding_b_wrong_program(),
-        AccountWithMetadataForTests::current_tick_account_uninit(),
-        AccountWithMetadataForTests::clock(),
-        AccountWithMetadataForTests::protocol_fee_holding_a(),
-        166,
-        BalanceForTests::max_amount_in(),
+#[should_panic(expected = "not derived under this config's namespace")]
+fn plan_sync_reserves_rejects_a_pool_outside_the_config_namespace() {
+    plan_sync(
+        &ours(AccountId::new([0xAAu8; 32])),
+        &sync_effect(RESERVE_A, RESERVE_B),
+    );
+}
+
+/// A donation straight into a vault leaves the pool mispriced; syncing is how
+/// the reserves catch up.
+#[test]
+fn pool_after_sync_absorbs_a_donation() {
+    let p = live_pool();
+    let effect = sync_effect(RESERVE_A + 1_000, RESERVE_B);
+    let post = PoolDefinition::try_from(&sync_reserves(&pool_data(&p), &effect)).unwrap();
+    assert_eq!(post.reserve_a, RESERVE_A + 1_000);
+    assert_eq!(post.reserve_b, RESERVE_B);
+    assert_eq!(
+        post.liquidity_pool_supply, LP_SUPPLY,
+        "a donation mints no LP: it accrues to the existing providers"
+    );
+}
+
+/// Reserves may lag a vault but never exceed it, so the other direction is a
+/// broken invariant to report rather than a state to normalize.
+#[test]
+#[should_panic(expected = "vault A balance is less than its reserve")]
+fn pool_after_sync_rejects_an_under_collateralized_vault_a() {
+    let p = live_pool();
+    let _ = sync_reserves(&pool_data(&p), &sync_effect(RESERVE_A - 1, RESERVE_B));
+}
+
+#[test]
+#[should_panic(expected = "vault B balance is less than its reserve")]
+fn pool_after_sync_rejects_an_under_collateralized_vault_b() {
+    let p = live_pool();
+    let _ = sync_reserves(&pool_data(&p), &sync_effect(RESERVE_A, RESERVE_B - 1));
+}
+
+#[test]
+#[should_panic(expected = "below minimum liquidity")]
+fn pool_after_sync_rejects_a_pool_below_the_lock_floor() {
+    let p = pool(RESERVE_A, RESERVE_B, MINIMUM_LIQUIDITY - 1);
+    let _ = sync_reserves(&pool_data(&p), &sync_effect(RESERVE_A, RESERVE_B));
+}
+
+#[test]
+#[should_panic(expected = "Declared pool identity does not match")]
+fn pool_after_sync_rejects_a_forged_identity() {
+    let p = live_pool();
+    let mut effect = sync_effect(RESERVE_A, RESERVE_B);
+    effect.identity.definition_token_a_id = definition_c();
+    let _ = sync_reserves(&pool_data(&p), &effect);
+}
+
+/// The donation → mispricing → sync sequence end to end: an add against stale
+/// reserves prices the deposit off the pool's recorded ratio, and a sync first
+/// is what makes the deposit fair.
+#[test]
+fn syncing_before_an_add_prices_the_deposit_against_the_real_vaults() {
+    let p = live_pool();
+    let donated_a = RESERVE_A + 1_000;
+
+    // Unsynced: 500 of A still buys the full 707 LP, because the pool's recorded
+    // reserve_a has not caught up with the donation.
+    let (_, _, stale_lp) = quote_add_liquidity(&p, MAX_ADD_A, MAX_ADD_B);
+    assert_eq!(stale_lp, 707);
+
+    // Synced: the same deposit buys proportionally less, which is the donation
+    // accruing to the providers who were there for it.
+    let synced = PoolDefinition::try_from(&sync_reserves(
+        &pool_data(&p),
+        &sync_effect(donated_a, RESERVE_B),
+    ))
+    .unwrap();
+    let (_, _, fair_lp) = quote_add_liquidity(&synced, MAX_ADD_A, MAX_ADD_B);
+    assert!(
+        fair_lp < stale_lp,
+        "syncing must make the stale deposit buy less, not more"
+    );
+}
+
+// ─── the vault guard ────────────────────────────────────────────────────────
+
+#[test]
+fn check_vault_balance_accepts_the_stored_balance() {
+    check_vault_balance(
+        &holding(definition_a(), 5_000),
+        &CheckVaultBalance {
+            descriptor: descriptor(definition_a()),
+            balance: 5_000,
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "Declared vault balance does not match")]
+fn check_vault_balance_rejects_a_forged_balance() {
+    check_vault_balance(
+        &holding(definition_a(), 5_000),
+        &CheckVaultBalance {
+            descriptor: descriptor(definition_a()),
+            balance: 6_000,
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "Vault holds a different token")]
+fn check_vault_balance_rejects_a_vault_of_another_token() {
+    check_vault_balance(
+        &holding(definition_c(), 5_000),
+        &CheckVaultBalance {
+            descriptor: descriptor(definition_a()),
+            balance: 5_000,
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "valid Token Holding Account")]
+fn check_vault_balance_rejects_an_empty_vault_shard() {
+    check_vault_balance(
+        &empty(),
+        &CheckVaultBalance {
+            descriptor: descriptor(definition_a()),
+            balance: 0,
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "valid Fungible Token Holding Account")]
+fn check_vault_balance_rejects_a_non_fungible_vault() {
+    let nft = ShardData::from(&TokenHolding::NftPrintedCopy {
+        definition_id: definition_a(),
+        owned: true,
+    });
+    check_vault_balance(
+        &nft,
+        &CheckVaultBalance {
+            descriptor: descriptor(definition_a()),
+            balance: 0,
+        },
+    );
+}
+
+// ─── WithdrawProtocolFees ───────────────────────────────────────────────────
+
+fn plan_withdraw(
+    protocol_fee_holding: &AccountMeta,
+    authority: &AccountMeta,
+    amount: u128,
+    descriptor: &TokenDescriptor,
+) -> lee_core::program::ChainedCall {
+    plan_withdraw_protocol_fees(
+        &ours(config_id()),
+        protocol_fee_holding,
+        &token_slot(destination_id()),
+        authority,
+        amount,
+        &facts(),
+        descriptor,
         AMM_PROGRAM_ID,
+    )
+}
+
+#[test]
+fn plan_withdraw_protocol_fees_moves_the_declared_token_under_the_pda_seed() {
+    let call = plan_withdraw(
+        &token_slot(protocol_fee_id(definition_a())),
+        &AccountMeta::new(authority_id(), true, AMM_PROGRAM_ID),
+        250,
+        &descriptor(definition_a()),
+    );
+    assert_eq!(call.program_account_id, TOKEN_PROGRAM_ID);
+    assert_eq!(
+        transfer_parts(&call),
+        (
+            protocol_fee_id(definition_a()),
+            destination_id(),
+            definition_a(),
+            250
+        )
+    );
+    assert_eq!(
+        call.pda_seeds,
+        vec![amm_core::compute_protocol_fee_pda_seed(
+            config_id(),
+            definition_a()
+        )]
+    );
+}
+
+/// The descriptor is what makes both holdings vouch for the asset: the Token
+/// Program asserts it on the debit *and* the credit, which is what the two
+/// holding reads used to establish.
+#[test]
+fn plan_withdraw_protocol_fees_pins_both_holdings_through_one_descriptor() {
+    let call = plan_withdraw(
+        &token_slot(protocol_fee_id(definition_b())),
+        &AccountMeta::new(authority_id(), true, AMM_PROGRAM_ID),
+        1,
+        &descriptor(definition_b()),
+    );
+    match token_instruction(&call) {
+        token_core::Instruction::Transfer { descriptor, .. } => {
+            assert_eq!(descriptor.definition_id, definition_b());
+            assert_eq!(descriptor.kind, TokenKind::Fungible);
+        }
+        _ => panic!("expected a Transfer"),
+    }
+    assert_eq!(
+        selector_ids(&call),
+        vec![protocol_fee_id(definition_b()), destination_id()]
+    );
+}
+
+#[test]
+#[should_panic(expected = "not the configured admin authority")]
+fn plan_withdraw_protocol_fees_rejects_a_caller_who_is_not_the_admin() {
+    let _ = plan_withdraw(
+        &token_slot(protocol_fee_id(definition_a())),
+        &AccountMeta::new(other_authority_id(), true, AMM_PROGRAM_ID),
+        1,
+        &descriptor(definition_a()),
+    );
+}
+
+#[test]
+#[should_panic(expected = "must authorize the withdrawal")]
+fn plan_withdraw_protocol_fees_rejects_an_unauthorized_admin() {
+    let _ = plan_withdraw(
+        &token_slot(protocol_fee_id(definition_a())),
+        &AccountMeta::new(authority_id(), false, AMM_PROGRAM_ID),
+        1,
+        &descriptor(definition_a()),
+    );
+}
+
+#[test]
+#[should_panic(expected = "does not match the protocol-fee PDA")]
+fn plan_withdraw_protocol_fees_rejects_an_arbitrary_source_holding() {
+    let _ = plan_withdraw(
+        &token_slot(vault_a_id()),
+        &AccountMeta::new(authority_id(), true, AMM_PROGRAM_ID),
+        1,
+        &descriptor(definition_a()),
+    );
+}
+
+/// The source address and the declared token must agree: the PDA is derived from
+/// the descriptor, so naming token A's holding while declaring token B fails.
+#[test]
+#[should_panic(expected = "does not match the protocol-fee PDA")]
+fn plan_withdraw_protocol_fees_rejects_a_holding_for_a_different_declared_token() {
+    let _ = plan_withdraw(
+        &token_slot(protocol_fee_id(definition_a())),
+        &AccountMeta::new(authority_id(), true, AMM_PROGRAM_ID),
+        1,
+        &descriptor(definition_b()),
+    );
+}
+
+/// Each `(config, token)` pair has its own holding, so one call drains one token
+/// of one instance.
+#[test]
+fn protocol_fee_pdas_are_distinct_per_token_and_instance() {
+    let other_config = compute_config_pda(AMM_PROGRAM_ID, owner_id(), [7u8; 32]);
+    assert_ne!(
+        protocol_fee_id(definition_a()),
+        protocol_fee_id(definition_b())
+    );
+    assert_ne!(
+        protocol_fee_id(definition_a()),
+        compute_protocol_fee_pda(AMM_PROGRAM_ID, other_config, definition_a()),
+    );
+}
+
+// ─── fee arithmetic ─────────────────────────────────────────────────────────
+
+#[test]
+fn the_protocol_cut_is_a_fraction_of_the_swap_fee_not_of_the_input() {
+    let p = live_pool();
+    let binding = swap_in_binding(&p, definition_a(), SWAP_IN, 1);
+    let (effective, _) = swap_exact_in_amounts(SWAP_IN, RESERVE_A, RESERVE_B, SWAP_FEE_BPS);
+    let swap_fee = SWAP_IN - effective;
+    assert_eq!(
+        binding.protocol_fee,
+        mul_div_floor(swap_fee, PROTOCOL_FEE_BPS, FEE_BPS_DENOMINATOR)
+    );
+    assert!(
+        binding.protocol_fee < swap_fee,
+        "the rest of the fee stays with the providers"
+    );
+}
+
+#[test]
+fn a_zero_protocol_fee_tier_leaves_the_whole_swap_fee_with_the_providers() {
+    assert_eq!(protocol_fee_amount(1_000, 0), 0);
+}
+
+#[test]
+fn a_full_protocol_fee_tier_takes_the_whole_swap_fee() {
+    assert_eq!(
+        protocol_fee_amount(1_000, FEE_BPS_DENOMINATOR),
+        1_000,
+        "100% of the swap fee, not 100% of the input"
     );
 }

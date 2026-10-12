@@ -1,71 +1,36 @@
-use lee_core::{
-    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::AccountStateDiff,
-};
+use lee_core::account::{AccountId, ShardData};
 use token_core::TokenDefinition;
 
-/// Rotate or revoke the mint authority under **self/PDA authority**: the definition
-/// account itself is the current authority and proves it by being authorized in this
-/// transaction (a signer, or a PDA authorized under its seeds).
-pub fn set_authority(
-    definition_account: AccountWithMetadata,
+/// Definition-side effect: rotate or renounce the mint authority.
+///
+/// Like [`crate::mint::mint_supply`], the authority comparison belongs here
+/// because the current authority is stored state while the claiming account is
+/// plan-visible. Mutates only after every check passes, so a rejected call leaves
+/// the prior authority intact.
+///
+/// # Panics
+/// If the definition is non-fungible, the authority was already renounced, the
+/// claiming account did not authorize, it is not the current authority, or
+/// `new_authority` is the all-zero id.
+#[must_use]
+pub fn set_mint_authority(
+    pre_data: &ShardData,
     new_authority: Option<AccountId>,
-    token_program_id: AccountId,
-) -> Vec<AccountStateDiff> {
-    set_authority_inner(definition_account, None, new_authority, token_program_id)
-}
-
-/// Rotate or revoke the mint authority under an **external authority**: a distinct
-/// account (the account the authority was previously rotated to) proves authority by
-/// signing, so a rotated authority can rotate or revoke again without the definition's
-/// key. The definition account is mutated but does not authorize the change.
-pub fn set_authority_with_authority(
-    definition_account: AccountWithMetadata,
-    authority_account: AccountWithMetadata,
-    new_authority: Option<AccountId>,
-    token_program_id: AccountId,
-) -> Vec<AccountStateDiff> {
-    set_authority_inner(
-        definition_account,
-        Some(authority_account),
-        new_authority,
-        token_program_id,
-    )
-}
-
-/// Shared rotation/revocation core for both authority modes. `authority_account` is
-/// the external authority when `Some`; when `None` the definition account itself is
-/// treated as the authority (self/PDA authority). Only mutates state after all checks
-/// pass, so a rejected call leaves the prior authority intact. Post-state order mirrors
-/// the pre-state account order for each mode.
-fn set_authority_inner(
-    definition_account: AccountWithMetadata,
-    authority_account: Option<AccountWithMetadata>,
-    new_authority: Option<AccountId>,
-    token_program_id: AccountId,
-) -> Vec<AccountStateDiff> {
-    assert_eq!(
-        definition_account.account.program_owner, token_program_id,
-        "Token definition must be owned by token program"
-    );
-
-    let mut definition = TokenDefinition::try_from(&definition_account.account.data)
-        .expect("Token Definition account must be valid");
+    authority_id: AccountId,
+    authority_is_authorized: bool,
+) -> ShardData {
+    let mut definition =
+        TokenDefinition::try_from(pre_data).expect("Token Definition account must be valid");
 
     match &mut definition {
         TokenDefinition::Fungible { authority, .. } => {
-            // The account that proves authority must be authorized AND its id must
-            // match the stored authority. That account is the explicit external
-            // authority when present, otherwise the definition account itself.
-            // `None` means the authority was renounced and can no longer be set.
             let current = authority.expect("SetAuthority failed: authority already revoked");
-            let authority_ref = authority_account.as_ref().unwrap_or(&definition_account);
             assert!(
-                authority_ref.is_authorized,
+                authority_is_authorized,
                 "Mint authority must authorize the transaction"
             );
             assert_eq!(
-                authority_ref.account_id, current,
+                authority_id, current,
                 "SetAuthority failed: signer is not the current authority"
             );
 
@@ -83,16 +48,5 @@ fn set_authority_inner(
         }
     }
 
-    // Diffs must match pre-state order and count: [definition] for self
-    // authority, plus the read-only authority account when external.
-    let mut state_diffs = Vec::with_capacity(2);
-    state_diffs.push(AccountStateDiff::new(
-        definition_account,
-        BalanceDiff::Add(0),
-        Data::from(&definition),
-    ));
-    if let Some(authority) = authority_account {
-        state_diffs.push(AccountStateDiff::unchanged(authority));
-    }
-    state_diffs
+    ShardData::from(&definition)
 }

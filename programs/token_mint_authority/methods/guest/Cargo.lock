@@ -469,7 +469,7 @@ dependencies = [
 [[package]]
 name = "clock_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2#d8596eb734bf9c9ce801afb92df06098a2eb098a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.3.0#db66590ab821a4e142c211017a3866d007f6fa77"
 dependencies = [
  "borsh",
  "lee_core",
@@ -501,6 +501,15 @@ name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
+name = "convert_case"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
+dependencies = [
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "core-foundation"
@@ -687,6 +696,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
+ "convert_case",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -1129,12 +1139,13 @@ dependencies = [
 [[package]]
 name = "lee_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2#d8596eb734bf9c9ce801afb92df06098a2eb098a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.3.0#db66590ab821a4e142c211017a3866d007f6fa77"
 dependencies = [
  "base58",
  "borsh",
  "bytesize",
  "chacha20",
+ "derive_more",
  "ml-kem",
  "risc0-zkvm",
  "serde",
@@ -1891,7 +1902,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "spel-framework"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=0020cf2e8360fbed7f6284f2f4059d0b9155b236#0020cf2e8360fbed7f6284f2f4059d0b9155b236"
 dependencies = [
  "borsh",
  "lee_core",
@@ -1903,7 +1914,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-core"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=0020cf2e8360fbed7f6284f2f4059d0b9155b236#0020cf2e8360fbed7f6284f2f4059d0b9155b236"
 dependencies = [
  "base58",
  "borsh",
@@ -1920,7 +1931,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-macros"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=0020cf2e8360fbed7f6284f2f4059d0b9155b236#0020cf2e8360fbed7f6284f2f4059d0b9155b236"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2260,6 +2271,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-xid"

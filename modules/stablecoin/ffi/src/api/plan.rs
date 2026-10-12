@@ -1,6 +1,6 @@
 use borsh::from_slice;
-use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::account::AccountId;
+use clock_core::{clock_account_id, ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
+use lee_core::account::{AccountId, ShardData};
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
@@ -13,32 +13,42 @@ use twap_oracle_core::OraclePriceAccount;
 use super::{
     parse_stablecoin_program_id, InitializeProgramPlanRequest, StablecoinApiError, StablecoinResult,
 };
-use crate::account::{account_id_from_hex, account_id_hex, decode_account, AccountRead};
+use crate::account::{
+    account_id_from_hex, account_id_hex, decode_shard, AccountRead, AccountReadError,
+};
 
 pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> StablecoinResult {
     let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
     let admin = parse_account_id(&request.admin_id)?;
     let freeze_authority = parse_account_id(&request.freeze_authority_id)?;
+    let token_program_id = parse_account_id(&request.token_program_id)?;
+    let oracle_program_id = parse_account_id(&request.market_price_oracle_program_id)?;
 
-    let (collateral_definition_id, collateral_definition) =
-        required_account(&request.collateral_definition)?;
-    let collateral = TokenDefinition::try_from(&collateral_definition.data)
+    let (collateral_definition_id, collateral_shard) =
+        required_shard(&request.collateral_definition, token_program_id)?;
+    let collateral = TokenDefinition::try_from(&collateral_shard)
         .map_err(|_| StablecoinApiError::new("invalid_collateral_definition"))?;
     if !matches!(collateral, TokenDefinition::Fungible { .. }) {
         return Err(StablecoinApiError::new("invalid_collateral_definition"));
     }
 
-    let (market_price_oracle_id, market_price_oracle) =
-        required_account(&request.market_price_oracle)?;
-    let oracle = OraclePriceAccount::try_from(&market_price_oracle.data)
+    let (market_price_oracle_id, oracle_shard) =
+        required_shard(&request.market_price_oracle, oracle_program_id)?;
+    let oracle = OraclePriceAccount::try_from(&oracle_shard)
         .map_err(|_| StablecoinApiError::new("invalid_market_price_oracle"))?;
 
-    let (clock_id, clock) = required_account(&request.clock)?;
-    if clock_id != CLOCK_01_PROGRAM_ACCOUNT_ID
-        || from_slice::<ClockAccountData>(clock.data.as_ref()).is_err()
-    {
+    // The clock is read for its timestamp, not just validated: `now` is a declared
+    // instruction field in v0.3.0, and the guest pins it against this very shard
+    // with its `CheckClock` guard. So the client-side read is what makes the
+    // declaration, and the guard is what makes it true.
+    let (clock_id, clock_shard) = required_shard(&request.clock, clock_account_id())?;
+    let Ok(clock) = from_slice::<ClockAccountData>(clock_shard.as_ref()) else {
+        return Err(StablecoinApiError::new("invalid_clock"));
+    };
+    if clock_id != CLOCK_01_PROGRAM_ACCOUNT_ID {
         return Err(StablecoinApiError::new("invalid_clock"));
     }
+    let now = clock.timestamp;
 
     let stablecoin_definition_id = compute_stablecoin_definition_pda(program_id);
     if oracle.base_asset != stablecoin_definition_id
@@ -73,6 +83,7 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
         maximum_oracle_price_age_milliseconds,
         initial_redemption_price,
         stablecoin_name: request.stablecoin_name,
+        now,
     };
 
     plan_response(
@@ -88,15 +99,43 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
             market_price_oracle_id,
             clock_id,
         ],
+        // Which program's shard each slot selects. Unlike a Token instruction,
+        // this one spans four programs, and three of the entries are load-bearing
+        // rather than incidental: `collateral_definition`'s and
+        // `market_price_oracle`'s are the values `initialize_program` *records* as
+        // the protocol's bindings, and the clock's is what makes the timestamp the
+        // real one rather than bytes a caller authored at that address.
+        //
+        // The stablecoin definition and its master holding are the Token Program's
+        // because that is who writes them -- through the chained
+        // `NewFungibleDefinition` -- even though this program declares the slots.
+        [
+            program_id,
+            program_id,
+            program_id,
+            program_id,
+            token_program_id,
+            token_program_id,
+            token_program_id,
+            oracle_program_id,
+            clock_account_id(),
+        ],
         [true, false, false, false, false, false, false, false, false],
         instruction,
     )
 }
 
-fn required_account(
+/// One program's shard of an account read, required to be present.
+fn required_shard(
     read: &AccountRead,
-) -> Result<(AccountId, lee_core::account::Account), StablecoinApiError> {
-    decode_account(read).map_err(|_| StablecoinApiError::new("account_read_failed"))
+    program_account_id: AccountId,
+) -> Result<(AccountId, ShardData), StablecoinApiError> {
+    decode_shard(read, program_account_id).map_err(|error| match error {
+        AccountReadError::Failed | AccountReadError::Malformed => {
+            StablecoinApiError::new("account_read_failed")
+        }
+        AccountReadError::NoShard => StablecoinApiError::new("program_shard_missing"),
+    })
 }
 
 fn parse_account_id(value: &str) -> Result<AccountId, StablecoinApiError> {
@@ -175,9 +214,16 @@ fn parse_i128(value: &Value) -> Result<i128, StablecoinApiError> {
     }
 }
 
+/// Builds the plan envelope the module's C++ hands to the wallet.
+///
+/// `programAccountIds` is new in v0.3.0: a transaction names *shards*, not
+/// accounts, so every slot carries the program whose shard it selects alongside
+/// its address. It travels as a parallel array because `signingRequirements`
+/// already does, and the three stay index-aligned.
 fn plan_response(
     program_id: AccountId,
     account_ids: [AccountId; 9],
+    program_account_ids: [AccountId; 9],
     signing_requirements: [bool; 9],
     instruction: Instruction,
 ) -> StablecoinResult {
@@ -188,6 +234,10 @@ fn plan_response(
     Ok(json!({
         "programId": account_id_hex(program_id),
         "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
+        "programAccountIds": program_account_ids
+            .into_iter()
+            .map(account_id_hex)
+            .collect::<Vec<_>>(),
         "signingRequirements": signing_requirements,
         "instruction": instruction,
     }))

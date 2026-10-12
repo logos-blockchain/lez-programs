@@ -1,7 +1,8 @@
-use lee_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::account::{AccountId, ShardData};
 use serde_json::{json, Value};
 use token_core::{
-    Instruction, MetadataStandard, NewTokenDefinition, TokenDefinition, TokenHolding, TokenMetadata,
+    Instruction, MetadataStandard, NewTokenDefinition, TokenDefinition, TokenHolding, TokenKind,
+    TokenMetadata,
 };
 
 use super::{
@@ -15,18 +16,9 @@ use super::{
     PrintNftPlanRequest, SetAuthorityPlanRequest, SetAuthorityWithAuthorityPlanRequest,
     TransferPlanRequest,
 };
-use crate::account::{account_id_hex, account_read};
+use crate::account::{account_id_hex, account_read, AccountRead};
 
 const TOKEN_PROGRAM_ID: AccountId = AccountId::new([0x11_u8; 32]);
-
-fn account(owner: AccountId, data: Data) -> Account {
-    Account {
-        program_owner: owner,
-        balance: 0,
-        data,
-        nonce: Nonce(0),
-    }
-}
 
 fn definition_id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
@@ -70,6 +62,12 @@ fn assert_plan<const N: usize>(
         plan["accountIds"],
         json!(Vec::from(expected_account_ids.clone()))
     );
+    // Every Token slot selects the Token Program's own shard, including the
+    // authority slots no effect is ever emitted on.
+    assert_eq!(
+        plan["programAccountIds"],
+        json!(vec![token_program_id_hex(); N])
+    );
     assert_eq!(
         plan["signingRequirements"],
         json!(Vec::from(expected_signers))
@@ -86,7 +84,8 @@ fn decode_definition_request(definition: TokenDefinition) -> DecodeDefinitionReq
         token_program_id: token_program_id_hex(),
         definition: account_read(
             definition_id(1),
-            &account(TOKEN_PROGRAM_ID, Data::from(&definition)),
+            TOKEN_PROGRAM_ID,
+            &ShardData::from(&definition),
         ),
     }
 }
@@ -96,18 +95,20 @@ fn definition_read_from_bytes(seed: u8, bytes: Vec<u8>) -> DecodeDefinitionReque
         token_program_id: token_program_id_hex(),
         definition: account_read(
             definition_id(seed),
-            &account(TOKEN_PROGRAM_ID, ok(Data::try_from(bytes))),
+            TOKEN_PROGRAM_ID,
+            &ok(ShardData::try_from(bytes)),
         ),
     }
 }
 
-fn transfer_request(amount_raw: Value, recipient_is_fresh: bool) -> TransferPlanRequest {
+fn transfer_request(amount_raw: Value) -> TransferPlanRequest {
     TransferPlanRequest {
         token_program_id: token_program_id_hex(),
         sender_holding_id: id_hex(80),
         recipient_holding_id: id_hex(81),
+        definition_id: id_hex(1),
+        kind: String::from("fungible"),
         amount_raw,
-        recipient_is_fresh,
     }
 }
 
@@ -173,13 +174,11 @@ fn holding_decode_reports_all_variants_and_ownership_states() {
         token_program_id: token_program_id_hex(),
         holding: account_read(
             definition_id(5),
-            &account(
-                TOKEN_PROGRAM_ID,
-                Data::from(&TokenHolding::Fungible {
-                    definition_id: definition,
-                    balance: u128::MAX,
-                }),
-            ),
+            TOKEN_PROGRAM_ID,
+            &ShardData::from(&TokenHolding::Fungible {
+                definition_id: definition,
+                balance: u128::MAX,
+            }),
         ),
     }));
     assert_eq!(fungible["accountType"], "holding");
@@ -191,13 +190,11 @@ fn holding_decode_reports_all_variants_and_ownership_states() {
         token_program_id: token_program_id_hex(),
         holding: account_read(
             definition_id(6),
-            &account(
-                TOKEN_PROGRAM_ID,
-                Data::from(&TokenHolding::NftMaster {
-                    definition_id: definition,
-                    print_balance: 7,
-                }),
-            ),
+            TOKEN_PROGRAM_ID,
+            &ShardData::from(&TokenHolding::NftMaster {
+                definition_id: definition,
+                print_balance: 7,
+            }),
         ),
     }));
     assert_eq!(master["kind"], "nftMaster");
@@ -208,13 +205,11 @@ fn holding_decode_reports_all_variants_and_ownership_states() {
             token_program_id: token_program_id_hex(),
             holding: account_read(
                 definition_id(account_seed),
-                &account(
-                    TOKEN_PROGRAM_ID,
-                    Data::from(&TokenHolding::NftPrintedCopy {
-                        definition_id: definition,
-                        owned,
-                    }),
-                ),
+                TOKEN_PROGRAM_ID,
+                &ShardData::from(&TokenHolding::NftPrintedCopy {
+                    definition_id: definition,
+                    owned,
+                }),
             ),
         }));
         assert_eq!(copy["kind"], "nftPrintedCopy");
@@ -233,16 +228,14 @@ fn metadata_decode_reports_both_standards_and_exact_u64() {
             token_program_id: token_program_id_hex(),
             metadata: account_read(
                 definition_id(account_seed),
-                &account(
-                    TOKEN_PROGRAM_ID,
-                    Data::from(&TokenMetadata {
-                        definition_id: definition,
-                        standard,
-                        uri: String::from("ipfs://hash"),
-                        creators: String::from("alice,bob"),
-                        primary_sale_date,
-                    }),
-                ),
+                TOKEN_PROGRAM_ID,
+                &ShardData::from(&TokenMetadata {
+                    definition_id: definition,
+                    standard,
+                    uri: String::from("ipfs://hash"),
+                    creators: String::from("alice,bob"),
+                    primary_sale_date,
+                }),
             ),
         }));
         assert_eq!(value["accountType"], "metadata");
@@ -261,7 +254,7 @@ fn definition_decode_rejects_malformed_truncated_trailing_and_wrong_type_data() 
         metadata_id: None,
         authority: None,
     };
-    let valid = Data::from(&definition).as_ref().to_vec();
+    let valid = ShardData::from(&definition).as_ref().to_vec();
 
     let mut truncated = valid.clone();
     assert!(truncated.pop().is_some());
@@ -288,7 +281,7 @@ fn definition_decode_rejects_malformed_truncated_trailing_and_wrong_type_data() 
     assert_error(
         decode_definition(definition_read_from_bytes(
             17,
-            Data::from(&holding).as_ref().to_vec(),
+            ShardData::from(&holding).as_ref().to_vec(),
         )),
         "invalid_definition_data",
     );
@@ -301,23 +294,24 @@ fn discovery_requires_one_exact_account_type_match() {
         token_program_id: token_program_id_hex(),
         account: account_read(
             definition_id(19),
-            &account(
-                TOKEN_PROGRAM_ID,
-                Data::from(&TokenHolding::Fungible {
-                    definition_id: definition,
-                    balance: 1,
-                }),
-            ),
+            TOKEN_PROGRAM_ID,
+            &ShardData::from(&TokenHolding::Fungible {
+                definition_id: definition,
+                balance: 1,
+            }),
         ),
     }));
     assert_eq!(value["accountType"], "holding");
 
+    // Bytes that decode as none of the three types. An *empty* shard is a
+    // different answer -- see `an_empty_token_shard_reports_no_token_state`.
     assert_error(
         decode_account(DecodeAccountRequest {
             token_program_id: token_program_id_hex(),
             account: account_read(
                 definition_id(20),
-                &account(TOKEN_PROGRAM_ID, Data::default()),
+                TOKEN_PROGRAM_ID,
+                &ok(ShardData::try_from(vec![0xFF, 0xFF, 0xFF, 0xFF])),
             ),
         }),
         "invalid_account_data",
@@ -336,7 +330,8 @@ fn discovery_requires_one_exact_account_type_match() {
             token_program_id: token_program_id_hex(),
             account: account_read(
                 definition_id(21),
-                &account(TOKEN_PROGRAM_ID, ok(Data::try_from(ambiguous))),
+                TOKEN_PROGRAM_ID,
+                &ok(ShardData::try_from(ambiguous)),
             ),
         }),
         "ambiguous_account_type",
@@ -344,21 +339,19 @@ fn discovery_requires_one_exact_account_type_match() {
 }
 
 #[test]
-fn decode_rejects_wrong_program_owner_failed_reads_and_bad_identifiers() {
+fn decode_rejects_another_programs_shard_failed_reads_and_bad_identifiers() {
     assert_error(
         decode_definition(DecodeDefinitionRequest {
             token_program_id: token_program_id_hex(),
             definition: account_read(
                 definition_id(22),
-                &account(
-                    AccountId::new([0x22_u8; 32]),
-                    Data::from(&TokenDefinition::Fungible {
-                        name: String::from("Wrong"),
-                        total_supply: 1,
-                        metadata_id: None,
-                        authority: None,
-                    }),
-                ),
+                AccountId::new([0x22_u8; 32]),
+                &ShardData::from(&TokenDefinition::Fungible {
+                    name: String::from("Wrong"),
+                    total_supply: 1,
+                    metadata_id: None,
+                    authority: None,
+                }),
             ),
         }),
         "token_program_mismatch",
@@ -387,6 +380,24 @@ fn decode_rejects_wrong_program_owner_failed_reads_and_bad_identifiers() {
         }),
         "bad_request",
     );
+}
+
+/// A shard is keyed by the program that wrote it, so "the Token Program stored
+/// nothing at this address" is what v0.2.5's `program_owner != token_program_id`
+/// became. An empty shard and an absent one are the same answer: the chain
+/// removes a shard when a program writes it empty, so there is nothing to tell
+/// apart.
+#[test]
+fn an_empty_token_shard_reports_no_token_state() {
+    for shard in [ShardData::default(), ShardData::empty()] {
+        assert_error(
+            decode_holding(DecodeHoldingRequest {
+                token_program_id: token_program_id_hex(),
+                holding: account_read(definition_id(25), TOKEN_PROGRAM_ID, &shard),
+            }),
+            "token_program_mismatch",
+        );
+    }
 }
 
 #[test]
@@ -546,70 +557,91 @@ fn initialize_transfer_and_burn_plans_round_trip_exact_contracts() {
         token_program_id: token_program_id_hex(),
         definition_id: id_hex(38),
         holding_target_id: id_hex(39),
+        kind: String::from("fungible"),
     }));
-    let instruction = assert_plan(&initialize, [id_hex(38), id_hex(39)], [false, true]);
-    assert!(matches!(instruction, Instruction::InitializeAccount));
+    // The target does not sign: writing a shard at an address claims nothing, so
+    // there is no squatting left to guard against.
+    let instruction = assert_plan(&initialize, [id_hex(38), id_hex(39)], [false, false]);
+    let Instruction::InitializeAccount { kind } = instruction else {
+        panic!("expected InitializeAccount");
+    };
+    assert_eq!(kind, TokenKind::Fungible);
 
-    for (fresh, signers) in [(false, [true, false]), (true, [true, true])] {
-        let transfer = ok(transfer_plan(TransferPlanRequest {
-            token_program_id: token_program_id_hex(),
-            sender_holding_id: id_hex(40),
-            recipient_holding_id: id_hex(41),
-            amount_raw: json!("9"),
-            recipient_is_fresh: fresh,
-        }));
-        let instruction = assert_plan(&transfer, [id_hex(40), id_hex(41)], signers);
-        let Instruction::Transfer { amount_to_transfer } = instruction else {
-            panic!("expected Transfer");
-        };
-        assert_eq!(amount_to_transfer, 9);
-    }
+    let transfer = ok(transfer_plan(TransferPlanRequest {
+        token_program_id: token_program_id_hex(),
+        sender_holding_id: id_hex(40),
+        recipient_holding_id: id_hex(41),
+        definition_id: id_hex(1),
+        kind: String::from("fungible"),
+        amount_raw: json!("9"),
+    }));
+    let instruction = assert_plan(&transfer, [id_hex(40), id_hex(41)], [true, false]);
+    let Instruction::Transfer {
+        amount_to_transfer,
+        descriptor,
+    } = instruction
+    else {
+        panic!("expected Transfer");
+    };
+    assert_eq!(amount_to_transfer, 9);
+    // The descriptor is the declare-and-pin device: neither holding's apply sees
+    // the other's shard, so this is what makes "the same token moved" checkable.
+    assert_eq!(descriptor.definition_id, definition_id(1));
+    assert_eq!(descriptor.kind, TokenKind::Fungible);
 
     let burn = ok(burn_plan(BurnPlanRequest {
         token_program_id: token_program_id_hex(),
         definition_id: id_hex(42),
         holding_id: id_hex(43),
+        kind: String::from("fungible"),
         amount_raw: json!("11"),
     }));
     let instruction = assert_plan(&burn, [id_hex(42), id_hex(43)], [false, true]);
-    let Instruction::Burn { amount_to_burn } = instruction else {
+    let Instruction::Burn {
+        amount_to_burn,
+        kind,
+    } = instruction
+    else {
         panic!("expected Burn");
     };
     assert_eq!(amount_to_burn, 11);
+    assert_eq!(kind, TokenKind::Fungible);
 }
 
 #[test]
-fn mint_plans_cover_initialized_and_fresh_holding_signers() {
-    for (fresh, signers) in [(false, [true, false]), (true, [true, true])] {
-        let mint = ok(mint_plan(MintPlanRequest {
-            token_program_id: token_program_id_hex(),
-            definition_id: id_hex(44),
-            holding_id: id_hex(45),
-            amount_raw: json!("13"),
-            holding_is_fresh: fresh,
-        }));
-        let instruction = assert_plan(&mint, [id_hex(44), id_hex(45)], signers);
-        let Instruction::Mint { amount_to_mint } = instruction else {
-            panic!("expected Mint");
-        };
-        assert_eq!(amount_to_mint, 13);
-    }
+/// The mint destination never signs in either mode. The `holdingIsFresh` flag
+/// these cases used to vary is gone with address claiming: the guest declares the
+/// holding `#[account(mut)]` with no `signer`, so the signer set is a property of
+/// the instruction rather than of the caller's view of the destination.
+fn mint_plans_never_require_the_destination_to_sign() {
+    let mint = ok(mint_plan(MintPlanRequest {
+        token_program_id: token_program_id_hex(),
+        definition_id: id_hex(44),
+        holding_id: id_hex(45),
+        amount_raw: json!("13"),
+    }));
+    let instruction = assert_plan(&mint, [id_hex(44), id_hex(45)], [true, false]);
+    let Instruction::Mint { amount_to_mint } = instruction else {
+        panic!("expected Mint");
+    };
+    assert_eq!(amount_to_mint, 13);
 
-    for (fresh, signers) in [(false, [false, false, true]), (true, [false, true, true])] {
-        let mint = ok(mint_with_authority_plan(MintWithAuthorityPlanRequest {
-            token_program_id: token_program_id_hex(),
-            definition_id: id_hex(46),
-            holding_id: id_hex(47),
-            authority_id: id_hex(48),
-            amount_raw: json!("17"),
-            holding_is_fresh: fresh,
-        }));
-        let instruction = assert_plan(&mint, [id_hex(46), id_hex(47), id_hex(48)], signers);
-        let Instruction::MintWithAuthority { amount_to_mint } = instruction else {
-            panic!("expected MintWithAuthority");
-        };
-        assert_eq!(amount_to_mint, 17);
-    }
+    let mint = ok(mint_with_authority_plan(MintWithAuthorityPlanRequest {
+        token_program_id: token_program_id_hex(),
+        definition_id: id_hex(46),
+        holding_id: id_hex(47),
+        authority_id: id_hex(48),
+        amount_raw: json!("17"),
+    }));
+    let instruction = assert_plan(
+        &mint,
+        [id_hex(46), id_hex(47), id_hex(48)],
+        [false, false, true],
+    );
+    let Instruction::MintWithAuthority { amount_to_mint } = instruction else {
+        panic!("expected MintWithAuthority");
+    };
+    assert_eq!(amount_to_mint, 17);
 }
 
 #[test]
@@ -660,9 +692,16 @@ fn authority_and_print_plans_round_trip_exact_contracts() {
         token_program_id: token_program_id_hex(),
         master_holding_id: id_hex(54),
         printed_holding_target_id: id_hex(55),
+        definition_id: id_hex(60),
     }));
-    let instruction = assert_plan(&print, [id_hex(54), id_hex(55)], [true, true]);
-    assert!(matches!(instruction, Instruction::PrintNft));
+    let instruction = assert_plan(&print, [id_hex(54), id_hex(55)], [true, false]);
+    let Instruction::PrintNft {
+        definition_id: printed_from,
+    } = instruction
+    else {
+        panic!("expected PrintNft");
+    };
+    assert_eq!(printed_from, definition_id(60));
 }
 
 #[test]
@@ -671,6 +710,7 @@ fn tail_variants_use_token_core_enum_order() {
         token_program_id: token_program_id_hex(),
         master_holding_id: id_hex(56),
         printed_holding_target_id: id_hex(57),
+        definition_id: id_hex(60),
     }));
     let set = ok(set_authority_plan(SetAuthorityPlanRequest {
         token_program_id: token_program_id_hex(),
@@ -702,9 +742,12 @@ fn amount_parser_accepts_exact_boundaries_and_cli_quote_wrapper() {
         (json!("\"42\""), 42_u128),
         (json!("\" 42 \""), 42_u128),
     ] {
-        let plan = ok(transfer_plan(transfer_request(raw, false)));
+        let plan = ok(transfer_plan(transfer_request(raw)));
         let instruction = assert_plan(&plan, [id_hex(80), id_hex(81)], [true, false]);
-        let Instruction::Transfer { amount_to_transfer } = instruction else {
+        let Instruction::Transfer {
+            amount_to_transfer, ..
+        } = instruction
+        else {
             panic!("expected Transfer");
         };
         assert_eq!(amount_to_transfer, expected);
@@ -724,10 +767,7 @@ fn amount_parser_rejects_overflow_negative_float_exponent_letters_and_empty() {
         json!(""),
         json!("\"\""),
     ] {
-        assert_error(
-            transfer_plan(transfer_request(invalid, false)),
-            "bad_amount",
-        );
+        assert_error(transfer_plan(transfer_request(invalid)), "bad_amount");
     }
 }
 
@@ -766,7 +806,6 @@ fn planner_validation_rejects_invalid_authorities_standard_and_account_ids() {
             holding_id: id_hex(65),
             authority_id: "00".repeat(32),
             amount_raw: json!(1),
-            holding_is_fresh: false,
         }),
         "invalid_authority",
     );
@@ -791,7 +830,64 @@ fn planner_validation_rejects_invalid_authorities_standard_and_account_ids() {
             token_program_id: token_program_id_hex(),
             definition_id: String::from("not-an-id"),
             holding_target_id: id_hex(69),
+            kind: String::from("fungible"),
         }),
         "invalid_account_id",
     );
+}
+
+/// The envelope the module's C++ builds, parsed from JSON rather than constructed.
+///
+/// Every other test here builds `AccountRead` as a struct, so nothing checks that
+/// the two halves of the seam agree on field names -- and they are in different
+/// languages, with no shared schema. `readPublicAccount` in
+/// `modules/token/src/token_module_impl.cpp` emits exactly this: the module's own
+/// `id`/`status` envelope around an object shaped like `lee_core::Account`, with
+/// `lez_core`'s array of `{program, data}` already re-keyed into a map.
+#[test]
+fn the_account_read_the_module_emits_deserializes_and_decodes() {
+    let holding = TokenHolding::Fungible {
+        definition_id: AccountId::new([0xAA; 32]),
+        balance: 7,
+    };
+    let read: AccountRead = serde_json::from_value(json!({
+        "id": account_id_hex(AccountId::new([0x01; 32])),
+        "status": "ok",
+        "account": {
+            "nonce": "00000000000000000000000000000000",
+            "data": {
+                "shards": {
+                    account_id_hex(TOKEN_PROGRAM_ID): hex::encode(
+                        ShardData::from(&holding).as_ref(),
+                    ),
+                    // A foreign shard at the same address must not disturb the
+                    // decode: the whole-account read returns every shard anyone
+                    // wrote here.
+                    account_id_hex(AccountId::new([0xEE; 32])): "ff",
+                }
+            }
+        }
+    }))
+    .expect("the module's account-read JSON must deserialize");
+
+    let decoded = ok(decode_holding(DecodeHoldingRequest {
+        token_program_id: token_program_id_hex(),
+        holding: read,
+    }));
+    assert_eq!(decoded["accountType"], "holding");
+    assert_eq!(decoded["balanceRaw"], "7");
+
+    // The same envelope with the v0.2.5 flat account inside no longer parses, so
+    // an unbumped lez_core fails loudly rather than decoding as an empty account.
+    assert!(serde_json::from_value::<AccountRead>(json!({
+        "id": account_id_hex(AccountId::new([0x01; 32])),
+        "status": "ok",
+        "account": {
+            "program_owner": account_id_hex(TOKEN_PROGRAM_ID),
+            "balance": "00000000000000000000000000000000",
+            "nonce": "00000000000000000000000000000000",
+            "data": "00",
+        }
+    }))
+    .is_err());
 }

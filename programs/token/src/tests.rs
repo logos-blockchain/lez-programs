@@ -1,1753 +1,850 @@
 #![cfg(test)]
-#![expect(
-    clippy::arithmetic_side_effects,
-    reason = "test fixtures use fixed values to lock boundary behavior"
-)]
 
-use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
+//! Unit tests for the token program's two phases.
+//!
+//! The plan halves here are the small assertion helpers; effect *emission* lives
+//! in the guest, where the macro-generated `Effect` enum exists, and is covered
+//! end-to-end by `programs/integration_tests`. What this file covers is every
+//! apply half — the state transitions — plus the plan asserts, and the
+//! composition of the two applies an instruction emits.
+//!
+//! Three v0.2.5 tests have no successor here, and deliberately so:
+//!
+//! * `test_{token_initialize_account,mint,set_authority}_rejects_foreign_owned_definition` asserted
+//!   `program_owner == token_program_id`. There is no program-level check to test any more: a shard
+//!   is keyed by the program that wrote it, and declaring an effect on one asserts it is ours. The
+//!   assertion moved into SPEL (`spel-framework-core`'s `effect`/`guard` builders) and is tested
+//!   there.
+//! * `test_print_nft_print_account_must_be_authorized` asserted the *printed copy* authorized its
+//!   own creation. Writing an empty shard denies that address to nobody under v0.3.0, so requiring
+//!   authorization bought nothing and is gone. The copy is still guarded: `create` refuses a
+//!   non-empty shard.
+
+use std::collections::HashMap;
+
+use lee_core::{
+    account::{AccountId, ShardData},
+    program::AccountMeta,
+};
 use token_core::{
-    MetadataStandard, NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding,
+    MetadataStandard, NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenDescriptor,
+    TokenHolding, TokenKind, TokenMetadata,
 };
 
-use crate::{
-    burn::burn,
-    initialize::initialize_account,
-    mint::{mint, mint_with_authority},
-    new_definition::{new_definition_with_metadata, new_fungible_definition},
-    print_nft::print_nft,
-    set_authority::{set_authority, set_authority_with_authority},
-    transfer::transfer,
-    StateDiffExt,
-};
-
-// TODO: Move tests to a proper modules like burn, mint, transfer, etc, so that they are more
-// unit-test.
-
-struct BalanceForTests;
-struct IdForTests;
-
-struct AccountForTests;
+use crate::{burn, initialize, mint, new_definition, print_nft, set_authority, transfer};
 
 const TOKEN_PROGRAM_ID: AccountId = AccountId::new([5u8; 32]);
-const FOREIGN_TOKEN_PROGRAM_ID: AccountId = AccountId::new([6u8; 32]);
+const DEFINITION_ID: AccountId = AccountId::new([15u8; 32]);
+const OTHER_DEFINITION_ID: AccountId = AccountId::new([16u8; 32]);
+const HOLDING_ID: AccountId = AccountId::new([17u8; 32]);
+const HOLDING_ID_2: AccountId = AccountId::new([42u8; 32]);
+const METADATA_ID: AccountId = AccountId::new([43u8; 32]);
+const AUTHORITY_ID: AccountId = AccountId::new([44u8; 32]);
 
-impl AccountForTests {
-    fn definition_account_auth() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: BalanceForTests::init_supply(),
-                    metadata_id: None,
-                    authority: Some(AccountId::new([15_u8; 32])),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
+const INIT_SUPPLY: u128 = 100_000;
+const HOLDING_BALANCE: u128 = 1_000;
+const TRANSFER_AMOUNT: u128 = 5_000;
+const PRINTABLE_COPIES: u128 = 10;
 
-    fn definition_account_foreign_owner() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: FOREIGN_TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: BalanceForTests::init_supply(),
-                    metadata_id: None,
-                    authority: None,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
+const FUNGIBLE: TokenDescriptor = TokenDescriptor {
+    definition_id: DEFINITION_ID,
+    kind: TokenKind::Fungible,
+};
+const MASTER: TokenDescriptor = TokenDescriptor {
+    definition_id: DEFINITION_ID,
+    kind: TokenKind::NftMaster,
+};
+const PRINTED: TokenDescriptor = TokenDescriptor {
+    definition_id: DEFINITION_ID,
+    kind: TokenKind::NftPrintedCopy,
+};
+const OTHER_FUNGIBLE: TokenDescriptor = TokenDescriptor {
+    definition_id: OTHER_DEFINITION_ID,
+    kind: TokenKind::Fungible,
+};
 
-    fn definition_account_without_auth() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: BalanceForTests::init_supply(),
-                    metadata_id: None,
-                    authority: None,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: false,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
+// ── fixtures ────────────────────────────────────────────────────────────────
 
-    fn holding_different_definition() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id_diff(),
-                    balance: BalanceForTests::holding_balance(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    fn holding_same_definition_with_authorization() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::holding_balance(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    fn holding_same_definition_without_authorization() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::holding_balance(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: false,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    fn holding_same_definition_without_authorization_overflow() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::init_supply(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: false,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    fn definition_account_post_burn() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: BalanceForTests::init_supply_burned(),
-                    metadata_id: None,
-                    authority: Some(AccountId::new([15_u8; 32])),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn holding_account_post_burn() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::holding_balance_burned(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: false,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    fn holding_account_uninit() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: false,
-            account_id: IdForTests::holding_id_2(),
-        }
-    }
-
-    fn holding_account_uninit_auth() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: true,
-            account_id: IdForTests::holding_id_2(),
-        }
-    }
-
-    /// Freshly claimed by the program's own write: v0.2.5 makes the writing program the
-    /// owner of a default-owned account, so that ownership is part of the post-state.
-    fn init_mint() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::mint_success(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: false,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    fn holding_account_same_definition_mint() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::holding_balance_mint(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn definition_account_mint() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: BalanceForTests::init_supply_mint(),
-                    metadata_id: None,
-                    authority: Some(AccountId::new([15_u8; 32])),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn holding_same_definition_with_authorization_and_large_balance() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::mint_overflow(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn definition_account_with_authorization_nonfungible() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenDefinition::NonFungible {
-                    name: String::from("test"),
-                    printable_supply: BalanceForTests::printable_copies(),
-                    metadata_id: AccountId::new([0; 32]),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn definition_account_uninit() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: false,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn definition_account_uninit_auth() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    fn metadata_account_uninit_auth() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: true,
-            account_id: AccountId::new([19; 32]),
-        }
-    }
-
-    fn holding_account_init() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::init_supply(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    /// The definition account as the write leaves it. Under v0.2.5 the data write is
-    /// itself the claim, so the token program is already its owner here.
-    fn definition_account_claimed() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: BalanceForTests::init_supply(),
-                    metadata_id: None,
-                    authority: None,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::pool_definition_id(),
-        }
-    }
-
-    /// The holding account as the write leaves it — claimed by the write, as above.
-    fn holding_account_claimed() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::init_supply(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    fn holding_account2_init() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::init_supply(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id_2(),
-        }
-    }
-
-    fn holding_account2_init_post_transfer() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::recipient_post_transfer(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id_2(),
-        }
-    }
-
-    fn holding_account_init_post_transfer() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: IdForTests::pool_definition_id(),
-                    balance: BalanceForTests::sender_post_transfer(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    fn holding_account_master_nft() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::NftMaster {
-                    definition_id: IdForTests::pool_definition_id(),
-                    print_balance: BalanceForTests::printable_copies(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    fn holding_account_master_nft_insufficient_balance() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::NftMaster {
-                    definition_id: IdForTests::pool_definition_id(),
-                    print_balance: 1,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    fn holding_account_master_nft_after_print() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::NftMaster {
-                    definition_id: IdForTests::pool_definition_id(),
-                    print_balance: BalanceForTests::printable_copies() - 1,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    /// Freshly claimed by the program's own write: v0.2.5 makes the writing program the
-    /// owner of a default-owned account, so that ownership is part of the post-state.
-    fn holding_account_printed_nft() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::NftPrintedCopy {
-                    definition_id: IdForTests::pool_definition_id(),
-                    owned: true,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: false,
-            account_id: IdForTests::holding_id(),
-        }
-    }
-
-    /// Freshly claimed by the program's own write: v0.2.5 makes the writing program the
-    /// owner of a default-owned account, so that ownership is part of the post-state.
-    fn holding_account_with_master_nft_transferred_to() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: TOKEN_PROGRAM_ID,
-                balance: 0u128,
-                data: Data::from(&TokenHolding::NftMaster {
-                    definition_id: IdForTests::pool_definition_id(),
-                    print_balance: BalanceForTests::printable_copies(),
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id_2(),
-        }
-    }
-
-    fn holding_account_master_nft_post_transfer() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0u128,
-                data: Data::from(&TokenHolding::NftMaster {
-                    definition_id: IdForTests::pool_definition_id(),
-                    print_balance: 0,
-                }),
-                nonce: Nonce(0),
-            },
-            is_authorized: true,
-            account_id: IdForTests::holding_id(),
-        }
+const fn fungible(balance: u128) -> TokenHolding {
+    TokenHolding::Fungible {
+        definition_id: DEFINITION_ID,
+        balance,
     }
 }
 
-impl BalanceForTests {
-    fn init_supply() -> u128 {
-        100_000
-    }
-
-    fn holding_balance() -> u128 {
-        1_000
-    }
-
-    fn init_supply_burned() -> u128 {
-        99_500
-    }
-
-    fn holding_balance_burned() -> u128 {
-        500
-    }
-
-    fn burn_success() -> u128 {
-        500
-    }
-
-    fn burn_insufficient() -> u128 {
-        1_500
-    }
-
-    fn mint_success() -> u128 {
-        50_000
-    }
-
-    fn holding_balance_mint() -> u128 {
-        51_000
-    }
-
-    fn mint_overflow() -> u128 {
-        u128::MAX - 40_000
-    }
-
-    fn init_supply_mint() -> u128 {
-        150_000
-    }
-
-    fn sender_post_transfer() -> u128 {
-        95_000
-    }
-
-    fn recipient_post_transfer() -> u128 {
-        105_000
-    }
-
-    fn transfer_amount() -> u128 {
-        5_000
-    }
-
-    fn printable_copies() -> u128 {
-        10
+const fn master(print_balance: u128) -> TokenHolding {
+    TokenHolding::NftMaster {
+        definition_id: DEFINITION_ID,
+        print_balance,
     }
 }
 
-impl IdForTests {
-    fn pool_definition_id() -> AccountId {
-        AccountId::new([15; 32])
-    }
-
-    fn pool_definition_id_diff() -> AccountId {
-        AccountId::new([16; 32])
-    }
-
-    fn holding_id() -> AccountId {
-        AccountId::new([17; 32])
-    }
-
-    fn holding_id_2() -> AccountId {
-        AccountId::new([42; 32])
+const fn printed(owned: bool) -> TokenHolding {
+    TokenHolding::NftPrintedCopy {
+        definition_id: DEFINITION_ID,
+        owned,
     }
 }
 
-#[should_panic(expected = "Definition target account must have default values")]
-#[test]
-fn test_new_definition_non_default_first_account_should_fail() {
-    let definition_account = AccountWithMetadata {
-        account: Account {
-            program_owner: FOREIGN_TOKEN_PROGRAM_ID,
-            ..Account::default()
-        },
-        is_authorized: true,
-        account_id: AccountId::new([1; 32]),
-    };
-    let holding_account = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: AccountId::new([2; 32]),
-    };
-    let _post_states = new_fungible_definition(
-        definition_account,
-        holding_account,
-        String::from("test"),
-        10,
-        None,
+fn fungible_definition(total_supply: u128, authority: Option<AccountId>) -> TokenDefinition {
+    TokenDefinition::Fungible {
+        name: "Token".to_owned(),
+        total_supply,
+        metadata_id: None,
+        authority,
+    }
+}
+
+fn non_fungible_definition(printable_supply: u128) -> TokenDefinition {
+    TokenDefinition::NonFungible {
+        name: "NFT".to_owned(),
+        printable_supply,
+        metadata_id: METADATA_ID,
+    }
+}
+
+fn new_metadata() -> NewTokenMetadata {
+    NewTokenMetadata {
+        standard: MetadataStandard::Simple,
+        uri: "ipfs://metadata".to_owned(),
+        creators: "creator".to_owned(),
+    }
+}
+
+/// An account slot as the plan phase sees it: an id, an authorization flag, and
+/// whose shard is named. No data — the plan has none.
+fn handle(account_id: AccountId, is_authorized: bool) -> AccountMeta {
+    AccountMeta::new(account_id, is_authorized, TOKEN_PROGRAM_ID)
+}
+
+fn holding_data(holding: &TokenHolding) -> ShardData {
+    ShardData::from(holding)
+}
+
+fn definition_data(definition: &TokenDefinition) -> ShardData {
+    ShardData::from(definition)
+}
+
+fn empty() -> ShardData {
+    ShardData::default()
+}
+
+fn as_holding(data: &ShardData) -> TokenHolding {
+    TokenHolding::try_from(data).expect("apply wrote a holding")
+}
+
+fn as_definition(data: &ShardData) -> TokenDefinition {
+    TokenDefinition::try_from(data).expect("apply wrote a definition")
+}
+
+/// Run a transfer's two applies the way the runtime would: in emission order,
+/// each against its own shard, accumulating into one state map.
+///
+/// This is what proves the two independent `assert_matches` calls add up to the
+/// cross-check the single pre-v0.3.0 function did directly.
+fn settle_transfer(
+    sender: (AccountId, ShardData),
+    recipient: (AccountId, ShardData),
+    descriptor: TokenDescriptor,
+    amount: u128,
+) -> HashMap<AccountId, ShardData> {
+    let mut state: HashMap<AccountId, ShardData> = HashMap::new();
+    state.insert(sender.0, transfer::withdraw(&sender.1, &descriptor, amount));
+    state.insert(
+        recipient.0,
+        transfer::deposit(&recipient.1, &descriptor, amount),
     );
+    state
 }
 
-#[should_panic(expected = "Holding target account must have default values")]
-#[test]
-fn test_new_definition_non_default_second_account_should_fail() {
-    let definition_account = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: AccountId::new([1; 32]),
-    };
-    let holding_account = AccountWithMetadata {
-        account: Account {
-            program_owner: FOREIGN_TOKEN_PROGRAM_ID,
-            ..Account::default()
-        },
-        is_authorized: true,
-        account_id: AccountId::new([2; 32]),
-    };
-    let _post_states = new_fungible_definition(
-        definition_account,
-        holding_account,
-        String::from("test"),
-        10,
-        None,
-    );
+fn settled(state: &HashMap<AccountId, ShardData>, account_id: AccountId) -> TokenHolding {
+    as_holding(state.get(&account_id).expect("the account was settled"))
 }
 
-#[should_panic(expected = "Definition target account must be authorized")]
-#[test]
-fn test_new_definition_requires_authorized_definition_target() {
-    let definition_account = AccountForTests::definition_account_uninit();
-    let holding_account = AccountForTests::holding_account_uninit_auth();
-    let _post_states = new_fungible_definition(
-        definition_account,
-        holding_account,
-        String::from("test"),
-        10,
-        None,
-    );
-}
-
-#[should_panic(expected = "Holding target account must be authorized")]
-#[test]
-fn test_new_definition_requires_authorized_holding_target() {
-    let definition_account = AccountForTests::definition_account_uninit_auth();
-    let holding_account = AccountForTests::holding_account_uninit();
-    let _post_states = new_fungible_definition(
-        definition_account,
-        holding_account,
-        String::from("test"),
-        10,
-        None,
-    );
-}
+// ── new definitions ─────────────────────────────────────────────────────────
 
 #[test]
-fn test_new_definition_with_valid_inputs_succeeds() {
-    let definition_account = AccountForTests::definition_account_uninit_auth();
-    let holding_account = AccountForTests::holding_account_uninit_auth();
-
-    let post_states = new_fungible_definition(
-        definition_account,
-        holding_account,
-        String::from("test"),
-        BalanceForTests::init_supply(),
-        None,
-    );
-
-    let [definition_account, holding_account] = post_states.try_into().unwrap();
-    assert_eq!(
-        definition_account.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::definition_account_claimed().account
+fn new_definition_with_valid_inputs_succeeds() {
+    let (definition, holding) = new_definition::fungible_records(
+        DEFINITION_ID,
+        "Token".to_owned(),
+        INIT_SUPPLY,
+        Some(AUTHORITY_ID),
     );
 
     assert_eq!(
-        holding_account.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::holding_account_claimed().account
+        as_definition(&new_definition::create(&empty(), definition)),
+        fungible_definition(INIT_SUPPLY, Some(AUTHORITY_ID))
+    );
+    assert_eq!(
+        as_holding(&new_definition::create(&empty(), holding)),
+        fungible(INIT_SUPPLY)
     );
 }
 
-#[should_panic(expected = "Sender and recipient definition id mismatch")]
 #[test]
-fn test_transfer_with_different_definition_ids_should_fail() {
-    let sender = AccountForTests::holding_same_definition_with_authorization();
-    let recipient = AccountForTests::holding_different_definition();
-    let _post_states = transfer(sender, recipient, 10);
+#[should_panic(expected = "Target account must not already hold data")]
+fn new_definition_refuses_a_non_empty_definition_target() {
+    let (definition, _) =
+        new_definition::fungible_records(DEFINITION_ID, "Token".to_owned(), INIT_SUPPLY, None);
+    // Formerly "Definition target account must have default values", asserted in
+    // the plan phase against a whole pre-state account. Emptiness is only visible
+    // to the apply half now.
+    let _ = new_definition::create(
+        &definition_data(&fungible_definition(INIT_SUPPLY, None)),
+        definition,
+    );
 }
 
-#[should_panic(expected = "Insufficient balance")]
 #[test]
-fn test_transfer_with_insufficient_balance_should_fail() {
-    let sender = AccountForTests::holding_same_definition_with_authorization();
-    let recipient = AccountForTests::holding_account_same_definition_mint();
-    // Attempt to transfer more than balance
-    let _post_states = transfer(sender, recipient, BalanceForTests::burn_insufficient());
+#[should_panic(expected = "Target account must not already hold data")]
+fn new_definition_refuses_a_non_empty_holding_target() {
+    let (_, holding) =
+        new_definition::fungible_records(DEFINITION_ID, "Token".to_owned(), INIT_SUPPLY, None);
+    let _ = new_definition::create(&holding_data(&fungible(HOLDING_BALANCE)), holding);
 }
 
+#[test]
+#[should_panic(expected = "Target account must be authorized to be created")]
+fn new_definition_requires_authorized_definition_target() {
+    new_definition::authorize_targets(&[&handle(DEFINITION_ID, false), &handle(HOLDING_ID, true)]);
+}
+
+#[test]
+#[should_panic(expected = "Target account must be authorized to be created")]
+fn new_definition_requires_authorized_holding_target() {
+    new_definition::authorize_targets(&[&handle(DEFINITION_ID, true), &handle(HOLDING_ID, false)]);
+}
+
+#[test]
+#[should_panic(expected = "Mint authority must be a valid non-zero account ID")]
+fn new_definition_rejects_an_all_zero_mint_authority() {
+    let _ = new_definition::fungible_records(
+        DEFINITION_ID,
+        "Token".to_owned(),
+        INIT_SUPPLY,
+        Some(AccountId::new([0u8; 32])),
+    );
+}
+
+#[test]
+fn new_definition_with_metadata_success() {
+    let (definition, holding, metadata) = new_definition::records_with_metadata(
+        DEFINITION_ID,
+        METADATA_ID,
+        NewTokenDefinition::Fungible {
+            name: "Token".to_owned(),
+            total_supply: INIT_SUPPLY,
+            mint_authority: None,
+        },
+        new_metadata(),
+    );
+
+    assert_eq!(
+        as_definition(&definition),
+        TokenDefinition::Fungible {
+            name: "Token".to_owned(),
+            total_supply: INIT_SUPPLY,
+            metadata_id: Some(METADATA_ID),
+            authority: None,
+        }
+    );
+    assert_eq!(as_holding(&holding), fungible(INIT_SUPPLY));
+    assert_eq!(
+        TokenMetadata::try_from(&metadata).expect("metadata decodes"),
+        TokenMetadata {
+            definition_id: DEFINITION_ID,
+            standard: MetadataStandard::Simple,
+            uri: "ipfs://metadata".to_owned(),
+            creators: "creator".to_owned(),
+            primary_sale_date: 0,
+        }
+    );
+}
+
+#[test]
+fn new_definition_with_metadata_creates_a_master_copy_for_a_non_fungible() {
+    let (definition, holding, _) = new_definition::records_with_metadata(
+        DEFINITION_ID,
+        METADATA_ID,
+        NewTokenDefinition::NonFungible {
+            name: "NFT".to_owned(),
+            printable_supply: PRINTABLE_COPIES,
+        },
+        new_metadata(),
+    );
+
+    assert_eq!(
+        as_definition(&definition),
+        non_fungible_definition(PRINTABLE_COPIES)
+    );
+    assert_eq!(as_holding(&holding), master(PRINTABLE_COPIES));
+}
+
+#[test]
+fn metadata_fungible_with_authority_is_mintable() {
+    let (definition, _, _) = new_definition::records_with_metadata(
+        DEFINITION_ID,
+        METADATA_ID,
+        NewTokenDefinition::Fungible {
+            name: "Token".to_owned(),
+            total_supply: INIT_SUPPLY,
+            mint_authority: Some(AUTHORITY_ID),
+        },
+        new_metadata(),
+    );
+
+    let minted = mint::mint_supply(&definition, 1, AUTHORITY_ID, true);
+    let TokenDefinition::Fungible { total_supply, .. } = as_definition(&minted) else {
+        panic!("expected a fungible definition");
+    };
+    assert_eq!(total_supply, INIT_SUPPLY + 1);
+}
+
+#[test]
+#[should_panic(expected = "Target account must be authorized to be created")]
+fn new_definition_with_metadata_requires_every_target_authorized() {
+    new_definition::authorize_targets(&[
+        &handle(DEFINITION_ID, true),
+        &handle(HOLDING_ID, true),
+        &handle(METADATA_ID, false),
+    ]);
+}
+
+// ── transfer ────────────────────────────────────────────────────────────────
+
+#[test]
+fn transfer_with_valid_inputs_succeeds() {
+    let state = settle_transfer(
+        (HOLDING_ID, holding_data(&fungible(INIT_SUPPLY))),
+        (HOLDING_ID_2, holding_data(&fungible(INIT_SUPPLY))),
+        FUNGIBLE,
+        TRANSFER_AMOUNT,
+    );
+
+    assert_eq!(
+        settled(&state, HOLDING_ID),
+        fungible(INIT_SUPPLY - TRANSFER_AMOUNT)
+    );
+    assert_eq!(
+        settled(&state, HOLDING_ID_2),
+        fungible(INIT_SUPPLY + TRANSFER_AMOUNT)
+    );
+}
+
+#[test]
 #[should_panic(expected = "Sender authorization is missing")]
-#[test]
-fn test_transfer_without_sender_authorization_should_fail() {
-    let sender = AccountForTests::holding_same_definition_without_authorization();
-    let recipient = AccountForTests::holding_account_uninit();
-    let _post_states = transfer(sender, recipient, 37);
+fn transfer_without_sender_authorization_should_fail() {
+    transfer::authorize(&handle(HOLDING_ID, false));
 }
 
 #[test]
-fn test_transfer_with_valid_inputs_succeeds() {
-    let sender = AccountForTests::holding_account_init();
-    let recipient = AccountForTests::holding_account2_init();
-    let post_states = transfer(sender, recipient, BalanceForTests::transfer_amount());
-    let [sender_post, recipient_post] = post_states.try_into().unwrap();
-
-    assert_eq!(
-        sender_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::holding_account_init_post_transfer().account
-    );
-    assert_eq!(
-        recipient_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::holding_account2_init_post_transfer().account
+#[should_panic(expected = "Insufficient balance")]
+fn transfer_with_insufficient_balance_should_fail() {
+    let _ = transfer::withdraw(
+        &holding_data(&fungible(HOLDING_BALANCE)),
+        &FUNGIBLE,
+        HOLDING_BALANCE + 1,
     );
 }
 
+/// Formerly `test_transfer_with_different_definition_ids_should_fail`, which
+/// relied on one function holding both holdings. Each side now checks itself
+/// against the declared descriptor, so a mismatch is caught on whichever side
+/// disagrees — here the recipient.
+#[test]
+#[should_panic(expected = "Mismatched Token Definition and Token Holding")]
+fn transfer_into_a_holding_of_another_definition_should_fail() {
+    let _ = transfer::deposit(
+        &holding_data(&fungible(HOLDING_BALANCE)),
+        &OTHER_FUNGIBLE,
+        TRANSFER_AMOUNT,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Mismatched Token Definition and Token Holding types")]
+fn transfer_with_a_descriptor_of_the_wrong_kind_should_fail() {
+    let _ = transfer::withdraw(&holding_data(&fungible(HOLDING_BALANCE)), &MASTER, 1);
+}
+
+#[test]
+fn transfer_into_an_empty_shard_initializes_it_from_the_descriptor() {
+    let state = settle_transfer(
+        (HOLDING_ID, holding_data(&fungible(INIT_SUPPLY))),
+        (HOLDING_ID_2, empty()),
+        FUNGIBLE,
+        TRANSFER_AMOUNT,
+    );
+
+    assert_eq!(
+        settled(&state, HOLDING_ID),
+        fungible(INIT_SUPPLY - TRANSFER_AMOUNT)
+    );
+    assert_eq!(settled(&state, HOLDING_ID_2), fungible(TRANSFER_AMOUNT));
+}
+
+#[test]
+fn transfer_with_master_nft_success() {
+    let state = settle_transfer(
+        (HOLDING_ID, holding_data(&master(PRINTABLE_COPIES))),
+        (HOLDING_ID_2, holding_data(&master(0))),
+        MASTER,
+        PRINTABLE_COPIES,
+    );
+
+    assert_eq!(settled(&state, HOLDING_ID), master(0));
+    assert_eq!(settled(&state, HOLDING_ID_2), master(PRINTABLE_COPIES));
+}
+
+#[test]
 #[should_panic(expected = "Invalid balance for NFT Master transfer")]
-#[test]
-fn test_transfer_with_master_nft_invalid_balance() {
-    let sender = AccountForTests::holding_account_master_nft();
-    let recipient = AccountForTests::holding_account_uninit();
-    let _post_states = transfer(sender, recipient, BalanceForTests::transfer_amount());
+fn transfer_with_master_nft_invalid_balance() {
+    let _ = transfer::withdraw(
+        &holding_data(&master(PRINTABLE_COPIES)),
+        &MASTER,
+        PRINTABLE_COPIES - 1,
+    );
 }
 
+#[test]
 #[should_panic(expected = "Invalid balance in recipient account for NFT transfer")]
-#[test]
-fn test_transfer_with_master_nft_invalid_recipient_balance() {
-    let sender = AccountForTests::holding_account_master_nft();
-    let recipient = AccountForTests::holding_account_with_master_nft_transferred_to();
-    let _post_states = transfer(sender, recipient, BalanceForTests::printable_copies());
-}
-
-#[test]
-fn test_transfer_with_master_nft_success() {
-    let sender = AccountForTests::holding_account_master_nft();
-    let recipient = AccountForTests::holding_account_uninit_auth();
-    let post_states = transfer(sender, recipient, BalanceForTests::printable_copies());
-    let [sender_post, recipient_post] = post_states.try_into().unwrap();
-
-    assert_eq!(
-        sender_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::holding_account_master_nft_post_transfer().account
-    );
-    assert_eq!(
-        recipient_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::holding_account_with_master_nft_transferred_to().account
+fn transfer_with_master_nft_invalid_recipient_balance() {
+    let _ = transfer::deposit(
+        &holding_data(&master(PRINTABLE_COPIES)),
+        &MASTER,
+        PRINTABLE_COPIES,
     );
 }
 
 #[test]
-fn test_transfer_with_default_recipient_claims_recipient() {
-    let sender = AccountForTests::holding_account_init();
-    let recipient = AccountForTests::holding_account_uninit_auth();
-    let post_states = transfer(sender, recipient, BalanceForTests::transfer_amount());
-    let [sender_post, recipient_post] = post_states.try_into().unwrap();
-
-    assert_eq!(
-        sender_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::holding_account_init_post_transfer().account
+fn transfer_of_a_printed_copy_moves_ownership() {
+    let state = settle_transfer(
+        (HOLDING_ID, holding_data(&printed(true))),
+        (HOLDING_ID_2, holding_data(&printed(false))),
+        PRINTED,
+        1,
     );
+
+    assert_eq!(settled(&state, HOLDING_ID), printed(false));
+    assert_eq!(settled(&state, HOLDING_ID_2), printed(true));
+}
+
+#[test]
+#[should_panic(expected = "Sender does not own the NFT Printed Copy")]
+fn transfer_of_an_unowned_printed_copy_should_fail() {
+    let _ = transfer::withdraw(&holding_data(&printed(false)), &PRINTED, 1);
+}
+
+#[test]
+#[should_panic(expected = "Recipient already owns the NFT Printed Copy")]
+fn transfer_into_an_owned_printed_copy_should_fail() {
+    let _ = transfer::deposit(&holding_data(&printed(true)), &PRINTED, 1);
+}
+
+// ── initialize_account ──────────────────────────────────────────────────────
+
+#[test]
+fn initialize_account_succeeds() {
+    let definition = definition_data(&fungible_definition(INIT_SUPPLY, None));
+    // The definition-side guard reads and asserts, and must not write.
+    initialize::check_holding_kind(&definition, TokenKind::Fungible);
     assert_eq!(
-        recipient_post.post_account(TOKEN_PROGRAM_ID),
-        Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0u128,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::pool_definition_id(),
-                balance: BalanceForTests::transfer_amount(),
-            }),
-            nonce: Nonce(0),
-        }
+        as_holding(&initialize::initialize_holding(&empty(), &FUNGIBLE, false)),
+        fungible(0)
     );
 }
 
 #[test]
-fn test_token_initialize_account_succeeds() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_account_uninit_auth();
-    let post_states = initialize_account(definition_account, holding_account, TOKEN_PROGRAM_ID);
-    let [definition_post, holding_post] = post_states.try_into().unwrap();
+#[should_panic(expected = "Token Definition does not initialize this Token Holding kind")]
+fn initialize_account_rejects_a_kind_the_definition_does_not_describe() {
+    initialize::check_holding_kind(
+        &definition_data(&fungible_definition(INIT_SUPPLY, None)),
+        TokenKind::NftMaster,
+    );
+}
+
+/// Replaces `test_token_initialize_account_requires_authorization`. An *empty*
+/// shard needs no authorization — writing it denies nothing to anyone. What still
+/// needs it is overwriting a shard that already holds something.
+#[test]
+#[should_panic(expected = "Only uninitialized or authorized accounts can be initialized")]
+fn initialize_account_over_existing_data_requires_authorization() {
+    let _ =
+        initialize::initialize_holding(&holding_data(&fungible(HOLDING_BALANCE)), &FUNGIBLE, false);
+}
+
+#[test]
+fn initialize_account_over_existing_data_is_allowed_when_authorized() {
+    assert_eq!(
+        as_holding(&initialize::initialize_holding(
+            &holding_data(&fungible(HOLDING_BALANCE)),
+            &FUNGIBLE,
+            true
+        )),
+        fungible(0)
+    );
+}
+
+// ── burn ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn burn_success() {
+    let definition = burn::burn_supply(
+        &definition_data(&fungible_definition(INIT_SUPPLY, None)),
+        TokenKind::Fungible,
+        500,
+    );
+    let holding = burn::burn_holding(&holding_data(&fungible(HOLDING_BALANCE)), &FUNGIBLE, 500);
 
     assert_eq!(
-        definition_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::definition_account_auth().account
+        as_definition(&definition),
+        fungible_definition(INIT_SUPPLY - 500, None)
     );
-    assert_eq!(
-        holding_post.post_account(TOKEN_PROGRAM_ID),
-        Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0u128,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: IdForTests::pool_definition_id(),
-                balance: 0,
-            }),
-            nonce: Nonce(0),
-        }
-    );
-}
-
-#[test]
-#[should_panic(expected = "Account to initialize must be authorized")]
-fn test_token_initialize_account_requires_authorization() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_account_uninit();
-    let _post_states = initialize_account(definition_account, holding_account, TOKEN_PROGRAM_ID);
-}
-
-#[test]
-#[should_panic(expected = "Token definition must be owned by token program")]
-fn test_token_initialize_account_rejects_foreign_owned_definition() {
-    let definition_account = AccountForTests::definition_account_foreign_owner();
-    let holding_account = AccountForTests::holding_account_uninit_auth();
-    let _post_states = initialize_account(definition_account, holding_account, TOKEN_PROGRAM_ID);
-}
-
-#[test]
-#[should_panic(expected = "Mismatch Token Definition and Token Holding")]
-fn test_burn_mismatch_def() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_different_definition();
-    let _post_states = burn(
-        definition_account,
-        holding_account,
-        BalanceForTests::burn_success(),
-    );
+    assert_eq!(as_holding(&holding), fungible(HOLDING_BALANCE - 500));
 }
 
 #[test]
 #[should_panic(expected = "Authorization is missing")]
-fn test_burn_missing_authorization() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_same_definition_without_authorization();
-    let _post_states = burn(
-        definition_account,
-        holding_account,
-        BalanceForTests::burn_success(),
+fn burn_missing_authorization() {
+    burn::authorize(&handle(HOLDING_ID, false));
+}
+
+#[test]
+#[should_panic(expected = "Mismatched Token Definition and Token Holding")]
+fn burn_mismatch_def() {
+    let _ = burn::burn_holding(
+        &holding_data(&fungible(HOLDING_BALANCE)),
+        &OTHER_FUNGIBLE,
+        1,
     );
 }
 
 #[test]
 #[should_panic(expected = "Insufficient balance to burn")]
-fn test_burn_insufficient_balance() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_same_definition_with_authorization();
-    let _post_states = burn(
-        definition_account,
-        holding_account,
-        BalanceForTests::burn_insufficient(),
+fn burn_insufficient_balance() {
+    let _ = burn::burn_holding(
+        &holding_data(&fungible(HOLDING_BALANCE)),
+        &FUNGIBLE,
+        HOLDING_BALANCE + 1,
     );
 }
 
 #[test]
 #[should_panic(expected = "Total supply underflow")]
-fn test_burn_total_supply_underflow() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account =
-        AccountForTests::holding_same_definition_with_authorization_and_large_balance();
-    let _post_states = burn(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_overflow(),
+fn burn_total_supply_underflow() {
+    let _ = burn::burn_supply(
+        &definition_data(&fungible_definition(100, None)),
+        TokenKind::Fungible,
+        101,
     );
 }
 
 #[test]
-fn test_burn_success() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_same_definition_with_authorization();
-    let post_states = burn(
-        definition_account,
-        holding_account,
-        BalanceForTests::burn_success(),
-    );
-
-    let [def_post, holding_post] = post_states.try_into().unwrap();
-
-    assert_eq!(
-        def_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::definition_account_post_burn().account
-    );
-    assert_eq!(
-        holding_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::holding_account_post_burn().account
+#[should_panic(expected = "Mismatched Token Definition and Token Holding types")]
+fn burn_supply_rejects_a_kind_the_definition_does_not_describe() {
+    let _ = burn::burn_supply(
+        &definition_data(&fungible_definition(INIT_SUPPLY, None)),
+        TokenKind::NftMaster,
+        1,
     );
 }
 
 #[test]
-#[should_panic(expected = "Holding account must be valid")]
-fn test_mint_not_valid_holding_account() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::definition_account_without_auth();
-    let _post_states = mint(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_success(),
-        TOKEN_PROGRAM_ID,
+#[should_panic(expected = "Cannot burn unowned NFT Printed Copy")]
+fn burn_of_an_unowned_printed_copy_should_fail() {
+    let _ = burn::burn_holding(&holding_data(&printed(false)), &PRINTED, 1);
+}
+
+#[test]
+fn burn_of_a_printed_copy_decrements_printable_supply() {
+    let definition = burn::burn_supply(
+        &definition_data(&non_fungible_definition(PRINTABLE_COPIES)),
+        TokenKind::NftPrintedCopy,
+        1,
+    );
+    assert_eq!(
+        as_definition(&definition),
+        non_fungible_definition(PRINTABLE_COPIES - 1)
+    );
+    assert_eq!(
+        as_holding(&burn::burn_holding(
+            &holding_data(&printed(true)),
+            &PRINTED,
+            1
+        )),
+        printed(false)
+    );
+}
+
+// ── mint ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn mint_success() {
+    let definition = mint::mint_supply(
+        &definition_data(&fungible_definition(INIT_SUPPLY, Some(DEFINITION_ID))),
+        50_000,
+        DEFINITION_ID,
+        true,
+    );
+    let holding = transfer::deposit(&holding_data(&fungible(HOLDING_BALANCE)), &FUNGIBLE, 50_000);
+
+    assert_eq!(
+        as_definition(&definition),
+        fungible_definition(INIT_SUPPLY + 50_000, Some(DEFINITION_ID))
+    );
+    assert_eq!(as_holding(&holding), fungible(HOLDING_BALANCE + 50_000));
+}
+
+#[test]
+fn mint_into_an_empty_holding_succeeds() {
+    assert_eq!(
+        as_holding(&transfer::deposit(&empty(), &FUNGIBLE, 50_000)),
+        fungible(50_000)
     );
 }
 
 #[test]
 #[should_panic(expected = "Definition account must be valid")]
-fn test_mint_not_valid_definition_account() {
-    let definition_account = AccountForTests::holding_same_definition_with_authorization();
-    let holding_account = AccountForTests::holding_same_definition_without_authorization();
-    let _post_states = mint(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_success(),
-        TOKEN_PROGRAM_ID,
+fn mint_not_valid_definition_account() {
+    let _ = mint::mint_supply(&holding_data(&fungible(1)), 1, DEFINITION_ID, true);
+}
+
+#[test]
+#[should_panic(expected = "Invalid recipient data")]
+fn mint_not_valid_holding_account() {
+    let _ = transfer::deposit(
+        &definition_data(&fungible_definition(INIT_SUPPLY, None)),
+        &FUNGIBLE,
+        1,
     );
 }
 
 #[test]
 #[should_panic(expected = "Mint authority must authorize the transaction")]
-fn test_mint_missing_authorization() {
-    // The definition account itself is the authority; mark it unauthorized.
-    let mut definition_account = AccountForTests::definition_account_auth();
-    definition_account.is_authorized = false;
-    let holding_account = AccountForTests::holding_same_definition_without_authorization();
-    let _post_states = mint(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_success(),
-        TOKEN_PROGRAM_ID,
+fn mint_missing_authorization() {
+    let _ = mint::mint_supply(
+        &definition_data(&fungible_definition(INIT_SUPPLY, Some(DEFINITION_ID))),
+        1,
+        DEFINITION_ID,
+        false,
     );
 }
 
 #[test]
-#[should_panic(expected = "Token definition must be owned by token program")]
-fn test_mint_rejects_foreign_owned_definition() {
-    let definition_account = AccountForTests::definition_account_foreign_owner();
-    let holding_account = AccountForTests::holding_account_uninit();
-    let _post_states = mint(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_success(),
-        TOKEN_PROGRAM_ID,
+#[should_panic(expected = "Mint authority check failed: signer is not the current authority")]
+fn mint_by_a_non_authority_should_fail() {
+    let _ = mint::mint_supply(
+        &definition_data(&fungible_definition(INIT_SUPPLY, Some(AUTHORITY_ID))),
+        1,
+        HOLDING_ID,
+        true,
     );
 }
 
 #[test]
-#[should_panic(expected = "Token definition must be owned by token program")]
-fn test_set_authority_rejects_foreign_owned_definition() {
-    // A foreign-owned account carrying token-shaped data must not be able to
-    // rotate or revoke its authority through the token program.
-    let definition_account = AccountForTests::definition_account_foreign_owner();
-    let _post_states = set_authority(
-        definition_account,
-        Some(AccountId::new([7_u8; 32])),
-        TOKEN_PROGRAM_ID,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Mismatch Token Definition and Token Holding")]
-fn test_mint_mismatched_token_definition() {
-    //
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_different_definition();
-    let _post_states = mint(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_success(),
-        TOKEN_PROGRAM_ID,
-    );
-}
-
-#[test]
-fn test_mint_success() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_same_definition_without_authorization();
-    let post_states = mint(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_success(),
-        TOKEN_PROGRAM_ID,
-    );
-
-    let [def_post, holding_post] = post_states.try_into().unwrap();
-
-    assert_eq!(
-        def_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::definition_account_mint().account
-    );
-    assert_eq!(
-        holding_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::holding_account_same_definition_mint().account
-    );
-}
-
-#[test]
-fn test_mint_uninit_holding_success() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_account_uninit_auth();
-    let post_states = mint(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_success(),
-        TOKEN_PROGRAM_ID,
-    );
-
-    let [def_post, holding_post] = post_states.try_into().unwrap();
-
-    assert_eq!(
-        def_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::definition_account_mint().account
-    );
-    assert_eq!(
-        holding_post.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::init_mint().account
+#[should_panic(expected = "Mismatched Token Definition and Token Holding")]
+fn mint_mismatched_token_definition() {
+    let _ = transfer::deposit(
+        &holding_data(&fungible(HOLDING_BALANCE)),
+        &OTHER_FUNGIBLE,
+        1,
     );
 }
 
 #[test]
 #[should_panic(expected = "Total supply overflow")]
-fn test_mint_total_supply_overflow() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_same_definition_without_authorization();
-    let _post_states = mint(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_overflow(),
-        TOKEN_PROGRAM_ID,
+fn mint_total_supply_overflow() {
+    let _ = mint::mint_supply(
+        &definition_data(&fungible_definition(u128::MAX, Some(DEFINITION_ID))),
+        1,
+        DEFINITION_ID,
+        true,
     );
 }
 
 #[test]
-#[should_panic(expected = "Balance overflow on minting")]
-fn test_mint_holding_account_overflow() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let holding_account = AccountForTests::holding_same_definition_without_authorization_overflow();
-    let _post_states = mint(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_overflow(),
-        TOKEN_PROGRAM_ID,
-    );
+#[should_panic(expected = "Recipient balance overflow")]
+fn mint_holding_account_overflow() {
+    let _ = transfer::deposit(&holding_data(&fungible(u128::MAX)), &FUNGIBLE, 1);
 }
 
 #[test]
 #[should_panic(expected = "Cannot mint additional supply for Non-Fungible Tokens")]
-fn test_mint_cannot_mint_unmintable_tokens() {
-    let definition_account = AccountForTests::definition_account_with_authorization_nonfungible();
-    let holding_account = AccountForTests::holding_account_master_nft();
-    let _post_states = mint(
-        definition_account,
-        holding_account,
-        BalanceForTests::mint_success(),
-        TOKEN_PROGRAM_ID,
+fn mint_cannot_mint_unmintable_tokens() {
+    let _ = mint::mint_supply(
+        &definition_data(&non_fungible_definition(PRINTABLE_COPIES)),
+        1,
+        DEFINITION_ID,
+        true,
     );
 }
 
 #[test]
-fn test_new_definition_with_metadata_success() {
-    let definition_account = AccountForTests::definition_account_uninit_auth();
-    let holding_account = AccountForTests::holding_account_uninit_auth();
-    let metadata_account = AccountForTests::metadata_account_uninit_auth();
-    let new_definition = NewTokenDefinition::Fungible {
-        name: String::from("test"),
-        total_supply: 15u128,
-        mint_authority: None,
-    };
-    let metadata = NewTokenMetadata {
-        standard: MetadataStandard::Simple,
-        uri: "test_uri".to_string(),
-        creators: "test_creators".to_string(),
-    };
-
-    let post_states = new_definition_with_metadata(
-        definition_account,
-        holding_account,
-        metadata_account,
-        new_definition,
-        metadata,
+#[should_panic(expected = "Mint authority check failed: authority revoked, supply is fixed")]
+fn mint_on_a_renounced_definition_should_fail() {
+    let _ = mint::mint_supply(
+        &definition_data(&fungible_definition(INIT_SUPPLY, None)),
+        1,
+        DEFINITION_ID,
+        true,
     );
-    let [definition_post, holding_post, metadata_post] = post_states.try_into().unwrap();
-
-    // All three accounts are claimed by their own writes: in v0.2.5 writing data to a
-    // default-owned account makes the writing program its owner.
-    for diff in [&definition_post, &holding_post, &metadata_post] {
-        assert!(diff.writes_data());
-        assert_eq!(diff.post_owner(TOKEN_PROGRAM_ID), TOKEN_PROGRAM_ID);
-    }
 }
 
-/// Comment #2: a metadata-backed fungible created with `mint_authority: Some(..)`
-/// carries a real, non-renounced authority and is therefore mintable — no longer
-/// force-fixed-supply the way the hardcoded `Authority::renounced()` made it.
+// ── print_nft ───────────────────────────────────────────────────────────────
+
 #[test]
-fn test_metadata_fungible_with_authority_is_mintable() {
-    let definition_account = AccountForTests::definition_account_uninit_auth();
-    let holding_account = AccountForTests::holding_account_uninit_auth();
-    let metadata_account = AccountForTests::metadata_account_uninit_auth();
-    let new_definition = NewTokenDefinition::Fungible {
-        name: String::from("test"),
-        total_supply: 15u128,
-        mint_authority: Some(AccountId::new([15_u8; 32])),
-    };
-    let metadata = NewTokenMetadata {
-        standard: MetadataStandard::Simple,
-        uri: "test_uri".to_string(),
-        creators: "test_creators".to_string(),
-    };
-    let post_states = new_definition_with_metadata(
-        definition_account,
-        holding_account,
-        metadata_account,
-        new_definition,
-        metadata,
-    );
-    let [definition_post, _holding_post, _metadata_post] = post_states.try_into().unwrap();
+fn print_nft_success() {
+    let master_after =
+        print_nft::print_copy(&holding_data(&master(PRINTABLE_COPIES)), DEFINITION_ID);
+    let copy = new_definition::create(&empty(), holding_data(&printed(true)));
 
-    // The stored authority must be the requested key, NOT renounced.
-    let def = TokenDefinition::try_from(definition_post.post_data()).unwrap();
-    let stored = match def {
-        TokenDefinition::Fungible { authority, .. } => authority,
-        _ => None,
-    };
-    assert_eq!(stored, Some(AccountId::new([15_u8; 32])));
+    assert_eq!(as_holding(&master_after), master(PRINTABLE_COPIES - 1));
+    assert_eq!(as_holding(&copy), printed(true));
 }
 
-#[should_panic(expected = "Definition target account must be authorized")]
 #[test]
-fn test_call_new_definition_metadata_requires_authorized_definition() {
-    let definition_account = AccountForTests::definition_account_uninit();
-    let holding_account = AccountForTests::holding_account_uninit_auth();
-    let metadata_account = AccountForTests::metadata_account_uninit_auth();
-    let new_definition = NewTokenDefinition::Fungible {
-        name: String::from("test"),
-        total_supply: 15u128,
-        mint_authority: None,
-    };
-    let metadata = NewTokenMetadata {
-        standard: MetadataStandard::Simple,
-        uri: "test_uri".to_string(),
-        creators: "test_creators".to_string(),
-    };
-    let _post_states = new_definition_with_metadata(
-        definition_account,
-        holding_account,
-        metadata_account,
-        new_definition,
-        metadata,
-    );
-}
-
-#[should_panic(expected = "Holding target account must be authorized")]
-#[test]
-fn test_call_new_definition_metadata_requires_authorized_holding() {
-    let definition_account = AccountForTests::definition_account_uninit_auth();
-    let holding_account = AccountForTests::holding_account_uninit();
-    let metadata_account = AccountForTests::metadata_account_uninit_auth();
-    let new_definition = NewTokenDefinition::Fungible {
-        name: String::from("test"),
-        total_supply: 15u128,
-        mint_authority: None,
-    };
-    let metadata = NewTokenMetadata {
-        standard: MetadataStandard::Simple,
-        uri: "test_uri".to_string(),
-        creators: "test_creators".to_string(),
-    };
-    let _post_states = new_definition_with_metadata(
-        definition_account,
-        holding_account,
-        metadata_account,
-        new_definition,
-        metadata,
-    );
-}
-
-#[should_panic(expected = "Metadata target account must be authorized")]
-#[test]
-fn test_call_new_definition_metadata_requires_authorized_metadata() {
-    let definition_account = AccountForTests::definition_account_uninit_auth();
-    let holding_account = AccountForTests::holding_account_uninit_auth();
-    let metadata_account = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: AccountId::new([20; 32]),
-    };
-    let new_definition = NewTokenDefinition::Fungible {
-        name: String::from("test"),
-        total_supply: 15u128,
-        mint_authority: None,
-    };
-    let metadata = NewTokenMetadata {
-        standard: MetadataStandard::Simple,
-        uri: "test_uri".to_string(),
-        creators: "test_creators".to_string(),
-    };
-    let _post_states = new_definition_with_metadata(
-        definition_account,
-        holding_account,
-        metadata_account,
-        new_definition,
-        metadata,
-    );
-}
-
-#[should_panic(expected = "Definition target account must have default values")]
-#[test]
-fn test_call_new_definition_metadata_with_init_definition() {
-    let definition_account = AccountForTests::definition_account_auth();
-    let metadata_account = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: AccountId::new([2; 32]),
-    };
-    let holding_account = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: AccountId::new([3; 32]),
-    };
-    let new_definition = NewTokenDefinition::Fungible {
-        name: String::from("test"),
-        total_supply: 15u128,
-        mint_authority: None,
-    };
-    let metadata = NewTokenMetadata {
-        standard: MetadataStandard::Simple,
-        uri: "test_uri".to_string(),
-        creators: "test_creators".to_string(),
-    };
-    let _post_states = new_definition_with_metadata(
-        definition_account,
-        metadata_account,
-        holding_account,
-        new_definition,
-        metadata,
-    );
-}
-
-#[should_panic(expected = "Metadata target account must have default values")]
-#[test]
-fn test_call_new_definition_metadata_with_init_metadata() {
-    let definition_account = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: AccountId::new([1; 32]),
-    };
-    let holding_account = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: AccountId::new([3; 32]),
-    };
-    let metadata_account = AccountForTests::holding_account_same_definition_mint();
-    let new_definition = NewTokenDefinition::Fungible {
-        name: String::from("test"),
-        total_supply: 15u128,
-        mint_authority: None,
-    };
-    let metadata = NewTokenMetadata {
-        standard: MetadataStandard::Simple,
-        uri: "test_uri".to_string(),
-        creators: "test_creators".to_string(),
-    };
-    let _post_states = new_definition_with_metadata(
-        definition_account,
-        holding_account,
-        metadata_account,
-        new_definition,
-        metadata,
-    );
-}
-
-#[should_panic(expected = "Holding target account must have default values")]
-#[test]
-fn test_call_new_definition_metadata_with_init_holding() {
-    let definition_account = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: AccountId::new([1; 32]),
-    };
-    let metadata_account = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: AccountId::new([2; 32]),
-    };
-    let holding_account = AccountForTests::holding_account_same_definition_mint();
-    let new_definition = NewTokenDefinition::Fungible {
-        name: String::from("test"),
-        total_supply: 15u128,
-        mint_authority: None,
-    };
-    let metadata = NewTokenMetadata {
-        standard: MetadataStandard::Simple,
-        uri: "test_uri".to_string(),
-        creators: "test_creators".to_string(),
-    };
-    let _post_states = new_definition_with_metadata(
-        definition_account,
-        holding_account,
-        metadata_account,
-        new_definition,
-        metadata,
-    );
-}
-
 #[should_panic(expected = "Master NFT Account must be authorized")]
-#[test]
-fn test_print_nft_master_account_must_be_authorized() {
-    let master_account = AccountForTests::holding_account_uninit();
-    let printed_account = AccountForTests::holding_account_uninit();
-    let _post_states = print_nft(master_account, printed_account);
+fn print_nft_master_account_must_be_authorized() {
+    print_nft::authorize(&handle(HOLDING_ID, false));
 }
 
-#[should_panic(expected = "Printed Account must be uninitialized")]
 #[test]
-fn test_print_nft_print_account_initialized() {
-    let master_account = AccountForTests::holding_account_master_nft();
-    let printed_account = AccountForTests::holding_account_init();
-    let _post_states = print_nft(master_account, printed_account);
+#[should_panic(expected = "Target account must not already hold data")]
+fn print_nft_print_account_initialized() {
+    // Formerly "Printed Account must be uninitialized".
+    let _ = new_definition::create(&holding_data(&printed(false)), holding_data(&printed(true)));
 }
 
-#[should_panic(expected = "Printed Account must be authorized")]
 #[test]
-fn test_print_nft_print_account_must_be_authorized() {
-    let master_account = AccountForTests::holding_account_master_nft();
-    let printed_account = AccountForTests::holding_account_uninit();
-    let _post_states = print_nft(master_account, printed_account);
-}
-
 #[should_panic(expected = "Invalid Token Holding data")]
-#[test]
-fn test_print_nft_master_nft_invalid_token_holding() {
-    let master_account = AccountForTests::definition_account_auth();
-    let printed_account = AccountForTests::holding_account_uninit_auth();
-    let _post_states = print_nft(master_account, printed_account);
+fn print_nft_master_nft_invalid_token_holding() {
+    let _ = print_nft::print_copy(
+        &definition_data(&fungible_definition(INIT_SUPPLY, None)),
+        DEFINITION_ID,
+    );
 }
 
+#[test]
 #[should_panic(expected = "Invalid Token Holding provided as NFT Master Account")]
-#[test]
-fn test_print_nft_master_nft_not_nft_master_account() {
-    let master_account = AccountForTests::holding_account_init();
-    let printed_account = AccountForTests::holding_account_uninit_auth();
-    let _post_states = print_nft(master_account, printed_account);
+fn print_nft_master_nft_not_nft_master_account() {
+    let _ = print_nft::print_copy(&holding_data(&fungible(HOLDING_BALANCE)), DEFINITION_ID);
 }
 
+#[test]
 #[should_panic(expected = "Insufficient balance to print another NFT copy")]
-#[test]
-fn test_print_nft_master_nft_insufficient_balance() {
-    let master_account = AccountForTests::holding_account_master_nft_insufficient_balance();
-    let printed_account = AccountForTests::holding_account_uninit_auth();
-    let _post_states = print_nft(master_account, printed_account);
+fn print_nft_master_nft_insufficient_balance() {
+    let _ = print_nft::print_copy(&holding_data(&master(1)), DEFINITION_ID);
 }
 
+/// The printed copy's `definition_id` is a declared value; the master's apply is
+/// what makes it true.
 #[test]
-fn test_print_nft_success() {
-    let master_account = AccountForTests::holding_account_master_nft();
-    let printed_account = AccountForTests::holding_account_uninit_auth();
-    let post_states = print_nft(master_account, printed_account);
-
-    let [post_master_nft, post_printed] = post_states.try_into().unwrap();
-
-    assert_eq!(
-        post_master_nft.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::holding_account_master_nft_after_print().account
-    );
-    assert_eq!(
-        post_printed.post_account(TOKEN_PROGRAM_ID),
-        AccountForTests::holding_account_printed_nft().account
+#[should_panic(expected = "Printed copy does not belong to the master's Token Definition")]
+fn print_nft_rejects_a_foreign_definition_id() {
+    let _ = print_nft::print_copy(
+        &holding_data(&master(PRINTABLE_COPIES)),
+        OTHER_DEFINITION_ID,
     );
 }
 
-#[cfg(test)]
-mod authority_tests {
-    use super::*;
-    use crate::{mint::mint, set_authority::set_authority};
+// ── set_authority ───────────────────────────────────────────────────────────
 
-    const AUTHORITY: [u8; 32] = [15_u8; 32];
-    const TOKEN_PROGRAM_ID: AccountId = AccountId::new([5u8; 32]);
+#[test]
+fn set_authority_rotates_the_authority() {
+    let rotated = set_authority::set_mint_authority(
+        &definition_data(&fungible_definition(INIT_SUPPLY, Some(DEFINITION_ID))),
+        Some(AUTHORITY_ID),
+        DEFINITION_ID,
+        true,
+    );
+    assert_eq!(
+        as_definition(&rotated),
+        fungible_definition(INIT_SUPPLY, Some(AUTHORITY_ID))
+    );
+}
 
-    /// A fungible definition whose own account id ([15;32]) equals its stored
-    /// mint authority, authorized in the transaction. This models both an external
-    /// owner signing the definition key and a PDA authorized via its seeds.
-    fn def_with_authority() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0_u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: 100_000_u128,
-                    metadata_id: None,
-                    authority: Some(AccountId::new(AUTHORITY)),
-                }),
-                nonce: 0_u128.into(),
-            },
-            is_authorized: true,
-            account_id: AccountId::new([15; 32]),
-        }
-    }
+#[test]
+fn set_authority_renounces_with_none() {
+    let renounced = set_authority::set_mint_authority(
+        &definition_data(&fungible_definition(INIT_SUPPLY, Some(DEFINITION_ID))),
+        None,
+        DEFINITION_ID,
+        true,
+    );
+    assert_eq!(
+        as_definition(&renounced),
+        fungible_definition(INIT_SUPPLY, None)
+    );
+}
 
-    /// A definition whose authority has been renounced (fixed supply).
-    fn def_with_authority_revoked() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0_u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: 100_000_u128,
-                    metadata_id: None,
-                    authority: None,
-                }),
-                nonce: 0_u128.into(),
-            },
-            is_authorized: true,
-            account_id: AccountId::new([15; 32]),
-        }
-    }
+/// A rotated authority can rotate again without the definition's key: the only
+/// thing that matters is that the claiming account matches the stored authority.
+#[test]
+fn set_authority_with_an_external_authority_succeeds() {
+    let rotated = set_authority::set_mint_authority(
+        &definition_data(&fungible_definition(INIT_SUPPLY, Some(AUTHORITY_ID))),
+        Some(HOLDING_ID),
+        AUTHORITY_ID,
+        true,
+    );
+    assert_eq!(
+        as_definition(&rotated),
+        fungible_definition(INIT_SUPPLY, Some(HOLDING_ID))
+    );
+}
 
-    /// A definition whose account id ([99;32]) does NOT match its stored
-    /// authority ([15;32]) — models a caller that isn't the current authority.
-    fn def_wrong_authority() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0_u128,
-                data: Data::from(&TokenDefinition::Fungible {
-                    name: String::from("test"),
-                    total_supply: 100_000_u128,
-                    metadata_id: None,
-                    authority: Some(AccountId::new(AUTHORITY)),
-                }),
-                nonce: 0_u128.into(),
-            },
-            is_authorized: true,
-            account_id: AccountId::new([99; 32]),
-        }
-    }
+#[test]
+#[should_panic(expected = "Mint authority must authorize the transaction")]
+fn set_authority_requires_the_authority_to_authorize() {
+    let _ = set_authority::set_mint_authority(
+        &definition_data(&fungible_definition(INIT_SUPPLY, Some(DEFINITION_ID))),
+        None,
+        DEFINITION_ID,
+        false,
+    );
+}
 
-    fn holding_account() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account {
-                program_owner: AccountId::new([5u8; 32]),
-                balance: 0_u128,
-                data: Data::from(&TokenHolding::Fungible {
-                    definition_id: AccountId::new([15; 32]),
-                    balance: 1_000_u128,
-                }),
-                nonce: 0_u128.into(),
-            },
-            is_authorized: false,
-            account_id: AccountId::new([17; 32]),
-        }
-    }
+#[test]
+#[should_panic(expected = "SetAuthority failed: signer is not the current authority")]
+fn set_authority_by_a_non_authority_should_fail() {
+    let _ = set_authority::set_mint_authority(
+        &definition_data(&fungible_definition(INIT_SUPPLY, Some(AUTHORITY_ID))),
+        None,
+        HOLDING_ID,
+        true,
+    );
+}
 
-    #[test]
-    fn mint_with_authority_succeeds() {
-        let post_states = mint(
-            def_with_authority(),
-            holding_account(),
-            50_000,
-            TOKEN_PROGRAM_ID,
-        );
-        let [def_post, holding_post] = post_states.try_into().unwrap();
+#[test]
+#[should_panic(expected = "SetAuthority failed: authority already revoked")]
+fn set_authority_on_a_renounced_definition_should_fail() {
+    let _ = set_authority::set_mint_authority(
+        &definition_data(&fungible_definition(INIT_SUPPLY, None)),
+        None,
+        DEFINITION_ID,
+        true,
+    );
+}
 
-        let def = TokenDefinition::try_from(def_post.post_data()).unwrap();
-        let holding = TokenHolding::try_from(holding_post.post_data()).unwrap();
+#[test]
+#[should_panic(expected = "New mint authority must be a valid non-zero account ID")]
+fn set_authority_rejects_an_all_zero_new_authority() {
+    let _ = set_authority::set_mint_authority(
+        &definition_data(&fungible_definition(INIT_SUPPLY, Some(DEFINITION_ID))),
+        Some(AccountId::new([0u8; 32])),
+        DEFINITION_ID,
+        true,
+    );
+}
 
-        assert!(matches!(
-            def,
-            TokenDefinition::Fungible {
-                total_supply: 150_000,
-                ..
-            }
-        ));
-        assert!(matches!(
-            holding,
-            TokenHolding::Fungible {
-                balance: 51_000,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    #[should_panic(expected = "Mint authority check failed")]
-    fn mint_with_revoked_authority_fails() {
-        let _ = mint(
-            def_with_authority_revoked(),
-            holding_account(),
-            50_000,
-            TOKEN_PROGRAM_ID,
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "Mint authority must authorize the transaction")]
-    fn mint_without_is_authorized_fails() {
-        let mut def = def_with_authority();
-        def.is_authorized = false;
-        let _ = mint(def, holding_account(), 50_000, TOKEN_PROGRAM_ID);
-    }
-
-    #[test]
-    #[should_panic(expected = "Mint authority check failed")]
-    fn mint_with_wrong_signer_fails() {
-        let _ = mint(
-            def_wrong_authority(),
-            holding_account(),
-            50_000,
-            TOKEN_PROGRAM_ID,
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "New mint authority must be a valid non-zero account ID")]
-    fn set_authority_rejects_zero_new_authority() {
-        let _ = set_authority(
-            def_with_authority(),
-            Some(AccountId::new([0u8; 32])),
-            TOKEN_PROGRAM_ID,
-        );
-    }
-
-    #[test]
-    fn set_authority_rotates_to_new_key() {
-        let new_key = AccountId::new([7_u8; 32]);
-        let post_states = set_authority(def_with_authority(), Some(new_key), TOKEN_PROGRAM_ID);
-        let [def_post] = post_states.try_into().unwrap();
-
-        let def = TokenDefinition::try_from(def_post.post_data()).unwrap();
-        let auth = match def {
-            TokenDefinition::Fungible { authority, .. } => authority,
-            _ => None,
-        };
-        assert_eq!(auth, Some(AccountId::new([7_u8; 32])));
-    }
-
-    #[test]
-    fn set_authority_revokes_permanently() {
-        let post_states = set_authority(def_with_authority(), None, TOKEN_PROGRAM_ID);
-        let [def_post] = post_states.try_into().unwrap();
-
-        let def = TokenDefinition::try_from(def_post.post_data()).unwrap();
-        let renounced = match def {
-            TokenDefinition::Fungible { authority, .. } => authority.is_none(),
-            _ => false,
-        };
-        assert!(renounced);
-    }
-
-    #[test]
-    #[should_panic(expected = "SetAuthority failed")]
-    fn set_authority_on_revoked_fails() {
-        let _ = set_authority(
-            def_with_authority_revoked(),
-            Some(AccountId::new([7_u8; 32])),
-            TOKEN_PROGRAM_ID,
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "Mint authority must authorize the transaction")]
-    fn set_authority_without_is_authorized_fails() {
-        let mut def = def_with_authority();
-        def.is_authorized = false;
-        let _ = set_authority(def, Some(AccountId::new([7_u8; 32])), TOKEN_PROGRAM_ID);
-    }
-
-    #[test]
-    #[should_panic(expected = "SetAuthority failed")]
-    fn set_authority_wrong_signer_fails() {
-        let _ = set_authority(
-            def_wrong_authority(),
-            Some(AccountId::new([7_u8; 32])),
-            TOKEN_PROGRAM_ID,
-        );
-    }
-
-    /// After rotating A ([15;32]) -> B ([7;32]) via self-authority, B can rotate
-    /// again to C ([9;32]) by presenting itself as the external authority.
-    #[test]
-    fn set_authority_with_authority_rotates_again() {
-        let rotate_post = set_authority(
-            def_with_authority(),
-            Some(AccountId::new([7_u8; 32])),
-            TOKEN_PROGRAM_ID,
-        );
-        let [def_post] = rotate_post.try_into().unwrap();
-
-        let mut rotated_def = def_with_authority();
-        rotated_def.account = def_post.post_account(TOKEN_PROGRAM_ID);
-
-        // B ([7;32]) rotates to C ([9;32]) as the external authority.
-        let post_states = set_authority_with_authority(
-            rotated_def,
-            new_authority_signer(),
-            Some(AccountId::new([9_u8; 32])),
-            TOKEN_PROGRAM_ID,
-        );
-        let [def_after, _auth] = post_states.try_into().unwrap();
-        let auth = match TokenDefinition::try_from(def_after.post_data()).unwrap() {
-            TokenDefinition::Fungible { authority, .. } => authority,
-            _ => None,
-        };
-        assert_eq!(auth, Some(AccountId::new([9_u8; 32])));
-    }
-
-    /// A rotated external authority B ([7;32]) can permanently revoke.
-    #[test]
-    fn set_authority_with_authority_revokes() {
-        let rotate_post = set_authority(
-            def_with_authority(),
-            Some(AccountId::new([7_u8; 32])),
-            TOKEN_PROGRAM_ID,
-        );
-        let [def_post] = rotate_post.try_into().unwrap();
-
-        let mut rotated_def = def_with_authority();
-        rotated_def.account = def_post.post_account(TOKEN_PROGRAM_ID);
-
-        let post_states = set_authority_with_authority(
-            rotated_def,
-            new_authority_signer(),
-            None,
-            TOKEN_PROGRAM_ID,
-        );
-        let [def_after, _auth] = post_states.try_into().unwrap();
-        let renounced = match TokenDefinition::try_from(def_after.post_data()).unwrap() {
-            TokenDefinition::Fungible { authority, .. } => authority.is_none(),
-            _ => false,
-        };
-        assert!(renounced);
-    }
-
-    /// An external account that is not the current authority cannot rotate/revoke.
-    #[test]
-    #[should_panic(expected = "SetAuthority failed: signer is not the current authority")]
-    fn set_authority_with_authority_wrong_signer_fails() {
-        // Stored authority is A ([15;32]); present a different authorized account.
-        let wrong_authority = AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: true,
-            account_id: AccountId::new([8_u8; 32]),
-        };
-        let _ = set_authority_with_authority(
-            def_with_authority(),
-            wrong_authority,
-            Some(AccountId::new([9_u8; 32])),
-            TOKEN_PROGRAM_ID,
-        );
-    }
-
-    #[test]
-    fn set_authority_rotate_then_old_cannot_mint() {
-        let new_key = AccountId::new([7_u8; 32]);
-        let post_states = set_authority(def_with_authority(), Some(new_key), TOKEN_PROGRAM_ID);
-        let [def_post] = post_states.try_into().unwrap();
-
-        let def = TokenDefinition::try_from(def_post.post_data()).unwrap();
-        let auth = match def {
-            TokenDefinition::Fungible { authority, .. } => authority,
-            _ => None,
-        };
-        // Rotated to the new key; the old authority no longer controls it.
-        assert_eq!(auth, Some(AccountId::new([7_u8; 32])));
-        assert_ne!(auth, Some(AccountId::new(AUTHORITY)));
-    }
-
-    /// Authority signer for the rotated key B ([7;32]), authorized.
-    fn new_authority_signer() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: true,
-            account_id: AccountId::new([7_u8; 32]),
-        }
-    }
-
-    /// RFP-001 end-to-end (comment #1): after rotating authority A -> B, the new
-    /// authority B can actually mint by presenting itself in `authority_accounts`.
-    #[test]
-    fn rotated_authority_can_mint() {
-        // Rotate A ([15;32]) -> B ([7;32]), signed by A via self-authority.
-        let rotate_post = set_authority(
-            def_with_authority(),
-            Some(AccountId::new([7_u8; 32])),
-            TOKEN_PROGRAM_ID,
-        );
-        let [def_post] = rotate_post.try_into().unwrap();
-
-        // Rebuild the definition carrying the rotated authority, re-authorized.
-        let mut rotated_def = def_with_authority();
-        rotated_def.account = def_post.post_account(TOKEN_PROGRAM_ID);
-
-        // B mints by presenting itself as the external authority.
-        let mint_post = mint_with_authority(
-            rotated_def,
-            holding_account(),
-            new_authority_signer(),
-            10_000,
-            TOKEN_PROGRAM_ID,
-        );
-        let [def_after, holding_after, _auth] = mint_post.try_into().unwrap();
-        let minted = TokenDefinition::try_from(def_after.post_data()).unwrap();
-        assert!(matches!(
-            minted,
-            TokenDefinition::Fungible {
-                total_supply: 110_000,
-                ..
-            }
-        ));
-        let holding = TokenHolding::try_from(holding_after.post_data()).unwrap();
-        assert!(matches!(
-            holding,
-            TokenHolding::Fungible {
-                balance: 11_000,
-                ..
-            }
-        ));
-    }
-
-    /// Comment #1 negative: after rotation to B, the OLD authority A can no
-    /// longer mint. Here A attempts self-authority (empty `authority_accounts`),
-    /// but the definition's own id no longer matches the stored authority B.
-    #[test]
-    #[should_panic(expected = "Mint authority check failed")]
-    fn rotated_authority_old_key_cannot_mint() {
-        let rotate_post = set_authority(
-            def_with_authority(),
-            Some(AccountId::new([7_u8; 32])),
-            TOKEN_PROGRAM_ID,
-        );
-        let [def_post] = rotate_post.try_into().unwrap();
-
-        let mut rotated_def = def_with_authority();
-        rotated_def.account = def_post.post_account(TOKEN_PROGRAM_ID);
-
-        // A ([15;32]) is no longer the authority; self-authority must fail.
-        let _ = mint(rotated_def, holding_account(), 10_000, TOKEN_PROGRAM_ID);
-    }
+#[test]
+#[should_panic(expected = "SetAuthority is not supported for Non-Fungible Tokens")]
+fn set_authority_is_not_supported_for_non_fungibles() {
+    let _ = set_authority::set_mint_authority(
+        &definition_data(&non_fungible_definition(PRINTABLE_COPIES)),
+        None,
+        DEFINITION_ID,
+        true,
+    );
 }

@@ -1,77 +1,83 @@
+use ata_core::AtaContents;
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, ShardData},
+    program::{AccountMeta, PdaSeed},
 };
-use token_core::{TokenDefinition, TokenHolding};
+use token_core::{TokenDefinition, TokenDescriptor, TokenKind};
 
-pub fn create_associated_token_account(
-    owner: AccountWithMetadata,
-    token_definition: AccountWithMetadata,
-    ata_account: AccountWithMetadata,
+/// Plan half: verify the ATA address and report whether a chained initialize is
+/// needed.
+///
+/// `contents` decides that, and arrives as a caller claim — so the guard that
+/// pins it (`check_contents`) must be emitted whatever branch is taken. Taking
+/// `contents` on the caller's word would be a hole, not a shortcut: `Empty`
+/// claimed over a funded ATA would hand the token program a seed-authorized
+/// `InitializeAccount` and zeroize the holding, with no owner signature anywhere.
+/// Token's own `initialize_holding` cannot stop that, because the PDA seed is
+/// exactly what makes the ATA authorized in the child call.
+///
+/// # Panics
+/// If the ATA address does not derive from `(owner, definition, token program)`,
+/// or a squatted ATA is being replaced without the owner's authorization.
+pub fn plan_create(
+    owner: &AccountMeta,
+    token_definition: &AccountMeta,
+    ata_account: &AccountMeta,
     ata_program_id: AccountId,
     token_program_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    // No explicit owner authorization check is needed here: ATA creation is idempotent, so the
-    // call itself may proceed without `owner.is_authorized`. Nothing writes to the owner account,
-    // so it is reported unchanged — since LEZ v0.2.5 ownership is acquired by writing data to a
-    // default-owned account, not by claiming one.
-    assert_eq!(
-        token_definition.account.program_owner, token_program_id,
-        "Token definition must be owned by expected token program"
-    );
-    let _definition = TokenDefinition::try_from(&token_definition.account.data)
-        .expect("Token definition must be valid");
+    contents: AtaContents,
+) -> (PdaSeed, bool) {
     let seed = ata_core::verify_ata_and_get_seed(
-        &ata_account,
-        &owner,
+        ata_account,
+        owner,
         token_program_id,
         token_definition.account_id,
         ata_program_id,
     );
 
-    // Idempotent: already initialized → no-op
-    if ata_account.account != Account::default() {
-        assert_eq!(
-            ata_account.account.program_owner, token_program_id,
-            "Existing ATA must be owned by expected token program"
-        );
-        let holding = TokenHolding::try_from(&ata_account.account.data)
-            .expect("Existing ATA must hold a valid token");
-        assert_eq!(
-            holding.definition_id(),
-            token_definition.account_id,
-            "Existing ATA token definition does not match"
-        );
-        return (
-            vec![
-                AccountStateDiff::unchanged(owner),
-                AccountStateDiff::unchanged(token_definition),
-                AccountStateDiff::unchanged(ata_account),
-            ],
-            vec![],
-        );
-    }
+    let needs_initialize = match contents {
+        AtaContents::Empty => true,
+        AtaContents::Intended => false,
+        AtaContents::Squatted => {
+            // Replacing someone else's bytes at this address is the one branch
+            // that destroys value, so it needs the owner to say so.
+            assert!(owner.is_authorized, "Owner authorization is missing");
+            true
+        }
+    };
 
-    let definition_id = token_definition.account_id;
-    let ata_account_id = ata_account.account_id;
+    (seed, needs_initialize)
+}
 
-    // Every declared account is reported, untouched ones included: v0.2.5 fails a
-    // transaction whose output omits one. The ATA itself is written by the token
-    // program in the chained call below, not here.
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(owner),
-        AccountStateDiff::unchanged(token_definition),
-        AccountStateDiff::unchanged(ata_account),
-    ];
+/// Guard on the ATA's shard: the declared `contents` must be what is really there.
+///
+/// Reads a Token Program shard and writes nothing — this program owns no shard,
+/// so every effect it emits is a read.
+///
+/// # Panics
+/// If the classification disagrees with the shard's bytes.
+pub fn check_contents(pre_data: &ShardData, descriptor: &TokenDescriptor, contents: AtaContents) {
+    assert_eq!(
+        ata_core::classify(pre_data, descriptor),
+        contents,
+        "Associated token account does not hold what the instruction claims"
+    );
+}
 
-    // The call names its pre-states by id; the callee's authority over the ATA comes
-    // from `pda_seeds` — LEZ derives the authorized set as
-    // `for_public_pda(caller_account_id, seed)` — rather than from a pre-state flag.
-    let chained_call = ChainedCall::new(
-        token_program_id,
-        vec![definition_id, ata_account_id],
-        &token_core::Instruction::InitializeAccount,
-    )
-    .with_pda_seeds(vec![seed]);
-    (state_diffs, vec![chained_call])
+/// Guard on the definition's shard: the declared `kind` must be the definition's.
+///
+/// Only needed on the `Intended` branch, which emits no chained call and so has
+/// nothing downstream to pin `kind` against. The other branches leave that to
+/// `InitializeAccount`'s own `CheckHoldingKind` guard on this same shard.
+///
+/// # Panics
+/// If the definition does not describe holdings of `kind`.
+pub fn check_definition_kind(pre_data: &ShardData, kind: TokenKind) {
+    let definition =
+        TokenDefinition::try_from(pre_data).expect("Token Definition account must be valid");
+    assert_eq!(
+        TokenKind::from_definition(&definition),
+        kind,
+        "Token Definition does not initialize this Token Holding kind"
+    );
 }

@@ -6,7 +6,7 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
-    account::{AccountId, Data},
+    account::{AccountId, ShardData},
     program::PdaSeed,
 };
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,28 @@ pub struct ProtocolParameters {
     /// `update_redemption_rate` and the oracle staleness gate in
     /// `generate_debt`.
     pub market_price_oracle_id: AccountId,
+    /// Account address of the Token Program every chained call routes through,
+    /// and the shard key every holding- or definition-guard requires.
+    ///
+    /// Recorded at bootstrap rather than taken from a caller-supplied account's
+    /// owner, which is what v0.2.5 did. That was adequate then, because an
+    /// account had one owner and one data blob: pinning the *address* of the
+    /// stablecoin definition pinned its contents too. Under v0.3.0 an address has
+    /// one shard per program, so a caller-chosen `program_account_id` means
+    /// caller-authored bytes — a `RepayDebt` routed through a program the caller
+    /// controls would burn nothing and still reduce the position's debt, and a
+    /// `DepositCollateral` guarded against a forged vault shard would inflate the
+    /// position's collateral for free. Pinning the program closes both.
+    pub token_program_id: AccountId,
+    /// Shard key of the market-price oracle account: which program's bytes at
+    /// `market_price_oracle_id` the protocol will read.
+    ///
+    /// The *producing program* is still deliberately unconstrained — any producer
+    /// emitting a well-formed `OraclePriceAccount` can be bound here — but it is
+    /// bound once, by the admin, rather than chosen per call by whoever submits
+    /// the transaction. Without that, a caller could name the right address under
+    /// their own program and author the observation the controller reads.
+    pub market_price_oracle_program_id: AccountId,
     /// Per-millisecond stability fee multiplier in fixed-point, stored as
     /// `(1 + r_per_millisecond) * FIXED_POINT_ONE`.
     pub stability_fee_per_millisecond: u128,
@@ -56,21 +78,21 @@ pub struct ProtocolParameters {
     pub is_frozen: bool,
 }
 
-impl TryFrom<&Data> for ProtocolParameters {
+impl TryFrom<&ShardData> for ProtocolParameters {
     type Error = std::io::Error;
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+    fn try_from(data: &ShardData) -> Result<Self, Self::Error> {
         Self::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&ProtocolParameters> for Data {
+impl From<&ProtocolParameters> for ShardData {
     fn from(params: &ProtocolParameters) -> Self {
         let len = borsh::object_length(params).expect("ProtocolParameters length must be known");
         let mut buf = Vec::with_capacity(len);
         BorshSerialize::serialize(params, &mut buf)
             .expect("ProtocolParameters serialization should not fail");
-        Self::try_from(buf).expect("ProtocolParameters encoded data should fit into Data")
+        Self::try_from(buf).expect("ProtocolParameters encoded data should fit into ShardData")
     }
 }
 
@@ -107,6 +129,8 @@ mod tests {
             stablecoin_definition_id: AccountId::new([0x01; 32]),
             collateral_definition_id: AccountId::new([0x02; 32]),
             market_price_oracle_id: AccountId::new([0x03; 32]),
+            token_program_id: AccountId::new([0x04; 32]),
+            market_price_oracle_program_id: AccountId::new([0x05; 32]),
             stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000, /* ε ≈ 1.5×10^15 → ~5% annual */
             controller_proportional_gain: -123_456_789,
             controller_integral_gain: 987_654_321,
@@ -120,7 +144,7 @@ mod tests {
     #[test]
     fn borsh_roundtrip_preserves_every_field() {
         let params = sample_params();
-        let data: Data = (&params).into();
+        let data: ShardData = (&params).into();
         let decoded = ProtocolParameters::try_from(&data).expect("decode");
         assert_eq!(decoded, params);
     }
@@ -129,7 +153,7 @@ mod tests {
     fn borsh_roundtrip_with_is_frozen_true() {
         let mut params = sample_params();
         params.is_frozen = true;
-        let data: Data = (&params).into();
+        let data: ShardData = (&params).into();
         let decoded = ProtocolParameters::try_from(&data).expect("decode");
         assert!(decoded.is_frozen);
         assert_eq!(decoded, params);

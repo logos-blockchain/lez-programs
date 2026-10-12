@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::AccountStateDiff,
+    account::{AccountId, ShardData},
+    program::AccountMeta,
 };
 use token_core::{
     NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding, TokenMetadata,
@@ -10,6 +10,9 @@ use token_core::{
 ///
 /// `Some(id)` makes the token mintable by `id`; `None` fixes the supply.
 /// An all-zero authority id is rejected as it cannot be a real signer.
+///
+/// # Panics
+/// If `mint_authority` is the all-zero id.
 fn validate_mint_authority(mint_authority: Option<AccountId>) -> Option<AccountId> {
     if let Some(id) = &mint_authority {
         assert!(
@@ -20,99 +23,53 @@ fn validate_mint_authority(mint_authority: Option<AccountId>) -> Option<AccountI
     mint_authority
 }
 
-pub fn new_fungible_definition(
-    definition_target_account: AccountWithMetadata,
-    holding_target_account: AccountWithMetadata,
+/// Plan half: every target must authorize its own creation.
+///
+/// These instructions read nothing, so the whole check is here. The emptiness of
+/// each target is asserted by [`create`] in the apply phase, which is the only
+/// phase that can see it.
+///
+/// # Panics
+/// If any target account is not authorized.
+pub fn authorize_targets(targets: &[&AccountMeta]) {
+    for target in targets {
+        assert!(
+            target.is_authorized,
+            "Target account must be authorized to be created"
+        );
+    }
+}
+
+/// The definition and holding records for a fungible token with no metadata.
+#[must_use]
+pub fn fungible_records(
+    definition_id: AccountId,
     name: String,
     total_supply: u128,
     mint_authority: Option<AccountId>,
-) -> Vec<AccountStateDiff> {
-    assert_eq!(
-        definition_target_account.account,
-        Account::default(),
-        "Definition target account must have default values"
-    );
-
-    assert_eq!(
-        holding_target_account.account,
-        Account::default(),
-        "Holding target account must have default values"
-    );
-    assert!(
-        definition_target_account.is_authorized,
-        "Definition target account must be authorized"
-    );
-    assert!(
-        holding_target_account.is_authorized,
-        "Holding target account must be authorized"
-    );
-
-    let token_definition = TokenDefinition::Fungible {
+) -> (ShardData, ShardData) {
+    let definition = TokenDefinition::Fungible {
         name,
         total_supply,
         metadata_id: None,
         authority: validate_mint_authority(mint_authority),
     };
-    let token_holding = TokenHolding::Fungible {
-        definition_id: definition_target_account.account_id,
+    let holding = TokenHolding::Fungible {
+        definition_id,
         balance: total_supply,
     };
-
-    // Both accounts are claimed by these writes. The `is_authorized` asserts above are
-    // now the sole guard — v0.2.5 acquires ownership on a data write and no longer checks
-    // the claim's authorization itself.
-    vec![
-        AccountStateDiff::new(
-            definition_target_account,
-            BalanceDiff::Add(0),
-            Data::from(&token_definition),
-        ),
-        AccountStateDiff::new(
-            holding_target_account,
-            BalanceDiff::Add(0),
-            Data::from(&token_holding),
-        ),
-    ]
+    (ShardData::from(&definition), ShardData::from(&holding))
 }
 
-pub fn new_definition_with_metadata(
-    definition_target_account: AccountWithMetadata,
-    holding_target_account: AccountWithMetadata,
-    metadata_target_account: AccountWithMetadata,
+/// The definition, holding and metadata records for a token with metadata.
+#[must_use]
+pub fn records_with_metadata(
+    definition_id: AccountId,
+    metadata_id: AccountId,
     new_definition: NewTokenDefinition,
     metadata: NewTokenMetadata,
-) -> Vec<AccountStateDiff> {
-    assert_eq!(
-        definition_target_account.account,
-        Account::default(),
-        "Definition target account must have default values"
-    );
-
-    assert_eq!(
-        holding_target_account.account,
-        Account::default(),
-        "Holding target account must have default values"
-    );
-
-    assert_eq!(
-        metadata_target_account.account,
-        Account::default(),
-        "Metadata target account must have default values"
-    );
-    assert!(
-        definition_target_account.is_authorized,
-        "Definition target account must be authorized"
-    );
-    assert!(
-        holding_target_account.is_authorized,
-        "Holding target account must be authorized"
-    );
-    assert!(
-        metadata_target_account.is_authorized,
-        "Metadata target account must be authorized"
-    );
-
-    let (token_definition, token_holding) = match new_definition {
+) -> (ShardData, ShardData, ShardData) {
+    let (definition, holding) = match new_definition {
         NewTokenDefinition::Fungible {
             name,
             total_supply,
@@ -121,11 +78,11 @@ pub fn new_definition_with_metadata(
             TokenDefinition::Fungible {
                 name,
                 total_supply,
-                metadata_id: Some(metadata_target_account.account_id),
+                metadata_id: Some(metadata_id),
                 authority: validate_mint_authority(mint_authority),
             },
             TokenHolding::Fungible {
-                definition_id: definition_target_account.account_id,
+                definition_id,
                 balance: total_supply,
             },
         ),
@@ -136,40 +93,42 @@ pub fn new_definition_with_metadata(
             TokenDefinition::NonFungible {
                 name,
                 printable_supply,
-                metadata_id: metadata_target_account.account_id,
+                metadata_id,
             },
             TokenHolding::NftMaster {
-                definition_id: definition_target_account.account_id,
+                definition_id,
                 print_balance: printable_supply,
             },
         ),
     };
 
     let token_metadata = TokenMetadata {
-        definition_id: definition_target_account.account_id,
+        definition_id,
         standard: metadata.standard,
         uri: metadata.uri,
         creators: metadata.creators,
         primary_sale_date: 0u64,
     };
 
-    // All three accounts are claimed by these writes; the `is_authorized` asserts above
-    // are the sole guard, as v0.2.5 no longer checks a claim's authorization.
-    vec![
-        AccountStateDiff::new(
-            definition_target_account,
-            BalanceDiff::Add(0),
-            Data::from(&token_definition),
-        ),
-        AccountStateDiff::new(
-            holding_target_account,
-            BalanceDiff::Add(0),
-            Data::from(&token_holding),
-        ),
-        AccountStateDiff::new(
-            metadata_target_account,
-            BalanceDiff::Add(0),
-            Data::from(&token_metadata),
-        ),
-    ]
+    (
+        ShardData::from(&definition),
+        ShardData::from(&holding),
+        ShardData::from(&token_metadata),
+    )
+}
+
+/// Write a whole record into a shard that must be empty.
+///
+/// The emptiness assert is what `#[account(init)]` used to express in the plan
+/// phase and no longer can: nothing there can see whether a shard holds bytes.
+///
+/// # Panics
+/// If the shard already holds data.
+#[must_use]
+pub fn create(pre_data: &ShardData, data: ShardData) -> ShardData {
+    assert!(
+        pre_data.is_empty(),
+        "Target account must not already hold data"
+    );
+    data
 }

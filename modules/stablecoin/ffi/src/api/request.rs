@@ -25,6 +25,14 @@ pub struct InitializeProgramPlanRequest {
     pub stablecoin_program_id: String,
     pub admin_id: String,
     pub freeze_authority_id: String,
+    /// The Token Program the collateral lives under. Needed twice over: it says
+    /// which shard of `collateralDefinition` to decode, and it is the value
+    /// `initialize_program` records as `ProtocolParameters.token_program_id` and
+    /// checks every later token slot against.
+    pub token_program_id: String,
+    /// The program that publishes `marketPriceOracle`. Same two roles: the shard
+    /// to decode, and the producer the protocol binds.
+    pub market_price_oracle_program_id: String,
     pub collateral_definition: AccountRead,
     pub market_price_oracle: AccountRead,
     pub clock: AccountRead,

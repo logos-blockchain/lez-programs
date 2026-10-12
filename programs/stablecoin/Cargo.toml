@@ -4,9 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
-clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.0", features = ["host"] }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.0" }
 alloy-primitives = { version = "1", default-features = false }
 stablecoin_core = { path = "core" }
 token_core = { path = "../token/core" }
 twap_oracle_core = { path = "../twap_oracle/core" }
+
+[dev-dependencies]
+# Chained-call payloads are Borsh-encoded bytes; the tests decode them to assert
+# which Token instruction was emitted.
+borsh = "1.5"
+
+[lints]
+workspace = true

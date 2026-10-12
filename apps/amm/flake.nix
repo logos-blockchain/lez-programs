@@ -13,10 +13,11 @@
     # Core wallet module (the LEZ wallet FFI Qt plugin). The input name must
     # match the metadata.json `dependencies` entry so the builder can resolve it
     # as a module dependency. Same rev the repo-root flake and the amm_module
-    # flake pin: the module `main` build against a v0.2.5-rc2 wallet-ffi.
-    # See the root flake.nix for why not the newer adapt-ffi-program-kind branch.
-    # See the root flake.nix for the full rationale.
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
+    # flake pin: the module `main` build against a v0.3.0 wallet-ffi, and the
+    # three must stay in lockstep or the UI and the core module resolve two
+    # different wallets. See the root flake.nix for the full rationale, including
+    # why `wallet_ffi_get_account_view` is still missing here.
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=b89e5d24df5babc2490d2e5d47756fb1f33435dd";
 
     # The AMM core module, resolved as the metadata.json `amm_module` dependency
     # (the builder reads its .lidl to generate modules().amm_module). Built from

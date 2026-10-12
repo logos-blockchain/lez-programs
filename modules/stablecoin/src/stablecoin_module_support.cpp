@@ -57,13 +57,6 @@ bool isZeroId(const std::string& value) {
            });
 }
 
-bool isAllZero(const std::string& value) {
-    return !value.empty()
-        && std::all_of(value.begin(), value.end(), [](char character) {
-               return character == '0';
-           });
-}
-
 std::string jsonString(const json& object, const char* key) {
     const auto field = object.find(key);
     return field != object.end() && field->is_string()
@@ -103,26 +96,52 @@ nlohmann::json publicAccountRead(const std::string& account_id,
         return read;
     }
 
-    std::string owner = lowercase(jsonString(account, "program_owner"));
-    std::string balance = lowercase(jsonString(account, "balance"));
-    std::string nonce = lowercase(jsonString(account, "nonce"));
-    std::string data = lowercase(jsonString(account, "data"));
-    if (!isHexLength(owner, 64) || !isHexLength(balance, 32)
-        || !isHexLength(nonce, 32) || !isEvenHex(data)) {
+    // LEZ v0.3.0: an account is a nonce plus its program shards. v0.2.5's flat
+    // `{program_owner, balance, nonce, data}` is gone with the flat account
+    // itself -- ownership is not a property of an address any more, a balance is
+    // just the native token program's shard, and "the data" is whichever shard
+    // you asked for.
+    //
+    // The two sides spell it differently, deliberately. `lez_core` emits what its
+    // C struct holds -- `{nonce, shards: [{program, data}]}`, an array because
+    // `FfiAccount` is a pointer plus a length -- while stablecoin_ffi's
+    // `WalletAccount` mirrors `lee_core::Account` itself, `{nonce, data: {shards}}`
+    // keyed by program. Re-keying the array into that map is this function's job,
+    // and the only place the module has to care that the two agree.
+    const std::string nonce = lowercase(jsonString(account, "nonce"));
+    const auto shards_field = account.find("shards");
+    if (!isHexLength(nonce, 32) || shards_field == account.end()
+        || !shards_field->is_array()) {
         read["status"] = "backend_error";
         return read;
     }
 
-    if (isZeroId(owner) && isAllZero(balance) && isAllZero(nonce) && data.empty()) {
-        return read;
+    json shards = json::object();
+    bool any_state = false;
+    for (const auto& entry : *shards_field) {
+        if (!entry.is_object()) {
+            read["status"] = "backend_error";
+            return read;
+        }
+        const std::string program = lowercase(jsonString(entry, "program"));
+        const std::string value = lowercase(jsonString(entry, "data"));
+        if (!isHexLength(program, 64) || !isEvenHex(value)) {
+            read["status"] = "backend_error";
+            return read;
+        }
+        if (!value.empty()) any_state = true;
+        shards[program] = value;
     }
+
+    // An address nobody has written to carries an empty shard map, and a shard
+    // with no bytes says the same thing. Both are the `not_found` that v0.2.5
+    // reported for an `Account::default()` read.
+    if (!any_state) return read;
 
     read["status"] = "ok";
     read["account"] = {
-        {"program_owner", std::move(owner)},
-        {"balance", std::move(balance)},
-        {"nonce", std::move(nonce)},
-        {"data", std::move(data)},
+        {"nonce", nonce},
+        {"data", {{"shards", std::move(shards)}}},
     };
     return read;
 }
@@ -157,6 +176,9 @@ std::string stableFfiError(const std::string& error) {
         "invalid_stablecoin_name",
         "oracle_asset_mismatch",
         "program_id_mismatch",
+        // New in v0.3.0: a read succeeded but the named program holds no shard at
+        // that address -- the successor to a `program_owner` mismatch.
+        "program_shard_missing",
         "protocol_parameters_pda_mismatch",
         "stablecoin_program_mismatch",
     };

@@ -1,231 +1,107 @@
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
-};
-use stablecoin_core::{
-    compute_protocol_parameters_pda, compute_redemption_price_state_pda,
-    compute_stability_fee_accumulator_pda,
-    math::{compute_current_accumulated_rate_wide, compute_current_redemption_price_wide},
-    verify_position_and_get_seed, verify_position_vault_and_get_seed, Position, ProtocolParameters,
-    RedemptionPriceState, StabilityFeeAccumulator,
-};
-use token_core::TokenHolding;
+//! `Instruction::WithdrawCollateral` (spec §10.6).
 
-/// Withdraw `amount` collateral tokens from `position`'s vault back to `user_collateral_holding`.
+use lee_core::{
+    account::{AccountId, ShardData},
+    program::{AccountMeta, ChainedCall},
+};
+use stablecoin_core::{Position, ProtocolParameters, WithdrawCollateral};
+
+/// Plan half: check the addresses and chain the vault→user transfer.
 ///
-/// Decreases `Position.collateral_amount` by `amount` and emits a single chained
-/// `Token::Transfer` from the vault to `user_collateral_holding`, authorized by the vault
-/// PDA seed. The position diff is a plain data write —
-/// the initial PDA claim already happened in
-/// [`crate::open_position::open_position`].
-///
-/// Blocked while the protocol is frozen. After the decrement, the §6.2
-/// collateralization invariant is checked against debt and redemption price both
-/// projected forward to the clock timestamp (§5.3) — unless `amount` is zero or
-/// the position carries no debt, in which case the projections are skipped
-/// entirely. A zero-amount withdrawal is a valid no-op (§11) and leaves the
-/// position untouched, so there is nothing for the check to re-examine.
+/// Blocked while frozen (§7): a withdrawal is the one collateral move that can
+/// only worsen the protocol's position.
 ///
 /// # Panics
-/// - `owner` is not authorized.
-/// - `position` is uninitialized, not owned by `stablecoin_program_id`, holds data that does not
-///   decode as a [`Position`], or sits at an address that does not match
-///   `compute_position_pda(stablecoin_program_id, owner, Position.position_nonce)`.
-/// - `vault` sits at an address that does not match
-///   `compute_position_vault_pda(stablecoin_program_id, position_id)`.
-/// - `vault` holds a token other than `protocol_parameters.collateral_definition_id`.
-/// - `user_collateral_holding` is uninitialized, owned by a different Token Program than the vault,
-///   or holds a [`TokenHolding`] whose `definition_id` does not match the vault holding's
-///   collateral definition.
-/// - `protocol_parameters`, `stability_fee_accumulator` or `redemption_price_state` is
-///   uninitialized, wrongly owned, not at its canonical PDA, or does not decode.
-/// - `protocol_parameters.is_frozen` is set.
-/// - `clock` is not the initialized system `CLOCK_01` account.
-/// - The projected redemption price is zero.
-/// - `amount > Position.collateral_amount`, or §6.2 fails post-decrement.
-#[allow(
+/// - `owner` did not sign.
+/// - any global is not at its canonical PDA, or the clock is not `CLOCK_01`.
+/// - the protocol is frozen.
+/// - any token slot does not select the bound Token Program's shard.
+/// - `position` or `vault` is not at its PDA derivation.
+#[expect(
     clippy::too_many_arguments,
-    reason = "the eight account inputs mirror the spec §10.6 ABI; a param struct would obscure it"
+    reason = "the account inputs mirror the spec §10.6 ABI, plus the declared globals and clock"
 )]
-pub fn withdraw_collateral(
-    owner: AccountWithMetadata,
-    position: AccountWithMetadata,
-    vault: AccountWithMetadata,
-    user_collateral_holding: AccountWithMetadata,
-    stability_fee_accumulator: AccountWithMetadata,
-    redemption_price_state: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    clock: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
+#[must_use]
+pub fn plan_withdraw_collateral(
+    owner: &AccountMeta,
+    position: &AccountMeta,
+    vault: &AccountMeta,
+    user_collateral_holding: &AccountMeta,
+    stability_fee_accumulator: &AccountMeta,
+    redemption_price_state: &AccountMeta,
+    protocol_parameters: &AccountMeta,
+    clock: &AccountMeta,
+    parameters: &ProtocolParameters,
+    position_nonce: u64,
     amount: u128,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    let parameters = crate::checks::decode_global(
-        &protocol_parameters,
-        compute_protocol_parameters_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "ProtocolParameters",
-    );
-    let parameters =
-        ProtocolParameters::try_from(&parameters).expect("ProtocolParameters must decode");
-    assert!(!parameters.is_frozen, "Protocol is frozen");
-
-    let accumulator_data = crate::checks::decode_global(
-        &stability_fee_accumulator,
-        compute_stability_fee_accumulator_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "StabilityFeeAccumulator",
-    );
-    let accumulator = StabilityFeeAccumulator::try_from(&accumulator_data)
-        .expect("StabilityFeeAccumulator must decode");
-
-    let redemption_data = crate::checks::decode_global(
-        &redemption_price_state,
-        compute_redemption_price_state_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "RedemptionPriceState",
-    );
-    let redemption =
-        RedemptionPriceState::try_from(&redemption_data).expect("RedemptionPriceState must decode");
-
-    let now = crate::accrue_stability_fee::read_clock(&clock);
+    stablecoin_program_id: AccountId,
+) -> ChainedCall {
     assert!(owner.is_authorized, "Owner authorization is missing");
-    assert_ne!(
-        position.account,
-        Account::default(),
-        "Position account must be initialized"
-    );
-    assert_eq!(
-        position.account.program_owner, stablecoin_program_id,
-        "Position is not owned by this stablecoin program"
+    crate::shared::assert_parameters_slot(protocol_parameters, stablecoin_program_id);
+    crate::shared::assert_accumulator_slot(stability_fee_accumulator, stablecoin_program_id);
+    crate::shared::assert_redemption_slot(redemption_price_state, stablecoin_program_id);
+    crate::shared::assert_canonical_clock(clock);
+    assert!(!parameters.is_frozen, "Protocol is frozen");
+    crate::shared::assert_token_program(vault, parameters, "Position vault");
+    crate::shared::assert_token_program(
+        user_collateral_holding,
+        parameters,
+        "User collateral holding",
     );
 
-    let position_data = Position::try_from(&position.account.data)
-        .expect("Position account must hold valid Position state");
-    // `verify_position_and_get_seed` asserts the position address matches the
-    // (owner, position_nonce) PDA derivation. We do not use the seed
-    // downstream — the position is already PDA-claimed.
-    let _position_seed = verify_position_and_get_seed(
-        &position,
-        &owner,
-        position_data.position_nonce,
+    let vault_seed = crate::shared::assert_position_and_vault_slots(
+        position,
+        vault,
+        owner,
+        position_nonce,
         stablecoin_program_id,
     );
-    // The PDA derivation above already binds the owner; this guards the stored
-    // discovery copy against silently drifting out of sync.
-    assert_eq!(
-        position_data.owner_account_id, owner.account_id,
-        "Position owner_account_id does not match the owner account"
-    );
-    let vault_seed =
-        verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
-    assert_eq!(
-        position_data.vault_account_id, vault.account_id,
-        "Position vault_account_id does not match the vault account"
-    );
 
-    let vault_holding = TokenHolding::try_from(&vault.account.data)
-        .expect("Vault account must hold a valid TokenHolding");
-    // `ProtocolParameters` is the authority on which token is collateral. The
-    // vault PDA is verified to belong to this position and was created against
-    // that same definition, so this should always hold — it is pinned anyway, as
-    // in `deposit_collateral`, so the two instructions cannot drift apart.
-    let collateral_definition_id = parameters.collateral_definition_id;
-    assert_eq!(
-        vault_holding.definition_id(),
-        collateral_definition_id,
-        "Vault holding does not match the protocol's collateral definition"
-    );
-
-    let token_program_id = vault.account.program_owner;
-    assert_ne!(
-        user_collateral_holding.account,
-        Account::default(),
-        "User collateral holding must be initialized"
-    );
-    assert_eq!(
-        user_collateral_holding.account.program_owner, token_program_id,
-        "User collateral holding must be owned by the same Token Program as the vault"
-    );
-    let user_holding = TokenHolding::try_from(&user_collateral_holding.account.data)
-        .expect("User collateral holding must hold a valid TokenHolding");
-    assert_eq!(
-        user_holding.definition_id(),
-        collateral_definition_id,
-        "User collateral holding definition does not match the position's collateral definition"
-    );
-
-    let new_collateral = position_data
-        .collateral_amount
-        .checked_sub(amount)
-        .expect("Withdrawal amount exceeds position collateral");
-
-    let updated_position = Position {
-        owner_account_id: position_data.owner_account_id,
-        position_nonce: position_data.position_nonce,
-        vault_account_id: position_data.vault_account_id,
-        collateral_amount: new_collateral,
-        normalized_debt_amount: position_data.normalized_debt_amount,
-        opened_at: position_data.opened_at,
-    };
-    // Spec §6.2 is enforced *after* the decrement, against debt and redemption
-    // price both projected forward to `now` (§5.3).
-    //
-    // Two cases skip the check, and with it the projections. `amount == 0` is a
-    // valid no-op (§11): collateral and debt are unchanged, so re-running the
-    // check could only reject a position the call did not touch. A position
-    // with no debt has nothing to collateralize. Projecting is `O(log Δt)`
-    // `U512` multiplications, so skipping is worth it on its own in the guest.
-    if amount != 0 && updated_position.normalized_debt_amount != 0 {
-        let current_redemption_price = compute_current_redemption_price_wide(
-            redemption.redemption_price_at_last_update,
-            redemption.redemption_rate_per_millisecond,
-            redemption.last_updated_at,
-            now,
-        );
-        // A rate below 1.0 decays the projected price toward zero, and it does
-        // reach zero over a long enough gap. Zero would zero out the required
-        // collateral and let an indebted position be drained completely.
-        assert!(
-            !current_redemption_price.is_zero(),
-            "Redemption price projected to zero"
-        );
-        crate::checks::assert_position_is_collateralized(
-            &updated_position,
-            compute_current_accumulated_rate_wide(
-                accumulator.accumulated_rate_at_last_accrual,
-                parameters.stability_fee_per_millisecond,
-                accumulator.last_accrued_at,
-                now,
-            ),
-            current_redemption_price,
-            parameters.minimum_collateralization_ratio,
-        );
-    }
-
-    let vault_id = vault.account_id;
-    let user_collateral_holding_id = user_collateral_holding.account_id;
-
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(owner),
-        AccountStateDiff::new(position, BalanceDiff::Add(0), Data::from(&updated_position)),
-        AccountStateDiff::unchanged(vault),
-        AccountStateDiff::unchanged(user_collateral_holding),
-        AccountStateDiff::unchanged(stability_fee_accumulator),
-        AccountStateDiff::unchanged(redemption_price_state),
-        AccountStateDiff::unchanged(protocol_parameters),
-        AccountStateDiff::unchanged(clock),
-    ];
-
-    // The vault PDA seed is the authority over the vault for the chained
-    // transfer; pre-states are ids now, so there is no flag to flip.
-    let transfer_call = ChainedCall::new(
-        token_program_id,
-        vec![vault_id, user_collateral_holding_id],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: amount,
-        },
+    // The vault is the sender, and a chained call ships shard selectors rather
+    // than authorized accounts — so the vault's PDA seed is the whole of the
+    // authority for debiting it.
+    crate::shared::transfer_call(
+        parameters.token_program_id,
+        vault.account_id,
+        user_collateral_holding.account_id,
+        crate::shared::collateral_descriptor(parameters),
+        amount,
     )
-    .with_pda_seeds(vec![vault_seed]);
+    .with_pda_seeds(vec![vault_seed])
+}
 
-    (state_diffs, vec![transfer_call])
+/// Apply half: shrink the position's collateral and re-check §6.2.
+///
+/// The check is against debt and redemption price both projected forward to the
+/// pinned `now` (§5.3) — see
+/// [`assert_collateralized`](crate::generate_debt::assert_collateralized), which
+/// this shares with `GenerateDebt`.
+///
+/// It is skipped when either `amount` or the position's normalized debt is zero.
+/// A debt-free position has no invariant to satisfy, and a zero-amount
+/// withdrawal changes nothing — so neither needs a live redemption price, and
+/// requiring one would make both fail on a stale oracle for no benefit. §6.2 is
+/// an *inequality on the new state*, so skipping it where the state is trivially
+/// safe is sound rather than lenient.
+///
+/// # Panics
+/// - the shard is not a valid [`Position`], or its identity differs from the declared one.
+/// - `amount` exceeds the recorded collateral.
+/// - §6.2 fails after the withdrawal.
+#[must_use]
+pub fn position_after_withdraw(pre_data: &ShardData, effect: &WithdrawCollateral) -> ShardData {
+    let position = crate::shared::position_of(pre_data, &effect.expected);
+    let collateral_amount = position
+        .collateral_amount
+        .checked_sub(effect.amount)
+        .expect("Withdraw amount exceeds position collateral");
+
+    let updated = Position {
+        collateral_amount,
+        ..position
+    };
+    if effect.amount != 0 && updated.normalized_debt_amount != 0 {
+        crate::generate_debt::assert_collateralized(&updated, &effect.inputs);
+    }
+    ShardData::from(&updated)
 }

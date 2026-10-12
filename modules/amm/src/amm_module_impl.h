@@ -296,10 +296,21 @@ private:
     nlohmann::json readConfig();
 
     // Reads a public account through the wallet module and returns the
-    // { id, status, account:{ program_owner, balance, nonce, data } } shape the
-    // amm_ffi ops expect (see the app-side accountReadJson). `account` is
-    // omitted when the read has no data (uninitialized/nonexistent).
+    // { id, status, account:{ nonce, data:{ shards } } } shape the amm_ffi ops
+    // expect (see the app-side accountReadJson) -- v0.3.0's account, a nonce plus
+    // a map keyed by the program that wrote each shard. `account` is omitted when
+    // the read failed or came back malformed.
+    /// Every shard anyone ever wrote at `account_id`.
     nlohmann::json readPublicAccount(const std::string& account_id);
+    /// Only `program_id`'s shard of `account_id`, projected by the node.
+    nlohmann::json readPublicAccountShard(const std::string& account_id,
+                                          const std::string& program_id);
+    nlohmann::json shardedRead(const std::string& account_id,
+                               const std::string& account_json);
+    /// The canonical clock's shard, from the ids a derivation op reported.
+    nlohmann::json readClock(const nlohmann::json& pool_ids);
+    /// One program's shard bytes out of a read, hex, or "" when there are none.
+    static std::string shardHex(const nlohmann::json& read, const std::string& program_id);
 
     // The user's own public account reads, fresh each call (empty when the wallet
     // is closed). Each read is a live sequencer round-trip.

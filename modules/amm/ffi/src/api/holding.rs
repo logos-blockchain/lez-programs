@@ -1,7 +1,7 @@
 use lee_core::account::AccountId;
 use token_core::TokenHolding;
 
-use crate::account::{decode_account, AccountRead};
+use crate::account::{program_shard, AccountRead};
 
 #[derive(Clone)]
 pub(super) struct SelectedHolding {
@@ -24,15 +24,13 @@ pub(super) fn decode_fungible_holding(
     read: &AccountRead,
     token_program: AccountId,
 ) -> Result<SelectedHolding, String> {
-    let (id, account) = decode_account(read)?;
-    if account.program_owner != token_program {
-        return Err(String::from("holding owner mismatch"));
-    }
+    // Asking for the Token Program's shard is the v0.2.5 `program_owner !=
+    // token_program` check: an account it never wrote to holds no shard of its.
+    let (id, shard) = program_shard(read, token_program, "token holding")?;
     let TokenHolding::Fungible {
         definition_id,
         balance,
-    } = TokenHolding::try_from(&account.data)
-        .map_err(|_| String::from("invalid fungible holding"))?
+    } = TokenHolding::try_from(&shard).map_err(|_| String::from("invalid fungible holding"))?
     else {
         return Err(String::from("invalid fungible holding"));
     };

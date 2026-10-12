@@ -269,6 +269,17 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
             return submission;
         }
     }
+    if (!transaction.shardProgramIds.isEmpty()
+        && transaction.shardProgramIds.size() != transaction.accountIds.size()) {
+        submission.failure = WalletFailure::InvalidRequest;
+        return submission;
+    }
+    for (const QString& programId : transaction.shardProgramIds) {
+        if (!isHex(programId, 64)) {
+            submission.failure = WalletFailure::InvalidRequest;
+            return submission;
+        }
+    }
 
     QVariantList signingRequirements;
     signingRequirements.reserve(transaction.signingRequirements.size());
@@ -302,7 +313,8 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
             // signing account self-pays. A signer with no balance will be
             // rejected as `PayerCannotFund` -- that case needs a funded payer
             // threaded through `transaction`, not a default here.
-            QString());
+            QString(),
+            transaction.shardProgramIds);
 
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(response.toUtf8(), &parseError);

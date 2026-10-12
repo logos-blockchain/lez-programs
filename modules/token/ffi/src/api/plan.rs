@@ -1,7 +1,9 @@
 use lee_core::account::AccountId;
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
-use token_core::{Instruction, MetadataStandard, NewTokenDefinition, NewTokenMetadata};
+use token_core::{
+    Instruction, MetadataStandard, NewTokenDefinition, NewTokenMetadata, TokenDescriptor, TokenKind,
+};
 
 use super::{
     parse_token_program_id,
@@ -33,7 +35,7 @@ pub fn program_id(request: ProgramIdRequest) -> TokenResult {
         .compute_image_id()
         .map_err(|_| TokenApiError::new("backend_error"))?
         .into();
-    let bijection_id = AccountId::from(image_id);
+    let bijection_id = AccountId::from_builtin_program(image_id);
     Ok(json!({
         "imageId": hex::encode(bijection_id.into_value()),
         "imageIdBase58": bijection_id.to_string(),
@@ -125,11 +127,15 @@ pub fn initialize_holding_plan(request: InitializeHoldingPlanRequest) -> TokenRe
     let program_id = parse_token_program_id(&request.token_program_id)?;
     let definition_id = parse_account_id(&request.definition_id, "definition id")?;
     let holding_target = parse_account_id(&request.holding_target_id, "holding target id")?;
+    let kind = parse_token_kind(&request.kind)?;
+    // The target no longer signs. Writing a shard at an address claims nothing
+    // from anyone, so there is no squatting left to guard against -- which is
+    // why `holdingTargetIsFresh` and its siblings are gone from these requests.
     plan_response(
         program_id,
         [definition_id, holding_target],
-        [false, true],
-        Instruction::InitializeAccount,
+        [false, false],
+        Instruction::InitializeAccount { kind },
     )
 }
 
@@ -137,13 +143,15 @@ pub fn transfer_plan(request: TransferPlanRequest) -> TokenResult {
     let program_id = parse_token_program_id(&request.token_program_id)?;
     let sender = parse_account_id(&request.sender_holding_id, "sender holding id")?;
     let recipient = parse_account_id(&request.recipient_holding_id, "recipient holding id")?;
+    let descriptor = parse_descriptor(&request.definition_id, &request.kind)?;
     let amount = parse_amount(&request.amount_raw)?;
     plan_response(
         program_id,
         [sender, recipient],
-        [true, request.recipient_is_fresh],
+        [true, false],
         Instruction::Transfer {
             amount_to_transfer: amount,
+            descriptor,
         },
     )
 }
@@ -152,6 +160,7 @@ pub fn burn_plan(request: BurnPlanRequest) -> TokenResult {
     let program_id = parse_token_program_id(&request.token_program_id)?;
     let definition = parse_account_id(&request.definition_id, "definition id")?;
     let holding = parse_account_id(&request.holding_id, "holding id")?;
+    let kind = parse_token_kind(&request.kind)?;
     let amount = parse_amount(&request.amount_raw)?;
     plan_response(
         program_id,
@@ -159,6 +168,7 @@ pub fn burn_plan(request: BurnPlanRequest) -> TokenResult {
         [false, true],
         Instruction::Burn {
             amount_to_burn: amount,
+            kind,
         },
     )
 }
@@ -171,7 +181,7 @@ pub fn mint_plan(request: MintPlanRequest) -> TokenResult {
     plan_response(
         program_id,
         [definition, holding],
-        [true, request.holding_is_fresh],
+        [true, false],
         Instruction::Mint {
             amount_to_mint: amount,
         },
@@ -188,7 +198,7 @@ pub fn mint_with_authority_plan(request: MintWithAuthorityPlanRequest) -> TokenR
     plan_response(
         program_id,
         [definition, holding, authority],
-        [false, request.holding_is_fresh, true],
+        [false, false, true],
         Instruction::MintWithAuthority {
             amount_to_mint: amount,
         },
@@ -230,12 +240,30 @@ pub fn print_nft_plan(request: PrintNftPlanRequest) -> TokenResult {
         &request.printed_holding_target_id,
         "printed holding target id",
     )?;
+    let definition_id = parse_account_id(&request.definition_id, "definition id")?;
     plan_response(
         program_id,
         [master, printed],
-        [true, true],
-        Instruction::PrintNft,
+        [true, false],
+        Instruction::PrintNft { definition_id },
     )
+}
+
+/// Parses one of the three `TokenKind` names the module's callers use.
+fn parse_token_kind(value: &str) -> Result<TokenKind, TokenApiError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fungible" => Ok(TokenKind::Fungible),
+        "nftmaster" => Ok(TokenKind::NftMaster),
+        "nftprintedcopy" => Ok(TokenKind::NftPrintedCopy),
+        _ => Err(TokenApiError::new("invalid_token_kind")),
+    }
+}
+
+fn parse_descriptor(definition_id: &str, kind: &str) -> Result<TokenDescriptor, TokenApiError> {
+    Ok(TokenDescriptor {
+        definition_id: parse_account_id(definition_id, "definition id")?,
+        kind: parse_token_kind(kind)?,
+    })
 }
 
 fn parse_account_id(value: &str, label: &str) -> Result<AccountId, TokenApiError> {
@@ -308,6 +336,20 @@ fn reject_zero_account_id(account_id: AccountId, code: &'static str) -> Result<(
     Ok(())
 }
 
+/// Builds the plan envelope the module's C++ hands to the wallet.
+///
+/// `programAccountIds` is new in v0.3.0: a transaction no longer names accounts,
+/// it names *shards*, so every slot carries the program whose shard it selects
+/// alongside its address. It travels as a parallel array because
+/// `signingRequirements` already does, and the three stay index-aligned.
+///
+/// Every slot of a Token instruction selects the Token Program's own shard --
+/// definitions, holdings and metadata are all state this program wrote. The
+/// exception is a slot the program neither reads nor writes: `mint_with_authority`
+/// and `set_authority_with_authority` declare an authority purely for its
+/// signature, and no effect is ever emitted on it. Nothing consults such a slot's
+/// program, so it is named as the called program too rather than inventing a
+/// value for it.
 fn plan_response<const N: usize>(
     program_id: AccountId,
     account_ids: [AccountId; N],
@@ -321,6 +363,7 @@ fn plan_response<const N: usize>(
     Ok(json!({
         "programId": account_id_hex(program_id),
         "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
+        "programAccountIds": vec![account_id_hex(program_id); N],
         "signingRequirements": signing_requirements.into_iter().collect::<Vec<_>>(),
         "instruction": instruction,
     }))

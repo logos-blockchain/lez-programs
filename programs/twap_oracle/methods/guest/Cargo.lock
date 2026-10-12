@@ -691,7 +691,7 @@ dependencies = [
 [[package]]
 name = "clock_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2#d8596eb734bf9c9ce801afb92df06098a2eb098a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.3.0#db66590ab821a4e142c211017a3866d007f6fa77"
 dependencies = [
  "borsh",
  "lee_core",
@@ -1597,12 +1597,13 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 [[package]]
 name = "lee_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2#d8596eb734bf9c9ce801afb92df06098a2eb098a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.3.0#db66590ab821a4e142c211017a3866d007f6fa77"
 dependencies = [
  "base58",
  "borsh",
  "bytesize",
  "chacha20",
+ "derive_more",
  "ml-kem",
  "risc0-zkvm",
  "serde",
@@ -2609,7 +2610,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "spel-framework"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=0020cf2e8360fbed7f6284f2f4059d0b9155b236#0020cf2e8360fbed7f6284f2f4059d0b9155b236"
 dependencies = [
  "borsh",
  "lee_core",
@@ -2621,7 +2622,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-core"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=0020cf2e8360fbed7f6284f2f4059d0b9155b236#0020cf2e8360fbed7f6284f2f4059d0b9155b236"
 dependencies = [
  "base58",
  "borsh",
@@ -2638,7 +2639,7 @@ dependencies = [
 [[package]]
 name = "spel-framework-macros"
 version = "0.7.0"
-source = "git+https://github.com/0x-r4bbit/spel.git?rev=1ba0b6b797957875710c87837f4080d5341e98da#1ba0b6b797957875710c87837f4080d5341e98da"
+source = "git+https://github.com/0x-r4bbit/spel.git?rev=0020cf2e8360fbed7f6284f2f4059d0b9155b236#0020cf2e8360fbed7f6284f2f4059d0b9155b236"
 dependencies = [
  "proc-macro2",
  "quote",

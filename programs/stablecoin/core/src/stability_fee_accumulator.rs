@@ -7,7 +7,7 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
-    account::{AccountId, Data},
+    account::{AccountId, ShardData},
     program::PdaSeed,
 };
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,9 @@ const STABILITY_FEE_ACCUMULATOR_PDA_DOMAIN: &[u8] = b"STABILITY_FEE_ACCUMULATOR"
 /// `accumulated_rate_at_last_accrual * compound_rate(stability_fee_per_millisecond, now -
 /// last_accrued_at) / FIXED_POINT_ONE`. See spec §5.3 for the read-side projection.
 #[account_type]
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+)]
 pub struct StabilityFeeAccumulator {
     /// Accumulator value at [`Self::last_accrued_at`], fixed-point. Initialized
     /// to `FIXED_POINT_ONE` and monotonically non-decreasing.
@@ -31,22 +33,22 @@ pub struct StabilityFeeAccumulator {
     pub last_accrued_at: u64,
 }
 
-impl TryFrom<&Data> for StabilityFeeAccumulator {
+impl TryFrom<&ShardData> for StabilityFeeAccumulator {
     type Error = std::io::Error;
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+    fn try_from(data: &ShardData) -> Result<Self, Self::Error> {
         Self::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&StabilityFeeAccumulator> for Data {
+impl From<&StabilityFeeAccumulator> for ShardData {
     fn from(state: &StabilityFeeAccumulator) -> Self {
         let len =
             borsh::object_length(state).expect("StabilityFeeAccumulator length must be known");
         let mut buf = Vec::with_capacity(len);
         BorshSerialize::serialize(state, &mut buf)
             .expect("StabilityFeeAccumulator serialization should not fail");
-        Self::try_from(buf).expect("StabilityFeeAccumulator encoded data should fit into Data")
+        Self::try_from(buf).expect("StabilityFeeAccumulator encoded data should fit into ShardData")
     }
 }
 
@@ -82,7 +84,7 @@ mod tests {
     #[test]
     fn borsh_roundtrip_preserves_both_fields() {
         let state = sample();
-        let data: Data = (&state).into();
+        let data: ShardData = (&state).into();
         let decoded = StabilityFeeAccumulator::try_from(&data).expect("decode");
         assert_eq!(decoded, state);
     }
@@ -93,7 +95,7 @@ mod tests {
             accumulated_rate_at_last_accrual: FIXED_POINT_ONE * 12345 / 10000, // 1.2345
             last_accrued_at: 2_000_000_000,
         };
-        let data: Data = (&state).into();
+        let data: ShardData = (&state).into();
         let decoded = StabilityFeeAccumulator::try_from(&data).expect("decode");
         assert_eq!(decoded, state);
     }

@@ -14,12 +14,14 @@ std::string repeated(char value, std::size_t count) {
     return std::string(count, value);
 }
 
+/// An account as `lez_core` hands it over: a nonce plus an array of program
+/// shards (an array because `FfiAccount` is a shard pointer plus a length).
 nlohmann::json validAccount() {
     return {
-        {"program_owner", repeated('A', 64)},
-        {"balance", repeated('B', 32)},
         {"nonce", repeated('C', 32)},
-        {"data", "00ff"},
+        {"shards", nlohmann::json::array({
+                       {{"program", repeated('A', 64)}, {"data", "00ff"}},
+                   })},
     };
 }
 
@@ -61,24 +63,59 @@ LOGOS_TEST(public_account_response_validation_distinguishes_state_and_corruption
         account_id,
         validAccount().dump());
     LOGOS_ASSERT_EQ(valid["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(valid["account"]["nonce"].get<std::string>(), repeated('c', 32));
+    // The shard map is keyed by the program that wrote it, lowercased like every
+    // other id the module hands to the Rust decoders.
     LOGOS_ASSERT_EQ(
-        valid["account"]["program_owner"].get<std::string>(),
-        repeated('a', 64));
+        valid["account"]["data"]["shards"][repeated('a', 64)].get<std::string>(),
+        std::string("00ff"));
 
-    const nlohmann::json empty = {
-        {"program_owner", repeated('0', 64)},
-        {"balance", repeated('0', 32)},
+    // v0.2.5 spelled an absent account `Account::default()`. There is no such
+    // value now: an address nobody has written to has no shards.
+    const nlohmann::json absent = {
         {"nonce", repeated('0', 32)},
-        {"data", ""},
+        {"shards", nlohmann::json::array()},
     };
-    const auto missing = stablecoin_module::detail::publicAccountRead(account_id, empty.dump());
+    const auto missing = stablecoin_module::detail::publicAccountRead(account_id, absent.dump());
     LOGOS_ASSERT_EQ(missing["status"].get<std::string>(), std::string("not_found"));
+
+    // A shard that is present but empty says the same thing.
+    const nlohmann::json empty_shard = {
+        {"nonce", repeated('0', 32)},
+        {"shards", nlohmann::json::array({
+                       {{"program", repeated('A', 64)}, {"data", ""}},
+                   })},
+    };
+    const auto empty =
+        stablecoin_module::detail::publicAccountRead(account_id, empty_shard.dump());
+    LOGOS_ASSERT_EQ(empty["status"].get<std::string>(), std::string("not_found"));
 
     auto malformed = validAccount();
     malformed["nonce"] = "short";
     const auto invalid =
         stablecoin_module::detail::publicAccountRead(account_id, malformed.dump());
     LOGOS_ASSERT_EQ(invalid["status"].get<std::string>(), std::string("backend_error"));
+
+    // A shard whose program is not an account id is corruption, not absence.
+    auto bad_key = validAccount();
+    bad_key["shards"][0]["program"] = "not-a-program-id";
+    LOGOS_ASSERT_EQ(
+        stablecoin_module::detail::publicAccountRead(account_id, bad_key.dump())["status"]
+            .get<std::string>(),
+        std::string("backend_error"));
+
+    // The v0.2.5 flat account has no shards array at all, so an unbumped lez_core
+    // reads as corruption rather than silently as an empty account.
+    const nlohmann::json flat = {
+        {"program_owner", repeated('A', 64)},
+        {"balance", repeated('0', 32)},
+        {"nonce", repeated('C', 32)},
+        {"data", "00ff"},
+    };
+    LOGOS_ASSERT_EQ(
+        stablecoin_module::detail::publicAccountRead(account_id, flat.dump())["status"]
+            .get<std::string>(),
+        std::string("backend_error"));
 }
 
 LOGOS_TEST(wallet_submission_response_requires_success_and_full_hash) {

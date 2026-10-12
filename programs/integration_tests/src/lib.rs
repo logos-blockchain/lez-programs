@@ -5,34 +5,35 @@ use key_protocol::key_management::{
     secret_holders::SecretSpendingKey,
 };
 use lee_core::{
-    account::AccountId, encryption::ViewingPublicKey, AuthorizationSecretKey, CommitmentSetDigest,
-    InputAccountIdentity, MembershipProof, NullifierPublicKey, NullifierSecretKey,
-    NullifierWitness, PrivateWitness, WitnessKind,
+    account::{Account, AccountId},
+    encryption::ViewingPublicKey,
+    AuthorizationSecretKey, CommitmentSetDigest, Identifier, MembershipProof, NullifierPublicKey,
+    NullifierSecretKey, NullifierWitness, PrivateWitness, WitnessKind,
 };
 
 /// Builds a foreign-init identity: a third party credits a fresh private account it does
 /// not control, using only the owner's public key material (`npk`/`vpk`), no credential.
 ///
-/// LEZ v0.2.5 collapsed the three `InputAccountIdentity::Private*` variants into a single
-/// `Private(PrivateWitness)` carrying a `kind` and a `nullifier`; this shape is the former
-/// `PrivateForeignInit`. The circuit now asserts `pre_state.is_authorized == ask.is_some()`,
-/// so a pre-state paired with this identity must carry `is_authorized = false` — the
-/// opposite of what logos-execution-zone PR #621 required under v0.2.4.
+/// v0.3.0 dropped the `InputAccountIdentity` wrapper: a witness goes straight into
+/// `PrivacyPreservingCircuitInput::private_witnesses`, and public slots are named by the
+/// shard selectors instead of by a `Public` arm. This shape is the former
+/// `PrivateForeignInit`. The circuit asserts `pre_state.is_authorized == ask.is_some()`,
+/// so a pre-state paired with this witness must carry `is_authorized = false`.
 pub fn private_foreign_init_identity(
     npk: NullifierPublicKey,
     vpk: &ViewingPublicKey,
     commitment_root: CommitmentSetDigest,
-) -> InputAccountIdentity {
-    InputAccountIdentity::Private(PrivateWitness {
+) -> PrivateWitness {
+    PrivateWitness {
         vpk: vpk.clone(),
         random_seed: [0; 32],
-        identifier: 0,
+        identifier: Identifier::ZERO,
         kind: WitnessKind::Regular { ask: None },
         nullifier: NullifierWitness::Init {
             npk,
             commitment_root,
         },
-    })
+    }
 }
 
 /// Builds an authorized-init identity: the owner self-initializes a fresh private account by
@@ -44,18 +45,18 @@ pub fn private_authorized_init_identity(
     ask: AuthorizationSecretKey,
     vpk: &ViewingPublicKey,
     commitment_root: CommitmentSetDigest,
-) -> InputAccountIdentity {
+) -> PrivateWitness {
     let npk = NullifierPublicKey::from(&NullifierSecretKey::from(&ask));
-    InputAccountIdentity::Private(PrivateWitness {
+    PrivateWitness {
         vpk: vpk.clone(),
         random_seed: [0; 32],
-        identifier: 0,
+        identifier: Identifier::ZERO,
         kind: WitnessKind::Regular { ask: Some(ask) },
         nullifier: NullifierWitness::Init {
             npk,
             commitment_root,
         },
-    })
+    }
 }
 
 /// Builds an authorized-update identity: spends/credits an *existing* private account,
@@ -63,23 +64,30 @@ pub fn private_authorized_init_identity(
 ///
 /// Takes an `ask` rather than v0.2.4's `nsk`; the `nsk` the nullifier witness needs is
 /// derived from it, and the circuit cross-checks the two agree.
+///
+/// `account` is the pre-state being spent. Under the shard model the witness is the only
+/// place a private account's shards can come from — nobody else can see them — so
+/// `execution_state` loads `account.data` as this account's pre-state (where an `Init`
+/// witness gets `AccountData::default()`).
 pub fn private_authorized_update_identity(
     ask: AuthorizationSecretKey,
     vpk: &ViewingPublicKey,
+    account: Account,
     membership_proof: MembershipProof,
-) -> InputAccountIdentity {
+) -> PrivateWitness {
     let nsk = NullifierSecretKey::from(&ask);
-    InputAccountIdentity::Private(PrivateWitness {
+    PrivateWitness {
         vpk: vpk.clone(),
         random_seed: [0; 32],
-        identifier: 0,
+        identifier: Identifier::ZERO,
         kind: WitnessKind::Regular { ask: Some(ask) },
         nullifier: NullifierWitness::Update {
+            account,
             view_tag: 0,
             nsk,
             membership_proof,
         },
-    })
+    }
 }
 
 /// "Alice": creates a shared private account's `GroupKeyHolder` (Group Master Secret) and
@@ -103,7 +111,7 @@ impl GroupOwner {
         let keys = holder.derive_keys_for_shared_account(&derivation_seed);
         let npk = keys.generate_nullifier_public_key();
         let vpk = keys.generate_viewing_public_key();
-        let id = AccountId::for_regular_private_account(&npk, &vpk, 0);
+        let id = AccountId::for_regular_private_account(&npk, &vpk, Identifier::ZERO);
         Self {
             holder,
             derivation_seed,
@@ -139,3 +147,4 @@ impl GroupOwner {
         member_keys.authorization_secret_key
     }
 }
+

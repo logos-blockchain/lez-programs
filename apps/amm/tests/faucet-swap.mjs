@@ -39,6 +39,10 @@ const fwRoot =
 const { test, run } = await import(resolve(fwRoot, "test-framework/framework.mjs"));
 
 const SELL_AMOUNT = "100"; // same token A sell size swap.mjs uses against this pool
+// The native token program's id (all zero bytes): an account's balance shard is keyed by it.
+const NATIVE_TOKEN_PROGRAM = "11111111111111111111111111111111";
+// The faucet chains a mint into the Token Program; the wallet's 2M-cycle default reverts it.
+const FAUCET_GAS_LIMIT = "10000000";
 
 // Repo root is three levels up from apps/amm/tests/. The manifest stores bin/IDL
 // paths repo-relative, so spel is invoked with cwd = repoRoot.
@@ -88,7 +92,8 @@ function loadManifest() {
   const m = JSON.parse(raw);
   for (const key of [
     "tokenProgramId", "tokenIdl", "faucetProgramId", "faucetIdl", "recipient", "mintAllowance",
-    "userHolding", "tokenDefinition", "mintAuthority", "clock", "feePayer", "fundAmount",
+    "userHolding", "tokenDefinition", "mintAuthority", "clock", "clockProgram", "feePayer",
+    "fundAmount",
   ]) {
     if (!m[key]) throw new Error(`faucet manifest is missing "${key}"`);
   }
@@ -300,7 +305,11 @@ function fundHolding(m) {
   let balance = 0n;
   try {
     // A never-funded account simply isn't on chain yet; no match means zero.
-    const match = /"balance":(\d+)/.exec(wallet(["account", "get", "-a", `Public/${id}`]));
+    // v0.3.0 prints `Balance <n>, nonce <m>`: the native balance became a shard
+    // under NATIVE_TOKEN_PROGRAM_ID rather than a field, and the JSON "balance"
+    // key this used to read is gone. The old regex matched nothing, so the holding
+    // was re-funded on every run.
+    const match = /^Balance (\d+),/m.exec(wallet(["account", "get", "-a", `Public/${id}`]));
     if (match) balance = BigInt(match[1]);
   } catch { /* not on chain yet -> zero */ }
 
@@ -317,6 +326,46 @@ function fundHolding(m) {
   console.log(`    ✅ funded holder2 holding for fees (${target})`);
 }
 
+// Read the canonical clock's timestamp (milliseconds).
+//
+// LEZ v0.3.0 made `now` a declared instruction field — a plan phase can no longer
+// read the clock for itself — so FaucetMint takes one and `check_clock` pins it
+// against the CLOCK_01 shard. The faucet's guard is deliberately BOUNDED
+// (`now <= timestamp`, "FaucetMint declared a time ahead of the clock") rather than
+// exact like the oracle's, so one read is enough: the clock only moves forward, and
+// a declaration that was true stays true. No retry needed.
+//
+// `spel inspect` cannot do this (no IDL declares ClockAccountData), so it goes
+// through the wallet: `account get --raw` prints `{"shards": {"<program>": "<hex>"}}`
+// and the clock program's shard is a borsh `{ block_id: u64, timestamp: u64 }`, so
+// the timestamp is bytes 8..16, little-endian.
+function clockNow(m) {
+  const out = execFileSync(
+    "wallet",
+    ["account", "get", "--raw", "--scope", m.clockProgram, "-a", `Public/${m.clock}`],
+    {
+      cwd: REPO_ROOT,
+      env: { ...process.env, LEE_WALLET_HOME_DIR: WALLET_HOME },
+      input: `${WALLET_PASSWORD}\n`,
+      encoding: "utf8",
+    },
+  );
+  const start = out.indexOf("{");
+  if (start < 0) throw new Error(`no JSON in \`wallet account get --raw\` output:\n${out}`);
+  // The wallet prints "Stored statistics at ..." after the pretty-printed JSON, so
+  // cut at the top-level closing brace (the first `}` that starts a line).
+  const end = out.indexOf("\n}", start);
+  const json = end < 0 ? out.slice(start) : out.slice(start, end + 2);
+  const shards = JSON.parse(json).shards ?? {};
+  const hex = Object.values(shards)[0];
+  if (Object.keys(shards).length !== 1 || !hex)
+    throw new Error(`expected exactly one clock shard, got ${JSON.stringify(Object.keys(shards))}`);
+  const raw = Buffer.from(hex, "hex");
+  if (raw.length !== 16)
+    throw new Error(`clock shard is ${raw.length} bytes, expected 16 (block_id + timestamp)`);
+  return raw.readBigUInt64LE(8).toString();
+}
+
 // Is holder2's token A holding already an initialized TokenHolding on-chain? Read-only
 // `spel inspect`: it exits non-zero when the account is absent/uninitialized (empty
 // data can't decode as a TokenHolding). To avoid mistaking a default/empty decode for
@@ -327,7 +376,10 @@ function holdingInitialized(m) {
   try {
     out = execFileSync(
       "spel",
-      ["--idl", m.tokenIdl, "inspect", m.userHolding, "--type", "TokenHolding"],
+      // --program names which shard to decode: an account holds one per program
+      // since v0.3.0, and a token holding lives in the Token Program's.
+      ["--idl", m.tokenIdl, "--program", m.tokenProgramId, "inspect", m.userHolding,
+       "--type", "TokenHolding"],
       { cwd: REPO_ROOT, env: { ...process.env, LEE_WALLET_HOME_DIR: WALLET_HOME }, encoding: "utf8" },
     );
   } catch {
@@ -351,6 +403,10 @@ function initializeHolding(m) {
       "--idl", m.tokenIdl, "--program", m.tokenProgramId, "--", "initialize-account",
       "--definition-account", m.tokenDefinition,
       "--account-to-initialize", m.userHolding,
+      // v0.3.0: the plan cannot read the definition's shard, so the holding's kind
+      // is declared and `check_holding_kind` pins it against that shard. The
+      // faucet tokens are fungible.
+      "--kind", "Fungible",
     ],
     { tolerate: [/Uninitialized accounts can be initialized/i, /already/i], feePayer: m.feePayer },
   );
@@ -372,7 +428,8 @@ function mintAlreadyDone(m) {
   try {
     out = execFileSync(
       "spel",
-      ["--idl", m.faucetIdl, "inspect", m.mintAllowance, "--type", "MintAllowance"],
+      ["--idl", m.faucetIdl, "--program", m.faucetProgramId, "inspect", m.mintAllowance,
+       "--type", "MintAllowance"],
       { cwd: REPO_ROOT, env: { ...process.env, LEE_WALLET_HOME_DIR: WALLET_HOME }, encoding: "utf8" },
     );
   } catch {
@@ -393,13 +450,17 @@ function faucetMint(m) {
   }
   const out = runSpel(
     [
-      "--idl", m.faucetIdl, "--program", m.faucetProgramId, "--", "faucet-mint",
-      "--recipient", m.recipient,
+      "--idl", m.faucetIdl, "--program", m.faucetProgramId,
+      "--gas-limit", FAUCET_GAS_LIMIT, "--", "faucet-mint",
+      // v0.3.0 selects (account, program) shards; `<account>@<program>` names a shard
+      // other than the faucet's own (mirrors the faucet integration test's selectors).
+      "--recipient", `${m.recipient}@${NATIVE_TOKEN_PROGRAM}`,
       "--mint-allowance", m.mintAllowance,
-      "--user-holding", m.userHolding,
-      "--token-definition", m.tokenDefinition,
-      "--mint-authority", m.mintAuthority,
-      "--clock", m.clock,
+      "--user-holding", `${m.userHolding}@${m.tokenProgramId}`,
+      "--token-definition", `${m.tokenDefinition}@${m.tokenProgramId}`,
+      "--mint-authority", `${m.mintAuthority}@${m.tokenProgramId}`,
+      "--clock", `${m.clock}@${m.clockProgram}`,
+      "--now", clockNow(m),
     ],
     { tolerate: [/cooldown has not elapsed/i], feePayer: m.feePayer },
   );

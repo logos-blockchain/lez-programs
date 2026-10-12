@@ -13,15 +13,16 @@ use integration_tests::{
 use lee::{
     execute_and_prove,
     privacy_preserving_transaction::{
-        circuit::ProgramWithDependencies, Message, PrivacyPreservingTransaction, WitnessSet,
+        circuit::{ProgramWithDependencies, ProvingInput},
+        Message, PrivacyPreservingTransaction, WitnessSet,
     },
     program::Program,
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
+    account::{Account, AccountId, Nonce, ProgramShardSelector, ShardData},
     encryption::ViewingPublicKey,
-    AuthorizationSecretKey, Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey,
+    AuthorizationSecretKey, Commitment, Identifier, Nullifier, NullifierPublicKey,
     NullifierSecretKey,
 };
 use token_core::{TokenDefinition, TokenHolding};
@@ -35,6 +36,9 @@ struct Ids;
 
 /// Faucet-mint wall-clock anchor (Unix milliseconds).
 const T0: u64 = 1_700_000_000_000;
+
+/// Native balance seeded on the recipient so its account is non-empty.
+const RECIPIENT_FUNDING: u128 = 1;
 
 impl Keys {
     fn recipient() -> PrivateKey {
@@ -51,18 +55,16 @@ impl Keys {
 }
 
 impl Ids {
-    /// The program's account id: since v0.2.5 a program is addressed by its deployed
-    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
-    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    /// The program's account id: a program is addressed by its deployed
+    /// `ProgramHeader` account, and `with_programs` seeds that header at
+    /// `AccountId::from_builtin_program(program.id())`, so that is where it lives here.
     fn token_program() -> AccountId {
-        AccountId::from(token_methods::TOKEN_ID)
+        AccountId::from_builtin_program(token_methods::TOKEN_ID)
     }
 
-    /// The program's account id: since v0.2.5 a program is addressed by its deployed
-    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
-    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    /// See [`Ids::token_program`].
     fn token_mint_authority_program() -> AccountId {
-        AccountId::from(token_mint_authority_methods::TOKEN_MINT_AUTHORITY_ID)
+        AccountId::from_builtin_program(token_mint_authority_methods::TOKEN_MINT_AUTHORITY_ID)
     }
 
     fn recipient() -> AccountId {
@@ -96,56 +98,71 @@ impl Ids {
 /// The faucet token definition: a normal fungible whose mint authority is the
 /// Token-Mint-Authority PDA. Starts at zero supply.
 fn faucet_definition_init() -> Account {
-    Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenDefinition::Fungible {
+    Account::default().with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenDefinition::Fungible {
             name: String::from("Faucet Token"),
             total_supply: 0,
             metadata_id: None,
             authority: Some(Ids::mint_authority()),
         }),
-        nonce: Nonce(0),
-    }
+    )
 }
 
 /// The recipient's existing holding for the faucet token (so no holding
 /// signature is needed — the Token Program just writes to it).
 fn user_holding_init() -> Account {
-    Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+    Account::default().with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::faucet_definition(),
             balance: 0,
         }),
-        nonce: Nonce(0),
-    }
+    )
 }
 
-/// The recipient identity that signs and is rate-limited. Non-default owner so
-/// its (unchanged) post-state survives the framework output filter as its nonce
-/// bumps across transactions.
+/// The recipient identity that signs and is rate-limited. Carries a native
+/// balance so the account is non-empty: that is what the old non-default
+/// `program_owner` stood in for, keeping its (otherwise unchanged) post-state
+/// alive through the output filter as its nonce bumps across transactions.
 fn recipient_init() -> Account {
-    Account {
-        program_owner: AccountId::new([7u8; 32]),
-        ..Account::default()
-    }
+    Account::funded(RECIPIENT_FUNDING)
 }
 
-/// Seed the canonical `CLOCK_01` account at `timestamp`. Non-default owner for
-/// the same output-filter reason the stablecoin tests use.
+/// `FaucetMint`'s six shard selectors, in instruction order. Each names the
+/// program whose shard the slot selects, not just the account: the recipient is
+/// reached through its native balance, the allowance is this program's own
+/// shard, the holding/definition/authority are the Token Program's, and the
+/// clock is the Clock Program's shard of the `CLOCK_01` data account. Mirrors
+/// `programs/token_mint_authority/src/test_support.rs`.
+fn faucet_mint_slots(
+    recipient: AccountId,
+    allowance: AccountId,
+    user_holding: AccountId,
+) -> Vec<ProgramShardSelector> {
+    vec![
+        ProgramShardSelector::native_balance(recipient),
+        ProgramShardSelector::new(allowance, Ids::token_mint_authority_program()),
+        ProgramShardSelector::new(user_holding, Ids::token_program()),
+        ProgramShardSelector::new(Ids::faucet_definition(), Ids::token_program()),
+        ProgramShardSelector::new(Ids::mint_authority(), Ids::token_program()),
+        ProgramShardSelector::new(CLOCK_01_PROGRAM_ACCOUNT_ID, clock_core::clock_account_id()),
+    ]
+}
+
+/// Seed the canonical `CLOCK_01` account at `timestamp`. The timestamp lives in
+/// the Clock *Program*'s shard of the clock *data* account, which is the shard
+/// every clock guard selects.
 fn seed_clock(state: &mut V03State, timestamp: u64) {
     let data = ClockAccountData {
         block_id: 0,
         timestamp,
     }
     .to_bytes();
-    let clock_account = Account {
-        program_owner: AccountId::new([8u8; 32]),
-        data: Data::try_from(data).expect("clock account data fits"),
-        ..Account::default()
-    };
+    let clock_account = Account::default().with_shard(
+        clock_core::clock_account_id(),
+        ShardData::try_from(data).expect("clock account data fits"),
+    );
     state.force_insert_account(CLOCK_01_PROGRAM_ACCOUNT_ID, clock_account);
 }
 
@@ -180,21 +197,32 @@ fn current_nonce(state: &V03State, account_id: AccountId) -> Nonce {
     state.get_account_by_id(account_id).nonce
 }
 
+/// The clock timestamp a caller would declare as `now`. Read from the seeded
+/// `CLOCK_01` shard rather than fixed, because that is what a real client does:
+/// the client's read is what makes the declaration, and the program's clock
+/// guard (`now <= clock.timestamp`) is what makes it true.
+fn clock_now(state: &V03State) -> u64 {
+    ClockAccountData::from_bytes(
+        state
+            .get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID)
+            .data
+            .shard(clock_core::clock_account_id())
+            .as_ref(),
+    )
+    .timestamp
+}
+
 /// Submit one `FaucetMint`. Only the recipient signs; the mint-authority and
 /// allowance PDAs are authorized/claimed by the program via seeds.
 fn faucet_mint(state: &mut V03State) -> Result<(), lee::error::LeeError> {
     let message = public_transaction::Message::try_new(
         Ids::token_mint_authority_program(),
-        vec![
-            Ids::recipient(),
-            Ids::mint_allowance(),
-            Ids::user_holding(),
-            Ids::faucet_definition(),
-            Ids::mint_authority(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
+        faucet_mint_slots(Ids::recipient(), Ids::mint_allowance(), Ids::user_holding()),
         vec![current_nonce(state, Ids::recipient())],
-        token_mint_authority_core::Instruction::FaucetMint,
+        // `now` is declared and pinned against CLOCK_01 by the program's clock guard.
+        token_mint_authority_core::Instruction::FaucetMint {
+            now: clock_now(state),
+        },
     )
     .expect("faucet-mint message is valid");
     let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::recipient()]);
@@ -205,7 +233,13 @@ fn faucet_mint(state: &mut V03State) -> Result<(), lee::error::LeeError> {
 }
 
 fn holding_balance(state: &V03State, account_id: AccountId) -> u128 {
-    match TokenHolding::try_from(&state.get_account_by_id(account_id).data).expect("valid holding")
+    match TokenHolding::try_from(
+        state
+            .get_account_by_id(account_id)
+            .data
+            .shard(Ids::token_program()),
+    )
+    .expect("valid holding")
     {
         TokenHolding::Fungible { balance, .. } => balance,
         TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
@@ -215,8 +249,13 @@ fn holding_balance(state: &V03State, account_id: AccountId) -> u128 {
 }
 
 fn definition_supply(state: &V03State, account_id: AccountId) -> u128 {
-    match TokenDefinition::try_from(&state.get_account_by_id(account_id).data)
-        .expect("valid definition")
+    match TokenDefinition::try_from(
+        state
+            .get_account_by_id(account_id)
+            .data
+            .shard(Ids::token_program()),
+    )
+    .expect("valid definition")
     {
         TokenDefinition::Fungible { total_supply, .. } => total_supply,
         TokenDefinition::NonFungible { .. } => panic!("expected a fungible definition"),
@@ -224,9 +263,14 @@ fn definition_supply(state: &V03State, account_id: AccountId) -> u128 {
 }
 
 fn allowance_last_mint(state: &V03State, account_id: AccountId) -> u64 {
-    MintAllowance::try_from(&state.get_account_by_id(account_id).data)
-        .expect("valid allowance")
-        .last_mint_ms
+    MintAllowance::try_from(
+        state
+            .get_account_by_id(account_id)
+            .data
+            .shard(Ids::token_mint_authority_program()),
+    )
+    .expect("valid allowance")
+    .last_mint_ms
 }
 
 #[test]
@@ -245,11 +289,18 @@ fn faucet_grants_fixed_amount_and_enforces_daily_cooldown() {
         FAUCET_MINT_AMOUNT
     );
     assert_eq!(allowance_last_mint(&state, Ids::mint_allowance()), T0);
-    // The program owns the allowance PDA now, but never the authority PDA.
-    assert_eq!(
-        state.get_account_by_id(Ids::mint_allowance()).program_owner,
-        Ids::token_mint_authority_program()
-    );
+    // Ownership is a written shard now: the program holds one at the allowance
+    // PDA, and still none at the authority PDA.
+    assert!(!state
+        .get_account_by_id(Ids::mint_allowance())
+        .data
+        .shard(Ids::token_mint_authority_program())
+        .is_empty());
+    assert!(state
+        .get_account_by_id(Ids::mint_authority())
+        .data
+        .shard(Ids::token_mint_authority_program())
+        .is_empty());
 
     // 2. Second mint at the same clock: blocked by the cooldown, state unchanged.
     assert!(
@@ -285,12 +336,15 @@ fn faucet_rejects_a_token_whose_authority_is_not_the_mint_authority_pda() {
     // Re-point the faucet token's mint authority at some unrelated account: the
     // Token-Mint-Authority must refuse to mint a token it does not control.
     let mut definition = faucet_definition_init();
-    definition.data = Data::from(&TokenDefinition::Fungible {
-        name: String::from("Faucet Token"),
-        total_supply: 0,
-        metadata_id: None,
-        authority: Some(AccountId::new([0xEE; 32])),
-    });
+    definition.data.set_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenDefinition::Fungible {
+            name: String::from("Faucet Token"),
+            total_supply: 0,
+            metadata_id: None,
+            authority: Some(AccountId::new([0xEE; 32])),
+        }),
+    );
     state.force_insert_account(Ids::faucet_definition(), definition);
 
     assert!(
@@ -332,7 +386,11 @@ impl PrivateKeys {
     }
 
     fn holding_id() -> AccountId {
-        AccountId::for_regular_private_account(&Self::holding_npk(), &Self::holding_vpk(), 0)
+        AccountId::for_regular_private_account(
+            &Self::holding_npk(),
+            &Self::holding_vpk(),
+            Identifier::ZERO,
+        )
     }
 
     /// The authorization key is the root credential under v0.2.5: the circuit takes an
@@ -354,7 +412,11 @@ impl PrivateKeys {
     }
 
     fn recipient_id() -> AccountId {
-        AccountId::for_regular_private_account(&Self::recipient_npk(), &Self::recipient_vpk(), 0)
+        AccountId::for_regular_private_account(
+            &Self::recipient_npk(),
+            &Self::recipient_vpk(),
+            Identifier::ZERO,
+        )
     }
 }
 
@@ -407,44 +469,28 @@ fn faucet_mint_into_private_user_holding() {
         .get_proof_for_commitment(&Commitment::new(&holding_id, &holding_account))
         .expect("the private holding's commitment must be in the set");
 
-    let recipient_account = state.get_account_by_id(Ids::recipient());
-    let recipient_nonce = recipient_account.nonce;
-    let recipient_pre = AccountWithMetadata::new(recipient_account, true, Ids::recipient());
-    let allowance_pre = AccountWithMetadata::new(Account::default(), false, Ids::mint_allowance());
-    // A `PrivateAuthorizedUpdate` pre-state must be authorized — the circuit requires it for any
-    // authenticated private account, even though the faucet itself never checks the holding.
-    let user_holding_pre = AccountWithMetadata::new(holding_account, true, holding_id);
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::faucet_definition()),
-        false,
-        Ids::faucet_definition(),
-    );
-    let mint_authority_pre =
-        AccountWithMetadata::new(Account::default(), false, Ids::mint_authority());
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
+    let recipient_nonce = state.get_account_by_id(Ids::recipient()).nonce;
 
     let (output, proof) = execute_and_prove(
-        vec![
-            recipient_pre,
-            allowance_pre,
-            user_holding_pre,
-            definition_pre,
-            mint_authority_pre,
-            clock_pre,
-        ],
-        Program::serialize_instruction(token_mint_authority_core::Instruction::FaucetMint).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(holding_ask, &holding_vpk, membership_proof),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: faucet_mint_slots(Ids::recipient(), Ids::mint_allowance(), holding_id),
+            // An authenticated private account must be authorized — the circuit
+            // requires it even though the faucet itself never checks the holding.
+            signers: [Ids::recipient(), holding_id].into(),
+            private_witnesses: vec![private_authorized_update_identity(
+                holding_ask,
+                &holding_vpk,
+                holding_account,
+                membership_proof,
+            )],
+            instruction_data: Program::serialize_instruction(
+                token_mint_authority_core::Instruction::FaucetMint {
+                    now: clock_now(&state),
+                },
+            )
+            .unwrap(),
+            ..Default::default()
+        },
         &faucet_with_deps(),
     )
     .expect("FaucetMint into an existing private holding must succeed");
@@ -468,14 +514,17 @@ fn faucet_mint_into_private_user_holding() {
 
     // Private side: the shielded holding carries the grant, under its incremented nonce.
     let funded = Account {
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::faucet_definition(),
-            balance: FAUCET_MINT_AMOUNT,
-        }),
         nonce: Nonce::private_account_nonce_init(&holding_id)
             .private_account_nonce_increment(&holding_nsk),
         ..user_holding_init()
-    };
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
+            definition_id: Ids::faucet_definition(),
+            balance: FAUCET_MINT_AMOUNT,
+        }),
+    );
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&holding_id, &funded))
         .is_some());
@@ -492,48 +541,23 @@ fn faucet_mint_with_private_recipient() {
     let recipient_id = PrivateKeys::recipient_id();
     let allowance_id = mint_allowance_for(recipient_id);
 
-    let recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
-    let allowance_pre = AccountWithMetadata::new(Account::default(), false, allowance_id);
-    let user_holding_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::user_holding()),
-        false,
-        Ids::user_holding(),
-    );
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::faucet_definition()),
-        false,
-        Ids::faucet_definition(),
-    );
-    let mint_authority_pre =
-        AccountWithMetadata::new(Account::default(), false, Ids::mint_authority());
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
-
     let (output, proof) = execute_and_prove(
-        vec![
-            recipient_pre,
-            allowance_pre,
-            user_holding_pre,
-            definition_pre,
-            mint_authority_pre,
-            clock_pre,
-        ],
-        Program::serialize_instruction(token_mint_authority_core::Instruction::FaucetMint).unwrap(),
-        vec![
-            private_authorized_init_identity(
+        ProvingInput {
+            shard_selectors: faucet_mint_slots(recipient_id, allowance_id, Ids::user_holding()),
+            signers: [recipient_id].into(),
+            private_witnesses: vec![private_authorized_init_identity(
                 PrivateKeys::recipient_ask(),
                 &PrivateKeys::recipient_vpk(),
                 state.commitment_root(),
-            ),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+            )],
+            instruction_data: Program::serialize_instruction(
+                token_mint_authority_core::Instruction::FaucetMint {
+                    now: clock_now(&state),
+                },
+            )
+            .unwrap(),
+            ..Default::default()
+        },
         &faucet_with_deps(),
     )
     .expect("FaucetMint signed by a private recipient must succeed");
@@ -555,9 +579,14 @@ fn faucet_mint_with_private_recipient() {
     );
     assert_eq!(allowance_last_mint(&state, allowance_id), T0);
     assert_eq!(
-        MintAllowance::try_from(&state.get_account_by_id(allowance_id).data)
-            .expect("valid allowance")
-            .recipient_id,
+        MintAllowance::try_from(
+            state
+                .get_account_by_id(allowance_id)
+                .data
+                .shard(Ids::token_mint_authority_program()),
+        )
+        .expect("valid allowance")
+        .recipient_id,
         recipient_id
     );
 
@@ -583,44 +612,23 @@ fn faucet_mint_with_group_owned_recipient() {
     let recipient_id = alice.id;
     let allowance_id = mint_allowance_for(recipient_id);
 
-    let recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
-    let allowance_pre = AccountWithMetadata::new(Account::default(), false, allowance_id);
-    let user_holding_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::user_holding()),
-        false,
-        Ids::user_holding(),
-    );
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::faucet_definition()),
-        false,
-        Ids::faucet_definition(),
-    );
-    let mint_authority_pre =
-        AccountWithMetadata::new(Account::default(), false, Ids::mint_authority());
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
-
     let (output, proof) = execute_and_prove(
-        vec![
-            recipient_pre,
-            allowance_pre,
-            user_holding_pre,
-            definition_pre,
-            mint_authority_pre,
-            clock_pre,
-        ],
-        Program::serialize_instruction(token_mint_authority_core::Instruction::FaucetMint).unwrap(),
-        vec![
-            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: faucet_mint_slots(recipient_id, allowance_id, Ids::user_holding()),
+            signers: [recipient_id].into(),
+            private_witnesses: vec![private_authorized_init_identity(
+                bob_ask,
+                &alice.vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(
+                token_mint_authority_core::Instruction::FaucetMint {
+                    now: clock_now(&state),
+                },
+            )
+            .unwrap(),
+            ..Default::default()
+        },
         &faucet_with_deps(),
     )
     .expect("FaucetMint signed by a group-owned recipient must succeed");
@@ -640,9 +648,14 @@ fn faucet_mint_with_group_owned_recipient() {
         FAUCET_MINT_AMOUNT
     );
     assert_eq!(
-        MintAllowance::try_from(&state.get_account_by_id(allowance_id).data)
-            .expect("valid allowance")
-            .recipient_id,
+        MintAllowance::try_from(
+            state
+                .get_account_by_id(allowance_id)
+                .data
+                .shard(Ids::token_mint_authority_program()),
+        )
+        .expect("valid allowance")
+        .recipient_id,
         recipient_id
     );
 }

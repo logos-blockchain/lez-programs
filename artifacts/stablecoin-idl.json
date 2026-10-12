@@ -96,6 +96,10 @@
         {
           "name": "stablecoin_name",
           "type": "string"
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -127,7 +131,18 @@
           "init": false
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "update_redemption_rate",
@@ -163,7 +178,26 @@
           "init": false
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
+        },
+        {
+          "name": "oracle_price",
+          "type": "u128"
+        },
+        {
+          "name": "oracle_timestamp",
+          "type": "u64"
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "refresh_globals",
@@ -205,7 +239,26 @@
           "init": false
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
+        },
+        {
+          "name": "oracle_price",
+          "type": "u128"
+        },
+        {
+          "name": "oracle_timestamp",
+          "type": "u64"
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "open_position",
@@ -226,7 +279,7 @@
           "name": "vault",
           "writable": true,
           "signer": false,
-          "init": true
+          "init": false
         },
         {
           "name": "user_collateral_holding",
@@ -261,6 +314,16 @@
         {
           "name": "initial_collateral_amount",
           "type": "u128"
+        },
+        {
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -302,6 +365,22 @@
         {
           "name": "amount",
           "type": "u128"
+        },
+        {
+          "name": "expected",
+          "type": {
+            "defined": "PositionIdentity"
+          }
+        },
+        {
+          "name": "vault_balance",
+          "type": "u128"
+        },
+        {
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
         }
       ]
     },
@@ -367,6 +446,42 @@
         {
           "name": "amount",
           "type": "u128"
+        },
+        {
+          "name": "expected",
+          "type": {
+            "defined": "PositionIdentity"
+          }
+        },
+        {
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
+        },
+        {
+          "name": "accumulator",
+          "type": {
+            "defined": "StabilityFeeAccumulator"
+          }
+        },
+        {
+          "name": "redemption",
+          "type": {
+            "defined": "RedemptionPriceState"
+          }
+        },
+        {
+          "name": "oracle_price",
+          "type": "u128"
+        },
+        {
+          "name": "oracle_timestamp",
+          "type": "u64"
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -398,152 +513,18 @@
           "init": false
         }
       ],
-      "args": []
-    },
-    {
-      "name": "withdraw_collateral",
-      "accounts": [
-        {
-          "name": "owner",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "position",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "user_collateral_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stability_fee_accumulator",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "redemption_price_state",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
       "args": [
         {
-          "name": "amount",
-          "type": "u128"
-        }
-      ]
-    },
-    {
-      "name": "repay_debt",
-      "accounts": [
-        {
-          "name": "owner",
-          "writable": false,
-          "signer": true,
-          "init": false
+          "name": "expected",
+          "type": {
+            "defined": "PositionIdentity"
+          }
         },
         {
-          "name": "position",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stablecoin_definition",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "user_stablecoin_holding",
-          "writable": true,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "stability_fee_accumulator",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u128"
-        }
-      ]
-    },
-    {
-      "name": "set_stability_fee_per_millisecond",
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stability_fee_accumulator",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "new_rate",
-          "type": "u128"
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
         }
       ]
     },
@@ -594,6 +575,39 @@
         {
           "name": "new_integral_gain",
           "type": "i128"
+        }
+      ]
+    },
+    {
+      "name": "set_market_price_oracle",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "new_oracle",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "expected_base_asset",
+          "type": "account_id"
+        },
+        {
+          "name": "expected_quote_asset",
+          "type": "account_id"
         }
       ]
     },
@@ -671,7 +685,7 @@
       ]
     },
     {
-      "name": "set_market_price_oracle",
+      "name": "set_stability_fee_per_millisecond",
       "accounts": [
         {
           "name": "admin",
@@ -686,13 +700,32 @@
           "init": false
         },
         {
-          "name": "new_oracle",
+          "name": "stability_fee_accumulator",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
           "writable": false,
           "signer": false,
           "init": false
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "new_rate",
+          "type": "u128"
+        },
+        {
+          "name": "old_rate",
+          "type": "u128"
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "freeze",
@@ -729,6 +762,168 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "withdraw_collateral",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_collateral_holding",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "redemption_price_state",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u128"
+        },
+        {
+          "name": "expected",
+          "type": {
+            "defined": "PositionIdentity"
+          }
+        },
+        {
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
+        },
+        {
+          "name": "accumulator",
+          "type": {
+            "defined": "StabilityFeeAccumulator"
+          }
+        },
+        {
+          "name": "redemption",
+          "type": {
+            "defined": "RedemptionPriceState"
+          }
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "repay_debt",
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_definition",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "user_stablecoin_holding",
+          "writable": true,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "stability_fee_accumulator",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u128"
+        },
+        {
+          "name": "expected",
+          "type": {
+            "defined": "PositionIdentity"
+          }
+        },
+        {
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
+        },
+        {
+          "name": "accumulator",
+          "type": {
+            "defined": "StabilityFeeAccumulator"
+          }
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -755,6 +950,14 @@
           },
           {
             "name": "market_price_oracle_id",
+            "type": "account_id"
+          },
+          {
+            "name": "token_program_id",
+            "type": "account_id"
+          },
+          {
+            "name": "market_price_oracle_program_id",
             "type": "account_id"
           },
           {
@@ -1092,6 +1295,24 @@
         {
           "name": "tick_cumulative",
           "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "PositionIdentity",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner_account_id",
+          "type": "account_id"
+        },
+        {
+          "name": "position_nonce",
+          "type": "u64"
+        },
+        {
+          "name": "vault_account_id",
+          "type": "account_id"
         }
       ]
     }

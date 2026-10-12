@@ -22,6 +22,12 @@
         {
           "name": "amount_to_transfer",
           "type": "u128"
+        },
+        {
+          "name": "descriptor",
+          "type": {
+            "defined": "TokenDescriptor"
+          }
         }
       ]
     },
@@ -107,11 +113,18 @@
         {
           "name": "account_to_initialize",
           "writable": true,
-          "signer": true,
+          "signer": false,
           "init": true
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "kind",
+          "type": {
+            "defined": "TokenKind"
+          }
+        }
+      ]
     },
     {
       "name": "burn",
@@ -133,6 +146,12 @@
         {
           "name": "amount_to_burn",
           "type": "u128"
+        },
+        {
+          "name": "kind",
+          "type": {
+            "defined": "TokenKind"
+          }
         }
       ]
     },
@@ -200,11 +219,16 @@
         {
           "name": "printed_account",
           "writable": true,
-          "signer": true,
+          "signer": false,
           "init": true
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "definition_id",
+          "type": "account_id"
+        }
+      ]
     },
     {
       "name": "set_authority",
@@ -428,6 +452,37 @@
               "type": "u128"
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "TokenDescriptor",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "definition_id",
+          "type": "account_id"
+        },
+        {
+          "name": "kind",
+          "type": {
+            "defined": "TokenKind"
+          }
+        }
+      ]
+    },
+    {
+      "name": "TokenKind",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Fungible"
+        },
+        {
+          "name": "NftMaster"
+        },
+        {
+          "name": "NftPrintedCopy"
         }
       ]
     }

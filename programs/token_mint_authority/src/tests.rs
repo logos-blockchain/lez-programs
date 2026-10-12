@@ -1,253 +1,103 @@
-//! Unit tests for the `faucet_mint` host function.
+//! Unit tests for the `faucet_mint` two-phase implementation.
+//!
+//! `rejects_foreign_owned_allowance` has no successor: it asserted
+//! `mint_allowance.program_owner == token_mint_authority_program_id`. A shard is
+//! keyed by the program that wrote it, and emitting an effect on one asserts it
+//! is ours — the check lives in SPEL now and is tested there.
+//!
+//! `rejects_creating_a_holding_the_caller_cannot_sign_for` is also gone, but for
+//! a different reason: it is a *deliberate* semantic change. The rule existed
+//! only because v0.2.5's `acquire_ownership_on_data_write` let a chained mint
+//! claim any unowned address permanently. Writing `shards[token]` denies that
+//! address to nobody, so there is nothing left to squat on and the restriction
+//! bought only inconvenience.
 
 #![allow(
     clippy::indexing_slicing,
     clippy::panic,
     clippy::unwrap_used,
-    reason = "tests deliberately panic on bad state via assert!/#[should_panic] and index fixed-size vectors"
+    clippy::wildcard_enum_match_arm,
+    reason = "tests deliberately panic on bad state via assert!/#[should_panic], index fixed-size vectors, and match one chained-call variant against a borsh-only instruction enum"
 )]
 
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata},
-    program::{AccountStateDiff, ChainedCall},
-};
+use lee_core::account::AccountId;
 use token_core::Instruction as TokenInstruction;
-use token_mint_authority_core::{
-    compute_mint_authority_pda_seed, MintAllowance, FAUCET_MINT_AMOUNT, MINT_COOLDOWN_MS,
-};
+use token_mint_authority_core::{MintAllowance, FAUCET_MINT_AMOUNT, MINT_COOLDOWN_MS};
 
 use crate::{
-    faucet_mint::faucet_mint,
+    faucet_mint::{check_clock, check_faucet_authority, plan_faucet_mint, record_mint},
     test_support::{
-        allowance_account, clock_account, definition_id, faucet_definition_account,
-        faucet_definition_with_authority, fresh_user_holding_account, mint_authority_account,
-        mint_authority_id, recipient_account, recipient_id, uninitialized_allowance,
-        user_holding_account, user_holding_id, NOW, TOKEN_MINT_AUTHORITY_PROGRAM_ID,
+        allowance_data, allowance_slot, allowance_slot_at, authority_slot, authority_slot_at,
+        clock_data, clock_slot, clock_slot_at, definition_id, definition_slot, empty,
+        faucet_definition, holding_data, mint_authority_id, non_fungible_definition,
+        recipient_account, recipient_id, user_holding_slot, NOW, TOKEN_MINT_AUTHORITY_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
     },
-    StateDiffExt,
 };
 
-fn invoke(allowance: AccountWithMetadata, now: u64) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    faucet_mint(
-        recipient_account(),
-        allowance,
-        user_holding_account(),
-        faucet_definition_account(),
-        mint_authority_account(),
-        clock_account(now),
+fn plan() -> lee_core::program::ChainedCall {
+    plan_faucet_mint(
+        &recipient_account(true),
+        &allowance_slot(),
+        &user_holding_slot(),
+        &definition_slot(),
+        &authority_slot(),
+        &clock_slot(),
         TOKEN_MINT_AUTHORITY_PROGRAM_ID,
     )
 }
 
-fn decode_token_instruction(call: &ChainedCall) -> TokenInstruction {
-    borsh::from_slice::<TokenInstruction>(&call.instruction_data)
-        .expect("chained instruction must decode as a token_core::Instruction")
-}
-
-#[test]
-fn first_mint_returns_six_post_states_and_one_chained_call() {
-    let (post_states, chained_calls) = invoke(uninitialized_allowance(), NOW);
-    assert_eq!(post_states.len(), 6);
-    assert_eq!(chained_calls.len(), 1);
-}
-
-#[test]
-fn first_mint_claims_allowance_pda_and_stamps_now() {
-    let (post_states, _) = invoke(uninitialized_allowance(), NOW);
-    // post_states[1] is the allowance (input-order). Writing its data is the claim in
-    // v0.2.5 — there is no `Claim::Pda` to inspect — so assert the ownership that write
-    // acquires. The PDA address itself is asserted by `verify_mint_allowance_and_get_seed`.
-    assert!(post_states[1].writes_data());
-    assert_eq!(
-        post_states[1].post_owner(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
-        TOKEN_MINT_AUTHORITY_PROGRAM_ID
-    );
-    let decoded = MintAllowance::try_from(post_states[1].post_data()).unwrap();
-    assert_eq!(decoded.recipient_id, recipient_id());
-    assert_eq!(decoded.definition_id, definition_id());
-    assert_eq!(decoded.last_mint_ms, NOW);
-}
-
-#[test]
-fn first_mint_echoes_authority_pda_without_claiming_it() {
-    // The authority PDA holds no state; the seed alone authorizes the chained
-    // mint, so this program takes no ownership of it.
-    let (post_states, _) = invoke(uninitialized_allowance(), NOW);
-    assert!(!post_states[4].writes_data());
-    assert_eq!(
-        post_states[4].post_owner(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
-        post_states[4].pre_state.account.program_owner
-    );
-}
-
-#[test]
-fn post_state_order_mirrors_inputs() {
-    let (post_states, _) = invoke(uninitialized_allowance(), NOW);
-    // [recipient, allowance, holding, definition, authority, clock]
-    assert_eq!(
-        post_states[0].post_account(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
-        Account::default()
-    ); // recipient echoed
-    assert_eq!(
-        post_states[5].post_account(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
-        clock_account(NOW).account
-    ); // clock echoed
-}
+// ── plan half ───────────────────────────────────────────────────────────────
 
 #[test]
 fn chained_call_delegates_fixed_mint_to_token_program() {
-    let (_, chained_calls) = invoke(uninitialized_allowance(), NOW);
-    let call = &chained_calls[0];
-
+    let call = plan();
     assert_eq!(call.program_account_id, TOKEN_PROGRAM_ID);
-    // MintWithAuthority account order: [definition, holding, authority]. Calls carry bare
-    // account ids since v0.2.5; the authority PDA's authority comes from its seed alone.
-    assert_eq!(
-        call.pre_state_ids,
-        vec![definition_id(), user_holding_id(), mint_authority_id()]
-    );
-    assert_eq!(call.pda_seeds, vec![compute_mint_authority_pda_seed()]);
-
-    match decode_token_instruction(call) {
+    // `token_core::Instruction` derives only Borsh, so match rather than compare.
+    match borsh::from_slice::<TokenInstruction>(&call.instruction_data)
+        .expect("chained instruction must decode as a token_core::Instruction")
+    {
         TokenInstruction::MintWithAuthority { amount_to_mint } => {
-            assert_eq!(amount_to_mint, FAUCET_MINT_AMOUNT);
+            assert_eq!(amount_to_mint, FAUCET_MINT_AMOUNT, "the grant is fixed");
         }
-        _ => panic!("expected chained instruction to be Token::MintWithAuthority"),
+        _ => panic!("the faucet must delegate MintWithAuthority"),
     }
 }
 
+/// `[definition, holding, authority]`, each naming the Token Program's shard.
 #[test]
-fn mint_exactly_at_cooldown_boundary_is_allowed_and_rewrites_without_claim() {
-    let (post_states, chained_calls) = invoke(allowance_account(NOW - MINT_COOLDOWN_MS), NOW);
-    assert_eq!(chained_calls.len(), 1);
-    // Already owned by this program -> rewritten, and the owner is unchanged.
+fn chained_call_names_the_token_programs_shards_in_order() {
+    let call = plan();
+    let ids: Vec<AccountId> = call.shard_selectors.iter().map(|s| s.account_id).collect();
     assert_eq!(
-        post_states[1].post_owner(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
-        TOKEN_MINT_AUTHORITY_PROGRAM_ID
+        ids,
+        vec![
+            definition_id(),
+            crate::test_support::user_holding_id(),
+            mint_authority_id()
+        ]
     );
-    let decoded = MintAllowance::try_from(post_states[1].post_data()).unwrap();
-    assert_eq!(decoded.last_mint_ms, NOW);
+    assert!(call
+        .shard_selectors
+        .iter()
+        .all(|s| s.program_account_id == TOKEN_PROGRAM_ID));
 }
 
 #[test]
-fn mint_to_a_fresh_holding_delegates_the_authorized_holding() {
-    let (post_states, chained_calls) = faucet_mint(
-        recipient_account(),
-        uninitialized_allowance(),
-        fresh_user_holding_account(),
-        faucet_definition_account(),
-        mint_authority_account(),
-        clock_account(NOW),
-        TOKEN_MINT_AUTHORITY_PROGRAM_ID,
-    );
-    assert_eq!(chained_calls.len(), 1);
-    // Holding is echoed as default; the chained mint materializes it.
-    assert_eq!(
-        post_states[2].post_account(TOKEN_MINT_AUTHORITY_PROGRAM_ID),
-        Account::default()
-    );
-    assert_eq!(chained_calls[0].pre_state_ids[1], user_holding_id());
-}
-
-#[test]
-#[should_panic(expected = "A fresh user holding must be authorized by its owner")]
-fn rejects_creating_a_holding_the_caller_cannot_sign_for() {
-    // An unowned address the caller names but nobody authorized. v0.2.4 rejected this
-    // downstream via `Claim::Authorized`; v0.2.5 has no claims, so the faucet checks it.
-    let unauthorized_fresh_holding = AccountWithMetadata {
-        is_authorized: false,
-        ..fresh_user_holding_account()
-    };
-    faucet_mint(
-        recipient_account(),
-        uninitialized_allowance(),
-        unauthorized_fresh_holding,
-        faucet_definition_account(),
-        mint_authority_account(),
-        clock_account(NOW),
-        TOKEN_MINT_AUTHORITY_PROGRAM_ID,
-    );
-}
-
-#[test]
-#[should_panic(expected = "FaucetMint cooldown has not elapsed")]
-fn rejects_a_second_mint_within_the_cooldown() {
-    let _ = invoke(allowance_account(NOW - (MINT_COOLDOWN_MS - 1)), NOW);
-}
-
-#[test]
-#[should_panic(expected = "FaucetMint cooldown has not elapsed")]
-fn rejects_a_second_mint_at_the_same_instant() {
-    let _ = invoke(allowance_account(NOW), NOW);
-}
-
-#[test]
-#[should_panic(expected = "FaucetMint cooldown has not elapsed")]
-fn a_backwards_clock_stays_throttled() {
-    // Clock earlier than the last mint: saturating_sub -> 0 elapsed -> blocked.
-    let _ = invoke(allowance_account(NOW), NOW - 1_000);
+fn chained_call_carries_the_authority_pda_seed() {
+    assert_eq!(plan().pda_seeds.len(), 1, "the mint is seed-authorized");
 }
 
 #[test]
 #[should_panic(expected = "Recipient authorization is missing")]
 fn rejects_unauthorized_recipient() {
-    let mut recipient = recipient_account();
-    recipient.is_authorized = false;
-    let _ = faucet_mint(
-        recipient,
-        uninitialized_allowance(),
-        user_holding_account(),
-        faucet_definition_account(),
-        mint_authority_account(),
-        clock_account(NOW),
-        TOKEN_MINT_AUTHORITY_PROGRAM_ID,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Faucet token definition must be initialized")]
-fn rejects_uninitialized_definition() {
-    let definition = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: definition_id(),
-    };
-    let _ = faucet_mint(
-        recipient_account(),
-        uninitialized_allowance(),
-        user_holding_account(),
-        definition,
-        mint_authority_account(),
-        clock_account(NOW),
-        TOKEN_MINT_AUTHORITY_PROGRAM_ID,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Faucet token mint authority is not this program's mint-authority PDA")]
-fn rejects_definition_whose_authority_is_not_our_pda() {
-    let _ = faucet_mint(
-        recipient_account(),
-        uninitialized_allowance(),
-        user_holding_account(),
-        faucet_definition_with_authority(Some(AccountId::new([0xEE; 32]))),
-        mint_authority_account(),
-        clock_account(NOW),
-        TOKEN_MINT_AUTHORITY_PROGRAM_ID,
-    );
-}
-
-#[test]
-#[should_panic(expected = "renounced mint authority")]
-fn rejects_definition_with_renounced_authority() {
-    let _ = faucet_mint(
-        recipient_account(),
-        uninitialized_allowance(),
-        user_holding_account(),
-        faucet_definition_with_authority(None),
-        mint_authority_account(),
-        clock_account(NOW),
+    let _ = plan_faucet_mint(
+        &recipient_account(false),
+        &allowance_slot(),
+        &user_holding_slot(),
+        &definition_slot(),
+        &authority_slot(),
+        &clock_slot(),
         TOKEN_MINT_AUTHORITY_PROGRAM_ID,
     );
 }
@@ -255,15 +105,13 @@ fn rejects_definition_with_renounced_authority() {
 #[test]
 #[should_panic(expected = "Mint authority account ID does not match expected PDA derivation")]
 fn rejects_wrong_authority_pda() {
-    let mut authority = mint_authority_account();
-    authority.account_id = AccountId::new([0xEE; 32]);
-    let _ = faucet_mint(
-        recipient_account(),
-        uninitialized_allowance(),
-        user_holding_account(),
-        faucet_definition_account(),
-        authority,
-        clock_account(NOW),
+    let _ = plan_faucet_mint(
+        &recipient_account(true),
+        &allowance_slot(),
+        &user_holding_slot(),
+        &definition_slot(),
+        &authority_slot_at(AccountId::new([0x99; 32])),
+        &clock_slot(),
         TOKEN_MINT_AUTHORITY_PROGRAM_ID,
     );
 }
@@ -271,31 +119,156 @@ fn rejects_wrong_authority_pda() {
 #[test]
 #[should_panic(expected = "Mint allowance account ID does not match expected PDA derivation")]
 fn rejects_wrong_allowance_pda() {
-    let mut allowance = uninitialized_allowance();
-    allowance.account_id = AccountId::new([0xEE; 32]);
-    let _ = invoke(allowance, NOW);
-}
-
-#[test]
-#[should_panic(expected = "Mint allowance account is not owned by this program")]
-fn rejects_foreign_owned_allowance() {
-    let mut allowance = allowance_account(NOW - MINT_COOLDOWN_MS);
-    allowance.account.program_owner = AccountId::new([9u8; 32]);
-    let _ = invoke(allowance, NOW);
+    let _ = plan_faucet_mint(
+        &recipient_account(true),
+        &allowance_slot_at(AccountId::new([0x98; 32])),
+        &user_holding_slot(),
+        &definition_slot(),
+        &authority_slot(),
+        &clock_slot(),
+        TOKEN_MINT_AUTHORITY_PROGRAM_ID,
+    );
 }
 
 #[test]
 #[should_panic(expected = "Clock account must be the system CLOCK_01 account")]
 fn rejects_wrong_clock_account() {
-    let mut clock = clock_account(NOW);
-    clock.account_id = AccountId::new([0xC1; 32]);
-    let _ = faucet_mint(
-        recipient_account(),
-        uninitialized_allowance(),
-        user_holding_account(),
-        faucet_definition_account(),
-        mint_authority_account(),
-        clock,
+    let _ = plan_faucet_mint(
+        &recipient_account(true),
+        &allowance_slot(),
+        &user_holding_slot(),
+        &definition_slot(),
+        &authority_slot(),
+        &clock_slot_at(AccountId::new([0x97; 32])),
         TOKEN_MINT_AUTHORITY_PROGRAM_ID,
+    );
+}
+
+// ── clock guard ─────────────────────────────────────────────────────────────
+
+#[test]
+fn check_clock_accepts_the_clocks_own_time() {
+    check_clock(&clock_data(NOW), NOW);
+}
+
+/// The bound is one-directional: understating is allowed, since it can only make
+/// the faucet more throttled.
+#[test]
+fn check_clock_accepts_an_understated_time() {
+    check_clock(&clock_data(NOW), NOW - 1_000);
+}
+
+#[test]
+#[should_panic(expected = "FaucetMint declared a time ahead of the clock")]
+fn check_clock_rejects_an_overstated_time() {
+    // Overstating is what would let a caller walk past the cooldown.
+    check_clock(&clock_data(NOW), NOW + 1);
+}
+
+#[test]
+#[should_panic(expected = "Clock account must be initialized")]
+fn check_clock_rejects_an_empty_clock_shard() {
+    check_clock(&empty(), NOW);
+}
+
+// ── definition guard ────────────────────────────────────────────────────────
+
+#[test]
+fn check_faucet_authority_accepts_our_pda() {
+    check_faucet_authority(
+        &faucet_definition(Some(mint_authority_id())),
+        mint_authority_id(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Faucet token definition must be initialized")]
+fn rejects_uninitialized_definition() {
+    check_faucet_authority(&empty(), mint_authority_id());
+}
+
+#[test]
+#[should_panic(expected = "Faucet token mint authority is not this program's mint-authority PDA")]
+fn rejects_definition_whose_authority_is_not_our_pda() {
+    check_faucet_authority(
+        &faucet_definition(Some(AccountId::new([0x77; 32]))),
+        mint_authority_id(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "renounced mint authority")]
+fn rejects_definition_with_renounced_authority() {
+    check_faucet_authority(&faucet_definition(None), mint_authority_id());
+}
+
+#[test]
+#[should_panic(expected = "Faucet token definition must be Fungible")]
+fn rejects_non_fungible_definition() {
+    check_faucet_authority(&non_fungible_definition(), mint_authority_id());
+}
+
+#[test]
+#[should_panic(expected = "must decode as a TokenDefinition")]
+fn rejects_a_definition_shard_that_is_not_a_definition() {
+    check_faucet_authority(&holding_data(), mint_authority_id());
+}
+
+// ── allowance effect (the cooldown) ─────────────────────────────────────────
+
+#[test]
+fn first_mint_stamps_a_fresh_allowance() {
+    let written = record_mint(&empty(), recipient_id(), definition_id(), NOW);
+    assert_eq!(
+        MintAllowance::try_from(&written).expect("a MintAllowance was written"),
+        MintAllowance {
+            recipient_id: recipient_id(),
+            definition_id: definition_id(),
+            last_mint_ms: NOW,
+        }
+    );
+}
+
+#[test]
+fn mint_exactly_at_the_cooldown_boundary_is_allowed() {
+    let written = record_mint(
+        &allowance_data(NOW),
+        recipient_id(),
+        definition_id(),
+        NOW + MINT_COOLDOWN_MS,
+    );
+    assert_eq!(
+        MintAllowance::try_from(&written)
+            .expect("a MintAllowance was written")
+            .last_mint_ms,
+        NOW + MINT_COOLDOWN_MS
+    );
+}
+
+#[test]
+#[should_panic(expected = "FaucetMint cooldown has not elapsed")]
+fn rejects_a_second_mint_within_the_cooldown() {
+    let _ = record_mint(
+        &allowance_data(NOW),
+        recipient_id(),
+        definition_id(),
+        NOW + MINT_COOLDOWN_MS - 1,
+    );
+}
+
+#[test]
+#[should_panic(expected = "FaucetMint cooldown has not elapsed")]
+fn rejects_a_second_mint_at_the_same_instant() {
+    let _ = record_mint(&allowance_data(NOW), recipient_id(), definition_id(), NOW);
+}
+
+#[test]
+#[should_panic(expected = "FaucetMint cooldown has not elapsed")]
+fn a_backwards_clock_stays_throttled() {
+    let _ = record_mint(
+        &allowance_data(NOW),
+        recipient_id(),
+        definition_id(),
+        NOW - MINT_COOLDOWN_MS,
     );
 }

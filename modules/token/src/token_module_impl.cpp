@@ -88,18 +88,18 @@ bool isZeroId(const std::string& value) {
         && std::all_of(value.begin(), value.end(), [](char c) { return c == '0'; });
 }
 
-bool isAllZero(const std::string& value) {
-    return !value.empty()
-        && std::all_of(value.begin(), value.end(), [](char c) { return c == '0'; });
-}
-
-bool isDefaultPublicAccount(const std::string& owner,
-                            const std::string& balance,
-                            const std::string& nonce,
-                            const std::string& data) {
-    // The execution-zone read API represents an absent public account with
-    // Account::default(): zero owner, balance, and nonce, with no data.
-    return isZeroId(owner) && isAllZero(balance) && isAllZero(nonce) && data.empty();
+/// Whether an account read carries no state at all.
+///
+/// LEZ v0.2.5 spelled an absent public account `Account::default()` -- zero
+/// owner, balance and nonce, with no data -- and this compared against that.
+/// There is no such value now: an address nobody has written to has an empty
+/// shard map, and a program that wrote nothing has no entry in it. Both are
+/// reported as `not_found`, exactly as before.
+bool hasNoShards(const json& shards) {
+    return !shards.is_object() || shards.empty()
+        || std::all_of(shards.begin(), shards.end(), [](const json& value) {
+               return !value.is_string() || value.get<std::string>().empty();
+           });
 }
 
 std::string jsonString(const json& object, const char* key) {
@@ -289,10 +289,57 @@ std::string TokenModuleImpl::normalizeAccountId(const std::string& id) {
 }
 
 nlohmann::json TokenModuleImpl::readPublicAccount(const std::string& account_id) {
-    json read = {{"id", account_id}, {"status", "not_found"}};
     logos::CallError call_error;
     const std::string raw =
         modules().lez_core.get_account_public(account_id, &call_error);
+    return shardedRead(account_id, raw, call_error);
+}
+
+nlohmann::json TokenModuleImpl::readPublicAccountShard(const std::string& account_id,
+                                                       const std::string& program_id) {
+    // Projected here rather than by the node: wallet-ffi has
+    // `wallet_ffi_get_account_view(account_id, program_account_id)`, but lez_core
+    // does not surface it yet, so there is no narrower read to call. Dropping the
+    // other shards locally gives the decoders the same answer; what it does not
+    // give is the protection a server-side projection would -- a third party can
+    // still write shards at the same address and push the response past the size
+    // cap. Swap the one call below for the view when lez_core exposes it.
+    json read = readPublicAccount(account_id);
+    if (jsonString(read, "status") != "ok") return read;
+    const std::string shard = shardHex(read, program_id);
+    if (shard.empty()) {
+        // The named program stored nothing here -- the successor to v0.2.5's
+        // `program_owner != program_id`, and reported the same way an absent
+        // account is.
+        return {{"id", account_id}, {"status", "not_found"}};
+    }
+    read["account"]["data"]["shards"] = {{program_id, shard}};
+    return read;
+}
+
+std::string TokenModuleImpl::shardHex(const nlohmann::json& read,
+                                      const std::string& program_id) {
+    const auto account = read.find("account");
+    if (account == read.end() || !account->is_object()) return {};
+    const auto data = account->find("data");
+    if (data == account->end() || !data->is_object()) return {};
+    const auto shards = data->find("shards");
+    if (shards == data->end() || !shards->is_object()) return {};
+    return jsonString(*shards, program_id.c_str());
+}
+
+/// Validates a `lez_core` account read into the envelope token_ffi decodes.
+///
+/// The two shapes differ, deliberately. `lez_core` emits what its C struct holds
+/// -- `{nonce, shards: [{program, data}]}`, an array because `FfiAccount` is a
+/// pointer plus a length -- while token_ffi's `WalletAccount` mirrors
+/// `lee_core::Account` itself, `{nonce, data: {shards}}` keyed by program. So
+/// this re-keys the array into a map, which is also the only place the module
+/// has to care that the two agree.
+nlohmann::json TokenModuleImpl::shardedRead(const std::string& account_id,
+                                            const std::string& raw,
+                                            const logos::CallError& call_error) {
+    json read = {{"id", account_id}, {"status", "not_found"}};
     if (!call_error.ok()) {
         TOKEN_TRACE("lez_core account read transport failure: " << call_error.code);
         read["status"] = "backend_error";
@@ -306,24 +353,35 @@ nlohmann::json TokenModuleImpl::readPublicAccount(const std::string& account_id)
         return read;
     }
 
-    std::string owner = lowercase(jsonString(account, "program_owner"));
-    std::string balance = lowercase(jsonString(account, "balance"));
-    std::string nonce = lowercase(jsonString(account, "nonce"));
-    std::string data = lowercase(jsonString(account, "data"));
-    if (!isHexLength(owner, 64) || !isHexLength(balance, 32)
-        || !isHexLength(nonce, 32) || !isEvenHex(data)) {
+    const std::string nonce = lowercase(jsonString(account, "nonce"));
+    const auto shards_field = account.find("shards");
+    if (!isHexLength(nonce, 32) || shards_field == account.end()
+        || !shards_field->is_array()) {
         read["status"] = "backend_error";
         return read;
     }
 
-    if (isDefaultPublicAccount(owner, balance, nonce, data)) return read;
+    json shards = json::object();
+    for (const auto& entry : *shards_field) {
+        if (!entry.is_object()) {
+            read["status"] = "backend_error";
+            return read;
+        }
+        const std::string program = lowercase(jsonString(entry, "program"));
+        const std::string value = lowercase(jsonString(entry, "data"));
+        if (!isHexLength(program, 64) || !isEvenHex(value)) {
+            read["status"] = "backend_error";
+            return read;
+        }
+        shards[program] = value;
+    }
+
+    if (hasNoShards(shards)) return read;
 
     read["status"] = "ok";
     read["account"] = {
-        {"program_owner", std::move(owner)},
-        {"balance", std::move(balance)},
-        {"nonce", std::move(nonce)},
-        {"data", std::move(data)},
+        {"nonce", nonce},
+        {"data", {{"shards", std::move(shards)}}},
     };
     return read;
 }
@@ -353,13 +411,15 @@ nlohmann::json TokenModuleImpl::walletAccountIds() {
 bool TokenModuleImpl::isFreshOwnedAccount(const std::string& account_id,
                                           bool& fresh,
                                           std::string& error) {
-    const json read = readPublicAccount(account_id);
+    const json info = tokenProgramInfo();
+    if (!info.is_object()) {
+        error = "config_missing";
+        return false;
+    }
+    // Freshness is a question about the Token Program's shard, not about the
+    // address: another program may hold state here and the slot is still free.
+    const json read = readPublicAccountShard(account_id, jsonString(info, "programIdHex"));
     if (jsonString(read, "status") == "ok") {
-        const json info = tokenProgramInfo();
-        if (!info.is_object()) {
-            error = "config_missing";
-            return false;
-        }
         const FfiResult decoded = callToken(token_decode_holding, {
             {"tokenProgramId", info["programIdHex"]},
             {"holding", read},
@@ -400,6 +460,82 @@ bool TokenModuleImpl::requireFreshOwnedAccount(const std::string& account_id,
     return true;
 }
 
+nlohmann::json TokenModuleImpl::decodeOwnAccount(const std::string& account_id,
+                                                 TokenOperation operation,
+                                                 std::string& error) {
+    const json info = tokenProgramInfo();
+    if (!info.is_object()) {
+        error = "config_missing";
+        return json();
+    }
+    const json read = readPublicAccountShard(account_id, jsonString(info, "programIdHex"));
+    const std::string status = jsonString(read, "status");
+    if (status == "backend_error") {
+        error = "backend_error";
+        return json();
+    }
+    if (status != "ok") {
+        error = "account_read_failed";
+        return json();
+    }
+    json request = {{"tokenProgramId", info["programIdHex"]}};
+    request[operation == token_decode_definition ? "definition" : "holding"] = read;
+    const FfiResult decoded = callToken(operation, request);
+    if (!decoded.ok) {
+        error = ffiError(decoded);
+        return json();
+    }
+    return decoded.value;
+}
+
+/// Which of the three holding shapes a definition's holdings take.
+///
+/// New in v0.3.0 and the same story everywhere: the Token Program's plan phase
+/// sees no account data, so a holding's apply cannot look at the definition it is
+/// being paired with. The kind therefore travels in the instruction and each side
+/// asserts it against its own shard -- which means the client has to say which one
+/// it means, and the only honest source is the definition itself.
+bool TokenModuleImpl::holdingKindOfDefinition(const std::string& definition_id,
+                                              std::string& kind,
+                                              std::string& error) {
+    const json definition = decodeOwnAccount(definition_id, token_decode_definition, error);
+    if (!definition.is_object()) return false;
+    const std::string definition_kind = jsonString(definition, "kind");
+    if (definition_kind == "fungible") {
+        kind = "fungible";
+        return true;
+    }
+    if (definition_kind == "nonFungible") {
+        // A non-fungible definition's own holding is its master; printed copies
+        // are created by printNft, never here.
+        kind = "nftMaster";
+        return true;
+    }
+    error = "invalid_definition_data";
+    return false;
+}
+
+/// The token a holding holds, as the descriptor its instructions now declare.
+///
+/// A transfer's two holdings never see each other's shard, so "the same token left
+/// one and arrived at the other" is only a checked claim because the descriptor
+/// rides on the instruction and each side asserts it. The source holding is what
+/// the client reads it off.
+bool TokenModuleImpl::descriptorOfHolding(const std::string& holding_id,
+                                          std::string& definition_id,
+                                          std::string& kind,
+                                          std::string& error) {
+    const json holding = decodeOwnAccount(holding_id, token_decode_holding, error);
+    if (!holding.is_object()) return false;
+    definition_id = lowercase(jsonString(holding, "definitionIdHex"));
+    kind = jsonString(holding, "kind");
+    if (!isHexLength(definition_id, 64) || kind.empty()) {
+        error = "invalid_holding_data";
+        return false;
+    }
+    return true;
+}
+
 LogosMap TokenModuleImpl::programInfo() {
     return guarded([&]() -> LogosMap {
         const json info = tokenProgramInfo();
@@ -420,7 +556,10 @@ LogosMap TokenModuleImpl::inspectAccount(const std::string& account_id,
 
     const std::string normalized = normalizeAccountId(account_id);
     if (normalized.empty()) return publicError("invalid_account_id");
-    const json read = readPublicAccount(normalized);
+    // The shard read, not the whole account: an inspector knows which program's
+    // state it wants, and a projected read cannot be pushed past the response
+    // size cap by a third party writing shards at the same address.
+    const json read = readPublicAccountShard(normalized, jsonString(info, "programIdHex"));
     const std::string read_status = jsonString(read, "status");
     if (read_status == "backend_error") return publicError("backend_error");
     if (read_status != "ok") return publicError("account_read_failed");
@@ -466,13 +605,12 @@ LogosMap TokenModuleImpl::walletTokenAccounts() {
         for (const auto& id_value : ids) {
             if (!id_value.is_string()) continue;
             const std::string id = id_value.get<std::string>();
-            const json read = readPublicAccount(id);
+            // v0.2.5 read the whole account and compared `program_owner` against
+            // the Token Program. Asking for the Token Program's shard is the same
+            // question, and a wallet account carrying only other programs' shards
+            // now comes back `not_found` rather than `ok`-but-foreign.
+            const json read = readPublicAccountShard(id, program_id);
             if (jsonString(read, "status") != "ok") continue;
-            const auto account = read.find("account");
-            if (account == read.end() || !account->is_object()
-                || lowercase(jsonString(*account, "program_owner")) != program_id) {
-                continue;
-            }
 
             const FfiResult decoded = callToken(token_decode_account, {
                 {"tokenProgramId", program_id},
@@ -496,24 +634,37 @@ LogosMap TokenModuleImpl::walletTokenAccounts() {
 
 LogosMap TokenModuleImpl::submitPlan(const nlohmann::json& plan) {
     const auto account_ids_it = plan.find("accountIds");
+    const auto program_ids_it = plan.find("programAccountIds");
     const auto signers_it = plan.find("signingRequirements");
     const auto instruction_it = plan.find("instruction");
     const std::string program_id = lowercase(jsonString(plan, "programId"));
-    if (account_ids_it == plan.end() || signers_it == plan.end()
-        || instruction_it == plan.end() || !isHexLength(program_id, 64)) {
+    if (account_ids_it == plan.end() || program_ids_it == plan.end()
+        || signers_it == plan.end() || instruction_it == plan.end()
+        || !isHexLength(program_id, 64)) {
         return publicError("backend_error");
     }
 
     const std::vector<std::string> account_ids =
         account_ids_it->get<std::vector<std::string>>();
+    // New in v0.3.0: a transaction names shards, not accounts, so every slot
+    // carries the program whose shard it selects. It travels as an array parallel
+    // to accountIds and signingRequirements, and all three must stay aligned --
+    // a short or long array here is a planner bug, not a user error.
+    const std::vector<std::string> program_account_ids =
+        program_ids_it->get<std::vector<std::string>>();
     const std::vector<bool> signers = signers_it->get<std::vector<bool>>();
     const std::vector<std::uint8_t> instruction =
         token_module::detail::jsonInstructionLeBytes(*instruction_it);
+    const auto isAccountId = [](const std::string& id) {
+        return !isHexLength(id, 64) || isZeroId(id);
+    };
     if (account_ids.empty() || account_ids.size() != signers.size()
+        || account_ids.size() != program_account_ids.size()
         || instruction.empty()
-        || std::any_of(account_ids.begin(), account_ids.end(), [](const std::string& id) {
-            return !isHexLength(id, 64) || isZeroId(id);
-        })) {
+        || std::any_of(account_ids.begin(), account_ids.end(), isAccountId)
+        // A program account id may not be zero either: the all-zero id is the
+        // native token program, never a program a token instruction routes through.
+        || std::any_of(program_account_ids.begin(), program_account_ids.end(), isAccountId)) {
         return publicError("backend_error");
     }
 
@@ -524,6 +675,11 @@ LogosMap TokenModuleImpl::submitPlan(const nlohmann::json& plan) {
         instruction,
         program_id,
         FEE_PAYER_SELF,
+        // Last, after the fee payer: lez_core takes one entry per account, where
+        // "" would mean the called program's own shard. The planners always name
+        // the program explicitly, so the Rust side stays the single authority on
+        // which shard each slot selects.
+        program_account_ids,
         &call_error);
     if (!call_error.ok()) {
         TOKEN_TRACE("lez_core submission transport failure: " << call_error.code);
@@ -680,9 +836,12 @@ LogosMap TokenModuleImpl::initializeHolding(const std::string& definition_id,
         if (definition.empty() || holding.empty()) return publicError("invalid_account_id");
         std::string error;
         if (!requireFreshOwnedAccount(holding, error)) return publicError(error);
+        std::string kind;
+        if (!holdingKindOfDefinition(definition, kind, error)) return publicError(error);
         return planAndSubmit(token_initialize_holding_plan, {
             {"definitionId", definition},
             {"holdingTargetId", holding},
+            {"kind", kind},
         });
     });
 }
@@ -694,16 +853,20 @@ LogosMap TokenModuleImpl::transfer(const std::string& sender_holding_id,
         const std::string sender = normalizeAccountId(sender_holding_id);
         const std::string recipient = normalizeAccountId(recipient_holding_id);
         if (sender.empty() || recipient.empty()) return publicError("invalid_account_id");
-        bool recipient_fresh = false;
+        // `recipientIsFresh` is gone with address claiming: writing a shard at an
+        // address denies that address to nobody, so a fresh recipient has nothing
+        // to squat on and no longer needs to sign. What the plan needs instead is
+        // the token being moved, read off the sender.
+        std::string definition;
+        std::string kind;
         std::string error;
-        if (!isFreshOwnedAccount(recipient, recipient_fresh, error)) {
-            return publicError(error);
-        }
+        if (!descriptorOfHolding(sender, definition, kind, error)) return publicError(error);
         return planAndSubmit(token_transfer_plan, {
             {"senderHoldingId", sender},
             {"recipientHoldingId", recipient},
+            {"definitionId", definition},
+            {"kind", kind},
             {"amountRaw", amount_raw},
-            {"recipientIsFresh", recipient_fresh},
         });
     });
 }
@@ -715,9 +878,13 @@ LogosMap TokenModuleImpl::burn(const std::string& definition_id,
         const std::string definition = normalizeAccountId(definition_id);
         const std::string holding = normalizeAccountId(holding_id);
         if (definition.empty() || holding.empty()) return publicError("invalid_account_id");
+        std::string error;
+        std::string kind;
+        if (!holdingKindOfDefinition(definition, kind, error)) return publicError(error);
         return planAndSubmit(token_burn_plan, {
             {"definitionId", definition},
             {"holdingId", holding},
+            {"kind", kind},
             {"amountRaw", amount_raw},
         });
     });
@@ -730,14 +897,10 @@ LogosMap TokenModuleImpl::mint(const std::string& definition_id,
         const std::string definition = normalizeAccountId(definition_id);
         const std::string holding = normalizeAccountId(holding_id);
         if (definition.empty() || holding.empty()) return publicError("invalid_account_id");
-        bool holding_fresh = false;
-        std::string error;
-        if (!isFreshOwnedAccount(holding, holding_fresh, error)) return publicError(error);
         return planAndSubmit(token_mint_plan, {
             {"definitionId", definition},
             {"holdingId", holding},
             {"amountRaw", amount_raw},
-            {"holdingIsFresh", holding_fresh},
         });
     });
 }
@@ -752,15 +915,11 @@ LogosMap TokenModuleImpl::mintWithAuthority(const std::string& definition_id,
         const std::string authority = normalizeAccountId(authority_id);
         if (definition.empty() || holding.empty()) return publicError("invalid_account_id");
         if (authority.empty()) return publicError("invalid_authority");
-        bool holding_fresh = false;
-        std::string error;
-        if (!isFreshOwnedAccount(holding, holding_fresh, error)) return publicError(error);
         return planAndSubmit(token_mint_with_authority_plan, {
             {"definitionId", definition},
             {"holdingId", holding},
             {"authorityId", authority},
             {"amountRaw", amount_raw},
-            {"holdingIsFresh", holding_fresh},
         });
     });
 }
@@ -810,9 +969,16 @@ LogosMap TokenModuleImpl::printNft(const std::string& master_holding_id,
         if (master.empty() || printed.empty()) return publicError("invalid_account_id");
         std::string error;
         if (!requireFreshOwnedAccount(printed, error)) return publicError(error);
+        // The printed copy's apply cannot see the master's shard, so the definition
+        // both belong to is declared and each side asserts it.
+        std::string definition;
+        std::string kind;
+        if (!descriptorOfHolding(master, definition, kind, error)) return publicError(error);
+        if (kind != "nftMaster") return publicError("invalid_holding_data");
         return planAndSubmit(token_print_nft_plan, {
             {"masterHoldingId", master},
             {"printedHoldingTargetId", printed},
+            {"definitionId", definition},
         });
     });
 }

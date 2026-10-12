@@ -1,8 +1,7 @@
 #![cfg_attr(not(test), no_main)]
 
-use nssa_core::account::AccountWithMetadata;
-use spel_framework::context::ProgramContext;
-use spel_framework::prelude::*;
+use nssa_core::account::ShardData;
+use spel_framework::{context::ProgramContext, prelude::*};
 
 #[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
@@ -13,40 +12,101 @@ mod token_mint_authority {
     use super::*;
 
     /// Mint a fixed faucet grant to the calling recipient, rate-limited to once
-    /// per 24h per `(recipient, token definition)` (host fn
-    /// `token_mint_authority_program::faucet_mint::faucet_mint`).
+    /// per 24h per `(recipient, token definition)`.
     ///
-    /// Pure delegating proxy: `user -> token-mint-authority -> token`. Emits one chained
-    /// `Token::MintWithAuthority` authorized by this program's mint-authority PDA
-    /// seed — the Token-Mint-Authority holds no key of its own. Wall-clock time is read
-    /// from the system `CLOCK_01` account passed as the 6th input, since the
-    /// pinned `ProgramContext` exposes no clock.
+    /// A delegating proxy: `user -> token-mint-authority -> token`. One chained
+    /// `Token::MintWithAuthority`, authorized by this program's mint-authority PDA
+    /// seed — this program holds no key of its own.
+    ///
+    /// It owns exactly one shard, the allowance, and that is the only effect it
+    /// writes. The other two effects are guards on shards belonging to other
+    /// programs: the clock, and the Token Program's definition.
     ///
     /// # Errors
     /// Returns the host program's panic-converted error if any precondition
     /// fails — see the host fn for the full list.
-    #[instruction]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "instruction interface requires explicit recipient, allowance, holding, definition, authority, and clock accounts"
+    )]
+    #[plan]
     pub fn faucet_mint(
         ctx: ProgramContext,
-        #[account(signer)] recipient: AccountWithMetadata,
-        #[account(mut)] mint_allowance: AccountWithMetadata,
-        #[account(mut)] user_holding: AccountWithMetadata,
-        #[account(mut)] token_definition: AccountWithMetadata,
-        mint_authority: AccountWithMetadata,
-        clock: AccountWithMetadata,
+        #[account(signer)] recipient: AccountMeta,
+        #[account(mut)] mint_allowance: AccountMeta,
+        #[account(mut)] user_holding: AccountMeta,
+        #[account(mut)] token_definition: AccountMeta,
+        mint_authority: AccountMeta,
+        clock: AccountMeta,
+        now: u64,
     ) -> SpelResult {
-        let (post_states, chained_calls) = token_mint_authority_program::faucet_mint::faucet_mint(
-            recipient,
-            mint_allowance,
-            user_holding,
-            token_definition,
-            mint_authority,
-            clock,
+        let mint_call = token_mint_authority_program::faucet_mint::plan_faucet_mint(
+            &recipient,
+            &mint_allowance,
+            &user_holding,
+            &token_definition,
+            &mint_authority,
+            &clock,
             ctx.self_account_id,
         );
-        Ok(spel_framework::SpelOutput::execute(
-            post_states,
-            chained_calls,
+        let token_program_id = token_definition.program_account_id;
+
+        Ok(SpelOutput::empty()
+            .guard(
+                &clock,
+                clock.program_account_id,
+                &Effect::CheckClock(token_mint_authority_core::CheckClock { now }),
+            )
+            .guard(
+                &token_definition,
+                token_program_id,
+                &Effect::CheckFaucetAuthority(token_mint_authority_core::CheckFaucetAuthority {
+                    mint_authority_id: mint_authority.account_id,
+                }),
+            )
+            .effect(
+                &mint_allowance,
+                mint_allowance.program_account_id,
+                &Effect::RecordMint(token_mint_authority_core::RecordMint {
+                    recipient_id: recipient.account_id,
+                    definition_id: token_definition.account_id,
+                    now,
+                }),
+            )
+            .call(mint_call))
+    }
+
+    #[apply]
+    pub fn check_clock(
+        effect: token_mint_authority_core::CheckClock,
+        pre_data: &ShardData,
+    ) -> Option<ShardData> {
+        token_mint_authority_program::faucet_mint::check_clock(pre_data, effect.now);
+        None
+    }
+
+    #[apply]
+    pub fn check_faucet_authority(
+        effect: token_mint_authority_core::CheckFaucetAuthority,
+        pre_data: &ShardData,
+    ) -> Option<ShardData> {
+        token_mint_authority_program::faucet_mint::check_faucet_authority(
+            pre_data,
+            effect.mint_authority_id,
+        );
+        None
+    }
+
+    #[apply]
+    pub fn record_mint(
+        effect: token_mint_authority_core::RecordMint,
+        pre_data: &ShardData,
+    ) -> Option<ShardData> {
+        Some(token_mint_authority_program::faucet_mint::record_mint(
+            pre_data,
+            effect.recipient_id,
+            effect.definition_id,
+            effect.now,
         ))
     }
 }

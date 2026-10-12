@@ -12,20 +12,24 @@
 //! guest's `assert pool uninitialized`.
 
 use amm_core::{
-    isqrt_product, mul_div_floor, spot_price_q64_64, PoolDefinition, FEE_BPS_DENOMINATOR,
-    MINIMUM_LIQUIDITY,
+    isqrt_product, mul_div_floor, quote_add_liquidity, quote_remove_liquidity, spot_price_q64_64,
+    PoolDefinition, FEE_BPS_DENOMINATOR, MINIMUM_LIQUIDITY,
 };
+use clock_core::clock_account_id;
 use lee_core::account::AccountId;
 use serde_json::{json, Value};
+use token_core::TokenHolding;
 
 use super::{
-    pair::{derive_pair, is_canonical_pair},
+    clock::now_from_clock,
+    envelope::{identity_of, plan_response, pool_from_hex, signer, slot, Slot},
+    pair::{derive_pair, is_canonical_pair, PairIds},
     quote::minimum_opening_pair,
     AddLiquidityPlanRequest, AddLiquidityQuoteRequest, CreatePoolPlanRequest,
     CreatePoolQuoteRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest,
     SyncReservesPlanRequest,
 };
-use crate::account::{account_id_from_hex, account_id_hex, parse_program_id};
+use crate::account::{account_id_from_hex, parse_program_id, program_shard, AccountRead};
 
 /// Parses a required, strictly-positive base-unit amount. Empty / non-digit /
 /// zero inputs surface as stable codes so the UI can flag the offending field.
@@ -69,20 +73,61 @@ fn canonical_triples(
     }
 }
 
-/// The tx-submission envelope shared by the create and add plans: the fixed IDL account ids
-/// as hex, their signer flags, and the borsh-encoded instruction bytes.
-fn plan_response(
-    program_id: &str,
-    account_ids: impl IntoIterator<Item = AccountId>,
-    signing_requirements: &[bool],
-    instruction: Vec<u8>,
-) -> Value {
-    json!({
-        "programId": program_id,
-        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
-        "instruction": instruction,
-    })
+/// The eight pool-side slots the add and remove plans share, in the fixed IDL order.
+///
+/// Four programs across them: the AMM holds the config and the pool, the Token
+/// Program holds the vaults, the LP definition and the three user holdings, the
+/// configured oracle holds the current tick, and the clock is the Clock Program's.
+/// Add and remove differ only in which holding signs, so that is the one argument.
+fn liquidity_slots(
+    pair: &PairIds,
+    pool: &PoolDefinition,
+    user_a: AccountId,
+    user_b: AccountId,
+    user_lp: AccountId,
+    lp_signs: bool,
+) -> [Slot; 10] {
+    let amm = pair.amm_program;
+    let token = pair.facts.token_program_id;
+    let holding = |account, signs| {
+        if signs {
+            signer(account, token)
+        } else {
+            slot(account, token)
+        }
+    };
+    [
+        slot(pair.config, amm),
+        slot(pair.pool, amm),
+        slot(pool.vault_a_id, token),
+        slot(pool.vault_b_id, token),
+        slot(pool.liquidity_pool_id, token),
+        holding(user_a, !lp_signs),
+        holding(user_b, !lp_signs),
+        holding(user_lp, lp_signs),
+        slot(pair.current_tick, pair.twap_oracle_program),
+        slot(pair.clock, clock_account_id()),
+    ]
+}
+
+/// A vault's live balance, declared by `SyncReserves` and pinned by a guard on the
+/// vault's own Token Program shard.
+fn vault_balance(
+    read: &AccountRead,
+    token_program: AccountId,
+    vault_id: AccountId,
+    label: &str,
+) -> Result<u128, String> {
+    let (id, shard) = program_shard(read, token_program, label)?;
+    if id != vault_id {
+        return Err(format!("{label} is not the pool's stored vault"));
+    }
+    let TokenHolding::Fungible { balance, .. } =
+        TokenHolding::try_from(&shard).map_err(|_| format!("{label} is not a token holding"))?
+    else {
+        return Err(format!("{label} is not a fungible holding"));
+    };
+    Ok(balance)
 }
 
 /// Prices a create-pool deposit — dual mode, matching the legacy create quote (minus its
@@ -179,38 +224,44 @@ pub(super) fn create_pool_plan(request: CreatePoolPlanRequest) -> Result<Value, 
     let Ok(pair) = derive_pair(amm_program, canonical_a, canonical_b, &request.config) else {
         return Err(String::from("config_unavailable"));
     };
+    let now = now_from_clock(&request.clock)?;
 
+    // The one pool instruction with no pool to read: the pair is declared rather
+    // than taken off the trader's holdings, and three things pin it -- the pool PDA
+    // assertion ties it to the pool address, the chained transfers carry it as
+    // their `TokenDescriptor`, and the pool record written here is what every later
+    // instruction pins against.
     let instruction = borsh::to_vec(&amm_core::Instruction::NewDefinition {
         token_a_amount: canonical_amount_a,
         token_b_amount: canonical_amount_b,
         deadline,
+        facts: pair.facts,
+        definition_token_a_id: canonical_a,
+        definition_token_b_id: canonical_b,
+        now,
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
-    // Fixed IDL account order for NewDefinition; only the user holdings (a, b, LP) sign.
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pair.vault_a,
-        pair.vault_b,
-        pair.lp_definition,
-        pair.lp_lock_holding,
-        user_a,
-        user_b,
-        user_lp,
-        pair.current_tick,
-        pair.clock,
-    ];
-    let signing_requirements = [
-        false, false, false, false, false, false, true, true, true, false, false,
+    // Fixed IDL slot order for NewDefinition; only the user holdings (a, b) sign --
+    // the LP holding only receives. Everything the Token Program creates or funds
+    // (vaults, the LP definition, the lock, the holdings) selects its shard.
+    let amm = pair.amm_program;
+    let token = pair.facts.token_program_id;
+    let slots = [
+        slot(pair.config, amm),
+        slot(pair.pool, amm),
+        slot(pair.vault_a, token),
+        slot(pair.vault_b, token),
+        slot(pair.lp_definition, token),
+        slot(pair.lp_lock_holding, token),
+        signer(user_a, token),
+        signer(user_b, token),
+        slot(user_lp, token),
+        slot(pair.current_tick, pair.twap_oracle_program),
+        slot(pair.clock, clock_account_id()),
     ];
 
-    Ok(plan_response(
-        &request.amm_program_id,
-        account_ids,
-        &signing_requirements,
-        instruction,
-    ))
+    Ok(plan_response(&request.amm_program_id, &slots, instruction))
 }
 
 /// Prices an `AddLiquidity` into an existing pool. Mirrors the swap quotes: decode the
@@ -343,12 +394,7 @@ pub(super) fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> Result<Val
     };
 
     // Vaults + LP definition come from the pool's stored ids (the guest asserts against them).
-    let Some(pool) = hex::decode(&request.pool_data)
-        .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
-    else {
-        return Err(String::from("no_pool"));
-    };
+    let pool = pool_from_hex(&request.pool_data)?;
 
     // Orient (max amount, holding) to the pool's STORED (definition_token_a_id,
     // definition_token_b_id) order — NOT is_canonical_pair. The guest transfers user_holding_a
@@ -366,37 +412,55 @@ pub(super) fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> Result<Val
             return Err(String::from("pair_mismatch"));
         };
 
+    let now = now_from_clock(&request.clock)?;
+
+    // The ratio-matched deposits and the LP they mint, from the same `amm_core`
+    // derivation the guest's apply half bounds them with: declaring too little LP
+    // or too much deposit only ever benefits the existing providers, so a stale
+    // read costs the caller rather than the pool.
+    if pool.reserve_a == 0 || pool.reserve_b == 0 {
+        return Err(String::from("no_pool"));
+    }
+    let (amount_a, amount_b, delta_lp) = quote_add_liquidity(&pool, max_pool_a, max_pool_b);
+    if delta_lp == 0 {
+        return Err(String::from("amount_too_low"));
+    }
+    // Pinned *exactly* by the pool's effect, because it is forwarded to the oracle.
+    let new_price = post_add_price(&pool, amount_a, amount_b)?;
+
     let instruction = borsh::to_vec(&amm_core::Instruction::AddLiquidity {
         min_amount_liquidity: min_lp,
         max_amount_to_add_token_a: max_pool_a,
         max_amount_to_add_token_b: max_pool_b,
         deadline,
+        facts: pair.facts,
+        identity: identity_of(&pool),
+        amount_a,
+        amount_b,
+        delta_lp,
+        new_price,
+        now,
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
-    // Fixed IDL account order for AddLiquidity; only the user holdings (a, b, LP) sign.
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pool.vault_a_id,
-        pool.vault_b_id,
-        pool.liquidity_pool_id,
-        user_a,
-        user_b,
-        user_lp,
-        pair.current_tick,
-        pair.clock,
-    ];
-    let signing_requirements = [
-        false, false, false, false, false, true, true, true, false, false,
-    ];
-
     Ok(plan_response(
         &request.amm_program_id,
-        account_ids,
-        &signing_requirements,
+        &liquidity_slots(&pair, &pool, user_a, user_b, user_lp, false),
         instruction,
     ))
+}
+
+/// The post-add spot price the pool's effect recomputes and pins exactly.
+fn post_add_price(pool: &PoolDefinition, amount_a: u128, amount_b: u128) -> Result<u128, String> {
+    let reserve_a = pool
+        .reserve_a
+        .checked_add(amount_a)
+        .ok_or_else(|| String::from("reserve_overflow"))?;
+    let reserve_b = pool
+        .reserve_b
+        .checked_add(amount_b)
+        .ok_or_else(|| String::from("reserve_overflow"))?;
+    Ok(spot_price_q64_64(reserve_a, reserve_b))
 }
 
 /// Prices removing liquidity: burning `lp_amount` of the pool returns the proportional
@@ -522,12 +586,7 @@ pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Resu
     };
 
     // Vaults + LP definition come from the pool's stored ids (the guest asserts against them).
-    let Some(pool) = hex::decode(&request.pool_data)
-        .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
-    else {
-        return Err(String::from("no_pool"));
-    };
+    let pool = pool_from_hex(&request.pool_data)?;
 
     // Orient (min amount, holding) to the pool's STORED order — NOT is_canonical_pair. The guest
     // transfers vault_a (== pool.vault_a_id, which holds definition_token_a_id) into
@@ -543,35 +602,42 @@ pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Resu
             return Err(String::from("pair_mismatch"));
         };
 
+    let now = now_from_clock(&request.clock)?;
+
+    // The burner's pro-rata share, from the same `amm_core` derivation the guest's
+    // apply half bounds from above: withdrawing less than the share leaves the
+    // surplus with the remaining providers, so again one direction suffices.
+    if pool.liquidity_pool_supply == 0 {
+        return Err(String::from("no_pool"));
+    }
+    let (withdraw_amount_a, withdraw_amount_b) = quote_remove_liquidity(&pool, lp_amount);
+    let reserve_a = pool
+        .reserve_a
+        .checked_sub(withdraw_amount_a)
+        .ok_or_else(|| String::from("insufficient_pool_liquidity"))?;
+    let reserve_b = pool
+        .reserve_b
+        .checked_sub(withdraw_amount_b)
+        .ok_or_else(|| String::from("insufficient_pool_liquidity"))?;
+
     let instruction = borsh::to_vec(&amm_core::Instruction::RemoveLiquidity {
         remove_liquidity_amount: lp_amount,
         min_amount_to_remove_token_a: min_pool_a,
         min_amount_to_remove_token_b: min_pool_b,
         deadline,
+        facts: pair.facts,
+        identity: identity_of(&pool),
+        withdraw_amount_a,
+        withdraw_amount_b,
+        // Pinned exactly by the pool's effect -- it is forwarded to the oracle.
+        new_price: spot_price_q64_64(reserve_a, reserve_b),
+        now,
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
-    // Fixed IDL account order for RemoveLiquidity; only user_holding_lp (burned) signs.
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pool.vault_a_id,
-        pool.vault_b_id,
-        pool.liquidity_pool_id,
-        user_a,
-        user_b,
-        user_lp,
-        pair.current_tick,
-        pair.clock,
-    ];
-    let signing_requirements = [
-        false, false, false, false, false, false, false, true, false, false,
-    ];
-
     Ok(plan_response(
         &request.amm_program_id,
-        account_ids,
-        &signing_requirements,
+        &liquidity_slots(&pair, &pool, user_a, user_b, user_lp, true),
         instruction,
     ))
 }
@@ -599,42 +665,56 @@ pub(super) fn sync_reserves_plan(request: SyncReservesPlanRequest) -> Result<Val
 
     // The vaults are asserted against the pool's stored ids, so take them from pool_data (a pool
     // created outside the FFI can store a non-canonical order — see add/remove/swap plans).
-    let Some(pool) = hex::decode(&request.pool_data)
-        .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
-    else {
-        return Err(String::from("no_pool"));
-    };
+    let pool = pool_from_hex(&request.pool_data)?;
 
-    let instruction = borsh::to_vec(&amm_core::Instruction::SyncReserves)
-        .map_err(|error| format!("instruction serialization failed: {error}"))?;
+    let now = now_from_clock(&request.clock)?;
 
-    // Fixed IDL account order for SyncReserves; nothing signs (permissionless keeper op).
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pool.vault_a_id,
-        pool.vault_b_id,
-        pair.current_tick,
-        pair.clock,
+    // The one instruction whose whole purpose is to read the vaults. The balances
+    // are declared from these two reads and each is pinned by a guard on its own
+    // Token Program shard, which is why they are the only vault reads left in the
+    // module: everywhere else a vault balance was read, only this program can debit
+    // it, so the assertion was structural.
+    let token_program = pair.facts.token_program_id;
+    let vault_a_balance =
+        vault_balance(&request.vault_a, token_program, pool.vault_a_id, "vault A")?;
+    let vault_b_balance =
+        vault_balance(&request.vault_b, token_program, pool.vault_b_id, "vault B")?;
+
+    let instruction = borsh::to_vec(&amm_core::Instruction::SyncReserves {
+        facts: pair.facts,
+        identity: identity_of(&pool),
+        vault_a_balance,
+        vault_b_balance,
+        now,
+    })
+    .map_err(|error| format!("instruction serialization failed: {error}"))?;
+
+    // Fixed IDL slot order for SyncReserves; nothing signs (permissionless keeper op).
+    let slots = [
+        slot(pair.config, pair.amm_program),
+        slot(pair.pool, pair.amm_program),
+        slot(pool.vault_a_id, token_program),
+        slot(pool.vault_b_id, token_program),
+        slot(pair.current_tick, pair.twap_oracle_program),
+        slot(pair.clock, clock_account_id()),
     ];
-    let signing_requirements = [false, false, false, false, false, false];
 
-    Ok(plan_response(
-        &request.amm_program_id,
-        account_ids,
-        &signing_requirements,
-        instruction,
-    ))
+    Ok(plan_response(&request.amm_program_id, &slots, instruction))
 }
 
 #[cfg(test)]
 mod tests {
     use amm_core::{compute_config_pda, compute_pool_pda, compute_vault_pda, AmmConfig};
-    use lee_core::account::{Account, AccountId, Data};
+    use lee_core::account::{AccountId, ShardData};
 
     use super::*;
-    use crate::account::{account_read, AccountRead};
+    use crate::{
+        account::{account_id_hex, account_read},
+        api::clock::clock_read,
+    };
+
+    const TOKEN_PROGRAM: AccountId = AccountId::new([0x01_u8; 32]);
+    const TWAP_PROGRAM: AccountId = AccountId::new([0x02_u8; 32]);
 
     fn quote_request(token_a: AccountId, token_b: AccountId) -> CreatePoolQuoteRequest {
         CreatePoolQuoteRequest {
@@ -661,22 +741,45 @@ mod tests {
         compute_config_pda(amm, AccountId::new([0x07; 32]), [0; 32])
     }
 
-    /// A valid AMM config account read so `derive_pair` succeeds in plan tests.
+    /// A valid AMM config account read so `derive_pair` succeeds in plan tests. It is
+    /// the AMM's own shard of the config PDA -- which is all `program_owner == amm`
+    /// ever meant.
     fn valid_config(amm: AccountId) -> AccountRead {
-        let token_program = parse_program_id(&"01".repeat(32)).unwrap();
-        let twap_program = parse_program_id(&"02".repeat(32)).unwrap();
-        let account = Account {
-            program_owner: amm,
-            data: Data::from(&AmmConfig {
-                token_program_id: token_program,
-                twap_oracle_program_id: twap_program,
+        account_read(
+            config_id(amm),
+            amm,
+            &ShardData::from(&AmmConfig {
+                token_program_id: TOKEN_PROGRAM,
+                twap_oracle_program_id: TWAP_PROGRAM,
                 authority: AccountId::new([0x09; 32]),
                 swap_fee_bps: 30,
                 protocol_fee_bps: 0,
             }),
-            ..Account::default()
-        };
-        account_read(config_id(amm), &account)
+        )
+    }
+
+    /// The config fields every instruction now declares, matching `valid_config`.
+    fn facts() -> amm_core::ConfigFacts {
+        amm_core::ConfigFacts {
+            token_program_id: TOKEN_PROGRAM,
+            twap_oracle_program_id: TWAP_PROGRAM,
+            authority: AccountId::new([0x09; 32]),
+            swap_fee_bps: 30,
+            protocol_fee_bps: 0,
+        }
+    }
+
+    /// A vault holding read `sync_reserves_plan` declares a balance from. The balance
+    /// is pinned on-chain by a guard on this very shard.
+    fn vault_read(vault_id: AccountId, definition_id: AccountId, balance: u128) -> AccountRead {
+        account_read(
+            vault_id,
+            TOKEN_PROGRAM,
+            &ShardData::from(&token_core::TokenHolding::Fungible {
+                definition_id,
+                balance,
+            }),
+        )
     }
 
     #[test]
@@ -784,6 +887,7 @@ mod tests {
             amount_a: Some(String::from("1000000")), // deposit for display token_a
             amount_b: Some(String::from("4000000")), // deposit for display token_b
             deadline_ms: String::from("1000"),
+            clock: clock_read(1_000),
             user_holding_a_id: account_id_hex(holding_a),
             user_holding_b_id: account_id_hex(holding_b),
             user_holding_lp_id: account_id_hex(lp),
@@ -819,9 +923,39 @@ mod tests {
         assert_eq!(ids[6], account_id_hex(holding_b));
         assert_eq!(ids[7], account_id_hex(holding_a));
         assert_eq!(ids[8], account_id_hex(lp));
+        // The LP holding no longer signs: writing a shard at an address claims that
+        // address from nobody, so a fresh holding has nothing to squat on.
         assert_eq!(
             signers,
-            vec![false, false, false, false, false, false, true, true, true, false, false]
+            vec![false, false, false, false, false, false, true, true, false, false, false]
+        );
+        // Four programs across eleven slots. The AMM owns the config and the pool it
+        // creates; everything the chained `NewFungibleDefinition` and transfers write
+        // (vaults, the LP definition, the lock, the holdings) is the Token Program's;
+        // the tick is the configured oracle's and the clock the Clock Program's.
+        let programs: Vec<&str> = value["programAccountIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        let amm_hex = account_id_hex(amm);
+        let token_hex = account_id_hex(TOKEN_PROGRAM);
+        assert_eq!(
+            programs,
+            vec![
+                amm_hex.as_str(),
+                amm_hex.as_str(),
+                token_hex.as_str(),
+                token_hex.as_str(),
+                token_hex.as_str(),
+                token_hex.as_str(),
+                token_hex.as_str(),
+                token_hex.as_str(),
+                token_hex.as_str(),
+                account_id_hex(TWAP_PROGRAM).as_str(),
+                account_id_hex(clock_account_id()).as_str(),
+            ]
         );
 
         // The decisive check: the encoded instruction must carry token_a_amount =
@@ -833,6 +967,11 @@ mod tests {
             token_a_amount: 4_000_000,
             token_b_amount: 1_000_000,
             deadline: 1_000,
+            facts: facts(),
+            // The pair is declared now, in the same canonical order as the amounts.
+            definition_token_a_id: canonical_a,
+            definition_token_b_id: canonical_b,
+            now: 1_000,
         })
         .unwrap();
         let expected_words: Vec<u64> = expected.iter().map(|word| u64::from(*word)).collect();
@@ -850,6 +989,7 @@ mod tests {
             amount_a: Some(String::from("1")),
             amount_b: Some(String::from("1")),
             deadline_ms: String::from("1"),
+            clock: clock_read(1_000),
             user_holding_a_id: account_id_hex(token),
             user_holding_b_id: account_id_hex(token),
             user_holding_lp_id: account_id_hex(token),
@@ -1035,6 +1175,7 @@ mod tests {
                 max_amount_b: mb.to_string(),
                 min_lp: String::from("500"),
                 deadline_ms: String::from("1000"),
+                clock: clock_read(1_000),
                 user_holding_a_id: ha,
                 user_holding_b_id: hb,
                 user_holding_lp_id: account_id_hex(lp),
@@ -1053,11 +1194,24 @@ mod tests {
         // The instruction the guest must receive: token_a's cap into vault_a (token_a), token_b's
         // cap into vault_b — regardless of the caller's argument order.
         let expected_instruction = {
+            // The deposits, the LP and the post-add price are declared: the plan
+            // phase cannot read the reserves they are functions of. These are the
+            // figures `amm_core`'s shared derivation yields for this pool, which is
+            // exactly what the guest's apply half bounds them against.
+            let (amount_a, amount_b, delta_lp) =
+                amm_core::quote_add_liquidity(&pool, 1_000_000, 4_000_000);
             let words = borsh::to_vec(&amm_core::Instruction::AddLiquidity {
                 min_amount_liquidity: 500,
                 max_amount_to_add_token_a: 1_000_000, // token_a's cap
                 max_amount_to_add_token_b: 4_000_000, // token_b's cap
                 deadline: 1_000,
+                facts: facts(),
+                identity: identity_of(&pool),
+                amount_a,
+                amount_b,
+                delta_lp,
+                new_price: spot_price_q64_64(pool.reserve_a + amount_a, pool.reserve_b + amount_b),
+                now: 1_000,
             })
             .unwrap();
             serde_json::json!(words.iter().map(|w| u64::from(*w)).collect::<Vec<u64>>())
@@ -1117,6 +1271,7 @@ mod tests {
                 max_amount_b: String::from("1"),
                 min_lp: String::from("1"),
                 deadline_ms: String::from("1"),
+                clock: clock_read(1_000),
                 user_holding_a_id: account_id_hex(token_a),
                 user_holding_b_id: account_id_hex(token_b),
                 user_holding_lp_id: account_id_hex(token_a),
@@ -1323,6 +1478,7 @@ mod tests {
                 min_amount_a: min_a.to_string(),
                 min_amount_b: min_b.to_string(),
                 deadline_ms: String::from("1000"),
+                clock: clock_read(1_000),
                 user_holding_a_id: ha,
                 user_holding_b_id: hb,
                 user_holding_lp_id: account_id_hex(lp),
@@ -1345,11 +1501,25 @@ mod tests {
         // The instruction the guest must receive: token_a's floor with vault_a's token,
         // token_b's floor with vault_b's — regardless of the caller's argument order.
         let expected_instruction = {
+            // Same story as add: the withdrawals and the post-removal price are
+            // declared from `amm_core`'s shared derivation, and the pool's effect
+            // bounds the first pair from above and pins the price exactly.
+            let (withdraw_amount_a, withdraw_amount_b) =
+                amm_core::quote_remove_liquidity(&pool, 100_000);
             let words = borsh::to_vec(&amm_core::Instruction::RemoveLiquidity {
                 remove_liquidity_amount: 100_000,
                 min_amount_to_remove_token_a: 90_000, // token_a's floor
                 min_amount_to_remove_token_b: 180_000, // token_b's floor
                 deadline: 1_000,
+                facts: facts(),
+                identity: identity_of(&pool),
+                withdraw_amount_a,
+                withdraw_amount_b,
+                new_price: spot_price_q64_64(
+                    pool.reserve_a - withdraw_amount_a,
+                    pool.reserve_b - withdraw_amount_b,
+                ),
+                now: 1_000,
             })
             .unwrap();
             serde_json::json!(words.iter().map(|w| u64::from(*w)).collect::<Vec<u64>>())
@@ -1413,6 +1583,7 @@ mod tests {
                 min_amount_a: String::from("1"),
                 min_amount_b: String::from("1"),
                 deadline_ms: String::from("1"),
+                clock: clock_read(1_000),
                 user_holding_a_id: account_id_hex(token_a),
                 user_holding_b_id: account_id_hex(token_b),
                 user_holding_lp_id: account_id_hex(token_a),
@@ -1455,12 +1626,17 @@ mod tests {
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
         };
+        // The vaults have drifted above the stored reserves -- which is the whole
+        // point of a sync -- and the two balances are declared from these reads.
         let value = sync_reserves_plan(SyncReservesPlanRequest {
             amm_program_id: program.clone(),
             config: valid_config(amm),
             token_a_id: account_id_hex(token_a),
             token_b_id: account_id_hex(token_b),
             pool_data: pool_hex(&pool),
+            vault_a: vault_read(vault_a, token_a, 1_500_000),
+            vault_b: vault_read(vault_b, token_b, 2_500_000),
+            clock: clock_read(1_000),
         })
         .unwrap();
 
@@ -1483,8 +1659,26 @@ mod tests {
             value["signingRequirements"],
             serde_json::json!([false, false, false, false, false, false])
         );
+        assert_eq!(
+            value["programAccountIds"],
+            serde_json::json!([
+                account_id_hex(amm),
+                account_id_hex(amm),
+                account_id_hex(TOKEN_PROGRAM),
+                account_id_hex(TOKEN_PROGRAM),
+                account_id_hex(TWAP_PROGRAM),
+                account_id_hex(clock_account_id()),
+            ])
+        );
         let expected_instruction = {
-            let words = borsh::to_vec(&amm_core::Instruction::SyncReserves).unwrap();
+            let words = borsh::to_vec(&amm_core::Instruction::SyncReserves {
+                facts: facts(),
+                identity: identity_of(&pool),
+                vault_a_balance: 1_500_000,
+                vault_b_balance: 2_500_000,
+                now: 1_000,
+            })
+            .unwrap();
             serde_json::json!(words.iter().map(|w| u64::from(*w)).collect::<Vec<u64>>())
         };
         assert_eq!(value["instruction"], expected_instruction);
@@ -1501,6 +1695,10 @@ mod tests {
                 token_a_id: account_id_hex(token_a),
                 token_b_id: account_id_hex(token_b),
                 pool_data,
+                // Never reached: the config / pool checks fail first.
+                vault_a: read_failed(),
+                vault_b: read_failed(),
+                clock: read_failed(),
             };
 
         // Same token pair — rejected before any config/pool work.

@@ -1,20 +1,25 @@
+use std::collections::HashMap;
+
 use integration_tests::{
     private_authorized_init_identity, private_authorized_update_identity,
     private_foreign_init_identity, GroupOwner,
 };
 use lee::{
     execute_and_prove,
-    privacy_preserving_transaction::{Message, PrivacyPreservingTransaction, WitnessSet},
+    privacy_preserving_transaction::{
+        circuit::{ProgramWithDependencies, ProvingInput},
+        Message, PrivacyPreservingTransaction, WitnessSet,
+    },
     program::Program,
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
+    account::{Account, AccountId, Nonce, ProgramShardSelector, ShardData},
     encryption::ViewingPublicKey,
-    AuthorizationSecretKey, Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey,
-    NullifierSecretKey,
+    AuthorizationSecretKey, Commitment, Identifier, Nullifier, NullifierPublicKey,
+    NullifierSecretKey, PrivateWitness,
 };
-use token_core::{TokenDefinition, TokenHolding};
+use token_core::{TokenDefinition, TokenDescriptor, TokenHolding, TokenKind};
 
 struct Keys;
 struct Ids;
@@ -43,7 +48,7 @@ impl Ids {
     /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
     /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
     fn token_program() -> AccountId {
-        AccountId::from(token_methods::TOKEN_ID)
+        AccountId::from_builtin_program(token_methods::TOKEN_ID)
     }
 
     /// A program that was never deployed here, for "owned by someone else" fixtures.
@@ -70,31 +75,27 @@ impl Ids {
 
 impl Accounts {
     fn token_definition_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
                 authority: Some(Ids::token_definition()),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn token_definition_foreign_owner() -> Account {
-        Account {
-            program_owner: Ids::foreign_token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::foreign_token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
                 authority: Some(Ids::token_definition()),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn holder_init() -> Account {
@@ -105,28 +106,28 @@ impl Accounts {
         Self::token_holding(0_u128, Nonce(0))
     }
 
+    /// An account the Token Program will write to but has not written to yet.
+    /// v0.2.5 spelled this "owned, with empty data"; under shards an empty shard
+    /// *is* no shard, so there is nothing to seed.
     fn authority_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::default(),
-            nonce: Nonce(0),
-        }
+        Account::default()
     }
 
     /// A token holding account for the canonical `Ids::token_definition()`, at the given
     /// balance and nonce. Covers every private and public token-holding shape in this file —
-    /// the `program_owner`/`definition_id` are fixed for this test module.
+    /// the owning program and `definition_id` are fixed for this test module.
     fn token_holding(balance: u128, nonce: Nonce) -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce,
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_definition(),
                 balance,
             }),
-            nonce,
-        }
+        )
     }
 }
 
@@ -174,7 +175,10 @@ fn token_new_fungible_definition() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+        ],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -191,16 +195,18 @@ fn token_new_fungible_definition() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
                 authority: None,
             }),
-            nonce: Nonce(1),
-        }
+        )
     );
 
     assert_eq!(
@@ -213,11 +219,16 @@ fn token_new_fungible_definition() {
 fn token_initialize_account_succeeds_for_canonical_definition() {
     let mut state = state_for_token_tests_without_recipient();
 
-    let instruction = token_core::Instruction::InitializeAccount;
+    let instruction = token_core::Instruction::InitializeAccount {
+        kind: TokenKind::Fungible,
+    };
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::recipient(), Ids::token_program()),
+        ],
         vec![Nonce(0)],
         instruction,
     )
@@ -247,11 +258,16 @@ fn token_initialize_account_rejects_foreign_owned_definition() {
         Accounts::token_definition_foreign_owner(),
     );
 
-    let instruction = token_core::Instruction::InitializeAccount;
+    let instruction = token_core::Instruction::InitializeAccount {
+        kind: TokenKind::Fungible,
+    };
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::recipient(), Ids::token_program()),
+        ],
         vec![Nonce(0)],
         instruction,
     )
@@ -279,11 +295,18 @@ fn token_transfer() {
 
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: 500_000_u128,
+        descriptor: TokenDescriptor {
+            definition_id: Ids::token_definition(),
+            kind: TokenKind::Fungible,
+        },
     };
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::holder(), Ids::recipient()],
+        vec![
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::recipient(), Ids::token_program()),
+        ],
         vec![Nonce(0)],
         instruction,
     )
@@ -321,11 +344,18 @@ fn token_transfer_fresh_public_recipient_is_unauthenticated_since_v0_2_5() {
 
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: 500_000_u128,
+        descriptor: TokenDescriptor {
+            definition_id: Ids::token_definition(),
+            kind: TokenKind::Fungible,
+        },
     };
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::holder(), Ids::recipient()],
+        vec![
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::recipient(), Ids::token_program()),
+        ],
         vec![Nonce(0)],
         instruction,
     )
@@ -352,11 +382,18 @@ fn token_transfer_fresh_authorized_public_recipient() {
 
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: 500_000_u128,
+        descriptor: TokenDescriptor {
+            definition_id: Ids::token_definition(),
+            kind: TokenKind::Fungible,
+        },
     };
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::holder(), Ids::recipient()],
+        vec![
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::recipient(), Ids::token_program()),
+        ],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -387,11 +424,15 @@ fn token_burn() {
 
     let instruction = token_core::Instruction::Burn {
         amount_to_burn: 200_000_u128,
+        kind: TokenKind::Fungible,
     };
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+        ],
         vec![Nonce(0)],
         instruction,
     )
@@ -404,17 +445,15 @@ fn token_burn() {
 
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 800_000_u128,
                 metadata_id: None,
                 authority: Some(Ids::token_definition()),
             }),
-            nonce: Nonce(0),
-        }
+        )
     );
 
     assert_eq!(
@@ -433,7 +472,10 @@ fn token_mint() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+        ],
         vec![Nonce(0)],
         instruction,
     )
@@ -447,16 +489,18 @@ fn token_mint() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
                 authority: Some(Ids::token_definition()),
             }),
-            nonce: Nonce(1),
-        }
+        )
     );
 
     assert_eq!(
@@ -479,7 +523,10 @@ fn token_mint_rejects_foreign_owned_definition() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::recipient(), Ids::token_program()),
+        ],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -516,7 +563,10 @@ fn token_mint_fresh_public_recipient_is_unauthenticated_since_v0_2_5() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::recipient(), Ids::token_program()),
+        ],
         vec![Nonce(0)],
         instruction,
     )
@@ -546,7 +596,10 @@ fn token_mint_fresh_authorized_public_recipient() {
 
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::recipient(), Ids::token_program()),
+        ],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -563,16 +616,18 @@ fn token_mint_fresh_authorized_public_recipient() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
                 authority: Some(Ids::token_definition()),
             }),
-            nonce: Nonce(1),
-        }
+        )
     );
 
     assert_eq!(
@@ -605,7 +660,11 @@ impl PrivateKeys {
     }
 
     fn holder_id() -> AccountId {
-        AccountId::for_regular_private_account(&Self::holder_npk(), &Self::holder_vpk(), 0)
+        AccountId::for_regular_private_account(
+            &Self::holder_npk(),
+            &Self::holder_vpk(),
+            Identifier::ZERO,
+        )
     }
 
     /// The authorization key is the root credential under v0.2.5: the circuit takes an
@@ -627,12 +686,22 @@ impl PrivateKeys {
     }
 
     fn recipient_id() -> AccountId {
-        AccountId::for_regular_private_account(&Self::recipient_npk(), &Self::recipient_vpk(), 0)
+        AccountId::for_regular_private_account(
+            &Self::recipient_npk(),
+            &Self::recipient_vpk(),
+            Identifier::ZERO,
+        )
     }
 }
 
 fn token_program() -> Program {
     Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF")
+}
+
+/// The Token Program as a provable unit. It is a leaf — it chains into nothing —
+/// so its dependency map is empty.
+fn token_program_deps() -> ProgramWithDependencies {
+    ProgramWithDependencies::new(token_program(), Ids::token_program(), HashMap::new())
 }
 
 /// Performs a shielded transfer (public → private) of `amount` tokens from
@@ -643,7 +712,7 @@ fn shielded_token_transfer(
     amount: u128,
     state: &mut V03State,
     recipient_is_authorized: bool,
-    recipient_identity: InputAccountIdentity,
+    recipient_identity: PrivateWitness,
 ) -> Account {
     let sender_id = Ids::holder();
     let sender_account = state.get_account_by_id(sender_id);
@@ -651,18 +720,31 @@ fn shielded_token_transfer(
 
     let recipient_id = PrivateKeys::recipient_id();
 
-    let sender = AccountWithMetadata::new(sender_account, true, sender_id);
-    let recipient =
-        AccountWithMetadata::new(Account::default(), recipient_is_authorized, recipient_id);
-
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: amount,
+        descriptor: TokenDescriptor {
+            definition_id: Ids::token_definition(),
+            kind: TokenKind::Fungible,
+        },
     };
     let (output, proof) = execute_and_prove(
-        vec![sender, recipient],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![InputAccountIdentity::Public, recipient_identity],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(sender_id, Ids::token_program()),
+                ProgramShardSelector::new(recipient_id, Ids::token_program()),
+            ],
+            // The flag used to ride on the recipient's `AccountWithMetadata`; the
+            // authorization set is explicit now, so it decides membership here.
+            signers: if recipient_is_authorized {
+                [sender_id, recipient_id].into()
+            } else {
+                [sender_id].into()
+            },
+            private_witnesses: vec![recipient_identity],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -765,26 +847,37 @@ fn token_private_transfer() {
         .get_proof_for_commitment(&sender_commitment)
         .expect("sender's commitment must be in the set");
 
-    let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, sender_id);
-    let new_recipient_pre = AccountWithMetadata::new(Account::default(), false, new_recipient_id);
-
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: transfer_amount,
+        descriptor: TokenDescriptor {
+            definition_id: Ids::token_definition(),
+            kind: TokenKind::Fungible,
+        },
     };
     let (output, proof) = execute_and_prove(
-        vec![sender_pre, new_recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            // Distinct `output_index` per private output keeps the encapsulated secrets
-            // reproducible.
-            private_authorized_update_identity(sender_ask, &sender_vpk, membership_proof),
-            private_foreign_init_identity(
-                new_recipient_npk,
-                &new_recipient_vpk,
-                state.commitment_root(),
-            ),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(sender_id, Ids::token_program()),
+                ProgramShardSelector::new(new_recipient_id, Ids::token_program()),
+            ],
+            signers: [sender_id].into(),
+            private_witnesses: vec![
+                private_authorized_update_identity(
+                    sender_ask,
+                    &sender_vpk,
+                    sender_account.clone(),
+                    membership_proof,
+                ),
+                private_foreign_init_identity(
+                    new_recipient_npk,
+                    &new_recipient_vpk,
+                    state.commitment_root(),
+                ),
+            ],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -842,24 +935,30 @@ fn token_deshielded_transfer() {
         .get_proof_for_commitment(&sender_commitment)
         .expect("sender's commitment must be in the set");
 
-    let public_recipient_pre = AccountWithMetadata::new(
-        state.get_account_by_id(public_recipient_id),
-        false,
-        public_recipient_id,
-    );
-    let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, sender_id);
-
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: deshield_amount,
+        descriptor: TokenDescriptor {
+            definition_id: Ids::token_definition(),
+            kind: TokenKind::Fungible,
+        },
     };
     let (output, proof) = execute_and_prove(
-        vec![sender_pre, public_recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            private_authorized_update_identity(sender_ask, &sender_vpk, membership_proof),
-            InputAccountIdentity::Public,
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(sender_id, Ids::token_program()),
+                ProgramShardSelector::new(public_recipient_id, Ids::token_program()),
+            ],
+            signers: [sender_id].into(),
+            private_witnesses: vec![private_authorized_update_identity(
+                sender_ask,
+                &sender_vpk,
+                sender_account.clone(),
+                membership_proof,
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -898,19 +997,23 @@ fn token_mint_private_unauthorized() {
 
     let definition_account = state.get_account_by_id(Ids::token_definition());
     let definition_nonce = definition_account.nonce;
-    let definition_pre =
-        AccountWithMetadata::new(definition_account, true, Ids::token_definition());
-    let recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
-
     let instruction = token_core::Instruction::Mint { amount_to_mint };
     let (output, proof) = execute_and_prove(
-        vec![definition_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(recipient_npk, &recipient_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(recipient_id, Ids::token_program()),
+            ],
+            signers: [Ids::token_definition()].into(),
+            private_witnesses: vec![private_foreign_init_identity(
+                recipient_npk,
+                &recipient_vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -925,16 +1028,18 @@ fn token_mint_private_unauthorized() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128 + amount_to_mint,
                 metadata_id: None,
                 authority: Some(Ids::token_definition()),
             }),
-            nonce: Nonce(1),
-        }
+        )
     );
 
     let recipient_account = Accounts::token_holding(
@@ -959,23 +1064,23 @@ fn token_mint_authorized_private_init() {
 
     let definition_account = state.get_account_by_id(Ids::token_definition());
     let definition_nonce = definition_account.nonce;
-    let definition_pre =
-        AccountWithMetadata::new(definition_account, true, Ids::token_definition());
-    let recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
-
     let instruction = token_core::Instruction::Mint { amount_to_mint };
     let (output, proof) = execute_and_prove(
-        vec![definition_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(recipient_id, Ids::token_program()),
+            ],
+            signers: [Ids::token_definition(), recipient_id].into(),
+            private_witnesses: vec![private_authorized_init_identity(
                 recipient_ask,
                 &recipient_vpk,
                 state.commitment_root(),
-            ),
-        ],
-        &token_program().into(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -990,16 +1095,18 @@ fn token_mint_authorized_private_init() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128 + amount_to_mint,
                 metadata_id: None,
                 authority: Some(Ids::token_definition()),
             }),
-            nonce: Nonce(1),
-        }
+        )
     );
 
     let recipient_account = Accounts::token_holding(
@@ -1040,19 +1147,26 @@ fn token_mint_into_existing_private_holding() {
 
     let definition_account = state.get_account_by_id(Ids::token_definition());
     let definition_nonce = definition_account.nonce;
-    let definition_pre =
-        AccountWithMetadata::new(definition_account, true, Ids::token_definition());
-    let existing_recipient_pre =
-        AccountWithMetadata::new(recipient_pre.clone(), true, recipient_id);
-
     let (output, second_proof) = execute_and_prove(
-        vec![definition_pre, existing_recipient_pre],
-        Program::serialize_instruction(token_core::Instruction::Mint { amount_to_mint }).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(recipient_ask, &recipient_vpk, membership_proof),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(recipient_id, Ids::token_program()),
+            ],
+            signers: [Ids::token_definition(), recipient_id].into(),
+            private_witnesses: vec![private_authorized_update_identity(
+                recipient_ask,
+                &recipient_vpk,
+                recipient_pre.clone(),
+                membership_proof,
+            )],
+            instruction_data: Program::serialize_instruction(token_core::Instruction::Mint {
+                amount_to_mint,
+            })
+            .unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -1069,16 +1183,18 @@ fn token_mint_into_existing_private_holding() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128 + amount_to_mint,
                 metadata_id: None,
                 authority: Some(Ids::token_definition()),
             }),
-            nonce: Nonce(1),
-        }
+        )
     );
 
     let recipient_nonce_after = Nonce::private_account_nonce_init(&recipient_id)
@@ -1119,24 +1235,27 @@ fn token_private_burn() {
         .get_proof_for_commitment(&holder_commitment)
         .expect("holder's commitment must be in the set");
 
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
-    );
-    let holder_pre = AccountWithMetadata::new(holder_account.clone(), true, holder_id);
-
     let instruction = token_core::Instruction::Burn {
         amount_to_burn: burn_amount,
+        kind: TokenKind::Fungible,
     };
     let (output, proof) = execute_and_prove(
-        vec![definition_pre, holder_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(holder_ask, &holder_vpk, membership_proof),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(holder_id, Ids::token_program()),
+            ],
+            signers: [holder_id].into(),
+            private_witnesses: vec![private_authorized_update_identity(
+                holder_ask,
+                &holder_vpk,
+                holder_account.clone(),
+                membership_proof,
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -1150,17 +1269,15 @@ fn token_private_burn() {
 
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128 - burn_amount,
                 metadata_id: None,
                 authority: Some(Ids::token_definition()),
             }),
-            nonce: Nonce(0),
-        }
+        )
     );
 
     let new_holder_account = Accounts::token_holding(
@@ -1202,20 +1319,30 @@ fn token_transfer_into_existing_private_holding() {
     let sender_account = state.get_account_by_id(sender_id);
     let sender_nonce = sender_account.nonce;
 
-    let sender_pre = AccountWithMetadata::new(sender_account, true, sender_id);
-    let recipient_pre = AccountWithMetadata::new(recipient_account.clone(), true, recipient_id);
-
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: second_amount,
+        descriptor: TokenDescriptor {
+            definition_id: Ids::token_definition(),
+            kind: TokenKind::Fungible,
+        },
     };
     let (output, proof) = execute_and_prove(
-        vec![sender_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(recipient_ask, &recipient_vpk, membership_proof),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(sender_id, Ids::token_program()),
+                ProgramShardSelector::new(recipient_id, Ids::token_program()),
+            ],
+            signers: [sender_id, recipient_id].into(),
+            private_witnesses: vec![private_authorized_update_identity(
+                recipient_ask,
+                &recipient_vpk,
+                recipient_account.clone(),
+                membership_proof,
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -1291,24 +1418,38 @@ fn token_private_transfer_into_existing_private_holding() {
         .get_proof_for_commitment(&recipient_commitment)
         .expect("recipient's commitment must be in the set");
 
-    let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, sender_id);
-    let recipient_pre = AccountWithMetadata::new(recipient_account.clone(), true, recipient_id);
-
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: transfer_amount,
+        descriptor: TokenDescriptor {
+            definition_id: Ids::token_definition(),
+            kind: TokenKind::Fungible,
+        },
     };
     let (output, proof) = execute_and_prove(
-        vec![sender_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            private_authorized_update_identity(sender_ask, &sender_vpk, sender_membership_proof),
-            private_authorized_update_identity(
-                recipient_ask,
-                &recipient_vpk,
-                recipient_membership_proof,
-            ),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(sender_id, Ids::token_program()),
+                ProgramShardSelector::new(recipient_id, Ids::token_program()),
+            ],
+            signers: [sender_id, recipient_id].into(),
+            private_witnesses: vec![
+                private_authorized_update_identity(
+                    sender_ask,
+                    &sender_vpk,
+                    sender_account.clone(),
+                    sender_membership_proof,
+                ),
+                private_authorized_update_identity(
+                    recipient_ask,
+                    &recipient_vpk,
+                    recipient_account.clone(),
+                    recipient_membership_proof,
+                ),
+            ],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -1353,22 +1494,25 @@ fn token_initialize_private_account_succeeds_for_canonical_definition() {
     let owner_vpk = PrivateKeys::recipient_vpk();
     let owner_id = PrivateKeys::recipient_id();
 
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
-    );
-    let account_to_init_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
-
-    let instruction = token_core::Instruction::InitializeAccount;
+    let instruction = token_core::Instruction::InitializeAccount {
+        kind: TokenKind::Fungible,
+    };
     let (output, proof) = execute_and_prove(
-        vec![definition_pre, account_to_init_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(owner_ask, &owner_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(owner_id, Ids::token_program()),
+            ],
+            signers: [owner_id].into(),
+            private_witnesses: vec![private_authorized_init_identity(
+                owner_ask,
+                &owner_vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -1391,34 +1535,51 @@ fn token_initialize_private_account_succeeds_for_canonical_definition() {
 /// expressible under v0.2.4, and v0.2.5 refuses it again because a foreign-init pre-state now
 /// correctly carries `is_authorized == false`. Initializing an account requires its key.
 #[test]
-fn token_initialize_private_account_via_foreign_init_is_refused() {
+fn token_initialize_private_account_via_foreign_init_now_succeeds() {
     let state = state_for_token_tests_without_recipient();
 
     let recipient_npk = PrivateKeys::recipient_npk();
     let recipient_vpk = PrivateKeys::recipient_vpk();
     let recipient_id = PrivateKeys::recipient_id();
 
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
-    );
-    let account_to_init_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
-
-    let error = execute_and_prove(
-        vec![definition_pre, account_to_init_pre],
-        Program::serialize_instruction(token_core::Instruction::InitializeAccount).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(recipient_npk, &recipient_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
+    // v0.2.5 refused this: the init target had to be a signer. v0.3.0 dropped that
+    // requirement, because writing a shard at an address denies the address to
+    // nobody — `initialize_holding` only demands authorization when it would
+    // *overwrite* data ("An empty shard needs no authorization — writing it denies
+    // nothing to anyone — but overwriting one that already holds something does").
+    // The overwrite refusal is unit tested in `programs/token/src/tests.rs`; what
+    // is left to show end to end is that a third party can now credit a fresh
+    // private holding it does not control.
+    let (output, _proof) = execute_and_prove(
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(recipient_id, Ids::token_program()),
+            ],
+            signers: [].into(),
+            private_witnesses: vec![private_foreign_init_identity(
+                recipient_npk,
+                &recipient_vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(
+                token_core::Instruction::InitializeAccount {
+                    kind: TokenKind::Fungible,
+                },
+            )
+            .unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
-    .expect_err("a foreign-init target cannot satisfy the signer requirement");
+    .expect("initializing an empty private holding needs no authorization");
 
-    assert!(
-        format!("{error:?}").contains("must be a signer"),
-        "expected the init target's signer requirement to reject this, got: {error:?}"
+    // The new holding is emitted as a private action, not a public one: the
+    // recipient's shard never becomes visible.
+    assert_eq!(
+        output.private_actions.len(),
+        1,
+        "the fresh private holding must be emitted as exactly one private action"
     );
 }
 
@@ -1432,23 +1593,27 @@ fn token_new_fungible_definition_private_initial_holder() {
     let holder_id = PrivateKeys::holder_id();
 
     let definition_nonce = state.get_account_by_id(Ids::token_definition()).nonce;
-    let definition_pre =
-        AccountWithMetadata::new(Account::default(), true, Ids::token_definition());
-    let holder_pre = AccountWithMetadata::new(Account::default(), true, holder_id);
-
     let instruction = token_core::Instruction::NewFungibleDefinition {
         name: String::from("Gold"),
         total_supply: 1_000_000_u128,
         mint_authority: None,
     };
     let (output, proof) = execute_and_prove(
-        vec![definition_pre, holder_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(holder_ask, &holder_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(holder_id, Ids::token_program()),
+            ],
+            signers: [Ids::token_definition(), holder_id].into(),
+            private_witnesses: vec![private_authorized_init_identity(
+                holder_ask,
+                &holder_vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -1462,16 +1627,18 @@ fn token_new_fungible_definition_private_initial_holder() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
                 authority: None,
             }),
-            nonce: Nonce(1),
-        }
+        )
     );
 
     let holder_account = Accounts::token_holding(
@@ -1499,23 +1666,27 @@ fn token_new_fungible_definition_foreign_init_holder_is_refused() {
     let holder_vpk = PrivateKeys::holder_vpk();
     let holder_id = PrivateKeys::holder_id();
 
-    let definition_pre =
-        AccountWithMetadata::new(Account::default(), true, Ids::token_definition());
-    let holder_pre = AccountWithMetadata::new(Account::default(), false, holder_id);
-
     let instruction = token_core::Instruction::NewFungibleDefinition {
         name: String::from("Gold"),
         total_supply: 1_000_000_u128,
         mint_authority: None,
     };
     let error = execute_and_prove(
-        vec![definition_pre, holder_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(holder_npk, &holder_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(holder_id, Ids::token_program()),
+            ],
+            signers: [Ids::token_definition()].into(),
+            private_witnesses: vec![private_foreign_init_identity(
+                holder_npk,
+                &holder_vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .expect_err("a foreign-init holder cannot satisfy the signer requirement");
 
@@ -1547,20 +1718,29 @@ fn token_group_owned_holding_shared_control_burn() {
     let sender_id = Ids::holder();
     let sender_account = state.get_account_by_id(sender_id);
     let sender_nonce = sender_account.nonce;
-    let sender_pre = AccountWithMetadata::new(sender_account, true, sender_id);
-    let group_pre_shield = AccountWithMetadata::new(Account::default(), false, group_id);
-
     let shield_instruction = token_core::Instruction::Transfer {
         amount_to_transfer: shield_amount,
+        descriptor: TokenDescriptor {
+            definition_id: Ids::token_definition(),
+            kind: TokenKind::Fungible,
+        },
     };
     let (shield_output, shield_proof) = execute_and_prove(
-        vec![sender_pre, group_pre_shield],
-        Program::serialize_instruction(shield_instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(group_npk, &group_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(sender_id, Ids::token_program()),
+                ProgramShardSelector::new(group_id, Ids::token_program()),
+            ],
+            signers: [sender_id].into(),
+            private_witnesses: vec![private_foreign_init_identity(
+                group_npk,
+                &group_vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(shield_instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
     let shield_message = Message::from_circuit_output(vec![sender_nonce], shield_output);
@@ -1582,24 +1762,27 @@ fn token_group_owned_holding_shared_control_burn() {
         .get_proof_for_commitment(&group_commitment)
         .expect("group holding's commitment must be in the set");
 
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
-    );
-    let group_pre_burn = AccountWithMetadata::new(group_account, true, group_id);
-
     let burn_instruction = token_core::Instruction::Burn {
         amount_to_burn: burn_amount,
+        kind: TokenKind::Fungible,
     };
     let (burn_output, burn_proof) = execute_and_prove(
-        vec![definition_pre, group_pre_burn],
-        Program::serialize_instruction(burn_instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(bob_ask, &group_vpk, membership_proof),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(group_id, Ids::token_program()),
+            ],
+            signers: [group_id].into(),
+            private_witnesses: vec![private_authorized_update_identity(
+                bob_ask,
+                &group_vpk,
+                group_account.clone(),
+                membership_proof,
+            )],
+            instruction_data: Program::serialize_instruction(burn_instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -1612,17 +1795,15 @@ fn token_group_owned_holding_shared_control_burn() {
 
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128 - burn_amount,
                 metadata_id: None,
                 authority: Some(Ids::token_definition()),
             }),
-            nonce: Nonce(0),
-        }
+        )
     );
 
     let group_nonce_after =
@@ -1666,20 +1847,37 @@ fn token_group_owned_holding_shared_control_transfer() {
     let recipient_vpk = PrivateKeys::holder_vpk();
     let recipient_id = PrivateKeys::holder_id();
 
-    let group_pre = AccountWithMetadata::new(group_account, true, group_id);
-    let recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
-
     let instruction = token_core::Instruction::Transfer {
         amount_to_transfer: transfer_amount,
+        descriptor: TokenDescriptor {
+            definition_id: Ids::token_definition(),
+            kind: TokenKind::Fungible,
+        },
     };
     let (output, proof) = execute_and_prove(
-        vec![group_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            private_authorized_update_identity(bob_ask, &group_vpk, membership_proof),
-            private_foreign_init_identity(recipient_npk, &recipient_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(group_id, Ids::token_program()),
+                ProgramShardSelector::new(recipient_id, Ids::token_program()),
+            ],
+            signers: [group_id].into(),
+            private_witnesses: vec![
+                private_authorized_update_identity(
+                    bob_ask,
+                    &group_vpk,
+                    group_account.clone(),
+                    membership_proof,
+                ),
+                private_foreign_init_identity(
+                    recipient_npk,
+                    &recipient_vpk,
+                    state.commitment_root(),
+                ),
+            ],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -1723,22 +1921,25 @@ fn token_group_owned_holding_shared_control_initialize() {
     let bob_ask = alice.admit_member();
 
     // Bob — who never created the group — self-initializes the shared holding directly.
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
-    );
-    let group_pre = AccountWithMetadata::new(Account::default(), true, group_id);
-
-    let instruction = token_core::Instruction::InitializeAccount;
+    let instruction = token_core::Instruction::InitializeAccount {
+        kind: TokenKind::Fungible,
+    };
     let (output, proof) = execute_and_prove(
-        vec![definition_pre, group_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(group_id, Ids::token_program()),
+            ],
+            signers: [group_id].into(),
+            private_witnesses: vec![private_authorized_init_identity(
+                bob_ask,
+                &alice.vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -1773,7 +1974,10 @@ fn token_new_fungible_definition_with_authority() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+        ],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -1787,16 +1991,18 @@ fn token_new_fungible_definition_with_authority() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("AuthCoin"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
                 authority: Some(AccountId::new(authority_key)),
             }),
-            nonce: Nonce(1),
-        }
+        )
     );
 }
 
@@ -1816,7 +2022,10 @@ fn token_set_authority_revoke() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+        ],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -1837,7 +2046,10 @@ fn token_set_authority_revoke() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition()],
+        vec![ProgramShardSelector::new(
+            Ids::token_definition(),
+            Ids::token_program(),
+        )],
         vec![Nonce(1)],
         instruction,
     )
@@ -1848,16 +2060,18 @@ fn token_set_authority_revoke() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(2),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("AuthCoin"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
                 authority: None,
             }),
-            nonce: Nonce(2),
-        }
+        )
     );
 }
 
@@ -1877,7 +2091,10 @@ fn token_set_authority_with_authority_revokes() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+        ],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -1895,7 +2112,10 @@ fn token_set_authority_with_authority_revokes() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition()],
+        vec![ProgramShardSelector::new(
+            Ids::token_definition(),
+            Ids::token_program(),
+        )],
         vec![Nonce(1)],
         instruction,
     )
@@ -1914,7 +2134,10 @@ fn token_set_authority_with_authority_revokes() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::authority()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::authority(), Ids::token_program()),
+        ],
         vec![Nonce(0)],
         instruction,
     )
@@ -1925,7 +2148,7 @@ fn token_set_authority_with_authority_revokes() {
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     let def = state.get_account_by_id(Ids::token_definition());
-    let stored = match TokenDefinition::try_from(&def.data).unwrap() {
+    let stored = match TokenDefinition::try_from(def.data.shard(Ids::token_program())).unwrap() {
         TokenDefinition::Fungible { authority, .. } => authority,
         _ => None,
     };
@@ -1961,7 +2184,10 @@ fn token_rotate_authority_then_new_authority_can_mint() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+        ],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -1980,7 +2206,10 @@ fn token_rotate_authority_then_new_authority_can_mint() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition()],
+        vec![ProgramShardSelector::new(
+            Ids::token_definition(),
+            Ids::token_program(),
+        )],
         vec![Nonce(1)],
         instruction,
     )
@@ -1993,16 +2222,18 @@ fn token_rotate_authority_then_new_authority_can_mint() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(2),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("RotCoin"),
                 total_supply: 1_000_000_u128,
                 metadata_id: None,
                 authority: Some(AccountId::new(authority_key)),
             }),
-            nonce: Nonce(2),
-        }
+        )
     );
 
     // Seed the external authority account and the holder so they exist in state.
@@ -2016,7 +2247,11 @@ fn token_rotate_authority_then_new_authority_can_mint() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder(), Ids::authority()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::authority(), Ids::token_program()),
+        ],
         vec![Nonce(0)],
         instruction,
     )
@@ -2030,16 +2265,18 @@ fn token_rotate_authority_then_new_authority_can_mint() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(2),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("RotCoin"),
                 total_supply: 1_500_000_u128,
                 metadata_id: None,
                 authority: Some(AccountId::new(authority_key)),
             }),
-            nonce: Nonce(2),
-        }
+        )
     );
     assert_eq!(
         state.get_account_by_id(Ids::holder()),
@@ -2052,7 +2289,10 @@ fn token_rotate_authority_then_new_authority_can_mint() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+        ],
         vec![Nonce(0)],
         instruction,
     )
@@ -2085,7 +2325,10 @@ fn token_mint_with_authority_to_private_holding() {
     };
     let message = public_transaction::Message::try_new(
         Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
+        vec![
+            ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+            ProgramShardSelector::new(Ids::holder(), Ids::token_program()),
+        ],
         vec![Nonce(0), Nonce(0)],
         instruction,
     )
@@ -2106,26 +2349,26 @@ fn token_mint_with_authority_to_private_holding() {
 
     // Definition is `#[account(mut)]` only under external authority — it does not itself
     // authorize the mint, so it goes in as an ordinary (unauthorized) public account.
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
-    );
-    let recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
     let authority_account = state.get_account_by_id(Ids::authority());
     let authority_nonce = authority_account.nonce;
-    let authority_pre = AccountWithMetadata::new(authority_account, true, Ids::authority());
-
     let instruction = token_core::Instruction::MintWithAuthority { amount_to_mint };
     let (output, proof) = execute_and_prove(
-        vec![definition_pre, recipient_pre, authority_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(recipient_npk, &recipient_vpk, state.commitment_root()),
-            InputAccountIdentity::Public,
-        ],
-        &token_program().into(),
+        ProvingInput {
+            shard_selectors: vec![
+                ProgramShardSelector::new(Ids::token_definition(), Ids::token_program()),
+                ProgramShardSelector::new(recipient_id, Ids::token_program()),
+                ProgramShardSelector::new(Ids::authority(), Ids::token_program()),
+            ],
+            signers: [Ids::authority()].into(),
+            private_witnesses: vec![private_foreign_init_identity(
+                recipient_npk,
+                &recipient_vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &token_program_deps(),
     )
     .unwrap();
 
@@ -2142,16 +2385,18 @@ fn token_mint_with_authority_to_private_holding() {
     assert_eq!(
         state.get_account_by_id(Ids::token_definition()),
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("Gold"),
                 total_supply: 1_000_000_u128 + amount_to_mint,
                 metadata_id: None,
                 authority: Some(AccountId::new(authority_key)),
             }),
-            nonce: Nonce(1),
-        }
+        )
     );
 
     let recipient_account = Accounts::token_holding(

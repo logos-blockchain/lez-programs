@@ -1,4 +1,4 @@
-use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
+use clock_core::{clock_account_id, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{account::AccountId, program::ProgramId};
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Map, Value};
@@ -54,7 +54,7 @@ fn program_id_from_binary(value: &str) -> Result<AccountId, StablecoinApiError> 
         .compute_image_id()
         .map(Into::into)
         .map_err(|_| StablecoinApiError::new("invalid_program_binary"))?;
-    Ok(AccountId::from(image_id))
+    Ok(AccountId::from_builtin_program(image_id))
 }
 
 fn program_info_value(program_id: AccountId) -> Value {
@@ -95,6 +95,14 @@ fn program_info_value(program_id: AccountId) -> Value {
         "clockId",
         "clockIdHex",
         CLOCK_01_PROGRAM_ACCOUNT_ID,
+    );
+    // The clock's *program*, distinct from the clock account's address: a read now
+    // names both, and only the Clock Program's shard of that address is the clock.
+    insert_id(
+        &mut result,
+        "clockProgramId",
+        "clockProgramIdHex",
+        clock_account_id(),
     );
     Value::Object(result)
 }

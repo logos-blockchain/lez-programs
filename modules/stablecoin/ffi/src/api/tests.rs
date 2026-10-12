@@ -1,5 +1,5 @@
-use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::account::{Account, AccountId, Data, Nonce};
+use clock_core::{clock_account_id, ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
+use lee_core::account::{AccountId, ShardData};
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
 use stablecoin_core::{
@@ -15,21 +15,11 @@ use super::{
     DecodeProtocolParametersRequest, InitializeProgramPlanRequest, ProgramInfoRequest,
     StablecoinResult,
 };
-use crate::account::{account_id_hex, account_read};
+use crate::account::{account_id_hex, account_read, AccountRead};
 
 const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([0x11_u8; 32]);
 const TOKEN_PROGRAM_ID: AccountId = AccountId::new([0x22_u8; 32]);
 const ORACLE_PROGRAM_ID: AccountId = AccountId::new([0x33_u8; 32]);
-const CLOCK_PROGRAM_ID: AccountId = AccountId::new([0x44_u8; 32]);
-
-fn account(owner: AccountId, data: Data) -> Account {
-    Account {
-        program_owner: owner,
-        balance: 0,
-        data,
-        nonce: Nonce(0),
-    }
-}
 
 fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
@@ -43,7 +33,7 @@ fn deployable_program_binary() -> (String, AccountId) {
     let encoded = stablecoin_methods::STABLECOIN_ELF;
     let binary = ok(ProgramBinary::decode(encoded));
     let image_id: lee_core::program::ProgramId = ok(binary.compute_image_id()).into();
-    let image_id = AccountId::from(image_id);
+    let image_id = AccountId::from_builtin_program(image_id);
     (hex::encode(encoded), image_id)
 }
 
@@ -68,6 +58,8 @@ fn protocol_parameters() -> ProtocolParameters {
         stablecoin_definition_id: id(3),
         collateral_definition_id: id(4),
         market_price_oracle_id: id(5),
+        token_program_id: TOKEN_PROGRAM_ID,
+        market_price_oracle_program_id: ORACLE_PROGRAM_ID,
         stability_fee_per_millisecond: u128::MAX,
         controller_proportional_gain: i128::MIN,
         controller_integral_gain: i128::MAX,
@@ -84,7 +76,8 @@ fn protocol_request(parameters: &ProtocolParameters) -> DecodeProtocolParameters
         stablecoin_program_id: program_id_hex(),
         protocol_parameters: account_read(
             account_id,
-            &account(STABLECOIN_PROGRAM_ID, Data::from(parameters)),
+            STABLECOIN_PROGRAM_ID,
+            &ShardData::from(parameters),
         ),
     }
 }
@@ -116,17 +109,18 @@ fn initialize_request() -> InitializeProgramPlanRequest {
         stablecoin_program_id: program_id_hex(),
         admin_id: account_id_hex(id(13)),
         freeze_authority_id: account_id_hex(id(14)),
+        token_program_id: account_id_hex(TOKEN_PROGRAM_ID),
+        market_price_oracle_program_id: account_id_hex(ORACLE_PROGRAM_ID),
         collateral_definition: account_read(
             collateral_id,
-            &account(TOKEN_PROGRAM_ID, Data::from(&collateral_definition)),
+            TOKEN_PROGRAM_ID,
+            &ShardData::from(&collateral_definition),
         ),
-        market_price_oracle: account_read(
-            oracle_id,
-            &account(ORACLE_PROGRAM_ID, Data::from(&oracle)),
-        ),
+        market_price_oracle: account_read(oracle_id, ORACLE_PROGRAM_ID, &ShardData::from(&oracle)),
         clock: account_read(
             CLOCK_01_PROGRAM_ACCOUNT_ID,
-            &account(CLOCK_PROGRAM_ID, ok(Data::try_from(clock.to_bytes()))),
+            clock_account_id(),
+            &ok(ShardData::try_from(clock.to_bytes())),
         ),
         initial_stability_fee_per_millisecond: json!(u128::MAX.to_string()),
         initial_controller_proportional_gain: json!(i128::MIN.to_string()),
@@ -177,6 +171,13 @@ fn program_info_derives_all_singleton_ids_from_program_id() {
     assert_eq!(
         value["clockIdHex"],
         account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID)
+    );
+    // The clock's program, distinct from the clock account's address: the module
+    // reads a shard now, so it needs both.
+    assert_eq!(value["clockProgramId"], clock_account_id().to_string());
+    assert_eq!(
+        value["clockProgramIdHex"],
+        account_id_hex(clock_account_id())
     );
 }
 
@@ -254,7 +255,7 @@ fn protocol_parameters_decode_preserves_exact_numeric_and_id_fields() {
 }
 
 #[test]
-fn protocol_parameters_decode_rejects_wrong_pda_owner_and_non_exact_data() {
+fn protocol_parameters_decode_rejects_wrong_pda_foreign_shard_and_non_exact_data() {
     let parameters = protocol_parameters();
     let mut wrong_pda = protocol_request(&parameters);
     wrong_pda.protocol_parameters.id = account_id_hex(id(20));
@@ -263,22 +264,30 @@ fn protocol_parameters_decode_rejects_wrong_pda_owner_and_non_exact_data() {
         "protocol_parameters_pda_mismatch",
     );
 
-    let mut wrong_owner = protocol_request(&parameters);
-    if let Some(account) = &mut wrong_owner.protocol_parameters.account {
-        account.program_owner = account_id_hex(TOKEN_PROGRAM_ID);
-    }
+    // The record is there, but filed under another program's shard. v0.2.5 spelled
+    // this `program_owner = TOKEN_PROGRAM_ID`; now it is the map key, and the
+    // stablecoin program simply has nothing at the address.
+    let foreign_shard = DecodeProtocolParametersRequest {
+        stablecoin_program_id: program_id_hex(),
+        protocol_parameters: account_read(
+            compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID),
+            TOKEN_PROGRAM_ID,
+            &ShardData::from(&parameters),
+        ),
+    };
     assert_error(
-        decode_protocol_parameters(wrong_owner),
+        decode_protocol_parameters(foreign_shard),
         "stablecoin_program_mismatch",
     );
 
-    let mut trailing = Data::from(&parameters).as_ref().to_vec();
+    let mut trailing = ShardData::from(&parameters).as_ref().to_vec();
     trailing.push(0);
     let malformed = DecodeProtocolParametersRequest {
         stablecoin_program_id: program_id_hex(),
         protocol_parameters: account_read(
             compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID),
-            &account(STABLECOIN_PROGRAM_ID, ok(Data::try_from(trailing))),
+            STABLECOIN_PROGRAM_ID,
+            &ok(ShardData::try_from(trailing)),
         ),
     };
     assert_error(
@@ -311,6 +320,24 @@ fn initialize_plan_round_trips_all_boundary_values_and_exact_account_contract() 
             account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID),
         ])
     );
+    // Four programs across nine slots. The collateral definition's, the oracle's
+    // and the clock's are load-bearing: the first two are what the protocol
+    // records as its bindings, and the clock's is what makes the declared `now`
+    // the real timestamp rather than bytes written at that address by anyone else.
+    assert_eq!(
+        plan["programAccountIds"],
+        json!([
+            program_id_hex(),
+            program_id_hex(),
+            program_id_hex(),
+            program_id_hex(),
+            account_id_hex(TOKEN_PROGRAM_ID),
+            account_id_hex(TOKEN_PROGRAM_ID),
+            account_id_hex(TOKEN_PROGRAM_ID),
+            account_id_hex(ORACLE_PROGRAM_ID),
+            account_id_hex(clock_account_id()),
+        ])
+    );
     assert_eq!(
         plan["signingRequirements"],
         json!([true, false, false, false, false, false, false, false, false])
@@ -326,6 +353,7 @@ fn initialize_plan_round_trips_all_boundary_values_and_exact_account_contract() 
         maximum_oracle_price_age_milliseconds,
         initial_redemption_price,
         stablecoin_name,
+        now,
     } = decode_instruction(&plan["instruction"])
     else {
         panic!("expected InitializeProgram");
@@ -342,6 +370,9 @@ fn initialize_plan_round_trips_all_boundary_values_and_exact_account_contract() 
     assert_eq!(maximum_oracle_price_age_milliseconds, u64::MAX);
     assert_eq!(initial_redemption_price, u128::MAX);
     assert_eq!(stablecoin_name, "Exact Stablecoin");
+    // `now` is declared from the clock the FFI just read, and the guest's
+    // `CheckClock` guard is what holds the declaration to that shard.
+    assert_eq!(now, 4);
 }
 
 #[test]
@@ -375,14 +406,12 @@ fn initialize_plan_validates_required_account_shapes_and_assets() {
     let collateral_id = id(10);
     nft_collateral.collateral_definition = account_read(
         collateral_id,
-        &account(
-            TOKEN_PROGRAM_ID,
-            Data::from(&TokenDefinition::NonFungible {
-                name: String::from("NFT"),
-                printable_supply: 1,
-                metadata_id: id(30),
-            }),
-        ),
+        TOKEN_PROGRAM_ID,
+        &ShardData::from(&TokenDefinition::NonFungible {
+            name: String::from("NFT"),
+            printable_supply: 1,
+            metadata_id: id(30),
+        }),
     );
     assert_error(
         initialize_program_plan(nft_collateral),
@@ -392,17 +421,15 @@ fn initialize_plan_validates_required_account_shapes_and_assets() {
     let mut wrong_oracle = initialize_request();
     wrong_oracle.market_price_oracle = account_read(
         id(11),
-        &account(
-            ORACLE_PROGRAM_ID,
-            Data::from(&OraclePriceAccount {
-                base_asset: id(31),
-                quote_asset: id(10),
-                price: 1,
-                timestamp: 2,
-                source_id: id(12),
-                confidence_interval: 0,
-            }),
-        ),
+        ORACLE_PROGRAM_ID,
+        &ShardData::from(&OraclePriceAccount {
+            base_asset: id(31),
+            quote_asset: id(10),
+            price: 1,
+            timestamp: 2,
+            source_id: id(12),
+            confidence_interval: 0,
+        }),
     );
     assert_error(
         initialize_program_plan(wrong_oracle),
@@ -417,4 +444,60 @@ fn initialize_plan_validates_required_account_shapes_and_assets() {
     failed_read.collateral_definition.status = String::from("read_failed");
     failed_read.collateral_definition.account = None;
     assert_error(initialize_program_plan(failed_read), "account_read_failed");
+}
+
+/// The envelope the module's C++ builds, parsed from JSON rather than constructed.
+///
+/// Every other test here builds `AccountRead` as a struct, so nothing checks that
+/// the two halves of the seam agree on field names -- and they are in different
+/// languages, with no shared schema. `publicAccountRead` in
+/// `modules/stablecoin/src/stablecoin_module_support.cpp` emits exactly this: the
+/// module's own `id`/`status` envelope around an object shaped like
+/// `lee_core::Account`, with `lez_core`'s array of `{program, data}` already
+/// re-keyed into a map.
+#[test]
+fn the_account_read_the_module_emits_deserializes_and_decodes() {
+    let parameters = protocol_parameters();
+    let account_id = compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID);
+    let read: AccountRead = serde_json::from_value(json!({
+        "id": account_id_hex(account_id),
+        "status": "ok",
+        "account": {
+            "nonce": "00000000000000000000000000000000",
+            "data": {
+                "shards": {
+                    account_id_hex(STABLECOIN_PROGRAM_ID): hex::encode(
+                        ShardData::from(&parameters).as_ref(),
+                    ),
+                    // A foreign shard at the same address must not disturb the
+                    // decode: the whole-account read returns every shard anyone
+                    // wrote here.
+                    account_id_hex(TOKEN_PROGRAM_ID): "ff",
+                }
+            }
+        }
+    }))
+    .expect("the module's account-read JSON must deserialize");
+
+    let decoded = ok(decode_protocol_parameters(
+        DecodeProtocolParametersRequest {
+            stablecoin_program_id: program_id_hex(),
+            protocol_parameters: read,
+        },
+    ));
+    assert_eq!(decoded["accountIdHex"], account_id_hex(account_id));
+
+    // The same envelope with the v0.2.5 flat account inside no longer parses, so
+    // an unbumped lez_core fails loudly rather than decoding as an empty account.
+    assert!(serde_json::from_value::<AccountRead>(json!({
+        "id": account_id_hex(account_id),
+        "status": "ok",
+        "account": {
+            "program_owner": program_id_hex(),
+            "balance": "00000000000000000000000000000000",
+            "nonce": "00000000000000000000000000000000",
+            "data": "00",
+        }
+    }))
+    .is_err());
 }

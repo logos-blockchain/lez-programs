@@ -87,6 +87,12 @@ bool isHexEven(const std::string& s) {
 
 // Exception-safe field accessor over a json object: returns "" when the key is
 // missing or not a string (nlohmann's value()/get() throw on a type mismatch).
+std::string lower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
 std::string jStr(const json& obj, const char* key) {
     const auto it = obj.find(key);
     return (it != obj.end() && it->is_string()) ? it->get<std::string>() : std::string();
@@ -308,33 +314,99 @@ std::string AmmModuleImpl::normalizeAccountId(const std::string& id) {
 }
 
 nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
+    return shardedRead(account_id, modules().lez_core.get_account_public(account_id));
+}
+
+nlohmann::json AmmModuleImpl::readPublicAccountShard(const std::string& account_id,
+                                                     const std::string& program_id) {
+    // Projected here rather than by the node: wallet-ffi has
+    // `wallet_ffi_get_account_view(account_id, program_account_id)`, but lez_core
+    // does not surface it yet, so there is no narrower read to call. Dropping the
+    // other shards locally gives the decoders the same answer; what it does not
+    // give is the protection a server-side projection would -- a third party can
+    // still write shards at the same address and push the response past the size
+    // cap. Swap the underlying read for the view when lez_core exposes it.
+    json read = readPublicAccount(account_id);
+    if (jStr(read, "status") != "ok") return read;
+    const std::string shard = shardHex(read, program_id);
+    // An absent shard stays an `ok` read with an empty map here, unlike the token
+    // and stablecoin modules: the AMM's callers want "no pool" / "no config"
+    // phrased in their own codes, which the Rust side derives from the absence.
+    read["account"]["data"]["shards"] =
+        shard.empty() ? json::object() : json{{program_id, shard}};
+    return read;
+}
+
+nlohmann::json AmmModuleImpl::shardedRead(const std::string& account_id,
+                                          const std::string& account_json) {
     // Matches the app-side accountReadJson: WalletAccountRead defaults status to
     // "read_failed" and only flips to "ok" when every field is well-formed hex;
     // the `account` key is present only for an ok read.
+    //
+    // LEZ v0.3.0: an account is a nonce plus a map of program shards, and both of
+    // `lez_core`'s reads answer in that one shape -- the whole-account read with
+    // every shard anyone wrote at the address, the shard view with at most the one
+    // asked for. amm_ffi's decoders are permissive about shards they did not ask
+    // for, so they work against either and this validator needn't know which.
+    //
+    // Unlike the token and stablecoin modules, a well-formed read with an *empty*
+    // shard map is still `ok` here: the AMM's callers want "there is no pool / no
+    // config" phrased in their own codes (`no_pool`, `config_unavailable`), which
+    // the Rust side already does from the absent shard.
+    //
+    // The two sides spell an account differently, deliberately. `lez_core` emits
+    // what its C struct holds -- `{nonce, shards: [{program, data}]}`, an array
+    // because `FfiAccount` is a pointer plus a length -- while amm_ffi's
+    // `WalletAccount` mirrors `lee_core::Account` itself, `{nonce, data: {shards}}`
+    // keyed by program. Re-keying the array into that map is this function's job.
     json result = {{"id", account_id}, {"status", "read_failed"}};
 
-    const std::string account_json =
-        modules().lez_core.get_account_public(account_id);
     const auto obj = json::parse(account_json, nullptr, /*allow_exceptions=*/false);
     if (!obj.is_object()) return result;
 
-    const std::string owner = jStr(obj, "program_owner");
-    const std::string balance = jStr(obj, "balance");
     const std::string nonce = jStr(obj, "nonce");
-    const std::string data = jStr(obj, "data");
-    if (!isHexLen(owner, 64) || !isHexLen(balance, 32) || !isHexLen(nonce, 32)
-        || !isHexEven(data)) {
+    const auto shards_field = obj.find("shards");
+    if (!isHexLen(nonce, 32) || shards_field == obj.end() || !shards_field->is_array())
         return result;
+
+    json shards = json::object();
+    for (const auto& entry : *shards_field) {
+        if (!entry.is_object()) return result;
+        const std::string program = lower(jStr(entry, "program"));
+        const std::string value = lower(jStr(entry, "data"));
+        if (!isHexLen(program, 64) || !isHexEven(value)) return result;
+        shards[program] = value;
     }
 
     result["status"] = "ok";
     result["account"] = {
-        {"program_owner", owner},
-        {"balance", balance},
         {"nonce", nonce},
-        {"data", data},
+        {"data", {{"shards", std::move(shards)}}},
     };
     return result;
+}
+
+nlohmann::json AmmModuleImpl::readClock(const nlohmann::json& pool_ids) {
+    // Every plan that chains into the TWAP oracle declares `now`, so the module
+    // reads the clock to make the declaration and the oracle's own clock guard is
+    // what holds it to this shard. The two ids come back from `amm_pool_id` /
+    // `amm_swap_pair`: the canonical clock account and the Clock Program whose
+    // shard of it is the clock.
+    return readPublicAccountShard(jStr(pool_ids, "clockId"),
+                                  jStr(pool_ids, "clockProgramId"));
+}
+
+std::string AmmModuleImpl::shardHex(const nlohmann::json& read,
+                                    const std::string& program_id) {
+    // The successor to `read["account"]["data"]`: there is no single "the data"
+    // any more, only whichever program's shard you meant.
+    const auto account = read.find("account");
+    if (account == read.end() || !account->is_object()) return {};
+    const auto data = account->find("data");
+    if (data == account->end() || !data->is_object()) return {};
+    const auto shards = data->find("shards");
+    if (shards == data->end() || !shards->is_object()) return {};
+    return jStr(*shards, program_id.c_str());
 }
 
 nlohmann::json AmmModuleImpl::walletAccountReads(bool wallet_open) {
@@ -375,7 +447,12 @@ nlohmann::json AmmModuleImpl::readConfig() {
     // owner/nonce derivation lives in the deploy tooling that emits the registry.
     const std::string config_id = ammConfigId();
     if (config_id.empty()) return json();  // null: no config id configured
-    return readPublicAccount(config_id);
+    const std::string amm_program_id = ammProgramId();
+    // Before a program id is configured there is no shard to ask for, so fall back
+    // to the whole account and let the plan op report `config_unavailable`.
+    return amm_program_id.empty()
+        ? readPublicAccount(config_id)
+        : readPublicAccountShard(config_id, amm_program_id);
 }
 
 LogosMap AmmModuleImpl::setConfigId(const LogosMap& request) {
@@ -445,7 +522,11 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
     const json pool = readPublicAccount(jStr(pairResult.value, "poolId"));
     // The fee shown for the pool is the instance-wide AmmConfig::swap_fee_bps, so resolve_pool
     // needs the config account to read it (it is no longer a pool field).
-    const FfiResult resolveResult = call(amm_resolve_pool, json{{"pool", pool}, {"config", config}});
+    const FfiResult resolveResult = call(amm_resolve_pool, json{
+        {"ammProgramId", amm_program_id},
+        {"pool", pool},
+        {"config", config},
+    });
     if (!resolveResult.ok)
         return failed("bad_config");  // amm_resolve_pool op failed
     // resolve_pool returns status:"error"/no_pool for a missing pool (pass through) or
@@ -509,6 +590,10 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
     const json plan = planResult.value;
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    // New in v0.3.0: a transaction names shards, so each slot carries the program
+    // whose shard it selects, index-aligned with accounts and signers.
+    const std::vector<std::string> programs =
+        jsonStrVec(plan.value("programAccountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
@@ -517,7 +602,7 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
               << " accounts=" << accounts.size());
 
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, FEE_PAYER_SELF, programs);
     AMM_TRACE("transferOwnership: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -564,6 +649,10 @@ LogosMap AmmModuleImpl::withdrawProtocolFees(const LogosMap& request) {
     const json plan = planResult.value;
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    // New in v0.3.0: a transaction names shards, so each slot carries the program
+    // whose shard it selects, index-aligned with accounts and signers.
+    const std::vector<std::string> programs =
+        jsonStrVec(plan.value("programAccountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
@@ -572,7 +661,7 @@ LogosMap AmmModuleImpl::withdrawProtocolFees(const LogosMap& request) {
               << " accounts=" << accounts.size());
 
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, FEE_PAYER_SELF, programs);
     AMM_TRACE("withdrawProtocolFees: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -627,37 +716,72 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     if (window == 0)
         return error("invalid_window");
 
-    auto* const plan_op =
-        observations ? amm_create_price_observations_plan : amm_create_oracle_price_account_plan;
-    const FfiResult planResult = call(plan_op, json{
+    // Both plans now declare the pool's five ids, and the observations plan also
+    // declares the feed's initial tick. Neither is caller-chosen: the pool's own
+    // guard pins the ids (and, for the price account, its reserves *exactly*), and
+    // a guard on the oracle's current-tick shard pins the tick.
+    const FfiResult pairResult = call(amm_swap_pair, json{
+        {"ammProgramId", amm_program_id},
+        {"tokenInId", token_a},
+        {"tokenOutId", token_b},
+        {"config", config},
+    });
+    if (!pairResult.ok || jStr(pairResult.value, "status") != "ok")
+        return error("amm_not_initialized");
+    const json pool = readPublicAccount(jStr(pairResult.value, "poolId"));
+    const std::string pool_data = shardHex(pool, amm_program_id);
+    if (pool_data.empty())
+        return error("no_pool");
+
+    json plan_request = json{
         {"ammProgramId", amm_program_id},
         {"config", config},
         {"tokenAId", token_a},
         {"tokenBId", token_b},
         {"windowDurationMs", window},
-    });
+        {"poolData", pool_data},
+        {"clock", readClock(pairResult.value)},
+    };
+    if (observations) {
+        plan_request["currentTick"] =
+            readPublicAccountShard(jStr(pairResult.value, "currentTickId"),
+                                   jStr(pairResult.value, "twapOracleProgramId"));
+    }
+
+    auto* const plan_op =
+        observations ? amm_create_price_observations_plan : amm_create_oracle_price_account_plan;
+    const FfiResult planResult = call(plan_op, plan_request);
     if (!planResult.ok)
         return error(planResult.error.empty() ? "backend_error" : planResult.error);
     const json plan = planResult.value;
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    // New in v0.3.0: a transaction names shards, so each slot carries the program
+    // whose shard it selects, index-aligned with accounts and signers.
+    const std::vector<std::string> programs =
+        jsonStrVec(plan.value("programAccountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction =
         jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
-    // Surface a stable error code when the target PDA already exists instead of failing at submit.
+    // Surface a stable error code when the target PDA already exists instead of
+    // failing at submit. The question is whether the TWAP oracle holds a shard
+    // there, not whether the address has been written to at all: the guest's
+    // `#[account(init)]` only requires *its* shard to be empty, so another
+    // program's state at the same address is no obstacle.
     const size_t target_index = observations ? 3 : 2;
-    if (accounts.size() > target_index) {
-        const json existing = readPublicAccount(accounts[target_index]);
-        if (jStr(existing, "status") == "ok")
+    if (accounts.size() > target_index && target_index < programs.size()) {
+        const json existing =
+            readPublicAccountShard(accounts[target_index], programs[target_index]);
+        if (!shardHex(existing, programs[target_index]).empty())
             return error("already_exists");
     }
 
     AMM_TRACE("oracleSetup(" << (observations ? "observations" : "priceAccount")
               << "): SUBMIT programId=" << program_id << " accounts=" << accounts.size());
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, FEE_PAYER_SELF, programs);
     AMM_TRACE("oracleSetup: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -717,9 +841,10 @@ LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
-    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const std::string pool_data = shardHex(pool, amm_program_id);
 
     const FfiResult quoteResult = call(amm_swap_exact_in_quote, json{
+        {"ammProgramId", amm_program_id},
         {"tokenInId", token_in},
         {"tokenOutId", token_out},
         {"amountIn", amount_in_decimal},
@@ -778,9 +903,10 @@ LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
-    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const std::string pool_data = shardHex(pool, amm_program_id);
 
     const FfiResult quoteResult = call(amm_swap_exact_out_quote, json{
+        {"ammProgramId", amm_program_id},
         {"tokenInId", token_in},
         {"tokenOutId", token_out},
         {"amountOut", amount_out_decimal},
@@ -852,11 +978,13 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         return {};
     }
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
-    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const std::string pool_data = shardHex(pool, amm_program_id);
 
     // amm_swap_exact_in_plan resolves the pool accounts, encodes SwapExactInput,
     // and returns a ready-to-submit plan.
+    const json clock = readClock(poolId.value);
     const FfiResult planResult = call(amm_swap_exact_in_plan, json{
+        {"clock", clock},
         {"ammProgramId", amm_program_id},
         {"tokenInId", def_a},
         {"tokenOutId", def_b},
@@ -875,6 +1003,10 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
     const json plan = planResult.value;
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    // New in v0.3.0: a transaction names shards, so each slot carries the program
+    // whose shard it selects, index-aligned with accounts and signers.
+    const std::vector<std::string> programs =
+        jsonStrVec(plan.value("programAccountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
@@ -883,7 +1015,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, FEE_PAYER_SELF, programs);
     AMM_TRACE("swapExactInput: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -943,11 +1075,13 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
         return {};
     }
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
-    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const std::string pool_data = shardHex(pool, amm_program_id);
 
     // amm_swap_exact_out_plan resolves the pool accounts, encodes SwapExactOutput,
     // and returns a ready-to-submit plan.
+    const json clock = readClock(poolId.value);
     const FfiResult planResult = call(amm_swap_exact_out_plan, json{
+        {"clock", clock},
         {"ammProgramId", amm_program_id},
         {"tokenInId", def_a},
         {"tokenOutId", def_b},
@@ -966,6 +1100,10 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
     const json plan = planResult.value;
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    // New in v0.3.0: a transaction names shards, so each slot carries the program
+    // whose shard it selects, index-aligned with accounts and signers.
+    const std::vector<std::string> programs =
+        jsonStrVec(plan.value("programAccountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
@@ -974,7 +1112,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, FEE_PAYER_SELF, programs);
     AMM_TRACE("swapExactOutput: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1075,10 +1213,24 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     // The swap fee is set once per namespace at initialize (AmmConfig::swap_fee_bps); pools no
     // longer carry a fee, so pool creation takes none.
     //
+    // There is no pool to read yet, so amm_pool_id is called only for the ids the
+    // plan needs to read against -- here just the canonical clock, since `now` is
+    // declared and forwarded to the oracle's chained UpdateCurrentTick.
+    const FfiResult poolId = call(amm_pool_id, json{
+        {"ammProgramId", amm_program_id},
+        {"config", config},
+        {"tokenInId", token_a},
+        {"tokenOutId", token_b},
+    });
+    if (!poolId.ok)
+        return error(poolId.error.empty() ? "backend_error" : poolId.error);
+    const json clock = readClock(poolId.value);
+
     // amm_create_pool_plan resolves the pool accounts (canonicalizing the pair),
     // encodes NewDefinition, and returns a ready-to-submit plan.
     const FfiResult planResult = call(amm_create_pool_plan, json{
         {"ammProgramId", amm_program_id},
+        {"clock", clock},
         {"config", config},
         {"tokenAId", token_a},
         {"tokenBId", token_b},
@@ -1094,6 +1246,10 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     const json plan = planResult.value;
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    // New in v0.3.0: a transaction names shards, so each slot carries the program
+    // whose shard it selects, index-aligned with accounts and signers.
+    const std::vector<std::string> programs =
+        jsonStrVec(plan.value("programAccountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
@@ -1102,7 +1258,7 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, FEE_PAYER_SELF, programs);
     AMM_TRACE("createPool: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1152,7 +1308,7 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
-    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const std::string pool_data = shardHex(pool, amm_program_id);
 
     // slippageBps is a fraction of 100% in basis points; the pricing op uses it to derive
     // minimumLp (the LP floor the submit accepts). Require an integer JSON number and reject
@@ -1234,11 +1390,13 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
-    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const std::string pool_data = shardHex(pool, amm_program_id);
 
     // amm_add_liquidity_plan resolves the pool accounts (canonicalizing the pair), encodes
     // AddLiquidity (with the slippage floor), and returns a ready-to-submit plan.
+    const json clock = readClock(poolId.value);
     const FfiResult planResult = call(amm_add_liquidity_plan, json{
+        {"clock", clock},
         {"ammProgramId", amm_program_id},
         {"config", config},
         {"tokenAId", token_a},
@@ -1257,6 +1415,10 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     const json plan = planResult.value;
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    // New in v0.3.0: a transaction names shards, so each slot carries the program
+    // whose shard it selects, index-aligned with accounts and signers.
+    const std::vector<std::string> programs =
+        jsonStrVec(plan.value("programAccountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
@@ -1265,7 +1427,7 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, FEE_PAYER_SELF, programs);
     AMM_TRACE("addLiquidity: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1312,7 +1474,7 @@ LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
-    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const std::string pool_data = shardHex(pool, amm_program_id);
 
     // slippageBps derives the minimumAmount*Raw floors the submit enforces. Require an integer
     // JSON number and reject everything else with a stable invalid_slippage (same as
@@ -1392,11 +1554,13 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
-    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const std::string pool_data = shardHex(pool, amm_program_id);
 
     // amm_remove_liquidity_plan resolves the pool accounts, encodes RemoveLiquidity (with the
     // per-side slippage floors + caller deadline), and returns a ready-to-submit plan.
+    const json clock = readClock(poolId.value);
     const FfiResult planResult = call(amm_remove_liquidity_plan, json{
+        {"clock", clock},
         {"ammProgramId", amm_program_id},
         {"config", config},
         {"tokenAId", token_a},
@@ -1415,6 +1579,10 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     const json plan = planResult.value;
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    // New in v0.3.0: a transaction names shards, so each slot carries the program
+    // whose shard it selects, index-aligned with accounts and signers.
+    const std::vector<std::string> programs =
+        jsonStrVec(plan.value("programAccountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
@@ -1423,7 +1591,7 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, FEE_PAYER_SELF, programs);
     AMM_TRACE("removeLiquidity: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1467,7 +1635,25 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
-    const std::string pool_data = jStr(pool.value("account", json::object()), "data");
+    const std::string pool_data = shardHex(pool, amm_program_id);
+
+    // The one instruction whose whole purpose is to read the vaults: the two
+    // balances are declared from these reads and each is pinned on-chain by a
+    // guard on its own Token Program shard. The vault ids come from the pool's
+    // STORED order (a pool created outside the FFI can hold the opposite one), so
+    // they are taken from the decoded pool rather than re-derived canonically.
+    const FfiResult resolved = call(amm_resolve_pool, json{
+        {"ammProgramId", amm_program_id},
+        {"pool", pool},
+        {"config", config},
+    });
+    if (!resolved.ok || jStr(resolved.value, "status") != "ok")
+        return error("no_pool");
+    const std::string token_program = normalizeAccountId(jStr(poolId.value, "tokenProgramId"));
+    const std::string vault_a = normalizeAccountId(jStr(resolved.value, "vaultAId"));
+    const std::string vault_b = normalizeAccountId(jStr(resolved.value, "vaultBId"));
+    if (token_program.empty() || vault_a.empty() || vault_b.empty())
+        return error("backend_error");
 
     const FfiResult planResult = call(amm_sync_reserves_plan, json{
         {"ammProgramId", amm_program_id},
@@ -1475,12 +1661,19 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
         {"tokenAId", token_a},
         {"tokenBId", token_b},
         {"poolData", pool_data},
+        {"vaultA", readPublicAccountShard(vault_a, token_program)},
+        {"vaultB", readPublicAccountShard(vault_b, token_program)},
+        {"clock", readClock(poolId.value)},
     });
     if (!planResult.ok)
         return error(planResult.error.empty() ? "backend_error" : planResult.error);
     const json plan = planResult.value;
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
+    // New in v0.3.0: a transaction names shards, so each slot carries the program
+    // whose shard it selects, index-aligned with accounts and signers.
+    const std::vector<std::string> programs =
+        jsonStrVec(plan.value("programAccountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
@@ -1489,7 +1682,7 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, FEE_PAYER_SELF, programs);
     AMM_TRACE("syncReserves: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);

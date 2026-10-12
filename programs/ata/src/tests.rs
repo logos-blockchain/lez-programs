@@ -1,465 +1,392 @@
-use ata_core::{compute_ata_seed, get_associated_token_account_id};
+#![cfg(test)]
+
+//! Unit tests for the ATA program's two phases.
+//!
+//! This program owns no shard, so it has no state transitions — every apply half
+//! is a guard that reads a Token Program shard and returns `None`. What is
+//! covered here is address derivation, the `AtaContents` classification the
+//! `Create` branch now hangs on, and each guard.
+//!
+//! Six v0.2.5 tests have no successor, all of the same kind: they asserted
+//! `<account>.program_owner == token_program_id` for the definition, the existing
+//! ATA, the sender ATA and the recipient. There is no program-level check left to
+//! test. A shard is keyed by the program that wrote it, and the transaction's
+//! `ProgramShardSelector`s name which program's shard each account slot refers
+//! to; `guard(account, token_program_id, …)` asserts that naming. The assertion
+//! lives in SPEL now and is tested there.
+
+use ata_core::AtaContents;
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, ShardData},
+    program::AccountMeta,
 };
-use token_core::{TokenDefinition, TokenHolding};
+use token_core::{TokenDefinition, TokenDescriptor, TokenHolding, TokenKind};
+
+use crate::{burn, create, transfer};
 
 const ATA_PROGRAM_ID: AccountId = AccountId::new([1u8; 32]);
 const TOKEN_PROGRAM_ID: AccountId = AccountId::new([2u8; 32]);
-const OTHER_TOKEN_PROGRAM_ID: AccountId = AccountId::new([3u8; 32]);
+const OWNER_ID: AccountId = AccountId::new([3u8; 32]);
+const DEFINITION_ID: AccountId = AccountId::new([4u8; 32]);
+const OTHER_DEFINITION_ID: AccountId = AccountId::new([5u8; 32]);
+const WRONG_ATA_ID: AccountId = AccountId::new([7u8; 32]);
+const METADATA_ID: AccountId = AccountId::new([8u8; 32]);
 
-fn owner_id() -> AccountId {
-    AccountId::new([0x01u8; 32])
+const AMOUNT: u128 = 1_000;
+
+const FUNGIBLE: TokenDescriptor = TokenDescriptor {
+    definition_id: DEFINITION_ID,
+    kind: TokenKind::Fungible,
+};
+const OTHER_FUNGIBLE: TokenDescriptor = TokenDescriptor {
+    definition_id: OTHER_DEFINITION_ID,
+    kind: TokenKind::Fungible,
+};
+
+/// An account slot as the plan phase sees it, naming the token program's shard.
+fn token_shard(account_id: AccountId, is_authorized: bool) -> AccountMeta {
+    AccountMeta::new(account_id, is_authorized, TOKEN_PROGRAM_ID)
 }
 
-fn definition_id() -> AccountId {
-    AccountId::new([0x02u8; 32])
+/// The ATA address for `(token program, owner, definition)`.
+fn ata_id(definition_id: AccountId) -> AccountId {
+    let seed = ata_core::compute_ata_seed(TOKEN_PROGRAM_ID, OWNER_ID, definition_id);
+    ata_core::get_associated_token_account_id(&ATA_PROGRAM_ID, &seed)
 }
 
-fn ata_id() -> AccountId {
-    get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
-    )
+fn holding(definition_id: AccountId, balance: u128) -> ShardData {
+    ShardData::from(&TokenHolding::Fungible {
+        definition_id,
+        balance,
+    })
 }
 
-fn owner_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: owner_id(),
-    }
+fn master_holding() -> ShardData {
+    ShardData::from(&TokenHolding::NftMaster {
+        definition_id: DEFINITION_ID,
+        print_balance: 10,
+    })
 }
 
-fn definition_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: "TEST".to_string(),
-                total_supply: 1000,
-                metadata_id: None,
-                authority: None,
-            }),
-            nonce: lee_core::account::Nonce(0),
-        },
-        is_authorized: false,
-        account_id: definition_id(),
-    }
+fn fungible_definition() -> ShardData {
+    ShardData::from(&TokenDefinition::Fungible {
+        name: "Token".to_owned(),
+        total_supply: 100_000,
+        metadata_id: None,
+        authority: None,
+    })
 }
 
-fn uninitialized_ata_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: ata_id(),
-    }
+fn non_fungible_definition() -> ShardData {
+    ShardData::from(&TokenDefinition::NonFungible {
+        name: "NFT".to_owned(),
+        printable_supply: 10,
+        metadata_id: METADATA_ID,
+    })
 }
 
-fn initialized_ata_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: definition_id(),
-                balance: 100,
-            }),
-            nonce: lee_core::account::Nonce(0),
-        },
-        is_authorized: false,
-        account_id: ata_id(),
-    }
+fn empty() -> ShardData {
+    ShardData::default()
+}
+
+// ── address derivation ──────────────────────────────────────────────────────
+
+#[test]
+fn create_accepts_the_derived_ata_address() {
+    let (_, needs_initialize) = create::plan_create(
+        &token_shard(OWNER_ID, false),
+        &token_shard(DEFINITION_ID, false),
+        &token_shard(ata_id(DEFINITION_ID), false),
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        AtaContents::Empty,
+    );
+    assert!(needs_initialize, "an empty ATA must be initialized");
 }
 
 #[test]
-fn create_emits_chained_call_for_uninitialized_ata() {
-    let (post_states, chained_calls) = crate::create::create_associated_token_account(
-        owner_account(),
-        definition_account(),
-        uninitialized_ata_account(),
+#[should_panic(expected = "ATA account ID does not match expected derivation")]
+fn create_rejects_an_address_that_is_not_the_derived_ata() {
+    let _ = create::plan_create(
+        &token_shard(OWNER_ID, false),
+        &token_shard(DEFINITION_ID, false),
+        &token_shard(WRONG_ATA_ID, false),
         ATA_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
-    );
-
-    assert_eq!(post_states.len(), 3);
-    // The owner is echoed untouched. v0.2.4 claimed it as a marker when it was default
-    // (`Claim::Authorized` over empty data); v0.2.5 acquires ownership only on a data
-    // write and forbids an unowned account from carrying data, so that marker is gone.
-    assert_eq!(post_states[0], AccountStateDiff::unchanged(owner_account()));
-
-    let expected_call = ChainedCall::new(
-        TOKEN_PROGRAM_ID,
-        vec![definition_id(), ata_id()],
-        &token_core::Instruction::InitializeAccount,
-    )
-    .with_pda_seeds(vec![compute_ata_seed(
-        TOKEN_PROGRAM_ID,
-        owner_id(),
-        definition_id(),
-    )]);
-
-    assert_eq!(chained_calls, vec![expected_call]);
-}
-
-#[test]
-fn create_is_idempotent_for_initialized_ata() {
-    let (post_states, chained_calls) = crate::create::create_associated_token_account(
-        owner_account(),
-        definition_account(),
-        initialized_ata_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-    );
-
-    assert_eq!(post_states.len(), 3);
-    assert!(
-        chained_calls.is_empty(),
-        "Should emit no chained call for already-initialized ATA"
+        AtaContents::Empty,
     );
 }
 
 #[test]
 #[should_panic(expected = "ATA account ID does not match expected derivation")]
-fn create_panics_on_wrong_ata_address() {
-    let wrong_ata = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: AccountId::new([0xFFu8; 32]),
-    };
-
-    crate::create::create_associated_token_account(
-        owner_account(),
-        definition_account(),
-        wrong_ata,
+fn create_rejects_an_ata_derived_from_another_definition() {
+    let _ = create::plan_create(
+        &token_shard(OWNER_ID, false),
+        &token_shard(DEFINITION_ID, false),
+        &token_shard(ata_id(OTHER_DEFINITION_ID), false),
         ATA_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
+        AtaContents::Empty,
     );
 }
 
-#[test]
-fn get_associated_token_account_id_is_deterministic() {
-    let seed = compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id());
-    let id1 = get_associated_token_account_id(&ATA_PROGRAM_ID, &seed);
-    let id2 = get_associated_token_account_id(&ATA_PROGRAM_ID, &seed);
-    assert_eq!(id1, id2);
-}
+// ── Create: the contents branch ─────────────────────────────────────────────
 
+/// `Create` is idempotent: an ATA that already holds the intended token needs no
+/// chained initialize.
 #[test]
-fn get_associated_token_account_id_differs_by_token_program() {
-    let id1 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
-    );
-    let id2 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(OTHER_TOKEN_PROGRAM_ID, owner_id(), definition_id()),
-    );
-    assert_ne!(id1, id2);
-}
-
-#[test]
-fn get_associated_token_account_id_differs_by_owner() {
-    let other_owner = AccountId::new([0x99u8; 32]);
-    let id1 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
-    );
-    let id2 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, other_owner, definition_id()),
-    );
-    assert_ne!(id1, id2);
-}
-
-#[test]
-fn get_associated_token_account_id_differs_by_definition() {
-    let other_def = AccountId::new([0x99u8; 32]);
-    let id1 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
-    );
-    let id2 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), other_def),
-    );
-    assert_ne!(id1, id2);
-}
-
-#[test]
-#[should_panic(expected = "Token definition must be owned by expected token program")]
-fn create_panics_when_definition_is_owned_by_unexpected_token_program() {
-    let mut definition = definition_account();
-    definition.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
-
-    crate::create::create_associated_token_account(
-        owner_account(),
-        definition,
-        uninitialized_ata_account(),
+fn create_is_a_no_op_for_an_intended_ata() {
+    let (_, needs_initialize) = create::plan_create(
+        &token_shard(OWNER_ID, false),
+        &token_shard(DEFINITION_ID, false),
+        &token_shard(ata_id(DEFINITION_ID), false),
         ATA_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
+        AtaContents::Intended,
     );
+    assert!(!needs_initialize, "an intended ATA is already there");
 }
 
+/// Replacing a squatted ATA destroys whatever was there, so it is the one branch
+/// that needs the owner to say so.
 #[test]
-#[should_panic(expected = "Existing ATA must be owned by expected token program")]
-fn create_panics_when_existing_ata_is_owned_by_unexpected_token_program() {
-    let mut ata = initialized_ata_account();
-    ata.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
-
-    crate::create::create_associated_token_account(
-        owner_account(),
-        definition_account(),
-        ata,
+fn create_replaces_a_squatted_ata_when_the_owner_authorizes() {
+    let (_, needs_initialize) = create::plan_create(
+        &token_shard(OWNER_ID, true),
+        &token_shard(DEFINITION_ID, false),
+        &token_shard(ata_id(DEFINITION_ID), false),
         ATA_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
+        AtaContents::Squatted,
     );
-}
-
-#[test]
-#[should_panic(expected = "Existing ATA token definition does not match")]
-fn create_panics_when_existing_ata_definition_mismatches_requested_definition() {
-    let mut ata = initialized_ata_account();
-    ata.account.data = Data::from(&TokenHolding::Fungible {
-        definition_id: AccountId::new([0xAAu8; 32]),
-        balance: 100,
-    });
-
-    crate::create::create_associated_token_account(
-        owner_account(),
-        definition_account(),
-        ata,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-    );
-}
-
-fn recipient_id() -> AccountId {
-    AccountId::new([0x03u8; 32])
-}
-
-fn initialized_recipient_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: definition_id(),
-                balance: 0,
-            }),
-            nonce: lee_core::account::Nonce(0),
-        },
-        is_authorized: false,
-        account_id: recipient_id(),
-    }
-}
-
-#[test]
-fn transfer_emits_chained_call_for_initialized_recipient() {
-    let (post_states, chained_calls) = crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        initialized_recipient_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        25,
-    );
-
-    assert_eq!(post_states.len(), 3);
-    assert_eq!(chained_calls.len(), 1);
-
-    let expected_call = ChainedCall::new(
-        TOKEN_PROGRAM_ID,
-        vec![ata_id(), initialized_recipient_account().account_id],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: 25,
-        },
-    )
-    .with_pda_seeds(vec![compute_ata_seed(
-        TOKEN_PROGRAM_ID,
-        owner_id(),
-        definition_id(),
-    )]);
-
-    assert_eq!(chained_calls, vec![expected_call]);
+    assert!(needs_initialize);
 }
 
 #[test]
 #[should_panic(expected = "Owner authorization is missing")]
-fn transfer_panics_when_owner_not_authorized() {
-    let mut unauthorized_owner = owner_account();
-    unauthorized_owner.is_authorized = false;
-
-    crate::transfer::transfer_from_associated_token_account(
-        unauthorized_owner,
-        initialized_ata_account(),
-        initialized_recipient_account(),
+fn create_refuses_to_replace_a_squatted_ata_without_the_owner() {
+    let _ = create::plan_create(
+        &token_shard(OWNER_ID, false),
+        &token_shard(DEFINITION_ID, false),
+        &token_shard(ata_id(DEFINITION_ID), false),
         ATA_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
-        1,
+        AtaContents::Squatted,
     );
 }
 
+/// An empty ATA needs no authorization: writing an empty shard denies that
+/// address to nobody.
+#[test]
+fn create_initializes_an_empty_ata_without_owner_authorization() {
+    let (_, needs_initialize) = create::plan_create(
+        &token_shard(OWNER_ID, false),
+        &token_shard(DEFINITION_ID, false),
+        &token_shard(ata_id(DEFINITION_ID), false),
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        AtaContents::Empty,
+    );
+    assert!(needs_initialize);
+}
+
+// ── classify / check_contents ───────────────────────────────────────────────
+
+#[test]
+fn classify_reads_an_empty_shard_as_empty() {
+    assert_eq!(ata_core::classify(&empty(), &FUNGIBLE), AtaContents::Empty);
+}
+
+#[test]
+fn classify_reads_the_intended_holding_as_intended() {
+    assert_eq!(
+        ata_core::classify(&holding(DEFINITION_ID, AMOUNT), &FUNGIBLE),
+        AtaContents::Intended
+    );
+}
+
+#[test]
+fn classify_reads_another_definitions_holding_as_squatted() {
+    assert_eq!(
+        ata_core::classify(&holding(OTHER_DEFINITION_ID, AMOUNT), &FUNGIBLE),
+        AtaContents::Squatted
+    );
+}
+
+#[test]
+fn classify_reads_undecodable_bytes_as_squatted() {
+    assert_eq!(
+        ata_core::classify(&fungible_definition(), &FUNGIBLE),
+        AtaContents::Squatted
+    );
+}
+
+/// A non-fungible definition classifies both the master and its printed copies,
+/// so a master holding is `Intended` for a printed-copy descriptor.
+#[test]
+fn classify_accepts_either_nft_shape_for_a_non_fungible_definition() {
+    let printed = TokenDescriptor {
+        definition_id: DEFINITION_ID,
+        kind: TokenKind::NftPrintedCopy,
+    };
+    assert_eq!(
+        ata_core::classify(&master_holding(), &printed),
+        AtaContents::Intended
+    );
+}
+
+#[test]
+fn check_contents_accepts_a_truthful_claim() {
+    create::check_contents(&empty(), &FUNGIBLE, AtaContents::Empty);
+}
+
+/// The hole this closes: `Empty` claimed over a funded ATA would hand the token
+/// program a seed-authorized `InitializeAccount` and zeroize the holding, with no
+/// owner signature anywhere.
+#[test]
+#[should_panic(expected = "Associated token account does not hold what the instruction claims")]
+fn check_contents_rejects_empty_claimed_over_a_funded_ata() {
+    create::check_contents(
+        &holding(DEFINITION_ID, AMOUNT),
+        &FUNGIBLE,
+        AtaContents::Empty,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Associated token account does not hold what the instruction claims")]
+fn check_contents_rejects_intended_claimed_over_a_squatted_ata() {
+    create::check_contents(
+        &holding(OTHER_DEFINITION_ID, AMOUNT),
+        &FUNGIBLE,
+        AtaContents::Intended,
+    );
+}
+
+// ── check_definition_kind ───────────────────────────────────────────────────
+
+#[test]
+fn check_definition_kind_accepts_the_definitions_own_kind() {
+    create::check_definition_kind(&fungible_definition(), TokenKind::Fungible);
+}
+
+#[test]
+#[should_panic(expected = "Token Definition does not initialize this Token Holding kind")]
+fn check_definition_kind_rejects_a_mismatched_kind() {
+    create::check_definition_kind(&fungible_definition(), TokenKind::NftMaster);
+}
+
+#[test]
+fn check_definition_kind_classifies_a_non_fungible_as_a_printed_copy() {
+    create::check_definition_kind(&non_fungible_definition(), TokenKind::NftPrintedCopy);
+}
+
+#[test]
+#[should_panic(expected = "Token Definition account must be valid")]
+fn check_definition_kind_rejects_a_shard_that_is_not_a_definition() {
+    create::check_definition_kind(&holding(DEFINITION_ID, AMOUNT), TokenKind::Fungible);
+}
+
+// ── Transfer ────────────────────────────────────────────────────────────────
+
+#[test]
+fn transfer_accepts_an_authorized_owner_and_derived_ata() {
+    let _ = transfer::plan_transfer(
+        &token_shard(OWNER_ID, true),
+        &token_shard(ata_id(DEFINITION_ID), false),
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        &FUNGIBLE,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Owner authorization is missing")]
+fn transfer_without_owner_authorization_should_fail() {
+    let _ = transfer::plan_transfer(
+        &token_shard(OWNER_ID, false),
+        &token_shard(ata_id(DEFINITION_ID), false),
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        &FUNGIBLE,
+    );
+}
+
+/// The declared descriptor is what the ATA address derives from, so a lie about
+/// it cannot reach the chained call — the derivation stops it here.
+#[test]
+#[should_panic(expected = "ATA account ID does not match expected derivation")]
+fn transfer_with_a_descriptor_for_another_definition_should_fail() {
+    let _ = transfer::plan_transfer(
+        &token_shard(OWNER_ID, true),
+        &token_shard(ata_id(DEFINITION_ID), false),
+        ATA_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        &OTHER_FUNGIBLE,
+    );
+}
+
+#[test]
+fn check_recipient_accepts_an_initialized_matching_holding() {
+    transfer::check_recipient(&holding(DEFINITION_ID, AMOUNT), &FUNGIBLE);
+}
+
+/// ATA's own contract, deliberately stricter than token's: token's `deposit`
+/// would materialize an empty recipient from the descriptor.
 #[test]
 #[should_panic(expected = "Recipient token holding must be initialized")]
-fn transfer_panics_when_recipient_is_default() {
-    let default_recipient = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: recipient_id(),
-    };
-
-    crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        default_recipient,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
+fn check_recipient_rejects_an_empty_recipient() {
+    transfer::check_recipient(&empty(), &FUNGIBLE);
 }
 
 #[test]
-#[should_panic(expected = "Sender ATA must be owned by expected token program")]
-fn transfer_panics_when_sender_ata_is_owned_by_unexpected_token_program() {
-    let mut sender = initialized_ata_account();
-    sender.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
-
-    crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        sender,
-        initialized_recipient_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Recipient must be owned by the same token program as the sender ATA")]
-fn transfer_panics_when_recipient_is_foreign_owned() {
-    let mut foreign_recipient = initialized_recipient_account();
-    foreign_recipient.account.program_owner = AccountId::new([9u8; 32]);
-
-    crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        foreign_recipient,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
+#[should_panic(expected = "Mismatched Token Definition and Token Holding")]
+fn check_recipient_rejects_a_holding_of_another_definition() {
+    transfer::check_recipient(&holding(OTHER_DEFINITION_ID, AMOUNT), &FUNGIBLE);
 }
 
 #[test]
 #[should_panic(expected = "Recipient must hold a valid token")]
-fn transfer_panics_when_recipient_data_is_malformed() {
-    let mut malformed_recipient = initialized_recipient_account();
-    malformed_recipient.account.data = Data::try_from(vec![0xFFu8, 0xFE, 0xFD]).unwrap();
+fn check_recipient_rejects_a_shard_that_is_not_a_holding() {
+    transfer::check_recipient(&fungible_definition(), &FUNGIBLE);
+}
 
-    crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        malformed_recipient,
+// ── Burn ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn burn_accepts_an_authorized_owner_and_matching_definition() {
+    let _ = burn::plan_burn(
+        &token_shard(OWNER_ID, true),
+        &token_shard(ata_id(DEFINITION_ID), false),
+        &token_shard(DEFINITION_ID, false),
         ATA_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
-        1,
+        &FUNGIBLE,
     );
 }
 
 #[test]
-#[should_panic(expected = "Recipient and sender token definitions do not match")]
-fn transfer_panics_when_recipient_definition_mismatches_sender() {
-    let mut mismatched_recipient = initialized_recipient_account();
-    mismatched_recipient.account.data = Data::from(&TokenHolding::Fungible {
-        definition_id: AccountId::new([0xAAu8; 32]),
-        balance: 0,
-    });
-
-    crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        mismatched_recipient,
+#[should_panic(expected = "Owner authorization is missing")]
+fn burn_without_owner_authorization_should_fail() {
+    let _ = burn::plan_burn(
+        &token_shard(OWNER_ID, false),
+        &token_shard(ata_id(DEFINITION_ID), false),
+        &token_shard(DEFINITION_ID, false),
         ATA_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
-        1,
-    );
-}
-
-#[test]
-fn burn_emits_chained_call_for_initialized_ata() {
-    let (post_states, chained_calls) = crate::burn::burn_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        definition_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        25,
-    );
-
-    assert_eq!(post_states.len(), 3);
-    assert_eq!(chained_calls.len(), 1);
-
-    let expected_call = ChainedCall::new(
-        TOKEN_PROGRAM_ID,
-        vec![definition_id(), ata_id()],
-        &token_core::Instruction::Burn { amount_to_burn: 25 },
-    )
-    .with_pda_seeds(vec![compute_ata_seed(
-        TOKEN_PROGRAM_ID,
-        owner_id(),
-        definition_id(),
-    )]);
-
-    assert_eq!(chained_calls, vec![expected_call]);
-}
-
-#[test]
-#[should_panic(expected = "Holder ATA must be owned by expected token program")]
-fn burn_panics_when_holder_ata_is_owned_by_unexpected_token_program() {
-    let mut holder = initialized_ata_account();
-    holder.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
-
-    crate::burn::burn_from_associated_token_account(
-        owner_account(),
-        holder,
-        definition_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Token definition must be owned by expected token program")]
-fn burn_panics_when_definition_is_owned_by_unexpected_token_program() {
-    let mut definition = definition_account();
-    definition.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
-
-    crate::burn::burn_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        definition,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
+        &FUNGIBLE,
     );
 }
 
 #[test]
 #[should_panic(expected = "Holder ATA token definition does not match")]
-fn burn_panics_when_holder_definition_mismatches_supplied_definition() {
-    let mut definition = definition_account();
-    definition.account_id = AccountId::new([0xBBu8; 32]);
-
-    crate::burn::burn_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        definition,
+fn burn_with_a_descriptor_naming_another_definition_should_fail() {
+    let _ = burn::plan_burn(
+        &token_shard(OWNER_ID, true),
+        &token_shard(ata_id(OTHER_DEFINITION_ID), false),
+        &token_shard(DEFINITION_ID, false),
         ATA_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
-        1,
+        &OTHER_FUNGIBLE,
     );
 }

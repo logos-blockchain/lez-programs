@@ -9,7 +9,7 @@ use super::{
     holding::{select_holding, wallet_holdings},
     ResolveTokensRequest,
 };
-use crate::account::{account_id_from_hex, decode_account, parse_program_id, AccountRead};
+use crate::account::{account_id_from_hex, parse_program_id, program_shard, AccountRead};
 
 /// Resolves an explicit, app-provided set of token ids into selector rows. The app owns the
 /// id set (its configured tokens plus any custom/pasted ids it remembers), so there is no
@@ -79,17 +79,17 @@ pub(super) fn resolve_tokens(request: ResolveTokensRequest) -> Result<Value, Str
 }
 
 /// Decodes a token definition read as a fungible `(name, total_supply)`, or `None` when it is
-/// unreadable, owned by a different program, its id mismatches, or it isn't fungible.
+/// unreadable, carries no Token Program shard, its id mismatches, or it isn't fungible.
 fn fungible_definition(
     read: Option<&AccountRead>,
     token_id: AccountId,
     token_program: AccountId,
 ) -> Option<(String, u128)> {
-    let (id, account) = decode_account(read?).ok()?;
-    if id != token_id || account.program_owner != token_program {
+    let (id, shard) = program_shard(read?, token_program, "token definition").ok()?;
+    if id != token_id {
         return None;
     }
-    match TokenDefinition::try_from(&account.data) {
+    match TokenDefinition::try_from(&shard) {
         Ok(TokenDefinition::Fungible {
             name, total_supply, ..
         }) => Some((name, total_supply)),

@@ -1,7 +1,8 @@
 use amm_core::{
     compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda, compute_vault_pda,
+    ConfigFacts,
 };
-use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
+use clock_core::{clock_account_id, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::account::AccountId;
 use serde_json::{json, Value};
 use twap_oracle_core::compute_current_tick_account_pda;
@@ -11,6 +12,9 @@ use crate::account::{account_id_hex, parse_base58_id, parse_program_id, AccountR
 
 #[derive(Clone, Copy)]
 pub(super) struct PairIds {
+    /// The deployed AMM program — the program whose shard the config and pool
+    /// slots select.
+    pub(super) amm_program: AccountId,
     pub(super) token_a: AccountId,
     pub(super) token_b: AccountId,
     pub(super) config: AccountId,
@@ -23,6 +27,11 @@ pub(super) struct PairIds {
     pub(super) clock: AccountId,
     /// The configured TWAP oracle program — the price/observation PDAs are seeded by it.
     pub(super) twap_oracle_program: AccountId,
+    /// The config's own fields, carried along because every instruction now
+    /// *declares* them: nine of the eleven used to read the config for the
+    /// program ids they route through and the fees they price with, and no plan
+    /// phase can read anything. The config shard's guard is what pins them.
+    pub(super) facts: ConfigFacts,
 }
 
 pub(super) fn pair_ids(request: PairIdsRequest) -> Result<Value, String> {
@@ -59,6 +68,7 @@ pub(super) fn derive_pair(
     let (config_id, config) = load_config(amm_program, config_read)?;
     let pool = compute_pool_pda(amm_program, config_id, token_a, token_b);
     Ok(PairIds {
+        amm_program,
         token_a,
         token_b,
         config: config_id,
@@ -70,6 +80,13 @@ pub(super) fn derive_pair(
         current_tick: compute_current_tick_account_pda(config.twap_oracle_program_id, pool),
         clock: CLOCK_01_PROGRAM_ACCOUNT_ID,
         twap_oracle_program: config.twap_oracle_program_id,
+        facts: ConfigFacts {
+            token_program_id: config.token_program_id,
+            twap_oracle_program_id: config.twap_oracle_program_id,
+            authority: config.authority,
+            swap_fee_bps: config.swap_fee_bps,
+            protocol_fee_bps: config.protocol_fee_bps,
+        },
     })
 }
 
@@ -86,5 +103,10 @@ fn pair_json(pair: PairIds) -> Value {
         "lpLockHoldingId": account_id_hex(pair.lp_lock_holding),
         "currentTickId": account_id_hex(pair.current_tick),
         "clockId": account_id_hex(pair.clock),
+        // The programs whose shards those last two slots select. A caller reading
+        // an account now names an address *and* a program, and these two are the
+        // ones it cannot derive for itself.
+        "twapOracleProgramId": account_id_hex(pair.twap_oracle_program),
+        "clockProgramId": account_id_hex(clock_account_id()),
     })
 }

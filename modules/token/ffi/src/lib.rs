@@ -5,7 +5,7 @@ mod ffi;
 
 pub mod api;
 
-pub use account::{AccountRead, WalletAccount};
+pub use account::{AccountRead, WalletAccount, WalletAccountData};
 pub use api::{
     burn_plan, create_fungible_plan, create_fungible_with_metadata_plan, create_non_fungible_plan,
     decode_account, decode_definition, decode_holding, decode_metadata, initialize_holding_plan,

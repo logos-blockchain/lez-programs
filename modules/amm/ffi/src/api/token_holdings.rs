@@ -40,7 +40,7 @@ pub(super) fn token_holdings(request: TokenHoldingsRequest) -> Result<Value, Str
 #[cfg(test)]
 mod tests {
     use amm_core::{compute_config_pda, AmmConfig};
-    use lee_core::account::{Account, AccountId, Data};
+    use lee_core::account::{AccountId, ShardData};
     use token_core::TokenHolding;
 
     use super::*;
@@ -51,33 +51,27 @@ mod tests {
     }
 
     fn holding_read(id: AccountId, definition: AccountId, balance: u128) -> AccountRead {
-        let account = Account {
-            program_owner: token_program(),
-            data: (&TokenHolding::Fungible {
+        account_read(
+            id,
+            token_program(),
+            &ShardData::from(&TokenHolding::Fungible {
                 definition_id: definition,
                 balance,
-            })
-                .into(),
-            ..Account::default()
-        };
-        account_read(id, &account)
+            }),
+        )
     }
 
     fn config_read(amm: AccountId) -> AccountRead {
-        let account = Account {
-            program_owner: amm,
-            data: Data::from(&AmmConfig {
+        account_read(
+            compute_config_pda(amm, AccountId::new([0x07; 32]), [0; 32]),
+            amm,
+            &ShardData::from(&AmmConfig {
                 token_program_id: token_program(),
                 twap_oracle_program_id: parse_program_id(&"02".repeat(32)).unwrap(),
                 authority: AccountId::new([0x09; 32]),
                 swap_fee_bps: 30,
                 protocol_fee_bps: 0,
             }),
-            ..Account::default()
-        };
-        account_read(
-            compute_config_pda(amm, AccountId::new([0x07; 32]), [0; 32]),
-            &account,
         )
     }
 
@@ -106,15 +100,17 @@ mod tests {
     #[test]
     fn skips_non_token_accounts_and_fails_closed_on_bad_config() {
         let amm = parse_program_id(&"00".repeat(32)).unwrap();
-        // A non-token-program account is not a holding.
-        let foreign = Account {
-            program_owner: parse_program_id(&"ee".repeat(32)).unwrap(),
-            ..Account::default()
-        };
+        // An account carrying only some other program's shard is not a holding --
+        // the v0.2.5 `program_owner != token_program` check, asked of the shard map.
+        let foreign = account_read(
+            AccountId::new([0x02; 32]),
+            parse_program_id(&"ee".repeat(32)).unwrap(),
+            &ShardData::try_from(vec![0xFF_u8; 4]).unwrap(),
+        );
         let value = token_holdings(TokenHoldingsRequest {
             amm_program_id: "00".repeat(32),
             config: config_read(amm),
-            wallet_accounts: vec![account_read(AccountId::new([0x02; 32]), &foreign)],
+            wallet_accounts: vec![foreign],
         })
         .unwrap();
         assert!(value["holdings"].as_array().unwrap().is_empty());

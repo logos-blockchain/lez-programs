@@ -1,117 +1,76 @@
-use lee_core::{
-    account::{Account, AccountWithMetadata, BalanceDiff, Data},
-    program::AccountStateDiff,
-};
-use token_core::TokenHolding;
+use lee_core::{account::ShardData, program::AccountMeta};
+use token_core::{TokenDescriptor, TokenHolding};
 
-pub fn transfer(
-    sender: AccountWithMetadata,
-    recipient: AccountWithMetadata,
-    balance_to_move: u128,
-) -> Vec<AccountStateDiff> {
+/// Plan half: the only thing a transfer can check before any shard is read.
+///
+/// Deliberately no `is_authorized` check on the recipient: crediting a recipient
+/// who has not participated is a supported flow (see the private foreign-init
+/// path, where the recipient is known only by `npk`/`vpk`). Under v0.3.0 the
+/// question is moot anyway — writing `shards[token]` at an address denies that
+/// address to nobody, so there is nothing to squat on.
+///
+/// # Panics
+/// If the sender is not authorized.
+pub fn authorize(sender: &AccountMeta) {
     assert!(sender.is_authorized, "Sender authorization is missing");
+}
 
-    let mut sender_holding =
-        TokenHolding::try_from(&sender.account.data).expect("Invalid sender data");
+/// Apply half for the sender: debit this shard.
+#[must_use]
+pub fn withdraw(pre_data: &ShardData, descriptor: &TokenDescriptor, amount: u128) -> ShardData {
+    let mut holding = TokenHolding::try_from(pre_data).expect("Invalid sender data");
+    holding.assert_matches(descriptor);
 
-    let mut recipient_holding = if recipient.account == Account::default() {
-        TokenHolding::zeroized_clone_from(&sender_holding)
-    } else {
-        TokenHolding::try_from(&recipient.account.data).expect("Invalid recipient data")
-    };
-
-    assert_eq!(
-        sender_holding.definition_id(),
-        recipient_holding.definition_id(),
-        "Sender and recipient definition id mismatch"
-    );
-
-    match (&mut sender_holding, &mut recipient_holding) {
-        (
-            TokenHolding::Fungible {
-                definition_id: _,
-                balance: sender_balance,
-            },
-            TokenHolding::Fungible {
-                definition_id: _,
-                balance: recipient_balance,
-            },
-        ) => {
-            *sender_balance = sender_balance
-                .checked_sub(balance_to_move)
-                .expect("Insufficient balance");
-
-            *recipient_balance = recipient_balance
-                .checked_add(balance_to_move)
-                .expect("Recipient balance overflow");
+    match &mut holding {
+        TokenHolding::Fungible { balance, .. } => {
+            *balance = balance.checked_sub(amount).expect("Insufficient balance");
         }
-        (
-            TokenHolding::NftMaster {
-                definition_id: _,
-                print_balance: sender_print_balance,
-            },
-            TokenHolding::NftMaster {
-                definition_id: _,
-                print_balance: recipient_print_balance,
-            },
-        ) => {
+        TokenHolding::NftMaster { print_balance, .. } => {
             assert_eq!(
-                *recipient_print_balance, 0,
-                "Invalid balance in recipient account for NFT transfer"
-            );
-
-            assert_eq!(
-                *sender_print_balance, balance_to_move,
+                *print_balance, amount,
                 "Invalid balance for NFT Master transfer"
             );
-
-            std::mem::swap(sender_print_balance, recipient_print_balance);
+            *print_balance = 0;
         }
-        (
-            TokenHolding::NftPrintedCopy {
-                definition_id: _,
-                owned: sender_owned,
-            },
-            TokenHolding::NftPrintedCopy {
-                definition_id: _,
-                owned: recipient_owned,
-            },
-        ) => {
-            assert_eq!(
-                balance_to_move, 1,
-                "Invalid balance for NFT Printed Copy transfer"
-            );
-
-            assert!(*sender_owned, "Sender does not own the NFT Printed Copy");
-
-            assert!(
-                !*recipient_owned,
-                "Recipient already owns the NFT Printed Copy"
-            );
-
-            *sender_owned = false;
-            *recipient_owned = true;
+        TokenHolding::NftPrintedCopy { owned, .. } => {
+            assert_eq!(amount, 1, "Invalid balance for NFT Printed Copy transfer");
+            assert!(*owned, "Sender does not own the NFT Printed Copy");
+            *owned = false;
         }
-        _ => {
-            panic!("Mismatched token holding types for transfer");
-        }
+    }
+
+    ShardData::from(&holding)
+}
+
+/// Apply half for the recipient: credit this shard, initializing it if empty.
+#[must_use]
+pub fn deposit(pre_data: &ShardData, descriptor: &TokenDescriptor, amount: u128) -> ShardData {
+    let mut holding = if pre_data.is_empty() {
+        descriptor.zeroized()
+    } else {
+        TokenHolding::try_from(pre_data).expect("Invalid recipient data")
     };
+    holding.assert_matches(descriptor);
 
-    // Deliberately no `is_authorized` check on an uninitialized recipient: crediting a
-    // recipient who has not participated is a supported flow (see the private foreign-init
-    // path, where the recipient is known only by `npk`/`vpk`). v0.2.4 expressed the claim as
-    // `Claim::Authorized`, but logos-execution-zone PR #621 made foreign-init pre-states carry
-    // `is_authorized = true` as a circuit artifact rather than as recipient consent, so that
-    // claim never actually gated this path. v0.2.5 makes it honest — `is_authorized` now
-    // matches whether a credential was supplied — and acquires ownership on any data write.
-    // A guard here cannot distinguish an unauthorized public recipient from a legitimate
-    // private foreign init, so squatting on unowned accounts is the runtime's to prevent.
-    vec![
-        AccountStateDiff::new(sender, BalanceDiff::Add(0), Data::from(&sender_holding)),
-        AccountStateDiff::new(
-            recipient,
-            BalanceDiff::Add(0),
-            Data::from(&recipient_holding),
-        ),
-    ]
+    match &mut holding {
+        TokenHolding::Fungible { balance, .. } => {
+            *balance = balance
+                .checked_add(amount)
+                .expect("Recipient balance overflow");
+        }
+        TokenHolding::NftMaster { print_balance, .. } => {
+            assert_eq!(
+                *print_balance, 0,
+                "Invalid balance in recipient account for NFT transfer"
+            );
+            *print_balance = amount;
+        }
+        TokenHolding::NftPrintedCopy { owned, .. } => {
+            assert_eq!(amount, 1, "Invalid balance for NFT Printed Copy transfer");
+            assert!(!*owned, "Recipient already owns the NFT Printed Copy");
+            *owned = true;
+        }
+    }
+
+    ShardData::from(&holding)
 }

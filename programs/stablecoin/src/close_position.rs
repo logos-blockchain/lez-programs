@@ -1,116 +1,67 @@
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
-};
-use stablecoin_core::{
-    compute_protocol_parameters_pda, verify_position_and_get_seed, Position, ProtocolParameters,
-};
-use token_core::TokenHolding;
+//! `Instruction::ClosePosition` (spec §10.9).
 
-/// Clear a fully-settled `position` (spec §10.9).
-///
-/// The position's data is zeroed but the account itself lingers: LEE's
-/// `validate_execution` forbids a program from changing an account's
-/// `program_owner` or `nonce`, so the PDA cannot be released and §10.9's
-/// `Account::default()` post-state is not expressible. A consequence worth
-/// knowing: the `(owner, position_nonce)` pair cannot be reused afterwards,
-/// because `open_position` requires an uninitialized position account.
-///
-/// The vault is **not** closed either — the Token Program has no `CloseHolding`,
-/// so it also lingers at `balance = 0` (§12, §14). It is passed read-only purely
-/// so its emptiness can be asserted.
-///
-/// Allowed while the protocol is frozen: closing a settled position removes an
-/// obligation and cannot worsen protocol health.
+use lee_core::{
+    account::{AccountId, ShardData},
+    program::AccountMeta,
+};
+use stablecoin_core::{ClosePosition, ProtocolParameters};
+
+/// Plan half: check the addresses. Allowed while frozen — closing a settled
+/// position removes an obligation and cannot worsen protocol health.
 ///
 /// # Panics
-/// - `owner` is not authorized.
-/// - `position` is uninitialized, not owned by `stablecoin_program_id`, does not decode, or is not
-///   at its `(owner, position_nonce)` PDA.
-/// - `position.normalized_debt_amount` or `position.collateral_amount` is non-zero.
-/// - `vault` does not match `Position.vault_account_id`, does not decode as a fungible
-///   [`TokenHolding`], or still holds a balance.
-/// - `protocol_parameters` is uninitialized, wrongly owned, not at its canonical PDA, or does not
-///   decode.
-pub fn close_position(
-    owner: AccountWithMetadata,
-    position: AccountWithMetadata,
-    vault: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
+/// - `owner` did not sign.
+/// - `protocol_parameters` is not at its canonical PDA.
+/// - the vault slot does not select the bound Token Program's shard.
+/// - `position` or `vault` is not at its PDA derivation.
+pub fn plan_close_position(
+    owner: &AccountMeta,
+    position: &AccountMeta,
+    vault: &AccountMeta,
+    protocol_parameters: &AccountMeta,
+    parameters: &ProtocolParameters,
+    position_nonce: u64,
     stablecoin_program_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
+) {
     assert!(owner.is_authorized, "Owner authorization is missing");
-
-    assert_ne!(
-        position.account,
-        Account::default(),
-        "Position account must be initialized"
-    );
-    assert_eq!(
-        position.account.program_owner, stablecoin_program_id,
-        "Position is not owned by this stablecoin program"
-    );
-    let position_data = Position::try_from(&position.account.data)
-        .expect("Position account must hold valid Position state");
-    let _position_seed = verify_position_and_get_seed(
-        &position,
-        &owner,
-        position_data.position_nonce,
+    crate::shared::assert_parameters_slot(protocol_parameters, stablecoin_program_id);
+    crate::shared::assert_token_program(vault, parameters, "Position vault");
+    crate::shared::assert_position_and_vault_slots(
+        position,
+        vault,
+        owner,
+        position_nonce,
         stablecoin_program_id,
     );
-    assert_eq!(
-        position_data.owner_account_id, owner.account_id,
-        "Position owner_account_id does not match the owner account"
-    );
+}
 
-    // Read-only, but still pinned: a substituted global would be a silent
-    // inconsistency even though nothing here branches on its contents.
-    let _parameters = ProtocolParameters::try_from(&crate::checks::decode_global(
-        &protocol_parameters,
-        compute_protocol_parameters_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "ProtocolParameters",
-    ))
-    .expect("ProtocolParameters must decode");
-    // `is_frozen` is deliberately not read: closing a settled position removes an
-    // obligation and cannot worsen protocol health (§7).
-
+/// Apply half: clear a fully-settled position's shard.
+///
+/// v0.2.5 could only zero the *data*: a diff carried no `program_owner`, the
+/// runtime derived it, and the account lingered stablecoin-owned — which is why
+/// §10.9's `Account::default()` was unexpressible and the `(owner,
+/// position_nonce)` pair could never be reused. v0.3.0 removes ownership from an
+/// address entirely, so clearing the shard *is* the close, and the pair becomes
+/// reusable: `OpenPosition`'s `create` asks only that the shard be empty.
+///
+/// The vault still lingers at `balance = 0` — the Token Program has no
+/// `CloseHolding` (§12) — and its emptiness is asserted by a guard on its own
+/// shard rather than read here. That catches the case where the two disagree,
+/// which would strand tokens behind a cleared position.
+///
+/// # Panics
+/// - the shard is not a valid `Position`, or its identity differs from the declared one.
+/// - the position still has debt or collateral recorded.
+#[must_use]
+pub fn position_after_close(pre_data: &ShardData, effect: &ClosePosition) -> ShardData {
+    let position = crate::shared::position_of(pre_data, &effect.expected);
     assert_eq!(
-        position_data.normalized_debt_amount, 0,
+        position.normalized_debt_amount, 0,
         "Position still has outstanding debt"
     );
     assert_eq!(
-        position_data.collateral_amount, 0,
+        position.collateral_amount, 0,
         "Position still holds collateral"
     );
-
-    assert_eq!(
-        position_data.vault_account_id, vault.account_id,
-        "Position vault_account_id does not match the vault account"
-    );
-    let vault_balance = match TokenHolding::try_from(&vault.account.data)
-        .expect("Vault account must hold a valid TokenHolding")
-    {
-        TokenHolding::Fungible { balance, .. } => balance,
-        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
-            panic!("Vault must hold a fungible collateral balance")
-        }
-    };
-    // The position's own accounting already reads zero; this catches the case
-    // where the two disagree, which would strand tokens behind a released PDA.
-    assert_eq!(vault_balance, 0, "Vault still holds a balance");
-
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(owner),
-        // Clear the data only. A diff cannot change an account's `program_owner`
-        // or `nonce` — it does not carry them, and the runtime derives the post
-        // owner itself — so the PDA cannot actually be released; spec §10.9's
-        // `Account::default()` is not expressible here. The account lingers
-        // stablecoin-owned with empty data, like the vault does per §12.
-        AccountStateDiff::new(position, BalanceDiff::Add(0), Data::default()),
-        AccountStateDiff::unchanged(vault),
-        AccountStateDiff::unchanged(protocol_parameters),
-    ];
-
-    (state_diffs, vec![])
+    ShardData::default()
 }

@@ -7,6 +7,7 @@ edition = "2021"
 workspace = true
 
 [dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
+token_core = { path = "../../token/core" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.0", features = ["host"] }
 borsh = { version = "1.5", features = ["derive"] }
 risc0-zkvm = { version = "=3.0.5", default-features = false }

@@ -4,8 +4,8 @@ use amm_core::{
     compute_protocol_fee_pda, compute_vault_pda, isqrt_product, AmmConfig, Instruction,
     PoolDefinition, MINIMUM_LIQUIDITY,
 };
-use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use lee_core::account::{Account, AccountId, Data, Nonce};
+use clock_core::{clock_account_id, CLOCK_01_PROGRAM_ACCOUNT_ID};
+use lee_core::account::{AccountId, ShardData};
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use token_core::{TokenDefinition, TokenHolding};
@@ -16,8 +16,10 @@ use twap_oracle_core::{
 
 use super::{
     admin::{transfer_ownership_plan, withdraw_protocol_fees_plan},
+    clock::clock_read,
     config::config_account as decode_config_account,
     context::resolve_tokens,
+    envelope::identity_of,
     holding::{select_holding, SelectedHolding},
     oracle::{create_oracle_price_account_plan, create_price_observations_plan},
     pair::{is_canonical_pair, pair_ids, PairIds},
@@ -28,7 +30,7 @@ use super::{
     TransferOwnershipPlanRequest, WithdrawProtocolFeesPlanRequest,
 };
 use crate::{
-    account::{account_id_hex, account_read, decode_account, program_id_base58},
+    account::{account_id_hex, account_read, program_id_base58, WalletAccount, WalletAccountData},
     AccountRead,
 };
 
@@ -36,17 +38,18 @@ const AMM_PROGRAM: AccountId = AccountId::new([11; 32]);
 const TOKEN_PROGRAM: AccountId = AccountId::new([22; 32]);
 const TWAP_PROGRAM: AccountId = AccountId::new([33; 32]);
 
-fn account(owner: AccountId, data: Data) -> Account {
-    Account {
-        program_owner: owner,
-        balance: 0,
-        data,
-        nonce: Nonce(0),
+/// A read of an address no program has written to: v0.2.5's `Account::default()`,
+/// which is now simply an empty shard map. Decoding any program's shard of it
+/// yields the same answer the old `account == Account::default()` check gave.
+fn empty_read(id: AccountId) -> AccountRead {
+    AccountRead {
+        id: account_id_hex(id),
+        status: String::from("ok"),
+        account: Some(WalletAccount {
+            nonce: hex::encode(0_u128.to_le_bytes()),
+            data: WalletAccountData::default(),
+        }),
     }
-}
-
-fn default_read(id: AccountId) -> AccountRead {
-    account_read(id, &Account::default())
 }
 
 /// The namespace root (config PDA id) the tests derive pools under. A fixed `(owner, nonce)`
@@ -56,39 +59,41 @@ fn config_id() -> AccountId {
     compute_config_pda(AMM_PROGRAM, AccountId::new([0x50; 32]), [0; 32])
 }
 
-fn config_account() -> Account {
-    account(
-        AMM_PROGRAM,
-        Data::from(&AmmConfig {
-            token_program_id: TOKEN_PROGRAM,
-            twap_oracle_program_id: TWAP_PROGRAM,
-            authority: AccountId::new([7; 32]),
-            swap_fee_bps: 30,
-            protocol_fee_bps: 2_000,
-        }),
-    )
+fn config_account() -> ShardData {
+    ShardData::from(&AmmConfig {
+        token_program_id: TOKEN_PROGRAM,
+        twap_oracle_program_id: TWAP_PROGRAM,
+        authority: AccountId::new([7; 32]),
+        swap_fee_bps: 30,
+        protocol_fee_bps: 2_000,
+    })
 }
 
-fn token_definition(name: &str, supply: u128) -> Account {
-    account(
-        TOKEN_PROGRAM,
-        Data::from(&TokenDefinition::Fungible {
-            name: String::from(name),
-            total_supply: supply,
-            metadata_id: None,
-            authority: None,
-        }),
-    )
+/// The config fields every instruction declares, matching `config_account`.
+fn facts() -> amm_core::ConfigFacts {
+    amm_core::ConfigFacts {
+        token_program_id: TOKEN_PROGRAM,
+        twap_oracle_program_id: TWAP_PROGRAM,
+        authority: AccountId::new([7; 32]),
+        swap_fee_bps: 30,
+        protocol_fee_bps: 2_000,
+    }
 }
 
-fn token_holding(definition_id: AccountId, balance: u128) -> Account {
-    account(
-        TOKEN_PROGRAM,
-        Data::from(&TokenHolding::Fungible {
-            definition_id,
-            balance,
-        }),
-    )
+fn token_definition(name: &str, supply: u128) -> ShardData {
+    ShardData::from(&TokenDefinition::Fungible {
+        name: String::from(name),
+        total_supply: supply,
+        metadata_id: None,
+        authority: None,
+    })
+}
+
+fn token_holding(definition_id: AccountId, balance: u128) -> ShardData {
+    ShardData::from(&TokenHolding::Fungible {
+        definition_id,
+        balance,
+    })
 }
 
 fn ids() -> PairIds {
@@ -97,6 +102,7 @@ fn ids() -> PairIds {
     let config = config_id();
     let pool = compute_pool_pda(AMM_PROGRAM, config, token_a, token_b);
     PairIds {
+        amm_program: AMM_PROGRAM,
         token_a,
         token_b,
         config,
@@ -108,11 +114,28 @@ fn ids() -> PairIds {
         current_tick: compute_current_tick_account_pda(TWAP_PROGRAM, pool),
         clock: CLOCK_01_PROGRAM_ACCOUNT_ID,
         twap_oracle_program: TWAP_PROGRAM,
+        facts: facts(),
     }
 }
 
 fn amm_program_id() -> String {
     account_id_hex(AMM_PROGRAM)
+}
+
+/// The pool record the oracle-setup plans read their declared `PoolIdentity` and
+/// reserves out of.
+fn pool_definition(config: AccountId, token_a: AccountId, token_b: AccountId) -> PoolDefinition {
+    let pool = compute_pool_pda(AMM_PROGRAM, config, token_a, token_b);
+    PoolDefinition {
+        definition_token_a_id: token_a,
+        definition_token_b_id: token_b,
+        vault_a_id: compute_vault_pda(AMM_PROGRAM, pool, token_a),
+        vault_b_id: compute_vault_pda(AMM_PROGRAM, pool, token_b),
+        liquidity_pool_id: compute_liquidity_token_pda(AMM_PROGRAM, pool),
+        liquidity_pool_supply: 2_000,
+        reserve_a: 1_000,
+        reserve_b: 4_000,
+    }
 }
 
 #[test]
@@ -161,7 +184,7 @@ fn pair_manifest_uses_canonical_ids_and_current_program_types() {
     let config_id = config_id();
     let result = pair_ids(PairIdsRequest {
         amm_program_id: amm_program_id(),
-        config: account_read(config_id, &config_account()),
+        config: account_read(config_id, AMM_PROGRAM, &config_account()),
         token_a_id: token_a.to_string(),
         token_b_id: token_b.to_string(),
     })
@@ -180,7 +203,7 @@ fn pair_manifest_reports_invalid_token_as_domain_error() {
     let pair = ids();
     let result = pair_ids(PairIdsRequest {
         amm_program_id: amm_program_id(),
-        config: account_read(pair.config, &config_account()),
+        config: account_read(pair.config, AMM_PROGRAM, &config_account()),
         token_a_id: String::from("not-a-token-id"),
         token_b_id: pair.token_b.to_string(),
     })
@@ -195,7 +218,7 @@ fn pair_manifest_reports_unavailable_config_as_domain_error() {
     let pair = ids();
     let result = pair_ids(PairIdsRequest {
         amm_program_id: amm_program_id(),
-        config: default_read(pair.config),
+        config: empty_read(pair.config),
         token_a_id: pair.token_a.to_string(),
         token_b_id: pair.token_b.to_string(),
     })
@@ -214,7 +237,7 @@ fn resolve_tokens_returns_lean_rows_held_first_and_omits_unresolvable() {
 
     let value = resolve_tokens(ResolveTokensRequest {
         amm_program_id: amm_program_id(),
-        config: account_read(config_id, &config_account()),
+        config: account_read(config_id, AMM_PROGRAM, &config_account()),
         token_ids: vec![
             account_id_hex(held),
             account_id_hex(listed),
@@ -222,11 +245,12 @@ fn resolve_tokens_returns_lean_rows_held_first_and_omits_unresolvable() {
         ],
         wallet_accounts: vec![account_read(
             AccountId::new([6; 32]),
+            TOKEN_PROGRAM,
             &token_holding(held, 42),
         )],
         token_definitions: vec![
-            account_read(held, &token_definition("Held", 1_000)),
-            account_read(listed, &token_definition("Listed", 2_000)),
+            account_read(held, TOKEN_PROGRAM, &token_definition("Held", 1_000)),
+            account_read(listed, TOKEN_PROGRAM, &token_definition("Listed", 2_000)),
         ],
     })
     .unwrap();
@@ -260,7 +284,7 @@ fn transfer_ownership_plan_targets_config_and_current_admin() {
     let new_authority = AccountId::new([5; 32]);
     let plan = transfer_ownership_plan(TransferOwnershipPlanRequest {
         amm_program_id: amm_program_id(),
-        config: account_read(config_id, &config_account()),
+        config: account_read(config_id, AMM_PROGRAM, &config_account()),
         new_authority_id: account_id_hex(new_authority),
     })
     .unwrap();
@@ -299,7 +323,7 @@ fn withdraw_protocol_fees_plan_targets_protocol_pda_destination_and_admin() {
     let destination = AccountId::new([8; 32]);
     let plan = withdraw_protocol_fees_plan(WithdrawProtocolFeesPlanRequest {
         amm_program_id: amm_program_id(),
-        config: account_read(config_id, &config_account()),
+        config: account_read(config_id, AMM_PROGRAM, &config_account()),
         token_definition_id: account_id_hex(token_def),
         destination_id: account_id_hex(destination),
         amount: "500".into(),
@@ -322,18 +346,39 @@ fn withdraw_protocol_fees_plan_targets_protocol_pda_destination_and_admin() {
         plan["signingRequirements"],
         json!([false, false, false, true])
     );
+    // The config is the AMM's shard; the two holdings are the Token Program's. The
+    // authority slot wants a signature and nothing else, so it names the program
+    // being called -- nothing is written there for a `program_account_id` to mean.
+    assert_eq!(
+        plan["programAccountIds"],
+        json!([
+            account_id_hex(AMM_PROGRAM),
+            account_id_hex(TOKEN_PROGRAM),
+            account_id_hex(TOKEN_PROGRAM),
+            account_id_hex(AMM_PROGRAM),
+        ])
+    );
 
-    // The instruction decodes back to WithdrawProtocolFees { amount }.
+    // The instruction decodes back to WithdrawProtocolFees with the declared facts and
+    // the token descriptor that replaced the two holding reads.
     let bytes: Vec<u8> = plan["instruction"]
         .as_array()
         .unwrap()
         .iter()
         .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
-    let Instruction::WithdrawProtocolFees { amount } = borsh::from_slice(&bytes).unwrap() else {
+    let Instruction::WithdrawProtocolFees {
+        amount,
+        facts: declared_facts,
+        descriptor,
+    } = borsh::from_slice(&bytes).unwrap()
+    else {
         panic!("expected WithdrawProtocolFees");
     };
     assert_eq!(amount, 500);
+    assert_eq!(declared_facts, facts());
+    assert_eq!(descriptor.definition_id, token_def);
+    assert_eq!(descriptor.kind, token_core::TokenKind::Fungible);
 }
 
 #[test]
@@ -344,12 +389,26 @@ fn create_price_observations_plan_targets_the_window_feed_accounts() {
     let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
     let window = 3_600_000_u64;
 
+    let pool_definition = pool_definition(config_id, token_a, token_b);
+    let current_tick_id = compute_current_tick_account_pda(TWAP_PROGRAM, pool);
     let plan = create_price_observations_plan(CreatePriceObservationsPlanRequest {
         amm_program_id: amm_program_id(),
-        config: account_read(config_id, &config_account()),
+        config: account_read(config_id, AMM_PROGRAM, &config_account()),
         token_a_id: account_id_hex(token_a),
         token_b_id: account_id_hex(token_b),
         window_duration_ms: window,
+        pool_data: hex::encode(borsh::to_vec(&pool_definition).unwrap()),
+        // The feed's initial tick comes from the oracle's own current-tick shard,
+        // read here and pinned on-chain by a guard on it.
+        current_tick: account_read(
+            current_tick_id,
+            TWAP_PROGRAM,
+            &ShardData::from(&twap_oracle_core::CurrentTickAccount {
+                tick: -4_200,
+                last_updated: 900,
+            }),
+        ),
+        clock: clock_read(1_000),
     })
     .unwrap();
 
@@ -368,6 +427,19 @@ fn create_price_observations_plan_targets_the_window_feed_accounts() {
         plan["signingRequirements"],
         json!([false, false, false, false, false])
     );
+    // The config and the pool are the AMM's shards; the tick and the feed being
+    // created are the configured oracle's, since it is the program that writes them
+    // through the chained call.
+    assert_eq!(
+        plan["programAccountIds"],
+        json!([
+            account_id_hex(AMM_PROGRAM),
+            account_id_hex(AMM_PROGRAM),
+            account_id_hex(TWAP_PROGRAM),
+            account_id_hex(TWAP_PROGRAM),
+            account_id_hex(clock_account_id()),
+        ])
+    );
 
     let bytes: Vec<u8> = plan["instruction"]
         .as_array()
@@ -375,12 +447,21 @@ fn create_price_observations_plan_targets_the_window_feed_accounts() {
         .iter()
         .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
-    let Instruction::CreatePriceObservations { window_duration } =
-        borsh::from_slice(&bytes).unwrap()
+    let Instruction::CreatePriceObservations {
+        window_duration,
+        facts: declared_facts,
+        identity,
+        initial_tick,
+        now,
+    } = borsh::from_slice(&bytes).unwrap()
     else {
         panic!("expected CreatePriceObservations");
     };
     assert_eq!(window_duration, window);
+    assert_eq!(declared_facts, facts());
+    assert_eq!(identity, identity_of(&pool_definition));
+    assert_eq!(initial_tick, -4_200);
+    assert_eq!(now, 1_000);
 }
 
 #[test]
@@ -391,12 +472,15 @@ fn create_oracle_price_account_plan_targets_the_window_price_account() {
     let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
     let window = 900_000_u64;
 
+    let pool_definition = pool_definition(config_id, token_a, token_b);
     let plan = create_oracle_price_account_plan(CreateOraclePriceAccountPlanRequest {
         amm_program_id: amm_program_id(),
-        config: account_read(config_id, &config_account()),
+        config: account_read(config_id, AMM_PROGRAM, &config_account()),
         token_a_id: account_id_hex(token_a),
         token_b_id: account_id_hex(token_b),
         window_duration_ms: window,
+        pool_data: hex::encode(borsh::to_vec(&pool_definition).unwrap()),
+        clock: clock_read(1_000),
     })
     .unwrap();
 
@@ -414,6 +498,15 @@ fn create_oracle_price_account_plan_targets_the_window_price_account() {
         plan["signingRequirements"],
         json!([false, false, false, false])
     );
+    assert_eq!(
+        plan["programAccountIds"],
+        json!([
+            account_id_hex(AMM_PROGRAM),
+            account_id_hex(AMM_PROGRAM),
+            account_id_hex(TWAP_PROGRAM),
+            account_id_hex(clock_account_id()),
+        ])
+    );
 
     let bytes: Vec<u8> = plan["instruction"]
         .as_array()
@@ -421,12 +514,24 @@ fn create_oracle_price_account_plan_targets_the_window_price_account() {
         .iter()
         .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
-    let Instruction::CreateOraclePriceAccount { window_duration } =
-        borsh::from_slice(&bytes).unwrap()
+    let Instruction::CreateOraclePriceAccount {
+        window_duration,
+        facts: declared_facts,
+        identity,
+        reserve_a,
+        reserve_b,
+        now,
+    } = borsh::from_slice(&bytes).unwrap()
     else {
         panic!("expected CreateOraclePriceAccount");
     };
     assert_eq!(window_duration, window);
+    assert_eq!(declared_facts, facts());
+    assert_eq!(identity, identity_of(&pool_definition));
+    // The feed is seeded at the pool's own spot price, derived from reserves the
+    // pool's guard pins *exactly* -- so these are the live ones, not a caller's.
+    assert_eq!((reserve_a, reserve_b), (1_000_u128, 4_000_u128));
+    assert_eq!(now, 1_000);
 }
 
 #[test]
@@ -434,7 +539,7 @@ fn config_account_decodes_authority_and_program_ids() {
     let config_id = config_id();
     let value = decode_config_account(ConfigAccountRequest {
         amm_program_id: amm_program_id(),
-        config: account_read(config_id, &config_account()),
+        config: account_read(config_id, AMM_PROGRAM, &config_account()),
     })
     .unwrap();
 
@@ -458,7 +563,7 @@ fn config_account_is_unavailable_when_not_on_chain() {
     let config_id = config_id();
     let value = decode_config_account(ConfigAccountRequest {
         amm_program_id: amm_program_id(),
-        config: default_read(config_id),
+        config: empty_read(config_id),
     })
     .unwrap();
 
@@ -467,12 +572,24 @@ fn config_account_is_unavailable_when_not_on_chain() {
 }
 
 #[test]
-fn missing_pool_snapshot_defaults_remain_real_accounts() {
+fn an_account_no_program_has_written_to_decodes_as_no_shard() {
+    // v0.2.5 read this back as a real `Account::default()` and the callers compared
+    // against it. There is no such value any more: an address nobody has written to
+    // carries an empty shard map, so asking for a program's shard of it is what
+    // reports "nothing here".
     let id = AccountId::new([5; 32]);
-    let read = default_read(id);
-    let (decoded_id, decoded) = decode_account(&read).unwrap();
-    assert_eq!(decoded_id, id);
-    assert_eq!(decoded, Account::default());
+    let read = empty_read(id);
+    assert_eq!(
+        crate::account::decode_shard(&read, AMM_PROGRAM),
+        Err(crate::account::AccountReadError::NoShard)
+    );
+    // And an empty shard under the right key says the same thing, rather than
+    // decoding to zero bytes of config.
+    let empty_shard = account_read(id, AMM_PROGRAM, &ShardData::default());
+    assert_eq!(
+        crate::account::decode_shard(&empty_shard, AMM_PROGRAM),
+        Err(crate::account::AccountReadError::NoShard)
+    );
 }
 
 #[test]
@@ -502,12 +619,13 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         amm_program_id: amm_program_id(),
         token_in_id: account_id_hex(token_small),
         token_out_id: account_id_hex(token_large),
-        config: account_read(config_id(), &config_account()),
+        config: account_read(config_id(), AMM_PROGRAM, &config_account()),
         user_input_holding_id: account_id_hex(holding),
         user_output_holding_id: account_id_hex(holding),
         amount_in: String::from("100"),
         min_out: String::from("0"),
         deadline_ms: String::from("0"),
+        clock: clock_read(1_000),
         pool_data: hex::encode(borsh::to_vec(&pool).unwrap()),
     })
     .unwrap();
@@ -554,12 +672,13 @@ fn swap_exact_in_plan_missing_pool_fails_closed_with_err() {
         amm_program_id: amm_program_id(),
         token_in_id: account_id_hex(token_a),
         token_out_id: account_id_hex(token_b),
-        config: account_read(config_id(), &config_account()),
+        config: account_read(config_id(), AMM_PROGRAM, &config_account()),
         user_input_holding_id: account_id_hex(holding),
         user_output_holding_id: account_id_hex(holding),
         amount_in: String::from("100"),
         min_out: String::from("0"),
         deadline_ms: String::from("0"),
+        clock: clock_read(1_000),
         pool_data: String::new(), // absent/undecodable
     })
     .unwrap_err();
@@ -591,12 +710,13 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         amm_program_id: amm_program_id(),
         token_in_id: account_id_hex(token_small),
         token_out_id: account_id_hex(token_large),
-        config: account_read(config_id(), &config_account()),
+        config: account_read(config_id(), AMM_PROGRAM, &config_account()),
         user_input_holding_id: account_id_hex(holding),
         user_output_holding_id: account_id_hex(holding),
         amount_out: String::from("100"),
         max_in: String::from("1000"),
         deadline_ms: String::from("0"),
+        clock: clock_read(1_000),
         pool_data: hex::encode(borsh::to_vec(&pool).unwrap()),
     })
     .unwrap();
@@ -621,4 +741,55 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         plan["signingRequirements"],
         json!([false, false, false, false, true, false, false, false, false])
     );
+}
+
+/// The envelope the module's C++ builds, parsed from JSON rather than constructed.
+///
+/// Every other test here builds `AccountRead` as a struct, so nothing checks that
+/// the two halves of the seam agree on field names -- and they are in different
+/// languages, with no shared schema. `shardedRead` in
+/// `modules/amm/src/amm_module_impl.cpp` emits exactly this: the module's own
+/// `id`/`status` envelope around an object shaped like `lee_core::Account`, with
+/// `lez_core`'s array of `{program, data}` already re-keyed into a map.
+#[test]
+fn the_account_read_the_module_emits_deserializes_and_decodes() {
+    let read: AccountRead = serde_json::from_value(json!({
+        "id": account_id_hex(config_id()),
+        "status": "ok",
+        "account": {
+            "nonce": "00000000000000000000000000000000",
+            "data": {
+                "shards": {
+                    account_id_hex(AMM_PROGRAM): hex::encode(config_account().as_ref()),
+                    // A foreign shard at the same address must not disturb the
+                    // decode: the whole-account read returns every shard anyone
+                    // wrote here.
+                    account_id_hex(TOKEN_PROGRAM): "ff",
+                }
+            }
+        }
+    }))
+    .expect("the module's account-read JSON must deserialize");
+
+    let value = decode_config_account(ConfigAccountRequest {
+        amm_program_id: amm_program_id(),
+        config: read,
+    })
+    .unwrap();
+    assert_eq!(value["status"], "ok");
+    assert_eq!(value["authority"], AccountId::new([7; 32]).to_string());
+
+    // The same envelope with the v0.2.5 flat account inside no longer parses, so
+    // an unbumped lez_core fails loudly rather than decoding as an empty account.
+    assert!(serde_json::from_value::<AccountRead>(json!({
+        "id": account_id_hex(config_id()),
+        "status": "ok",
+        "account": {
+            "program_owner": account_id_hex(AMM_PROGRAM),
+            "balance": "00000000000000000000000000000000",
+            "nonce": "00000000000000000000000000000000",
+            "data": "00",
+        }
+    }))
+    .is_err());
 }

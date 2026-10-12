@@ -1,11 +1,11 @@
 use amm_core::{compute_config_pda, AmmConfig};
-use lee_core::account::{Account, AccountId};
+use lee_core::account::AccountId;
 use serde_json::{json, Value};
 
 use super::{ConfigAccountRequest, ConfigIdRequest};
 use crate::account::{
-    account_id_hex, decode_account, parse_base58_id, parse_hex_32, parse_program_id,
-    program_id_base58, AccountRead,
+    account_id_hex, parse_base58_id, parse_hex_32, parse_program_id, program_id_base58,
+    program_shard, AccountRead,
 };
 
 pub(super) fn config_id(request: ConfigIdRequest) -> Result<Value, String> {
@@ -50,17 +50,18 @@ pub(super) fn config_account(request: ConfigAccountRequest) -> Result<Value, Str
 /// Decodes and validates a passed AMM config account, returning its id (the namespace root
 /// callers derive pools under) alongside the decoded config. Since the config PDA is now
 /// namespaced by `(owner, nonce)`, the id can no longer be recomputed here without those
-/// inputs — the caller-supplied account's id IS the namespace root. Program ownership and a
-/// non-default, parseable account are still enforced.
+/// inputs — the caller-supplied account's id IS the namespace root.
+///
+/// The v0.2.5 pair of checks — `program_owner == amm_program` and `account !=
+/// Account::default()` — are both answered by asking for the AMM's shard: a shard
+/// is keyed by the program that wrote it, and an absent or empty one is how the
+/// chain spells "nothing here".
 pub(super) fn load_config(
     amm_program: AccountId,
     read: &AccountRead,
 ) -> Result<(AccountId, AmmConfig), String> {
-    let (id, account) = decode_account(read)?;
-    if account.program_owner != amm_program || account == Account::default() {
-        return Err(String::from("AMM config is unavailable"));
-    }
-    let config =
-        AmmConfig::try_from(&account.data).map_err(|_| String::from("AMM config is invalid"))?;
+    let (id, shard) = program_shard(read, amm_program, "AMM config")
+        .map_err(|_| String::from("AMM config is unavailable"))?;
+    let config = AmmConfig::try_from(&shard).map_err(|_| String::from("AMM config is invalid"))?;
     Ok((id, config))
 }

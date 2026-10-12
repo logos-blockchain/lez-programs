@@ -32,6 +32,10 @@
         {
           "name": "window_duration",
           "type": "u64"
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -73,6 +77,10 @@
         {
           "name": "window_duration",
           "type": "u64"
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -102,6 +110,10 @@
         {
           "name": "initial_price",
           "type": "u128"
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -131,6 +143,10 @@
         {
           "name": "price",
           "type": "u128"
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -170,6 +186,24 @@
         {
           "name": "window_duration",
           "type": "u64"
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        },
+        {
+          "name": "current_tick",
+          "type": "i32"
+        },
+        {
+          "name": "current_tick_last_updated",
+          "type": "u64"
+        },
+        {
+          "name": "twap_price",
+          "type": {
+            "option": "u128"
+          }
         }
       ]
     },
@@ -203,6 +237,14 @@
         {
           "name": "window_duration",
           "type": "u64"
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        },
+        {
+          "name": "current_tick",
+          "type": "i32"
         }
       ]
     }

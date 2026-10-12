@@ -5,29 +5,122 @@
 
 use amm_core::{
     compute_pool_pda, compute_protocol_fee_pda, mul_div_ceil, mul_div_floor, price_impact_bps,
-    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR,
+    protocol_fee_amount, spot_price_q64_64, swap_exact_in_amounts, swap_exact_out_amounts,
+    ConfigFacts, PoolDefinition, FEE_BPS_DENOMINATOR,
 };
+use clock_core::{clock_account_id, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::account::AccountId;
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Value};
 
 use super::{
+    clock::now_from_clock,
+    config::load_config,
+    envelope::{identity_of, plan_response, pool_from_hex, signer, slot},
     pair::{derive_pair, is_canonical_pair},
     PoolIdRequest, ProgramIdRequest, ResolvePoolRequest, SwapExactInPlanRequest,
     SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
 };
-use crate::account::{
-    account_id_from_hex, account_id_hex, decode_account, parse_program_id, AccountRead,
-};
+use crate::account::{account_id_from_hex, account_id_hex, parse_program_id, AccountRead};
 
 /// Reads the instance-wide swap fee (basis points) from an AMM config account read. Fees moved
 /// from `PoolDefinition` to `AmmConfig::swap_fee_bps`, so quotes and pool resolution source the
 /// fee here. Returns `invalid_config` if the read can't be decoded as an `AmmConfig`.
-fn swap_fee_bps_from_config(config: &AccountRead) -> Result<u128, String> {
-    let (_, account) = decode_account(config)?;
-    AmmConfig::try_from(&account.data)
-        .map(|cfg| cfg.swap_fee_bps)
+fn swap_fee_bps_from_config(amm_program: AccountId, config: &AccountRead) -> Result<u128, String> {
+    load_config(amm_program, config)
+        .map(|(_, config)| config.swap_fee_bps)
         .map_err(|_| String::from("invalid_config"))
+}
+
+/// Which way a swap is priced.
+#[derive(Clone, Copy)]
+enum Exactness {
+    /// The trader fixes the input; the curve decides the output.
+    Input,
+    /// The trader fixes the output; the curve decides the input.
+    Output,
+}
+
+/// The four figures a swap declares beyond the caller's own bounds.
+///
+/// All four used to be the handler's own business: it read the pool, priced the
+/// trade, and wrote the result. A plan phase can read nothing now, so the client
+/// derives them here and the pool's effect decides whether they were true -- and
+/// it does so with two different kinds of pin side by side. `amount_out` (or
+/// `amount_in`) is *bounded*, so a stale read only ever leaves the surplus with
+/// the pool; `protocol_fee` and `new_price` are pinned *exactly*, the latter
+/// because a tick reaches consumers who act on it. The price of that exactness is
+/// that a swap retries when the pool moved underneath it.
+#[derive(Debug)]
+struct SwapPins {
+    amount_in: u128,
+    amount_out: u128,
+    protocol_fee: u128,
+    new_price: u128,
+}
+
+/// Prices a swap exactly as `amm_program::swap`'s apply half will re-price it.
+///
+/// `amount` is the trader's fixed side -- the input for [`Exactness::Input`], the
+/// output for [`Exactness::Output`].
+fn swap_pins(
+    pool: &PoolDefinition,
+    facts: &ConfigFacts,
+    definition_id_in: AccountId,
+    amount: u128,
+    exactness: Exactness,
+) -> Result<SwapPins, String> {
+    let (input, output) = pool
+        .sides(definition_id_in)
+        .ok_or_else(|| String::from("pair_mismatch"))?;
+    let (reserve_in, reserve_out) = (input.reserve, output.reserve);
+    if reserve_in == 0 || reserve_out == 0 {
+        return Err(String::from("no_pool"));
+    }
+
+    let (effective_amount_in, amount_in, amount_out) = match exactness {
+        Exactness::Input => {
+            let (effective, quote) =
+                swap_exact_in_amounts(amount, reserve_in, reserve_out, facts.swap_fee_bps);
+            (effective, amount, quote)
+        }
+        Exactness::Output => {
+            let (effective, required_in) =
+                swap_exact_out_amounts(amount, reserve_in, reserve_out, facts.swap_fee_bps)
+                    .ok_or_else(|| String::from("output_exceeds_liquidity"))?;
+            (effective, required_in, amount)
+        }
+    };
+    if amount_in == 0 || amount_out == 0 || amount_out >= reserve_out {
+        return Err(String::from("amount_too_small"));
+    }
+
+    // The fee split, recomputed on-chain from these same two amounts and the
+    // pinned fee tiers: `swap_fee` is what the trader forfeits to the pool,
+    // `protocol_fee` the slice of it diverted to the protocol holding.
+    let swap_fee = amount_in
+        .checked_sub(effective_amount_in)
+        .ok_or_else(|| String::from("invalid_fee_tier"))?;
+    let protocol_fee = protocol_fee_amount(swap_fee, facts.protocol_fee_bps);
+
+    let net_amount_in = amount_in
+        .checked_sub(protocol_fee)
+        .ok_or_else(|| String::from("invalid_fee_tier"))?;
+    let post_reserve_in = reserve_in
+        .checked_add(net_amount_in)
+        .ok_or_else(|| String::from("reserve_overflow"))?;
+    let post_reserve_out = reserve_out
+        .checked_sub(amount_out)
+        .ok_or_else(|| String::from("output_exceeds_liquidity"))?;
+    let (reserve_a, reserve_b) =
+        pool.reserves_in_ab_order(definition_id_in, post_reserve_in, post_reserve_out);
+
+    Ok(SwapPins {
+        amount_in,
+        amount_out,
+        protocol_fee,
+        new_price: spot_price_q64_64(reserve_a, reserve_b),
+    })
 }
 
 /// Orders `(token_in, token_out)` into the pool's canonical `(token_a, token_b)`
@@ -75,6 +168,10 @@ pub(super) fn swap_pair(request: SwapPairRequest) -> Result<Value, String> {
         "vaultBId": account_id_hex(pair.vault_b),
         "currentTickId": account_id_hex(pair.current_tick),
         "clockId": account_id_hex(pair.clock),
+        // The programs whose shards those last two slots select -- the caller
+        // cannot derive either for itself.
+        "twapOracleProgramId": account_id_hex(pair.twap_oracle_program),
+        "clockProgramId": account_id_hex(clock_account_id()),
     }))
 }
 
@@ -87,6 +184,7 @@ pub(super) fn swap_pair(request: SwapPairRequest) -> Result<Value, String> {
 /// uninitialized pool is the `{ status: "error", error: "no_pool", poolId }`
 /// envelope (the derived `poolId` is still carried, for address derivation).
 pub(super) fn resolve_pool(request: ResolvePoolRequest) -> Result<Value, String> {
+    let amm_program = parse_program_id(&request.amm_program_id)?;
     // The pool's presence IS the signal: existing pools return their decoded state; a missing /
     // uninitialized pool is the `no_pool` error (still carrying the derived `poolId` for address
     // derivation). The read's id is hex (the module reads by hex); undecodable ⇒ "".
@@ -98,17 +196,20 @@ pub(super) fn resolve_pool(request: ResolvePoolRequest) -> Result<Value, String>
     if request.pool.status != "ok" {
         return Ok(missing());
     }
-    let Ok((_, pool_account)) = decode_account(&request.pool) else {
+    // The pool read's AMM shard: v0.2.5 decoded `account.data`, which only had one
+    // program's bytes in it to begin with.
+    let Ok((_, pool_shard)) = crate::account::program_shard(&request.pool, amm_program, "pool")
+    else {
         return Ok(missing());
     };
-    let Ok(pool) = PoolDefinition::try_from(&pool_account.data) else {
+    let Ok(pool) = PoolDefinition::try_from(&pool_shard) else {
         return Ok(missing());
     };
     if pool.liquidity_pool_supply == 0 {
         return Ok(missing());
     }
     // The fee is instance-wide (AmmConfig::swap_fee_bps), not a pool field.
-    let fee_bps = u32::try_from(swap_fee_bps_from_config(&request.config)?)
+    let fee_bps = u32::try_from(swap_fee_bps_from_config(amm_program, &request.config)?)
         .map_err(|_| String::from("invalid_fee_tier"))?;
     Ok(json!({
         "status": "ok",
@@ -137,10 +238,22 @@ pub(super) fn pool_id(request: PoolIdRequest) -> Result<Value, String> {
     if token_in == token_out {
         return Err(String::from("same_token_pair"));
     }
-    let (config_id, _) = decode_account(&request.config)?;
+    // The config's address is the namespace root the pool derives under.
+    let (config_id, config) = load_config(amm_program, &request.config)?;
     let (token_a, token_b) = canonical_pair(token_in, token_out);
     Ok(json!({
-        "poolId": account_id_hex(compute_pool_pda(amm_program, config_id, token_a, token_b))
+        "poolId": account_id_hex(compute_pool_pda(amm_program, config_id, token_a, token_b)),
+        // Which program's shard to ask for at each address a plan path reads. In
+        // v0.2.5 a read named only an address, so none of this was needed; now the
+        // module must know whose state it wants, and this is the one derivation op
+        // every plan path already calls.
+        "tokenProgramId": account_id_hex(config.token_program_id),
+        "twapOracleProgramId": account_id_hex(config.twap_oracle_program_id),
+        // The canonical clock: every plan that chains into the TWAP oracle declares
+        // `now` and so has to read it. Both ids are constants the caller cannot
+        // derive for itself.
+        "clockId": account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID),
+        "clockProgramId": account_id_hex(clock_account_id()),
     }))
 }
 
@@ -156,6 +269,7 @@ pub(super) fn pool_id(request: PoolIdRequest) -> Result<Value, String> {
 /// zero effective input or zero output — the guest would reject it on submit).
 /// Pool metadata (reserves, fee) comes from `resolve_pool`, so it isn't echoed here.
 pub(super) fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> Result<Value, String> {
+    let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
     let token_out = account_id_from_hex(&request.token_out_id, "token out id")?;
     if token_in == token_out {
@@ -167,7 +281,7 @@ pub(super) fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> Result<Va
     }
 
     // The swap fee is instance-wide (AmmConfig::swap_fee_bps), read from the config.
-    let swap_fee_bps = swap_fee_bps_from_config(&request.config)?;
+    let swap_fee_bps = swap_fee_bps_from_config(amm_program, &request.config)?;
 
     // Decode the pool; absent / undecodable / empty ⇒ nothing to swap against.
     let pool = hex::decode(&request.pool_data)
@@ -227,6 +341,7 @@ pub(super) fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> Result<Va
 /// `output_exceeds_liquidity` (asking for at least the whole reserve). Pool
 /// metadata (reserves/fee) comes from `resolve_pool`.
 pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<Value, String> {
+    let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
     let token_out = account_id_from_hex(&request.token_out_id, "token out id")?;
     if token_in == token_out {
@@ -244,7 +359,7 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
     }
 
     // The swap fee is instance-wide (AmmConfig::swap_fee_bps), read from the config.
-    let swap_fee_bps = swap_fee_bps_from_config(&request.config)?;
+    let swap_fee_bps = swap_fee_bps_from_config(amm_program, &request.config)?;
 
     // Decode the pool; absent / undecodable / empty ⇒ nothing to swap against.
     let pool = hex::decode(&request.pool_data)
@@ -305,17 +420,22 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
     }))
 }
 
-/// Builds the `SwapExactInput` submission for a pair: the fixed 8-account IDL
-/// order (vaults from the pool's stored ids, only the user's input holding
-/// signs) and the borsh-encoded instruction bytes (the encoding the guest
-/// decodes). On success returns exactly the tx-submission fields
-/// (`programId`, `accountIds`, `signingRequirements`, `instruction`; the
-/// deadline is already baked into the instruction bytes). Every recoverable
-/// domain failure fails CLOSED as `Err` (surfaced through the FFI envelope as
-/// `{ ok: false, error }`): `same_token_pair`, `config_unavailable`, and a
+/// Builds the `SwapExactInput` submission for a pair: the fixed 9-slot IDL order
+/// (vaults from the pool's stored ids, only the user's input holding signs) and
+/// the borsh-encoded instruction bytes (the encoding the guest decodes). On
+/// success returns exactly the tx-submission fields (`programId`, `accountIds`,
+/// `programAccountIds`, `signingRequirements`, `instruction`; the deadline is
+/// already baked into the instruction bytes). Every recoverable domain failure
+/// fails CLOSED as `Err` (surfaced through the FFI envelope as `{ ok: false,
+/// error }`): `same_token_pair`, `config_unavailable`, and a
 /// missing/undecodable pool as `Err("no_pool")` — so the caller stops on
 /// `planResult.ok` rather than submit a tx with empty account/instruction
 /// vectors.
+///
+/// Four figures the v0.2.5 handler worked out for itself — the output, the
+/// protocol fee, the post-swap price, and the direction the trade runs in — are
+/// declared here instead, because the guest's plan phase sees no account data.
+/// See [`SwapPins`]; `clock` is read for the same reason.
 pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
@@ -333,12 +453,7 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
     // `vault_b_id`, which needn't match `derive_pair`'s canonical order for a
     // non-canonically created pool. (`pair.pool`/`current_tick`/`clock` are
     // order-independent, so they still come from `derive_pair`.)
-    let Some(pool) = hex::decode(&request.pool_data)
-        .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
-    else {
-        return Err(String::from("no_pool"));
-    };
+    let pool = pool_from_hex(&request.pool_data)?;
 
     let user_input_holding =
         account_id_from_hex(&request.user_input_holding_id, "user input holding id")?;
@@ -348,11 +463,27 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
     let swap_amount_in = parse_u128(&request.amount_in, "amountIn")?;
     let min_amount_out = parse_u128(&request.min_out, "minOut")?;
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
+    let now = now_from_clock(&request.clock)?;
+
+    let pins = swap_pins(
+        &pool,
+        &pair.facts,
+        token_in,
+        swap_amount_in,
+        Exactness::Input,
+    )?;
 
     let instruction = borsh::to_vec(&amm_core::Instruction::SwapExactInput {
         swap_amount_in,
         min_amount_out,
         deadline,
+        facts: pair.facts,
+        identity: identity_of(&pool),
+        definition_id_in: token_in,
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now,
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
@@ -360,26 +491,44 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
     // instance-wide protocol PDA under this config namespace (created lazily on first fee).
     let protocol_fee_holding = compute_protocol_fee_pda(amm_program, pair.config, token_in);
 
-    // Fixed IDL account order for SwapExactInput; only user_input_holding signs.
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pool.vault_a_id,
-        pool.vault_b_id,
-        user_input_holding,
-        user_output_holding,
-        pair.current_tick,
-        pair.clock,
-        protocol_fee_holding,
-    ];
-    let signing_requirements = [false, false, false, false, true, false, false, false, false];
+    Ok(plan_response(
+        &request.amm_program_id,
+        &swap_slots(
+            &pair,
+            &pool,
+            user_input_holding,
+            user_output_holding,
+            protocol_fee_holding,
+        ),
+        instruction,
+    ))
+}
 
-    Ok(json!({
-        "programId": request.amm_program_id,
-        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
-        "instruction": instruction,
-    }))
+/// The nine slots both swap directions share, in the fixed IDL order.
+///
+/// Four programs across them: the AMM holds the config and the pool, the Token
+/// Program holds every vault and holding (including the protocol-fee PDA), the
+/// configured oracle holds the current tick, and the clock is the Clock Program's.
+fn swap_slots(
+    pair: &super::pair::PairIds,
+    pool: &PoolDefinition,
+    user_input_holding: AccountId,
+    user_output_holding: AccountId,
+    protocol_fee_holding: AccountId,
+) -> [super::envelope::Slot; 9] {
+    let amm = pair.amm_program;
+    let token = pair.facts.token_program_id;
+    [
+        slot(pair.config, amm),
+        slot(pair.pool, amm),
+        slot(pool.vault_a_id, token),
+        slot(pool.vault_b_id, token),
+        signer(user_input_holding, token),
+        slot(user_output_holding, token),
+        slot(pair.current_tick, pair.twap_oracle_program),
+        slot(pair.clock, clock_account_id()),
+        slot(protocol_fee_holding, token),
+    ]
 }
 
 /// Builds the `SwapExactOutput` submission for a pair: the same fixed 8-account
@@ -405,12 +554,7 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
     // `vault_b_id`, which needn't match `derive_pair`'s canonical order for a
     // non-canonically created pool. (`pair.pool`/`current_tick`/`clock` are
     // order-independent, so they still come from `derive_pair`.)
-    let Some(pool) = hex::decode(&request.pool_data)
-        .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
-    else {
-        return Err(String::from("no_pool"));
-    };
+    let pool = pool_from_hex(&request.pool_data)?;
 
     let user_input_holding =
         account_id_from_hex(&request.user_input_holding_id, "user input holding id")?;
@@ -420,11 +564,27 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
     let exact_amount_out = parse_u128(&request.amount_out, "amountOut")?;
     let max_amount_in = parse_u128(&request.max_in, "maxIn")?;
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
+    let now = now_from_clock(&request.clock)?;
+
+    let pins = swap_pins(
+        &pool,
+        &pair.facts,
+        token_in,
+        exact_amount_out,
+        Exactness::Output,
+    )?;
 
     let instruction = borsh::to_vec(&amm_core::Instruction::SwapExactOutput {
         exact_amount_out,
         max_amount_in,
         deadline,
+        facts: pair.facts,
+        identity: identity_of(&pool),
+        definition_id_in: token_in,
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_in: pins.amount_in,
+        now,
     })
     .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
@@ -432,26 +592,17 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
     // instance-wide protocol PDA under this config namespace (created lazily on first fee).
     let protocol_fee_holding = compute_protocol_fee_pda(amm_program, pair.config, token_in);
 
-    // Fixed IDL account order for SwapExactOutput; only user_input_holding signs.
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pool.vault_a_id,
-        pool.vault_b_id,
-        user_input_holding,
-        user_output_holding,
-        pair.current_tick,
-        pair.clock,
-        protocol_fee_holding,
-    ];
-    let signing_requirements = [false, false, false, false, true, false, false, false, false];
-
-    Ok(json!({
-        "programId": request.amm_program_id,
-        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
-        "instruction": instruction,
-    }))
+    Ok(plan_response(
+        &request.amm_program_id,
+        &swap_slots(
+            &pair,
+            &pool,
+            user_input_holding,
+            user_output_holding,
+            protocol_fee_holding,
+        ),
+        instruction,
+    ))
 }
 
 /// Computes a binary's RISC Zero ImageID. `elf` is the hex-encoded `.bin` (a
@@ -471,46 +622,46 @@ pub(super) fn program_id(request: ProgramIdRequest) -> Result<Value, String> {
         .compute_image_id()
         .map_err(|error| format!("{error:?}"))?
         .into();
-    Ok(json!({ "imageId": account_id_hex(AccountId::from(image_id)) }))
+    Ok(json!({ "imageId": account_id_hex(AccountId::from_builtin_program(image_id)) }))
 }
 
 #[cfg(test)]
 mod tests {
-    use amm_core::PoolDefinition;
-    use lee_core::account::{Account, AccountId, Data};
+    use amm_core::{AmmConfig, PoolDefinition};
+    use lee_core::account::{AccountId, ShardData};
 
     use super::*;
-    use crate::account::{account_read, AccountRead, WalletAccount};
+    use crate::{account::account_read, api::clock::clock_read};
+
+    /// The AMM program every fixture here is keyed under. Both the config and the
+    /// pool are *its* shards, so a read now names it as well as an address.
+    const AMM: AccountId = AccountId::new([0_u8; 32]);
+    const TOKEN: AccountId = AccountId::new([0x01_u8; 32]);
+    const TWAP: AccountId = AccountId::new([0x02_u8; 32]);
+
+    fn amm_hex() -> String {
+        account_id_hex(AMM)
+    }
 
     /// A decodable AMM config read carrying `swap_fee_bps = 30` — the quotes/resolve read the
     /// instance-wide fee from here now that it is no longer a pool field. 30 bps matches the fee
     /// the pricing assertions were computed against.
     fn valid_config() -> AccountRead {
-        let account = Account {
-            program_owner: parse_program_id(&"00".repeat(32)).unwrap(),
-            data: Data::from(&AmmConfig {
-                token_program_id: parse_program_id(&"01".repeat(32)).unwrap(),
-                twap_oracle_program_id: parse_program_id(&"02".repeat(32)).unwrap(),
+        account_read(
+            AccountId::new([0xEE; 32]),
+            AMM,
+            &ShardData::from(&AmmConfig {
+                token_program_id: TOKEN,
+                twap_oracle_program_id: TWAP,
                 authority: AccountId::new([0x09; 32]),
                 swap_fee_bps: 30,
                 protocol_fee_bps: 0,
             }),
-            ..Account::default()
-        };
-        account_read(AccountId::new([0xEE; 32]), &account)
+        )
     }
 
     fn pool_read(pool: &PoolDefinition) -> AccountRead {
-        AccountRead {
-            id: "11".repeat(32),
-            status: String::from("ok"),
-            account: Some(WalletAccount {
-                program_owner: "00".repeat(32),
-                balance: "0".repeat(32),
-                nonce: "0".repeat(32),
-                data: hex::encode(borsh::to_vec(pool).unwrap()),
-            }),
-        }
+        account_read(AccountId::new([0x11; 32]), AMM, &ShardData::from(pool))
     }
 
     #[test]
@@ -532,6 +683,7 @@ mod tests {
         };
 
         let value = resolve_pool(ResolvePoolRequest {
+            amm_program_id: amm_hex(),
             config: valid_config(),
             pool: pool_read(&pool),
         })
@@ -560,6 +712,7 @@ mod tests {
             ..Default::default()
         };
         let value = resolve_pool(ResolvePoolRequest {
+            amm_program_id: amm_hex(),
             config: valid_config(),
             pool: pool_read(&pool),
         })
@@ -608,6 +761,7 @@ mod tests {
             amount_in: String::new(),
             min_out: String::new(),
             deadline_ms: String::new(),
+            clock: clock_read(1_000),
             pool_data: String::new(),
         })
         .unwrap_err();
@@ -633,6 +787,7 @@ mod tests {
             amount_in: String::new(),
             min_out: String::new(),
             deadline_ms: String::new(),
+            clock: clock_read(1_000),
             pool_data: String::new(),
         })
         .unwrap_err();
@@ -659,6 +814,7 @@ mod tests {
             amount_out: String::new(),
             max_in: String::new(),
             deadline_ms: String::new(),
+            clock: clock_read(1_000),
             pool_data: String::new(),
         })
         .unwrap_err();
@@ -684,6 +840,7 @@ mod tests {
 
         // Sell A → receive B: reserveIn = reserve_a, reserveOut = reserve_b.
         let ab = swap_exact_in_quote(SwapExactInQuoteRequest {
+            amm_program_id: amm_hex(),
             config: valid_config(),
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
@@ -707,6 +864,7 @@ mod tests {
 
         // Reverse direction orients reserves the other way.
         let ba = swap_exact_in_quote(SwapExactInQuoteRequest {
+            amm_program_id: amm_hex(),
             config: valid_config(),
             token_in_id: account_id_hex(def_b),
             token_out_id: account_id_hex(def_a),
@@ -724,6 +882,7 @@ mod tests {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let req = |pool_data: String| SwapExactInQuoteRequest {
+            amm_program_id: amm_hex(),
             config: valid_config(),
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
@@ -762,6 +921,7 @@ mod tests {
             ..Default::default()
         };
         let req = |amount: &str| SwapExactInQuoteRequest {
+            amm_program_id: amm_hex(),
             config: valid_config(),
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
@@ -800,6 +960,7 @@ mod tests {
             ..Default::default()
         };
         let quote = swap_exact_in_quote(SwapExactInQuoteRequest {
+            amm_program_id: amm_hex(),
             config: valid_config(),
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
@@ -828,6 +989,7 @@ mod tests {
             ..Default::default()
         };
         let req = |amount_out: &str| SwapExactOutQuoteRequest {
+            amm_program_id: amm_hex(),
             config: valid_config(),
             token_in_id: account_id_hex(def_a),
             token_out_id: account_id_hex(def_b),
@@ -875,6 +1037,7 @@ mod tests {
         };
         assert_eq!(
             swap_exact_out_quote(SwapExactOutQuoteRequest {
+                amm_program_id: amm_hex(),
                 config: valid_config(),
                 token_in_id: account_id_hex(def_a),
                 token_out_id: account_id_hex(def_b),
@@ -886,19 +1049,84 @@ mod tests {
         );
     }
 
+    /// The four figures a swap plan declares, spelled out rather than re-derived.
+    ///
+    /// `swap_pins` and the guest's apply half both price through `amm_core`, so
+    /// asserting one against the other would be tautological. Fixed numbers for a
+    /// known pool catch drift in either of them.
+    #[test]
+    fn swap_plans_declare_the_priced_amounts_the_pool_will_recompute() {
+        let def_a = AccountId::new([0xAA; 32]);
+        let def_b = AccountId::new([0xBB; 32]);
+        let pool = PoolDefinition {
+            definition_token_a_id: def_a,
+            definition_token_b_id: def_b,
+            vault_a_id: AccountId::new([0xC1; 32]),
+            vault_b_id: AccountId::new([0xC2; 32]),
+            liquidity_pool_id: AccountId::new([0xD0; 32]),
+            liquidity_pool_supply: 1_000_000,
+            reserve_a: 1_000_000,
+            reserve_b: 2_000_000,
+        };
+        // 30 bps swap fee, a fifth of it to the protocol.
+        let facts = ConfigFacts {
+            token_program_id: TOKEN,
+            twap_oracle_program_id: TWAP,
+            authority: AccountId::new([0x09; 32]),
+            swap_fee_bps: 30,
+            protocol_fee_bps: 2_000,
+        };
+
+        // Selling 10_000 of token A: 30 bps (30) is the pool's fee, a fifth of it
+        // (6) the protocol's cut, and the curve pays out against the remaining
+        // 9_970 of effective input.
+        let pins = swap_pins(&pool, &facts, def_a, 10_000, Exactness::Input).unwrap();
+        assert_eq!(pins.amount_in, 10_000);
+        assert_eq!(pins.amount_out, 19_743);
+        assert_eq!(pins.protocol_fee, 6);
+        // The post-swap price is the pool's, from the reserves *net* of the
+        // protocol's cut -- those tokens leave the vault for the fee holding.
+        assert_eq!(
+            pins.new_price,
+            spot_price_q64_64(1_000_000 + 10_000 - 6, 2_000_000 - 19_743)
+        );
+
+        // Buying the same output the other way round: the mirror bound, so the
+        // declared input is what the curve *demands* rather than what it affords.
+        let mirror = swap_pins(&pool, &facts, def_a, pins.amount_out, Exactness::Output).unwrap();
+        assert_eq!(mirror.amount_out, pins.amount_out);
+        assert_eq!(mirror.amount_in, 10_000);
+        assert_eq!(mirror.protocol_fee, 6);
+
+        // A direction that is not one of the pool's two tokens is not a swap.
+        assert_eq!(
+            swap_pins(
+                &pool,
+                &facts,
+                AccountId::new([0xEE; 32]),
+                10_000,
+                Exactness::Input
+            )
+            .unwrap_err(),
+            "pair_mismatch"
+        );
+    }
+
     /// A config account read whose id is `config_id` (the namespace root pool derivation uses).
-    /// `pool_id` only decodes the account for its id, so the config bytes/owner are irrelevant.
+    /// `pool_id` wants only the id, but it still asks for the AMM's shard -- which is what
+    /// confirms there is an instance at that address -- so the shard must be non-empty.
     fn config_read(config_id: AccountId) -> AccountRead {
-        AccountRead {
-            id: account_id_hex(config_id),
-            status: String::from("ok"),
-            account: Some(WalletAccount {
-                program_owner: "00".repeat(32),
-                balance: "0".repeat(32),
-                nonce: "0".repeat(32),
-                data: String::new(),
+        account_read(
+            config_id,
+            AMM,
+            &ShardData::from(&AmmConfig {
+                token_program_id: TOKEN,
+                twap_oracle_program_id: TWAP,
+                authority: AccountId::new([0x09; 32]),
+                swap_fee_bps: 30,
+                protocol_fee_bps: 0,
             }),
-        }
+        )
     }
 
     #[test]

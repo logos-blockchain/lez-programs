@@ -16,6 +16,7 @@ clippy-all: clippy clippy-guest
 test:
 	RISC0_DEV_MODE=1 cargo test --workspace
 
+# `make test` already covers this; kept for running the zkVM end-to-end tests alone.
 integration-test:
 	RISC0_DEV_MODE=1 cargo test -p integration_tests
 

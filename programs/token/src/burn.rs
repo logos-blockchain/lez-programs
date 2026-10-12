@@ -1,107 +1,98 @@
-use lee_core::{
-    account::{AccountWithMetadata, BalanceDiff, Data},
-    program::AccountStateDiff,
-};
-use token_core::{TokenDefinition, TokenHolding};
+use lee_core::{account::ShardData, program::AccountMeta};
+use token_core::{TokenDefinition, TokenDescriptor, TokenHolding, TokenKind};
 
-pub fn burn(
-    definition_account: AccountWithMetadata,
-    user_holding_account: AccountWithMetadata,
-    amount_to_burn: u128,
-) -> Vec<AccountStateDiff> {
+/// Plan half: the holder must authorize the burn.
+///
+/// # Panics
+/// If the holding account is not authorized.
+pub fn authorize(user_holding_account: &AccountMeta) {
     assert!(
         user_holding_account.is_authorized,
         "Authorization is missing"
     );
+}
 
-    let mut definition = TokenDefinition::try_from(&definition_account.account.data)
-        .expect("Token Definition account must be valid");
-    let mut holding = TokenHolding::try_from(&user_holding_account.account.data)
-        .expect("Token Holding account must be valid");
+/// Definition-side effect: decrement the supply the burnt `kind` draws on.
+///
+/// # Panics
+/// If the definition does not describe holdings of `kind`, or the supply would
+/// underflow.
+#[must_use]
+pub fn burn_supply(pre_data: &ShardData, kind: TokenKind, amount_to_burn: u128) -> ShardData {
+    let mut definition =
+        TokenDefinition::try_from(pre_data).expect("Token Definition account must be valid");
 
-    assert_eq!(
-        definition_account.account_id,
-        holding.definition_id(),
-        "Mismatch Token Definition and Token Holding"
-    );
-
-    match (&mut definition, &mut holding) {
-        (
-            TokenDefinition::Fungible {
-                name: _,
-                metadata_id: _,
-                total_supply,
-                authority: _,
-            },
-            TokenHolding::Fungible {
-                definition_id: _,
-                balance,
-            },
-        ) => {
-            *balance = balance
-                .checked_sub(amount_to_burn)
-                .expect("Insufficient balance to burn");
-
+    match (&mut definition, kind) {
+        (TokenDefinition::Fungible { total_supply, .. }, TokenKind::Fungible) => {
             *total_supply = total_supply
                 .checked_sub(amount_to_burn)
                 .expect("Total supply underflow");
         }
         (
             TokenDefinition::NonFungible {
-                name: _,
-                printable_supply,
-                metadata_id: _,
+                printable_supply, ..
             },
-            TokenHolding::NftMaster {
-                definition_id: _,
-                print_balance,
-            },
+            TokenKind::NftMaster,
         ) => {
             *printable_supply = printable_supply
                 .checked_sub(amount_to_burn)
                 .expect("Printable supply underflow");
-
-            *print_balance = print_balance
-                .checked_sub(amount_to_burn)
-                .expect("Insufficient balance to burn");
         }
         (
             TokenDefinition::NonFungible {
-                name: _,
-                printable_supply,
-                metadata_id: _,
+                printable_supply, ..
             },
-            TokenHolding::NftPrintedCopy {
-                definition_id: _,
-                owned,
-            },
+            TokenKind::NftPrintedCopy,
         ) => {
             assert_eq!(
                 amount_to_burn, 1,
                 "Invalid balance to burn for NFT Printed Copy"
             );
-
-            assert!(*owned, "Cannot burn unowned NFT Printed Copy");
-
             *printable_supply = printable_supply
                 .checked_sub(1)
                 .expect("Printable supply underflow");
-
-            *owned = false;
         }
         _ => panic!("Mismatched Token Definition and Token Holding types"),
     }
 
-    vec![
-        AccountStateDiff::new(
-            definition_account,
-            BalanceDiff::Add(0),
-            Data::from(&definition),
-        ),
-        AccountStateDiff::new(
-            user_holding_account,
-            BalanceDiff::Add(0),
-            Data::from(&holding),
-        ),
-    ]
+    ShardData::from(&definition)
+}
+
+/// Holding-side effect: debit the burnt amount from this shard.
+///
+/// # Panics
+/// If the holding is not the asset `descriptor` names, or the balance is
+/// insufficient.
+#[must_use]
+pub fn burn_holding(
+    pre_data: &ShardData,
+    descriptor: &TokenDescriptor,
+    amount_to_burn: u128,
+) -> ShardData {
+    let mut holding =
+        TokenHolding::try_from(pre_data).expect("Token Holding account must be valid");
+    holding.assert_matches(descriptor);
+
+    match &mut holding {
+        TokenHolding::Fungible { balance, .. } => {
+            *balance = balance
+                .checked_sub(amount_to_burn)
+                .expect("Insufficient balance to burn");
+        }
+        TokenHolding::NftMaster { print_balance, .. } => {
+            *print_balance = print_balance
+                .checked_sub(amount_to_burn)
+                .expect("Insufficient balance to burn");
+        }
+        TokenHolding::NftPrintedCopy { owned, .. } => {
+            assert_eq!(
+                amount_to_burn, 1,
+                "Invalid balance to burn for NFT Printed Copy"
+            );
+            assert!(*owned, "Cannot burn unowned NFT Printed Copy");
+            *owned = false;
+        }
+    }
+
+    ShardData::from(&holding)
 }

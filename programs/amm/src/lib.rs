@@ -1,4 +1,25 @@
 //! The AMM Program implementation.
+//!
+//! Each instruction is split the way v0.3.0 splits execution. A `plan_*` function
+//! runs in the plan phase, where there is no account data at all: it checks ids
+//! and authorization, derives the addresses the transaction needs, and builds the
+//! chained calls. The remaining functions are apply halves — each sees exactly
+//! one shard's bytes and returns their replacement, or nothing at all when it is
+//! only reading.
+//!
+//! Nine of the eleven instructions used to read the config account and six read
+//! the pool. Those reads became declarations: a caller states the values and an
+//! effect on the shard they came from pins the statement
+//! ([`amm_core::check_config`], [`shared::pool_of`]). Where a figure is a
+//! *function* of what it declares — a swap's output, a liquidity add's LP — the
+//! pin is a bound rather than an equality, so the trade still executes when the
+//! pool moved under the quote and the surplus stays with the pool. Where a figure
+//! leaves the AMM for someone else to act on — an oracle price — the pin is exact.
+//!
+//! The vault-balance reads are gone outright, not relocated. Only this program can
+//! debit a vault and every reserve change it records is paired with an equal
+//! transfer, so the backing those reads re-derived is structural; `SyncReserves`,
+//! which still reads them, is the repair path.
 
 pub use amm_core as core;
 
@@ -8,74 +29,10 @@ pub mod create_price_observations;
 pub mod initialize;
 pub mod new_definition;
 pub mod remove;
+pub mod shared;
 pub mod swap;
 pub mod sync;
 pub mod update_config;
 pub mod withdraw_protocol_fees;
 
 mod tests;
-
-/// Test-only view of what an [`AccountStateDiff`] leaves behind.
-///
-/// Since LEZ v0.2.5 a diff carries a *change* rather than a whole post-state account:
-/// `post_data` is `None` when the data is untouched, and ownership is not in the diff at
-/// all — the runtime derives it (see `acquire_ownership_on_data_write`). These mirror that
-/// derivation so assertions can stay written in terms of the resulting account.
-/// `pub` only so an accessor no single program happens to use is not dead code; the whole
-/// trait is `#[cfg(test)]`, so it never exists in a real build.
-#[cfg(test)]
-pub trait StateDiffExt {
-    /// The data the account ends up with.
-    fn post_data(&self) -> &lee_core::account::Data;
-
-    /// The owner the account ends up with: writing data to a default-owned account makes
-    /// `executing_account_id` its owner.
-    fn post_owner(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::AccountId;
-
-    /// Whether this diff changes the account's data at all.
-    fn writes_data(&self) -> bool;
-
-    /// The whole account the diff leaves behind, via the runtime's own `post_state`.
-    fn post_account(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::Account;
-}
-
-#[cfg(test)]
-impl StateDiffExt for lee_core::program::AccountStateDiff {
-    fn post_data(&self) -> &lee_core::account::Data {
-        self.post_data
-            .as_ref()
-            .unwrap_or(&self.pre_state.account.data)
-    }
-
-    fn post_owner(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::AccountId {
-        let pre = &self.pre_state.account;
-        if pre.program_owner == lee_core::program::DEFAULT_PROGRAM_OWNER && self.writes_data() {
-            executing_account_id
-        } else {
-            pre.program_owner
-        }
-    }
-
-    fn writes_data(&self) -> bool {
-        self.post_data
-            .as_ref()
-            .is_some_and(|data| *data != self.pre_state.account.data)
-    }
-
-    fn post_account(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::Account {
-        lee_core::program::post_state(self, executing_account_id)
-            .expect("balance diff must apply to the pre-state balance")
-    }
-}

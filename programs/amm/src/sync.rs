@@ -1,123 +1,134 @@
 use amm_core::{
-    compute_pool_pda, compute_pool_pda_seed, read_vault_fungible_balances, spot_price_q64_64,
-    AmmConfig, PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_pool_pda_seed, spot_price_q64_64, ConfigFacts, PoolDefinition, SyncReserves,
+    MINIMUM_LIQUIDITY,
 };
-use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, ProgramShardSelector, ShardData},
+    program::{AccountMeta, ChainedCall},
 };
+use token_core::{TokenDescriptor, TokenKind};
 use twap_oracle_core::compute_current_tick_account_pda;
 
-pub fn sync_reserves(
-    config: AccountWithMetadata,
-    pool: AccountWithMetadata,
-    vault_a: AccountWithMetadata,
-    vault_b: AccountWithMetadata,
-    current_tick_account: AccountWithMetadata,
-    clock: AccountWithMetadata,
+const CONTEXT: &str = "Sync reserves";
+
+/// Plan half of `SyncReserves`: check the addresses and chain the tick refresh at
+/// the synced price.
+///
+/// This is the one instruction whose purpose *is* to read the vaults, so unlike
+/// its siblings it cannot drop that read — it declares both balances and pins
+/// each with a guard on its own Token Program shard
+/// ([`amm_core::check_vault_balance`]). Everything derived from them, the synced
+/// price included, then follows from pinned numbers.
+///
+/// Returns `(descriptor_a, descriptor_b, calls)`: the two descriptors are what the
+/// vault guards assert the holdings against.
+///
+/// # Panics
+/// Panics if:
+/// - `clock` is not the canonical 1-block LEZ clock shard.
+/// - `pool` is not the pool PDA for `(config, declared pair)`.
+/// - either vault slot is not the pool's own.
+/// - `current_tick_account` is not the pool's current-tick PDA.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "instruction surface passes explicit config, pool, vault, oracle, and clock accounts"
+)]
+#[must_use]
+pub fn plan_sync_reserves(
+    config: &AccountMeta,
+    pool: &AccountMeta,
+    vault_a: &AccountMeta,
+    vault_b: &AccountMeta,
+    current_tick_account: &AccountMeta,
+    clock: &AccountMeta,
+    facts: &ConfigFacts,
+    effect: &SyncReserves,
+    now: u64,
     amm_program_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    let pool_def_data = PoolDefinition::try_from(&pool.account.data)
-        .expect("Sync reserves: AMM Program expects a valid Pool Definition Account");
-
-    // The TWAP oracle program ID is taken from the config account. Validating the config PDA is
-    // also the Program's initialization gate.
-    assert_eq!(
-        config.account.program_owner, amm_program_id,
-        "Sync reserves: AMM config account must be owned by the AMM Program"
+) -> (TokenDescriptor, TokenDescriptor, Vec<ChainedCall>) {
+    let identity = &effect.identity;
+    crate::shared::assert_canonical_clock(clock, CONTEXT);
+    crate::shared::assert_pool_in_namespace(
+        pool,
+        config.account_id,
+        identity,
+        amm_program_id,
+        CONTEXT,
     );
-    let twap_oracle_program_id = AmmConfig::try_from(&config.account.data)
-        .expect("Sync reserves: AMM Program must be initialized before use")
-        .twap_oracle_program_id;
-
-    // The pool must be derived under THIS config's namespace. config.account_id is the
-    // namespace root, so a pool belonging to another instance — even a valid AMM-owned
-    // pool with the same token pair — derives a different PDA and is rejected here. This
-    // stops a caller from pairing any AMM-owned config with an arbitrary pool (matching
-    // the check new_definition makes when it creates the pool).
-    assert_eq!(
-        pool.account_id,
-        compute_pool_pda(
-            amm_program_id,
-            config.account_id,
-            pool_def_data.definition_token_a_id,
-            pool_def_data.definition_token_b_id,
-        ),
-        "Sync reserves: pool account is not derived under this config's namespace"
-    );
-
-    assert!(
-        pool_def_data.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
-        "Pool liquidity supply is below minimum liquidity"
-    );
-    assert_eq!(
-        vault_a.account_id, pool_def_data.vault_a_id,
-        "Vault A was not provided"
-    );
-    assert_eq!(
-        vault_b.account_id, pool_def_data.vault_b_id,
-        "Vault B was not provided"
-    );
-    // The current tick is refreshed by a chained call to the oracle; validate its PDA and the
-    // clock here so the sync is rejected early with an AMM-level error.
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
-        "Sync reserves: clock account must be the canonical 1-block LEZ clock account"
-    );
+    crate::shared::assert_vault_slots(vault_a, vault_b, identity, CONTEXT);
     assert_eq!(
         current_tick_account.account_id,
-        compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
-        "Sync reserves: current tick Account ID does not match PDA"
+        compute_current_tick_account_pda(facts.twap_oracle_program_id, pool.account_id),
+        "{CONTEXT}: current tick Account ID does not match PDA"
     );
 
-    let (vault_a_balance, vault_b_balance) =
-        read_vault_fungible_balances("Sync reserves", &vault_a, &vault_b);
-    assert!(
-        vault_a_balance >= pool_def_data.reserve_a,
-        "Sync reserves: vault A balance is less than its reserve"
-    );
-    assert!(
-        vault_b_balance >= pool_def_data.reserve_b,
-        "Sync reserves: vault B balance is less than its reserve"
-    );
-
-    let pool_post_definition = PoolDefinition {
-        reserve_a: vault_a_balance,
-        reserve_b: vault_b_balance,
-        ..pool_def_data
+    let descriptor_a = TokenDescriptor {
+        definition_id: identity.definition_token_a_id,
+        kind: TokenKind::Fungible,
     };
-    // Refresh the pool's TWAP current tick from the synced spot price. The oracle reads the
-    // pool in its *synced* state without this program hand-building that state: a chained
-    // call names accounts by id, and the runtime resolves each one from this transaction's
-    // diff first, so the pool write below is what the callee sees. The pool PDA seed is what
-    // authorizes the oracle over it.
-    let new_price = spot_price_q64_64(vault_a_balance, vault_b_balance);
-    let pool_seed = compute_pool_pda_seed(
-        config.account_id,
-        pool_def_data.definition_token_a_id,
-        pool_def_data.definition_token_b_id,
-    );
-    let update_tick_call = ChainedCall::new(
-        twap_oracle_program_id,
-        vec![
-            current_tick_account.account_id,
-            pool.account_id,
-            clock.account_id,
-        ],
-        &twap_oracle_core::Instruction::UpdateCurrentTick { price: new_price },
-    )
-    .with_pda_seeds(vec![pool_seed]);
+    let descriptor_b = TokenDescriptor {
+        definition_id: identity.definition_token_b_id,
+        kind: TokenKind::Fungible,
+    };
 
-    (
+    // Both balances are pinned to their vaults by the guards this emits, so the
+    // price derived from them is the pool's own synced price, not a caller's.
+    let new_price = spot_price_q64_64(effect.vault_a_balance, effect.vault_b_balance);
+    let call_update_tick = ChainedCall::new(
+        facts.twap_oracle_program_id,
         vec![
-            AccountStateDiff::unchanged(config),
-            AccountStateDiff::new(pool, BalanceDiff::Add(0), Data::from(&pool_post_definition)),
-            AccountStateDiff::unchanged(vault_a),
-            AccountStateDiff::unchanged(vault_b),
-            AccountStateDiff::unchanged(current_tick_account),
-            AccountStateDiff::unchanged(clock),
+            ProgramShardSelector::new(
+                current_tick_account.account_id,
+                facts.twap_oracle_program_id,
+            ),
+            ProgramShardSelector::new(pool.account_id, amm_program_id),
+            ProgramShardSelector::from(clock),
         ],
-        vec![update_tick_call],
+        &twap_oracle_core::Instruction::UpdateCurrentTick {
+            price: new_price,
+            now,
+        },
     )
+    .with_pda_seeds(vec![compute_pool_pda_seed(
+        config.account_id,
+        identity.definition_token_a_id,
+        identity.definition_token_b_id,
+    )]);
+
+    (descriptor_a, descriptor_b, vec![call_update_tick])
+}
+
+/// Apply half of `SyncReserves`: set the reserves to the pinned vault balances.
+///
+/// Reserves may lag a vault but must never exceed it, so a balance below its
+/// reserve is refused rather than written: that direction means funds the pool
+/// thought it had are gone, which is a broken invariant to investigate and not a
+/// state to normalize.
+///
+/// # Panics
+/// Panics if:
+/// - the shard is not a valid pool, or the declared identity differs.
+/// - the pool's LP supply is below [`MINIMUM_LIQUIDITY`].
+/// - either declared balance is below its current reserve.
+#[must_use]
+pub fn sync_reserves(pre_data: &ShardData, effect: &SyncReserves) -> ShardData {
+    let pool = crate::shared::pool_of(pre_data, &effect.identity, CONTEXT);
+    assert!(
+        pool.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
+        "Pool liquidity supply is below minimum liquidity"
+    );
+    assert!(
+        effect.vault_a_balance >= pool.reserve_a,
+        "{CONTEXT}: vault A balance is less than its reserve"
+    );
+    assert!(
+        effect.vault_b_balance >= pool.reserve_b,
+        "{CONTEXT}: vault B balance is less than its reserve"
+    );
+
+    ShardData::from(&PoolDefinition {
+        reserve_a: effect.vault_a_balance,
+        reserve_b: effect.vault_b_balance,
+        ..pool
+    })
 }

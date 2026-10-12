@@ -42,7 +42,12 @@
           "init": false
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "now",
+          "type": "u64"
+        }
+      ]
     }
   ],
   "accounts": [

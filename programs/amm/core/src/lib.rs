@@ -2,7 +2,7 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, Data},
+    account::{AccountId, ShardData},
     program::PdaSeed,
 };
 use serde::{Deserialize, Serialize};
@@ -119,6 +119,23 @@ pub enum Instruction {
         /// Duration of the TWAP window this feed serves, in milliseconds. Part of the
         /// observations PDA seed, so each window gets a distinct account.
         window_duration: u64,
+        /// The config account's fields, pinned by a guard on the config shard.
+        /// Nine instructions used to read the config for the program ids they
+        /// route through and the fees they price with; none of them can read it
+        /// any more. See [`ConfigFacts`].
+        facts: ConfigFacts,
+        /// The pool account's ids, pinned by the pool shard's own effect. See
+        /// [`PoolIdentity`].
+        identity: PoolIdentity,
+        /// The tick the feed is seeded at, pinned by a guard on the oracle's
+        /// current-tick shard. Declared rather than read, so the seed is still
+        /// the oracle's own authoritative tick and not the caller's.
+        initial_tick: i32,
+        /// Wall-clock time in milliseconds. Declared only to forward it to the
+        /// oracle's own instruction in the chained call below, where the oracle's
+        /// clock guard pins it to the canonical `CLOCK_01` account. The AMM never
+        /// acts on it itself.
+        now: u64,
     },
 
     /// Creates a TWAP oracle price account for a pool over a time window, on behalf of the AMM,
@@ -143,6 +160,25 @@ pub enum Instruction {
         /// Duration of the TWAP window this price account serves, in milliseconds. Part of the
         /// price-account PDA seed, so each window gets a distinct account.
         window_duration: u64,
+        /// The config account's fields, pinned by a guard on the config shard.
+        /// Nine instructions used to read the config for the program ids they
+        /// route through and the fees they price with; none of them can read it
+        /// any more. See [`ConfigFacts`].
+        facts: ConfigFacts,
+        /// The pool account's ids, pinned by the pool shard's own effect. See
+        /// [`PoolIdentity`].
+        identity: PoolIdentity,
+        /// The pool's live reserves, pinned *exactly* by the pool shard's
+        /// guard. The initial price is `reserve_b / reserve_a` as a Q64.64, and
+        /// the plan derives it from these — it is still the pool's own spot
+        /// price, not a caller-chosen one. See [`CheckPoolPrice`].
+        reserve_a: u128,
+        reserve_b: u128,
+        /// Wall-clock time in milliseconds. Declared only to forward it to the
+        /// oracle's own instruction in the chained call below, where the oracle's
+        /// clock guard pins it to the canonical `CLOCK_01` account. The AMM never
+        /// acts on it itself.
+        now: u64,
     },
 
     /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
@@ -165,6 +201,24 @@ pub enum Instruction {
         token_b_amount: u128,
         /// Unix timestamp (milliseconds) after which this transaction is invalid.
         deadline: u64,
+        /// The config account's fields, pinned by a guard on the config shard.
+        /// Nine instructions used to read the config for the program ids they
+        /// route through and the fees they price with; none of them can read it
+        /// any more. See [`ConfigFacts`].
+        facts: ConfigFacts,
+        /// The pool's token pair. The plan derives the pool, vault, LP
+        /// definition and LP lock addresses from these, and each one is pinned
+        /// downstream: the pool PDA assertion ties the pair to the pool address,
+        /// and the chained transfers carry the pair as their `TokenDescriptor`,
+        /// so the Token Program refuses them if the trader's holdings hold
+        /// anything else.
+        definition_token_a_id: AccountId,
+        definition_token_b_id: AccountId,
+        /// Wall-clock time in milliseconds. Declared only to forward it to the
+        /// oracle's own instruction in the chained call below, where the oracle's
+        /// clock guard pins it to the canonical `CLOCK_01` account. The AMM never
+        /// acts on it itself.
+        now: u64,
     },
 
     /// Adds liquidity to the Pool
@@ -187,6 +241,29 @@ pub enum Instruction {
         max_amount_to_add_token_b: u128,
         /// Unix timestamp (milliseconds) after which this transaction is invalid.
         deadline: u64,
+        /// The config account's fields, pinned by a guard on the config shard.
+        /// Nine instructions used to read the config for the program ids they
+        /// route through and the fees they price with; none of them can read it
+        /// any more. See [`ConfigFacts`].
+        facts: ConfigFacts,
+        /// The pool account's ids, pinned by the pool shard's own effect. See
+        /// [`PoolIdentity`].
+        identity: PoolIdentity,
+        /// The deposits and the LP to mint. These are what the chained
+        /// transfers and mint carry, so the plan must name them, but they are
+        /// functions of the live reserves the plan cannot read. Bounded by the
+        /// pool's own effect — see [`AddLiquidity`](crate::AddLiquidity).
+        amount_a: u128,
+        amount_b: u128,
+        delta_lp: u128,
+        /// Post-add Q64.64 spot price, forwarded to the oracle and pinned
+        /// exactly by the pool's effect.
+        new_price: u128,
+        /// Wall-clock time in milliseconds. Declared only to forward it to the
+        /// oracle's own instruction in the chained call below, where the oracle's
+        /// clock guard pins it to the canonical `CLOCK_01` account. The AMM never
+        /// acts on it itself.
+        now: u64,
     },
 
     /// Removes liquidity from the Pool
@@ -209,6 +286,27 @@ pub enum Instruction {
         min_amount_to_remove_token_b: u128,
         /// Unix timestamp (milliseconds) after which this transaction is invalid.
         deadline: u64,
+        /// The config account's fields, pinned by a guard on the config shard.
+        /// Nine instructions used to read the config for the program ids they
+        /// route through and the fees they price with; none of them can read it
+        /// any more. See [`ConfigFacts`].
+        facts: ConfigFacts,
+        /// The pool account's ids, pinned by the pool shard's own effect. See
+        /// [`PoolIdentity`].
+        identity: PoolIdentity,
+        /// The withdrawals the chained transfers carry. Bounded from above by
+        /// the burner's pro-rata share of the live reserves — see
+        /// [`RemoveLiquidity`](crate::RemoveLiquidity).
+        withdraw_amount_a: u128,
+        withdraw_amount_b: u128,
+        /// Post-removal Q64.64 spot price, forwarded to the oracle and pinned
+        /// exactly by the pool's effect.
+        new_price: u128,
+        /// Wall-clock time in milliseconds. Declared only to forward it to the
+        /// oracle's own instruction in the chained call below, where the oracle's
+        /// clock guard pins it to the canonical `CLOCK_01` account. The AMM never
+        /// acts on it itself.
+        now: u64,
     },
 
     /// Swap some quantity of tokens while maintaining the Pool constant product.
@@ -232,6 +330,35 @@ pub enum Instruction {
         min_amount_out: u128,
         /// Unix timestamp (milliseconds) after which this transaction is invalid.
         deadline: u64,
+        /// The config account's fields, pinned by a guard on the config shard.
+        /// Nine instructions used to read the config for the program ids they
+        /// route through and the fees they price with; none of them can read it
+        /// any more. See [`ConfigFacts`].
+        facts: ConfigFacts,
+        /// The pool account's ids, pinned by the pool shard's own effect. See
+        /// [`PoolIdentity`].
+        identity: PoolIdentity,
+        /// The declared swap *direction*: the token the trader is selling. The
+        /// plan can no longer read the trader's holding to work it out, so it is
+        /// declared here and resolved against the pool's own data by
+        /// [`PoolDefinition::sides`].
+        definition_id_in: AccountId,
+        /// The protocol's cut of this swap's fee, in the input token. Recomputed
+        /// and pinned exactly by the pool's effect from the declared amounts and
+        /// the pinned fee tiers.
+        protocol_fee: u128,
+        /// Post-swap Q64.64 spot price, forwarded to the oracle and pinned
+        /// exactly by the pool's effect. See [`SwapBinding::new_price`].
+        new_price: u128,
+        /// The output the trader will receive. Bounded from above by what the
+        /// live curve affords, so an over-declaration is refused and an
+        /// under-declaration only leaves the surplus with the pool.
+        amount_out: u128,
+        /// Wall-clock time in milliseconds. Declared only to forward it to the
+        /// oracle's own instruction in the chained call below, where the oracle's
+        /// clock guard pins it to the canonical `CLOCK_01` account. The AMM never
+        /// acts on it itself.
+        now: u64,
     },
 
     /// Swap tokens specifying the exact desired output amount while maintaining the Pool constant
@@ -256,6 +383,35 @@ pub enum Instruction {
         max_amount_in: u128,
         /// Unix timestamp (milliseconds) after which this transaction is invalid.
         deadline: u64,
+        /// The config account's fields, pinned by a guard on the config shard.
+        /// Nine instructions used to read the config for the program ids they
+        /// route through and the fees they price with; none of them can read it
+        /// any more. See [`ConfigFacts`].
+        facts: ConfigFacts,
+        /// The pool account's ids, pinned by the pool shard's own effect. See
+        /// [`PoolIdentity`].
+        identity: PoolIdentity,
+        /// The declared swap *direction*: the token the trader is selling. The
+        /// plan can no longer read the trader's holding to work it out, so it is
+        /// declared here and resolved against the pool's own data by
+        /// [`PoolDefinition::sides`].
+        definition_id_in: AccountId,
+        /// The protocol's cut of this swap's fee, in the input token. Recomputed
+        /// and pinned exactly by the pool's effect from the declared amounts and
+        /// the pinned fee tiers.
+        protocol_fee: u128,
+        /// Post-swap Q64.64 spot price, forwarded to the oracle and pinned
+        /// exactly by the pool's effect. See [`SwapBinding::new_price`].
+        new_price: u128,
+        /// The input the trader will pay. Bounded from *below* by what the
+        /// live curve demands for `exact_amount_out`, the mirror of the
+        /// exact-input bound: paying more only leaves the surplus with the pool.
+        amount_in: u128,
+        /// Wall-clock time in milliseconds. Declared only to forward it to the
+        /// oracle's own instruction in the chained call below, where the oracle's
+        /// clock guard pins it to the canonical `CLOCK_01` account. The AMM never
+        /// acts on it itself.
+        now: u64,
     },
 
     /// Sync pool reserves with current vault balances, refreshing the pool's TWAP current tick.
@@ -268,7 +424,27 @@ pub enum Instruction {
     ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
     ///   with the new spot price
     /// - Clock Account (the canonical 1-block LEZ clock)
-    SyncReserves,
+    SyncReserves {
+        /// The config account's fields, pinned by a guard on the config shard.
+        /// Nine instructions used to read the config for the program ids they
+        /// route through and the fees they price with; none of them can read it
+        /// any more. See [`ConfigFacts`].
+        facts: ConfigFacts,
+        /// The pool account's ids, pinned by the pool shard's own effect. See
+        /// [`PoolIdentity`].
+        identity: PoolIdentity,
+        /// The vault balances the reserves are synced to, each pinned by a
+        /// guard on its own Token Program shard. This is the one instruction
+        /// that genuinely reads a vault — see
+        /// [`check_vault_balance`](crate::check_vault_balance).
+        vault_a_balance: u128,
+        vault_b_balance: u128,
+        /// Wall-clock time in milliseconds. Declared only to forward it to the
+        /// oracle's own instruction in the chained call below, where the oracle's
+        /// clock guard pins it to the canonical `CLOCK_01` account. The AMM never
+        /// acts on it itself.
+        now: u64,
+    },
 
     /// Withdraw accrued protocol fees for one token to a destination holding. Only the config's
     /// admin `authority` may call this. Protocol fees accumulate in an instance-wide, AMM-owned
@@ -286,6 +462,17 @@ pub enum Instruction {
     WithdrawProtocolFees {
         /// Amount of protocol fees (base units of the holding's token) to move to the destination.
         amount: u128,
+        /// The config account's fields, pinned by a guard on the config shard.
+        /// Nine instructions used to read the config for the program ids they
+        /// route through and the fees they price with; none of them can read it
+        /// any more. See [`ConfigFacts`].
+        facts: ConfigFacts,
+        /// The token being withdrawn. It selects the protocol-fee PDA the plan
+        /// derives, and it rides on the chained transfer, so the Token Program
+        /// refuses the call unless *both* the protocol-fee holding and the
+        /// destination hold exactly this asset. That is the whole of what the
+        /// two holding reads used to establish.
+        descriptor: token_core::TokenDescriptor,
     },
 }
 
@@ -304,6 +491,340 @@ pub struct PoolDefinition {
     pub liquidity_pool_supply: u128,
     pub reserve_a: u128,
     pub reserve_b: u128,
+}
+
+/// One side of a pool, resolved by token definition id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolSide {
+    pub definition_id: AccountId,
+    pub vault_id: AccountId,
+    pub reserve: u128,
+}
+
+impl PoolDefinition {
+    /// The `(input, output)` sides for a swap entering via `definition_id_in`.
+    ///
+    /// `None` when the id is not one of the pool's two tokens. This is what pins a
+    /// caller's declared swap *direction*: the plan phase can no longer read the
+    /// trader's holding to work out which way round the trade goes, so the
+    /// direction is declared and resolved here, against the pool's own data.
+    #[must_use]
+    pub fn sides(&self, definition_id_in: AccountId) -> Option<(PoolSide, PoolSide)> {
+        let a = PoolSide {
+            definition_id: self.definition_token_a_id,
+            vault_id: self.vault_a_id,
+            reserve: self.reserve_a,
+        };
+        let b = PoolSide {
+            definition_id: self.definition_token_b_id,
+            vault_id: self.vault_b_id,
+            reserve: self.reserve_b,
+        };
+        if definition_id_in == self.definition_token_a_id {
+            Some((a, b))
+        } else if definition_id_in == self.definition_token_b_id {
+            Some((b, a))
+        } else {
+            None
+        }
+    }
+
+    /// `(reserve_a, reserve_b)` for reserves expressed in input/output terms.
+    #[must_use]
+    pub fn reserves_in_ab_order(
+        &self,
+        definition_id_in: AccountId,
+        reserve_in: u128,
+        reserve_out: u128,
+    ) -> (u128, u128) {
+        if definition_id_in == self.definition_token_a_id {
+            (reserve_in, reserve_out)
+        } else {
+            (reserve_out, reserve_in)
+        }
+    }
+}
+
+/// The `AmmConfig` fields an instruction declares and a guard pins.
+///
+/// Nine of the eleven instructions read the config for the program ids they route
+/// through and the fee tiers they price with. None of them can read it any more,
+/// so the values are declared once per instruction and
+/// [`check_config`] asserts them against the config shard.
+///
+/// Carrying the whole set rather than a per-instruction subset keeps one guard for
+/// the lot: a caller cannot declare a true `token_program_id` alongside a forged
+/// `swap_fee_bps`, because the single assertion covers both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct ConfigFacts {
+    pub token_program_id: AccountId,
+    pub twap_oracle_program_id: AccountId,
+    pub authority: AccountId,
+    pub swap_fee_bps: u128,
+    pub protocol_fee_bps: u128,
+}
+
+impl From<&AmmConfig> for ConfigFacts {
+    fn from(config: &AmmConfig) -> Self {
+        Self {
+            token_program_id: config.token_program_id,
+            twap_oracle_program_id: config.twap_oracle_program_id,
+            authority: config.authority,
+            swap_fee_bps: config.swap_fee_bps,
+            protocol_fee_bps: config.protocol_fee_bps,
+        }
+    }
+}
+
+/// Guard on the config shard: the declared facts must be the stored ones.
+///
+/// Also the initialization gate — an empty or undecodable config shard means the
+/// AMM instance does not exist yet.
+///
+/// # Panics
+/// If the config shard is not a valid [`AmmConfig`], or any declared field differs.
+pub fn check_config(pre_data: &ShardData, facts: &ConfigFacts) {
+    let config = AmmConfig::try_from(pre_data).expect("AMM Program must be initialized before use");
+    assert_eq!(
+        &ConfigFacts::from(&config),
+        facts,
+        "Declared AMM config does not match the config account"
+    );
+}
+
+/// Guard on the pool shard: the declared identity must be the stored one.
+///
+/// Every effect on a pool runs this first. The five ids are what a plan needs to
+/// derive the pool PDA and address the chained transfers, mint, or burn, and all
+/// five live here — so a caller who names the wrong vault, the wrong LP
+/// definition, or the wrong token pair is refused before anything moves.
+///
+/// # Panics
+/// If any declared id differs from the pool's stored one.
+pub fn check_pool_identity(pool: &PoolDefinition, identity: &PoolIdentity) {
+    assert_eq!(
+        &PoolIdentity::from(pool),
+        identity,
+        "Declared pool identity does not match the pool account"
+    );
+}
+
+// ─── Effect payloads ────────────────────────────────────────────────────────
+//
+// One struct per shard effect this program emits. Under v0.3.0 a plan half sees
+// no account data at all and an apply half sees exactly one shard, so every
+// value that used to be read from a second account is now *declared* by the
+// caller and *pinned* by an effect on the shard it came from. Each struct below
+// says which half of that it carries.
+
+/// Payload for writing a whole record into a shard that must be empty.
+///
+/// Used by `Initialize` and `NewDefinition`, whose records are built entirely
+/// from instruction fields and account ids the plan can see.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Create {
+    pub data: ShardData,
+}
+
+/// Payload of `UpdateConfig`'s effect on the config shard.
+///
+/// The plan can report *which* account claims to be the admin and whether it
+/// signed, but the stored authority lives in this shard and nowhere else, so the
+/// comparison travels here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct RotateAuthority {
+    pub expected_authority: AccountId,
+    pub new_authority: AccountId,
+}
+
+/// The pool fields a plan declares so it can derive addresses and route chained
+/// calls, pinned by the pool shard's own effect.
+///
+/// A plan needs the token pair to re-derive the pool PDA (the namespace check),
+/// the vault ids to address the transfers, and the LP definition id to address
+/// the mint or burn. All five live in the pool shard, so all five are declared
+/// and every effect on the pool asserts them against the stored definition
+/// before acting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct PoolIdentity {
+    pub definition_token_a_id: AccountId,
+    pub definition_token_b_id: AccountId,
+    pub vault_a_id: AccountId,
+    pub vault_b_id: AccountId,
+    pub liquidity_pool_id: AccountId,
+}
+
+impl From<&PoolDefinition> for PoolIdentity {
+    fn from(pool: &PoolDefinition) -> Self {
+        Self {
+            definition_token_a_id: pool.definition_token_a_id,
+            definition_token_b_id: pool.definition_token_b_id,
+            vault_a_id: pool.vault_a_id,
+            vault_b_id: pool.vault_b_id,
+            liquidity_pool_id: pool.liquidity_pool_id,
+        }
+    }
+}
+
+impl PoolIdentity {
+    /// `((definition_in, vault_in), (definition_out, vault_out))` for a swap
+    /// entering via `definition_id_in`; `None` if the id is not in the pair.
+    ///
+    /// The plan-phase counterpart of [`PoolDefinition::sides`]: it resolves the
+    /// declared direction into the addresses the chained transfers need, while
+    /// the pool's own apply resolves the same direction against the stored
+    /// definition and so decides whether the declaration was true.
+    #[must_use]
+    pub fn sides(
+        &self,
+        definition_id_in: AccountId,
+    ) -> Option<((AccountId, AccountId), (AccountId, AccountId))> {
+        let a = (self.definition_token_a_id, self.vault_a_id);
+        let b = (self.definition_token_b_id, self.vault_b_id);
+        if definition_id_in == self.definition_token_a_id {
+            Some((a, b))
+        } else if definition_id_in == self.definition_token_b_id {
+            Some((b, a))
+        } else {
+            None
+        }
+    }
+}
+
+/// Guard on the pool shard for an instruction that also needs the live reserves:
+/// `CreateOraclePriceAccount`, which seeds the feed at the pool's spot price.
+///
+/// Reserves are pinned *exactly* here, unlike the bounded pins the mutating
+/// instructions use. A price account is seeded once and read by consumers
+/// afterwards, so a stale-by-one-swap seed is not acceptable; the cost is that a
+/// concurrent swap makes the call retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckPoolPrice {
+    pub identity: PoolIdentity,
+    pub reserve_a: u128,
+    pub reserve_b: u128,
+}
+
+/// Guard on the oracle's current-tick shard: it must hold exactly this tick.
+///
+/// `CreatePriceObservations` seeds a feed from the pool's authoritative tick
+/// rather than from the caller, which under v0.3.0 means the caller declares it
+/// and this guard holds the declaration to the oracle's own account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckOracleTick {
+    pub tick: i32,
+}
+
+/// Guard on a vault's Token Program shard: it must hold exactly this balance of
+/// exactly this token.
+///
+/// Only `SyncReserves` needs it. Everywhere else the vault balance is not read
+/// at all — see the note on [`read_vault_fungible_balances`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckVaultBalance {
+    pub descriptor: token_core::TokenDescriptor,
+    pub balance: u128,
+}
+
+/// Payload of `AddLiquidity`'s effect on the pool shard.
+///
+/// The deposit amounts and the LP to mint are the figures the chained transfers
+/// and mint carry, so the plan must know them — but they are functions of the
+/// live reserves, which the plan cannot read. They are therefore declared, and
+/// the pool's apply bounds them: the LP minted may not exceed the pro-rata share
+/// of what was actually deposited (`delta_lp <= supply * amount / reserve` on
+/// *both* sides). Declaring too little LP, or too much deposit, only ever
+/// benefits the existing liquidity providers, so a bound in that one direction is
+/// all the pool needs. `min_amount_liquidity` / `max_amount_*` are the caller's
+/// own slippage bounds, re-asserted here against the figures that actually land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct AddLiquidity {
+    pub identity: PoolIdentity,
+    /// Post-add Q64.64 spot price, carried by the chained `UpdateCurrentTick`.
+    /// Pinned exactly — see [`SwapBinding::new_price`].
+    pub new_price: u128,
+    pub amount_a: u128,
+    pub amount_b: u128,
+    pub delta_lp: u128,
+    pub min_amount_liquidity: u128,
+    pub max_amount_a: u128,
+    pub max_amount_b: u128,
+}
+
+/// Payload of `RemoveLiquidity`'s effect on the pool shard.
+///
+/// Mirror image of [`AddLiquidity`]: the withdrawal amounts ride on chained
+/// transfers so the plan must name them, and the pool's apply bounds them from
+/// above by the burner's pro-rata share of the live reserves. Withdrawing less
+/// than that share leaves the surplus with the remaining providers, so again one
+/// direction suffices. `min_amount_*` are the caller's slippage floors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct RemoveLiquidity {
+    pub identity: PoolIdentity,
+    /// Post-removal Q64.64 spot price, carried by the chained
+    /// `UpdateCurrentTick`. Pinned exactly — see [`SwapBinding::new_price`].
+    pub new_price: u128,
+    pub remove_liquidity_amount: u128,
+    pub withdraw_amount_a: u128,
+    pub withdraw_amount_b: u128,
+    pub min_amount_to_remove_token_a: u128,
+    pub min_amount_to_remove_token_b: u128,
+}
+
+/// Everything a swap declares, pinned by the pool shard's own effect.
+///
+/// Both swap directions and both exactness modes share this. `definition_id_in`
+/// is the declared *direction* — the plan can no longer read the trader's holding
+/// to work out which way the trade goes — and [`PoolDefinition::sides`] resolves
+/// it against the pool's own data, which is what makes the lie fail.
+///
+/// `swap_fee_bps` and `protocol_fee_bps` are copied out of the [`ConfigFacts`]
+/// the same plan declares, so the config guard that pins those fields pins these
+/// too; they travel in the binding only because the pool's apply has to price the
+/// trade and cannot see the config shard.
+///
+/// `amount_out` is a *bounded* pin for an exact-input swap (at most what the live
+/// curve affords) and `amount_in` a bounded pin for an exact-output one (at least
+/// what the live curve demands). Either way the surplus stays in the pool and
+/// accrues to its providers, so the caller can only ever cheat themselves. The
+/// caller's own `limit` — `min_amount_out` or `max_amount_in` — is re-asserted
+/// here against the amounts that actually land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct SwapBinding {
+    pub identity: PoolIdentity,
+    pub definition_id_in: AccountId,
+    pub amount_in: u128,
+    pub amount_out: u128,
+    pub protocol_fee: u128,
+    /// Post-swap Q64.64 spot price, carried by the chained `UpdateCurrentTick`.
+    ///
+    /// Pinned *exactly*: the pool's apply recomputes it from the reserves it can
+    /// see plus the two amounts. Two different pins therefore sit side by side
+    /// here, and deliberately so. The bound on `amount_out` is what makes a
+    /// vault drain impossible — it holds no matter how stale the caller's view
+    /// of the pool was. The exact pin on `new_price` is what keeps the oracle
+    /// honest, and it is strict because a tick is published to consumers who act
+    /// on it, so slack in neither direction is acceptable. The price of that
+    /// strictness is that a swap retries when the pool moved under it, the same
+    /// trade-off the oracle itself makes for `now`.
+    pub new_price: u128,
+    pub swap_fee_bps: u128,
+    pub protocol_fee_bps: u128,
+    /// `min_amount_out` for an exact-input swap, `max_amount_in` for an
+    /// exact-output one.
+    pub limit: u128,
+}
+
+/// Payload of `SyncReserves`' effect on the pool shard.
+///
+/// The one instruction whose whole purpose is to read the vaults, so the two
+/// balances are declared and each is pinned by a [`CheckVaultBalance`] guard on
+/// its own Token Program shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct SyncReserves {
+    pub identity: PoolIdentity,
+    pub vault_a_balance: u128,
+    pub vault_b_balance: u128,
 }
 
 pub const FEE_BPS_DENOMINATOR: u128 = 10_000;
@@ -540,6 +1061,68 @@ pub fn swap_exact_out_amounts(
     Some((effective_in_min, required_in))
 }
 
+/// The deposits and the LP to mint for an `AddLiquidity` against `pool`, given
+/// the caller's maximums. The figures the v0.2.5 handler derived for itself.
+///
+/// Under v0.3.0 the caller derives them and declares them, because no plan phase
+/// can read the reserves they depend on. This is the shared derivation: clients,
+/// tests, and the off-chain quote all build their declaration here, so what they
+/// declare is exactly what `amm_program::add::add_liquidity` accepts at the top
+/// of its bound. Returns `(amount_a, amount_b, delta_lp)`.
+///
+/// # Panics
+/// Panics if either reserve is zero (there is no ratio to deposit at).
+#[must_use]
+pub fn quote_add_liquidity(
+    pool: &PoolDefinition,
+    max_amount_a: u128,
+    max_amount_b: u128,
+) -> (u128, u128, u128) {
+    assert!(
+        pool.reserve_a != 0 && pool.reserve_b != 0,
+        "quote_add_liquidity: reserves must be nonzero"
+    );
+    // floor(reserve * max_other / reserve_other) is the deposit that matches the
+    // pool's ratio; each side is then capped by its own maximum.
+    let amount_a = mul_div_floor(pool.reserve_a, max_amount_b, pool.reserve_b).min(max_amount_a);
+    let amount_b = mul_div_floor(pool.reserve_b, max_amount_a, pool.reserve_a).min(max_amount_b);
+    let delta_lp = mul_div_floor(pool.liquidity_pool_supply, amount_a, pool.reserve_a).min(
+        mul_div_floor(pool.liquidity_pool_supply, amount_b, pool.reserve_b),
+    );
+    (amount_a, amount_b, delta_lp)
+}
+
+/// The withdrawals a `RemoveLiquidity` of `remove_liquidity_amount` earns against
+/// `pool`: the burner's pro-rata share of each reserve, floored.
+///
+/// The counterpart of [`quote_add_liquidity`] — the figures the caller declares
+/// and `amm_program::remove::remove_liquidity` bounds from above.
+///
+/// # Panics
+/// Panics if `pool.liquidity_pool_supply` is zero.
+#[must_use]
+pub fn quote_remove_liquidity(
+    pool: &PoolDefinition,
+    remove_liquidity_amount: u128,
+) -> (u128, u128) {
+    assert!(
+        pool.liquidity_pool_supply != 0,
+        "quote_remove_liquidity: liquidity supply must be nonzero"
+    );
+    (
+        mul_div_floor(
+            pool.reserve_a,
+            remove_liquidity_amount,
+            pool.liquidity_pool_supply,
+        ),
+        mul_div_floor(
+            pool.reserve_b,
+            remove_liquidity_amount,
+            pool.liquidity_pool_supply,
+        ),
+    )
+}
+
 /// `floor(sqrt(a * b))` computed in U256 so the `a * b` product can't overflow u128.
 ///
 /// # Panics
@@ -554,15 +1137,15 @@ pub fn isqrt_product(a: u128, b: u128) -> u128 {
     u128::try_from(root).expect("isqrt_product result exceeds u128")
 }
 
-impl TryFrom<&Data> for PoolDefinition {
+impl TryFrom<&ShardData> for PoolDefinition {
     type Error = std::io::Error;
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+    fn try_from(data: &ShardData) -> Result<Self, Self::Error> {
         PoolDefinition::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&PoolDefinition> for Data {
+impl From<&PoolDefinition> for ShardData {
     fn from(definition: &PoolDefinition) -> Self {
         // Using size_of_val as size hint for Vec allocation
         let mut data = Vec::with_capacity(std::mem::size_of_val(definition));
@@ -570,7 +1153,7 @@ impl From<&PoolDefinition> for Data {
         BorshSerialize::serialize(definition, &mut data)
             .expect("Serialization to Vec should not fail");
 
-        Data::try_from(data).expect("Token definition encoded data should fit into Data")
+        ShardData::try_from(data).expect("Token definition encoded data should fit into ShardData")
     }
 }
 
@@ -604,21 +1187,21 @@ pub struct AmmConfig {
     pub protocol_fee_bps: u128,
 }
 
-impl TryFrom<&Data> for AmmConfig {
+impl TryFrom<&ShardData> for AmmConfig {
     type Error = std::io::Error;
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+    fn try_from(data: &ShardData) -> Result<Self, Self::Error> {
         AmmConfig::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&AmmConfig> for Data {
+impl From<&AmmConfig> for ShardData {
     fn from(config: &AmmConfig) -> Self {
         let mut data = Vec::with_capacity(std::mem::size_of_val(config));
 
         BorshSerialize::serialize(config, &mut data).expect("Serialization to Vec should not fail");
 
-        Data::try_from(data).expect("AMM config encoded data should fit into Data")
+        ShardData::try_from(data).expect("AMM config encoded data should fit into ShardData")
     }
 }
 
@@ -805,8 +1388,8 @@ pub fn compute_lp_lock_holding_pda_seed(pool_id: AccountId) -> PdaSeed {
     )
 }
 
-fn read_fungible_holding(account: &AccountWithMetadata, context: &str) -> (AccountId, u128) {
-    let token_holding = token_core::TokenHolding::try_from(&account.account.data)
+fn read_fungible_holding(data: &ShardData, context: &str) -> (AccountId, u128) {
+    let token_holding = token_core::TokenHolding::try_from(data)
         .unwrap_or_else(|_| panic!("{context}: AMM Program expects a valid Token Holding Account"));
 
     let token_core::TokenHolding::Fungible {
@@ -820,17 +1403,30 @@ fn read_fungible_holding(account: &AccountWithMetadata, context: &str) -> (Accou
     (definition_id, balance)
 }
 
-pub fn read_vault_fungible_balances(
-    context: &str,
-    vault_a: &AccountWithMetadata,
-    vault_b: &AccountWithMetadata,
-) -> (u128, u128) {
-    let vault_a_context = format!("{context}: Vault A");
-    let vault_b_context = format!("{context}: Vault B");
-    let (_, vault_a_balance) = read_fungible_holding(vault_a, &vault_a_context);
-    let (_, vault_b_balance) = read_fungible_holding(vault_b, &vault_b_context);
-
-    (vault_a_balance, vault_b_balance)
+/// Guard on a vault's Token Program shard: it must hold exactly `balance` of
+/// exactly the token `descriptor` names.
+///
+/// Only `SyncReserves` uses this. Every other instruction dropped its
+/// vault-balance read entirely: a vault can be debited by nobody but this
+/// program, and every reserve change this program records is paired with an
+/// equal transfer, so the recorded reserve is backed by construction. The old
+/// `vault_balance >= reserve` assertions were re-deriving that invariant from
+/// data a plan can no longer see, and `SyncReserves` exists precisely to repair
+/// it if it ever breaks.
+///
+/// # Panics
+/// If the shard is not a fungible holding of `descriptor.definition_id`, or its
+/// balance differs from `balance`.
+pub fn check_vault_balance(pre_data: &ShardData, guard: &CheckVaultBalance) {
+    let (definition_id, actual) = read_fungible_holding(pre_data, "Check vault balance");
+    assert_eq!(
+        definition_id, guard.descriptor.definition_id,
+        "Vault holds a different token than the declared one"
+    );
+    assert_eq!(
+        actual, guard.balance,
+        "Declared vault balance does not match the vault holding"
+    );
 }
 
 #[cfg(test)]

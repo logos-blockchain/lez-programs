@@ -13,8 +13,8 @@ pub mod stability_fee_accumulator;
 use borsh::{BorshDeserialize, BorshSerialize};
 pub use controller::{run_controller_tick, ControllerOutput, INTEGRAL_CLAMP, RATE_DELTA_CLAMP};
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, Data},
-    program::PdaSeed,
+    account::{AccountId, ShardData},
+    program::{AccountMeta, PdaSeed},
 };
 pub use protocol_parameters::{
     compute_protocol_parameters_pda, compute_protocol_parameters_pda_seed, ProtocolParameters,
@@ -104,6 +104,10 @@ pub enum Instruction {
         initial_redemption_price: u128,
         /// Name baked into the stablecoin's `TokenDefinition::Fungible`.
         stablecoin_name: String,
+        /// Declared wall-clock millisecond timestamp, pinned against the
+        /// `CLOCK_01` shard by [`CheckClock`]. Anchors both the fee accumulator
+        /// and the redemption-price state.
+        now: u64,
     },
     /// Advance the stability-fee accumulator to the clock's timestamp.
     /// Permissionless and idempotent — there is no minimum-interval throttle;
@@ -115,7 +119,13 @@ pub enum Instruction {
     /// 2. `protocol_parameters` — initialized, read-only.
     /// 3. `stability_fee_accumulator` — initialized, writable.
     /// 4. `clock` — the system `CLOCK_01` account; read-only.
-    AccrueStabilityFee,
+    AccrueStabilityFee {
+        /// Declared `ProtocolParameters`, pinned by [`CheckParameters`]. Supplies
+        /// the fee rate the accrual applies.
+        parameters: ProtocolParameters,
+        /// Declared timestamp, pinned by [`CheckClock`].
+        now: u64,
+    },
     /// Run one tick of the redemption-rate controller and re-anchor the
     /// redemption price. Permissionless, but strict: panics if called within
     /// `minimum_milliseconds_between_rate_updates` of the last update, or if the
@@ -128,7 +138,17 @@ pub enum Instruction {
     /// 4. `market_price_oracle` — initialized, read-only; must equal
     ///    `protocol_parameters.market_price_oracle_id`.
     /// 5. `clock` — the system `CLOCK_01` account; read-only.
-    UpdateRedemptionRate,
+    UpdateRedemptionRate {
+        /// Declared `ProtocolParameters`, pinned by [`CheckParameters`]. Supplies
+        /// the controller gains and both timing bounds.
+        parameters: ProtocolParameters,
+        /// Declared market-price observation, pinned by [`CheckOracle`].
+        oracle_price: u128,
+        /// Declared observation timestamp, pinned by the same guard.
+        oracle_timestamp: u64,
+        /// Declared timestamp, pinned by [`CheckClock`].
+        now: u64,
+    },
     /// Best-effort combined poke that advances BOTH globals in one transaction.
     /// A LEZ transaction carries exactly one instruction, so this is the only way
     /// to refresh the fee accumulator and the redemption rate at once.
@@ -140,9 +160,11 @@ pub enum Instruction {
     /// frozen, like the individual pokes.
     ///
     /// Panics ONLY on: `caller` not authorized; any of `protocol_parameters` /
-    /// `stability_fee_accumulator` / `redemption_price_state` uninitialized, wrong
-    /// owner, or at the wrong PDA; oracle id mismatch; wrong clock account. It does
-    /// NOT panic on a not-yet-due interval or a stale / zero oracle.
+    /// `stability_fee_accumulator` / `redemption_price_state` uninitialized or at
+    /// the wrong PDA; an oracle that is not the bound handle, address or program;
+    /// a wrong clock account; a declared record that is not the stored one. It
+    /// does NOT panic on a not-yet-due interval or a stale / zero oracle — those
+    /// are skips, expressed by the redemption apply returning "unchanged".
     ///
     /// Required accounts (6), in order — the union of the two standalone pokes:
     /// 1. `caller` — authorized; not retained anywhere.
@@ -152,7 +174,16 @@ pub enum Instruction {
     /// 5. `market_price_oracle` — initialized, read-only; must equal
     ///    `protocol_parameters.market_price_oracle_id`.
     /// 6. `clock` — the system `CLOCK_01` account; read-only.
-    RefreshGlobals,
+    RefreshGlobals {
+        /// Declared `ProtocolParameters`, pinned by [`CheckParameters`].
+        parameters: ProtocolParameters,
+        /// Declared market-price observation, pinned by [`CheckOracle`].
+        oracle_price: u128,
+        /// Declared observation timestamp, pinned by the same guard.
+        oracle_timestamp: u64,
+        /// Declared timestamp, pinned by [`CheckClock`].
+        now: u64,
+    },
     /// Open a new collateral-only [`Position`] for the calling owner.
     ///
     /// The position starts with no debt — spec §10.4 deliberately omits an
@@ -167,9 +198,9 @@ pub enum Instruction {
     ///    `compute_position_vault_pda(self_program_id, position_id)`.
     /// 4. `user_collateral_holding` — authorized, initialized; the owner's source holding for the
     ///    collateral.
-    /// 5. `collateral_definition` — initialized; must equal
-    ///    `protocol_parameters.collateral_definition_id`. Its `program_owner` determines the Token
-    ///    Program used by the chained `InitializeAccount` and `Transfer` calls.
+    /// 5. `collateral_definition` — must equal `protocol_parameters.collateral_definition_id`, and
+    ///    must select the bound Token Program's shard — which is the program the chained
+    ///    `InitializeAccount` and `Transfer` calls route through.
     /// 6. `protocol_parameters` — initialized, read-only; must sit at
     ///    `compute_protocol_parameters_pda(self_program_id)`. Supplies the single global
     ///    collateral definition id and the freeze flag.
@@ -180,6 +211,12 @@ pub enum Instruction {
         position_nonce: u64,
         /// Collateral tokens to move into the position vault at open time.
         initial_collateral_amount: u128,
+        /// Declared `ProtocolParameters`, pinned by [`CheckParameters`]. Supplies
+        /// the bound collateral definition, the Token Program and the freeze flag
+        /// the plan branches on.
+        parameters: ProtocolParameters,
+        /// Declared timestamp, pinned by [`CheckClock`]. Stamps `opened_at`.
+        now: u64,
     },
     /// Deposit additional collateral into an existing position.
     ///
@@ -193,18 +230,24 @@ pub enum Instruction {
     ///
     /// Required accounts (5), in order:
     /// 1. `owner` — authorized; must match `Position.owner_account_id`.
-    /// 2. `position` — initialized, writable, owned by this program; address must match
-    ///    `compute_position_pda(self_program_id, owner, position_nonce)`.
+    /// 2. `position` — writable; address must match `compute_position_pda(self_program_id, owner,
+    ///    position_nonce)`.
     /// 3. `vault` — initialized, writable; must equal `Position.vault_account_id`.
-    /// 4. `user_collateral_holding` — authorized, initialized; owned by the same Token Program as
-    ///    the vault, with `TokenHolding.definition_id` equal to
-    ///    `ProtocolParameters.collateral_definition_id`.
+    /// 4. `user_collateral_holding` — authorized; must select the bound Token Program's shard. Its
+    ///    `definition_id` is pinned by the chained `Transfer`'s descriptor rather than read.
     /// 5. `protocol_parameters` — initialized, read-only; must sit at
     ///    `compute_protocol_parameters_pda(self_program_id)`. Supplies the collateral definition
     ///    id. `is_frozen` is deliberately not read.
     DepositCollateral {
         /// Collateral tokens to move from the user's holding into the vault.
         amount: u128,
+        /// Declared position identity, pinned by the position's own effect.
+        /// Carries the `position_nonce` the PDA assertion re-derives.
+        expected: PositionIdentity,
+        /// Declared pre-transfer vault balance, pinned by [`CheckHoldingBalance`].
+        vault_balance: u128,
+        /// Declared `ProtocolParameters`, pinned by [`CheckParameters`].
+        parameters: ProtocolParameters,
     },
     /// Mint stablecoins against an existing position, increasing its debt.
     ///
@@ -213,8 +256,7 @@ pub enum Instruction {
     ///
     /// Required accounts (9), in order:
     /// 1. `owner` — authorized.
-    /// 2. `position` — initialized, writable, owned by `self_program_id`; at its `(owner,
-    ///    position_nonce)` PDA.
+    /// 2. `position` — writable; at its `(owner, position_nonce)` PDA.
     /// 3. `stablecoin_definition` — initialized, writable via the chained `Token::Mint`; must
     ///    equal `protocol_parameters.stablecoin_definition_id`.
     /// 4. `user_stablecoin_holding` — initialized mint destination; NOT required to be authorized.
@@ -229,23 +271,47 @@ pub enum Instruction {
     GenerateDebt {
         /// Stablecoin atomic units to mint to `user_stablecoin_holding`.
         amount: u128,
+        /// Declared position identity, pinned by the position's own effect.
+        expected: PositionIdentity,
+        /// Declared `ProtocolParameters`, pinned by [`CheckParameters`].
+        parameters: ProtocolParameters,
+        /// Declared fee anchor, pinned by [`CheckAccumulator`].
+        accumulator: StabilityFeeAccumulator,
+        /// Declared redemption anchor, pinned by [`CheckRedemption`].
+        redemption: RedemptionPriceState,
+        /// Declared market-price observation, pinned by [`CheckOracle`]. §10.7
+        /// consumes only the timestamp, for the staleness gate; the price is
+        /// declared because an observation is pinned as a whole.
+        oracle_price: u128,
+        /// Declared observation timestamp, pinned by the same guard.
+        oracle_timestamp: u64,
+        /// Declared timestamp, pinned by [`CheckClock`].
+        now: u64,
     },
-    /// Clear a fully-settled position's data.
+    /// Clear a fully-settled position's shard.
     ///
-    /// The PDA is **not** released: LEE forbids a program from changing an
-    /// account's `program_owner` or `nonce`, so the account lingers owned by this
-    /// program with empty data, and its `(owner, position_nonce)` pair cannot be
-    /// reused. Allowed while frozen. The vault is **not** closed either — the
-    /// Token Program has no `CloseHolding`, so it too lingers at `balance = 0` (§12).
+    /// Since v0.3.0 this really does release the position: ownership is no longer
+    /// a property of an address, so clearing the shard *is* the close, and the
+    /// `(owner, position_nonce)` pair becomes reusable — `OpenPosition` asks only
+    /// that the shard be empty. v0.2.5 could zero the data but not the ownership
+    /// the runtime derived, so the pair was spent for good.
+    ///
+    /// The vault is still **not** closed — the Token Program has no
+    /// `CloseHolding`, so it lingers at `balance = 0` (§12). Allowed while frozen.
     ///
     /// Required accounts (4), in order:
     /// 1. `owner` — authorized.
-    /// 2. `position` — initialized, owned by `self_program_id`, at its `(owner, position_nonce)`
-    ///    PDA. Cleared to `Account::default()`.
-    /// 3. `vault` — initialized, read-only; must equal `Position.vault_account_id` and hold a zero
-    ///    balance.
-    /// 4. `protocol_parameters` — initialized, read-only; at its canonical PDA.
-    ClosePosition,
+    /// 2. `position` — at its `(owner, position_nonce)` PDA. Shard cleared.
+    /// 3. `vault` — read-only; must be the position's vault and hold a zero balance, asserted by a
+    ///    guard on its own shard.
+    /// 4. `protocol_parameters` — read-only; at its canonical PDA.
+    ClosePosition {
+        /// Declared position identity, pinned by the position's own effect.
+        expected: PositionIdentity,
+        /// Declared `ProtocolParameters`, pinned by [`CheckParameters`]. Supplies
+        /// the bound Token Program the vault slot is checked against.
+        parameters: ProtocolParameters,
+    },
     /// Retune the minimum collateralization ratio (spec §10.11).
     ///
     /// Tightening leaves existing positions retroactively under-collateralized:
@@ -272,12 +338,23 @@ pub enum Instruction {
     /// Rotate the market-price oracle (spec §10.13).
     ///
     /// Validates the replacement's shape and base/quote pair against the
-    /// definitions bound at bootstrap. Its `program_owner` is deliberately not
-    /// pinned, so any producer emitting a well-formed `OraclePriceAccount` works.
+    /// definitions bound at bootstrap. The producing program is deliberately not
+    /// constrained — any program emitting a well-formed `OraclePriceAccount`
+    /// works — but it is recorded, so it is bound by the admin here rather than
+    /// chosen per call later.
     ///
     /// Required accounts (3), in order: `admin`, `protocol_parameters` (writable),
     /// and `new_oracle` (initialized, read-only).
-    SetMarketPriceOracle,
+    SetMarketPriceOracle {
+        /// The stablecoin definition the replacement must quote as its base
+        /// asset. Declared rather than read, and pinned against the stored record
+        /// by the parameters apply — which is what makes the oracle shard's own
+        /// guard trustworthy, since neither apply sees both accounts.
+        expected_base_asset: AccountId,
+        /// The collateral definition the replacement must quote as its quote
+        /// asset. Pinned the same way.
+        expected_quote_asset: AccountId,
+    },
     /// Retune both timing parameters (spec §10.14). Bundled.
     ///
     /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
@@ -322,6 +399,13 @@ pub enum Instruction {
         /// New per-millisecond fee multiplier. Must sit in the §8 band
         /// `FIXED_POINT_ONE ..= 2 * FIXED_POINT_ONE`.
         new_rate: u128,
+        /// The rate currently stored, which the accrual runs at before the
+        /// overwrite so the new rate is never retroactive. Declared because the
+        /// accumulator's apply cannot see the parameters shard, and pinned
+        /// against the record being overwritten by the parameters apply.
+        old_rate: u128,
+        /// Declared timestamp, pinned by [`CheckClock`].
+        now: u64,
     },
     /// Emergency kill switch: halt the risk-increasing instructions (spec §10.17).
     ///
@@ -346,8 +430,8 @@ pub enum Instruction {
     ///
     /// Required accounts (8), in order:
     /// 1. `owner` — authorized.
-    /// 2. `position` — initialized, writable, owned by `self_program_id`; address must match
-    ///    `compute_position_pda(self_program_id, owner, position_nonce)`.
+    /// 2. `position` — writable; address must match `compute_position_pda(self_program_id, owner,
+    ///    position_nonce)`.
     /// 3. `vault` — initialized, writable; must equal `Position.vault_account_id`. Authorized in
     ///    the chained call via its PDA seed.
     /// 4. `user_collateral_holding` — initialized destination; NOT required to be authorized. Same
@@ -360,12 +444,24 @@ pub enum Instruction {
     ///    minimum collateralization ratio and the freeze flag.
     /// 8. `clock` — the system `CLOCK_01` account; read-only.
     ///
-    /// `token_program_id` is derived from `vault.account.program_owner`;
-    /// the collateral definition is read from the PDA-verified vault holding.
+    /// The Token Program and the collateral definition both come from the
+    /// declared `ProtocolParameters`, not from the accounts: the vault and user
+    /// holding slots are checked against `token_program_id`, and the chained
+    /// `Transfer` names `collateral_definition_id` in its descriptor.
     WithdrawCollateral {
         /// Amount of collateral tokens to move from the vault back to
         /// `user_collateral_holding`.
         amount: u128,
+        /// Declared position identity, pinned by the position's own effect.
+        expected: PositionIdentity,
+        /// Declared `ProtocolParameters`, pinned by [`CheckParameters`].
+        parameters: ProtocolParameters,
+        /// Declared fee anchor, pinned by [`CheckAccumulator`].
+        accumulator: StabilityFeeAccumulator,
+        /// Declared redemption anchor, pinned by [`CheckRedemption`].
+        redemption: RedemptionPriceState,
+        /// Declared timestamp, pinned by [`CheckClock`].
+        now: u64,
     },
     /// Repay `amount` of outstanding stablecoin debt against an existing position.
     ///
@@ -375,7 +471,7 @@ pub enum Instruction {
     ///
     /// Required accounts (7), in order:
     /// 1. `owner` — authorized; bound to the position via PDA re-derivation.
-    /// 2. `position` — initialized, writable, owned by `self_program_id`.
+    /// 2. `position` — writable; at its `(owner, position_nonce)` PDA.
     /// 3. `stablecoin_definition` — initialized, writable via the chained `Token::Burn`; must
     ///    equal `protocol_parameters.stablecoin_definition_id`.
     /// 4. `user_stablecoin_holding` — authorized, initialized; same Token Program and definition
@@ -384,12 +480,392 @@ pub enum Instruction {
     /// 6. `protocol_parameters` — initialized, read-only; at its canonical PDA.
     /// 7. `clock` — the system `CLOCK_01` account; read-only.
     ///
-    /// `token_program_id` is derived from `user_stablecoin_holding.account.program_owner`.
-    /// `position_nonce` (for position PDA verification) is read from the decoded [`Position`].
+    /// The Token Program comes from the declared `ProtocolParameters` rather than
+    /// from the holding, and `position_nonce` — which the position PDA is
+    /// re-derived from — arrives in `expected` rather than being read out of the
+    /// stored record.
     RepayDebt {
         /// Amount of stablecoin debt to repay (also the amount burned from the user's holding).
         amount: u128,
+        /// Declared position identity, pinned by the position's own effect.
+        expected: PositionIdentity,
+        /// Declared `ProtocolParameters`, pinned by [`CheckParameters`].
+        parameters: ProtocolParameters,
+        /// Declared fee anchor, pinned by [`CheckAccumulator`].
+        accumulator: StabilityFeeAccumulator,
+        /// Declared timestamp, pinned by [`CheckClock`].
+        now: u64,
     },
+}
+
+// ─── Effect payloads ────────────────────────────────────────────────────────
+//
+// One struct per shard effect this program emits. Under v0.3.0 a plan half sees
+// no account data and an apply half sees exactly one shard, so every value that
+// used to be read from a second account is declared by the caller and pinned by
+// an effect on the shard it came from.
+//
+// Everything here is pinned *exactly* rather than bounded, and that is a cheaper
+// choice than it looks. Nine of these nineteen instructions read the clock, and a
+// timestamp is a value no bound is safe for — understating it makes a stale
+// oracle look fresh and understates accrued fees, overstating it overcharges. So
+// `now` is exact, which already means any of those instructions must be rebuilt
+// if the block advances under it. Exact-pinning the anchors it is projected
+// against adds no failure mode that the clock has not already imposed, and it
+// avoids having to pick a safe direction per field — a choice that differs by
+// instruction and, got wrong, is a solvency bug rather than a slippage one.
+
+/// Payload for writing a whole record into a shard that must be empty.
+///
+/// Used by `InitializeProgram` for its three globals and by `OpenPosition` for
+/// the position: both build their records entirely from instruction fields,
+/// account ids the plan can see, and the pinned clock.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Create {
+    pub data: ShardData,
+}
+
+/// Guard on the `CLOCK_01` shard: it must read exactly the declared time.
+///
+/// Exact, for the reason given above: there is no safe direction to round a
+/// timestamp that gates oracle freshness *and* scales accrued debt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckClock {
+    pub now: u64,
+}
+
+/// Guard on the `ProtocolParameters` shard: every field must be the stored one.
+///
+/// Fourteen instructions read this account — for the freeze flag, the bound
+/// definitions, the oracle handle, the fee and ratio, the admin and freeze
+/// handles. None of them can read it any more, so the whole record is declared
+/// and this pins it in one assertion. Carrying the whole record rather than a
+/// per-instruction subset is what stops a caller pairing a true
+/// `minimum_collateralization_ratio` with a forged `is_frozen`.
+///
+/// A declared value this guard pins is one the *plan* may branch on: that is how
+/// `!is_frozen` survives as a plan-phase check even though the plan cannot read
+/// the flag.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckParameters {
+    pub parameters: ProtocolParameters,
+}
+
+/// Guard on the `StabilityFeeAccumulator` shard: its anchor must be the stored
+/// one.
+///
+/// The *anchor* is pinned, not the projection. Projecting needs the fee rate and
+/// the clock as well, and only the position's own apply sees all three — so the
+/// arithmetic stays in one place (see [`FeeProjection`]) and what travels here
+/// is the pair of plain integers the shard actually holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckAccumulator {
+    pub accumulator: StabilityFeeAccumulator,
+}
+
+/// Guard on the `RedemptionPriceState` shard: its anchor must be the stored one.
+///
+/// Same reasoning as [`CheckAccumulator`] — the anchor is pinned and the
+/// projection is recomputed where it is used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckRedemption {
+    pub state: RedemptionPriceState,
+}
+
+/// Guard on the market-price oracle's shard, which belongs to the TWAP oracle
+/// program: the observation must be exactly the declared one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckOracle {
+    pub price: u128,
+    pub timestamp: u64,
+}
+
+/// Guard on an oracle shard: it must quote exactly this asset pair.
+///
+/// `InitializeProgram` and `SetMarketPriceOracle` both bind an oracle, and
+/// neither may bind one quoting some other pair. The pair they compare against
+/// is itself pinned — at bootstrap by the account ids the plan can see, and on
+/// rotation by the `ProtocolParameters` shard's own apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckOraclePair {
+    pub base_asset: AccountId,
+    pub quote_asset: AccountId,
+}
+
+/// Guard on a Token Program definition shard: it must be a fungible definition.
+///
+/// Only `InitializeProgram` needs it, and only for the collateral token — a
+/// one-shot binding that cannot be corrected later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckFungibleDefinition;
+
+/// Guard on a Token Program holding shard: it must hold exactly `balance` of
+/// exactly the asset `descriptor` names.
+///
+/// Two instructions read a vault balance and both have to. `DepositCollateral`
+/// reconciles the position *from* the vault rather than incrementing it, so a
+/// balance donated straight into the vault is absorbed instead of stranded;
+/// `ClosePosition` refuses to clear a position whose vault still holds anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckHoldingBalance {
+    pub descriptor: token_core::TokenDescriptor,
+    pub balance: u128,
+}
+
+/// Guard on a Token Program holding shard: it must hold nothing yet.
+///
+/// `OpenPosition` chains a `Token::InitializeAccount` for the position's vault,
+/// and that call is authorized by the vault's PDA seed — which means the Token
+/// Program would happily re-initialize a vault that already held a balance,
+/// zeroing it. Unreachable in practice, since only this program holds that seed
+/// and only one `(owner, nonce)` derives that vault, but the cost of being wrong
+/// is stranded collateral, so it is asserted rather than argued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckHoldingAbsent;
+
+/// The pinned inputs the stability-fee projection needs, none of which live in
+/// the shard being projected onto.
+///
+/// `accumulator` is pinned by [`CheckAccumulator`], `stability_fee_per_millisecond`
+/// is copied out of the [`CheckParameters`] record the same plan declares, and
+/// `now` is pinned by [`CheckClock`]. The fee is copied rather than declared
+/// separately so the parameters guard pins it too — there is no second input to
+/// lie about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct FeeProjection {
+    pub accumulator: StabilityFeeAccumulator,
+    pub stability_fee_per_millisecond: u128,
+    pub now: u64,
+}
+
+impl FeeProjection {
+    /// The accumulator projected to `now` (spec §5.3).
+    #[must_use]
+    pub fn current_rate(&self) -> u128 {
+        math::compute_current_accumulated_rate(
+            self.accumulator.accumulated_rate_at_last_accrual,
+            self.stability_fee_per_millisecond,
+            self.accumulator.last_accrued_at,
+            self.now,
+        )
+    }
+
+    /// [`current_rate`](Self::current_rate) widened for the §6.2 comparison,
+    /// where a fee at its permitted bound outgrows `u128`.
+    #[must_use]
+    pub fn current_rate_wide(&self) -> alloy_primitives::U512 {
+        math::compute_current_accumulated_rate_wide(
+            self.accumulator.accumulated_rate_at_last_accrual,
+            self.stability_fee_per_millisecond,
+            self.accumulator.last_accrued_at,
+            self.now,
+        )
+    }
+
+    /// The accumulator advanced to `now`, as the record to store.
+    #[must_use]
+    pub fn advanced(&self) -> StabilityFeeAccumulator {
+        StabilityFeeAccumulator {
+            accumulated_rate_at_last_accrual: self.current_rate(),
+            last_accrued_at: self.now,
+        }
+    }
+}
+
+/// Everything the §6.2 collateralization check needs beyond the position itself.
+///
+/// The position's own shard holds its collateral and normalized debt; the
+/// accumulator, the redemption price and the minimum ratio live in three other
+/// accounts. This is the pin chain for all three: each arrives declared, each is
+/// held to its own shard by its own guard, and the position's apply is the one
+/// place that sees them together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CollateralizationInputs {
+    pub fee: FeeProjection,
+    pub redemption: RedemptionPriceState,
+    pub minimum_collateralization_ratio: u128,
+}
+
+impl CollateralizationInputs {
+    /// The redemption price projected to `now`, in `U512` (spec §5.3).
+    ///
+    /// A redemption rate at the controller's permitted limit outgrows `u128`
+    /// about 45 minutes out, and this value is only ever compared.
+    #[must_use]
+    pub fn current_redemption_price_wide(&self) -> alloy_primitives::U512 {
+        math::compute_current_redemption_price_wide(
+            self.redemption.redemption_price_at_last_update,
+            self.redemption.redemption_rate_per_millisecond,
+            self.redemption.last_updated_at,
+            self.fee.now,
+        )
+    }
+}
+
+/// What a position's apply pins about the position it is rewriting.
+///
+/// `position_nonce` has to be declared now: every position instruction except
+/// `OpenPosition` used to read it out of the stored record to re-derive the
+/// position PDA. Declaring it is safe because the plan's own address assertion
+/// is what checks it — a wrong nonce derives a different address — and this guard
+/// then catches a stored `owner_account_id` or `vault_account_id` that has
+/// drifted out of step with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct PositionIdentity {
+    pub owner_account_id: AccountId,
+    pub position_nonce: u64,
+    pub vault_account_id: AccountId,
+}
+
+impl From<&Position> for PositionIdentity {
+    fn from(position: &Position) -> Self {
+        Self {
+            owner_account_id: position.owner_account_id,
+            position_nonce: position.position_nonce,
+            vault_account_id: position.vault_account_id,
+        }
+    }
+}
+
+/// One admin parameter change, applied by the `ProtocolParameters` shard itself.
+///
+/// Bundled into one effect rather than one per setter so the admin gate is
+/// written once. Each variant carries only what its instruction overwrites,
+/// plus — where the change depends on a field of the record being changed — the
+/// value it expects to find there, so the apply can pin it before acting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum ParameterChange {
+    MinimumCollateralizationRatio(u128),
+    ControllerGains {
+        proportional: i128,
+        integral: i128,
+    },
+    TimingParameters {
+        minimum_milliseconds_between_rate_updates: u64,
+        maximum_oracle_price_age_milliseconds: u64,
+    },
+    Admin(AccountId),
+    FreezeAuthority(AccountId),
+    /// Rotating the oracle must not change the pair it quotes. The replacement's
+    /// actual pair is pinned to these two ids by [`CheckOraclePair`], and these
+    /// two ids are pinned to the bound definitions here — so the chain closes
+    /// without this apply ever seeing the oracle account.
+    MarketPriceOracle {
+        new_oracle_id: AccountId,
+        /// Shard key of the replacement — see
+        /// [`ProtocolParameters::market_price_oracle_program_id`].
+        new_oracle_program_id: AccountId,
+        expected_base_asset: AccountId,
+        expected_quote_asset: AccountId,
+    },
+    /// The fee change accrues at the *old* rate first, so it is never
+    /// retroactive. The accrual happens in the accumulator's own shard, which
+    /// cannot see this record — so the old rate travels there as a declared
+    /// value and `old_rate` is what pins it here.
+    StabilityFee {
+        old_rate: u128,
+        new_rate: u128,
+    },
+}
+
+/// Payload of every admin setter's effect on the `ProtocolParameters` shard.
+///
+/// The plan can report *which* account claims to be the admin and whether it
+/// signed; whether it is the real admin is stored in this shard and nowhere
+/// else, so that comparison travels here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct UpdateParameters {
+    pub expected_admin: AccountId,
+    pub change: ParameterChange,
+}
+
+/// Payload of `Freeze` / `Unfreeze`'s effect on the `ProtocolParameters` shard.
+///
+/// Separate from [`UpdateParameters`] because the gate is a different handle: the
+/// freeze authority, not the admin. (Rotating the freeze authority is an *admin*
+/// action, so a compromised freeze authority cannot entrench itself.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct SetFrozen {
+    pub expected_freeze_authority: AccountId,
+    pub is_frozen: bool,
+}
+
+/// Payload of the effect that advances the stability-fee accumulator.
+///
+/// Shared by `AccrueStabilityFee`, `RefreshGlobals` and
+/// `SetStabilityFeePerMillisecond` — the last of which is why the rate is
+/// carried rather than read: by the time that instruction's parameters apply has
+/// run, the stored rate is the new one, and the accrual must use the old.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct AccrueFee {
+    pub stability_fee_per_millisecond: u128,
+    pub now: u64,
+}
+
+/// Payload of the effect that runs one redemption-rate controller tick.
+///
+/// Every gate input is declared and pinned elsewhere: the oracle observation by
+/// [`CheckOracle`], the two timing bounds and the two gains by
+/// [`CheckParameters`], and `now` by [`CheckClock`]. The state the tick reads and
+/// rewrites — the price anchor, the rate and the integral term — is in the shard
+/// being applied to, so it is not declared at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct AdvanceRedemption {
+    pub oracle_price: u128,
+    pub oracle_timestamp: u64,
+    pub maximum_oracle_price_age_milliseconds: u64,
+    pub minimum_milliseconds_between_rate_updates: u64,
+    pub controller_proportional_gain: i128,
+    pub controller_integral_gain: i128,
+    pub now: u64,
+}
+
+/// Payload of `DepositCollateral`'s effect on the position shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct DepositCollateral {
+    pub expected: PositionIdentity,
+    /// The vault's balance *before* the chained transfer, pinned by
+    /// [`CheckHoldingBalance`]. Every effect of a call runs before any of its
+    /// chained calls, so this is the pre-transfer figure — which is the one the
+    /// reconciliation wants.
+    pub vault_balance: u128,
+    pub amount: u128,
+}
+
+/// Payload of `GenerateDebt`'s effect on the position shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct GenerateDebt {
+    pub expected: PositionIdentity,
+    pub amount: u128,
+    pub inputs: CollateralizationInputs,
+}
+
+/// Payload of `WithdrawCollateral`'s effect on the position shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct WithdrawCollateral {
+    pub expected: PositionIdentity,
+    pub amount: u128,
+    pub inputs: CollateralizationInputs,
+}
+
+/// Payload of `RepayDebt`'s effect on the position shard.
+///
+/// Repayment needs the fee projection but not the redemption price: it only
+/// shrinks debt, and §6.2 is never tightened by a repayment. Declaring the
+/// redemption anchor anyway would pin a value nothing reads, and so would make
+/// the instruction fail whenever the controller ticked — a failure mode bought
+/// for nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct RepayDebt {
+    pub expected: PositionIdentity,
+    pub amount: u128,
+    pub fee: FeeProjection,
+}
+
+/// Payload of `ClosePosition`'s effect on the position shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct ClosePosition {
+    pub expected: PositionIdentity,
 }
 
 /// Persistent state held by a Stablecoin [`Position`] account.
@@ -420,21 +896,21 @@ pub struct Position {
     pub opened_at: u64,
 }
 
-impl TryFrom<&Data> for Position {
+impl TryFrom<&ShardData> for Position {
     type Error = std::io::Error;
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+    fn try_from(data: &ShardData) -> Result<Self, Self::Error> {
         Self::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&Position> for Data {
+impl From<&Position> for ShardData {
     fn from(position: &Position) -> Self {
         let len = borsh::object_length(position).expect("Position length must be known");
         let mut buf = Vec::with_capacity(len);
         BorshSerialize::serialize(position, &mut buf)
             .expect("Position serialization should not fail");
-        Self::try_from(buf).expect("Position encoded data should fit into Data")
+        Self::try_from(buf).expect("Position encoded data should fit into ShardData")
     }
 }
 
@@ -506,8 +982,8 @@ pub fn compute_position_vault_pda(
 /// # Panics
 /// If `position.account_id` does not match the derived PDA.
 pub fn verify_position_and_get_seed(
-    position: &AccountWithMetadata,
-    owner: &AccountWithMetadata,
+    position: &AccountMeta,
+    owner: &AccountMeta,
     position_nonce: u64,
     stablecoin_program_id: AccountId,
 ) -> PdaSeed {
@@ -527,7 +1003,7 @@ pub fn verify_position_and_get_seed(
 /// If `vault.account_id` does not match the address derived from `position_id` and
 /// `stablecoin_program_id`.
 pub fn verify_position_vault_and_get_seed(
-    vault: &AccountWithMetadata,
+    vault: &AccountMeta,
     position_id: AccountId,
     stablecoin_program_id: AccountId,
 ) -> PdaSeed {
@@ -600,33 +1076,126 @@ mod global_pda_tests {
 /// through `serde_json`, which stopped being the instruction wire format in v0.2.5; testing
 /// it would have asserted an encoding nothing reads.
 #[cfg(test)]
+#[expect(
+    clippy::integer_division,
+    clippy::panic,
+    reason = "fixtures derive ratios from FIXED_POINT_ONE and assert the decoded variant"
+)]
 mod instruction_tests {
     use super::*;
     use crate::math::FIXED_POINT_ONE;
 
-    #[test]
-    fn accrue_stability_fee_borsh_roundtrip() {
-        let encoded = borsh::to_vec(&Instruction::AccrueStabilityFee).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(decoded, Instruction::AccrueStabilityFee));
+    const T: u64 = 1_700_000_600_000;
+
+    fn sample_parameters() -> ProtocolParameters {
+        ProtocolParameters {
+            admin_account_id: AccountId::new([0xAA; 32]),
+            freeze_authority_account_id: AccountId::new([0xFF; 32]),
+            stablecoin_definition_id: AccountId::new([0x01; 32]),
+            collateral_definition_id: AccountId::new([0x02; 32]),
+            market_price_oracle_id: AccountId::new([0x03; 32]),
+            token_program_id: AccountId::new([0x04; 32]),
+            market_price_oracle_program_id: AccountId::new([0x05; 32]),
+            stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000,
+            controller_proportional_gain: -123_456_789,
+            controller_integral_gain: 987_654_321,
+            minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
+            minimum_milliseconds_between_rate_updates: 300_000,
+            maximum_oracle_price_age_milliseconds: 900_000,
+            is_frozen: false,
+        }
     }
 
-    #[test]
-    fn update_redemption_rate_borsh_roundtrip() {
-        let encoded = borsh::to_vec(&Instruction::UpdateRedemptionRate).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(decoded, Instruction::UpdateRedemptionRate));
+    fn sample_accumulator() -> StabilityFeeAccumulator {
+        StabilityFeeAccumulator {
+            accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
+            last_accrued_at: T,
+        }
     }
 
-    #[test]
-    fn admin_setter_borsh_roundtrips() {
-        for instruction in [
+    fn sample_redemption() -> RedemptionPriceState {
+        RedemptionPriceState {
+            redemption_price_at_last_update: FIXED_POINT_ONE / 2,
+            redemption_rate_per_millisecond: FIXED_POINT_ONE,
+            controller_integral_term: -7,
+            last_updated_at: T,
+        }
+    }
+
+    fn sample_identity() -> PositionIdentity {
+        PositionIdentity {
+            owner_account_id: AccountId::new([0x11; 32]),
+            position_nonce: 9,
+            vault_account_id: AccountId::new([0x12; 32]),
+        }
+    }
+
+    /// One of every variant, in the enum's own order.
+    fn every_variant() -> Vec<Instruction> {
+        vec![
+            Instruction::InitializeProgram {
+                freeze_authority_account_id: AccountId::new([0xFF; 32]),
+                initial_stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000,
+                initial_controller_proportional_gain: -42,
+                initial_controller_integral_gain: 123_456,
+                initial_minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
+                minimum_milliseconds_between_rate_updates: 300_000,
+                maximum_oracle_price_age_milliseconds: 900_000,
+                initial_redemption_price: FIXED_POINT_ONE / 2,
+                stablecoin_name: "test-stable".to_owned(),
+                now: T,
+            },
+            Instruction::AccrueStabilityFee {
+                parameters: sample_parameters(),
+                now: T,
+            },
+            Instruction::UpdateRedemptionRate {
+                parameters: sample_parameters(),
+                oracle_price: FIXED_POINT_ONE / 4,
+                oracle_timestamp: T - 1_000,
+                now: T,
+            },
+            Instruction::RefreshGlobals {
+                parameters: sample_parameters(),
+                oracle_price: FIXED_POINT_ONE / 4,
+                oracle_timestamp: T - 1_000,
+                now: T,
+            },
+            Instruction::OpenPosition {
+                position_nonce: 9,
+                initial_collateral_amount: 1_000,
+                parameters: sample_parameters(),
+                now: T,
+            },
+            Instruction::DepositCollateral {
+                amount: 250,
+                expected: sample_identity(),
+                vault_balance: 1_000,
+                parameters: sample_parameters(),
+            },
+            Instruction::GenerateDebt {
+                amount: 500,
+                expected: sample_identity(),
+                parameters: sample_parameters(),
+                accumulator: sample_accumulator(),
+                redemption: sample_redemption(),
+                oracle_price: FIXED_POINT_ONE / 4,
+                oracle_timestamp: T - 1_000,
+                now: T,
+            },
+            Instruction::ClosePosition {
+                expected: sample_identity(),
+                parameters: sample_parameters(),
+            },
             Instruction::SetMinimumCollateralizationRatio { new_ratio: 3 },
             Instruction::SetControllerGains {
                 new_proportional_gain: -1,
                 new_integral_gain: 2,
             },
-            Instruction::SetMarketPriceOracle,
+            Instruction::SetMarketPriceOracle {
+                expected_base_asset: AccountId::new([0x01; 32]),
+                expected_quote_asset: AccountId::new([0x02; 32]),
+            },
             Instruction::SetTimingParameters {
                 new_minimum_milliseconds_between_rate_updates: 4,
                 new_maximum_oracle_price_age_milliseconds: 5,
@@ -637,7 +1206,34 @@ mod instruction_tests {
             Instruction::SetFreezeAuthority {
                 new_freeze_authority_account_id: AccountId::new([2u8; 32]),
             },
-        ] {
+            Instruction::SetStabilityFeePerMillisecond {
+                new_rate: 7,
+                old_rate: 6,
+                now: T,
+            },
+            Instruction::Freeze,
+            Instruction::Unfreeze,
+            Instruction::WithdrawCollateral {
+                amount: 250,
+                expected: sample_identity(),
+                parameters: sample_parameters(),
+                accumulator: sample_accumulator(),
+                redemption: sample_redemption(),
+                now: T,
+            },
+            Instruction::RepayDebt {
+                amount: 100,
+                expected: sample_identity(),
+                parameters: sample_parameters(),
+                accumulator: sample_accumulator(),
+                now: T,
+            },
+        ]
+    }
+
+    #[test]
+    fn every_variant_borsh_roundtrips() {
+        for instruction in every_variant() {
             let encoded = borsh::to_vec(&instruction).expect("serialize");
             let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
             assert_eq!(
@@ -648,51 +1244,27 @@ mod instruction_tests {
         }
     }
 
+    /// Borsh tags the variant by its index in the enum, and `spel-cli` derives
+    /// that index from the IDL — which is the guest's source order. So the two
+    /// orders must agree, and this pins the enum's half of the contract: a
+    /// variant inserted rather than appended shifts every tag after it.
     #[test]
-    fn set_stability_fee_per_millisecond_borsh_roundtrip() {
-        let instruction = Instruction::SetStabilityFeePerMillisecond { new_rate: 7 };
-        let encoded = borsh::to_vec(&instruction).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(
-            decoded,
-            Instruction::SetStabilityFeePerMillisecond { new_rate: 7 }
-        ));
+    fn the_variant_tag_is_the_declaration_index() {
+        let variants = every_variant();
+        assert_eq!(variants.len(), 19);
+        for (index, instruction) in variants.iter().enumerate() {
+            let encoded = borsh::to_vec(instruction).expect("serialize");
+            assert_eq!(
+                usize::from(encoded[0]),
+                index,
+                "variant {index} does not carry its declaration index as its tag"
+            );
+        }
     }
 
     #[test]
-    fn freeze_borsh_roundtrip() {
-        let encoded = borsh::to_vec(&Instruction::Freeze).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(decoded, Instruction::Freeze));
-    }
-
-    #[test]
-    fn unfreeze_borsh_roundtrip() {
-        let encoded = borsh::to_vec(&Instruction::Unfreeze).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(decoded, Instruction::Unfreeze));
-    }
-
-    #[test]
-    fn refresh_globals_borsh_roundtrip() {
-        let encoded = borsh::to_vec(&Instruction::RefreshGlobals).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(decoded, Instruction::RefreshGlobals));
-    }
-
-    #[test]
-    fn initialize_program_borsh_roundtrip() {
-        let original = Instruction::InitializeProgram {
-            freeze_authority_account_id: AccountId::new([0xFF; 32]),
-            initial_stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000,
-            initial_controller_proportional_gain: -42,
-            initial_controller_integral_gain: 123_456,
-            initial_minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
-            minimum_milliseconds_between_rate_updates: 300_000,
-            maximum_oracle_price_age_milliseconds: 900_000,
-            initial_redemption_price: FIXED_POINT_ONE / 2,
-            stablecoin_name: "test-stable".to_owned(),
-        };
+    fn initialize_program_decodes_every_field() {
+        let original = every_variant().remove(0);
         let encoded = borsh::to_vec(&original).expect("serialize");
         let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         match decoded {
@@ -706,6 +1278,7 @@ mod instruction_tests {
                 maximum_oracle_price_age_milliseconds,
                 initial_redemption_price,
                 stablecoin_name,
+                now,
             } => {
                 assert_eq!(freeze_authority_account_id, AccountId::new([0xFF; 32]));
                 assert_eq!(
@@ -722,6 +1295,7 @@ mod instruction_tests {
                 assert_eq!(maximum_oracle_price_age_milliseconds, 900_000);
                 assert_eq!(initial_redemption_price, FIXED_POINT_ONE / 2);
                 assert_eq!(stablecoin_name, "test-stable");
+                assert_eq!(now, T);
             }
             _ => panic!("decoded into wrong variant"),
         }

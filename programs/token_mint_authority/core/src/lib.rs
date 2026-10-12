@@ -15,11 +15,39 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, Data},
-    program::PdaSeed,
+    account::{AccountId, ShardData},
+    program::{AccountMeta, PdaSeed},
 };
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
+
+/// Guard payload: the clock must be at or past the declared time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckClock {
+    pub now: u64,
+}
+
+/// Guard payload: the faucet token's stored mint authority must be this
+/// program's authority PDA.
+///
+/// Reads the Token Program's definition shard. Without it the chained
+/// `MintWithAuthority` would still fail, but with token's error rather than a
+/// faucet-level one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckFaucetAuthority {
+    pub mint_authority_id: AccountId,
+}
+
+/// Effect payload: stamp this recipient's allowance, subject to the cooldown.
+///
+/// The cooldown compares against bytes in *our own* shard, so unlike the clock
+/// there is nothing to declare — the apply reads the previous stamp itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct RecordMint {
+    pub recipient_id: AccountId,
+    pub definition_id: AccountId,
+    pub now: u64,
+}
 
 /// One whole faucet token in base units (18 decimals), i.e. `1e18`.
 pub const ONE_TOKEN: u128 = 1_000_000_000_000_000_000;
@@ -76,7 +104,17 @@ pub enum Instruction {
     /// 6. `clock` — the system `CLOCK_01` account; read-only. Anchors the cooldown. (The pinned
     ///    spel-framework exposes no `ProgramContext` clock, so wall-clock time is read from this
     ///    account.)
-    FaucetMint,
+    FaucetMint {
+        /// Wall-clock milliseconds the caller claims the chain is at.
+        ///
+        /// A pinned read of the `CLOCK_01` account, bounded rather than exact: the
+        /// guard asserts `now <= clock.timestamp`, so a caller may only ever
+        /// *understate* the time. Understating makes the cooldown look un-elapsed
+        /// and stores an older `last_mint_ms`, both of which keep the faucet more
+        /// throttled, never less. An exact `==` would instead make every faucet
+        /// call race the next block.
+        now: u64,
+    },
 }
 
 /// Per-`(recipient, token definition)` rate-limit state.
@@ -95,21 +133,21 @@ pub struct MintAllowance {
     pub last_mint_ms: u64,
 }
 
-impl TryFrom<&Data> for MintAllowance {
+impl TryFrom<&ShardData> for MintAllowance {
     type Error = std::io::Error;
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+    fn try_from(data: &ShardData) -> Result<Self, Self::Error> {
         Self::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&MintAllowance> for Data {
+impl From<&MintAllowance> for ShardData {
     fn from(state: &MintAllowance) -> Self {
         let len = borsh::object_length(state).expect("MintAllowance length must be known");
         let mut buf = Vec::with_capacity(len);
         BorshSerialize::serialize(state, &mut buf)
             .expect("MintAllowance serialization should not fail");
-        Self::try_from(buf).expect("MintAllowance encoded data should fit into Data")
+        Self::try_from(buf).expect("MintAllowance encoded data should fit into ShardData")
     }
 }
 
@@ -177,7 +215,7 @@ pub fn compute_mint_allowance_pda(
 /// # Panics
 /// If `mint_authority.account_id` does not match the derived PDA.
 pub fn verify_mint_authority_and_get_seed(
-    mint_authority: &AccountWithMetadata,
+    mint_authority: &AccountMeta,
     token_mint_authority_program_id: AccountId,
 ) -> PdaSeed {
     let seed = compute_mint_authority_pda_seed();
@@ -195,7 +233,7 @@ pub fn verify_mint_authority_and_get_seed(
 /// # Panics
 /// If `mint_allowance.account_id` does not match the derived PDA.
 pub fn verify_mint_allowance_and_get_seed(
-    mint_allowance: &AccountWithMetadata,
+    mint_allowance: &AccountMeta,
     recipient_id: AccountId,
     definition_id: AccountId,
     token_mint_authority_program_id: AccountId,
@@ -224,7 +262,7 @@ mod tests {
     #[test]
     fn borsh_roundtrip_allowance() {
         let state = sample();
-        let data: Data = (&state).into();
+        let data: ShardData = (&state).into();
         let decoded = MintAllowance::try_from(&data).expect("decode");
         assert_eq!(decoded, state);
     }

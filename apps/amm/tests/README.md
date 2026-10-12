@@ -50,6 +50,22 @@ creates a seeded pool, and writes the test token config.
 From the **repo root**, with `wallet` / `spel` / `cargo` / `nix` on `PATH`, a
 local sequencer running, and the guest binaries built (`make build-programs`):
 
+> **Rebuild BOTH `spel` and `wallet` against LEZ v0.3.0 first.** They share the
+> wallet storage format, so a mismatched pair fails with `Failed to parse storage
+> file: invalid type: integer 0, expected a string` — and neither reports its LEZ
+> version (`wallet --version` prints only `0.1.0`), so compare build dates if in
+> doubt. `spel` additionally needs struct instruction arguments to encode `--facts`;
+> an older one refuses it with *"only enum arguments are supported"*.
+>
+> ```bash
+> cargo install --path <spel>/spel-cli --bin spel --locked     # v0.3.0-compat branch
+> cargo install --git https://github.com/logos-blockchain/logos-execution-zone.git \
+>   --tag v0.3.0 -p wallet --locked
+> ```
+>
+> The setup script then re-restores `testnet/.wallet` by itself if its `storage.json`
+> is in the pre-v0.3.0 format (it moves the old file aside).
+
 ```bash
 # 0. Once: build the JS test framework (symlinked where swap.mjs expects it)
 nix build .#test-framework -o apps/amm/result-mcp
@@ -86,6 +102,32 @@ Headless CI variant (no window, launches the app itself, pass/fail only):
 ```bash
 nix build .#integration-test -L
 ```
+
+## LEZ v0.3.0 notes
+
+A plan phase can no longer read a shard, so values a program used to look up now
+travel in the instruction and are pinned on chain by a guard on the shard they came
+from. That reaches the tests in four places:
+
+- **`setup-amm-testnet.sh`'s `new-definition`** declares `--facts` (read back from
+  the config account, the way `amm_ffi`'s `load_config` does),
+  `--definition-token-a/b-id`, and `--now`.
+- **`now` is pinned exactly** for the AMM, and the clock advances every block, so a
+  read-then-submit races it. `run_tx_at_clock` re-reads the clock and resubmits —
+  the oracle's own docs call this "the keeper's problem, not a correctness one".
+  `faucet-swap.mjs` needs no retry: the faucet's guard is deliberately *bounded*
+  (`now <= timestamp`), so one read stays true.
+- **`spel inspect` requires `--program`**: an account holds one shard per program,
+  so there is no single "the account's data" to decode.
+- **The native balance became a shard**, so `wallet account get` prints
+  `Balance <n>, nonce <m>`; the `"balance"` JSON key the funding checks used to grep
+  is gone.
+
+The five UI-driven tests (`swap`, `create-pool`, `add-liquidity`,
+`remove-liquidity`, `custom-token`) needed no changes: they read and submit through
+the app's own backend, so the AMM module's FFI supplies every declared value.
+`faucet-swap.mjs` is the one that calls `spel` directly, hence the edits above plus
+`--kind Fungible` on `initialize-account`.
 
 ## Notes
 

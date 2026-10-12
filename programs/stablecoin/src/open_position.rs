@@ -1,164 +1,126 @@
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
-};
-use stablecoin_core::{
-    compute_protocol_parameters_pda, verify_position_and_get_seed,
-    verify_position_vault_and_get_seed, Position, ProtocolParameters,
-};
-use token_core::TokenHolding;
+//! `Instruction::OpenPosition` (spec §10.4).
 
-/// Open a new collateral-only position for `owner`.
+use lee_core::{
+    account::{AccountId, ProgramShardSelector, ShardData},
+    program::{AccountMeta, ChainedCall},
+};
+use stablecoin_core::{Position, ProtocolParameters};
+use token_core::{TokenDescriptor, TokenKind};
+
+/// Plan half: derive the position and vault addresses, build the position
+/// record, and chain the two token calls that materialize and fund the vault.
 ///
-/// This claims the [`Position`] PDA, issues two chained token-program calls under the
-/// stablecoin's PDA authority, and stores `collateral_amount` with `debt_amount = 0`:
-/// 1. `InitializeAccount` materializes the vault token holding for the collateral.
-/// 2. `Transfer` moves `collateral_amount` collateral tokens from the user's holding into the
-///    freshly initialized vault.
+/// The position starts with no debt — spec §10.4 deliberately omits an
+/// initial-debt parameter; borrowing is a separate `GenerateDebt`.
 ///
-/// `debt_amount` is deferred to a future `generate_debt` instruction and is intentionally
-/// not parameterized here.
+/// `!is_frozen` survives as a plan-phase check even though the plan cannot read
+/// the flag: it is read off the declared parameters, which the parameters guard
+/// pins to the shard. A declared value a guard pins is one the plan may branch
+/// on, and that is what keeps the freeze gate where it belongs.
+///
+/// Three v0.2.5 reads are gone with nothing declared in their place, because the
+/// chained calls already carry what they established. The vault's token is pinned
+/// by `InitializeAccount`, which names the collateral definition; the user
+/// holding's token is pinned by the `Transfer` descriptor; and the Token Program
+/// is pinned by [`assert_token_program`](crate::shared::assert_token_program)
+/// against the bound one.
 ///
 /// # Panics
-/// - `owner` or `user_collateral_holding` is not authorized.
-/// - `position` or `vault` is already initialized.
-/// - `position.account_id` / `vault.account_id` do not match their PDA derivations.
-/// - `protocol_parameters` is uninitialized, not owned by `stablecoin_program_id`, not at
-///   `compute_protocol_parameters_pda(stablecoin_program_id)`, or does not decode.
-/// - `protocol_parameters.is_frozen` is set.
-/// - `collateral_definition.account_id` does not match
-///   `protocol_parameters.collateral_definition_id`.
-/// - `clock` is not the system `CLOCK_01` account, or is uninitialized.
-/// - `user_collateral_holding` cannot be decoded as a [`TokenHolding`].
-/// - `user_collateral_holding`'s definition does not match `collateral_definition`.
-/// - `collateral_definition.program_owner` does not match `user_collateral_holding.program_owner`.
-#[allow(
+/// - `owner` or `user_collateral_holding` did not sign.
+/// - `protocol_parameters` is not at its canonical PDA.
+/// - `clock` is not the system `CLOCK_01` shard.
+/// - the protocol is frozen.
+/// - `collateral_definition` is not the bound collateral definition.
+/// - any token slot does not select the bound Token Program's shard.
+/// - `position` or `vault` is not at its PDA derivation.
+#[expect(
     clippy::too_many_arguments,
-    reason = "account inputs + program id + nonce + amount are all required; a param struct would obscure the host-call ABI"
+    reason = "the account inputs mirror the spec §10.4 ABI, plus the declared parameters and clock"
 )]
-pub fn open_position(
-    owner: AccountWithMetadata,
-    position: AccountWithMetadata,
-    vault: AccountWithMetadata,
-    user_collateral_holding: AccountWithMetadata,
-    collateral_definition: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    clock: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
+#[must_use]
+pub fn plan_open_position(
+    owner: &AccountMeta,
+    position: &AccountMeta,
+    vault: &AccountMeta,
+    user_collateral_holding: &AccountMeta,
+    collateral_definition: &AccountMeta,
+    protocol_parameters: &AccountMeta,
+    clock: &AccountMeta,
+    parameters: &ProtocolParameters,
+    now: u64,
     position_nonce: u64,
     initial_collateral_amount: u128,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
+    stablecoin_program_id: AccountId,
+) -> (ShardData, Vec<ChainedCall>) {
     assert!(owner.is_authorized, "Owner authorization is missing");
     assert!(
         user_collateral_holding.is_authorized,
         "User collateral holding authorization is missing"
     );
-    assert_eq!(
-        position.account,
-        Account::default(),
-        "Position account must be uninitialized"
-    );
-    assert_eq!(
-        vault.account,
-        Account::default(),
-        "Position vault account must be uninitialized"
-    );
-
-    assert_ne!(
-        protocol_parameters.account,
-        Account::default(),
-        "ProtocolParameters account must be initialized"
-    );
-    assert_eq!(
-        protocol_parameters.account.program_owner, stablecoin_program_id,
-        "ProtocolParameters account must be owned by the stablecoin program"
-    );
-    // Ownership and a successful decode are not enough: without pinning the
-    // address, any stablecoin-owned account that happens to decode as
-    // ProtocolParameters could stand in for the global config and bypass both
-    // the freeze flag and the collateral binding below.
-    assert_eq!(
-        protocol_parameters.account_id,
-        compute_protocol_parameters_pda(stablecoin_program_id),
-        "ProtocolParameters account ID does not match expected PDA derivation"
-    );
-    let parameters = ProtocolParameters::try_from(&protocol_parameters.account.data)
-        .expect("ProtocolParameters must decode");
+    crate::shared::assert_parameters_slot(protocol_parameters, stablecoin_program_id);
+    crate::shared::assert_canonical_clock(clock);
     assert!(!parameters.is_frozen, "Protocol is frozen");
     assert_eq!(
         collateral_definition.account_id, parameters.collateral_definition_id,
         "Collateral definition does not match the one bound at initialize_program"
     );
-
-    let now = crate::accrue_stability_fee::read_clock(&clock);
-
-    let user_collateral_holding_definition_id =
-        TokenHolding::try_from(&user_collateral_holding.account.data)
-            .expect("User collateral holding must be a valid TokenHolding")
-            .definition_id();
-    assert_eq!(
-        user_collateral_holding_definition_id, collateral_definition.account_id,
-        "User collateral holding does not match the collateral definition"
+    crate::shared::assert_token_program(collateral_definition, parameters, "Collateral definition");
+    crate::shared::assert_token_program(
+        user_collateral_holding,
+        parameters,
+        "User collateral holding",
     );
-    let token_program_id = user_collateral_holding.account.program_owner;
-    assert_eq!(
-        collateral_definition.account.program_owner, token_program_id,
-        "Collateral definition is not owned by the user collateral holding's Token Program"
+    crate::shared::assert_token_program(vault, parameters, "Position vault");
+
+    let vault_seed = crate::shared::assert_position_and_vault_slots(
+        position,
+        vault,
+        owner,
+        position_nonce,
+        stablecoin_program_id,
     );
 
-    // Both calls assert the PDA derivation; only the vault seed is carried
-    // further, as the authority for the chained InitializeAccount.
-    verify_position_and_get_seed(&position, &owner, position_nonce, stablecoin_program_id);
-    let vault_seed =
-        verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
-
-    let vault_id = vault.account_id;
-    let user_collateral_holding_id = user_collateral_holding.account_id;
-    let collateral_definition_id = collateral_definition.account_id;
-
-    // Writing the position data is itself the ownership claim on the position
-    // PDA — v0.2.5 acquires ownership on data write, so no `Claim::Pda`.
-    let position_data = Data::from(&Position {
+    let position_data = ShardData::from(&Position {
         owner_account_id: owner.account_id,
         position_nonce,
-        vault_account_id: vault_id,
+        vault_account_id: vault.account_id,
         collateral_amount: initial_collateral_amount,
         normalized_debt_amount: 0,
         opened_at: now,
     });
 
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(owner),
-        AccountStateDiff::new(position, BalanceDiff::Add(0), position_data),
-        AccountStateDiff::unchanged(vault),
-        AccountStateDiff::unchanged(user_collateral_holding),
-        AccountStateDiff::unchanged(collateral_definition),
-        AccountStateDiff::unchanged(protocol_parameters),
-        AccountStateDiff::unchanged(clock),
-    ];
+    let token_program_id = parameters.token_program_id;
+    let descriptor = TokenDescriptor {
+        definition_id: parameters.collateral_definition_id,
+        kind: TokenKind::Fungible,
+    };
 
-    // Chained Token::InitializeAccount makes the vault a Token holding. The
-    // Stablecoin program authorizes that write by passing the vault PDA seed —
-    // the call ships account ids, so there is no pre-state flag to set.
+    // Materialize the vault as a Token holding for the collateral. The vault's
+    // PDA seed is the whole of the authority — a chained call ships shard
+    // selectors, not authorized accounts.
     let initialize_call = ChainedCall::new(
         token_program_id,
-        vec![collateral_definition_id, vault_id],
-        &token_core::Instruction::InitializeAccount,
+        vec![
+            ProgramShardSelector::new(collateral_definition.account_id, token_program_id),
+            ProgramShardSelector::new(vault.account_id, token_program_id),
+        ],
+        &token_core::Instruction::InitializeAccount {
+            kind: TokenKind::Fungible,
+        },
     )
     .with_pda_seeds(vec![vault_seed]);
 
-    // After InitializeAccount the vault is a zero-balance Fungible holding for the
-    // collateral definition. Token::Transfer only requires the sender to be authorized;
-    // the recipient (vault) is already initialized by the call above, and since calls
-    // name accounts by id the runtime resolves its post-InitializeAccount state — this
-    // no longer has to hand-build a synthetic pre-state.
-    let transfer_call = ChainedCall::new(
+    // Then fund it. The sender is the user's own holding, authorized by the
+    // transaction's witness set, so this call carries no seed. The runtime
+    // resolves the vault's post-`InitializeAccount` state from the transaction's
+    // own diff, so nothing has to be hand-built.
+    let transfer_call = crate::shared::transfer_call(
         token_program_id,
-        vec![user_collateral_holding_id, vault_id],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: initial_collateral_amount,
-        },
+        user_collateral_holding.account_id,
+        vault.account_id,
+        descriptor,
+        initial_collateral_amount,
     );
 
-    (state_diffs, vec![initialize_call, transfer_call])
+    (position_data, vec![initialize_call, transfer_call])
 }

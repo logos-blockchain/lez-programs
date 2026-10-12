@@ -7,7 +7,7 @@
       "accounts": [
         {
           "name": "owner",
-          "writable": true,
+          "writable": false,
           "signer": true,
           "init": false
         },
@@ -111,6 +111,26 @@
         {
           "name": "window_duration",
           "type": "u64"
+        },
+        {
+          "name": "facts",
+          "type": {
+            "defined": "ConfigFacts"
+          }
+        },
+        {
+          "name": "identity",
+          "type": {
+            "defined": "PoolIdentity"
+          }
+        },
+        {
+          "name": "initial_tick",
+          "type": "i32"
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -145,6 +165,30 @@
       "args": [
         {
           "name": "window_duration",
+          "type": "u64"
+        },
+        {
+          "name": "facts",
+          "type": {
+            "defined": "ConfigFacts"
+          }
+        },
+        {
+          "name": "identity",
+          "type": {
+            "defined": "PoolIdentity"
+          }
+        },
+        {
+          "name": "reserve_a",
+          "type": "u128"
+        },
+        {
+          "name": "reserve_b",
+          "type": "u128"
+        },
+        {
+          "name": "now",
           "type": "u64"
         }
       ]
@@ -203,7 +247,7 @@
         {
           "name": "user_holding_lp",
           "writable": true,
-          "signer": true,
+          "signer": false,
           "init": false
         },
         {
@@ -230,6 +274,24 @@
         },
         {
           "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "facts",
+          "type": {
+            "defined": "ConfigFacts"
+          }
+        },
+        {
+          "name": "definition_token_a_id",
+          "type": "account_id"
+        },
+        {
+          "name": "definition_token_b_id",
+          "type": "account_id"
+        },
+        {
+          "name": "now",
           "type": "u64"
         }
       ]
@@ -314,6 +376,38 @@
         {
           "name": "deadline",
           "type": "u64"
+        },
+        {
+          "name": "facts",
+          "type": {
+            "defined": "ConfigFacts"
+          }
+        },
+        {
+          "name": "identity",
+          "type": {
+            "defined": "PoolIdentity"
+          }
+        },
+        {
+          "name": "amount_a",
+          "type": "u128"
+        },
+        {
+          "name": "amount_b",
+          "type": "u128"
+        },
+        {
+          "name": "delta_lp",
+          "type": "u128"
+        },
+        {
+          "name": "new_price",
+          "type": "u128"
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -397,6 +491,34 @@
         {
           "name": "deadline",
           "type": "u64"
+        },
+        {
+          "name": "facts",
+          "type": {
+            "defined": "ConfigFacts"
+          }
+        },
+        {
+          "name": "identity",
+          "type": {
+            "defined": "PoolIdentity"
+          }
+        },
+        {
+          "name": "withdraw_amount_a",
+          "type": "u128"
+        },
+        {
+          "name": "withdraw_amount_b",
+          "type": "u128"
+        },
+        {
+          "name": "new_price",
+          "type": "u128"
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -469,6 +591,38 @@
         },
         {
           "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "facts",
+          "type": {
+            "defined": "ConfigFacts"
+          }
+        },
+        {
+          "name": "identity",
+          "type": {
+            "defined": "PoolIdentity"
+          }
+        },
+        {
+          "name": "definition_id_in",
+          "type": "account_id"
+        },
+        {
+          "name": "protocol_fee",
+          "type": "u128"
+        },
+        {
+          "name": "new_price",
+          "type": "u128"
+        },
+        {
+          "name": "amount_out",
+          "type": "u128"
+        },
+        {
+          "name": "now",
           "type": "u64"
         }
       ]
@@ -543,6 +697,38 @@
         {
           "name": "deadline",
           "type": "u64"
+        },
+        {
+          "name": "facts",
+          "type": {
+            "defined": "ConfigFacts"
+          }
+        },
+        {
+          "name": "identity",
+          "type": {
+            "defined": "PoolIdentity"
+          }
+        },
+        {
+          "name": "definition_id_in",
+          "type": "account_id"
+        },
+        {
+          "name": "protocol_fee",
+          "type": "u128"
+        },
+        {
+          "name": "new_price",
+          "type": "u128"
+        },
+        {
+          "name": "amount_in",
+          "type": "u128"
+        },
+        {
+          "name": "now",
+          "type": "u64"
         }
       ]
     },
@@ -586,7 +772,32 @@
           "init": false
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "facts",
+          "type": {
+            "defined": "ConfigFacts"
+          }
+        },
+        {
+          "name": "identity",
+          "type": {
+            "defined": "PoolIdentity"
+          }
+        },
+        {
+          "name": "vault_a_balance",
+          "type": "u128"
+        },
+        {
+          "name": "vault_b_balance",
+          "type": "u128"
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "withdraw_protocol_fees",
@@ -620,6 +831,18 @@
         {
           "name": "amount",
           "type": "u128"
+        },
+        {
+          "name": "facts",
+          "type": {
+            "defined": "ConfigFacts"
+          }
+        },
+        {
+          "name": "descriptor",
+          "type": {
+            "defined": "TokenDescriptor"
+          }
         }
       ]
     }
@@ -823,6 +1046,32 @@
   ],
   "types": [
     {
+      "name": "ConfigFacts",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "token_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "twap_oracle_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "authority",
+          "type": "account_id"
+        },
+        {
+          "name": "swap_fee_bps",
+          "type": "u128"
+        },
+        {
+          "name": "protocol_fee_bps",
+          "type": "u128"
+        }
+      ]
+    },
+    {
       "name": "MetadataStandard",
       "kind": "enum",
       "variants": [
@@ -831,6 +1080,63 @@
         },
         {
           "name": "Expanded"
+        }
+      ]
+    },
+    {
+      "name": "PoolIdentity",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "definition_token_a_id",
+          "type": "account_id"
+        },
+        {
+          "name": "definition_token_b_id",
+          "type": "account_id"
+        },
+        {
+          "name": "vault_a_id",
+          "type": "account_id"
+        },
+        {
+          "name": "vault_b_id",
+          "type": "account_id"
+        },
+        {
+          "name": "liquidity_pool_id",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
+      "name": "TokenDescriptor",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "definition_id",
+          "type": "account_id"
+        },
+        {
+          "name": "kind",
+          "type": {
+            "defined": "TokenKind"
+          }
+        }
+      ]
+    },
+    {
+      "name": "TokenKind",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Fungible"
+        },
+        {
+          "name": "NftMaster"
+        },
+        {
+          "name": "NftPrintedCopy"
         }
       ]
     }

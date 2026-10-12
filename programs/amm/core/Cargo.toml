@@ -7,8 +7,8 @@ edition = "2021"
 workspace = true
 
 [dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
-spel-framework-macros = { git = "https://github.com/0x-r4bbit/spel.git", rev = "1ba0b6b797957875710c87837f4080d5341e98da", package = "spel-framework-macros" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.3.0", features = ["host"] }
+spel-framework-macros = { git = "https://github.com/0x-r4bbit/spel.git", rev = "0020cf2e8360fbed7f6284f2f4059d0b9155b236", package = "spel-framework-macros" }
 token_core = { path = "../../token/core" }
 borsh = { version = "1.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -17,4 +17,8 @@ alloy-primitives = { version = "1", default-features = false }
 # Pin ruint (transitive via alloy-primitives) below 1.18, which raised its MSRV to rustc 1.90.
 # The risc0 guest toolchain ships rustc 1.88, so 1.18+ fails the guest build. 1.17.0 (MSRV 1.85)
 # is the newest compatible release. Remove this pin once the risc0 toolchain advances past 1.90.
-ruint = { version = "=1.17.0", default-features = false }
+# `std` is required for `Uint::root`, used by the constant-product maths.
+# It used to arrive by feature unification from the LEZ dependency graph;
+# v0.3.0 no longer enables it, so ask for it directly rather than relying
+# on another crate in the graph to turn it on.
+ruint = { version = "=1.17.0", default-features = false, features = ["std"] }

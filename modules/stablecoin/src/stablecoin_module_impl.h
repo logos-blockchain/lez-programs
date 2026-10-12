@@ -26,6 +26,7 @@ public:
 
     /// Initializes the stablecoin protocol. Request fields are `adminId`,
     /// `freezeAuthorityId`, `collateralDefinitionId`, `marketPriceOracleId`,
+    /// `tokenProgramId`, `marketPriceOracleProgramId`,
     /// `initialStabilityFeePerMillisecond`,
     /// `initialControllerProportionalGain`, `initialControllerIntegralGain`,
     /// `initialMinimumCollateralizationRatio`,
@@ -39,8 +40,14 @@ private:
     std::vector<std::uint8_t> loadStablecoinBinary() const;
     nlohmann::json stablecoinProgramInfo(std::string& error);
     std::string normalizeAccountId(const std::string& id);
+    /// Every shard anyone ever wrote at `account_id`.
     nlohmann::json readPublicAccount(const std::string& account_id);
-    bool requireUninitialized(const std::string& account_id, std::string& error);
+    /// Only `program_id`'s shard of `account_id`, projected by the node.
+    nlohmann::json readPublicAccountShard(const std::string& account_id,
+                                          const std::string& program_id);
+    bool requireUninitialized(const std::string& account_id,
+                              const std::string& program_id,
+                              std::string& error);
     LogosMap submitPlan(const nlohmann::json& plan);
 
     bool programInfoResolved_ = false;

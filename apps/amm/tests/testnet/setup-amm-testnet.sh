@@ -39,8 +39,27 @@
 # CAN change is the segment count (bigger binary => more 96 KiB chunks), and segments
 # are write-once, so a re-deploy needs a fresh set of segment accounts.
 #
+# LEZ v0.3.0 — DECLARE-AND-PIN. A plan phase can no longer read a shard, so every
+# value a program used to look up is now an instruction field, pinned on chain by a
+# guard on the shard it came from. For this script that means three things:
+#   - `new-definition` declares `--facts` (the AmmConfig, read back from the config
+#     account), `--definition-token-a/b-id`, and `--now` (the clock, pinned EXACTLY,
+#     so it runs under `run_tx_at_clock`, which re-reads and retries the race).
+#   - `spel inspect` requires `--program` to say which program's shard to decode;
+#     an account holds one per program and has no single "data" any more.
+#   - the native balance became a shard, so `wallet account get` prints
+#     `Balance <n>, nonce <m>` rather than a JSON object with a "balance" key.
+#
 # Prerequisites (managed by you, outside this script):
-#   - `wallet` and `spel` on PATH (from the SPEL toolchain)
+#   - `wallet` and `spel` on PATH, BOTH built against LEZ v0.3.0. They share the
+#     wallet storage format, so a mismatched pair fails with `Failed to parse
+#     storage file: invalid type: integer 0, expected a string` from whichever of
+#     the two is newer. Neither reports its LEZ version (`wallet --version` says
+#     only `0.1.0`), so check the build dates if in doubt.
+#     `spel` additionally must be new enough to encode STRUCT instruction
+#     arguments (`--facts`): v0.3.0's declare-and-pin made `ConfigFacts` /
+#     `PoolIdentity` ordinary arguments, and a spel that only handles enums fails
+#     with "only enum arguments are supported".
 #   - a reachable, funded sequencer (set TEST_SEQUENCER_ADDR, or pre-configure
 #     the wallet). Account creation is local, but deploys/mints need funds.
 #     Deploys additionally need a funded PAYER, because v0.2.5 writes them into
@@ -165,6 +184,11 @@ TOKEN_D_NAME="TOKEN D"; TOKEN_D_SYMBOL="TKD"; TOKEN_D_SUPPLY="100000000000000000
 
 # --- Pool inputs ---
 CLOCK_ACCOUNT="4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU"  # canonical LEZ system clock
+# The clock PROGRAM's account id — `AccountId::from_builtin_program_name(b"clock")`, i.e.
+# sha256("/LEE-BuiltinProgram/v1/AccountId" || "clock"). Distinct from CLOCK_ACCOUNT above
+# (the clock's *data* account): since v0.3.0 CLOCK_ACCOUNT holds one shard per program and
+# this names the clock program's, which is the one carrying the timestamp.
+CLOCK_PROGRAM_ACCOUNT="2hwaRW8sMnyKLLRbDRw8k68tiv9bnfq98oxcdtcp157Z"
 POOL_TOKEN_A_AMOUNT="10000"
 POOL_TOKEN_B_AMOUNT="10000"
 # Instance-wide swap fee (basis points), set once at `initialize` and stored in the AMM
@@ -175,6 +199,10 @@ SWAP_FEE_BPS="1"
 # the rest stays with LPs. 0 = no protocol fee.
 PROTOCOL_FEE_BPS="0"
 POOL_DEADLINE="18446744073709551615"
+# zkVM cycle budget for pool creation. The wallet's 2M default fits a native call, not a
+# plan that chains five calls into two other programs; an overrun reverts silently. 10M is
+# the protocol ceiling (`MAX_GAS_EXEC`).
+POOL_GAS_LIMIT="${POOL_GAS_LIMIT:-10000000}"
 
 # Where the UI token config is written for TESTS ONLY (git-ignored). This is
 # deliberately NOT apps/amm/amm-tokens.json — that file is your personal local
@@ -243,7 +271,15 @@ run_tx() {
   local rc=${PIPESTATUS[0]}
   set -e
 
-  if [ "$rc" -ne 0 ]; then
+  # `try` hands the outcome back to the caller rather than dying (strict) or
+  # warning and claiming success (soft). RUN_TX_LOG is the captured output, so the
+  # caller can tell a retryable failure from a real one; the caller removes it.
+  if [ "$mode" = "try" ]; then
+    RUN_TX_LOG="$tmp"
+    if [ "$rc" -ne 0 ]; then
+      return 1
+    fi
+  elif [ "$rc" -ne 0 ]; then
     rm -f "$tmp"
     die "command exited with status $rc — $desc"
   fi
@@ -257,10 +293,13 @@ run_tx() {
   if { grep -q "Transaction confirmed" "$tmp" && grep -q "included in a block" "$tmp"; } \
      || grep -q "Transaction is included in block" "$tmp"; then
     log "${GRN}✅ CONFIRMED — included in a block: ${desc}${RST}"
-    rm -f "$tmp"
+    [ "$mode" = "try" ] || rm -f "$tmp"
     return 0
   fi
 
+  if [ "$mode" = "try" ]; then
+    return 1
+  fi
   rm -f "$tmp"
   if [ "$mode" = "soft" ]; then
     log "${YEL}⚠ no '✅ Transaction confirmed — included in a block.' marker for: ${desc}"
@@ -271,11 +310,151 @@ run_tx() {
 }
 
 # Read-only account inspection (no confirmation check).
+#
+# Since LEZ v0.3.0 an account holds one shard per program, so there is no single
+# "the account's data" and `spel inspect` requires --program to say which shard to
+# decode. For a token holding or definition that is the Token Program; for an AMM
+# pool, the AMM.
 inspect() {
-  local idl="$1" addr="$2" type="$3"
-  sec "INSPECT: $type @ $addr"
-  log "${DIM}\$ spel --idl $idl inspect $addr --type $type${RST}"
-  spel --idl "$idl" inspect "$addr" --type "$type"
+  local idl="$1" prog="$2" addr="$3" type="$4"
+  sec "INSPECT: $type @ $addr (shard of $prog)"
+  log "${DIM}\$ spel --idl $idl --program $prog inspect $addr --type $type${RST}"
+  spel --idl "$idl" --program "$prog" inspect "$addr" --type "$type"
+}
+
+# Read the canonical clock's current timestamp (milliseconds).
+#
+# LEZ v0.3.0 made `now` a DECLARED instruction field: a plan phase can no longer
+# read the clock for itself, so the caller reads it and an on-chain guard pins the
+# declaration to the `CLOCK_01` shard — exactly (`check_clock`: "Declared timestamp
+# does not match the canonical clock"). This is that read.
+#
+# `spel inspect` can't do it: no IDL declares `ClockAccountData`. `wallet account get
+# --raw` prints the account as JSON `{"shards": {"<program>": "<hex>"}, ...}`, and the
+# clock program's shard is a borsh `{ block_id: u64, timestamp: u64 }` — 16 bytes, so
+# the timestamp is bytes 8..16, little-endian.
+clock_now() {
+  local json
+  json="$(printf '%s\n' "$TEST_WALLET_PASSWORD" | wallet account get --raw \
+            --scope "$CLOCK_PROGRAM_ACCOUNT" -a "Public/$CLOCK_ACCOUNT" 2>/dev/null)" \
+    || die "could not read the clock account $CLOCK_ACCOUNT — is the sequencer reachable?"
+  printf '%s' "$json" | python3 -c '
+import json, sys
+blob = sys.stdin.read()
+start = blob.find("{")
+if start < 0:
+    sys.exit("no JSON in `wallet account get --raw` output")
+# raw_decode: the wallet prints "Stored statistics at ..." after the JSON.
+shards = json.JSONDecoder().raw_decode(blob[start:])[0].get("shards", {})
+if len(shards) != 1:
+    sys.exit(f"expected exactly one clock shard, got {list(shards)}")
+raw = bytes.fromhex(next(iter(shards.values())))
+if len(raw) != 16:
+    sys.exit(f"clock shard is {len(raw)} bytes, expected 16 (block_id + timestamp)")
+print(int.from_bytes(raw[8:16], "little"))
+' || die "could not decode the clock shard of $CLOCK_ACCOUNT"
+}
+
+# Fail unless `$1`'s shard of program `$2` holds data.
+#
+# Since v0.3.0 a fee-paying transaction whose program panics is still INCLUDED in a block
+# (fee kept, nonces burned, no other effect), so spel's "included in a block" no longer
+# means it worked. This reads the state the transaction was meant to write instead.
+require_shard() {
+  local addr="$1" prog="$2" what="$3"
+  printf '%s\n' "$TEST_WALLET_PASSWORD" | wallet account get --raw \
+      --scope "$prog" -a "Public/$addr" 2>/dev/null | python3 -c '
+import json, sys
+blob = sys.stdin.read()
+start = blob.find("{")
+shards = json.JSONDecoder().raw_decode(blob[start:])[0].get("shards", {}) if start >= 0 else {}
+sys.exit(0 if any(shards.values()) else 1)
+' || die "$what was included in a block but did not take effect: $addr holds no shard of $prog. The transaction reverted; replay it to see the guest panic."
+  log "${GRN}✅ ${what}: $addr holds its shard of $prog${RST}"
+}
+
+# Decode the AMM config shard into the `ConfigFacts` JSON that every v0.3.0 AMM
+# instruction declares.
+#
+# `spel inspect` prints account ids as `Public/<base58>`; the instruction args take
+# the bare base58, so the prefix is stripped. Cross-checked against the values this
+# script passed to `initialize`, so a mismatch is reported here with the field name
+# rather than as a config-guard revert inside the guest.
+amm_facts_from_config() {
+  local config="$1" json
+  json="$(spel --idl "$AMM_IDL" --program "$AMM_PID" inspect "$config" --type AmmConfig 2>/dev/null)" \
+    || die "could not read the AMM config at $config — did initialize land?"
+
+  printf '%s' "$json" | TOKEN_PID="$TOKEN_PID" TWAP_PID="$TWAP_PID" \
+    AMM_AUTHORITY="$AMM_AUTHORITY" SWAP_FEE_BPS="$SWAP_FEE_BPS" \
+    PROTOCOL_FEE_BPS="$PROTOCOL_FEE_BPS" python3 -c '
+import json, os, sys
+cfg = json.load(sys.stdin)
+bare = lambda v: v.split("/", 1)[-1] if isinstance(v, str) else v
+facts = {
+    "token_program_id": bare(cfg["token_program_id"]),
+    "twap_oracle_program_id": bare(cfg["twap_oracle_program_id"]),
+    "authority": bare(cfg["authority"]),
+    "swap_fee_bps": int(cfg["swap_fee_bps"]),
+    "protocol_fee_bps": int(cfg["protocol_fee_bps"]),
+}
+expected = {
+    "token_program_id": os.environ["TOKEN_PID"],
+    "twap_oracle_program_id": os.environ["TWAP_PID"],
+    "authority": os.environ["AMM_AUTHORITY"],
+    "swap_fee_bps": int(os.environ["SWAP_FEE_BPS"]),
+    "protocol_fee_bps": int(os.environ["PROTOCOL_FEE_BPS"]),
+}
+for key, want in expected.items():
+    if facts[key] != want:
+        sys.exit(f"config {key} is {facts[key]!r} on chain, expected {want!r}")
+print(json.dumps(facts, separators=(",", ":")))
+' || die "the AMM config on chain does not match what initialize declared"
+}
+
+# `run_tx` for a transaction whose `now` must equal the clock EXACTLY.
+#
+# The clock advances every block, so a read-then-submit races it: the guard that
+# makes the declaration honest is also what makes it perishable. The oracle's own
+# docs call this "the keeper's problem, not a correctness one" — the fix is to
+# re-read and resubmit, which is what this does. `$1` is the placeholder the
+# remaining arguments carry in place of the timestamp.
+CLOCK_RETRIES="${CLOCK_RETRIES:-5}"
+run_tx_at_clock() {
+  local desc="$1"; shift
+  local placeholder="$1"; shift
+  [ "$1" = "--" ] && shift
+
+  local attempt=1
+  while :; do
+    local now; now="$(clock_now)"
+    kv "declared now (attempt $attempt/$CLOCK_RETRIES)" "$now"
+
+    local -a cmd=()
+    local arg
+    for arg in "$@"; do
+      [ "$arg" = "$placeholder" ] && cmd+=("$now") || cmd+=("$arg")
+    done
+
+    if run_tx try "$desc" -- "${cmd[@]}"; then
+      rm -f "$RUN_TX_LOG"
+      return 0
+    fi
+
+    # Only the clock race is worth retrying. Anything else is a real failure and
+    # retrying it just repeats it five times with a different timestamp.
+    if ! grep -qi "Declared timestamp does not match" "$RUN_TX_LOG"; then
+      rm -f "$RUN_TX_LOG"
+      die "$desc failed, and not on the clock — see the output above"
+    fi
+    rm -f "$RUN_TX_LOG"
+
+    if [ "$attempt" -ge "$CLOCK_RETRIES" ]; then
+      die "$desc lost the clock race $CLOCK_RETRIES times — the last declared now was $now"
+    fi
+    log "${YEL}⚠ retrying ${desc}: the clock moved under the declaration${RST}"
+    attempt=$((attempt + 1))
+  done
 }
 
 # How many 96 KiB segments a binary splits into. Mirrors the wallet's own chunking
@@ -460,6 +639,30 @@ if [ ! -f "$TEST_WALLET_HOME/storage.json" ] || [ "${FORCE_BOOTSTRAP:-0}" = "1" 
   NEEDS_KEY_RESTORE=1
 fi
 
+# A storage.json written by a PRE-v0.3.0 wallet cannot be read by a v0.3.0 one. The
+# stored accounts changed shape — `{program_owner, balance, data, nonce}` became
+# `{shards, nonce}` — so the load dies with `invalid type: integer 0, expected a
+# string`, several steps after this check and far from its cause. The existence test
+# above cannot see it, so it would reuse the file and fail late.
+#
+# Detected from the FILE rather than by probing a wallet command, because which
+# command trips over it depends on which wallet is installed: a pre-v0.3.0 `wallet`
+# reads the old format happily while `spel` (linked against the v0.3.0 wallet lib)
+# refuses it, so a probe's answer depends on the very mismatch being diagnosed.
+# `program_owner` is the discriminator: present in the old shape, gone in the new.
+#
+# Moved aside rather than deleted — this home is throwaway (restored from a fixed
+# mnemonic), but keeping a copy makes the surprise legible.
+if [ "$NEEDS_KEY_RESTORE" = "0" ] \
+   && grep -q '"program_owner"' "$TEST_WALLET_HOME/storage.json" 2>/dev/null; then
+  stale="$TEST_WALLET_HOME/storage.json.pre-v0.3.0.$(date +%s)"
+  mv "$TEST_WALLET_HOME/storage.json" "$stale"
+  log "${YEL}⚠ the test wallet's storage predates LEZ v0.3.0 (it still carries"
+  log "  \`program_owner\` account records). Moved it to"
+  log "  $stale and re-restoring from the test mnemonic.${RST}"
+  NEEDS_KEY_RESTORE=1
+fi
+
 # Write the v0.2.1 wallet config FIRST so every wallet command below can read it
 # (and any stale old-format config is replaced). Also sets the sequencer + widened
 # poll window.
@@ -609,14 +812,14 @@ run_tx strict "create fungible definition: $TOKEN_D_NAME" -- \
 ###############################################################################
 # 5. Verify token definitions & holdings
 ###############################################################################
-inspect "$TOKEN_IDL" "$TOKEN_A_DEF"     "TokenDefinition"
-inspect "$TOKEN_IDL" "$TOKEN_A_HOLDING" "TokenHolding"
-inspect "$TOKEN_IDL" "$TOKEN_B_DEF"     "TokenDefinition"
-inspect "$TOKEN_IDL" "$TOKEN_B_HOLDING" "TokenHolding"
-inspect "$TOKEN_IDL" "$TOKEN_C_DEF"     "TokenDefinition"
-inspect "$TOKEN_IDL" "$TOKEN_C_HOLDING" "TokenHolding"
-inspect "$TOKEN_IDL" "$TOKEN_D_DEF"     "TokenDefinition"
-inspect "$TOKEN_IDL" "$TOKEN_D_HOLDING" "TokenHolding"
+inspect "$TOKEN_IDL" "$TOKEN_PID" "$TOKEN_A_DEF"     "TokenDefinition"
+inspect "$TOKEN_IDL" "$TOKEN_PID" "$TOKEN_A_HOLDING" "TokenHolding"
+inspect "$TOKEN_IDL" "$TOKEN_PID" "$TOKEN_B_DEF"     "TokenDefinition"
+inspect "$TOKEN_IDL" "$TOKEN_PID" "$TOKEN_B_HOLDING" "TokenHolding"
+inspect "$TOKEN_IDL" "$TOKEN_PID" "$TOKEN_C_DEF"     "TokenDefinition"
+inspect "$TOKEN_IDL" "$TOKEN_PID" "$TOKEN_C_HOLDING" "TokenHolding"
+inspect "$TOKEN_IDL" "$TOKEN_PID" "$TOKEN_D_DEF"     "TokenDefinition"
+inspect "$TOKEN_IDL" "$TOKEN_PID" "$TOKEN_D_HOLDING" "TokenHolding"
 
 ###############################################################################
 # 6. Derive AMM PDAs from the program ids + token pair
@@ -666,27 +869,55 @@ run_tx strict "initialize AMM config" -- \
 ###############################################################################
 # 8. Create the pool (seed initial liquidity)
 ###############################################################################
-run_tx strict "create pool + seed liquidity" -- \
-  spel --idl "$AMM_IDL" --program "$AMM_PID" --fee-payer "$DEPLOY_PAYER" -- new-definition \
+# v0.3.0 declare-and-pin. `new_definition`'s plan half can no longer read the
+# config or the clock, so three things the caller used to leave to the program are
+# now instruction fields, each pinned by a guard on the shard it came from:
+#
+#   --facts                 the AmmConfig values this instance was initialized with,
+#                           pinned against the config shard (`check_config`)
+#   --definition-token-a/b  the pair, which also fixes the pool/vault PDAs the plan
+#                           checks the passed accounts against
+#   --now                   the clock, pinned EXACTLY (hence run_tx_at_clock)
+#
+# `facts` is READ BACK from the config account rather than rebuilt from the
+# variables above, which is what a real client does (`amm_ffi`'s `load_config`
+# decodes the config and derives ConfigFacts from it). Reading it back also means
+# a drift between what step 7 declared and what the chain stored surfaces here,
+# named, instead of as an opaque config-guard revert inside the guest.
+AMM_FACTS="$(amm_facts_from_config "$CONFIG")"
+kv "declared facts" "$AMM_FACTS"
+
+# Since v0.3.0 a transaction names (account, program) shards. spel binds a bare account
+# to the called program (the AMM); `<account>@<program>` selects another program's shard.
+# Token accounts are the Token Program's, the tick account the oracle's, and the clock the
+# clock program's -- the AMM asserts the last one before doing anything else.
+run_tx_at_clock "create pool + seed liquidity" "@NOW@" -- \
+  spel --idl "$AMM_IDL" --program "$AMM_PID" --fee-payer "$DEPLOY_PAYER" \
+    --gas-limit "$POOL_GAS_LIMIT" -- new-definition \
     --config "$CONFIG" \
     --pool "$POOL" \
-    --vault-a "$VAULT_A" \
-    --vault-b "$VAULT_B" \
-    --pool-definition-lp "$POOL_LP" \
-    --lp-lock-holding "$LP_LOCK" \
-    --user-holding-a "$USER_HOLDING_A" \
-    --user-holding-b "$USER_HOLDING_B" \
-    --user-holding-lp "$USER_HOLDING_LP" \
-    --current-tick-account "$TICK" \
-    --clock "$CLOCK_ACCOUNT" \
+    --vault-a "$VAULT_A@$TOKEN_PID" \
+    --vault-b "$VAULT_B@$TOKEN_PID" \
+    --pool-definition-lp "$POOL_LP@$TOKEN_PID" \
+    --lp-lock-holding "$LP_LOCK@$TOKEN_PID" \
+    --user-holding-a "$USER_HOLDING_A@$TOKEN_PID" \
+    --user-holding-b "$USER_HOLDING_B@$TOKEN_PID" \
+    --user-holding-lp "$USER_HOLDING_LP@$TOKEN_PID" \
+    --current-tick-account "$TICK@$TWAP_PID" \
+    --clock "$CLOCK_ACCOUNT@$CLOCK_PROGRAM_ACCOUNT" \
     --token-a-amount "$POOL_TOKEN_A_AMOUNT" \
     --token-b-amount "$POOL_TOKEN_B_AMOUNT" \
-    --deadline "$POOL_DEADLINE"
+    --deadline "$POOL_DEADLINE" \
+    --facts "$AMM_FACTS" \
+    --definition-token-a-id "$TOKEN_A_DEF" \
+    --definition-token-b-id "$TOKEN_B_DEF" \
+    --now "@NOW@"
 
 ###############################################################################
 # 9. Verify the pool
 ###############################################################################
-inspect "$AMM_IDL" "$POOL" "PoolDefinition"
+inspect "$AMM_IDL" "$AMM_PID" "$POOL" "PoolDefinition"
+require_shard "$POOL" "$AMM_PID" "create pool + seed liquidity"
 
 ###############################################################################
 # 10. Fund the UI-signing accounts so they can pay transaction fees
@@ -715,6 +946,13 @@ FUND_ACCOUNTS=(token-a-holding token-b-holding token-c-holding token-d-holding l
 # setups neither drain the payer nor pile up balance.
 # Prints the account's native balance, or nothing at all when the account does not
 # exist on chain yet (which is the normal state for an account nothing has funded).
+#
+# v0.3.0 changed the line this reads. The balance is no longer a field of the
+# account — it is the account's shard under NATIVE_TOKEN_PROGRAM_ID — and the wallet
+# now prints `Balance <n>, nonce <m>` instead of a JSON object with a "balance" key.
+# The old pattern still *ran*, it just never matched, so every account looked unfunded
+# and got re-funded on every run.
+#
 # Careful with `set -euo pipefail` here: a `grep` that matches nothing exits 1, which
 # pipefail promotes to the whole pipeline and `set -e` turns into an aborted run. `sed`
 # alone always exits 0, and the read itself is tolerated with `|| true`, so a missing
@@ -722,7 +960,7 @@ FUND_ACCOUNTS=(token-a-holding token-b-holding token-c-holding token-d-holding l
 native_balance() {
   local out
   out="$(wallet account get -a "Public/$1" 2>/dev/null || true)"
-  printf '%s' "$out" | sed -n 's/.*"balance":\([0-9][0-9]*\).*/\1/p' | head -1
+  printf '%s' "$out" | sed -n 's/^Balance \([0-9][0-9]*\),.*/\1/p' | head -1
 }
 
 fund_account() {
@@ -875,6 +1113,9 @@ sec "Write faucet manifest -> $FAUCET_MANIFEST_OUT"
 # then FaucetMint into it. Since v0.2.5 spel names a program by its deployed header
 # account id, so the manifest carries ids rather than binary paths; IDL paths stay
 # repo-relative (resolved against the repo root).
+#
+# `clockProgram` is new in v0.3.0: `FaucetMint` declares `now`, so the test has to
+# read the clock itself, and reading a shard needs the program that owns it.
 cat > "$FAUCET_MANIFEST_OUT" <<JSON
 {
   "tokenProgramId": "$TOKEN_PID",
@@ -887,6 +1128,7 @@ cat > "$FAUCET_MANIFEST_OUT" <<JSON
   "tokenDefinition": "$TOKEN_A_DEF",
   "mintAuthority": "$MINT_AUTHORITY_PDA",
   "clock": "$CLOCK_ACCOUNT",
+  "clockProgram": "$CLOCK_PROGRAM_ACCOUNT",
   "feePayer": "$DEPLOY_PAYER",
   "fundAmount": "$FUND_AMOUNT",
   "tokenASymbol": "$TOKEN_A_SYMBOL",

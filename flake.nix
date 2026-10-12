@@ -36,30 +36,43 @@
     # as a module dependency.
     #
     # Upstream logos-blockchain/logos-execution-zone-module, pinned to the build
-    # whose transitive logos-execution-zone (wallet-ffi) is v0.2.5-rc2, matching
-    # the local `wallet`/`spel` CLIs and the deployed sequencer.
+    # whose transitive logos-execution-zone (wallet-ffi) matches the local
+    # `wallet`/`spel` CLIs and the deployed sequencer.
     #
     # The wallet-ffi and the sequencer must agree on the JSON-RPC API, the
     # wallet-storage schema and the key-derivation domains, so this pin moves with
-    # the deployed sequencer's version. v0.2.5 changed all three: `PrivateKeyHolder`
-    # gained `authorization_secret_key`, so a v0.2.4 wallet-ffi cannot even parse a
-    # storage.json the current CLI wrote ("Failed to load storage"), and the key
-    # domains moved to /LEE-Keys/v1/..., so it would derive different account ids
-    # even if it could. The previous `0.4.1-interim` pin (acf0cd50) was a v0.2.4
-    # wallet-ffi held back deliberately to avoid a Borsh migration; that migration
-    # has since happened, so the reason to hold back is gone.
+    # the deployed sequencer's version. That coupling is the thing to re-check on
+    # every bump rather than assume: across v0.2.4 -> v0.2.5 `PrivateKeyHolder`
+    # gained `authorization_secret_key`, so the older wallet-ffi could not parse a
+    # storage.json the newer CLI wrote ("Failed to load storage"), and the key
+    # domains moved to /LEE-Keys/v1/..., so it derived different account ids.
     #
-    # This is the module's `main`. Do NOT bump to the newer
-    # `marvin/adapt-ffi-program-kind` branch: its C++ is written against a
-    # POST-v0.2.5-rc2 wallet-ffi (it sets `FfiProgramWithDependencies::self_account_id`
-    # / `self_kind` / `self_program_header` / `self_membership_proof`, which
-    # logos-execution-zone#846 adds and rc2 does not have) while its own flake still
-    # pins rc2, so it does not compile. It becomes the right pin once we move off
-    # rc2; until then `main` is the newest coherent combination.
+    # This is the module's `main` (#64, "bump LEZ to 0.3.0 + r0 link fix"), the
+    # first lez_core that speaks v0.3.0. It is what makes the shard model
+    # reachable from C++ at all:
+    #
+    #   - `FfiAccount` is `{nonce, shards, shards_len}` over `FfiShard
+    #     {program, data, data_len}`, and `ffiAccountToJson` emits
+    #     `{nonce, shards: [{program, data}]}`. The flat
+    #     `{program_owner, balance, nonce, data}` is gone with flat accounts.
+    #   - `send_generic_public_transaction` takes `shard_program_account_ids_hex`
+    #     as its LAST argument (after the fee payer): empty, or one entry per
+    #     account, where "" means the called program's own shard.
+    #   - The byte-string (`bstr`) instruction IPC fix landed here too, so the
+    #     `byte-string-fix` branch the stablecoin module used to track is
+    #     subsumed.
+    #
+    # Its LEZ pin is 411adc8f, which is our `tag = "v0.3.0"` (db66590a) plus a
+    # nextest config and an `lez/indexer/ffi` feature flag — no `lee_core` or
+    # wallet-ffi API delta, so the coupling this comment exists to police holds.
+    #
+    # Still missing: lez_core does not surface `wallet_ffi_get_account_view`, so
+    # the modules project a single program's shard out of the whole-account read
+    # themselves. See docs/lez-v0.3.0-upgrade-plan.md §5.1.
     #
     # (Also builds from the Logos nix cache, so `ring` isn't compiled locally — it
     # fails under the nix cc-wrapper on Apple Silicon.)
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=b89e5d24df5babc2490d2e5d47756fb1f33435dd";
 
   };
 

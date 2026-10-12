@@ -1,4 +1,4 @@
-use lee_core::account::{Account, AccountId};
+use lee_core::account::{AccountId, ShardData};
 use serde_json::{json, Value};
 use token_core::{MetadataStandard, TokenDefinition, TokenHolding, TokenMetadata};
 
@@ -9,39 +9,39 @@ use super::{
     },
     TokenApiError, TokenResult,
 };
-use crate::account::{account_id_hex, decode_account as decode_wallet_account};
+use crate::account::{account_id_hex, decode_shard, AccountReadError};
 
 pub fn decode_definition(request: DecodeDefinitionRequest) -> TokenResult {
     let token_program_id = parse_token_program_id(&request.token_program_id)?;
-    let (account_id, account) = parse_and_validate_account(&request.definition, token_program_id)?;
-    let definition = TokenDefinition::try_from(&account.data)
+    let (account_id, data) = token_shard(&request.definition, token_program_id)?;
+    let definition = TokenDefinition::try_from(&data)
         .map_err(|_| TokenApiError::new("invalid_definition_data"))?;
     Ok(definition_json(account_id, &definition))
 }
 
 pub fn decode_holding(request: DecodeHoldingRequest) -> TokenResult {
     let token_program_id = parse_token_program_id(&request.token_program_id)?;
-    let (account_id, account) = parse_and_validate_account(&request.holding, token_program_id)?;
-    let holding = TokenHolding::try_from(&account.data)
-        .map_err(|_| TokenApiError::new("invalid_holding_data"))?;
+    let (account_id, data) = token_shard(&request.holding, token_program_id)?;
+    let holding =
+        TokenHolding::try_from(&data).map_err(|_| TokenApiError::new("invalid_holding_data"))?;
     Ok(holding_json(account_id, &holding))
 }
 
 pub fn decode_metadata(request: DecodeMetadataRequest) -> TokenResult {
     let token_program_id = parse_token_program_id(&request.token_program_id)?;
-    let (account_id, account) = parse_and_validate_account(&request.metadata, token_program_id)?;
-    let metadata = TokenMetadata::try_from(&account.data)
-        .map_err(|_| TokenApiError::new("invalid_metadata_data"))?;
+    let (account_id, data) = token_shard(&request.metadata, token_program_id)?;
+    let metadata =
+        TokenMetadata::try_from(&data).map_err(|_| TokenApiError::new("invalid_metadata_data"))?;
     Ok(metadata_json(account_id, &metadata))
 }
 
 pub fn decode_account(request: DecodeAccountRequest) -> TokenResult {
     let token_program_id = parse_token_program_id(&request.token_program_id)?;
-    let (account_id, account) = parse_and_validate_account(&request.account, token_program_id)?;
+    let (account_id, data) = token_shard(&request.account, token_program_id)?;
 
-    let definition = TokenDefinition::try_from(&account.data).ok();
-    let holding = TokenHolding::try_from(&account.data).ok();
-    let metadata = TokenMetadata::try_from(&account.data).ok();
+    let definition = TokenDefinition::try_from(&data).ok();
+    let holding = TokenHolding::try_from(&data).ok();
+    let metadata = TokenMetadata::try_from(&data).ok();
     let matches = usize::from(definition.is_some())
         + usize::from(holding.is_some())
         + usize::from(metadata.is_some());
@@ -55,23 +55,22 @@ pub fn decode_account(request: DecodeAccountRequest) -> TokenResult {
     }
 }
 
-fn parse_and_validate_account(
+/// The Token Program's shard of an account read, or the reason there isn't one.
+///
+/// `token_program_mismatch` survives v0.2.5's `program_owner != token_program_id`
+/// with the same meaning and a different question. A shard is keyed by the program
+/// that wrote it, so "the Token Program stored nothing at this address" is what
+/// "this account is not owned by the Token Program" became -- and it is now asked
+/// of the shard map rather than of an ownership field that no longer exists.
+fn token_shard(
     read: &crate::account::AccountRead,
     token_program_id: AccountId,
-) -> Result<(AccountId, Account), TokenApiError> {
-    let (account_id, account) = decode_wallet_account(read).map_err(map_account_read_error)?;
-    if account.program_owner != token_program_id {
-        return Err(TokenApiError::new("token_program_mismatch"));
-    }
-    Ok((account_id, account))
-}
-
-fn map_account_read_error(error: String) -> TokenApiError {
-    if error == "account read failed" {
-        TokenApiError::new("account_read_failed")
-    } else {
-        TokenApiError::new("bad_request")
-    }
+) -> Result<(AccountId, ShardData), TokenApiError> {
+    decode_shard(read, token_program_id).map_err(|error| match error {
+        AccountReadError::Failed => TokenApiError::new("account_read_failed"),
+        AccountReadError::Malformed => TokenApiError::new("bad_request"),
+        AccountReadError::NoShard => TokenApiError::new("token_program_mismatch"),
+    })
 }
 
 fn definition_json(account_id: AccountId, definition: &TokenDefinition) -> Value {

@@ -1,8 +1,10 @@
 //! Transport-independent AMM client operations.
 
 mod admin;
+mod clock;
 mod config;
 mod context;
+mod envelope;
 mod fee;
 mod holding;
 mod liquidity;
@@ -29,7 +31,7 @@ pub use request::{
 };
 use serde_json::Value;
 
-pub use crate::account::{AccountRead, WalletAccount};
+pub use crate::account::{AccountRead, WalletAccount, WalletAccountData};
 
 /// JSON response shared by direct Rust callers and transport adapters.
 pub type AmmResponse = Value;

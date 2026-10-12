@@ -85,6 +85,10 @@ struct WalletTransaction {
     QStringList accountIds;
     QVector<bool> signingRequirements;
     QVector<quint32> instruction;
+    // Since LEZ v0.3.0 a transaction names (account, program) shards: entry i is the
+    // program whose shard of accountIds[i] is selected. Empty selects the called
+    // program's shard for every account.
+    QStringList shardProgramIds;
 };
 
 struct WalletSubmission {

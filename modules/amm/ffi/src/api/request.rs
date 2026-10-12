@@ -62,10 +62,23 @@ pub struct CreatePriceObservationsPlanRequest {
     pub token_a_id: String,
     pub token_b_id: String,
     pub window_duration_ms: u64,
+    /// Pool account data (hex Borsh `PoolDefinition`) — the pool's five ids are declared
+    /// as `PoolIdentity` now that the plan cannot read them, and the pool shard's own
+    /// guard pins them.
+    pub pool_data: String,
+    /// Read of the pool's current-tick account. The feed's `initial_tick` is still the
+    /// oracle's own authoritative tick and not the caller's: it is read here and pinned
+    /// on-chain by a guard on the oracle's shard.
+    pub current_tick: AccountRead,
+    /// Read of the canonical `CLOCK_01` account. Every plan that chains into the TWAP
+    /// oracle declares `now`, so the FFI reads the clock to make the declaration and the
+    /// oracle's own clock guard is what holds it to this shard.
+    pub clock: AccountRead,
 }
 
 /// Builds the `CreateOraclePriceAccount` submission — creates the pool's TWAP oracle price account
-/// for a window. Same inputs as `CreatePriceObservationsPlanRequest`.
+/// for a window. Like `CreatePriceObservationsPlanRequest` minus the tick read — this one
+/// seeds the feed at the pool's spot price, so it declares the reserves instead.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateOraclePriceAccountPlanRequest {
@@ -74,6 +87,15 @@ pub struct CreateOraclePriceAccountPlanRequest {
     pub token_a_id: String,
     pub token_b_id: String,
     pub window_duration_ms: u64,
+    /// Pool account data (hex Borsh `PoolDefinition`) — supplies the declared
+    /// `PoolIdentity` and the reserves the initial price is derived from. Both are
+    /// pinned *exactly* by the pool shard's guard, so a stale read retries rather
+    /// than seeding the feed at a forged price.
+    pub pool_data: String,
+    /// Read of the canonical `CLOCK_01` account. Every plan that chains into the TWAP
+    /// oracle declares `now`, so the FFI reads the clock to make the declaration and the
+    /// oracle's own clock guard is what holds it to this shard.
+    pub clock: AccountRead,
 }
 
 /// Resolves an app-provided set of token ids into selector rows. `token_ids` are hex — the
@@ -113,6 +135,9 @@ pub struct SwapPairRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvePoolRequest {
+    /// The AMM program whose shard of `config` to decode. A config read now names an
+    /// address *and* a program; v0.2.5 could decode `account.data` without asking.
+    pub amm_program_id: String,
     pub pool: AccountRead,
     /// AMM config account read — the fee shown for the pool is the instance-wide
     /// `AmmConfig::swap_fee_bps`, no longer a per-pool field.
@@ -122,6 +147,8 @@ pub struct ResolvePoolRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapExactInQuoteRequest {
+    /// The AMM program whose shard of `config` to decode (see `ResolvePoolRequest`).
+    pub amm_program_id: String,
     pub token_in_id: String,
     pub token_out_id: String,
     pub amount_in: String,
@@ -137,6 +164,8 @@ pub struct SwapExactInQuoteRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapExactOutQuoteRequest {
+    /// The AMM program whose shard of `config` to decode (see `ResolvePoolRequest`).
+    pub amm_program_id: String,
     pub token_in_id: String,
     pub token_out_id: String,
     pub amount_out: String,
@@ -172,6 +201,11 @@ pub struct SwapExactInPlanRequest {
     pub amount_in: String,
     pub min_out: String,
     pub deadline_ms: String,
+    /// Read of the canonical `CLOCK_01` account. Every plan that chains into the TWAP
+    /// oracle declares `now`, so the FFI reads the clock to make the declaration and the
+    /// oracle's own clock guard is what holds it to this shard.
+    pub clock: AccountRead,
+
     /// Pool account data (hex Borsh `PoolDefinition`) — its stored `vault_a_id` /
     /// `vault_b_id` are used verbatim (the guest asserts the vaults in the pool's
     /// creation order, which needn't match the canonical token order).
@@ -190,6 +224,11 @@ pub struct SwapExactOutPlanRequest {
     pub amount_out: String,
     pub max_in: String,
     pub deadline_ms: String,
+    /// Read of the canonical `CLOCK_01` account. Every plan that chains into the TWAP
+    /// oracle declares `now`, so the FFI reads the clock to make the declaration and the
+    /// oracle's own clock guard is what holds it to this shard.
+    pub clock: AccountRead,
+
     /// Pool account data (hex Borsh `PoolDefinition`) — its stored `vault_a_id` /
     /// `vault_b_id` are used verbatim (the guest asserts the vaults in the pool's
     /// creation order, which needn't match the canonical token order).
@@ -231,6 +270,10 @@ pub struct CreatePoolPlanRequest {
     pub user_holding_a_id: String,
     pub user_holding_b_id: String,
     pub user_holding_lp_id: String,
+    /// Read of the canonical `CLOCK_01` account. Every plan that chains into the TWAP
+    /// oracle declares `now`, so the FFI reads the clock to make the declaration and the
+    /// oracle's own clock guard is what holds it to this shard.
+    pub clock: AccountRead,
 }
 
 /// Prices an `AddLiquidity` into an existing pool — the add counterpart of
@@ -272,6 +315,10 @@ pub struct AddLiquidityPlanRequest {
     pub user_holding_b_id: String,
     pub user_holding_lp_id: String,
     pub pool_data: String,
+    /// Read of the canonical `CLOCK_01` account. Every plan that chains into the TWAP
+    /// oracle declares `now`, so the FFI reads the clock to make the declaration and the
+    /// oracle's own clock guard is what holds it to this shard.
+    pub clock: AccountRead,
 }
 
 /// Prices burning `lp_amount` of an existing pool's LP. `slippage_bps` sets the
@@ -312,6 +359,10 @@ pub struct RemoveLiquidityPlanRequest {
     pub user_holding_b_id: String,
     pub user_holding_lp_id: String,
     pub pool_data: String,
+    /// Read of the canonical `CLOCK_01` account. Every plan that chains into the TWAP
+    /// oracle declares `now`, so the FFI reads the clock to make the declaration and the
+    /// oracle's own clock guard is what holds it to this shard.
+    pub clock: AccountRead,
 }
 
 /// Builds the `SyncReserves` submission — a permissionless keeper op refreshing the pool's
@@ -329,6 +380,15 @@ pub struct SyncReservesPlanRequest {
     pub token_a_id: String,
     pub token_b_id: String,
     pub pool_data: String,
+    /// Reads of the pool's two vault holdings. This is the one instruction whose whole
+    /// purpose is to read the vaults, so the two balances are declared from here and
+    /// each is pinned by a guard on its own Token Program shard.
+    pub vault_a: AccountRead,
+    pub vault_b: AccountRead,
+    /// Read of the canonical `CLOCK_01` account. Every plan that chains into the TWAP
+    /// oracle declares `now`, so the FFI reads the clock to make the declaration and the
+    /// oracle's own clock guard is what holds it to this shard.
+    pub clock: AccountRead,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

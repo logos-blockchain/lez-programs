@@ -1,6 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
-    account::{AccountId, Data},
+    account::{AccountId, ShardData},
     program::PdaSeed,
 };
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,15 @@ pub enum Instruction {
         /// enforced by `RecordTick`: `min_interval = window_duration / OBSERVATIONS_CAPACITY`.
         /// It is also part of the PDA seed, so each window gets a distinct account.
         window_duration: u64,
+        /// Wall-clock milliseconds, pinned **exactly** against `CLOCK_01`.
+        ///
+        /// Exact, not bounded, unlike the faucet's cooldown: an oracle timestamp
+        /// is data consumers act on, and neither direction of slack is safe.
+        /// Understating it would let a caller stretch `RecordTick`'s sampling
+        /// interval and over-weight a segment; overstating it would make a stale
+        /// price look fresh. The cost is that a publish races the next block and
+        /// must be retried, which is the keeper's problem, not a correctness one.
+        now: u64,
     },
     /// Creates and initialises a canonical [`OraclePriceAccount`] for a price source and time
     /// window.
@@ -76,6 +85,15 @@ pub enum Instruction {
         /// Part of the PDA seed, so each `(price_source, window)` pair maps to a distinct
         /// oracle price account.
         window_duration: u64,
+        /// Wall-clock milliseconds, pinned **exactly** against `CLOCK_01`.
+        ///
+        /// Exact, not bounded, unlike the faucet's cooldown: an oracle timestamp
+        /// is data consumers act on, and neither direction of slack is safe.
+        /// Understating it would let a caller stretch `RecordTick`'s sampling
+        /// interval and over-weight a segment; overstating it would make a stale
+        /// price look fresh. The cost is that a publish races the next block and
+        /// must be retried, which is the keeper's problem, not a correctness one.
+        now: u64,
     },
     /// Creates and initialises a [`CurrentTickAccount`] for a price source.
     ///
@@ -93,6 +111,15 @@ pub enum Instruction {
         /// Opening spot price as a `Q64.64` ratio (`quote_asset` per `base_asset`), e.g. an
         /// AMM's `reserve_b / reserve_a`. Converted to a tick on-chain.
         initial_price: u128,
+        /// Wall-clock milliseconds, pinned **exactly** against `CLOCK_01`.
+        ///
+        /// Exact, not bounded, unlike the faucet's cooldown: an oracle timestamp
+        /// is data consumers act on, and neither direction of slack is safe.
+        /// Understating it would let a caller stretch `RecordTick`'s sampling
+        /// interval and over-weight a segment; overstating it would make a stale
+        /// price look fresh. The cost is that a publish races the next block and
+        /// must be retried, which is the keeper's problem, not a correctness one.
+        now: u64,
     },
     /// Updates the tick stored in an existing [`CurrentTickAccount`].
     ///
@@ -110,6 +137,15 @@ pub enum Instruction {
         /// New spot price as a `Q64.64` ratio (`quote_asset` per `base_asset`). Converted to a
         /// tick on-chain.
         price: u128,
+        /// Wall-clock milliseconds, pinned **exactly** against `CLOCK_01`.
+        ///
+        /// Exact, not bounded, unlike the faucet's cooldown: an oracle timestamp
+        /// is data consumers act on, and neither direction of slack is safe.
+        /// Understating it would let a caller stretch `RecordTick`'s sampling
+        /// interval and over-weight a segment; overstating it would make a stale
+        /// price look fresh. The cost is that a publish races the next block and
+        /// must be retried, which is the keeper's problem, not a correctness one.
+        now: u64,
     },
     /// Computes the TWAP over `window_duration` from the [`PriceObservations`] ring buffer and
     /// writes the result to the [`OraclePriceAccount`].
@@ -144,6 +180,29 @@ pub enum Instruction {
         /// `write_index`), because each observations account is calibrated to one window via its
         /// sampling guard.
         window_duration: u64,
+        /// Wall-clock milliseconds, pinned **exactly** against `CLOCK_01`.
+        ///
+        /// Exact, not bounded, unlike the faucet's cooldown: an oracle timestamp
+        /// is data consumers act on, and neither direction of slack is safe.
+        /// Understating it would let a caller stretch `RecordTick`'s sampling
+        /// interval and over-weight a segment; overstating it would make a stale
+        /// price look fresh. The cost is that a publish races the next block and
+        /// must be retried, which is the keeper's problem, not a correctness one.
+        now: u64,
+        /// The live tick and when it was written, each pinned against the
+        /// `CurrentTickAccount` shard by its own guard.
+        current_tick: i32,
+        current_tick_last_updated: u64,
+        /// The TWAP the caller computed, or `None` to claim there are fewer than
+        /// two observations and so nothing to publish.
+        ///
+        /// Neither is taken on trust. The guard on the observations shard
+        /// recomputes the average from the ring buffer it can see plus the three
+        /// pinned scalars above and asserts it matches. That is the whole reason
+        /// those scalars are declared: no single apply sees the buffer, the live
+        /// tick and the clock at once, so the computation runs where the buffer
+        /// is and every input it lacks is pinned elsewhere.
+        twap_price: Option<u128>,
     },
     /// Records the current tick from a [`CurrentTickAccount`] into a [`PriceObservations`]
     /// ring buffer.
@@ -168,6 +227,21 @@ pub enum Instruction {
         /// Duration of the TWAP window in milliseconds; used to verify the
         /// [`PriceObservations`] PDA and to compute the sampling guard interval.
         window_duration: u64,
+        /// Wall-clock milliseconds, pinned **exactly** against `CLOCK_01`.
+        ///
+        /// Exact, not bounded, unlike the faucet's cooldown: an oracle timestamp
+        /// is data consumers act on, and neither direction of slack is safe.
+        /// Understating it would let a caller stretch `RecordTick`'s sampling
+        /// interval and over-weight a segment; overstating it would make a stale
+        /// price look fresh. The cost is that a publish races the next block and
+        /// must be retried, which is the keeper's problem, not a correctness one.
+        now: u64,
+        /// The tick to record, pinned against the `CurrentTickAccount` shard.
+        ///
+        /// The observations shard's apply is what integrates it, and that apply
+        /// cannot see the tick account — so the tick travels in the instruction
+        /// and a guard makes the claim true.
+        current_tick: i32,
     },
 }
 
@@ -238,21 +312,21 @@ pub struct PriceObservations {
     pub entries: Vec<ObservationEntry>,
 }
 
-impl TryFrom<&Data> for PriceObservations {
+impl TryFrom<&ShardData> for PriceObservations {
     type Error = std::io::Error;
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+    fn try_from(data: &ShardData) -> Result<Self, Self::Error> {
         Self::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&PriceObservations> for Data {
+impl From<&PriceObservations> for ShardData {
     fn from(feed: &PriceObservations) -> Self {
         let serialized_len =
             borsh::object_length(feed).expect("PriceObservations length must be known");
         let mut data = Vec::with_capacity(serialized_len);
         BorshSerialize::serialize(feed, &mut data).expect("Serialization to Vec should not fail");
-        Self::try_from(data).expect("PriceObservations encoded data should fit into Data")
+        Self::try_from(data).expect("PriceObservations encoded data should fit into ShardData")
     }
 }
 
@@ -370,28 +444,292 @@ pub struct OraclePriceAccount {
     pub confidence_interval: u128,
 }
 
-impl TryFrom<&Data> for OraclePriceAccount {
+impl TryFrom<&ShardData> for OraclePriceAccount {
     type Error = std::io::Error;
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+    fn try_from(data: &ShardData) -> Result<Self, Self::Error> {
         Self::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&OraclePriceAccount> for Data {
+impl From<&OraclePriceAccount> for ShardData {
     fn from(price_account: &OraclePriceAccount) -> Self {
         let serialized_len =
             borsh::object_length(price_account).expect("Oracle price account length must be known");
         let mut data = Vec::with_capacity(serialized_len);
         BorshSerialize::serialize(price_account, &mut data)
             .expect("Serialization to Vec should not fail");
-        Self::try_from(data).expect("Oracle price account encoded data should fit into Data")
+        Self::try_from(data).expect("Oracle price account encoded data should fit into ShardData")
     }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Price → tick conversion
 // ──────────────────────────────────────────────────────────────────────────────
+/// Guard payload: the clock must read exactly the declared time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckClock {
+    pub now: u64,
+}
+
+/// Guard payload: the `CurrentTickAccount` must hold exactly these values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckCurrentTick {
+    pub tick: i32,
+    /// `None` where only the tick matters (`RecordTick`); `Some` where the
+    /// publish tail is split at it.
+    pub last_updated: Option<u64>,
+}
+
+/// Effect payload: write a whole record into an empty shard.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Create {
+    pub data: ShardData,
+}
+
+/// Effect payload: overwrite the live tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct WriteCurrentTick {
+    pub tick: i32,
+    pub last_updated: u64,
+}
+
+/// Effect payload: append an observation, subject to the sampling guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct AppendObservation {
+    pub tick: i32,
+    pub now: u64,
+    pub window_duration: u64,
+}
+
+/// Guard payload: the declared TWAP must be what this ring buffer yields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct CheckTwap {
+    pub tick: i32,
+    pub last_updated: u64,
+    pub now: u64,
+    pub twap_price: Option<u128>,
+}
+
+/// Effect payload: publish a price that a [`CheckTwap`] guard has already pinned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct PublishTwap {
+    pub price: u128,
+    pub now: u64,
+}
+
+/// The TWAP over `[oldest stored observation, now]`, as a `Q64.64` price.
+///
+/// Returns `None` when fewer than two observations exist — there is nothing to
+/// average yet, and the price account must stay at its `timestamp = 0`
+/// "no valid price" sentinel.
+///
+/// Split out of `PublishPrice`'s handler so it can run inside an *apply* half.
+/// The computation needs the ring buffer, the live tick and the wall clock, and
+/// no single apply sees more than one shard — so it runs where the buffer is, in
+/// a guard on the observations shard, with `tick`/`last_updated`/`now` arriving
+/// as declared values that their own guards pin to the shards they came from.
+///
+/// The *body* of the average comes from the ring buffer (oldest valid entry `t1`
+/// through newest stored entry `t2`). The *final segment* from `t2` to `now` is
+/// extrapolated from the current tick, mirroring Uniswap's
+/// `OracleLibrary.consult`, which always projects the accumulator to the present
+/// rather than reading only stored points.
+///
+/// The tail is split at `last_updated`: the live tick is only known to have held
+/// since then, so it is integrated only over `[last_updated, now]`, while
+/// `[t2, last_updated]` carries the tick stored at t2 (`last_recorded_tick`).
+/// Without this split a tick written moments before publish would be smeared
+/// across the whole unrecorded gap, letting a late spot move dominate a long
+/// stale tail. The live-tick segment is clamped against `last_recorded_tick` by
+/// [`MAX_TICK_DELTA`] — the same anti-manipulation bound `RecordTick` applies.
+///
+/// # Panics
+/// If any intermediate exceeds `i64`, or `now` is before the oldest observation.
+#[must_use]
+pub fn compute_twap_price(
+    observations: &PriceObservations,
+    tick: i32,
+    last_updated: u64,
+    now: u64,
+) -> Option<u128> {
+    // Need at least two observations to compute a TWAP.
+    if observations.total_entries < 2 {
+        return None;
+    }
+
+    let capacity =
+        usize::try_from(OBSERVATIONS_CAPACITY).expect("OBSERVATIONS_CAPACITY fits in usize");
+
+    // t2: the most recent observation.
+    let t2_index = if observations.write_index == 0 {
+        capacity
+            .checked_sub(1)
+            .expect("OBSERVATIONS_CAPACITY is non-zero")
+    } else {
+        usize::try_from(
+            observations
+                .write_index
+                .checked_sub(1)
+                .expect("write_index > 0"),
+        )
+        .expect("write_index - 1 fits in usize")
+    };
+
+    // t1: the oldest valid observation. Once the buffer is full, the oldest entry sits at
+    // write_index (the slot about to be overwritten next). Before that, entries start at 0.
+    let is_full = observations.total_entries >= u64::from(OBSERVATIONS_CAPACITY);
+    let t1_index = if is_full {
+        usize::try_from(observations.write_index).expect("write_index fits in usize")
+    } else {
+        0
+    };
+
+    let t1 = observations
+        .entries
+        .get(t1_index)
+        .expect("t1_index is within bounds");
+    let t2 = observations
+        .entries
+        .get(t2_index)
+        .expect("t2_index is within bounds");
+
+    let delta = tick.saturating_sub(observations.last_recorded_tick);
+    let clamped_delta = delta.clamp(-MAX_TICK_DELTA, MAX_TICK_DELTA);
+    let clamped_tick = observations
+        .last_recorded_tick
+        .saturating_add(clamped_delta);
+
+    // `now` comes from the canonical clock and is monotonic, so it is never before the newest
+    // stored observation. The boundary is clamped into `[t2.timestamp, now]`: a `last_updated` at
+    // or before t2 means the live tick provably held for the whole tail (pre-boundary segment
+    // empty); one at or after `now` means the live tick has accrued no elapsed time yet
+    // (post-boundary segment empty). The clamp also keeps a degenerate clock from underflowing the
+    // saturating subtractions into a huge tail.
+    let boundary = last_updated.clamp(t2.timestamp, now);
+    let pre_ms = boundary.saturating_sub(t2.timestamp);
+    let post_ms = now.saturating_sub(boundary);
+    let pre_ms_i64 = i64::try_from(pre_ms).expect("pre_ms fits in i64");
+    let post_ms_i64 = i64::try_from(post_ms).expect("post_ms fits in i64");
+
+    let pre_cumulative = i64::from(observations.last_recorded_tick)
+        .checked_mul(pre_ms_i64)
+        .expect("pre-boundary tail cumulative fits in i64");
+    let post_cumulative = i64::from(clamped_tick)
+        .checked_mul(post_ms_i64)
+        .expect("post-boundary tail cumulative fits in i64");
+    let cum_now = t2
+        .tick_cumulative
+        .checked_add(pre_cumulative)
+        .and_then(|acc| acc.checked_add(post_cumulative))
+        .expect("extrapolated tick_cumulative fits in i64");
+
+    // Average over [t1, now]. `now > t1.timestamp` because `now >= t2.timestamp > t1.timestamp`
+    // (the sampling guard makes stored timestamps strictly increasing), so the divisor is positive.
+    let elapsed_ms = now.checked_sub(t1.timestamp).expect("now >= t1.timestamp");
+    let elapsed_ms_i64 = i64::try_from(elapsed_ms).expect("elapsed_ms fits in i64");
+    let cumulative_diff = cum_now
+        .checked_sub(t1.tick_cumulative)
+        .expect("tick_cumulative difference fits in i64");
+    // Floor division (round toward -inf), matching Uniswap's `OracleLibrary.consult`. The divisor
+    // is always positive, so `div_euclid` is exactly the floor. Plain truncating division would
+    // round toward zero, biasing negative TWAPs upward by one tick.
+    let twap_tick_i64 = cumulative_diff
+        .checked_div_euclid(elapsed_ms_i64)
+        .expect("elapsed_ms is non-zero");
+    let twap_tick = i32::try_from(twap_tick_i64).expect("TWAP tick fits in i32");
+
+    Some(tick_to_oracle_price(twap_tick))
+}
+
+/// Append `tick` to the ring buffer at `now`, or `None` if the sampling guard
+/// says it is too soon.
+///
+/// `None` is how "too soon" is expressed now: an apply returning `None` leaves
+/// its shard untouched, which is exactly what the old handler did by returning
+/// every account unchanged. Callers may still invoke `RecordTick` every block.
+///
+/// # Panics
+/// If the accumulator would exceed `i64`.
+#[must_use]
+pub fn record_observation(
+    observations: &PriceObservations,
+    tick: i32,
+    now: u64,
+    window_duration: u64,
+) -> Option<PriceObservations> {
+    let mut observations = observations.clone();
+    let capacity =
+        usize::try_from(OBSERVATIONS_CAPACITY).expect("OBSERVATIONS_CAPACITY fits in usize");
+
+    // Sampling guard: enforce minimum interval between observations. Floored to 1 so a degenerate
+    // `window_duration < OBSERVATIONS_CAPACITY` (rejected at creation, but guarded here too) cannot
+    // zero out the interval and let same-timestamp writes through.
+    let min_interval = window_duration
+        .checked_div(u64::from(OBSERVATIONS_CAPACITY))
+        .expect("OBSERVATIONS_CAPACITY is non-zero")
+        .max(1);
+    let last_index = if observations.write_index == 0 {
+        capacity
+            .checked_sub(1)
+            .expect("OBSERVATIONS_CAPACITY is non-zero")
+    } else {
+        usize::try_from(
+            observations
+                .write_index
+                .checked_sub(1)
+                .expect("write_index > 0"),
+        )
+        .expect("write_index - 1 fits in usize")
+    };
+    let last_entry = observations
+        .entries
+        .get(last_index)
+        .expect("last_index is within bounds");
+    let last_timestamp = last_entry.timestamp;
+    let last_cumulative = last_entry.tick_cumulative;
+    let elapsed_ms = now.saturating_sub(last_timestamp);
+
+    if elapsed_ms < min_interval {
+        return None;
+    }
+
+    // Cap the per-observation tick move (anti-manipulation), then integrate the resulting *tick*
+    // — not the delta — so a constant tick still accumulates `tick * dt` per the TWAP formula.
+    let delta = tick.saturating_sub(observations.last_recorded_tick);
+    let clamped_delta = delta.clamp(-MAX_TICK_DELTA, MAX_TICK_DELTA);
+    let clamped_tick = observations
+        .last_recorded_tick
+        .saturating_add(clamped_delta);
+
+    let elapsed_ms_i64 = i64::try_from(elapsed_ms).expect("elapsed_ms fits in i64");
+    let new_cumulative = i64::from(clamped_tick)
+        .checked_mul(elapsed_ms_i64)
+        .and_then(|product| last_cumulative.checked_add(product))
+        .expect("tick_cumulative fits in i64");
+
+    let write_index = usize::try_from(observations.write_index).expect("write_index fits in usize");
+    *observations
+        .entries
+        .get_mut(write_index)
+        .expect("write_index is within bounds") = ObservationEntry {
+        timestamp: now,
+        tick_cumulative: new_cumulative,
+    };
+    let next_index = write_index
+        .checked_add(1)
+        .expect("write_index + 1 fits in usize")
+        .checked_rem(capacity)
+        .expect("capacity is non-zero");
+    observations.write_index = u32::try_from(next_index).expect("next write_index fits in u32");
+    observations.total_entries = observations
+        .total_entries
+        .checked_add(1)
+        .expect("total_entries does not overflow");
+    observations.last_recorded_tick = tick;
+
+    Some(observations)
+}
 
 /// Converts a `Q64.64` fixed-point spot price into the nearest TWAP tick.
 ///
@@ -536,22 +874,22 @@ pub struct CurrentTickAccount {
     pub last_updated: u64,
 }
 
-impl TryFrom<&Data> for CurrentTickAccount {
+impl TryFrom<&ShardData> for CurrentTickAccount {
     type Error = std::io::Error;
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+    fn try_from(data: &ShardData) -> Result<Self, Self::Error> {
         Self::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&CurrentTickAccount> for Data {
+impl From<&CurrentTickAccount> for ShardData {
     fn from(account: &CurrentTickAccount) -> Self {
         let serialized_len =
             borsh::object_length(account).expect("CurrentTickAccount length must be known");
         let mut data = Vec::with_capacity(serialized_len);
         BorshSerialize::serialize(account, &mut data)
             .expect("Serialization to Vec should not fail");
-        Self::try_from(data).expect("CurrentTickAccount encoded data should fit into Data")
+        Self::try_from(data).expect("CurrentTickAccount encoded data should fit into ShardData")
     }
 }
 

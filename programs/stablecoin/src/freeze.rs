@@ -1,88 +1,56 @@
+//! Emergency kill switch: `Freeze` / `Unfreeze` (spec §10.17, §10.18).
+//!
+//! While frozen, `OpenPosition`, `WithdrawCollateral` and `GenerateDebt` are
+//! refused; `DepositCollateral`, `RepayDebt`, `ClosePosition` and the
+//! permissionless pokes keep working (§7). Idempotent in both directions.
+
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, ShardData},
+    program::AccountMeta,
 };
-use stablecoin_core::{compute_protocol_parameters_pda, ProtocolParameters};
+use stablecoin_core::{ProtocolParameters, SetFrozen};
 
-/// Halt the risk-increasing instructions (spec §10.17).
+/// Plan half of `Freeze` / `Unfreeze`.
 ///
-/// Sets `ProtocolParameters.is_frozen`. While frozen, `open_position`,
-/// `withdraw_collateral` and `generate_debt` panic; everything that reduces risk
-/// — `deposit_collateral`, `repay_debt`, `close_position` — and the permissionless
-/// pokes keep working (§7). Idempotent: freezing an already-frozen protocol is a
-/// successful no-op.
-///
-/// # Panics
-/// - `freeze_authority` is not authorized, or its id does not match
-///   `ProtocolParameters.freeze_authority_account_id`.
-/// - `protocol_parameters` is uninitialized, wrongly owned, not at its canonical PDA, or does not
-///   decode.
-pub fn freeze(
-    freeze_authority: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    set_frozen(
-        freeze_authority,
-        protocol_parameters,
-        stablecoin_program_id,
-        true,
-    )
-}
-
-/// Resume normal operation (spec §10.18). Clears `ProtocolParameters.is_frozen`.
-/// Idempotent, with the same preconditions as [`freeze`].
+/// The gate is the freeze-authority handle, not the admin — so this does not go
+/// through [`plan_update_parameters`](crate::admin::plan_update_parameters). Which
+/// account currently holds that handle is stored in the parameters shard, so the
+/// plan reports who claims it and [`set_frozen`] does the comparison.
 ///
 /// # Panics
-/// See [`freeze`].
-pub fn unfreeze(
-    freeze_authority: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    set_frozen(
-        freeze_authority,
-        protocol_parameters,
-        stablecoin_program_id,
-        false,
-    )
-}
-
-fn set_frozen(
-    freeze_authority: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
+/// - `freeze_authority` did not sign.
+/// - `protocol_parameters` is not at its canonical PDA.
+#[must_use]
+pub fn plan_set_frozen(
+    freeze_authority: &AccountMeta,
+    protocol_parameters: &AccountMeta,
     is_frozen: bool,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
+    stablecoin_program_id: AccountId,
+) -> SetFrozen {
     assert!(
         freeze_authority.is_authorized,
         "Freeze authority authorization is missing"
     );
+    crate::shared::assert_parameters_slot(protocol_parameters, stablecoin_program_id);
+    SetFrozen {
+        expected_freeze_authority: freeze_authority.account_id,
+        is_frozen,
+    }
+}
 
-    let mut parameters = ProtocolParameters::try_from(&crate::checks::decode_global(
-        &protocol_parameters,
-        compute_protocol_parameters_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "ProtocolParameters",
-    ))
-    .expect("ProtocolParameters must decode");
+/// Apply half: gate on the stored freeze authority, then set the flag.
+///
+/// # Panics
+/// - the shard is not a valid [`ProtocolParameters`].
+/// - the stored freeze authority is not the account the plan saw sign.
+#[must_use]
+pub fn set_frozen(pre_data: &ShardData, effect: &SetFrozen) -> ShardData {
+    let mut parameters = ProtocolParameters::try_from(pre_data)
+        .expect("ProtocolParameters account must be initialized and decode");
     assert_eq!(
-        freeze_authority.account_id, parameters.freeze_authority_account_id,
+        parameters.freeze_authority_account_id, effect.expected_freeze_authority,
         "Signer is not the protocol's freeze authority"
     );
-
-    // Assigned unconditionally rather than only-on-change, so a future
-    // "short-circuit when already set" edit can't turn a no-op into a panic.
-    parameters.is_frozen = is_frozen;
-
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(freeze_authority),
-        AccountStateDiff::new(
-            protocol_parameters,
-            BalanceDiff::Add(0),
-            Data::from(&parameters),
-        ),
-    ];
-
-    (state_diffs, vec![])
+    parameters.is_frozen = effect.is_frozen;
+    ShardData::from(&parameters)
 }

@@ -6,7 +6,7 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
-    account::{AccountId, Data},
+    account::{AccountId, ShardData},
     program::PdaSeed,
 };
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,9 @@ const REDEMPTION_PRICE_STATE_PDA_DOMAIN: &[u8] = b"REDEMPTION_PRICE_STATE";
 /// `redemption_price_at_last_update * compound_rate(redemption_rate_per_millisecond, now -
 /// last_updated_at) / FIXED_POINT_ONE`. See spec §5.3 and §6.4.
 #[account_type]
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+)]
 pub struct RedemptionPriceState {
     /// Redemption price at [`Self::last_updated_at`], collateral-per-stablecoin
     /// fixed-point.
@@ -37,21 +39,21 @@ pub struct RedemptionPriceState {
     pub last_updated_at: u64,
 }
 
-impl TryFrom<&Data> for RedemptionPriceState {
+impl TryFrom<&ShardData> for RedemptionPriceState {
     type Error = std::io::Error;
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+    fn try_from(data: &ShardData) -> Result<Self, Self::Error> {
         Self::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&RedemptionPriceState> for Data {
+impl From<&RedemptionPriceState> for ShardData {
     fn from(state: &RedemptionPriceState) -> Self {
         let len = borsh::object_length(state).expect("RedemptionPriceState length must be known");
         let mut buf = Vec::with_capacity(len);
         BorshSerialize::serialize(state, &mut buf)
             .expect("RedemptionPriceState serialization should not fail");
-        Self::try_from(buf).expect("RedemptionPriceState encoded data should fit into Data")
+        Self::try_from(buf).expect("RedemptionPriceState encoded data should fit into ShardData")
     }
 }
 
@@ -89,7 +91,7 @@ mod tests {
     #[test]
     fn borsh_roundtrip_initial_state() {
         let state = sample();
-        let data: Data = (&state).into();
+        let data: ShardData = (&state).into();
         let decoded = RedemptionPriceState::try_from(&data).expect("decode");
         assert_eq!(decoded, state);
     }
@@ -102,7 +104,7 @@ mod tests {
             controller_integral_term: -987_654_321_i128,
             last_updated_at: 1_700_000_001,
         };
-        let data: Data = (&state).into();
+        let data: ShardData = (&state).into();
         let decoded = RedemptionPriceState::try_from(&data).expect("decode");
         assert_eq!(decoded.controller_integral_term, -987_654_321_i128);
         assert_eq!(decoded, state);

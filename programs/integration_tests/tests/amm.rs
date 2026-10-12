@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 
-use amm_core::{PoolDefinition, FEE_TIER_BPS_30, MINIMUM_LIQUIDITY};
+use amm_core::{
+    AmmConfig, ConfigFacts, PoolDefinition, PoolIdentity, FEE_TIER_BPS_30, MINIMUM_LIQUIDITY,
+};
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use integration_tests::{
     private_authorized_init_identity, private_authorized_update_identity,
@@ -15,18 +17,19 @@ use lee::{
     error::LeeError,
     execute_and_prove,
     privacy_preserving_transaction::{
-        circuit::ProgramWithDependencies, Message, PrivacyPreservingTransaction, WitnessSet,
+        circuit::{ProgramWithDependencies, ProvingInput},
+        Message, PrivacyPreservingTransaction, WitnessSet,
     },
     program::Program,
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
+    account::{Account, AccountData, AccountId, Nonce, ProgramShardSelector, ShardData},
     encryption::ViewingPublicKey,
-    AuthorizationSecretKey, Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey,
+    AuthorizationSecretKey, Commitment, Identifier, Nullifier, NullifierPublicKey,
     NullifierSecretKey,
 };
-use token_core::{TokenDefinition, TokenHolding};
+use token_core::{TokenDefinition, TokenDescriptor, TokenHolding, TokenKind};
 
 struct Keys;
 struct Ids;
@@ -54,7 +57,11 @@ impl PrivateKeys {
     }
 
     fn user_a_id() -> AccountId {
-        AccountId::for_regular_private_account(&Self::user_a_npk(), &Self::user_a_vpk(), 0)
+        AccountId::for_regular_private_account(
+            &Self::user_a_npk(),
+            &Self::user_a_vpk(),
+            Identifier::ZERO,
+        )
     }
 
     /// The authorization key is the root credential under v0.2.5: the circuit takes an
@@ -76,7 +83,11 @@ impl PrivateKeys {
     }
 
     fn user_lp_id() -> AccountId {
-        AccountId::for_regular_private_account(&Self::user_lp_npk(), &Self::user_lp_vpk(), 0)
+        AccountId::for_regular_private_account(
+            &Self::user_lp_npk(),
+            &Self::user_lp_vpk(),
+            Identifier::ZERO,
+        )
     }
 
     /// The authorization key is the root credential under v0.2.5: the circuit takes an
@@ -98,7 +109,11 @@ impl PrivateKeys {
     }
 
     fn user_b_id() -> AccountId {
-        AccountId::for_regular_private_account(&Self::user_b_npk(), &Self::user_b_vpk(), 0)
+        AccountId::for_regular_private_account(
+            &Self::user_b_npk(),
+            &Self::user_b_vpk(),
+            Identifier::ZERO,
+        )
     }
 }
 
@@ -138,21 +153,21 @@ impl Ids {
     /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
     /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
     fn token_program() -> AccountId {
-        AccountId::from(token_methods::TOKEN_ID)
+        AccountId::from_builtin_program(token_methods::TOKEN_ID)
     }
 
     /// The program's account id: since v0.2.5 a program is addressed by its deployed
     /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
     /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
     fn amm_program() -> AccountId {
-        AccountId::from(amm_methods::AMM_ID)
+        AccountId::from_builtin_program(amm_methods::AMM_ID)
     }
 
     /// The program's account id: since v0.2.5 a program is addressed by its deployed
     /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
     /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
     fn twap_oracle_program() -> AccountId {
-        AccountId::from(twap_oracle_methods::TWAP_ORACLE_ID)
+        AccountId::from_builtin_program(twap_oracle_methods::TWAP_ORACLE_ID)
     }
 
     /// The account that owns (and signs for) the canonical test AMM instance's namespace.
@@ -494,10 +509,9 @@ impl Balances {
 
 impl Accounts {
     fn config() -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&amm_core::AmmConfig {
+        Account::default().with_shard(
+            Ids::amm_program(),
+            ShardData::from(&amm_core::AmmConfig {
                 token_program_id: Ids::token_program(),
                 twap_oracle_program_id: Ids::twap_oracle_program(),
                 authority: Ids::admin(),
@@ -506,70 +520,60 @@ impl Accounts {
                 swap_fee_bps: Balances::fee_tier(),
                 protocol_fee_bps: 0,
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     /// Like [`config`], but with a nonzero `protocol_fee_bps` so swaps divert part of the swap fee
     /// to the instance's protocol-fee holding. Used by the end-to-end protocol-fee tests.
     fn config_with_protocol_fee(protocol_fee_bps: u128) -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&amm_core::AmmConfig {
+        Account::default().with_shard(
+            Ids::amm_program(),
+            ShardData::from(&amm_core::AmmConfig {
                 token_program_id: Ids::token_program(),
                 twap_oracle_program_id: Ids::twap_oracle_program(),
                 authority: Ids::admin(),
                 swap_fee_bps: Balances::fee_tier(),
                 protocol_fee_bps,
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     /// The pool's TWAP current-tick account, owned by the oracle program, holding `tick`. Seeded
     /// into state so swap/sync can refresh it via a chained UpdateCurrentTick call.
     fn current_tick_account(tick: i32) -> Account {
-        Account {
-            program_owner: Ids::twap_oracle_program(),
-            balance: 0_u128,
-            data: Data::from(&twap_oracle_core::CurrentTickAccount {
+        Account::default().with_shard(
+            Ids::twap_oracle_program(),
+            ShardData::from(&twap_oracle_core::CurrentTickAccount {
                 tick,
                 last_updated: 0,
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_a_holding() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::user_a_init(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_b_holding() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_init(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn pool_definition_init() -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&PoolDefinition {
+        Account::default().with_shard(
+            Ids::amm_program(),
+            ShardData::from(&PoolDefinition {
                 definition_token_a_id: Ids::token_a_definition(),
                 definition_token_b_id: Ids::token_b_definition(),
                 vault_a_id: Ids::vault_a(),
@@ -579,107 +583,91 @@ impl Accounts {
                 reserve_a: Balances::vault_a_init(),
                 reserve_b: Balances::vault_b_init(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn token_a_definition_account() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("test"),
                 total_supply: Balances::token_a_supply(),
                 metadata_id: None,
                 authority: None,
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn token_b_definition_account() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("test"),
                 total_supply: Balances::token_b_supply(),
                 metadata_id: None,
                 authority: None,
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn token_lp_definition_account() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("LP Token"),
                 total_supply: Balances::token_lp_supply(),
                 metadata_id: None,
                 authority: Some(Ids::token_lp_definition()),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_a_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::vault_a_init(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_b_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::vault_b_init(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_lp_holding() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
                 balance: Balances::user_lp_init(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_lp_holding_with_balance(balance: u128) -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
                 balance,
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     // --- Expected post-state accounts ---
 
     fn pool_definition_swap_1() -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&PoolDefinition {
+        Account::default().with_shard(
+            Ids::amm_program(),
+            ShardData::from(&PoolDefinition {
                 definition_token_a_id: Ids::token_a_definition(),
                 definition_token_b_id: Ids::token_b_definition(),
                 vault_a_id: Ids::vault_a(),
@@ -689,63 +677,57 @@ impl Accounts {
                 reserve_a: Balances::reserve_a_swap_1(),
                 reserve_b: Balances::reserve_b_swap_1(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_a_swap_1() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::vault_a_swap_1(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_b_swap_1() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::vault_b_swap_1(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_a_holding_swap_1() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::user_a_swap_1(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_b_holding_swap_1() -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_swap_1(),
             }),
-            nonce: Nonce(1),
-        }
+        )
     }
 
     fn pool_definition_swap_2() -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&PoolDefinition {
+        Account::default().with_shard(
+            Ids::amm_program(),
+            ShardData::from(&PoolDefinition {
                 definition_token_a_id: Ids::token_a_definition(),
                 definition_token_b_id: Ids::token_b_definition(),
                 vault_a_id: Ids::vault_a(),
@@ -755,63 +737,57 @@ impl Accounts {
                 reserve_a: Balances::reserve_a_swap_2(),
                 reserve_b: Balances::reserve_b_swap_2(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_a_swap_2() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::vault_a_swap_2(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_b_swap_2() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::vault_b_swap_2(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_a_holding_swap_2() -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::user_a_swap_2(),
             }),
-            nonce: Nonce(1),
-        }
+        )
     }
 
     fn user_b_holding_swap_2() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_swap_2(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn pool_definition_swap_exact_output_a_to_b() -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&PoolDefinition {
+        Account::default().with_shard(
+            Ids::amm_program(),
+            ShardData::from(&PoolDefinition {
                 definition_token_a_id: Ids::token_a_definition(),
                 definition_token_b_id: Ids::token_b_definition(),
                 vault_a_id: Ids::vault_a(),
@@ -821,63 +797,57 @@ impl Accounts {
                 reserve_a: Balances::reserve_a_swap_exact_output_a_to_b(),
                 reserve_b: Balances::reserve_b_swap_exact_output_a_to_b(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_a_swap_exact_output_a_to_b() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::reserve_a_swap_exact_output_a_to_b(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_b_swap_exact_output_a_to_b() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::reserve_b_swap_exact_output_a_to_b(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_a_holding_swap_exact_output_a_to_b() -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::user_a_swap_exact_output_a_to_b(),
             }),
-            nonce: Nonce(1),
-        }
+        )
     }
 
     fn user_b_holding_swap_exact_output_a_to_b() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_swap_exact_output_a_to_b(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn pool_definition_swap_exact_output_b_to_a() -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&PoolDefinition {
+        Account::default().with_shard(
+            Ids::amm_program(),
+            ShardData::from(&PoolDefinition {
                 definition_token_a_id: Ids::token_a_definition(),
                 definition_token_b_id: Ids::token_b_definition(),
                 vault_a_id: Ids::vault_a(),
@@ -887,63 +857,57 @@ impl Accounts {
                 reserve_a: Balances::reserve_a_swap_exact_output_b_to_a(),
                 reserve_b: Balances::reserve_b_swap_exact_output_b_to_a(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_a_swap_exact_output_b_to_a() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::reserve_a_swap_exact_output_b_to_a(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_b_swap_exact_output_b_to_a() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::reserve_b_swap_exact_output_b_to_a(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_a_holding_swap_exact_output_b_to_a() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::user_a_swap_exact_output_b_to_a(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_b_holding_swap_exact_output_b_to_a() -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_swap_exact_output_b_to_a(),
             }),
-            nonce: Nonce(1),
-        }
+        )
     }
 
     fn pool_definition_add() -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&PoolDefinition {
+        Account::default().with_shard(
+            Ids::amm_program(),
+            ShardData::from(&PoolDefinition {
                 definition_token_a_id: Ids::token_a_definition(),
                 definition_token_b_id: Ids::token_b_definition(),
                 vault_a_id: Ids::vault_a(),
@@ -953,89 +917,83 @@ impl Accounts {
                 reserve_a: Balances::vault_a_add(),
                 reserve_b: Balances::vault_b_add(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_a_add() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::vault_a_add(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_b_add() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::vault_b_add(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_a_holding_add() -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::user_a_add(),
             }),
-            nonce: Nonce(1),
-        }
+        )
     }
 
     fn user_b_holding_add() -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_add(),
             }),
-            nonce: Nonce(1),
-        }
+        )
     }
 
     fn user_lp_holding_add() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
                 balance: Balances::user_lp_add(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn token_lp_definition_add() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("LP Token"),
                 total_supply: Balances::token_lp_supply_add(),
                 metadata_id: None,
                 authority: Some(Ids::token_lp_definition()),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn pool_definition_remove() -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&PoolDefinition {
+        Account::default().with_shard(
+            Ids::amm_program(),
+            ShardData::from(&PoolDefinition {
                 definition_token_a_id: Ids::token_a_definition(),
                 definition_token_b_id: Ids::token_b_definition(),
                 vault_a_id: Ids::vault_a(),
@@ -1045,175 +1003,163 @@ impl Accounts {
                 reserve_a: Balances::vault_a_remove(),
                 reserve_b: Balances::vault_b_remove(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_a_remove() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::vault_a_remove(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_b_remove() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::vault_b_remove(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_a_holding_remove() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::user_a_remove(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_b_holding_remove() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_remove(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_lp_holding_remove() -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
                 balance: Balances::user_lp_remove(),
             }),
-            nonce: Nonce(1),
-        }
+        )
     }
 
     fn token_lp_definition_remove() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("LP Token"),
                 total_supply: Balances::token_lp_supply_remove(),
                 metadata_id: None,
                 authority: Some(Ids::token_lp_definition()),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_a_reinitializable() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: 0,
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn vault_b_reinitializable() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: 0,
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_a_holding_new_init() -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_a_definition(),
                 balance: Balances::user_a_new_definition(),
             }),
-            nonce: Nonce(1),
-        }
+        )
     }
 
     fn user_b_holding_new_init() -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_new_definition(),
             }),
-            nonce: Nonce(1),
-        }
+        )
     }
 
     fn user_lp_holding_new_init() -> Account {
         Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+            nonce: Nonce(1),
+            ..Account::default()
+        }
+        .with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
                 balance: Balances::lp_user_init(),
             }),
-            nonce: Nonce(1),
-        }
+        )
     }
 
     fn token_lp_definition_new_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenDefinition::Fungible {
                 name: String::from("LP Token"),
                 total_supply: Balances::lp_supply_init(),
                 metadata_id: None,
                 authority: Some(Ids::token_lp_definition()),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn lp_lock_holding_new_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
                 balance: MINIMUM_LIQUIDITY,
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn pool_definition_new_init() -> Account {
-        Account {
-            program_owner: Ids::amm_program(),
-            balance: 0_u128,
-            data: Data::from(&PoolDefinition {
+        Account::default().with_shard(
+            Ids::amm_program(),
+            ShardData::from(&PoolDefinition {
                 definition_token_a_id: Ids::token_a_definition(),
                 definition_token_b_id: Ids::token_b_definition(),
                 vault_a_id: Ids::vault_a(),
@@ -1223,20 +1169,17 @@ impl Accounts {
                 reserve_a: Balances::vault_a_init(),
                 reserve_b: Balances::vault_b_init(),
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 
     fn user_lp_holding_init_zero() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_lp_definition(),
                 balance: 0,
             }),
-            nonce: Nonce(0),
-        }
+        )
     }
 }
 
@@ -1245,6 +1188,210 @@ impl Accounts {
 // shape that flow produces — a loader-owned header plus its segment — without making every
 // test drive a deployment. The header lands at `AccountId::from(program.id())`, so a program's
 // account id stays derivable from its ELF here.
+// ── declared values ────────────────────────────────────────────────────────
+//
+// A plan sees only account metadata, so each instruction declares the config
+// facts, the pool's identity and every priced figure, and guards on the shards
+// those came from pin them. These helpers read them out of the seeded state and
+// re-derive the prices through the same `amm_core` functions the apply halves
+// use — which is exactly what `amm_ffi` does for a real client.
+
+fn declared_config_at(state: &V03State, config_id: AccountId) -> AmmConfig {
+    AmmConfig::try_from(
+        state
+            .get_account_by_id(config_id)
+            .data
+            .shard(Ids::amm_program()),
+    )
+    .expect("seeded AmmConfig must decode")
+}
+
+fn declared_facts_at(state: &V03State, config_id: AccountId) -> ConfigFacts {
+    ConfigFacts::from(&declared_config_at(state, config_id))
+}
+
+fn declared_facts(state: &V03State) -> ConfigFacts {
+    declared_facts_at(state, Ids::config())
+}
+
+fn declared_pool_at(state: &V03State, pool_id: AccountId) -> PoolDefinition {
+    PoolDefinition::try_from(
+        state
+            .get_account_by_id(pool_id)
+            .data
+            .shard(Ids::amm_program()),
+    )
+    .expect("seeded PoolDefinition must decode")
+}
+
+fn declared_pool(state: &V03State) -> PoolDefinition {
+    declared_pool_at(state, Ids::pool_definition())
+}
+
+fn declared_identity(state: &V03State) -> PoolIdentity {
+    PoolIdentity::from(&declared_pool(state))
+}
+
+/// The tick the oracle's current-tick shard holds. `CreatePriceObservations`
+/// declares it and `check_oracle_tick` pins it against that very shard.
+///
+/// Falls back to 0 when the shard holds nothing, because that is all a client in
+/// that position can do — there is no tick to read. The guard then rejects the
+/// declaration, which is what the missing-current-tick test asserts.
+fn declared_tick(state: &V03State) -> i32 {
+    twap_oracle_core::CurrentTickAccount::try_from(
+        state
+            .get_account_by_id(Ids::current_tick_account())
+            .data
+            .shard(Ids::twap_oracle_program()),
+    )
+    .map_or(0, |account| account.tick)
+}
+
+/// The asset a protocol-fee withdrawal names. Fees accrue fungible, and the
+/// chained transfer makes the Token Program assert this against both sides.
+fn fee_descriptor(definition_id: AccountId) -> TokenDescriptor {
+    TokenDescriptor {
+        definition_id,
+        kind: TokenKind::Fungible,
+    }
+}
+
+/// Wall-clock milliseconds from the seeded `CLOCK_01` shard.
+fn declared_now(state: &V03State) -> u64 {
+    ClockAccountData::from_bytes(
+        state
+            .get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID)
+            .data
+            .shard(clock_core::clock_account_id())
+            .as_ref(),
+    )
+    .timestamp
+}
+
+/// A swap's pinned figures, re-derived exactly as `amm_ffi::swap_pins` and the
+/// guest's apply half do, so the declaration and the pool can never disagree.
+struct SwapPins {
+    amount_in: u128,
+    amount_out: u128,
+    protocol_fee: u128,
+    new_price: u128,
+}
+
+fn swap_pins(
+    state: &V03State,
+    definition_id_in: AccountId,
+    amount: u128,
+    exact_input: bool,
+) -> SwapPins {
+    let pool = declared_pool(state);
+    let facts = declared_facts(state);
+    let (input, output) = pool
+        .sides(definition_id_in)
+        .expect("the swap's input token must be one of the pool's sides");
+    let (reserve_in, reserve_out) = (input.reserve, output.reserve);
+
+    let (effective_amount_in, amount_in, amount_out) = if exact_input {
+        let (effective, quote) =
+            amm_core::swap_exact_in_amounts(amount, reserve_in, reserve_out, facts.swap_fee_bps);
+        (effective, amount, quote)
+    } else {
+        let (effective, required_in) =
+            amm_core::swap_exact_out_amounts(amount, reserve_in, reserve_out, facts.swap_fee_bps)
+                .expect("the requested output must not exceed the pool's liquidity");
+        (effective, required_in, amount)
+    };
+
+    // The fee split the pool recomputes from these same amounts: `swap_fee` is
+    // what the trader forfeits, `protocol_fee` the slice diverted to the
+    // protocol's holding.
+    let swap_fee = amount_in - effective_amount_in;
+    let protocol_fee = amm_core::protocol_fee_amount(swap_fee, facts.protocol_fee_bps);
+    let post_reserve_in = reserve_in + (amount_in - protocol_fee);
+    let post_reserve_out = reserve_out - amount_out;
+    let (reserve_a, reserve_b) =
+        pool.reserves_in_ab_order(definition_id_in, post_reserve_in, post_reserve_out);
+
+    SwapPins {
+        amount_in,
+        amount_out,
+        protocol_fee,
+        new_price: amm_core::spot_price_q64_64(reserve_a, reserve_b),
+    }
+}
+
+/// An `AddLiquidity`'s pinned figures: the ratio-matched deposits, the LP minted
+/// and the resulting spot price, from `amm_core`'s own quote.
+struct AddPins {
+    amount_a: u128,
+    amount_b: u128,
+    delta_lp: u128,
+    new_price: u128,
+}
+
+fn add_pins(state: &V03State, max_amount_a: u128, max_amount_b: u128) -> AddPins {
+    let pool = declared_pool(state);
+    let (amount_a, amount_b, delta_lp) =
+        amm_core::quote_add_liquidity(&pool, max_amount_a, max_amount_b);
+    AddPins {
+        amount_a,
+        amount_b,
+        delta_lp,
+        new_price: amm_core::spot_price_q64_64(
+            pool.reserve_a + amount_a,
+            pool.reserve_b + amount_b,
+        ),
+    }
+}
+
+/// A `RemoveLiquidity`'s pinned figures: the pro-rata withdrawals and the resulting
+/// spot price.
+struct RemovePins {
+    withdraw_amount_a: u128,
+    withdraw_amount_b: u128,
+    new_price: u128,
+}
+
+fn remove_pins(state: &V03State, remove_liquidity_amount: u128) -> RemovePins {
+    let pool = declared_pool(state);
+    let (withdraw_amount_a, withdraw_amount_b) =
+        amm_core::quote_remove_liquidity(&pool, remove_liquidity_amount);
+    RemovePins {
+        withdraw_amount_a,
+        withdraw_amount_b,
+        new_price: amm_core::spot_price_q64_64(
+            pool.reserve_a - withdraw_amount_a,
+            pool.reserve_b - withdraw_amount_b,
+        ),
+    }
+}
+
+// ── shard selectors ────────────────────────────────────────────────────────
+//
+// A transaction names shards now, not accounts, so every slot carries the
+// program whose shard it selects. Mirrors `programs/amm/src/tests.rs`.
+
+/// One of the AMM's own shards — the config and the pool live here. Also used
+/// for signer-only slots, whose program is never consulted.
+fn ours(account_id: AccountId) -> ProgramShardSelector {
+    ProgramShardSelector::new(account_id, Ids::amm_program())
+}
+
+/// A Token Program shard — vaults, holdings, definitions and fee accounts.
+fn token_shard(account_id: AccountId) -> ProgramShardSelector {
+    ProgramShardSelector::new(account_id, Ids::token_program())
+}
+
+/// A TWAP oracle shard — the current tick, observations and price accounts.
+fn oracle_shard(account_id: AccountId) -> ProgramShardSelector {
+    ProgramShardSelector::new(account_id, Ids::twap_oracle_program())
+}
+
+/// The Clock Program's shard of the canonical `CLOCK_01` data account.
+fn clock_shard() -> ProgramShardSelector {
+    ProgramShardSelector::new(CLOCK_01_PROGRAM_ACCOUNT_ID, clock_core::clock_account_id())
+}
+
 fn deploy_programs(state: &mut V03State) {
     *state = std::mem::take(state).with_programs([
         Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF"),
@@ -1327,22 +1474,26 @@ fn try_execute_new_definition(
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
         deadline: u64::MAX,
+        facts: declared_facts(state),
+        definition_token_a_id: Ids::token_a_definition(),
+        definition_token_b_id: Ids::token_b_definition(),
+        now: declared_now(state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::lp_lock_holding(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::token_lp_definition()),
+            token_shard(Ids::lp_lock_holding()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_lp()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         if authorize_user_lp {
             vec![
@@ -1383,24 +1534,32 @@ fn execute_new_definition(state: &mut V03State) {
 
 #[cfg(test)]
 fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_out: u128) {
+    let pins = swap_pins(state, Ids::token_a_definition(), swap_amount_in, true);
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in,
         min_amount_out,
         deadline: u64::MAX,
+        facts: declared_facts(state),
+        identity: declared_identity(state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now: declared_now(state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_a(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_a()),
         ],
         vec![current_nonce(state, Ids::user_a())],
         instruction,
@@ -1415,25 +1574,33 @@ fn execute_swap_a_to_b(state: &mut V03State, swap_amount_in: u128, min_amount_ou
 
 #[cfg(test)]
 fn execute_swap_b_to_a(state: &mut V03State, swap_amount_in: u128, min_amount_out: u128) {
+    let pins = swap_pins(state, Ids::token_b_definition(), swap_amount_in, true);
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in,
         min_amount_out,
         deadline: u64::MAX,
+        facts: declared_facts(state),
+        identity: declared_identity(state),
+        definition_id_in: Ids::token_b_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now: declared_now(state),
     };
 
     // Token B is the input, so the B holding occupies the signed input slot.
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_b(),
-            Ids::user_a(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_b(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_a()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_b()),
         ],
         vec![current_nonce(state, Ids::user_b())],
         instruction,
@@ -1453,26 +1620,34 @@ fn execute_add_liquidity(
     max_amount_to_add_token_a: u128,
     max_amount_to_add_token_b: u128,
 ) {
+    let pins = add_pins(state, max_amount_to_add_token_a, max_amount_to_add_token_b);
     let instruction = amm_core::Instruction::AddLiquidity {
         min_amount_liquidity,
         max_amount_to_add_token_a,
         max_amount_to_add_token_b,
         deadline: u64::MAX,
+        facts: declared_facts(state),
+        identity: declared_identity(state),
+        amount_a: pins.amount_a,
+        amount_b: pins.amount_b,
+        delta_lp: pins.delta_lp,
+        new_price: pins.new_price,
+        now: declared_now(state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::token_lp_definition()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_lp()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![
             current_nonce(state, Ids::user_a()),
@@ -1496,26 +1671,33 @@ fn execute_remove_liquidity(
     min_amount_to_remove_token_a: u128,
     min_amount_to_remove_token_b: u128,
 ) {
+    let pins = remove_pins(state, remove_liquidity_amount);
     let instruction = amm_core::Instruction::RemoveLiquidity {
         remove_liquidity_amount,
         min_amount_to_remove_token_a,
         min_amount_to_remove_token_b,
         deadline: u64::MAX,
+        facts: declared_facts(state),
+        identity: declared_identity(state),
+        withdraw_amount_a: pins.withdraw_amount_a,
+        withdraw_amount_b: pins.withdraw_amount_b,
+        new_price: pins.new_price,
+        now: declared_now(state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::token_lp_definition()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_lp()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![current_nonce(state, Ids::user_lp())],
         instruction,
@@ -1561,7 +1743,7 @@ fn execute_initialize_for(
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
-        vec![owner_id, config_id],
+        vec![ours(owner_id), ours(config_id)],
         vec![current_nonce(state, owner_id)],
         instruction,
     )
@@ -1627,22 +1809,26 @@ fn execute_new_definition_in(
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
         deadline: u64::MAX,
+        facts: declared_facts_at(state, ns.config),
+        definition_token_a_id: Ids::token_a_definition(),
+        definition_token_b_id: Ids::token_b_definition(),
+        now: declared_now(state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            ns.config,
-            ns.pool,
-            ns.vault_a,
-            ns.vault_b,
-            ns.lp_def,
-            ns.lp_lock,
-            Ids::user_a(),
-            Ids::user_b(),
-            lp_id,
-            ns.current_tick,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(ns.config),
+            ours(ns.pool),
+            token_shard(ns.vault_a),
+            token_shard(ns.vault_b),
+            token_shard(ns.lp_def),
+            token_shard(ns.lp_lock),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            token_shard(lp_id),
+            oracle_shard(ns.current_tick),
+            clock_shard(),
         ],
         vec![
             current_nonce(state, Ids::user_a()),
@@ -1667,15 +1853,13 @@ fn execute_new_definition_in(
 /// Builds a fungible token holding account for `definition_id` with the given balance.
 #[cfg(test)]
 fn fungible_holding(definition_id: AccountId, balance: u128) -> Account {
-    Account {
-        program_owner: Ids::token_program(),
-        balance: 0_u128,
-        data: Data::from(&TokenHolding::Fungible {
+    Account::default().with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id,
             balance,
         }),
-        nonce: Nonce(0),
-    }
+    )
 }
 
 #[cfg(test)]
@@ -1683,16 +1867,22 @@ fn execute_create_price_observations(
     state: &mut V03State,
     window_duration: u64,
 ) -> Result<(), LeeError> {
-    let instruction = amm_core::Instruction::CreatePriceObservations { window_duration };
+    let instruction = amm_core::Instruction::CreatePriceObservations {
+        window_duration,
+        facts: declared_facts(state),
+        identity: declared_identity(state),
+        initial_tick: declared_tick(state),
+        now: declared_now(state),
+    };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::current_tick_account(),
-            Ids::price_observations(window_duration),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            oracle_shard(Ids::current_tick_account()),
+            oracle_shard(Ids::price_observations(window_duration)),
+            clock_shard(),
         ],
         vec![],
         instruction,
@@ -1712,15 +1902,23 @@ fn execute_create_oracle_price_account(
     state: &mut V03State,
     window_duration: u64,
 ) -> Result<(), LeeError> {
-    let instruction = amm_core::Instruction::CreateOraclePriceAccount { window_duration };
+    let pool = declared_pool(state);
+    let instruction = amm_core::Instruction::CreateOraclePriceAccount {
+        window_duration,
+        facts: declared_facts(state),
+        identity: PoolIdentity::from(&pool),
+        reserve_a: pool.reserve_a,
+        reserve_b: pool.reserve_b,
+        now: declared_now(state),
+    };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::oracle_price_account(window_duration),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            oracle_shard(Ids::oracle_price_account(window_duration)),
+            clock_shard(),
         ],
         vec![],
         instruction,
@@ -1740,15 +1938,21 @@ fn execute_sync_reserves(state: &mut V03State) {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![],
-        amm_core::Instruction::SyncReserves,
+        amm_core::Instruction::SyncReserves {
+            facts: declared_facts(state),
+            identity: declared_identity(state),
+            vault_a_balance: fungible_balance(&state.get_account_by_id(Ids::vault_a())),
+            vault_b_balance: fungible_balance(&state.get_account_by_id(Ids::vault_b())),
+            now: declared_now(state),
+        },
     )
     .unwrap();
 
@@ -1770,7 +1974,8 @@ fn state_with_pool_created_via_new_definition() -> V03State {
 }
 
 fn fungible_balance(account: &Account) -> u128 {
-    let holding = TokenHolding::try_from(&account.data).expect("expected token holding");
+    let holding = TokenHolding::try_from(account.data.shard(Ids::token_program()))
+        .expect("expected token holding");
     let TokenHolding::Fungible {
         definition_id: _,
         balance,
@@ -1783,7 +1988,8 @@ fn fungible_balance(account: &Account) -> u128 {
 }
 
 fn pool_definition(account: &Account) -> PoolDefinition {
-    PoolDefinition::try_from(&account.data).expect("expected pool definition")
+    PoolDefinition::try_from(account.data.shard(Ids::amm_program()))
+        .expect("expected pool definition")
 }
 
 fn initial_pool_tick() -> i32 {
@@ -1824,7 +2030,10 @@ fn assert_initial_swap_state(state: &V03State) {
 fn assert_current_tick_matches_pool(state: &V03State) {
     let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
     let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
-        &state.get_account_by_id(Ids::current_tick_account()).data,
+        state
+            .get_account_by_id(Ids::current_tick_account())
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("current tick account must hold a valid CurrentTickAccount");
     let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
@@ -1835,7 +2044,8 @@ fn assert_current_tick_matches_pool(state: &V03State) {
 }
 
 fn fungible_total_supply(account: &Account) -> u128 {
-    let definition = TokenDefinition::try_from(&account.data).expect("expected token definition");
+    let definition = TokenDefinition::try_from(account.data.shard(Ids::token_program()))
+        .expect("expected token definition");
     let TokenDefinition::Fungible {
         name: _,
         total_supply,
@@ -1865,7 +2075,7 @@ fn amm_initialize_creates_config_account() {
 
     // Explicitly assert the stored Token Program ID and admin authority round-trip from the
     // instruction arguments.
-    let config = amm_core::AmmConfig::try_from(&config_account.data)
+    let config = amm_core::AmmConfig::try_from(config_account.data.shard(Ids::amm_program()))
         .expect("config account must hold a valid AmmConfig");
     assert_eq!(config.token_program_id, Ids::token_program());
     assert_eq!(config.authority, Ids::admin());
@@ -1899,10 +2109,9 @@ fn amm_same_owner_multiple_instances_via_nonce() {
     // First instance: the owner signs and is echoed untouched.
     execute_initialize_for(&mut state, &owner_key, [0; 32], cfg0)
         .expect("first initialize (fresh owner) must succeed");
-    assert_eq!(
-        state.get_account_by_id(owner_id).program_owner,
-        AccountId::default(),
-        "the owner is a signer, not a state holder: initialize must leave it unowned"
+    assert!(
+        state.get_account_by_id(owner_id).data.shard(amm).is_empty(),
+        "the owner is a signer, not a state holder: initialize must write it no shard"
     );
 
     // Second instance under the SAME owner, different nonce.
@@ -1910,12 +2119,14 @@ fn amm_same_owner_multiple_instances_via_nonce() {
         .expect("second initialize (same owner, new nonce) must succeed");
 
     // Both instances exist, are AMM-owned, and are independent.
-    assert_eq!(state.get_account_by_id(cfg0).program_owner, amm);
-    assert_eq!(state.get_account_by_id(cfg1).program_owner, amm);
-    let c0 = amm_core::AmmConfig::try_from(&state.get_account_by_id(cfg0).data)
-        .expect("instance 0 config must decode");
-    let c1 = amm_core::AmmConfig::try_from(&state.get_account_by_id(cfg1).data)
-        .expect("instance 1 config must decode");
+    assert!(!state.get_account_by_id(cfg0).data.shard(amm).is_empty());
+    assert!(!state.get_account_by_id(cfg1).data.shard(amm).is_empty());
+    let c0 =
+        amm_core::AmmConfig::try_from(state.get_account_by_id(cfg0).data.shard(Ids::amm_program()))
+            .expect("instance 0 config must decode");
+    let c1 =
+        amm_core::AmmConfig::try_from(state.get_account_by_id(cfg1).data.shard(Ids::amm_program()))
+            .expect("instance 1 config must decode");
     assert_eq!(c0.token_program_id, Ids::token_program());
     assert_eq!(c1.token_program_id, Ids::token_program());
 }
@@ -1941,7 +2152,7 @@ fn amm_initialize_requires_owner_signature() {
     // The owner account is declared, but no signature (and no nonce) is supplied for it.
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
-        vec![owner_id, config_id],
+        vec![ours(owner_id), ours(config_id)],
         vec![],
         instruction,
     )
@@ -2000,14 +2211,16 @@ fn amm_two_namespaces_same_token_pair_are_isolated() {
     execute_initialize_for(&mut state, &Keys::amm_owner_b(), TEST_NONCE, ns1.config).unwrap();
 
     // Both configs exist as distinct AMM-owned accounts.
-    assert_eq!(
-        state.get_account_by_id(ns0.config).program_owner,
-        Ids::amm_program()
-    );
-    assert_eq!(
-        state.get_account_by_id(ns1.config).program_owner,
-        Ids::amm_program()
-    );
+    assert!(!state
+        .get_account_by_id(ns0.config)
+        .data
+        .shard(Ids::amm_program())
+        .is_empty());
+    assert!(!state
+        .get_account_by_id(ns1.config)
+        .data
+        .shard(Ids::amm_program())
+        .is_empty());
     assert_ne!(state.get_account_by_id(ns0.config), Account::default());
 
     // Create the same A/B pool in each instance (distinct LP recipients: they hold distinct LP
@@ -2049,7 +2262,7 @@ fn execute_update_config(
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
-        vec![Ids::config(), signer_id],
+        vec![ours(Ids::config()), ours(signer_id)],
         vec![current_nonce(state, signer_id)],
         instruction,
     )
@@ -2064,8 +2277,13 @@ fn execute_update_config(
 }
 
 fn config_data(state: &V03State) -> amm_core::AmmConfig {
-    amm_core::AmmConfig::try_from(&state.get_account_by_id(Ids::config()).data)
-        .expect("config account must hold a valid AmmConfig")
+    amm_core::AmmConfig::try_from(
+        state
+            .get_account_by_id(Ids::config())
+            .data
+            .shard(Ids::amm_program()),
+    )
+    .expect("config account must hold a valid AmmConfig")
 }
 
 /// Submits a `WithdrawProtocolFees` draining `amount` of `protocol_holding`'s token to
@@ -2077,14 +2295,24 @@ fn execute_withdraw_protocol_fees(
     signer: &PrivateKey,
     protocol_holding: AccountId,
     destination: AccountId,
+    token_definition: AccountId,
     amount: u128,
 ) -> Result<(), LeeError> {
     let signer_id = AccountId::from(&PublicKey::new_from_private_key(signer));
-    let instruction = amm_core::Instruction::WithdrawProtocolFees { amount };
+    let instruction = amm_core::Instruction::WithdrawProtocolFees {
+        amount,
+        facts: declared_facts(state),
+        descriptor: fee_descriptor(token_definition),
+    };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
-        vec![Ids::config(), protocol_holding, destination, signer_id],
+        vec![
+            ours(Ids::config()),
+            token_shard(protocol_holding),
+            token_shard(destination),
+            ours(signer_id),
+        ],
         vec![current_nonce(state, signer_id)],
         instruction,
     )
@@ -2176,10 +2404,12 @@ fn amm_creates_price_observations_on_twap_oracle() {
     // with the pool as its price source and the tick read from the current-tick account.
     let account = state.get_account_by_id(Ids::price_observations(window_duration));
     assert_ne!(account, Account::default());
-    assert_eq!(account.program_owner, Ids::twap_oracle_program());
+    assert!(!account.data.shard(Ids::twap_oracle_program()).is_empty());
 
-    let feed = twap_oracle_core::PriceObservations::try_from(&account.data)
-        .expect("observations account must hold a valid PriceObservations");
+    let feed = twap_oracle_core::PriceObservations::try_from(
+        account.data.shard(Ids::twap_oracle_program()),
+    )
+    .expect("observations account must hold a valid PriceObservations");
     assert_eq!(feed.price_source_id, Ids::pool_definition());
     assert_eq!(feed.last_recorded_tick, expected_tick);
     assert_eq!(feed.write_index, 1);
@@ -2220,10 +2450,12 @@ fn amm_creates_oracle_price_account_on_twap_oracle() {
     // reserve_a as a Q64.64) — all derived on-chain, none caller-supplied — stamped with the clock.
     let account = state.get_account_by_id(Ids::oracle_price_account(window_duration));
     assert_ne!(account, Account::default());
-    assert_eq!(account.program_owner, Ids::twap_oracle_program());
+    assert!(!account.data.shard(Ids::twap_oracle_program()).is_empty());
 
-    let price = twap_oracle_core::OraclePriceAccount::try_from(&account.data)
-        .expect("price account must hold a valid OraclePriceAccount");
+    let price = twap_oracle_core::OraclePriceAccount::try_from(
+        account.data.shard(Ids::twap_oracle_program()),
+    )
+    .expect("price account must hold a valid OraclePriceAccount");
     assert_eq!(price.source_id, Ids::pool_definition());
     assert_eq!(price.base_asset, Ids::token_a_definition());
     assert_eq!(price.quote_asset, Ids::token_b_definition());
@@ -2269,9 +2501,10 @@ fn amm_create_price_observations_rejects_existing_account() {
     // First creation succeeds.
     execute_create_price_observations(&mut state, window_duration).unwrap();
     let feed_after_first = twap_oracle_core::PriceObservations::try_from(
-        &state
+        state
             .get_account_by_id(Ids::price_observations(window_duration))
-            .data,
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("observations account must hold a valid PriceObservations");
 
@@ -2280,9 +2513,10 @@ fn amm_create_price_observations_rejects_existing_account() {
     let result = execute_create_price_observations(&mut state, window_duration);
     assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     let feed_after_second = twap_oracle_core::PriceObservations::try_from(
-        &state
+        state
             .get_account_by_id(Ids::price_observations(window_duration))
-            .data,
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("observations account must hold a valid PriceObservations");
     assert_eq!(feed_after_first, feed_after_second);
@@ -2310,17 +2544,15 @@ fn amm_create_price_observations_without_current_tick_account_fails() {
 /// to simulate the passage of time between observations.
 #[cfg(test)]
 fn advance_clock(state: &mut V03State, timestamp: u64) {
-    let clock_id = CLOCK_01_PROGRAM_ACCOUNT_ID;
     let data = ClockAccountData {
         block_id: 0,
         timestamp,
     }
     .to_bytes();
-    let clock_account = Account {
-        program_owner: clock_id,
-        data: Data::try_from(data).expect("clock account data fits"),
-        ..Account::default()
-    };
+    let clock_account = Account::default().with_shard(
+        clock_core::clock_account_id(),
+        ShardData::try_from(data).expect("clock account data fits"),
+    );
     state.force_insert_account(CLOCK_01_PROGRAM_ACCOUNT_ID, clock_account);
 }
 
@@ -2328,17 +2560,20 @@ fn advance_clock(state: &mut V03State, timestamp: u64) {
 /// folding the pool's current tick into its observations ring buffer for the given window.
 #[cfg(test)]
 fn execute_record_tick(state: &mut V03State, window_duration: u64) -> Result<(), LeeError> {
+    let tick = read_current_tick_account(state);
     let instruction = twap_oracle_core::Instruction::RecordTick {
         price_source_id: Ids::pool_definition(),
         window_duration,
+        now: declared_now(state),
+        current_tick: tick.tick,
     };
 
     let message = public_transaction::Message::try_new(
         Ids::twap_oracle_program(),
         vec![
-            Ids::price_observations(window_duration),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            oracle_shard(Ids::price_observations(window_duration)),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![],
         instruction,
@@ -2359,9 +2594,10 @@ fn read_observations(
     window_duration: u64,
 ) -> twap_oracle_core::PriceObservations {
     twap_oracle_core::PriceObservations::try_from(
-        &state
+        state
             .get_account_by_id(Ids::price_observations(window_duration))
-            .data,
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("observations account must hold a valid PriceObservations")
 }
@@ -2374,7 +2610,10 @@ fn read_current_tick(state: &V03State) -> i32 {
 #[cfg(test)]
 fn read_current_tick_account(state: &V03State) -> twap_oracle_core::CurrentTickAccount {
     twap_oracle_core::CurrentTickAccount::try_from(
-        &state.get_account_by_id(Ids::current_tick_account()).data,
+        state
+            .get_account_by_id(Ids::current_tick_account())
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("current tick account must hold a valid CurrentTickAccount")
 }
@@ -2385,9 +2624,10 @@ fn read_oracle_price(
     window_duration: u64,
 ) -> twap_oracle_core::OraclePriceAccount {
     twap_oracle_core::OraclePriceAccount::try_from(
-        &state
+        state
             .get_account_by_id(Ids::oracle_price_account(window_duration))
-            .data,
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("oracle price account must hold a valid OraclePriceAccount")
 }
@@ -2397,18 +2637,29 @@ fn read_oracle_price(
 /// writes it to the oracle price account.
 #[cfg(test)]
 fn execute_publish_price(state: &mut V03State, window_duration: u64) -> Result<(), LeeError> {
+    let tick = read_current_tick_account(state);
+    let now = declared_now(state);
     let instruction = twap_oracle_core::Instruction::PublishPrice {
         price_source_id: Ids::pool_definition(),
         window_duration,
+        now,
+        current_tick: tick.tick,
+        current_tick_last_updated: tick.last_updated,
+        twap_price: twap_oracle_core::compute_twap_price(
+            &read_observations(state, window_duration),
+            tick.tick,
+            tick.last_updated,
+            now,
+        ),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::twap_oracle_program(),
         vec![
-            Ids::price_observations(window_duration),
-            Ids::oracle_price_account(window_duration),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            oracle_shard(Ids::price_observations(window_duration)),
+            oracle_shard(Ids::oracle_price_account(window_duration)),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![],
         instruction,
@@ -2618,10 +2869,15 @@ fn amm_twap_create_oracle_price_account() {
         quote_asset: Ids::token_b_definition(),
         initial_price,
         window_duration,
+        now: declared_now(&state),
     };
     let message = public_transaction::Message::try_new(
         Ids::twap_oracle_program(),
-        vec![price_account_id, source, CLOCK_01_PROGRAM_ACCOUNT_ID],
+        vec![
+            oracle_shard(price_account_id),
+            oracle_shard(source),
+            clock_shard(),
+        ],
         vec![current_nonce(&state, source)],
         instruction,
     )
@@ -2631,9 +2887,11 @@ fn amm_twap_create_oracle_price_account() {
     state.transition_from_public_transaction(&tx, 0, 0).unwrap();
 
     let account = state.get_account_by_id(price_account_id);
-    assert_eq!(account.program_owner, Ids::twap_oracle_program());
-    let price = twap_oracle_core::OraclePriceAccount::try_from(&account.data)
-        .expect("oracle price account must hold a valid OraclePriceAccount");
+    assert!(!account.data.shard(Ids::twap_oracle_program()).is_empty());
+    let price = twap_oracle_core::OraclePriceAccount::try_from(
+        account.data.shard(Ids::twap_oracle_program()),
+    )
+    .expect("oracle price account must hold a valid OraclePriceAccount");
     assert_eq!(price.price, initial_price);
     assert_eq!(price.timestamp, 5_000);
     assert_eq!(price.source_id, source);
@@ -2756,26 +3014,33 @@ fn amm_twap_publish_price_noop_with_fewer_than_two_observations() {
 fn amm_remove_liquidity() {
     let mut state = state_for_amm_tests();
 
+    let pins = remove_pins(&state, Balances::remove_lp());
     let instruction = amm_core::Instruction::RemoveLiquidity {
         remove_liquidity_amount: Balances::remove_lp(),
         min_amount_to_remove_token_a: Balances::remove_min_a(),
         min_amount_to_remove_token_b: Balances::remove_min_b(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        withdraw_amount_a: pins.withdraw_amount_a,
+        withdraw_amount_b: pins.withdraw_amount_b,
+        new_price: pins.new_price,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::token_lp_definition()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_lp()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![Nonce(0)],
         instruction,
@@ -2819,7 +3084,10 @@ fn amm_remove_liquidity() {
     // Removing liquidity also refreshes the pool's TWAP current tick to the post-removal spot
     // price.
     let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
-        &state.get_account_by_id(Ids::current_tick_account()).data,
+        state
+            .get_account_by_id(Ids::current_tick_account())
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("current tick account must hold a valid CurrentTickAccount");
     let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
@@ -2834,26 +3102,33 @@ fn amm_remove_liquidity_insufficient_user_lp_fails() {
     let mut state = state_for_amm_tests();
     state.force_insert_account(Ids::user_lp(), Accounts::user_lp_holding_with_balance(500));
 
+    let pins = remove_pins(&state, Balances::remove_lp());
     let instruction = amm_core::Instruction::RemoveLiquidity {
         remove_liquidity_amount: Balances::remove_lp(),
         min_amount_to_remove_token_a: Balances::remove_min_a(),
         min_amount_to_remove_token_b: Balances::remove_min_b(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        withdraw_amount_a: pins.withdraw_amount_a,
+        withdraw_amount_b: pins.withdraw_amount_b,
+        new_price: pins.new_price,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::token_lp_definition()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_lp()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![Nonce(0)],
         instruction,
@@ -2911,9 +3186,14 @@ fn amm_new_definition_uninitialized_pool() {
     // oracle), owned by the oracle program and seeded with the tick derived from the opening
     // reserves (reserve_b / reserve_a as a Q64.64 spot price).
     let current_tick = state.get_account_by_id(Ids::current_tick_account());
-    assert_eq!(current_tick.program_owner, Ids::twap_oracle_program());
-    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(&current_tick.data)
-        .expect("current tick account must hold a valid CurrentTickAccount");
+    assert!(!current_tick
+        .data
+        .shard(Ids::twap_oracle_program())
+        .is_empty());
+    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
+        current_tick.data.shard(Ids::twap_oracle_program()),
+    )
+    .expect("current tick account must hold a valid CurrentTickAccount");
     let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
         Balances::vault_a_init(),
         Balances::vault_b_init(),
@@ -2921,80 +3201,74 @@ fn amm_new_definition_uninitialized_pool() {
     assert_eq!(tick_account.tick, expected_tick);
 }
 
+/// v0.2.5 required the LP recipient to sign, because the mint's credit rewrote its
+/// shard. Under v0.3.0 the guest declares `user_holding_lp` `#[account(mut)]` and not
+/// `signer`: a credit denies nothing to the holder, so a fresh LP holding needs no
+/// signature and the pool is created with the LP minted into it.
 #[test]
-fn amm_new_definition_without_user_lp_authorization_fails() {
+fn amm_new_definition_mints_to_an_unsigned_lp_holder() {
     let mut state = state_for_amm_tests_with_new_def();
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
 
-    let result = try_execute_new_definition(&mut state, false);
+    try_execute_new_definition(&mut state, false)
+        .expect("an unsigned LP recipient is only a credit destination");
 
-    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
-        Account::default()
+        Accounts::pool_definition_new_init()
     );
     assert_eq!(
         state.get_account_by_id(Ids::vault_a()),
-        Accounts::vault_a_reinitializable()
+        Accounts::vault_a_init()
     );
     assert_eq!(
         state.get_account_by_id(Ids::vault_b()),
-        Accounts::vault_b_reinitializable()
+        Accounts::vault_b_init()
     );
     assert_eq!(
         state.get_account_by_id(Ids::token_lp_definition()),
-        Account::default()
+        Accounts::token_lp_definition_new_init()
     );
     assert_eq!(
         state.get_account_by_id(Ids::lp_lock_holding()),
-        Account::default()
+        Accounts::lp_lock_holding_new_init()
     );
+    // The recipient did not sign, so its nonce does not move — the only difference
+    // from the signed path.
     assert_eq!(
-        state.get_account_by_id(Ids::user_a()),
-        Accounts::user_a_holding()
+        state.get_account_by_id(Ids::user_lp()),
+        Accounts::user_lp_holding_with_balance(Balances::lp_user_init())
     );
-    assert_eq!(
-        state.get_account_by_id(Ids::user_b()),
-        Accounts::user_b_holding()
-    );
-    assert_eq!(state.get_account_by_id(Ids::user_lp()), Account::default());
 }
 
+/// The same rule with a *pre-existing* LP holding: v0.2.5 refused to rewrite a
+/// non-empty shard unsigned, but the LP mint is a credit, not an overwrite, so the
+/// zero-balance holding is topped up to the minted amount without a signature.
 #[test]
-fn amm_new_definition_precreated_user_lp_unsigned_fails() {
-    // `user_holding_lp` is now a required signer: even a pre-existing (non-default)
-    // LP holding must be signed. An unsigned transaction is rejected and reverts.
+fn amm_new_definition_credits_a_precreated_unsigned_lp_holder() {
     let mut state = state_for_amm_tests_with_precreated_user_lp_for_new_def();
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
 
-    let result = try_execute_new_definition(&mut state, false);
+    try_execute_new_definition(&mut state, false)
+        .expect("crediting a pre-created LP holding needs no signature from it");
 
-    assert!(matches!(result, Err(LeeError::ProgramExecutionFailed(_))));
     assert_eq!(
         state.get_account_by_id(Ids::pool_definition()),
-        Account::default()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::vault_a()),
-        Accounts::vault_a_reinitializable()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::vault_b()),
-        Accounts::vault_b_reinitializable()
+        Accounts::pool_definition_new_init()
     );
     assert_eq!(
         state.get_account_by_id(Ids::token_lp_definition()),
-        Account::default()
+        Accounts::token_lp_definition_new_init()
     );
     assert_eq!(
         state.get_account_by_id(Ids::lp_lock_holding()),
-        Account::default()
+        Accounts::lp_lock_holding_new_init()
     );
     assert_eq!(
         state.get_account_by_id(Ids::user_lp()),
-        Accounts::user_lp_holding_init_zero()
+        Accounts::user_lp_holding_with_balance(Balances::lp_user_init())
     );
 }
 
@@ -3002,26 +3276,34 @@ fn amm_new_definition_precreated_user_lp_unsigned_fails() {
 fn amm_add_liquidity() {
     let mut state = state_for_amm_tests();
 
+    let pins = add_pins(&state, Balances::add_max_a(), Balances::add_max_b());
     let instruction = amm_core::Instruction::AddLiquidity {
         min_amount_liquidity: Balances::add_min_lp(),
         max_amount_to_add_token_a: Balances::add_max_a(),
         max_amount_to_add_token_b: Balances::add_max_b(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        amount_a: pins.amount_a,
+        amount_b: pins.amount_b,
+        delta_lp: pins.delta_lp,
+        new_price: pins.new_price,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::token_lp_definition()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_lp()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![Nonce(0), Nonce(0)],
         instruction,
@@ -3065,7 +3347,10 @@ fn amm_add_liquidity() {
 
     // Adding liquidity also refreshes the pool's TWAP current tick to the post-add spot price.
     let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
-        &state.get_account_by_id(Ids::current_tick_account()).data,
+        state
+            .get_account_by_id(Ids::current_tick_account())
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("current tick account must hold a valid CurrentTickAccount");
     let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
@@ -3079,25 +3364,38 @@ fn amm_add_liquidity() {
 fn amm_swap_b_to_a() {
     let mut state = state_for_amm_tests();
 
+    let pins = swap_pins(
+        &state,
+        Ids::token_b_definition(),
+        Balances::swap_amount_in(),
+        true,
+    );
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_b_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now: declared_now(&state),
     };
 
     // Token B is the input, so the B holding occupies the signed input slot.
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_b(),
-            Ids::user_a(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_b(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_a()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_b()),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3135,24 +3433,37 @@ fn amm_swap_b_to_a() {
 fn amm_swap_a_to_b() {
     let mut state = state_for_amm_tests();
 
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_amount_in(),
+        true,
+    );
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_a(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_a()),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3187,7 +3498,10 @@ fn amm_swap_a_to_b() {
 
     // The swap refreshed the pool's TWAP current tick to the post-swap spot price.
     let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
-        &state.get_account_by_id(Ids::current_tick_account()).data,
+        state
+            .get_account_by_id(Ids::current_tick_account())
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("current tick account must hold a valid CurrentTickAccount");
     let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
@@ -3202,29 +3516,45 @@ fn amm_swap_exact_output_refreshes_current_tick() {
     let mut state = state_for_amm_tests();
 
     let initial_tick = twap_oracle_core::CurrentTickAccount::try_from(
-        &state.get_account_by_id(Ids::current_tick_account()).data,
+        state
+            .get_account_by_id(Ids::current_tick_account())
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("current tick account must hold a valid CurrentTickAccount")
     .tick;
 
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_min_out(),
+        false,
+    );
     let instruction = amm_core::Instruction::SwapExactOutput {
         exact_amount_out: Balances::swap_min_out(),
         max_amount_in: Balances::swap_amount_in(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_in: pins.amount_in,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_a(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_a()),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3260,7 +3590,10 @@ fn amm_swap_exact_output_refreshes_current_tick() {
     // the reserves the swap actually settled on.
     let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
     let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
-        &state.get_account_by_id(Ids::current_tick_account()).data,
+        state
+            .get_account_by_id(Ids::current_tick_account())
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("current tick account must hold a valid CurrentTickAccount");
     let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
@@ -3278,25 +3611,38 @@ fn amm_swap_exact_output_refreshes_current_tick() {
 fn amm_swap_exact_output_b_to_a_signs_only_input() {
     let mut state = state_for_amm_tests();
 
+    let pins = swap_pins(
+        &state,
+        Ids::token_b_definition(),
+        Balances::swap_min_out(),
+        false,
+    );
     let instruction = amm_core::Instruction::SwapExactOutput {
         exact_amount_out: Balances::swap_min_out(),
         max_amount_in: Balances::swap_amount_in(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_b_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_in: pins.amount_in,
+        now: declared_now(&state),
     };
 
     // Token B is the input, so the B holding occupies the signed input slot; only it is signed.
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_b(),
-            Ids::user_a(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_b(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_a()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_b()),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3358,24 +3704,37 @@ fn amm_swap_exact_output_b_to_a_signs_only_input() {
 fn amm_swap_exact_input_requires_input_signature() {
     let mut state = state_for_amm_tests();
 
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_amount_in(),
+        true,
+    );
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_a(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_a()),
         ],
         vec![],
         instruction,
@@ -3396,10 +3755,23 @@ fn amm_swap_exact_input_requires_input_signature() {
 fn amm_swap_exact_input_rejects_when_only_output_holding_signed() {
     let mut state = state_for_amm_tests();
 
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_amount_in(),
+        true,
+    );
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now: declared_now(&state),
     };
 
     // Input slot holds token A but only the output (B) holding is signed: the input is unsigned, so
@@ -3407,15 +3779,15 @@ fn amm_swap_exact_input_rejects_when_only_output_holding_signed() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_a(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_a()),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3436,24 +3808,37 @@ fn amm_swap_exact_input_rejects_when_only_output_holding_signed() {
 fn amm_swap_exact_output_requires_input_signature() {
     let mut state = state_for_amm_tests();
 
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_min_out(),
+        false,
+    );
     let instruction = amm_core::Instruction::SwapExactOutput {
         exact_amount_out: Balances::swap_min_out(),
         max_amount_in: Balances::swap_amount_in(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_in: pins.amount_in,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_a(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_a()),
         ],
         vec![],
         instruction,
@@ -3474,10 +3859,23 @@ fn amm_swap_exact_output_requires_input_signature() {
 fn amm_swap_exact_output_rejects_when_only_output_holding_signed() {
     let mut state = state_for_amm_tests();
 
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_min_out(),
+        false,
+    );
     let instruction = amm_core::Instruction::SwapExactOutput {
         exact_amount_out: Balances::swap_min_out(),
         max_amount_in: Balances::swap_amount_in(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_in: pins.amount_in,
+        now: declared_now(&state),
     };
 
     // Input slot holds token A but only the output (B) holding is signed: the input is unsigned, so
@@ -3485,15 +3883,15 @@ fn amm_swap_exact_output_rejects_when_only_output_holding_signed() {
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_a(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_a()),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3517,10 +3915,13 @@ fn amm_sync_reserves_updates_pool_and_current_tick() {
     // Donate token A straight into vault A, so the vault balance exceeds the recorded reserve.
     let donation = 1_000u128;
     let mut donated_vault_a = Accounts::vault_a_init();
-    donated_vault_a.data = Data::from(&TokenHolding::Fungible {
-        definition_id: Ids::token_a_definition(),
-        balance: Balances::vault_a_init() + donation,
-    });
+    donated_vault_a.data.set_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
+            definition_id: Ids::token_a_definition(),
+            balance: Balances::vault_a_init() + donation,
+        }),
+    );
     state.force_insert_account(Ids::vault_a(), donated_vault_a);
 
     execute_sync_reserves(&mut state);
@@ -3532,7 +3933,10 @@ fn amm_sync_reserves_updates_pool_and_current_tick() {
 
     // And refreshes the current tick to the synced spot price.
     let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
-        &state.get_account_by_id(Ids::current_tick_account()).data,
+        state
+            .get_account_by_id(Ids::current_tick_account())
+            .data
+            .shard(Ids::twap_oracle_program()),
     )
     .expect("current tick account must hold a valid CurrentTickAccount");
     let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
@@ -3661,6 +4065,7 @@ fn amm_withdraw_protocol_fees_moves_accrued_fees_and_is_admin_gated() {
         &Keys::user_b(),
         Ids::protocol_fee_holding_a(),
         Ids::user_a(),
+        Ids::token_a_definition(),
         6,
     );
     assert!(matches!(
@@ -3679,6 +4084,7 @@ fn amm_withdraw_protocol_fees_moves_accrued_fees_and_is_admin_gated() {
         &Keys::admin(),
         Ids::protocol_fee_holding_a(),
         Ids::user_a(),
+        Ids::token_a_definition(),
         6,
     )
     .unwrap();
@@ -3701,24 +4107,37 @@ fn amm_swap_rejects_expired_deadline() {
     let deadline_ms = 1_000u64;
     let block_timestamp_ms = 2_000u64;
 
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_amount_in(),
+        true,
+    );
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         deadline: deadline_ms,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_a(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_a()),
         ],
         vec![Nonce(0)],
         instruction,
@@ -3740,24 +4159,37 @@ fn amm_swap_exact_output_rejects_expired_deadline() {
     let deadline_ms = 1_000u64;
     let block_timestamp_ms = 2_000u64;
 
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_min_out(),
+        false,
+    );
     let instruction = amm_core::Instruction::SwapExactOutput {
         exact_amount_out: Balances::swap_min_out(),
         max_amount_in: Balances::swap_amount_in(),
         deadline: deadline_ms,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_in: pins.amount_in,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-            Ids::protocol_fee_holding_a(),
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
+            token_shard(Ids::protocol_fee_holding_a()),
         ],
         vec![current_nonce(&state, Ids::user_a())],
         instruction,
@@ -3779,26 +4211,34 @@ fn amm_add_liquidity_rejects_expired_deadline() {
     let deadline_ms = 1_000u64;
     let block_timestamp_ms = 2_000u64;
 
+    let pins = add_pins(&state, Balances::add_max_a(), Balances::add_max_b());
     let instruction = amm_core::Instruction::AddLiquidity {
         min_amount_liquidity: Balances::add_min_lp(),
         max_amount_to_add_token_a: Balances::add_max_a(),
         max_amount_to_add_token_b: Balances::add_max_b(),
         deadline: deadline_ms,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        amount_a: pins.amount_a,
+        amount_b: pins.amount_b,
+        delta_lp: pins.delta_lp,
+        new_price: pins.new_price,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::token_lp_definition()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_lp()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![
             current_nonce(&state, Ids::user_a()),
@@ -3824,26 +4264,33 @@ fn amm_remove_liquidity_rejects_expired_deadline() {
     let deadline_ms = 1_000u64;
     let block_timestamp_ms = 2_000u64;
 
+    let pins = remove_pins(&state, Balances::remove_lp());
     let instruction = amm_core::Instruction::RemoveLiquidity {
         remove_liquidity_amount: Balances::remove_lp(),
         min_amount_to_remove_token_a: Balances::remove_min_a(),
         min_amount_to_remove_token_b: Balances::remove_min_b(),
         deadline: deadline_ms,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        withdraw_amount_a: pins.withdraw_amount_a,
+        withdraw_amount_b: pins.withdraw_amount_b,
+        new_price: pins.new_price,
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::token_lp_definition()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_lp()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![current_nonce(&state, Ids::user_lp())],
         instruction,
@@ -3869,22 +4316,26 @@ fn amm_new_definition_rejects_expired_deadline() {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
         deadline: deadline_ms,
+        facts: declared_facts(&state),
+        definition_token_a_id: Ids::token_a_definition(),
+        definition_token_b_id: Ids::token_b_definition(),
+        now: declared_now(&state),
     };
 
     let message = public_transaction::Message::try_new(
         Ids::amm_program(),
         vec![
-            Ids::config(),
-            Ids::pool_definition(),
-            Ids::vault_a(),
-            Ids::vault_b(),
-            Ids::token_lp_definition(),
-            Ids::lp_lock_holding(),
-            Ids::user_a(),
-            Ids::user_b(),
-            Ids::user_lp(),
-            Ids::current_tick_account(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ours(Ids::config()),
+            ours(Ids::pool_definition()),
+            token_shard(Ids::vault_a()),
+            token_shard(Ids::vault_b()),
+            token_shard(Ids::token_lp_definition()),
+            token_shard(Ids::lp_lock_holding()),
+            token_shard(Ids::user_a()),
+            token_shard(Ids::user_b()),
+            token_shard(Ids::user_lp()),
+            oracle_shard(Ids::current_tick_account()),
+            clock_shard(),
         ],
         vec![
             current_nonce(&state, Ids::user_a()),
@@ -3987,14 +4438,16 @@ fn amm_swap_a_to_b_private_user_holding() {
     let user_a_vpk = PrivateKeys::user_a_vpk();
     let user_a_id = PrivateKeys::user_a_id();
     let user_a_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: Nonce::private_account_nonce_init(&user_a_id),
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_a_definition(),
             balance: Balances::user_a_init(),
         }),
-        nonce: Nonce::private_account_nonce_init(&user_a_id),
-    };
+    );
     state = state.with_private_accounts([(
         Commitment::new(&user_a_id, &user_a_account),
         Nullifier::for_account_initialization(&user_a_id),
@@ -4003,76 +4456,54 @@ fn amm_swap_a_to_b_private_user_holding() {
         .get_proof_for_commitment(&Commitment::new(&user_a_id, &user_a_account))
         .expect("user_a's commitment must be in the set");
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let pool_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::pool_definition()),
-        false,
-        Ids::pool_definition(),
-    );
-    let vault_a_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_a()),
-        false,
-        Ids::vault_a(),
-    );
-    let vault_b_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_b()),
-        false,
-        Ids::vault_b(),
-    );
-    let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
     // The output recipient only receives: `user_output_holding` is `#[account(mut)]`, not a
     // signer. Passing it unauthorized keeps this test honest about the minimal signer set.
-    let user_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), false, Ids::user_b());
-    let current_tick_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::current_tick_account()),
-        false,
-        Ids::current_tick_account(),
-    );
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
     // Token A is the swap input, so the Token A protocol-fee holding is the one the swap may
     // credit. It is uninitialized here — `protocol_fee_bps` is 0 in these fixtures.
-    let protocol_fee_holding_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::protocol_fee_holding_a()),
-        false,
-        Ids::protocol_fee_holding_a(),
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_amount_in(),
+        true,
     );
-
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now: declared_now(&state),
     };
 
     let (output, proof) = execute_and_prove(
-        vec![
-            config_pre,
-            pool_pre,
-            vault_a_pre,
-            vault_b_pre,
-            user_a_pre,
-            user_b_pre,
-            current_tick_pre,
-            clock_pre,
-            protocol_fee_holding_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(user_a_ask, &user_a_vpk, membership_proof),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                ours(Ids::pool_definition()),
+                token_shard(Ids::vault_a()),
+                token_shard(Ids::vault_b()),
+                token_shard(user_a_id),
+                token_shard(Ids::user_b()),
+                oracle_shard(Ids::current_tick_account()),
+                clock_shard(),
+                token_shard(Ids::protocol_fee_holding_a()),
+            ],
+            signers: [user_a_id].into(),
+            private_witnesses: vec![
+                private_authorized_update_identity(
+                    user_a_ask,
+                    &user_a_vpk,
+                    user_a_account.clone(),
+                    membership_proof,
+                ),
+            ],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     )
     .expect("SwapExactInput with a private user holding must succeed now that the clock account is properly owned");
@@ -4110,207 +4541,157 @@ fn amm_swap_a_to_b_private_user_holding() {
     let user_a_nonce_after =
         Nonce::private_account_nonce_init(&user_a_id).private_account_nonce_increment(&user_a_nsk);
     let new_user_a_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: user_a_nonce_after,
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_a_definition(),
             balance: Balances::user_a_swap_2(),
         }),
-        nonce: user_a_nonce_after,
-    };
+    );
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&user_a_id, &new_user_a_account))
         .is_some());
 }
 
-/// Swap that pays out to a brand-new `PrivateForeignInit` destination is still not expressible on
-/// v0.2.4 — but no longer for the signer reason (PR #621 authorizes foreign-init). It is now
-/// blocked by AMM's own program-level precondition that the output holding must already be owned
-/// by the configured Token Program (i.e. already initialized). **[Open — Programs]**
+/// v0.2.5 refused this: the AMM read the output holding's shard and demanded it
+/// already be owned by the configured Token Program. v0.3.0 took that read away —
+/// a plan cannot see a public shard — and nothing replaced it, because the chained
+/// transfer's credit denies the destination to nobody (`programs/amm/src/swap.rs`
+/// now asserts only that a trader holding is not a pool vault). So paying a swap
+/// out to a brand-new private destination the payer does not control is expressible,
+/// and the destination appears only as a private action.
 #[test]
-fn amm_swap_a_to_b_private_unauthorized_destination_is_not_expressible() {
+fn amm_swap_a_to_b_private_foreign_init_destination_now_succeeds() {
     let state = state_for_amm_tests();
 
     let user_b_npk = PrivateKeys::user_b_npk();
     let user_b_vpk = PrivateKeys::user_b_vpk();
     let user_b_id = PrivateKeys::user_b_id();
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let pool_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::pool_definition()),
-        false,
-        Ids::pool_definition(),
-    );
-    let vault_a_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_a()),
-        false,
-        Ids::vault_a(),
-    );
-    let vault_b_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_b()),
-        false,
-        Ids::vault_b(),
-    );
-    let user_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
     // Foreign-init destination pre-state is authorized on v0.2.4 (PR #621); the swap is still
     // rejected, but by AMM's destination-must-already-exist precondition below.
-    let user_b_pre = AccountWithMetadata::new(Account::default(), true, user_b_id);
-    let current_tick_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::current_tick_account()),
-        false,
-        Ids::current_tick_account(),
-    );
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
     // Token A is the swap input, so the Token A protocol-fee holding is the one the swap may
     // credit. It is uninitialized here — `protocol_fee_bps` is 0 in these fixtures.
-    let protocol_fee_holding_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::protocol_fee_holding_a()),
-        false,
-        Ids::protocol_fee_holding_a(),
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_amount_in(),
+        true,
     );
-
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now: declared_now(&state),
     };
 
     let result = execute_and_prove(
-        vec![
-            config_pre,
-            pool_pre,
-            vault_a_pre,
-            vault_b_pre,
-            user_a_pre,
-            user_b_pre,
-            current_tick_pre,
-            clock_pre,
-            protocol_fee_holding_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(user_b_npk, &user_b_vpk, state.commitment_root()),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                ours(Ids::pool_definition()),
+                token_shard(Ids::vault_a()),
+                token_shard(Ids::vault_b()),
+                token_shard(Ids::user_a()),
+                token_shard(user_b_id),
+                oracle_shard(Ids::current_tick_account()),
+                clock_shard(),
+                token_shard(Ids::protocol_fee_holding_a()),
+            ],
+            signers: [Ids::user_a(), user_b_id].into(),
+            private_witnesses: vec![private_foreign_init_identity(
+                user_b_npk,
+                &user_b_vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     );
 
-    let err = result.expect_err(
-        "SwapExactInput paying out to a brand-new destination must be rejected: AMM requires the \
-         output holding to already be owned by the configured Token Program",
-    );
-    let message = format!("{err:?}");
-    assert!(
-        message.contains("must be owned by the configured Token Program"),
-        "expected AMM's destination-must-already-exist precondition on user_holding_b, got a \
-         different error: {message}"
+    let (output, _proof) =
+        result.expect("crediting a fresh private destination needs no read of its shard");
+    assert_eq!(
+        output.private_actions.len(),
+        1,
+        "the fresh private destination must be emitted as exactly one private action"
     );
 }
 
-/// Swap that pays out to `PrivateAuthorizedInit` is prohibited. Payment
-/// is only permitted to already initialized accounts.
+/// The same change as [`amm_swap_a_to_b_private_foreign_init_destination_now_succeeds`],
+/// with the destination's own authorization behind it: the AMM no longer has a
+/// destination-must-already-exist precondition to fail, so an init destination is
+/// credited and stays private.
 #[test]
-fn amm_swap_a_to_b_private_authorized_init_destination_is_not_expressible() {
+fn amm_swap_a_to_b_private_authorized_init_destination_now_succeeds() {
     let state = state_for_amm_tests();
 
     let user_b_ask = PrivateKeys::user_b_ask();
     let user_b_vpk = PrivateKeys::user_b_vpk();
     let user_b_id = PrivateKeys::user_b_id();
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let pool_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::pool_definition()),
-        false,
-        Ids::pool_definition(),
-    );
-    let vault_a_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_a()),
-        false,
-        Ids::vault_a(),
-    );
-    let vault_b_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_b()),
-        false,
-        Ids::vault_b(),
-    );
-    let user_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
-    let user_b_pre = AccountWithMetadata::new(Account::default(), true, user_b_id);
-    let current_tick_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::current_tick_account()),
-        false,
-        Ids::current_tick_account(),
-    );
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
     // Token A is the swap input, so the Token A protocol-fee holding is the one the swap may
     // credit. It is uninitialized here — `protocol_fee_bps` is 0 in these fixtures.
-    let protocol_fee_holding_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::protocol_fee_holding_a()),
-        false,
-        Ids::protocol_fee_holding_a(),
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_amount_in(),
+        true,
     );
-
     let instruction = amm_core::Instruction::SwapExactInput {
         swap_amount_in: Balances::swap_amount_in(),
         min_amount_out: Balances::swap_min_out(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_out: pins.amount_out,
+        now: declared_now(&state),
     };
 
     let result = execute_and_prove(
-        vec![
-            config_pre,
-            pool_pre,
-            vault_a_pre,
-            vault_b_pre,
-            user_a_pre,
-            user_b_pre,
-            current_tick_pre,
-            clock_pre,
-            protocol_fee_holding_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(user_b_ask, &user_b_vpk, state.commitment_root()),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                ours(Ids::pool_definition()),
+                token_shard(Ids::vault_a()),
+                token_shard(Ids::vault_b()),
+                token_shard(Ids::user_a()),
+                token_shard(user_b_id),
+                oracle_shard(Ids::current_tick_account()),
+                clock_shard(),
+                token_shard(Ids::protocol_fee_holding_a()),
+            ],
+            signers: [Ids::user_a(), user_b_id].into(),
+            private_witnesses: vec![private_authorized_init_identity(
+                user_b_ask,
+                &user_b_vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     );
 
-    let err = result.expect_err(
-        "SwapExactInput must be rejected by the AMM program itself: user_holding_b must already \
-         be initialized and owned by the configured Token Program before any chained call or the \
-         privacy-preserving circuit is ever reached",
-    );
-    let message = format!("{err:?}");
-    assert!(
-        message.contains("User Token B holding must be owned by the configured Token Program"),
-        "expected the AMM program's own initialized-destination precondition, got a different \
-         error: {message}"
+    let (output, _proof) =
+        result.expect("an authorized-init private destination may receive the swap's output");
+    assert_eq!(
+        output.private_actions.len(),
+        1,
+        "the init destination must be emitted as exactly one private action"
     );
 }
 
@@ -4323,14 +4704,16 @@ fn amm_swap_exact_output_private_user_holding() {
     let user_a_vpk = PrivateKeys::user_a_vpk();
     let user_a_id = PrivateKeys::user_a_id();
     let user_a_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: Nonce::private_account_nonce_init(&user_a_id),
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_a_definition(),
             balance: Balances::user_a_init(),
         }),
-        nonce: Nonce::private_account_nonce_init(&user_a_id),
-    };
+    );
     state = state.with_private_accounts([(
         Commitment::new(&user_a_id, &user_a_account),
         Nullifier::for_account_initialization(&user_a_id),
@@ -4339,76 +4722,54 @@ fn amm_swap_exact_output_private_user_holding() {
         .get_proof_for_commitment(&Commitment::new(&user_a_id, &user_a_account))
         .expect("user_a's commitment must be in the set");
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let pool_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::pool_definition()),
-        false,
-        Ids::pool_definition(),
-    );
-    let vault_a_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_a()),
-        false,
-        Ids::vault_a(),
-    );
-    let vault_b_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_b()),
-        false,
-        Ids::vault_b(),
-    );
-    let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
     // The output recipient only receives: `user_output_holding` is `#[account(mut)]`, not a
     // signer. Passing it unauthorized keeps this test honest about the minimal signer set.
-    let user_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), false, Ids::user_b());
-    let current_tick_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::current_tick_account()),
-        false,
-        Ids::current_tick_account(),
-    );
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
     // Token A is the swap input, so the Token A protocol-fee holding is the one the swap may
     // credit. It is uninitialized here — `protocol_fee_bps` is 0 in these fixtures.
-    let protocol_fee_holding_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::protocol_fee_holding_a()),
+    let pins = swap_pins(
+        &state,
+        Ids::token_a_definition(),
+        Balances::swap_min_out(),
         false,
-        Ids::protocol_fee_holding_a(),
     );
-
     let instruction = amm_core::Instruction::SwapExactOutput {
         exact_amount_out: Balances::swap_min_out(),
         max_amount_in: Balances::swap_amount_in(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        definition_id_in: Ids::token_a_definition(),
+        protocol_fee: pins.protocol_fee,
+        new_price: pins.new_price,
+        amount_in: pins.amount_in,
+        now: declared_now(&state),
     };
 
     let (output, proof) = execute_and_prove(
-        vec![
-            config_pre,
-            pool_pre,
-            vault_a_pre,
-            vault_b_pre,
-            user_a_pre,
-            user_b_pre,
-            current_tick_pre,
-            clock_pre,
-            protocol_fee_holding_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(user_a_ask, &user_a_vpk, membership_proof),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                ours(Ids::pool_definition()),
+                token_shard(Ids::vault_a()),
+                token_shard(Ids::vault_b()),
+                token_shard(user_a_id),
+                token_shard(Ids::user_b()),
+                oracle_shard(Ids::current_tick_account()),
+                clock_shard(),
+                token_shard(Ids::protocol_fee_holding_a()),
+            ],
+            signers: [user_a_id].into(),
+            private_witnesses: vec![
+                private_authorized_update_identity(
+                    user_a_ask,
+                    &user_a_vpk,
+                    user_a_account.clone(),
+                    membership_proof,
+                ),
+            ],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     )
     .expect("SwapExactOutput with a private user holding must succeed now that the clock account is properly owned");
@@ -4434,8 +4795,13 @@ fn amm_swap_exact_output_private_user_holding() {
     let pool = pool_definition(&state.get_account_by_id(Ids::pool_definition()));
     assert_eq!(pool.reserve_a, Balances::vault_a_init() + deposit_amount);
     assert_eq!(pool.reserve_b, Balances::vault_b_init() - withdraw_amount);
-    match TokenHolding::try_from(&state.get_account_by_id(Ids::vault_a()).data)
-        .expect("valid holding")
+    match TokenHolding::try_from(
+        state
+            .get_account_by_id(Ids::vault_a())
+            .data
+            .shard(Ids::token_program()),
+    )
+    .expect("valid holding")
     {
         TokenHolding::Fungible { balance, .. } => {
             assert_eq!(balance, Balances::vault_a_init() + deposit_amount);
@@ -4444,8 +4810,13 @@ fn amm_swap_exact_output_private_user_holding() {
             panic!("expected Fungible vault holding")
         }
     }
-    match TokenHolding::try_from(&state.get_account_by_id(Ids::vault_b()).data)
-        .expect("valid holding")
+    match TokenHolding::try_from(
+        state
+            .get_account_by_id(Ids::vault_b())
+            .data
+            .shard(Ids::token_program()),
+    )
+    .expect("valid holding")
     {
         TokenHolding::Fungible { balance, .. } => {
             assert_eq!(balance, Balances::vault_b_init() - withdraw_amount);
@@ -4457,28 +4828,28 @@ fn amm_swap_exact_output_private_user_holding() {
     // Credited without signing, so the nonce is untouched.
     assert_eq!(
         state.get_account_by_id(Ids::user_b()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
+        Account::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
                 definition_id: Ids::token_b_definition(),
                 balance: Balances::user_b_init() + withdraw_amount,
             }),
-            nonce: Nonce(0),
-        }
+        )
     );
 
     let user_a_nonce_after =
         Nonce::private_account_nonce_init(&user_a_id).private_account_nonce_increment(&user_a_nsk);
     let new_user_a_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: user_a_nonce_after,
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_a_definition(),
             balance: Balances::user_a_init() - deposit_amount,
         }),
-        nonce: user_a_nonce_after,
-    };
+    );
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&user_a_id, &new_user_a_account))
         .is_some());
@@ -4494,14 +4865,16 @@ fn amm_add_liquidity_private_lp_holding() {
     let user_lp_id = PrivateKeys::user_lp_id();
     let user_lp_initial_balance = 500_u128;
     let user_lp_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: Nonce::private_account_nonce_init(&user_lp_id),
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_lp_definition(),
             balance: user_lp_initial_balance,
         }),
-        nonce: Nonce::private_account_nonce_init(&user_lp_id),
-    };
+    );
     state = state.with_private_accounts([(
         Commitment::new(&user_lp_id, &user_lp_account),
         Nullifier::for_account_initialization(&user_lp_id),
@@ -4510,77 +4883,47 @@ fn amm_add_liquidity_private_lp_holding() {
         .get_proof_for_commitment(&Commitment::new(&user_lp_id, &user_lp_account))
         .expect("user_lp's commitment must be in the set");
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let pool_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::pool_definition()),
-        false,
-        Ids::pool_definition(),
-    );
-    let vault_a_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_a()),
-        false,
-        Ids::vault_a(),
-    );
-    let vault_b_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_b()),
-        false,
-        Ids::vault_b(),
-    );
-    let token_lp_definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_lp_definition()),
-        false,
-        Ids::token_lp_definition(),
-    );
-    let user_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
-    let user_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
-    let user_lp_pre = AccountWithMetadata::new(user_lp_account, true, user_lp_id);
-    let current_tick_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::current_tick_account()),
-        false,
-        Ids::current_tick_account(),
-    );
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
-
+    let pins = add_pins(&state, Balances::add_max_a(), Balances::add_max_b());
     let instruction = amm_core::Instruction::AddLiquidity {
         min_amount_liquidity: Balances::add_min_lp(),
         max_amount_to_add_token_a: Balances::add_max_a(),
         max_amount_to_add_token_b: Balances::add_max_b(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        amount_a: pins.amount_a,
+        amount_b: pins.amount_b,
+        delta_lp: pins.delta_lp,
+        new_price: pins.new_price,
+        now: declared_now(&state),
     };
 
     let (output, proof) = execute_and_prove(
-        vec![
-            config_pre,
-            pool_pre,
-            vault_a_pre,
-            vault_b_pre,
-            token_lp_definition_pre,
-            user_a_pre,
-            user_b_pre,
-            user_lp_pre,
-            current_tick_pre,
-            clock_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(user_lp_ask, &user_lp_vpk, membership_proof),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                ours(Ids::pool_definition()),
+                token_shard(Ids::vault_a()),
+                token_shard(Ids::vault_b()),
+                token_shard(Ids::token_lp_definition()),
+                token_shard(Ids::user_a()),
+                token_shard(Ids::user_b()),
+                token_shard(user_lp_id),
+                oracle_shard(Ids::current_tick_account()),
+                clock_shard(),
+            ],
+            signers: [Ids::user_a(), Ids::user_b(), user_lp_id].into(),
+            private_witnesses: vec![
+                private_authorized_update_identity(
+                    user_lp_ask,
+                    &user_lp_vpk,
+                    user_lp_account.clone(),
+                    membership_proof,
+                ),
+            ],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     )
     .expect("AddLiquidity with a private LP holding must succeed now that the clock account is properly owned");
@@ -4631,14 +4974,16 @@ fn amm_add_liquidity_private_lp_holding() {
     let user_lp_nonce_after = Nonce::private_account_nonce_init(&user_lp_id)
         .private_account_nonce_increment(&user_lp_nsk);
     let new_user_lp_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: user_lp_nonce_after,
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_lp_definition(),
             balance: user_lp_initial_balance + minted_lp,
         }),
-        nonce: user_lp_nonce_after,
-    };
+    );
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&user_lp_id, &new_user_lp_account))
         .is_some());
@@ -4653,14 +4998,16 @@ fn amm_remove_liquidity_private_lp_holding() {
     let user_lp_vpk = PrivateKeys::user_lp_vpk();
     let user_lp_id = PrivateKeys::user_lp_id();
     let user_lp_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: Nonce::private_account_nonce_init(&user_lp_id),
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_lp_definition(),
             balance: Balances::remove_lp(),
         }),
-        nonce: Nonce::private_account_nonce_init(&user_lp_id),
-    };
+    );
     state = state.with_private_accounts([(
         Commitment::new(&user_lp_id, &user_lp_account),
         Nullifier::for_account_initialization(&user_lp_id),
@@ -4669,77 +5016,46 @@ fn amm_remove_liquidity_private_lp_holding() {
         .get_proof_for_commitment(&Commitment::new(&user_lp_id, &user_lp_account))
         .expect("user_lp's commitment must be in the set");
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let pool_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::pool_definition()),
-        false,
-        Ids::pool_definition(),
-    );
-    let vault_a_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_a()),
-        false,
-        Ids::vault_a(),
-    );
-    let vault_b_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_b()),
-        false,
-        Ids::vault_b(),
-    );
-    let token_lp_definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_lp_definition()),
-        false,
-        Ids::token_lp_definition(),
-    );
-    let user_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), false, Ids::user_a());
-    let user_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), false, Ids::user_b());
-    let user_lp_pre = AccountWithMetadata::new(user_lp_account, true, user_lp_id);
-    let current_tick_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::current_tick_account()),
-        false,
-        Ids::current_tick_account(),
-    );
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
-
+    let pins = remove_pins(&state, Balances::remove_lp());
     let instruction = amm_core::Instruction::RemoveLiquidity {
         remove_liquidity_amount: Balances::remove_lp(),
         min_amount_to_remove_token_a: Balances::remove_min_a(),
         min_amount_to_remove_token_b: Balances::remove_min_b(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        withdraw_amount_a: pins.withdraw_amount_a,
+        withdraw_amount_b: pins.withdraw_amount_b,
+        new_price: pins.new_price,
+        now: declared_now(&state),
     };
 
     let (output, proof) = execute_and_prove(
-        vec![
-            config_pre,
-            pool_pre,
-            vault_a_pre,
-            vault_b_pre,
-            token_lp_definition_pre,
-            user_a_pre,
-            user_b_pre,
-            user_lp_pre,
-            current_tick_pre,
-            clock_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(user_lp_ask, &user_lp_vpk, membership_proof),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                ours(Ids::pool_definition()),
+                token_shard(Ids::vault_a()),
+                token_shard(Ids::vault_b()),
+                token_shard(Ids::token_lp_definition()),
+                token_shard(Ids::user_a()),
+                token_shard(Ids::user_b()),
+                token_shard(user_lp_id),
+                oracle_shard(Ids::current_tick_account()),
+                clock_shard(),
+            ],
+            signers: [user_lp_id].into(),
+            private_witnesses: vec![
+                private_authorized_update_identity(
+                    user_lp_ask,
+                    &user_lp_vpk,
+                    user_lp_account.clone(),
+                    membership_proof,
+                ),
+            ],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     )
     .expect("RemoveLiquidity with a private LP holding must succeed now that the clock account is properly owned");
@@ -4783,21 +5099,27 @@ fn amm_remove_liquidity_private_lp_holding() {
     let user_lp_nonce_after = Nonce::private_account_nonce_init(&user_lp_id)
         .private_account_nonce_increment(&user_lp_nsk);
     let new_user_lp_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: user_lp_nonce_after,
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_lp_definition(),
             balance: 0,
         }),
-        nonce: user_lp_nonce_after,
-    };
+    );
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&user_lp_id, &new_user_lp_account))
         .is_some());
 }
 
+/// Both withdrawal destinations are brand-new private holdings. v0.2.5 rejected
+/// this on the AMM's own initialized-destination precondition; v0.3.0 has no such
+/// read (see `programs/amm/src/remove.rs`), and the two chained credits each land
+/// as a private action.
 #[test]
-fn amm_remove_liquidity_private_new_user_holdings_is_not_expressible() {
+fn amm_remove_liquidity_into_new_private_holdings_now_succeeds() {
     let state = state_for_amm_tests();
 
     let user_a_npk = PrivateKeys::user_a_npk();
@@ -4807,95 +5129,54 @@ fn amm_remove_liquidity_private_new_user_holdings_is_not_expressible() {
     let user_b_vpk = PrivateKeys::user_b_vpk();
     let user_b_id = PrivateKeys::user_b_id();
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let pool_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::pool_definition()),
-        false,
-        Ids::pool_definition(),
-    );
-    let vault_a_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_a()),
-        false,
-        Ids::vault_a(),
-    );
-    let vault_b_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_b()),
-        false,
-        Ids::vault_b(),
-    );
-    let token_lp_definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_lp_definition()),
-        false,
-        Ids::token_lp_definition(),
-    );
     // Foreign-init destination pre-states are authorized on v0.2.4 (PR #621), matching the swap
     // test above. Passing them unauthorized would make the circuit reject the transaction on its
     // own, so removing AMM's guard below would leave this test negative for the wrong reason.
-    let user_a_pre = AccountWithMetadata::new(Account::default(), true, user_a_id);
-    let user_b_pre = AccountWithMetadata::new(Account::default(), true, user_b_id);
-    let user_lp_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::user_lp()),
-        true,
-        Ids::user_lp(),
-    );
-    let current_tick_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::current_tick_account()),
-        false,
-        Ids::current_tick_account(),
-    );
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
-
+    let pins = remove_pins(&state, Balances::remove_lp());
     let instruction = amm_core::Instruction::RemoveLiquidity {
         remove_liquidity_amount: Balances::remove_lp(),
         min_amount_to_remove_token_a: Balances::remove_min_a(),
         min_amount_to_remove_token_b: Balances::remove_min_b(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        withdraw_amount_a: pins.withdraw_amount_a,
+        withdraw_amount_b: pins.withdraw_amount_b,
+        new_price: pins.new_price,
+        now: declared_now(&state),
     };
 
     let result = execute_and_prove(
-        vec![
-            config_pre,
-            pool_pre,
-            vault_a_pre,
-            vault_b_pre,
-            token_lp_definition_pre,
-            user_a_pre,
-            user_b_pre,
-            user_lp_pre,
-            current_tick_pre,
-            clock_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(user_a_npk, &user_a_vpk, state.commitment_root()),
-            private_foreign_init_identity(user_b_npk, &user_b_vpk, state.commitment_root()),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                ours(Ids::pool_definition()),
+                token_shard(Ids::vault_a()),
+                token_shard(Ids::vault_b()),
+                token_shard(Ids::token_lp_definition()),
+                token_shard(user_a_id),
+                token_shard(user_b_id),
+                token_shard(Ids::user_lp()),
+                oracle_shard(Ids::current_tick_account()),
+                clock_shard(),
+            ],
+            signers: [user_a_id, user_b_id, Ids::user_lp()].into(),
+            private_witnesses: vec![
+                private_foreign_init_identity(user_a_npk, &user_a_vpk, state.commitment_root()),
+                private_foreign_init_identity(user_b_npk, &user_b_vpk, state.commitment_root()),
+            ],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     );
 
-    let err = result.expect_err(
-        "RemoveLiquidity must be rejected by the AMM program itself: user_holding_a/b must \
-         already be initialized and owned by the configured Token Program before any chained \
-         call or the privacy-preserving circuit is ever reached",
-    );
-    let message = format!("{err:?}");
-    assert!(
-        message.contains("User Token A holding must be owned by the configured Token Program"),
-        "expected the AMM program's own initialized-destination precondition, got a different \
-         error: {message}"
+    let (output, _proof) =
+        result.expect("both fresh private withdrawal destinations may be credited");
+    assert_eq!(
+        output.private_actions.len(),
+        2,
+        "each fresh private destination must be emitted as its own private action"
     );
 }
 
@@ -4908,28 +5189,32 @@ fn amm_add_liquidity_private_user_holdings() {
     let user_a_vpk = PrivateKeys::user_a_vpk();
     let user_a_id = PrivateKeys::user_a_id();
     let user_a_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: Nonce::private_account_nonce_init(&user_a_id),
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_a_definition(),
             balance: Balances::user_a_init(),
         }),
-        nonce: Nonce::private_account_nonce_init(&user_a_id),
-    };
+    );
 
     let user_b_ask = PrivateKeys::user_b_ask();
     let user_b_nsk = NullifierSecretKey::from(&user_b_ask);
     let user_b_vpk = PrivateKeys::user_b_vpk();
     let user_b_id = PrivateKeys::user_b_id();
     let user_b_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: Nonce::private_account_nonce_init(&user_b_id),
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_b_definition(),
             balance: Balances::user_b_init(),
         }),
-        nonce: Nonce::private_account_nonce_init(&user_b_id),
-    };
+    );
 
     state = state.with_private_accounts([
         (
@@ -4948,79 +5233,53 @@ fn amm_add_liquidity_private_user_holdings() {
         .get_proof_for_commitment(&Commitment::new(&user_b_id, &user_b_account))
         .expect("user_b's commitment must be in the set");
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let pool_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::pool_definition()),
-        false,
-        Ids::pool_definition(),
-    );
-    let vault_a_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_a()),
-        false,
-        Ids::vault_a(),
-    );
-    let vault_b_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_b()),
-        false,
-        Ids::vault_b(),
-    );
-    let token_lp_definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_lp_definition()),
-        false,
-        Ids::token_lp_definition(),
-    );
-    let user_a_pre = AccountWithMetadata::new(user_a_account, true, user_a_id);
-    let user_b_pre = AccountWithMetadata::new(user_b_account, true, user_b_id);
-    let user_lp_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::user_lp()),
-        false,
-        Ids::user_lp(),
-    );
-    let current_tick_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::current_tick_account()),
-        false,
-        Ids::current_tick_account(),
-    );
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
-
+    let pins = add_pins(&state, Balances::add_max_a(), Balances::add_max_b());
     let instruction = amm_core::Instruction::AddLiquidity {
         min_amount_liquidity: Balances::add_min_lp(),
         max_amount_to_add_token_a: Balances::add_max_a(),
         max_amount_to_add_token_b: Balances::add_max_b(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        identity: declared_identity(&state),
+        amount_a: pins.amount_a,
+        amount_b: pins.amount_b,
+        delta_lp: pins.delta_lp,
+        new_price: pins.new_price,
+        now: declared_now(&state),
     };
 
     let (output, proof) = execute_and_prove(
-        vec![
-            config_pre,
-            pool_pre,
-            vault_a_pre,
-            vault_b_pre,
-            token_lp_definition_pre,
-            user_a_pre,
-            user_b_pre,
-            user_lp_pre,
-            current_tick_pre,
-            clock_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(user_a_ask, &user_a_vpk, user_a_membership_proof),
-            private_authorized_update_identity(user_b_ask, &user_b_vpk, user_b_membership_proof),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                ours(Ids::pool_definition()),
+                token_shard(Ids::vault_a()),
+                token_shard(Ids::vault_b()),
+                token_shard(Ids::token_lp_definition()),
+                token_shard(user_a_id),
+                token_shard(user_b_id),
+                token_shard(Ids::user_lp()),
+                oracle_shard(Ids::current_tick_account()),
+                clock_shard(),
+            ],
+            signers: [user_a_id, user_b_id].into(),
+            private_witnesses: vec![
+                private_authorized_update_identity(
+                    user_a_ask,
+                    &user_a_vpk,
+                    user_a_account.clone(),
+                    user_a_membership_proof,
+                ),
+                private_authorized_update_identity(
+                    user_b_ask,
+                    &user_b_vpk,
+                    user_b_account.clone(),
+                    user_b_membership_proof,
+                ),
+            ],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     )
     .expect("AddLiquidity with private deposit holdings must succeed now that the clock account is properly owned");
@@ -5062,14 +5321,16 @@ fn amm_add_liquidity_private_user_holdings() {
     let user_a_nonce_after =
         Nonce::private_account_nonce_init(&user_a_id).private_account_nonce_increment(&user_a_nsk);
     let new_user_a_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: user_a_nonce_after,
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_a_definition(),
             balance: Balances::user_a_init() - Balances::add_max_a(),
         }),
-        nonce: user_a_nonce_after,
-    };
+    );
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&user_a_id, &new_user_a_account))
         .is_some());
@@ -5077,14 +5338,16 @@ fn amm_add_liquidity_private_user_holdings() {
     let user_b_nonce_after =
         Nonce::private_account_nonce_init(&user_b_id).private_account_nonce_increment(&user_b_nsk);
     let new_user_b_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: user_b_nonce_after,
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_b_definition(),
             balance: Balances::user_b_init() - Balances::add_max_b(),
         }),
-        nonce: user_b_nonce_after,
-    };
+    );
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&user_b_id, &new_user_b_account))
         .is_some());
@@ -5101,83 +5364,38 @@ fn amm_new_definition_private_initial_lp_holder() {
     let user_lp_vpk = PrivateKeys::user_lp_vpk();
     let user_lp_id = PrivateKeys::user_lp_id();
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let pool_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::pool_definition()),
-        false,
-        Ids::pool_definition(),
-    );
-    let vault_a_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_a()),
-        false,
-        Ids::vault_a(),
-    );
-    let vault_b_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_b()),
-        false,
-        Ids::vault_b(),
-    );
-    let token_lp_definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_lp_definition()),
-        false,
-        Ids::token_lp_definition(),
-    );
-    let lp_lock_holding_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::lp_lock_holding()),
-        false,
-        Ids::lp_lock_holding(),
-    );
-    let user_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
-    let user_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
-    let user_lp_pre = AccountWithMetadata::new(Account::default(), true, user_lp_id);
-    let current_tick_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::current_tick_account()),
-        false,
-        Ids::current_tick_account(),
-    );
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
-
     let instruction = amm_core::Instruction::NewDefinition {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        definition_token_a_id: Ids::token_a_definition(),
+        definition_token_b_id: Ids::token_b_definition(),
+        now: declared_now(&state),
     };
 
     let (output, proof) = execute_and_prove(
-        vec![
-            config_pre,
-            pool_pre,
-            vault_a_pre,
-            vault_b_pre,
-            token_lp_definition_pre,
-            lp_lock_holding_pre,
-            user_a_pre,
-            user_b_pre,
-            user_lp_pre,
-            current_tick_pre,
-            clock_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(user_lp_ask, &user_lp_vpk, state.commitment_root()),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                ours(Ids::pool_definition()),
+                token_shard(Ids::vault_a()),
+                token_shard(Ids::vault_b()),
+                token_shard(Ids::token_lp_definition()),
+                token_shard(Ids::lp_lock_holding()),
+                token_shard(Ids::user_a()),
+                token_shard(Ids::user_b()),
+                token_shard(user_lp_id),
+                oracle_shard(Ids::current_tick_account()),
+                clock_shard(),
+            ],
+            signers: [Ids::user_a(), Ids::user_b(), user_lp_id].into(),
+            private_witnesses: vec![
+                private_authorized_init_identity(user_lp_ask, &user_lp_vpk, state.commitment_root()),
+            ],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     )
     .expect("NewDefinition with a private initial LP holder must succeed: the program's own precondition allows a fresh, authorized user_holding_lp");
@@ -5228,9 +5446,14 @@ fn amm_new_definition_private_initial_lp_holder() {
     );
 
     let current_tick = state.get_account_by_id(Ids::current_tick_account());
-    assert_eq!(current_tick.program_owner, Ids::twap_oracle_program());
-    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(&current_tick.data)
-        .expect("current tick account must hold a valid CurrentTickAccount");
+    assert!(!current_tick
+        .data
+        .shard(Ids::twap_oracle_program())
+        .is_empty());
+    let tick_account = twap_oracle_core::CurrentTickAccount::try_from(
+        current_tick.data.shard(Ids::twap_oracle_program()),
+    )
+    .expect("current tick account must hold a valid CurrentTickAccount");
     let expected_tick = twap_oracle_core::price_to_tick(amm_core::spot_price_q64_64(
         Balances::vault_a_init(),
         Balances::vault_b_init(),
@@ -5240,28 +5463,28 @@ fn amm_new_definition_private_initial_lp_holder() {
     // A fresh PrivateAuthorizedInit account's nonce starts at private_account_nonce_init, not
     // incremented — this is its first-ever commitment, not an update to an existing one.
     let new_user_lp_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
+        nonce: Nonce::private_account_nonce_init(&user_lp_id),
+        ..Account::default()
+    }
+    .with_shard(
+        Ids::token_program(),
+        ShardData::from(&TokenHolding::Fungible {
             definition_id: Ids::token_lp_definition(),
             balance: Balances::lp_user_init(),
         }),
-        nonce: Nonce::private_account_nonce_init(&user_lp_id),
-    };
+    );
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&user_lp_id, &new_user_lp_account))
         .is_some());
 }
 
-/// Pool creation cannot mint the initial LP tokens to a foreign-init holder, and the round trip
-/// is worth recording: PR #621 made it expressible under v0.2.4 by giving a foreign-init
-/// pre-state `is_authorized == true`, which satisfied the guest's signer requirement on
-/// `user_holding_lp` without the holder consenting. v0.2.5 makes `is_authorized` match whether a
-/// credential was supplied, so the flag is `false` here and the guest correctly refuses.
-/// Minting the initial LP to a private holder requires their key — see
-/// `amm_new_definition_private_initial_lp_holder`, which uses `private_authorized_init_identity`.
+/// A pool created with its initial LP minted to a private holding whose authorization
+/// key nobody in the transaction holds. v0.2.5 declared `user_holding_lp` a signer and
+/// refused this; v0.3.0 declares it `#[account(mut)]` only, because the LP mint is a
+/// credit and a credit denies the address to nobody. So a third party can open a pool
+/// and pay the LP to an account it does not control.
 #[test]
-fn amm_new_definition_foreign_init_lp_holder_is_refused() {
+fn amm_new_definition_foreign_init_lp_holder_now_succeeds() {
     let mut state = state_for_amm_tests_with_new_def();
     state.force_insert_account(Ids::vault_a(), Accounts::vault_a_reinitializable());
     state.force_insert_account(Ids::vault_b(), Accounts::vault_b_reinitializable());
@@ -5270,90 +5493,48 @@ fn amm_new_definition_foreign_init_lp_holder_is_refused() {
     let user_lp_vpk = PrivateKeys::user_lp_vpk();
     let user_lp_id = PrivateKeys::user_lp_id();
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let pool_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::pool_definition()),
-        false,
-        Ids::pool_definition(),
-    );
-    let vault_a_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_a()),
-        false,
-        Ids::vault_a(),
-    );
-    let vault_b_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::vault_b()),
-        false,
-        Ids::vault_b(),
-    );
-    let token_lp_definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_lp_definition()),
-        false,
-        Ids::token_lp_definition(),
-    );
-    let lp_lock_holding_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::lp_lock_holding()),
-        false,
-        Ids::lp_lock_holding(),
-    );
-    let user_a_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), true, Ids::user_a());
-    let user_b_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_b()), true, Ids::user_b());
-    let user_lp_pre = AccountWithMetadata::new(Account::default(), false, user_lp_id);
-    let current_tick_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::current_tick_account()),
-        false,
-        Ids::current_tick_account(),
-    );
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
-
     let instruction = amm_core::Instruction::NewDefinition {
         token_a_amount: Balances::vault_a_init(),
         token_b_amount: Balances::vault_b_init(),
         deadline: u64::MAX,
+        facts: declared_facts(&state),
+        definition_token_a_id: Ids::token_a_definition(),
+        definition_token_b_id: Ids::token_b_definition(),
+        now: declared_now(&state),
     };
 
-    let error = execute_and_prove(
-        vec![
-            config_pre,
-            pool_pre,
-            vault_a_pre,
-            vault_b_pre,
-            token_lp_definition_pre,
-            lp_lock_holding_pre,
-            user_a_pre,
-            user_b_pre,
-            user_lp_pre,
-            current_tick_pre,
-            clock_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(user_lp_npk, &user_lp_vpk, state.commitment_root()),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
+    let (output, _proof) = execute_and_prove(
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                ours(Ids::pool_definition()),
+                token_shard(Ids::vault_a()),
+                token_shard(Ids::vault_b()),
+                token_shard(Ids::token_lp_definition()),
+                token_shard(Ids::lp_lock_holding()),
+                token_shard(Ids::user_a()),
+                token_shard(Ids::user_b()),
+                token_shard(user_lp_id),
+                oracle_shard(Ids::current_tick_account()),
+                clock_shard(),
+            ],
+            signers: [Ids::user_a(), Ids::user_b()].into(),
+            private_witnesses: vec![private_foreign_init_identity(
+                user_lp_npk,
+                &user_lp_vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     )
-    .expect_err("a foreign-init LP holder cannot satisfy the guest's signer requirement");
+    .expect("the LP mint is a credit, so its destination need not sign");
 
-    assert!(
-        format!("{error:?}").contains("must be a signer"),
-        "expected the LP holding's signer requirement to reject this, got: {error:?}"
+    assert_eq!(
+        output.private_actions.len(),
+        1,
+        "the private LP holding must be emitted as exactly one private action"
     );
 }
 
@@ -5392,25 +5573,27 @@ impl PrivateAdmins {
     }
 
     fn owner_id() -> AccountId {
-        AccountId::for_regular_private_account(&Self::owner_npk(), &Self::owner_vpk(), 0)
+        AccountId::for_regular_private_account(
+            &Self::owner_npk(),
+            &Self::owner_vpk(),
+            Identifier::ZERO,
+        )
     }
 }
 
 /// An [`Accounts::config`] variant whose admin `authority` is `authority` (and whose protocol fee
 /// is `protocol_fee_bps`), so the admin-gated instructions can be driven by a private identity.
 fn config_with_authority(authority: AccountId, protocol_fee_bps: u128) -> Account {
-    Account {
-        program_owner: Ids::amm_program(),
-        balance: 0_u128,
-        data: Data::from(&amm_core::AmmConfig {
+    Account::default().with_shard(
+        Ids::amm_program(),
+        ShardData::from(&amm_core::AmmConfig {
             token_program_id: Ids::token_program(),
             twap_oracle_program_id: Ids::twap_oracle_program(),
             authority,
             swap_fee_bps: Balances::fee_tier(),
             protocol_fee_bps,
         }),
-        nonce: Nonce(0),
-    }
+    )
 }
 
 /// REGULAR: a private account claims an AMM namespace. `Initialize`'s `owner` is the account
@@ -5426,9 +5609,6 @@ fn amm_initialize_private_namespace_owner() {
     let owner_id = PrivateAdmins::owner_id();
     let config_id = amm_core::compute_config_pda(Ids::amm_program(), owner_id, TEST_NONCE);
 
-    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
-    let config_pre = AccountWithMetadata::new(Account::default(), false, config_id);
-
     let instruction = amm_core::Instruction::Initialize {
         nonce: TEST_NONCE,
         token_program_id: Ids::token_program(),
@@ -5439,17 +5619,18 @@ fn amm_initialize_private_namespace_owner() {
     };
 
     let (output, proof) = execute_and_prove(
-        vec![owner_pre, config_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            private_authorized_init_identity(
+        ProvingInput {
+            shard_selectors: vec![ours(owner_id), ours(config_id)],
+            signers: [owner_id].into(),
+            private_witnesses: vec![private_authorized_init_identity(
                 PrivateAdmins::owner_ask(),
                 &PrivateAdmins::owner_vpk(),
                 state.commitment_root(),
-            ),
-            InputAccountIdentity::Public,
-        ],
-        &amm_program_instance().into(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &amm_with_deps(),
     )
     .expect("Initialize signed by a private namespace owner must succeed");
 
@@ -5464,20 +5645,24 @@ fn amm_initialize_private_namespace_owner() {
         )
         .unwrap();
 
-    let config = amm_core::AmmConfig::try_from(&state.get_account_by_id(config_id).data)
-        .expect("config account must hold a valid AmmConfig");
+    let config = amm_core::AmmConfig::try_from(
+        state
+            .get_account_by_id(config_id)
+            .data
+            .shard(Ids::amm_program()),
+    )
+    .expect("config account must hold a valid AmmConfig");
     assert_eq!(config.token_program_id, Ids::token_program());
     assert_eq!(config.twap_oracle_program_id, Ids::twap_oracle_program());
     assert_eq!(config.authority, Ids::admin());
     assert_eq!(config.swap_fee_bps, Balances::fee_tier());
 
     // The owner is echoed, not claimed: v0.2.4 wrote an AMM-owned namespace marker here, but
-    // v0.2.5 acquires ownership only on a data write and an unowned account may carry no data,
-    // so the marker is gone and the owner stays unowned. It still lives on as a private
-    // commitment — a private input is re-committed even when unchanged — so the owner never
-    // appears in public state, which is what this test is really about.
+    // under the shard model a program holds an account only by writing a shard, and the AMM
+    // writes none here, so the marker is gone and the owner's shard map stays empty. It still
+    // lives on as a private commitment — a private input is re-committed even when unchanged —
+    // so the owner never appears in public state, which is what this test is really about.
     let owner_expected = Account {
-        program_owner: AccountId::default(),
         nonce: Nonce::private_account_nonce_init(&owner_id),
         ..Account::default()
     };
@@ -5499,21 +5684,22 @@ fn amm_update_config_group_owned_admin_authority() {
     let bob_ask = alice.admit_member();
     state.force_insert_account(Ids::config(), config_with_authority(alice.id, 0));
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let authority_pre = AccountWithMetadata::new(Account::default(), true, alice.id);
-
     let new_authority = Ids::admin();
     let instruction = amm_core::Instruction::UpdateConfig { new_authority };
 
     let (output, proof) = execute_and_prove(
-        vec![config_pre, authority_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
-        ],
-        &amm_program_instance().into(),
+        ProvingInput {
+            shard_selectors: vec![ours(Ids::config()), ours(alice.id)],
+            signers: [alice.id].into(),
+            private_witnesses: vec![private_authorized_init_identity(
+                bob_ask,
+                &alice.vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
+        &amm_with_deps(),
     )
     .expect("UpdateConfig signed by a group-owned admin must succeed");
 
@@ -5563,29 +5749,32 @@ fn amm_withdraw_protocol_fees_to_private_destination() {
         .get_proof_for_commitment(&Commitment::new(&dest_id, &dest_account))
         .expect("the private destination's commitment must be in the set");
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let protocol_holding_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::protocol_fee_holding_a()),
-        false,
-        Ids::protocol_fee_holding_a(),
-    );
-    let destination_pre = AccountWithMetadata::new(dest_account, true, dest_id);
     let admin_account = state.get_account_by_id(Ids::admin());
     let admin_nonce = admin_account.nonce;
-    let admin_pre = AccountWithMetadata::new(admin_account, true, Ids::admin());
-
-    let instruction = amm_core::Instruction::WithdrawProtocolFees { amount: accrued };
+    let instruction = amm_core::Instruction::WithdrawProtocolFees {
+        amount: accrued,
+        facts: declared_facts(&state),
+        descriptor: fee_descriptor(Ids::token_a_definition()),
+    };
 
     let (output, proof) = execute_and_prove(
-        vec![config_pre, protocol_holding_pre, destination_pre, admin_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(dest_ask, &dest_vpk, membership_proof),
-            InputAccountIdentity::Public,
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                token_shard(Ids::protocol_fee_holding_a()),
+                token_shard(dest_id),
+                ours(Ids::admin()),
+            ],
+            signers: [dest_id, Ids::admin()].into(),
+            private_witnesses: vec![private_authorized_update_identity(
+                dest_ask,
+                &dest_vpk,
+                dest_account.clone(),
+                membership_proof,
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     )
     .expect("WithdrawProtocolFees into an existing private destination must succeed");
@@ -5606,13 +5795,15 @@ fn amm_withdraw_protocol_fees_to_private_destination() {
         0
     );
     let funded = Account {
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::token_a_definition(),
-            balance: Balances::user_a_init() + accrued,
-        }),
+        data: AccountData::default().with_shard(
+            Ids::token_program(),
+            ShardData::from(&TokenHolding::Fungible {
+                definition_id: Ids::token_a_definition(),
+                balance: Balances::user_a_init() + accrued,
+            }),
+        ),
         nonce: Nonce::private_account_nonce_init(&dest_id)
             .private_account_nonce_increment(&dest_nsk),
-        ..Accounts::user_a_holding()
     };
     assert!(state
         .get_proof_for_commitment(&Commitment::new(&dest_id, &funded))
@@ -5635,33 +5826,29 @@ fn amm_withdraw_protocol_fees_group_owned_admin_authority() {
 
     let user_a_before = fungible_balance(&state.get_account_by_id(Ids::user_a()));
 
-    let config_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::config()), false, Ids::config());
-    let protocol_holding_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::protocol_fee_holding_a()),
-        false,
-        Ids::protocol_fee_holding_a(),
-    );
-    let destination_pre =
-        AccountWithMetadata::new(state.get_account_by_id(Ids::user_a()), false, Ids::user_a());
-    let authority_pre = AccountWithMetadata::new(Account::default(), true, alice.id);
-
-    let instruction = amm_core::Instruction::WithdrawProtocolFees { amount: accrued };
+    let instruction = amm_core::Instruction::WithdrawProtocolFees {
+        amount: accrued,
+        facts: declared_facts(&state),
+        descriptor: fee_descriptor(Ids::token_a_definition()),
+    };
 
     let (output, proof) = execute_and_prove(
-        vec![
-            config_pre,
-            protocol_holding_pre,
-            destination_pre,
-            authority_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
-        ],
+        ProvingInput {
+            shard_selectors: vec![
+                ours(Ids::config()),
+                token_shard(Ids::protocol_fee_holding_a()),
+                token_shard(Ids::user_a()),
+                ours(alice.id),
+            ],
+            signers: [alice.id].into(),
+            private_witnesses: vec![private_authorized_init_identity(
+                bob_ask,
+                &alice.vpk,
+                state.commitment_root(),
+            )],
+            instruction_data: Program::serialize_instruction(instruction).unwrap(),
+            ..Default::default()
+        },
         &amm_with_deps(),
     )
     .expect("WithdrawProtocolFees signed by a group-owned admin must succeed");

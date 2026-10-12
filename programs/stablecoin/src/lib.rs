@@ -1,17 +1,47 @@
 //! The Stablecoin Program implementation.
+//!
+//! Each instruction is split the way v0.3.0 splits execution. A `plan_*` function
+//! runs in the plan phase, where there is no account data at all: it checks ids
+//! and authorization, derives the addresses the transaction needs, enforces the
+//! §8 parameter bands, and builds the chained Token calls. The remaining
+//! functions are apply halves — each sees exactly one shard's bytes and returns
+//! their replacement, or nothing when it is only reading.
+//!
+//! Fourteen of the nineteen instructions used to read `ProtocolParameters`, and
+//! most of them a second or third global on top. Those reads became
+//! declarations: the caller states the record and a guard on the shard it came
+//! from pins the statement ([`shared::check_parameters`] and its siblings). A
+//! declared value a guard pins is one the plan may branch on, which is how
+//! `!is_frozen` and the bound-definition checks stay plan-phase checks even
+//! though no plan can read them.
+//!
+//! The pins here are *exact*, not bounded, and the reason is the clock: nine of
+//! these instructions gate on oracle freshness or scale accrued debt by elapsed
+//! time, and a timestamp has no safe rounding direction. `now` must therefore be
+//! exact, which already means those instructions are rebuilt when the block
+//! advances — so exact-pinning the anchors it projects against costs no failure
+//! mode that is not already paid for, and avoids choosing a safe direction per
+//! field. Got wrong, that choice is a solvency bug rather than a slippage one.
+//!
+//! One check from v0.2.5 is *stronger* rather than relocated. A shard is keyed by
+//! the program that wrote it, so "which Token Program" is no longer implied by an
+//! account — it is chosen per slot by the caller. `ProtocolParameters` therefore
+//! records `token_program_id` and `market_price_oracle_program_id` at bootstrap,
+//! and every token and oracle slot is checked against them
+//! ([`shared::assert_token_program`], [`shared::assert_bound_oracle`]).
 
 pub use stablecoin_core as core;
 
 /// Permissionless poke: advance the global stability-fee accumulator.
 pub mod accrue_stability_fee;
 
-/// Shared validation helpers reused across the position-lifecycle instructions.
-pub mod checks;
-
 /// Admin parameter updates.
 pub mod admin;
 
-/// Clear a fully-settled position's data. The PDA itself cannot be released.
+/// Numerical bands and the collateralization invariant.
+pub mod checks;
+
+/// Clear a fully-settled position's shard.
 pub mod close_position;
 
 /// Deposit additional collateral into an existing position.
@@ -35,6 +65,9 @@ pub mod refresh_globals;
 /// Repay outstanding stablecoin debt against an existing position.
 pub mod repay_debt;
 
+/// Plan-phase address checks and apply-phase guards shared across the set.
+pub mod shared;
+
 /// Permissionless poke: run one redemption-rate controller tick.
 pub mod update_redemption_rate;
 
@@ -42,72 +75,4 @@ pub mod update_redemption_rate;
 pub mod withdraw_collateral;
 
 #[cfg(test)]
-mod test_support;
-
-#[cfg(test)]
 mod tests;
-
-/// Test-only view of what an [`AccountStateDiff`] leaves behind.
-///
-/// Since LEZ v0.2.5 a diff carries a *change* rather than a whole post-state account:
-/// `post_data` is `None` when the data is untouched, and ownership is not in the diff at
-/// all — the runtime derives it (see `acquire_ownership_on_data_write`). These mirror that
-/// derivation so assertions can stay written in terms of the resulting account.
-/// `pub` only so an accessor no single program happens to use is not dead code; the whole
-/// trait is `#[cfg(test)]`, so it never exists in a real build.
-#[cfg(test)]
-pub trait StateDiffExt {
-    /// The data the account ends up with.
-    fn post_data(&self) -> &lee_core::account::Data;
-
-    /// The owner the account ends up with: writing data to a default-owned account makes
-    /// `executing_account_id` its owner.
-    fn post_owner(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::AccountId;
-
-    /// Whether this diff changes the account's data at all.
-    fn writes_data(&self) -> bool;
-
-    /// The whole account the diff leaves behind, via the runtime's own `post_state`.
-    fn post_account(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::Account;
-}
-
-#[cfg(test)]
-impl StateDiffExt for lee_core::program::AccountStateDiff {
-    fn post_data(&self) -> &lee_core::account::Data {
-        self.post_data
-            .as_ref()
-            .unwrap_or(&self.pre_state.account.data)
-    }
-
-    fn post_owner(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::AccountId {
-        let pre = &self.pre_state.account;
-        if pre.program_owner == lee_core::program::DEFAULT_PROGRAM_OWNER && self.writes_data() {
-            executing_account_id
-        } else {
-            pre.program_owner
-        }
-    }
-
-    fn writes_data(&self) -> bool {
-        self.post_data
-            .as_ref()
-            .is_some_and(|data| *data != self.pre_state.account.data)
-    }
-
-    fn post_account(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::Account {
-        lee_core::program::post_state(self, executing_account_id)
-            .expect("balance diff must apply to the pre-state balance")
-    }
-}

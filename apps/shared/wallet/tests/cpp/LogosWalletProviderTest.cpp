@@ -289,6 +289,7 @@ void LogosWalletProviderTest::dispatchesExactGenericTransaction()
     transaction.accountIds = { ACCOUNT_A, ACCOUNT_B };
     transaction.signingRequirements = { true, false };
     transaction.instruction = { 7, 0, 4294967295U };
+    transaction.shardProgramIds = { PROGRAM_ID, ACCOUNT_A };
 
     const WalletSubmission submission = provider.submitPublicTransaction(transaction);
     QVERIFY(submission.accepted());
@@ -298,8 +299,10 @@ void LogosWalletProviderTest::dispatchesExactGenericTransaction()
     QCOMPARE(modules.lez_core.submittedAccountIds, transaction.accountIds);
     QCOMPARE(modules.lez_core.submittedSigningRequirements,
              QVariantList({ true, false }));
-    QCOMPARE(modules.lez_core.submittedInstruction.toList(),
-             QVariantList({ 7U, 0U, 4294967295U }));
+    QCOMPARE(modules.lez_core.submittedShardProgramIds, transaction.shardProgramIds);
+    // The u32 words travel as their little-endian bytes (QtRO byte-string param).
+    QCOMPARE(modules.lez_core.submittedInstruction.toByteArray(),
+             QByteArray::fromHex("0700000000000000ffffffff"));
 }
 
 void LogosWalletProviderTest::rejectsInvalidSubmissionResponses()
@@ -327,6 +330,12 @@ void LogosWalletProviderTest::rejectsInvalidSubmissionResponses()
         QCOMPARE(provider.submitPublicTransaction(transaction).failure,
                  WalletFailure::SubmissionFailed);
     }
+
+    // One shard owner per account, or none at all.
+    transaction.shardProgramIds = { PROGRAM_ID, PROGRAM_ID };
+    QCOMPARE(provider.submitPublicTransaction(transaction).failure,
+             WalletFailure::InvalidRequest);
+    transaction.shardProgramIds.clear();
 
     transaction.signingRequirements.clear();
     QCOMPARE(provider.submitPublicTransaction(transaction).failure,
