@@ -1,6 +1,8 @@
-//! Print the stablecoin position + collateral-vault PDAs.
+//! Print the stablecoin global PDAs, or position + collateral-vault PDAs.
 //!
 //! Usage:
+//!   cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid>
+//!
 //!   cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid> <owner>
 //! <position_nonce>
 //!
@@ -9,8 +11,13 @@
 
 use std::str::FromStr;
 
+use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::{account::AccountId, program::ProgramId};
-use stablecoin_core::{compute_position_pda, compute_position_vault_pda};
+use stablecoin_core::{
+    compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
+    compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
+    compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda,
+};
 
 // Accepts a ProgramId as 8 comma-separated u32 limbs, a 64-char ImageID hex, or a base58
 // ImageID. Hex/base58 are decoded as the 32 ImageID bytes read little-endian per u32 word,
@@ -48,8 +55,37 @@ fn parse_pid(s: &str) -> ProgramId {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [stablecoin_s] = args.as_slice() {
+        let stablecoin = parse_pid(stablecoin_s);
+        for (name, account) in [
+            (
+                "protocol_parameters",
+                compute_protocol_parameters_pda(stablecoin),
+            ),
+            (
+                "stability_fee_accumulator",
+                compute_stability_fee_accumulator_pda(stablecoin),
+            ),
+            (
+                "redemption_price_state",
+                compute_redemption_price_state_pda(stablecoin),
+            ),
+            (
+                "stablecoin_definition",
+                compute_stablecoin_definition_pda(stablecoin),
+            ),
+            (
+                "stablecoin_master_holding",
+                compute_stablecoin_master_holding_pda(stablecoin),
+            ),
+            ("clock", CLOCK_01_PROGRAM_ACCOUNT_ID),
+        ] {
+            println!("{name} {account}");
+        }
+        return;
+    }
     let [stablecoin_s, owner_s, nonce_s] = args.as_slice() else {
-        eprintln!("usage: stablecoin_pdas <stablecoin_pid> <owner> <position_nonce>");
+        eprintln!("usage: stablecoin_pdas <stablecoin_pid> [<owner> <position_nonce>]");
         std::process::exit(1);
     };
     let stablecoin = parse_pid(stablecoin_s);

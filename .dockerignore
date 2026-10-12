@@ -1,4 +1,7 @@
 .git
+.3esmit
+.agents
+.vscode
 target
 programs/*/methods/guest/target
 node_modules
