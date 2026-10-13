@@ -207,6 +207,11 @@ CUSTOM_TOKEN_CONFIG_OUT="apps/amm/tests/testnet/custom-tokens.json"
 # Written at the end from the derived values.
 FAUCET_MANIFEST_OUT="apps/amm/tests/testnet/faucet.json"
 
+# Token D's definition id for the custom-token UI test (git-ignored, tests only).
+# The test reads the id from here rather than from a wallet label: labels are only
+# valid for the wallet that ran the setup (see restore_test_wallet).
+CUSTOM_TOKEN_MANIFEST_OUT="apps/amm/tests/testnet/custom-token-manifest.json"
+
 ###############################################################################
 # Helpers
 ###############################################################################
@@ -298,10 +303,10 @@ segment_count() {
 #
 # Segments are write-once and the flow is not resumable: if this fails partway, the
 # segments it did land stay claimed and re-running with the same labels fails.
-# FORCE_BOOTSTRAP=1 does NOT recover from that -- the wallet restores from a FIXED
-# mnemonic, so a re-restore derives the very same ids and lands on the very same claimed
-# accounts. Recovery is to reset the CHAIN (for a local sequencer: stop it, delete its
-# rocksdb-* store, restart so genesis re-applies) or to move the labels to fresh slots.
+# FORCE_BOOTSTRAP=1 does NOT recover from that (see restore_test_wallet: a re-restore
+# against a used chain moves every label to fresh keys). Recovery is to reset the CHAIN
+# (for a local sequencer: stop it, delete its rocksdb-* store, restart so genesis
+# re-applies) and run the setup again.
 #
 # Account arguments are `CliAccountMention`s, whose grammar is `Public/<id>` or `Private/<id>`
 # -- a BARE base58 id fails to parse as an id and is silently retried as a LABEL, so it dies
@@ -369,6 +374,11 @@ acct_id() {
 # REWRITES storage (safe here — it's a throwaway test home). Only the key
 # material is restored here; account registration is a separate idempotent step
 # (ensure_accounts) so adding a label doesn't require a full re-restore.
+#
+# Labels are only deterministic on a FRESH chain. restore-keys brings back every key
+# the chain already knows, unlabelled, and ensure_accounts then labels the NEXT free
+# keys -- so re-restoring against a chain that already holds this setup's state
+# silently moves every label to a different account. Reset the chain before a re-restore.
 restore_test_wallet() {
   sec "Bootstrap deterministic test wallet"
   kv "wallet home" "$TEST_WALLET_HOME"
@@ -388,11 +398,20 @@ restore_test_wallet() {
   # Force the deterministic fresh-home path by clearing storage, then feed all three
   # lines. restore-keys REWRITES storage, so the final wallet is the deterministic
   # $TEST_MNEMONIC one with password $TEST_WALLET_PASSWORD.
-  rm -f "$TEST_WALLET_HOME/storage.json" "$TEST_WALLET_HOME/statistics.json"
+  # A failed restore must not cost the labelled wallet: without storage.json the next
+  # run re-restores, and against a used chain that moves the labels (see above).
+  local backup="$TEST_WALLET_HOME/storage.json.pre-restore"
+  if [ -f "$TEST_WALLET_HOME/storage.json" ]; then
+    mv "$TEST_WALLET_HOME/storage.json" "$backup"
+  fi
+  rm -f "$TEST_WALLET_HOME/statistics.json"
   log "${DIM}\$ printf '<password>\\n<mnemonic>\\n<password>\\n' | wallet restore-keys --depth $TEST_WALLET_DEPTH${RST}"
-  printf '%s\n%s\n%s\n' "$TEST_WALLET_PASSWORD" "$TEST_MNEMONIC" "$TEST_WALLET_PASSWORD" \
-    | wallet restore-keys --depth "$TEST_WALLET_DEPTH" \
-    || die "wallet restore-keys failed"
+  if ! printf '%s\n%s\n%s\n' "$TEST_WALLET_PASSWORD" "$TEST_MNEMONIC" "$TEST_WALLET_PASSWORD" \
+    | wallet restore-keys --depth "$TEST_WALLET_DEPTH"; then
+    [ -f "$backup" ] && mv "$backup" "$TEST_WALLET_HOME/storage.json"
+    die "wallet restore-keys failed"
+  fi
+  rm -f "$backup"
 }
 
 # Register the deterministic accounts, in ACCOUNT_LABELS order. Idempotent —
@@ -894,6 +913,14 @@ cat > "$FAUCET_MANIFEST_OUT" <<JSON
 }
 JSON
 kv "wrote" "$FAUCET_MANIFEST_OUT"
+
+cat > "$CUSTOM_TOKEN_MANIFEST_OUT" <<JSON
+{
+  "tokenDefinition": "$TOKEN_D_DEF",
+  "symbol": "$TOKEN_D_SYMBOL"
+}
+JSON
+kv "wrote" "$CUSTOM_TOKEN_MANIFEST_OUT"
 
 sec "Done"
 log "${GRN}✅ Setup complete.${RST}"

@@ -20,6 +20,7 @@ inspector (framework from
   deliberately **absent** from the token config) into a Liquidity token slot and
   verifies the app resolves it, selects it, and **persists** it to the custom-token
   store — the "add an unlisted token by id" path. No pool / submit involved.
+  Reads D's id from `testnet/custom-token-manifest.json`, written by the setup.
 - `faucet-swap.mjs` funds a **brand-new** account ("Token A Holder 2") that starts
   with no token A: it `initialize_account`s the account's token A holding, then
   submits a **FaucetMint** through the token-mint-authority program (both via `spel`,
