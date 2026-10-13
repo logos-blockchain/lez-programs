@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{compute_protocol_parameters_pda, ProtocolParameters};
 
@@ -20,8 +20,8 @@ use stablecoin_core::{compute_protocol_parameters_pda, ProtocolParameters};
 pub fn freeze(
     freeze_authority: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    stablecoin_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     set_frozen(
         freeze_authority,
         protocol_parameters,
@@ -38,8 +38,8 @@ pub fn freeze(
 pub fn unfreeze(
     freeze_authority: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    stablecoin_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     set_frozen(
         freeze_authority,
         protocol_parameters,
@@ -51,9 +51,9 @@ pub fn unfreeze(
 fn set_frozen(
     freeze_authority: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     is_frozen: bool,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(
         freeze_authority.is_authorized,
         "Freeze authority authorization is missing"
@@ -75,13 +75,14 @@ fn set_frozen(
     // "short-circuit when already set" edit can't turn a no-op into a panic.
     parameters.is_frozen = is_frozen;
 
-    let mut parameters_post = protocol_parameters.account;
-    parameters_post.data = Data::from(&parameters);
-
-    let post_states = vec![
-        AccountPostState::new(freeze_authority.account),
-        AccountPostState::new(parameters_post),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(freeze_authority),
+        AccountStateDiff::new(
+            protocol_parameters,
+            BalanceDiff::Add(0),
+            Data::from(&parameters),
+        ),
     ];
 
-    (post_states, vec![])
+    (state_diffs, vec![])
 }

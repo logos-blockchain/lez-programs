@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
@@ -15,7 +15,7 @@ use token_core::TokenHolding;
 ///
 /// Decreases `Position.collateral_amount` by `amount` and emits a single chained
 /// `Token::Transfer` from the vault to `user_collateral_holding`, authorized by the vault
-/// PDA seed. The position post-state uses plain [`AccountPostState::new`] —
+/// PDA seed. The position diff is a plain data write —
 /// the initial PDA claim already happened in
 /// [`crate::open_position::open_position`].
 ///
@@ -56,9 +56,9 @@ pub fn withdraw_collateral(
     redemption_price_state: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     clock: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     amount: u128,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     let parameters = crate::checks::decode_global(
         &protocol_parameters,
         compute_protocol_parameters_pda(stablecoin_program_id),
@@ -202,30 +202,30 @@ pub fn withdraw_collateral(
         );
     }
 
-    let mut position_post = position.account.clone();
-    position_post.data = Data::from(&updated_position);
+    let vault_id = vault.account_id;
+    let user_collateral_holding_id = user_collateral_holding.account_id;
 
-    let post_states = vec![
-        AccountPostState::new(owner.account),
-        AccountPostState::new(position_post),
-        AccountPostState::new(vault.account.clone()),
-        AccountPostState::new(user_collateral_holding.account.clone()),
-        AccountPostState::new(stability_fee_accumulator.account),
-        AccountPostState::new(redemption_price_state.account),
-        AccountPostState::new(protocol_parameters.account),
-        AccountPostState::new(clock.account),
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(owner),
+        AccountStateDiff::new(position, BalanceDiff::Add(0), Data::from(&updated_position)),
+        AccountStateDiff::unchanged(vault),
+        AccountStateDiff::unchanged(user_collateral_holding),
+        AccountStateDiff::unchanged(stability_fee_accumulator),
+        AccountStateDiff::unchanged(redemption_price_state),
+        AccountStateDiff::unchanged(protocol_parameters),
+        AccountStateDiff::unchanged(clock),
     ];
 
-    let mut vault_authorized = vault.clone();
-    vault_authorized.is_authorized = true;
+    // The vault PDA seed is the authority over the vault for the chained
+    // transfer; pre-states are ids now, so there is no flag to flip.
     let transfer_call = ChainedCall::new(
         token_program_id,
-        vec![vault_authorized, user_collateral_holding],
+        vec![vault_id, user_collateral_holding_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: amount,
         },
     )
     .with_pda_seeds(vec![vault_seed]);
 
-    (post_states, vec![transfer_call])
+    (state_diffs, vec![transfer_call])
 }

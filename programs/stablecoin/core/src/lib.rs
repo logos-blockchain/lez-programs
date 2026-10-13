@@ -14,7 +14,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 pub use controller::{run_controller_tick, ControllerOutput, INTEGRAL_CLAMP, RATE_DELTA_CLAMP};
 use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
-    program::{PdaSeed, ProgramId},
+    program::PdaSeed,
 };
 pub use protocol_parameters::{
     compute_protocol_parameters_pda, compute_protocol_parameters_pda_seed, ProtocolParameters,
@@ -38,7 +38,24 @@ const STABLECOIN_DEFINITION_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__DEFINITION____
 const STABLECOIN_MASTER_HOLDING_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__MASTER_HOLDING______";
 
 /// Stablecoin Program Instruction.
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// Borsh is the instruction wire format LEZ reads, and deliberately the *only* encoding
+/// this type derives.
+///
+/// `#[lez_program]` generates its guest-side counterpart with serde derives alongside
+/// Borsh, "for IDL/tooling". Nothing uses them: `idl-gen` parses the guest source, the
+/// framework's runtime IDL path deserializes its own types, and `spel-cli` encodes Borsh
+/// straight from the IDL. Carrying them here would only mean a type that accepts either
+/// encoder, which is how the v0.2.5 port silently rotted every instruction-encoding site in
+/// `modules/*/ffi` -- `risc0_zkvm::serde::to_vec` kept compiling and kept producing bytes
+/// the runtime rejects. Without a serde impl that is a compile error instead.
+///
+/// Account-data types below keep serde; the FFI renders them as JSON. This applies to the
+/// instruction enum alone.
+///
+/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
+/// inserting one shifts the encoding of every variant after it.
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum Instruction {
     /// Bootstrap the protocol. One-shot — fails if any of the five global PDAs
     /// is already initialized.
@@ -445,7 +462,7 @@ pub fn compute_position_pda_seed(owner_id: AccountId, position_nonce: u64) -> Pd
 /// `stablecoin_program_id`.
 #[must_use]
 pub fn compute_position_pda(
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     owner_id: AccountId,
     position_nonce: u64,
 ) -> AccountId {
@@ -473,7 +490,7 @@ pub fn compute_position_vault_pda_seed(position_id: AccountId) -> PdaSeed {
 
 /// Account id of the collateral vault PDA for `position_id` under `stablecoin_program_id`.
 pub fn compute_position_vault_pda(
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
     position_id: AccountId,
 ) -> AccountId {
     AccountId::for_public_pda(
@@ -492,7 +509,7 @@ pub fn verify_position_and_get_seed(
     position: &AccountWithMetadata,
     owner: &AccountWithMetadata,
     position_nonce: u64,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
 ) -> PdaSeed {
     let seed = compute_position_pda_seed(owner.account_id, position_nonce);
     let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
@@ -512,7 +529,7 @@ pub fn verify_position_and_get_seed(
 pub fn verify_position_vault_and_get_seed(
     vault: &AccountWithMetadata,
     position_id: AccountId,
-    stablecoin_program_id: ProgramId,
+    stablecoin_program_id: AccountId,
 ) -> PdaSeed {
     let seed = compute_position_vault_pda_seed(position_id);
     let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
@@ -536,7 +553,7 @@ pub fn compute_stablecoin_definition_pda_seed() -> PdaSeed {
 }
 
 #[must_use]
-pub fn compute_stablecoin_definition_pda(stablecoin_program_id: ProgramId) -> AccountId {
+pub fn compute_stablecoin_definition_pda(stablecoin_program_id: AccountId) -> AccountId {
     AccountId::for_public_pda(
         &stablecoin_program_id,
         &compute_stablecoin_definition_pda_seed(),
@@ -557,7 +574,7 @@ pub fn compute_stablecoin_master_holding_pda_seed() -> PdaSeed {
 }
 
 #[must_use]
-pub fn compute_stablecoin_master_holding_pda(stablecoin_program_id: ProgramId) -> AccountId {
+pub fn compute_stablecoin_master_holding_pda(stablecoin_program_id: AccountId) -> AccountId {
     AccountId::for_public_pda(
         &stablecoin_program_id,
         &compute_stablecoin_master_holding_pda_seed(),
@@ -570,7 +587,7 @@ mod global_pda_tests {
 
     #[test]
     fn stablecoin_definition_and_master_holding_pdas_are_distinct() {
-        let program_id: ProgramId = [11u32; 8];
+        let program_id = AccountId::new([11u8; 32]);
         let def = compute_stablecoin_definition_pda(program_id);
         let master = compute_stablecoin_master_holding_pda(program_id);
         assert_ne!(def, master);
@@ -579,27 +596,30 @@ mod global_pda_tests {
     }
 }
 
+/// Round-trips through Borsh -- the encoding LEZ actually decodes. These used to go
+/// through `serde_json`, which stopped being the instruction wire format in v0.2.5; testing
+/// it would have asserted an encoding nothing reads.
 #[cfg(test)]
 mod instruction_tests {
     use super::*;
     use crate::math::FIXED_POINT_ONE;
 
     #[test]
-    fn accrue_stability_fee_json_roundtrip() {
-        let json = serde_json::to_string(&Instruction::AccrueStabilityFee).expect("serialize");
-        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+    fn accrue_stability_fee_borsh_roundtrip() {
+        let encoded = borsh::to_vec(&Instruction::AccrueStabilityFee).expect("serialize");
+        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         assert!(matches!(decoded, Instruction::AccrueStabilityFee));
     }
 
     #[test]
-    fn update_redemption_rate_json_roundtrip() {
-        let json = serde_json::to_string(&Instruction::UpdateRedemptionRate).expect("serialize");
-        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+    fn update_redemption_rate_borsh_roundtrip() {
+        let encoded = borsh::to_vec(&Instruction::UpdateRedemptionRate).expect("serialize");
+        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         assert!(matches!(decoded, Instruction::UpdateRedemptionRate));
     }
 
     #[test]
-    fn admin_setter_json_roundtrips() {
+    fn admin_setter_borsh_roundtrips() {
         for instruction in [
             Instruction::SetMinimumCollateralizationRatio { new_ratio: 3 },
             Instruction::SetControllerGains {
@@ -618,21 +638,21 @@ mod instruction_tests {
                 new_freeze_authority_account_id: AccountId::new([2u8; 32]),
             },
         ] {
-            let json = serde_json::to_string(&instruction).expect("serialize");
-            let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+            let encoded = borsh::to_vec(&instruction).expect("serialize");
+            let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
             assert_eq!(
-                serde_json::to_string(&decoded).expect("re-serialize"),
-                json,
+                borsh::to_vec(&decoded).expect("re-serialize"),
+                encoded,
                 "round-trip must preserve the instruction"
             );
         }
     }
 
     #[test]
-    fn set_stability_fee_per_millisecond_json_roundtrip() {
+    fn set_stability_fee_per_millisecond_borsh_roundtrip() {
         let instruction = Instruction::SetStabilityFeePerMillisecond { new_rate: 7 };
-        let json = serde_json::to_string(&instruction).expect("serialize");
-        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+        let encoded = borsh::to_vec(&instruction).expect("serialize");
+        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         assert!(matches!(
             decoded,
             Instruction::SetStabilityFeePerMillisecond { new_rate: 7 }
@@ -640,28 +660,28 @@ mod instruction_tests {
     }
 
     #[test]
-    fn freeze_json_roundtrip() {
-        let json = serde_json::to_string(&Instruction::Freeze).expect("serialize");
-        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+    fn freeze_borsh_roundtrip() {
+        let encoded = borsh::to_vec(&Instruction::Freeze).expect("serialize");
+        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         assert!(matches!(decoded, Instruction::Freeze));
     }
 
     #[test]
-    fn unfreeze_json_roundtrip() {
-        let json = serde_json::to_string(&Instruction::Unfreeze).expect("serialize");
-        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+    fn unfreeze_borsh_roundtrip() {
+        let encoded = borsh::to_vec(&Instruction::Unfreeze).expect("serialize");
+        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         assert!(matches!(decoded, Instruction::Unfreeze));
     }
 
     #[test]
-    fn refresh_globals_json_roundtrip() {
-        let json = serde_json::to_string(&Instruction::RefreshGlobals).expect("serialize");
-        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+    fn refresh_globals_borsh_roundtrip() {
+        let encoded = borsh::to_vec(&Instruction::RefreshGlobals).expect("serialize");
+        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         assert!(matches!(decoded, Instruction::RefreshGlobals));
     }
 
     #[test]
-    fn initialize_program_json_roundtrip() {
+    fn initialize_program_borsh_roundtrip() {
         let original = Instruction::InitializeProgram {
             freeze_authority_account_id: AccountId::new([0xFF; 32]),
             initial_stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000,
@@ -673,8 +693,8 @@ mod instruction_tests {
             initial_redemption_price: FIXED_POINT_ONE / 2,
             stablecoin_name: "test-stable".to_owned(),
         };
-        let json = serde_json::to_string(&original).expect("serialize");
-        let decoded: Instruction = serde_json::from_str(&json).expect("deserialize");
+        let encoded = borsh::to_vec(&original).expect("serialize");
+        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         match decoded {
             Instruction::InitializeProgram {
                 freeze_authority_account_id,

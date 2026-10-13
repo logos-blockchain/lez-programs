@@ -1,6 +1,6 @@
 use lee_core::{
-    account::AccountWithMetadata,
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{AccountId, AccountWithMetadata},
+    program::{AccountStateDiff, ChainedCall},
 };
 use token_core::TokenHolding;
 
@@ -8,10 +8,10 @@ pub fn burn_from_associated_token_account(
     owner: AccountWithMetadata,
     holder_ata: AccountWithMetadata,
     token_definition: AccountWithMetadata,
-    ata_program_id: ProgramId,
-    token_program_id: ProgramId,
+    ata_program_id: AccountId,
+    token_program_id: AccountId,
     amount: u128,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(owner.is_authorized, "Owner authorization is missing");
     assert_eq!(
         holder_ata.account.program_owner, token_program_id,
@@ -36,21 +36,26 @@ pub fn burn_from_associated_token_account(
         ata_program_id,
     );
 
-    let post_states = vec![
-        AccountPostState::new(owner.account.clone()),
-        AccountPostState::new(holder_ata.account.clone()),
-        AccountPostState::new(token_definition.account.clone()),
-    ];
-    let mut holder_ata_auth = holder_ata.clone();
-    holder_ata_auth.is_authorized = true;
+    let definition_account_id = token_definition.account_id;
+    let holder_ata_id = holder_ata.account_id;
 
+    // The burn happens in the chained call, executed by the token program that owns
+    // these accounts; this program reports them unchanged but must still report them.
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(owner),
+        AccountStateDiff::unchanged(holder_ata),
+        AccountStateDiff::unchanged(token_definition),
+    ];
+
+    // `pda_seeds` is what authorizes the callee over the holder ATA — the call carries
+    // account ids, not pre-states, so there is no flag to set.
     let chained_call = ChainedCall::new(
         token_program_id,
-        vec![token_definition.clone(), holder_ata_auth],
+        vec![definition_account_id, holder_ata_id],
         &token_core::Instruction::Burn {
             amount_to_burn: amount,
         },
     )
     .with_pda_seeds(vec![seed]);
-    (post_states, vec![chained_call])
+    (state_diffs, vec![chained_call])
 }

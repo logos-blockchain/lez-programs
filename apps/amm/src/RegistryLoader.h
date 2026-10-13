@@ -29,7 +29,7 @@ class QJsonArray;
 // can be identical across networks), so the user picks; networks() lists them for
 // the picker. selectNetwork() re-filters the last-loaded registry with no re-fetch.
 // The active network's AMM program id is exposed via activeAmmProgramId() so the
-// backend can adopt it (no AMM_PROGRAM_BIN needed).
+// backend can adopt it (no AMM_PROGRAM_ID needed).
 //
 // refresh() bumps revision() and emits changed() whenever the snapshot updates,
 // so the backend re-publishes registryRevision and the UI re-fetches.
@@ -51,7 +51,7 @@ public:
     QVariantList networks() const;
     // The active network's declared AMM program id (empty for local / none / a
     // network that declares none). The backend adopts it via setAmmProgramId so ops
-    // target this network without an AMM_PROGRAM_BIN.
+    // target this network without an AMM_PROGRAM_ID.
     QString activeAmmProgramId() const { return m_activeAmmProgramId; }
 
     // The active network's AMM instance, identified by the account id of its config

@@ -1,10 +1,10 @@
 #include "amm_module_impl.h"
+#include "amm_fee_payer.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
-#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -37,15 +37,22 @@ bool ammDebug() {
         if (ammDebug()) std::cerr << "[amm-debug] " << msg << std::endl;  \
     } while (0)
 
-// Absolute path to the deployed AMM program's compiled binary (amm.bin). The
-// module can't derive this itself: the wallet module's bundled AMM program may
-// differ from whatever is deployed on the target sequencer, and the bytes are
-// what determine the program id (and every PDA derived from it).
+// Path to an AMM binary (amm.bin). Until LEZ v0.2.5 the module derived the program id
+// from it; since then a binary yields only an ImageID, not the program's address (see
+// AMM_PROGRAM_ID_ENV). It is read only to warn a caller who still sets it.
 constexpr char AMM_PROGRAM_BIN_ENV[] = "AMM_PROGRAM_BIN";
+
 
 // Account id (base58 or hex) of the active instance's config PDA, for local /
 // headless use when no registry (setConfigId) supplies one.
 constexpr char AMM_CONFIG_ID_ENV[] = "AMM_CONFIG_ID";
+
+// Account id (base58 or hex) of the DEPLOYED AMM program -- its `program_loader`
+// header account. Since LEZ v0.2.5 that account id *is* the program's address and is
+// chosen at deploy time, so it cannot be derived from the binary: AMM_PROGRAM_BIN
+// yields the ImageID, which is no longer an address. Use this for local / headless
+// use when no registry (setAmmProgramId) supplies one.
+constexpr char AMM_PROGRAM_ID_ENV[] = "AMM_PROGRAM_ID";
 
 int hexVal(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -68,17 +75,6 @@ bool isHexEven(const std::string& s) {
     for (const char c : s)
         if (hexVal(c) < 0) return false;
     return true;
-}
-
-std::string toHex(const uint8_t* p, size_t n) {
-    static const char* const kDigits = "0123456789abcdef";
-    std::string s;
-    s.reserve(n * 2);
-    for (size_t i = 0; i < n; ++i) {
-        s.push_back(kDigits[p[i] >> 4]);
-        s.push_back(kDigits[p[i] & 0x0f]);
-    }
-    return s;
 }
 
 // Exception-safe field accessor over a json object: returns "" when the key is
@@ -159,16 +155,17 @@ std::vector<bool> jsonBoolVec(const json& arr) {
     return out;
 }
 
-std::vector<uint8_t> jsonWordsToLeBytes(const json& arr) {
+// A plan's `instruction` is the borsh encoding of the program's Instruction, one
+// JSON number per byte. Returns {} on a non-array or any element outside 0..=255.
+std::vector<uint8_t> jsonInstructionBytes(const json& arr) {
     std::vector<uint8_t> out;
     if (!arr.is_array()) return out;
-    out.reserve(arr.size() * sizeof(uint32_t));
+    out.reserve(arr.size());
     for (const auto& v : arr) {
-        const uint32_t word = v.is_number() ? static_cast<uint32_t>(v.get<uint64_t>()) : 0;
-        out.push_back(static_cast<uint8_t>(word & 0xff));
-        out.push_back(static_cast<uint8_t>((word >> 8) & 0xff));
-        out.push_back(static_cast<uint8_t>((word >> 16) & 0xff));
-        out.push_back(static_cast<uint8_t>((word >> 24) & 0xff));
+        if (!v.is_number_unsigned() && !v.is_number_integer()) return {};
+        const int64_t byte = v.get<int64_t>();
+        if (byte < 0 || byte > 0xff) return {};
+        out.push_back(static_cast<uint8_t>(byte));
     }
     return out;
 }
@@ -240,31 +237,35 @@ json publicError(const std::string& code,
 
 }  // namespace
 
-std::vector<uint8_t> AmmModuleImpl::loadAmmElf() {
-    const char* path = std::getenv(AMM_PROGRAM_BIN_ENV);
-    if (path == nullptr || *path == '\0') return {};
-    std::ifstream file(path, std::ios::binary);
-    if (!file) return {};
-    return std::vector<uint8_t>((std::istreambuf_iterator<char>(file)),
-                                std::istreambuf_iterator<char>());
-}
-
 std::string AmmModuleImpl::ammProgramId() {
-    // An app-selected program id (setAmmProgramId) takes precedence; AMM_PROGRAM_BIN
-    // is the fallback for local / headless / no-registry use.
+    // An app-selected program id (setAmmProgramId, i.e. the registry) takes
+    // precedence; AMM_PROGRAM_ID is the fallback for local / headless use.
     if (!m_activeProgramId.empty()) return m_activeProgramId;
 
-    const std::vector<uint8_t> elf = loadAmmElf();
-    if (elf.empty()) return {};
-    // Hand the deployed binary to the amm_ffi program_id op, which decodes it
-    // and computes the Image ID — 64-char lowercase hex, little-endian per u32
-    // word (matches `spel program-id` and the on-chain *_program_id fields).
-    const FfiResult r = call(amm_program_id, json{{"elf", toHex(elf.data(), elf.size())}});
-    if (!r.ok) {
-        AMM_TRACE("ammProgramId: amm_program_id op failed");
-        return {};
+    const char* env_id = std::getenv(AMM_PROGRAM_ID_ENV);
+    if (env_id != nullptr && *env_id != '\0') {
+        const std::string normalized = normalizeAccountId(env_id);
+        if (normalized.empty()) {
+            AMM_TRACE("ammProgramId: " << AMM_PROGRAM_ID_ENV << " is not a valid account id");
+            return {};
+        }
+        return normalized;
     }
-    return jStr(r.value, "programId");
+
+    // Deliberately NOT falling back to the binary. Until LEZ v0.2.5 a program was
+    // addressed by its ImageID, so deriving it from AMM_PROGRAM_BIN worked. v0.2.5
+    // addresses programs by the account their `program_loader` header was deployed to,
+    // chosen at deploy time and not recoverable from the ELF. Deriving an ImageID here
+    // would hand every caller a well-formed id that simply is not where the program
+    // lives -- every PDA off it misses, and the config read fails as though the AMM
+    // were never initialized. Fail loudly instead.
+    const char* bin_path = std::getenv(AMM_PROGRAM_BIN_ENV);
+    if (bin_path != nullptr && *bin_path != '\0') {
+        AMM_TRACE("ammProgramId: " << AMM_PROGRAM_BIN_ENV << " is set but cannot supply a program "
+                  "address since LEZ v0.2.5 (it yields an ImageID). Set "
+                  << AMM_PROGRAM_ID_ENV << " to the deployed header account id, or use a registry.");
+    }
+    return {};
 }
 
 LogosMap AmmModuleImpl::setAmmProgramId(const LogosMap& request) {
@@ -273,7 +274,7 @@ LogosMap AmmModuleImpl::setAmmProgramId(const LogosMap& request) {
     if (!raw.empty() && normalized.empty())
         return LogosMap{{"status", "error"}, {"error", "invalid_account_id"}};
 
-    // Adopt the caller's chosen id (normalized to hex; empty reverts to the bin).
+    // Adopt the caller's chosen id (normalized to hex; empty reverts to AMM_PROGRAM_ID).
     m_activeProgramId = normalized;
     return LogosMap{{"status", "ok"}, {"error", ""}};
 }
@@ -296,6 +297,13 @@ std::string AmmModuleImpl::normalizeAccountId(const std::string& id) {
     std::transform(hex.begin(), hex.end(), hex.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return hex;
+}
+
+// See the class comment: the payer is explicit, and the rule lives in amm_fee_payer.
+std::string AmmModuleImpl::feePayerFor(const std::string& fee_payer_id,
+                                       const std::vector<std::string>& accounts,
+                                       const std::vector<bool>& signers) {
+    return amm_module::detail::resolveFeePayer(normalizeAccountId(fee_payer_id), accounts, signers);
 }
 
 nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
@@ -393,12 +401,23 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
 
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
-        // no program id from AMM_PROGRAM_BIN (unset/unreadable/bad).
+        // No program address: no registry id adopted and AMM_PROGRAM_ID unset/invalid.
+        // Kept as `no_program_bin` because the QML surfaces already switch on that code.
         return failed("no_program_bin");
 
     const json config = readConfig();
     if (config.is_null())
         return failed("bad_config");  // no config id configured (setConfigId / AMM_CONFIG_ID unset)
+    // A config id is set but the account could not be READ -- an unopened/empty wallet,
+    // or a sequencer that does not know the account. Distinguished from an
+    // uninitialized-but-readable config below (config_unavailable), because reporting a
+    // dead read as `amm_not_initialized` sends you looking on chain for state that is
+    // actually there.
+    if (jStr(config, "status") != "ok") {
+        AMM_TRACE("resolvePoolAccount: config account read failed for " << ammConfigId()
+                  << " (wallet open? sequencer reachable?)");
+        return failed("config_read_failed");
+    }
 
     // The liquidity view passes base58 ids; the swap card passes hex. Normalize both to hex
     // (idempotent for hex) so the FFI id derivation works either way.
@@ -490,14 +509,17 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("transferOwnership: SUBMIT programId=" << program_id
               << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("transferOwnership: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -545,14 +567,17 @@ LogosMap AmmModuleImpl::withdrawProtocolFees(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("withdrawProtocolFees: SUBMIT programId=" << program_id
               << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("withdrawProtocolFees: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -623,7 +648,7 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction =
-        jsonWordsToLeBytes(plan.value("instruction", json::array()));
+        jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     // Surface a stable error code when the target PDA already exists instead of failing at submit.
@@ -636,8 +661,11 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
 
     AMM_TRACE("oracleSetup(" << (observations ? "observations" : "priceAccount")
               << "): SUBMIT programId=" << program_id << " accounts=" << accounts.size());
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("oracleSetup: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -785,7 +813,8 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
                                           const std::string& user_output_holding_hex,
                                           const nlohmann::json& amount_in,
                                           const nlohmann::json& min_out,
-                                          const nlohmann::json& deadline) {
+                                          const nlohmann::json& deadline,
+                                          const std::string& fee_payer_hex) {
     std::string amount_in_decimal;
     std::string min_out_decimal;
     std::string deadline_decimal;
@@ -798,7 +827,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
 
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty()) {
-        AMM_TRACE("swapExactInput: FAIL no program id (AMM_PROGRAM_BIN unset/unreadable)");
+        AMM_TRACE("swapExactInput: FAIL no program id (no registry selection, AMM_PROGRAM_ID unset)");
         return {};
     }
 
@@ -856,14 +885,19 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("swapExactInput: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(fee_payer_hex, accounts, signers);
+    if (fee_payer.empty()) {
+        AMM_TRACE("swapExactInput: FAIL invalid fee payer");
+        return {};
+    }
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("swapExactInput: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -880,7 +914,8 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
                                            const std::string& user_output_holding_hex,
                                            const nlohmann::json& amount_out,
                                            const nlohmann::json& max_in,
-                                           const nlohmann::json& deadline) {
+                                           const nlohmann::json& deadline,
+                                           const std::string& fee_payer_hex) {
     std::string amount_out_decimal;
     std::string max_in_decimal;
     std::string deadline_decimal;
@@ -893,7 +928,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
 
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty()) {
-        AMM_TRACE("swapExactOutput: FAIL no program id (AMM_PROGRAM_BIN unset/unreadable)");
+        AMM_TRACE("swapExactOutput: FAIL no program id (no registry selection, AMM_PROGRAM_ID unset)");
         return {};
     }
 
@@ -947,14 +982,19 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("swapExactOutput: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(fee_payer_hex, accounts, signers);
+    if (fee_payer.empty()) {
+        AMM_TRACE("swapExactOutput: FAIL invalid fee payer");
+        return {};
+    }
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("swapExactOutput: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1020,7 +1060,7 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
         return LogosMap{{"status", "error"}, {"error", err}};
     };
 
-    // config_missing == no program id from AMM_PROGRAM_BIN (same as swapExactInQuote).
+    // config_missing == no program id (registry selection or AMM_PROGRAM_ID; same as swapExactInQuote).
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
         return error("config_missing");
@@ -1075,14 +1115,17 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("createPool: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("createPool: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1171,7 +1214,7 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
         return LogosMap{{"status", "error"}, {"error", err}};
     };
 
-    // config_missing == no program id from AMM_PROGRAM_BIN (same as createPool).
+    // config_missing == no program id (registry selection or AMM_PROGRAM_ID; same as createPool).
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
         return error("config_missing");
@@ -1238,14 +1281,17 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("addLiquidity: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("addLiquidity: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1329,7 +1375,7 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
         return LogosMap{{"status", "error"}, {"error", err}};
     };
 
-    // config_missing == no program id from AMM_PROGRAM_BIN (same as addLiquidity).
+    // config_missing == no program id (registry selection or AMM_PROGRAM_ID; same as addLiquidity).
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
         return error("config_missing");
@@ -1396,14 +1442,17 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("removeLiquidity: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("removeLiquidity: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1418,7 +1467,7 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
         return LogosMap{{"status", "error"}, {"error", err}};
     };
 
-    // config_missing == no program id from AMM_PROGRAM_BIN (same as the other submits).
+    // config_missing == no program id (registry selection or AMM_PROGRAM_ID; same as the other submits).
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
         return error("config_missing");
@@ -1462,14 +1511,17 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonWordsToLeBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("syncReserves: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("syncReserves: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);

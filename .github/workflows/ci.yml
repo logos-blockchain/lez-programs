@@ -69,6 +69,34 @@ jobs:
       - name: Guest Clippy
         run: make clippy-guest
 
+  benchmark:
+    name: Benchmark Compile Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/install-risc0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            programs/benchmark/target
+          key: ${{ runner.os }}-benchmark-${{ hashFiles('programs/benchmark/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-benchmark-
+
+      # Excluded from the workspace, so no other job compiles it.
+      - name: Check benchmark
+        run: make check-benchmark
+
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest

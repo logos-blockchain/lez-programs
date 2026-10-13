@@ -50,7 +50,7 @@ Mutating success adds `transactionId`.
 
 | Method | Arguments | Result payload |
 | --- | --- | --- |
-| `programInfo` | none | Token Program ID in base58 and hex |
+| `programInfo` | none | Token Program ID in base58 and hex, plus the binary's `imageIdHex` when one is configured |
 | `inspectDefinition` | definition ID | decoded fungible or non-fungible definition |
 | `inspectHolding` | holding ID | decoded fungible, NFT master, or NFT printed-copy holding |
 | `inspectMetadata` | metadata ID | decoded standard, URI, creators, and primary-sale value |
@@ -68,9 +68,9 @@ wallet.
 
 | Method | Arguments |
 | --- | --- |
-| `createFungible` | definition target, holding target, name, total supply raw, mint authority |
-| `createFungibleWithMetadata` | definition target, holding target, metadata target, name, total supply raw, mint authority, standard, URI, creators |
-| `createNonFungible` | definition target, master holding target, metadata target, name, printable supply raw, standard, URI, creators |
+| `createFungible` | definition target, holding target, name, total supply raw, mint authority, fee payer |
+| `createFungibleWithMetadata` | definition target, holding target, metadata target, name, total supply raw, mint authority, standard, URI, creators, fee payer |
+| `createNonFungible` | definition target, master holding target, metadata target, name, printable supply raw, standard, URI, creators, fee payer |
 
 Mint-authority values:
 
@@ -80,18 +80,24 @@ Mint-authority values:
 
 Metadata standard is `simple` or `expanded`.
 
+Every operation that submits a transaction takes the fee payer as its last
+argument: a funded public account in the connected wallet. LEZ charges public
+transactions, and the accounts a create flow signs with are fresh and unfunded,
+so the payer is never inferred. It may be one of the signers or a separate
+wallet account; a non-signing participant is rejected with `invalid_fee_payer`.
+
 ### Holding and supply operations
 
 | Method | Arguments | Notes |
 | --- | --- | --- |
-| `initializeHolding` | definition, fresh holding target | NFT definitions create an unowned printed-copy holding |
-| `transfer` | sender holding, recipient holding, amount raw | supports fungible, NFT master, and printed-copy rules |
-| `burn` | definition, holding, amount raw | supports fungible and NFT variants |
-| `mint` | definition, holding, amount raw | self-authority fungible path |
-| `mintWithAuthority` | definition, holding, current authority, amount raw | external-authority fungible path |
-| `setAuthority` | definition, new authority | self-authority path |
-| `setAuthorityWithAuthority` | definition, current authority, new authority | external-authority path |
-| `printNft` | master holding, fresh printed holding target | target must not be initialized first |
+| `initializeHolding` | definition, fresh holding target, fee payer | NFT definitions create an unowned printed-copy holding |
+| `transfer` | sender holding, recipient holding, amount raw, fee payer | supports fungible, NFT master, and printed-copy rules |
+| `burn` | definition, holding, amount raw, fee payer | supports fungible and NFT variants |
+| `mint` | definition, holding, amount raw, fee payer | self-authority fungible path |
+| `mintWithAuthority` | definition, holding, current authority, amount raw, fee payer | external-authority fungible path |
+| `setAuthority` | definition, new authority, fee payer | self-authority path |
+| `setAuthorityWithAuthority` | definition, current authority, new authority, fee payer | external-authority path |
+| `printNft` | master holding, fresh printed holding target, fee payer | target must not be initialized first |
 
 `new authority` accepts the same `none`, `self`, or account-ID values as
 definition creation. Revocation with `none` is permanent.
@@ -145,23 +151,27 @@ nix build path:.#token-module -L
 
 ## Runtime configuration
 
-Set either `TOKEN_PROGRAM_ID` or `TOKEN_PROGRAM_BIN` on the process hosting the
-module:
+Set `TOKEN_PROGRAM_ID` on the process hosting the module. Optionally add
+`TOKEN_PROGRAM_BIN` to check that the deployed program runs the binary you
+expect:
 
 ```bash
-# Use the deployed Token Program ID directly (base58 or 64-character hex).
+# The deployed Token Program ID (base58 or 64-character hex).
 TOKEN_PROGRAM_ID=F8sGbDbjcxvJHpUQJcArEaY7EbLMVmqZgRm3fXPw3jb3 \
   logoscore -D -m ./modules
 
-# Or derive the ID from the exact deployable binary.
+# Also verify the deployed bytecode against the exact deployable binary.
+TOKEN_PROGRAM_ID=F8sGbDbjcxvJHpUQJcArEaY7EbLMVmqZgRm3fXPw3jb3 \
 TOKEN_PROGRAM_BIN=/absolute/path/to/token.bin logoscore -D -m ./modules
 ```
 
-If both variables are set, they must resolve to the same program ID. The binary
-must be the exact deployable `.bin` running on the target sequencer. Its RISC
-Zero image ID is the Token Program ID. Rebuilding the guest changes that
-identity; accounts owned by an older deployment must be read with the matching
-program-ID configuration.
+Since LEZ v0.2.5 a program lives at the account its `program_loader` header
+was deployed to, chosen at deploy time, so only `TOKEN_PROGRAM_ID` can name it.
+The binary's RISC Zero image ID identifies bytecode, not an address: when
+`TOKEN_PROGRAM_BIN` is set, the module reads the header at `TOKEN_PROGRAM_ID`
+and requires its `image_id` to match, then reports it as `imageIdHex`. A binary
+alone, or one that does not match the deployment, leaves the module
+unconfigured (`config_missing`).
 
 Set `TOKEN_DEBUG=1` on the daemon to emit safe adapter diagnostics to module
 stderr. Debug logging never includes wallet storage or recovery material.
@@ -223,7 +233,7 @@ as a single line (`darwin-arm64-dev` on arm64 macOS). The
 
 ### 3. Start the daemon and load (dependency first)
 
-Set `TOKEN_PROGRAM_ID` or `TOKEN_PROGRAM_BIN` **on the daemon**, then load the
+Set `TOKEN_PROGRAM_ID` (and optionally `TOKEN_PROGRAM_BIN`) **on the daemon**, then load the
 dependency before the module:
 
 ```bash
@@ -238,7 +248,7 @@ logoscore call token_module inspectDefinition deadbeef --json
 ```
 
 The final call must return `invalid_account_id` without crashing, and
-`programInfo` should return the configured or binary-derived ID.
+`programInfo` should return the configured ID.
 
 ### 4. Chain reads
 

@@ -125,6 +125,7 @@ Item {
             // Wallet / account control on the far right.
             WalletControl {
                 id: accountControl
+                objectName: "tokenWalletControl"
                 Layout.leftMargin: root.compact ? 4 : 12
                 compact: root.compact
                 wallet: root.backend

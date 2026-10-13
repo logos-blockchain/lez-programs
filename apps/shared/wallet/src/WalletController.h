@@ -19,6 +19,9 @@ struct WalletUiState {
     int currentBlockHeight = 0;
     QString sequencerAddress;
     bool sequencerReachable = true;
+    // The funded public account that pays transaction fees (LEZ charges public
+    // transactions). Empty when the wallet is closed or no account is funded.
+    QString feePayerId;
 };
 
 class WalletController final : public QObject {
@@ -38,6 +41,9 @@ public:
     QString createAccount(bool isPublic);
     void refresh();
     QString balance(const QString& accountId, bool isPublic);
+    // Selects the fee payer; only a funded public wallet account is accepted.
+    // The choice persists per app across restarts.
+    bool setFeePayer(const QString& accountId);
     QString createDefaultWallet(const QString& password);
     QString createWallet(const QString& configPath,
                          const QString& storagePath,
@@ -55,6 +61,7 @@ private:
 
     void openOnStartup();
     void applySnapshot(const WalletSnapshot& snapshot);
+    void selectFeePayer(const QVector<WalletAccount>& accounts);
     void checkReachability();
 
     WalletProvider& m_wallet;
@@ -64,4 +71,5 @@ private:
     QNetworkAccessManager* m_network;
     QTimer* m_reachabilityTimer;
     bool m_started = false;
+    QVector<WalletAccount> m_accounts;
 };

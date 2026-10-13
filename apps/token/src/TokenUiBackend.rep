@@ -15,6 +15,10 @@ class TokenUiBackend
     // Whether the configured sequencer answered the last reachability probe.
     // Defaults true so the UI doesn't flash a warning before the first check.
     PROP(bool sequencerReachable READONLY)
+    // Funded public wallet account that pays every submit's fee (LEZ charges
+    // public transactions). Empty when none is funded; submits then fail with
+    // fee_payer_required. Defaults to the best-funded account.
+    PROP(QString feePayerId READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
@@ -36,6 +40,9 @@ class TokenUiBackend
     // Close this app's wallet view (lock); does not delete the wallet and, in
     // Basecamp, does not close the wallet other apps share.
     SLOT(void disconnectWallet())
+    // Pick the fee payer (persisted per app). False unless it is a funded
+    // public account in the open wallet.
+    SLOT(bool setFeePayer(QString accountId))
 
     // Token Program reads. walletDefinitions() joins the module's account
     // discovery and inspect calls into the record shape consumed by QML.

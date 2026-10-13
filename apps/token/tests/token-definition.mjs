@@ -3,7 +3,9 @@
 // Normal mode drives the complete visible create -> inspect shell without
 // mutating chain state. Set TOKEN_E2E_LIVE=1 to create fresh wallet accounts,
 // submit a fixed-supply definition through token_module, and verify it appears
-// in the live Inspect view.
+// in the live Inspect view. The fresh definition and holding targets are
+// unfunded, so the live run needs a funded public wallet account to pay the
+// sequencer's fee; the app selects it as the fee payer.
 
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,14 +77,17 @@ async function clickFirstVisible(app, names) {
 }
 
 async function waitForProperty(app, objectId, property, predicate, description, timeout = 10000) {
+  let matched;
   await app.waitFor(
     async () => {
       const value = await prop(app, objectId, property);
       if (!predicate(value))
         throw new Error(`${property}=${JSON.stringify(value)}`);
+      matched = value;
     },
     { timeout, interval: 300, description },
   );
+  return matched;
 }
 
 async function saveShot(app, name) {
@@ -189,6 +194,18 @@ test(live
     return;
   }
 
+  // LEZ charges public transactions and the new targets cannot pay, so a separate
+  // funded account must be the fee payer.
+  const walletControlId = await idByObjectName(app, "tokenWalletControl");
+  const feePayer = await waitForProperty(
+    app,
+    walletControlId,
+    "feePayerId",
+    (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value),
+    "funded fee payer (fund a public wallet account first)",
+  );
+  console.log(`    fee payer: ${feePayer}`);
+
   const createAccountsButtonId = await idByObjectName(app, "tokenCreateAccountsButton");
   await waitForProperty(
     app,
@@ -205,6 +222,8 @@ test(live
   const validAccount = (value) => typeof value === "string" && value.length > 0;
   await waitForProperty(app, definitionTargetId, "text", validAccount, "definition target account", 20000);
   await waitForProperty(app, holdingTargetId, "text", validAccount, "holding target account", 20000);
+  if (await prop(app, walletControlId, "feePayerId") !== feePayer)
+    throw new Error("fee payer changed to a fresh, unfunded target account");
   await saveShot(app, "token-account-targets-ready");
 
   await clickObject(app, "tokenReviewButton");

@@ -26,6 +26,8 @@ logos_module(
     SOURCES
         src/amm_module_impl.h
         src/amm_module_impl.cpp
+        src/amm_fee_payer.h
+        src/amm_fee_payer.cpp
     EXTERNAL_LIBS
         amm_ffi
 )

@@ -136,47 +136,49 @@ core module from `result-core/` and the UI plugin from `result-lgx/`:
 4. Choose the core module `.lgx` from `result-core/`, then the UI plugin `.lgx`
    from `result-lgx/`
 
-To actually use the on-chain views (**Swap** and **Liquidity**) you must also
-set `AMM_PROGRAM_BIN` and `TOKENS_CONFIG` (both explained below). Both views read
-the same two — the AMM program id is derived from `AMM_PROGRAM_BIN`, the token
-set from `TOKENS_CONFIG`, and the sequencer from the wallet config. Run this
+To actually use the on-chain views (**Swap** and **Liquidity**) without a
+registry you must also set `AMM_PROGRAM_ID`, `AMM_CONFIG_ID` and `TOKENS_CONFIG`
+(explained below). Both views read the same ones — the AMM program from
+`AMM_PROGRAM_ID`, its instance from `AMM_CONFIG_ID`, the token set from
+`TOKENS_CONFIG`, and the sequencer from the wallet config. Run this
 **from the repo root** — use absolute paths (`$(pwd)/…`), because `nix run` may
 not preserve the working directory, so relative paths won't resolve:
 
 ```bash
-AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+AMM_PROGRAM_ID=<deployed-amm-program-id> \
+AMM_CONFIG_ID=<amm-config-id> \
 TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
 nix run .#amm-ui
 ```
 
-Without `AMM_PROGRAM_BIN` the Swap and Liquidity views stay disabled; without
-`TOKENS_CONFIG` the token picker is empty. Each is detailed below.
+Without a program id (from a registry or `AMM_PROGRAM_ID`) the Swap and
+Liquidity views stay disabled; without `TOKENS_CONFIG` the token picker is
+empty. Each is detailed below.
 
-### AMM program binary (required for swaps and liquidity)
+### AMM program id (required for swaps and liquidity)
 
 To execute a swap, the app must submit a transaction against the **exact AMM
-program you deployed** (its ELF determines the program id, and therefore every
-pool/vault/config PDA and the transaction's target). The app therefore needs the
-deployed `amm.bin` bytes at runtime — it does **not** derive them from the wallet
-module (whose embedded AMM program may differ from your deployment).
+program you deployed**: its address determines every pool/vault/config PDA and
+the transaction's target. Since LEZ v0.2.5 that address is the account its
+`program_loader` header was deployed to, chosen at deploy time — it can't be
+derived from `amm.bin` (a binary yields only its ImageID).
 
-Point the app at your deployed binary with the `AMM_PROGRAM_BIN` environment
-variable (absolute path):
+A registry network supplies it. Without one, set `AMM_PROGRAM_ID` to the
+deployed header account id (base58 or hex), together with `AMM_CONFIG_ID` for
+the AMM instance:
 
 ```bash
-AMM_PROGRAM_BIN=/abs/path/to/amm.bin nix run .#amm-ui
+AMM_PROGRAM_ID=<deployed-amm-program-id> AMM_CONFIG_ID=<amm-config-id> nix run .#amm-ui
 ```
 
-This is the same `amm.bin` you deployed via the testnet runbook
-(`programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin`).
-The app reads it, derives the AMM program id (the binary's RISC Zero Image ID,
-via `amm_ffi`'s `program_id` op), and reads the on-chain AMM config account to
-discover the TWAP oracle program id for the pool's current-tick PDA. If `AMM_PROGRAM_BIN` is unset or unreadable, the
-Swap view stays disabled (no pool can be resolved).
+`apps/amm/tests/testnet/setup-amm-testnet.sh` prints both after deploying. The
+app reads the on-chain AMM config account to discover the TWAP oracle program
+id for the pool's current-tick PDA. Without a program id the Swap view stays
+disabled (no pool can be resolved).
 
-> **Golden rule (from the runbook):** recompiling the AMM changes its program id
-> and *every* derived PDA. After any redeploy, point `AMM_PROGRAM_BIN` at the new
-> `amm.bin` — never mix a stale binary with a fresh deployment.
+> **Golden rule:** a redeploy creates a new header account, so a new program id
+> and *every* derived PDA. After any redeploy, update `AMM_PROGRAM_ID` (and
+> `AMM_CONFIG_ID`) — never point the app at a stale deployment.
 
 ### Token list config (required for the Swap token picker)
 
@@ -281,7 +283,8 @@ the AMM program stores no history to read them from.
 Full command with the variables set (absolute paths, from the repo root):
 
 ```bash
-AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+AMM_PROGRAM_ID=<deployed-amm-program-id> \
+AMM_CONFIG_ID=<amm-config-id> \
 TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
 AMM_POOLS_CONFIG=$(pwd)/apps/amm/amm-pools.json \
 nix run .#amm-ui
@@ -334,7 +337,8 @@ nix build .#test-framework -o apps/amm/result-mcp
 #    listens on localhost:3768. Absolute paths ($(pwd)/…) because nix run may
 #    not preserve the working directory.
 AMM_DEBUG=1 \
-  AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+  AMM_PROGRAM_ID=<deployed-amm-program-id> \
+  AMM_CONFIG_ID=<amm-config-id> \
   TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
   nix run .#amm-ui
 

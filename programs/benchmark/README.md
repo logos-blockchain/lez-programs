@@ -3,6 +3,12 @@
 > **Status: fixed.** `OBSERVATIONS_CAPACITY` was reduced from 6396 to **2048**, bringing `RecordTick`
 > to ~16.8M cycles (~half the limit). The rest of this document is the diagnosis that led there; the
 > numbers labelled "cap 6396" are the pre-fix measurements that motivated the change.
+>
+> **LEZ v0.2.5 update.** All numbers below predate v0.2.5, which changed the guest interface (a
+> Borsh `ProgramInput` in, account state *diffs* out). Re-measured on v0.2.5-rc2, the owned-account
+> overhead is gone: `RecordTick` costs ~1.0M cycles at cap 2048 and ~2.4M at cap 6396, owned and
+> uninitialized accounts cost the same, and every capacity in the sweep completes under 2²⁵. The
+> diagnosis below explains the pre-v0.2.5 runtime only.
 
 At capacity 6396, `RecordTick` could not run on chain: a single call over a full-size observations
 buffer cost **~50.9M zkVM cycles**, over the **~33.5M (2²⁵)** public-execution limit, and the runtime

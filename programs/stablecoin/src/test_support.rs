@@ -5,10 +5,7 @@
 //! otherwise repeat the same fixtures three times.
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
     compute_stability_fee_accumulator_pda, math::FIXED_POINT_ONE, ProtocolParameters,
@@ -16,9 +13,9 @@ use stablecoin_core::{
 };
 use twap_oracle_core::OraclePriceAccount;
 
-pub(crate) const STABLECOIN_PROGRAM_ID: ProgramId = [3u32; 8];
-pub(crate) const ORACLE_PROGRAM_ID: ProgramId = [4u32; 8];
-pub(crate) const CLOCK_PROGRAM_ID: ProgramId = [5u32; 8];
+pub(crate) const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([3u8; 32]);
+pub(crate) const ORACLE_PROGRAM_ID: AccountId = AccountId::new([4u8; 32]);
+pub(crate) const CLOCK_PROGRAM_ID: AccountId = AccountId::new([5u8; 32]);
 
 /// Timestamps are Unix milliseconds, matching the `CLOCK_01` account.
 pub(crate) const T0: u64 = 1_700_000_000_000;

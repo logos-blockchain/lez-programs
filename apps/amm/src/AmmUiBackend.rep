@@ -18,6 +18,11 @@ class AmmUiBackend
     // Whether the configured sequencer answered the last reachability probe.
     // Defaults true so the UI doesn't flash a warning before the first check.
     PROP(bool sequencerReachable READONLY)
+    // Funded public wallet account that pays every submit's fee (LEZ charges
+    // public transactions). Empty when none is funded; submits then fail with
+    // fee_payer_required (an empty hash for the swaps). Defaults to the
+    // best-funded account.
+    PROP(QString feePayerId READONLY)
     // Bumps on every known-tokens / known-pools registry refresh so QML replicas
     // re-fetch tokenList()/poolList()/resolveTokens(). Starts at 0; the backend
     // sets it once the initial snapshot has loaded (and again on each refresh).
@@ -55,11 +60,14 @@ class AmmUiBackend
     // Close this app's wallet view (lock); does not delete the wallet and, in
     // Basecamp, does not close the wallet other apps share.
     SLOT(void disconnectWallet())
+    // Pick the fee payer (persisted per app). False unless it is a funded
+    // public account in the open wallet.
+    SLOT(bool setFeePayer(QString accountId))
 
     // AMM
-    // Derives the AMM pool PDA for (defAHex, defBHex) from the deployed AMM program
-    // binary (see AMM_PROGRAM_BIN — a RISC Zero ProgramBinary .bin, not a raw ELF)
-    // and reads/decodes the pool account. On success `{ status:"ok", error:"", poolId,
+    // Derives the AMM pool PDA for (defAHex, defBHex) from the deployed AMM program id
+    // (the active registry network's, else AMM_PROGRAM_ID — the program's deployed
+    // header account) and reads/decodes the pool account. On success `{ status:"ok", error:"", poolId,
     // defAHex, defBHex, vaultAId, vaultBId, lpDefinitionId, reserveA, reserveB,
     // liquiditySupply, feeBps }` (A/B oriented to the requested order); otherwise
     // `{ status:"error", error:<code> }` — `no_pool` for the ordinary "no pool /
@@ -89,7 +97,7 @@ class AmmUiBackend
     // timestamp in MILLISECONDS (matches amm_core's SwapExactInput deadline —
     // passing seconds would expire the swap immediately once deadline handling
     // is enforced). Returns the tx hash, or an empty string on failure
-    // (no pool, unreadable AMM_PROGRAM_BIN, bad inputs, or a failed tx).
+    // (no pool, no AMM program id, bad inputs, or a failed tx).
     SLOT(QString swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountInDecimal, QString minOutDecimal, QString deadlineDecimal))
     // Server-side SwapExactInput preview for (tokenInHex, tokenOutHex): reads the
     // pool and returns { status:"ok", error:"", expectedOut, minReceived,

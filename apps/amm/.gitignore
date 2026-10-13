@@ -31,3 +31,6 @@ tests/testnet/custom-tokens.json
 # Faucet manifest written by the setup script for tests/faucet-swap.mjs (account ids
 # + PDAs + bin/IDL paths for the FaucetMint). Regenerated on every setup run.
 tests/testnet/faucet.json
+
+# Token D's definition id, written by the setup script for tests/custom-token.mjs.
+tests/testnet/custom-token-manifest.json

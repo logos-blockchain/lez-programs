@@ -21,19 +21,17 @@
 // ---------------------------------------------------------------------------
 
 import { resolve } from "node:path";
-import { rm } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
+import { readFile, rm } from "node:fs/promises";
 
 const fwRoot =
   process.env.LOGOS_QT_MCP ||
   new URL("../result-mcp", import.meta.url).pathname;
 const { test, run } = await import(resolve(fwRoot, "test-framework/framework.mjs"));
 
-// The isolated test wallet home (set by the setup script) — used to resolve token
-// D's deterministic definition id via the wallet CLI, the same way the setup does.
-const WALLET_HOME =
-  process.env.LEE_WALLET_HOME_DIR ||
-  new URL("./testnet/.wallet", import.meta.url).pathname;
+// Token D's definition id, written by the setup script. Read from here rather than
+// from a wallet label: labels move to other accounts if the wallet is re-restored
+// against a chain that already holds the setup's state.
+const MANIFEST_PATH = new URL("./testnet/custom-token-manifest.json", import.meta.url).pathname;
 
 // Where the app persists custom tokens. Defaults to the isolated test store; set
 // CUSTOM_TOKEN_CONFIG to override. IMPORTANT: launch the app with the SAME path
@@ -75,17 +73,16 @@ async function saveShot(app, name) {
   }
 }
 
-// Resolve token D's definition id from the test wallet (deterministic under the
-// test mnemonic), the same account label the setup script mints it to.
-function resolveTokenD() {
-  const out = execFileSync("wallet", ["account", "id", "--account-id", "token-d-def"], {
-    encoding: "utf8",
-    env: { ...process.env, LEE_WALLET_HOME_DIR: WALLET_HOME },
-  });
-  const id = (out.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/) || [])[0];
-  if (!id)
-    throw new Error(`could not resolve token-d-def id from wallet (home=${WALLET_HOME}) — run the setup script`);
-  return id;
+async function resolveTokenD() {
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8"));
+  } catch (e) {
+    throw new Error(`could not read ${MANIFEST_PATH} (${e.message}) — run the setup script`);
+  }
+  if (!manifest.tokenDefinition)
+    throw new Error(`${MANIFEST_PATH} has no tokenDefinition — run the setup script`);
+  return manifest.tokenDefinition;
 }
 
 // Trigger a token-list reload and wait for it to complete. resolveTokens() re-reads the
@@ -108,7 +105,7 @@ async function selectableIds(app, formId) {
 // --- the test ---------------------------------------------------------------
 
 test("amm liquidity: add a custom (unlisted) token by id", async (app) => {
-  const tokenD = resolveTokenD();
+  const tokenD = await resolveTokenD();
   console.log(`    custom token D = ${tokenD}`);
 
   // 1. Switch to the Liquidity tab and wait for the form + page to render.

@@ -1,9 +1,6 @@
 use std::str::FromStr;
 
-use lee_core::{
-    account::{Account, AccountId, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, Data, Nonce};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -39,37 +36,24 @@ pub(crate) fn parse_hex_32(value: &str, label: &str) -> Result<[u8; 32], String>
     Ok(bytes)
 }
 
-pub(crate) fn parse_program_id(value: &str) -> Result<ProgramId, String> {
-    let bytes = parse_hex_32(value, "program id")?;
-    let mut program_id = [0_u32; 8];
-    for (word, chunk) in program_id.iter_mut().zip(bytes.chunks_exact(4)) {
-        let chunk: [u8; 4] = chunk
-            .try_into()
-            .map_err(|_| String::from("program id word has invalid length"))?;
-        *word = u32::from_le_bytes(chunk);
-    }
-    Ok(program_id)
+/// Parses a program's account id -- the id of its deployed `ProgramHeader` account.
+///
+/// The wire format is unchanged: 64 lowercase hex characters, the same 32 bytes
+/// callers already pass. Before LEZ v0.2.5 those bytes were reassembled into a
+/// `AccountId` (`[u32; 8]`, the ImageID); they are now an `AccountId` directly.
+/// `From<AccountId> for AccountId` expands the words little-endian, so a program
+/// deployed at the image-id bijection address has the same hex as before.
+pub(crate) fn parse_program_id(value: &str) -> Result<AccountId, String> {
+    Ok(AccountId::new(parse_hex_32(value, "program id")?))
 }
 
 #[cfg(test)]
-pub(crate) fn program_id_hex(program_id: ProgramId) -> String {
-    let bytes = program_id
-        .iter()
-        .flat_map(|word| word.to_le_bytes())
-        .collect::<Vec<_>>();
-    hex::encode(bytes)
+pub(crate) fn program_id_hex(program_id: AccountId) -> String {
+    account_id_hex(program_id)
 }
 
-pub(crate) fn program_id_base58(program_id: ProgramId) -> String {
-    AccountId::new(program_id_bytes(program_id)).to_string()
-}
-
-pub(crate) fn program_id_bytes(program_id: ProgramId) -> [u8; 32] {
-    let mut bytes = [0_u8; 32];
-    for (chunk, word) in bytes.chunks_exact_mut(4).zip(program_id) {
-        chunk.copy_from_slice(&word.to_le_bytes());
-    }
-    bytes
+pub(crate) fn program_id_base58(program_id: AccountId) -> String {
+    program_id.to_string()
 }
 
 pub(crate) fn parse_base58_id(value: &str, label: &str) -> Result<AccountId, String> {

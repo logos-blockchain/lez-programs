@@ -25,6 +25,15 @@
 // Public methods ARE the module's API; the Qt plugin glue is generated from
 // this header because metadata.json sets "interface": "universal". Keep the
 // header Qt-free — std types only.
+//
+// Fee payer: LEZ v0.2.5 charges public transactions, so every submitting method names
+// its payer — `request.feePayerId` for the request-map methods, the trailing
+// `fee_payer_hex` for the swaps. It must be a funded public account in the connected
+// wallet: one of the signers, or a separate account that co-signs the fee. It is never
+// inferred, because the signers may all be unfunded (fresh accounts, or no signer at
+// all for the permissionless ops). A missing payer, or one that takes part in the
+// transaction without signing, fails with `invalid_fee_payer` (an empty hash for the
+// swaps).
 class AmmModuleImpl : public LogosModuleContext {
 public:
     AmmModuleImpl() = default;
@@ -34,7 +43,7 @@ public:
     /// pool account. On success: `{ status:"ok", error:"", poolId, defAHex, defBHex,
     /// vaultAId, vaultBId, lpDefinitionId, reserveA, reserveB, liquiditySupply, feeBps }`
     /// — the A/B fields oriented to the caller's requested order (A is def_a_hex's).
-    /// Otherwise `{ status:"error", error:<code> }`: `no_program_bin` (AMM_PROGRAM_BIN
+    /// Otherwise `{ status:"error", error:<code> }`: `no_program_bin` (AMM_PROGRAM_ID
     /// unset/unreadable/bad), `amm_not_initialized` (config undecodable), `bad_config`
     /// (bad ids / internal decode failure), `same_token_pair`, or `no_pool` for the
     /// ordinary "no pool / no liquidity yet" state (still carries `poolId`).
@@ -42,15 +51,15 @@ public:
 
     /// Decodes the singleton AMM config account. On success: `{ status:"ok", error:"",
     /// configId, ammProgramId, authority, tokenProgramId, twapOracleProgramId }` (ids
-    /// base58). `{ status:"error", error:"config_missing" }` when AMM_PROGRAM_BIN is
+    /// base58). `{ status:"error", error:"config_missing" }` when AMM_PROGRAM_ID is
     /// unset/unreadable; `config_unavailable` when the config isn't on-chain yet; or
     /// `backend_error` when the backend FFI call fails.
     LogosMap configAccount();
 
     /// Sets the AMM program id every op derives from (base58 or hex; empty clears
-    /// it, reverting to `AMM_PROGRAM_BIN`). The app calls this to adopt the program
+    /// it, reverting to `AMM_PROGRAM_ID`). The app calls this to adopt the program
     /// id of the network it selected (from its configured registry) so no
-    /// `AMM_PROGRAM_BIN` is needed. Not selection logic — the module just adopts the
+    /// `AMM_PROGRAM_ID` is needed. Not selection logic — the module just adopts the
     /// caller's choice. Headless callers never touch it. Returns `{ status:"ok" }`.
     LogosMap setAmmProgramId(const LogosMap& request);
 
@@ -92,7 +101,7 @@ public:
     /// the shared on-chain formula. `amount_in` accepts a JSON integer or a
     /// decimal string (JSON floats rejected); `slippage_bps` is basis points.
     /// On failure: `{ status:"error", error:<code> }` — `no_pool` (no pool /
-    /// liquidity), `config_missing` (AMM_PROGRAM_BIN unset/unreadable),
+    /// liquidity), `config_missing` (AMM_PROGRAM_ID unset/invalid),
     /// `bad_amount`, `invalid_slippage` (`slippage_bps` out of range), or
     /// `backend_error`. Pool metadata (reserves, fee) comes from `resolvePool`,
     /// so it isn't echoed here.
@@ -108,7 +117,7 @@ public:
     /// string (JSON floats rejected); `slippage_bps` is basis points. On failure:
     /// `{ status:"error", error:<code> }` — `no_pool` (no pool / liquidity),
     /// `output_exceeds_liquidity` (amount_out ≥ reserve), `config_missing`
-    /// (AMM_PROGRAM_BIN unset/unreadable), `bad_amount`, `invalid_slippage`
+    /// (AMM_PROGRAM_ID unset/invalid), `bad_amount`, `invalid_slippage`
     /// (`slippage_bps` out of range), or `backend_error`.
     LogosMap swapExactOutQuote(const std::string& token_in_hex,
                        const std::string& token_out_hex,
@@ -124,28 +133,30 @@ public:
     /// '"1000000000000000000"'). Declared `nlohmann::json` so the generated
     /// dispatch hands us the raw value; JSON floats are rejected rather than
     /// submit a silently-rounded amount. Returns the tx hash, or an empty string
-    /// on failure (no pool, unreadable AMM_PROGRAM_BIN, bad inputs, failed tx).
+    /// on failure (no pool, unresolved AMM_PROGRAM_ID, bad inputs, failed tx).
     std::string swapExactInput(const std::string& def_a_hex,
                                const std::string& def_b_hex,
                                const std::string& user_input_holding_hex,
                                const std::string& user_output_holding_hex,
                                const nlohmann::json& amount_in,
                                const nlohmann::json& min_out,
-                               const nlohmann::json& deadline);
+                               const nlohmann::json& deadline,
+                               const std::string& fee_payer_hex);
 
     /// Submits an on-chain SwapExactOutput transaction against the pool for
     /// (def_a_hex = token in, def_b_hex = token out). amount_out / max_in are
     /// u128 base-unit amounts; deadline is a u64 unix-ms timestamp. Same argument
     /// conventions as swapExactInput (JSON integer or decimal string; floats
     /// rejected). Returns the tx hash, or an empty string on failure (no pool,
-    /// unreadable AMM_PROGRAM_BIN, bad inputs, failed tx).
+    /// unresolved AMM_PROGRAM_ID, bad inputs, failed tx).
     std::string swapExactOutput(const std::string& def_a_hex,
                                 const std::string& def_b_hex,
                                 const std::string& user_input_holding_hex,
                                 const std::string& user_output_holding_hex,
                                 const nlohmann::json& amount_out,
                                 const nlohmann::json& max_in,
-                                const nlohmann::json& deadline);
+                                const nlohmann::json& deadline,
+                                const std::string& fee_payer_hex);
 
     /// Prices creating a pool for (tokenAId, tokenBId) from the two deposit amounts.
     /// A pure preview — no chain reads, and no fee needed (the fee is not part of the
@@ -246,7 +257,7 @@ public:
     /// (base58), definitionIdHex (hex), balanceRaw }]` — one row per holding
     /// account, every token, including zero-balance holdings. Narrowing to a
     /// specific token is the selector's job. `wallet_open` gates the wallet read;
-    /// an empty list on a closed wallet, unset AMM_PROGRAM_BIN, or a decode failure.
+    /// an empty list on a closed wallet, unset AMM_PROGRAM_ID, or a decode failure.
     /// (Thin stopgap — token-holding listing is wallet/token data; see
     /// token_holdings.rs.)
     LogosList tokenHoldings(bool wallet_open);
@@ -267,14 +278,18 @@ public:
     /// row has the same fields — a token the wallet doesn't hold gets `holdingId:""`
     /// and `balance:"0"` — held tokens first. A requested id whose definition is
     /// unreadable / non-fungible is omitted (the app treats a missing row as
-    /// unresolved). Empty list if AMM_PROGRAM_BIN is unset or the config read fails.
+    /// unresolved). Empty list if AMM_PROGRAM_ID is unset or the config read fails.
     /// (`tokenIds` is wrapped in a map, not passed as a bare list, because the
     /// universal-module glue only supports map/scalar inputs.)
     LogosList resolveTokens(const LogosMap& request, bool wallet_open);
 
 private:
-    // 64-char lowercase-hex AMM program id via the amm_ffi `program_id` op
-    // over the AMM_PROGRAM_BIN bytes (empty if unset/unreadable/bad).
+    // 64-char lowercase-hex account id of the DEPLOYED AMM program -- the account its
+    // `program_loader` header lives at, which since LEZ v0.2.5 *is* the program's
+    // address. An app-selected id (setAmmProgramId, i.e. the registry) takes
+    // precedence; AMM_PROGRAM_ID is the env fallback. Empty when neither is set, or
+    // when the env value is not a valid account id. Deliberately NOT derived from
+    // AMM_PROGRAM_BIN any more: that yields an ImageID, which is no longer an address.
     std::string ammProgramId();
 
     // 64-char lowercase-hex account id of the active instance's config PDA. An
@@ -282,12 +297,15 @@ private:
     // env fallback for local / headless use. Empty when neither is set.
     std::string ammConfigId();
 
-    // Reads AMM_PROGRAM_BIN into a byte vector (empty on unset/unreadable/empty).
-    std::vector<uint8_t> loadAmmElf();
-
     // Normalizes an account id given as 64-char hex or base58 to lowercase hex
     // (base58 via the wallet module). Empty string if it is neither.
     std::string normalizeAccountId(const std::string& id);
+
+    // The normalized fee payer for a planned transaction, or empty when it is missing
+    // or names a non-signing participant (see the class comment).
+    std::string feePayerFor(const std::string& fee_payer_id,
+                            const std::vector<std::string>& accounts,
+                            const std::vector<bool>& signers);
 
     // Reads the active instance's config account (at ammConfigId()) and returns the
     // account-read shape the amm_ffi ops embed. Null json when no config id is
@@ -309,7 +327,7 @@ private:
     LogosMap oracleSetupSubmit(const LogosMap& request, bool observations);
 
     // The AMM program id the app selected (via setAmmProgramId). Empty ⇒
-    // ammProgramId() falls back to deriving it from AMM_PROGRAM_BIN.
+    // ammProgramId() falls back to the AMM_PROGRAM_ID env var.
     std::string m_activeProgramId;
 
     // The config-PDA account id the app selected (via setConfigId), 64-char

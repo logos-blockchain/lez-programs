@@ -5,10 +5,7 @@ use amm_core::{
     PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use lee_core::{
-    account::{Account, AccountId, Data, Nonce},
-    program::ProgramId,
-};
+use lee_core::account::{Account, AccountId, Data, Nonce};
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use token_core::{TokenDefinition, TokenHolding};
@@ -31,15 +28,15 @@ use super::{
     TransferOwnershipPlanRequest, WithdrawProtocolFeesPlanRequest,
 };
 use crate::{
-    account::{account_id_hex, account_read, decode_account, program_id_base58, program_id_bytes},
+    account::{account_id_hex, account_read, decode_account, program_id_base58},
     AccountRead,
 };
 
-const AMM_PROGRAM: ProgramId = [11; 8];
-const TOKEN_PROGRAM: ProgramId = [22; 8];
-const TWAP_PROGRAM: ProgramId = [33; 8];
+const AMM_PROGRAM: AccountId = AccountId::new([11; 32]);
+const TOKEN_PROGRAM: AccountId = AccountId::new([22; 32]);
+const TWAP_PROGRAM: AccountId = AccountId::new([33; 32]);
 
-fn account(owner: ProgramId, data: Data) -> Account {
+fn account(owner: AccountId, data: Data) -> Account {
     Account {
         program_owner: owner,
         balance: 0,
@@ -115,7 +112,7 @@ fn ids() -> PairIds {
 }
 
 fn amm_program_id() -> String {
-    hex::encode(program_id_bytes(AMM_PROGRAM))
+    account_id_hex(AMM_PROGRAM)
 }
 
 #[test]
@@ -280,15 +277,15 @@ fn transfer_ownership_plan_targets_config_and_current_admin() {
     assert_eq!(plan["signingRequirements"], json!([false, true]));
 
     // The instruction decodes back to UpdateConfig { new_authority }.
-    let words: Vec<u32> = plan["instruction"]
+    let bytes: Vec<u8> = plan["instruction"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|word| word.as_u64().unwrap() as u32)
+        .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
     let Instruction::UpdateConfig {
         new_authority: decoded,
-    } = risc0_zkvm::serde::from_slice(&words).unwrap()
+    } = borsh::from_slice(&bytes).unwrap()
     else {
         panic!("expected UpdateConfig");
     };
@@ -327,15 +324,13 @@ fn withdraw_protocol_fees_plan_targets_protocol_pda_destination_and_admin() {
     );
 
     // The instruction decodes back to WithdrawProtocolFees { amount }.
-    let words: Vec<u32> = plan["instruction"]
+    let bytes: Vec<u8> = plan["instruction"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|word| word.as_u64().unwrap() as u32)
+        .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
-    let Instruction::WithdrawProtocolFees { amount } =
-        risc0_zkvm::serde::from_slice(&words).unwrap()
-    else {
+    let Instruction::WithdrawProtocolFees { amount } = borsh::from_slice(&bytes).unwrap() else {
         panic!("expected WithdrawProtocolFees");
     };
     assert_eq!(amount, 500);
@@ -374,14 +369,14 @@ fn create_price_observations_plan_targets_the_window_feed_accounts() {
         json!([false, false, false, false, false])
     );
 
-    let words: Vec<u32> = plan["instruction"]
+    let bytes: Vec<u8> = plan["instruction"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|word| word.as_u64().unwrap() as u32)
+        .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
     let Instruction::CreatePriceObservations { window_duration } =
-        risc0_zkvm::serde::from_slice(&words).unwrap()
+        borsh::from_slice(&bytes).unwrap()
     else {
         panic!("expected CreatePriceObservations");
     };
@@ -420,14 +415,14 @@ fn create_oracle_price_account_plan_targets_the_window_price_account() {
         json!([false, false, false, false])
     );
 
-    let words: Vec<u32> = plan["instruction"]
+    let bytes: Vec<u8> = plan["instruction"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|word| word.as_u64().unwrap() as u32)
+        .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
     let Instruction::CreateOraclePriceAccount { window_duration } =
-        risc0_zkvm::serde::from_slice(&words).unwrap()
+        borsh::from_slice(&bytes).unwrap()
     else {
         panic!("expected CreateOraclePriceAccount");
     };

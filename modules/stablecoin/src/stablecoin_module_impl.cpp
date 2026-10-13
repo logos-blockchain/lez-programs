@@ -157,23 +157,29 @@ nlohmann::json StablecoinModuleImpl::stablecoinProgramInfo(std::string& error) {
         return json();
     }
 
+    // Since LEZ v0.2.5 only STABLECOIN_PROGRAM_ID names the program (its deployed
+    // header account); a binary yields an ImageID, which is not an address. The FFI
+    // rejects a binary without a program id as config_missing.
     json request = json::object();
+    std::string program_id_hex;
     if (program_id_configured) {
-        const std::string normalized = normalizeAccountId(configured);
-        if (normalized.empty()) {
+        program_id_hex = normalizeAccountId(configured);
+        if (program_id_hex.empty()) {
             error = "invalid_program_id";
             return json();
         }
-        request["stablecoinProgramId"] = normalized;
+        request["stablecoinProgramId"] = program_id_hex;
     }
 
-    if (binary_configured) {
+    // An optional binary is checked against the header deployed at the program id.
+    if (binary_configured && program_id_configured) {
         const std::vector<std::uint8_t> binary = loadStablecoinBinary();
         if (binary.empty()) {
             error = "invalid_program_binary";
             return json();
         }
         request["elf"] = bytesToHex(binary.data(), binary.size());
+        request["programHeader"] = readPublicAccount(program_id_hex);
     }
 
     const FfiResult result = callStablecoin(stablecoin_program_info, request);
@@ -305,7 +311,8 @@ LogosMap StablecoinModuleImpl::stabilityFeeAccumulator() {
     });
 }
 
-LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
+LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan,
+                                          const std::string& fee_payer) {
     const auto accounts_field = plan.find("accountIds");
     const auto signers_field = plan.find("signingRequirements");
     const auto instruction_field = plan.find("instruction");
@@ -331,6 +338,12 @@ LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
         || instruction.empty()) {
         return publicError("backend_error");
     }
+    // The wallet rejects a payer that takes part in the transaction without signing.
+    for (std::size_t i = 0; i < account_ids.size(); ++i) {
+        if (account_ids[i] == fee_payer && !signing_requirements[i]) {
+            return publicError("invalid_fee_payer");
+        }
+    }
 
     logos::CallError call_error;
     const std::string raw = modules().lez_core.send_generic_public_transaction(
@@ -338,6 +351,7 @@ LogosMap StablecoinModuleImpl::submitPlan(const nlohmann::json& plan) {
         signing_requirements,
         instruction,
         program_id,
+        fee_payer,
         &call_error);
     if (!call_error.ok()) {
         STABLECOIN_TRACE(
@@ -361,6 +375,7 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
                  "collateralDefinitionId",
                  "marketPriceOracleId",
                  "stablecoinName",
+                 "feePayerId",
              }) {
             if (!hasString(request, key)) return publicError("bad_request");
         }
@@ -390,6 +405,9 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
         if (admin.empty() || freeze_authority.empty() || collateral.empty() || oracle.empty()) {
             return publicError("invalid_account_id");
         }
+        // LEZ v0.2.5 charges public transactions; the payer is always explicit.
+        const std::string fee_payer = normalizeAccountId(jsonString(request, "feePayerId"));
+        if (fee_payer.empty()) return publicError("invalid_fee_payer");
 
         for (const char* key : {
                  "protocolParametersIdHex",
@@ -437,6 +455,6 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
         if (jsonString(planned.value, "programId") != jsonString(info, "programIdHex")) {
             return publicError("backend_error");
         }
-        return submitPlan(planned.value);
+        return submitPlan(planned.value, fee_payer);
     });
 }

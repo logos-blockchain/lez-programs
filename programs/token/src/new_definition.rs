@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, Claim},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 use token_core::{
     NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding, TokenMetadata,
@@ -26,7 +26,7 @@ pub fn new_fungible_definition(
     name: String,
     total_supply: u128,
     mint_authority: Option<AccountId>,
-) -> Vec<AccountPostState> {
+) -> Vec<AccountStateDiff> {
     assert_eq!(
         definition_target_account.account,
         Account::default(),
@@ -58,15 +58,20 @@ pub fn new_fungible_definition(
         balance: total_supply,
     };
 
-    let mut definition_target_account_post = definition_target_account.account;
-    definition_target_account_post.data = Data::from(&token_definition);
-
-    let mut holding_target_account_post = holding_target_account.account;
-    holding_target_account_post.data = Data::from(&token_holding);
-
+    // Both accounts are claimed by these writes. The `is_authorized` asserts above are
+    // now the sole guard — v0.2.5 acquires ownership on a data write and no longer checks
+    // the claim's authorization itself.
     vec![
-        AccountPostState::new_claimed(definition_target_account_post, Claim::Authorized),
-        AccountPostState::new_claimed(holding_target_account_post, Claim::Authorized),
+        AccountStateDiff::new(
+            definition_target_account,
+            BalanceDiff::Add(0),
+            Data::from(&token_definition),
+        ),
+        AccountStateDiff::new(
+            holding_target_account,
+            BalanceDiff::Add(0),
+            Data::from(&token_holding),
+        ),
     ]
 }
 
@@ -76,7 +81,7 @@ pub fn new_definition_with_metadata(
     metadata_target_account: AccountWithMetadata,
     new_definition: NewTokenDefinition,
     metadata: NewTokenMetadata,
-) -> Vec<AccountPostState> {
+) -> Vec<AccountStateDiff> {
     assert_eq!(
         definition_target_account.account,
         Account::default(),
@@ -148,18 +153,23 @@ pub fn new_definition_with_metadata(
         primary_sale_date: 0u64,
     };
 
-    let mut definition_target_account_post = definition_target_account.account.clone();
-    definition_target_account_post.data = Data::from(&token_definition);
-
-    let mut holding_target_account_post = holding_target_account.account.clone();
-    holding_target_account_post.data = Data::from(&token_holding);
-
-    let mut metadata_target_account_post = metadata_target_account.account.clone();
-    metadata_target_account_post.data = Data::from(&token_metadata);
-
+    // All three accounts are claimed by these writes; the `is_authorized` asserts above
+    // are the sole guard, as v0.2.5 no longer checks a claim's authorization.
     vec![
-        AccountPostState::new_claimed(definition_target_account_post, Claim::Authorized),
-        AccountPostState::new_claimed(holding_target_account_post, Claim::Authorized),
-        AccountPostState::new_claimed(metadata_target_account_post, Claim::Authorized),
+        AccountStateDiff::new(
+            definition_target_account,
+            BalanceDiff::Add(0),
+            Data::from(&token_definition),
+        ),
+        AccountStateDiff::new(
+            holding_target_account,
+            BalanceDiff::Add(0),
+            Data::from(&token_holding),
+        ),
+        AccountStateDiff::new(
+            metadata_target_account,
+            BalanceDiff::Add(0),
+            Data::from(&token_metadata),
+        ),
     ]
 }

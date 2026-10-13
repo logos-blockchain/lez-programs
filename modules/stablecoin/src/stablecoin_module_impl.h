@@ -16,8 +16,10 @@ public:
     ~StablecoinModuleImpl() = default;
 
     /// Returns stablecoin program IDs and all derived singleton account IDs.
-    /// Configure STABLECOIN_PROGRAM_ID or STABLECOIN_PROGRAM_BIN. When both are
-    /// configured, they must identify the same program.
+    /// STABLECOIN_PROGRAM_ID names the deployed program (its header account) and
+    /// is required. An optional STABLECOIN_PROGRAM_BIN must be the bytecode
+    /// deployed there; its ImageID is reported as `imageIdHex` (empty without a
+    /// binary) and is never used as an address.
     LogosMap programInfo();
 
     /// Reads and exactly decodes the singleton ProtocolParameters account.
@@ -35,7 +37,8 @@ public:
     /// `initialMinimumCollateralizationRatio`,
     /// `minimumMillisecondsBetweenRateUpdates`,
     /// `maximumOraclePriceAgeMilliseconds`, `initialRedemptionPrice`, and
-    /// `stablecoinName`. Integer values accept exact decimal strings or JSON
+    /// `stablecoinName`, plus `feePayerId`: a funded public wallet account that
+    /// pays the transaction fee (the admin or a separate account). Integer values accept exact decimal strings or JSON
     /// integers; JSON floats are rejected. Only `adminId` signs.
     LogosMap initializeProgram(const LogosMap& request);
 
@@ -45,7 +48,7 @@ private:
     std::string normalizeAccountId(const std::string& id);
     nlohmann::json readPublicAccount(const std::string& account_id);
     bool requireUninitialized(const std::string& account_id, std::string& error);
-    LogosMap submitPlan(const nlohmann::json& plan);
+    LogosMap submitPlan(const nlohmann::json& plan, const std::string& fee_payer);
 
     bool programInfoResolved_ = false;
     std::string programInfoJson_;

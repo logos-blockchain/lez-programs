@@ -16,13 +16,13 @@ use lee::{
         circuit::ProgramWithDependencies, Message, PrivacyPreservingTransaction, WitnessSet,
     },
     program::Program,
-    program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     encryption::ViewingPublicKey,
-    Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey, NullifierSecretKey,
+    AuthorizationSecretKey, Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey,
+    NullifierSecretKey,
 };
 use token_core::{TokenDefinition, TokenHolding};
 use token_mint_authority_core::{
@@ -51,12 +51,18 @@ impl Keys {
 }
 
 impl Ids {
-    fn token_program() -> lee_core::program::ProgramId {
-        token_methods::TOKEN_ID
+    /// The program's account id: since v0.2.5 a program is addressed by its deployed
+    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
+    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    fn token_program() -> AccountId {
+        AccountId::from(token_methods::TOKEN_ID)
     }
 
-    fn token_mint_authority_program() -> lee_core::program::ProgramId {
-        token_mint_authority_methods::TOKEN_MINT_AUTHORITY_ID
+    /// The program's account id: since v0.2.5 a program is addressed by its deployed
+    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
+    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    fn token_mint_authority_program() -> AccountId {
+        AccountId::from(token_mint_authority_methods::TOKEN_MINT_AUTHORITY_ID)
     }
 
     fn recipient() -> AccountId {
@@ -122,7 +128,7 @@ fn user_holding_init() -> Account {
 /// bumps across transactions.
 fn recipient_init() -> Account {
     Account {
-        program_owner: [7u32; 8],
+        program_owner: AccountId::new([7u8; 32]),
         ..Account::default()
     }
 }
@@ -136,24 +142,28 @@ fn seed_clock(state: &mut V03State, timestamp: u64) {
     }
     .to_bytes();
     let clock_account = Account {
-        program_owner: [8u32; 8],
+        program_owner: AccountId::new([8u8; 32]),
         data: Data::try_from(data).expect("clock account data fits"),
         ..Account::default()
     };
     state.force_insert_account(CLOCK_01_PROGRAM_ACCOUNT_ID, clock_account);
 }
 
+// v0.2.5 deleted `ProgramDeploymentTransaction`; deployment is now the `program_loader`
+// pseudo-program's WriteSegment/CreateHeader flow. `with_programs` seeds each program in the
+// shape that flow produces — a loader-owned header plus its segment — without making every
+// test drive a deployment. The header lands at `AccountId::from(program.id())`, so a program's
+// account id stays derivable from its ELF here.
 fn deploy_programs(state: &mut V03State) {
-    for elf in [
-        token_methods::TOKEN_ELF.to_vec(),
-        token_mint_authority_methods::TOKEN_MINT_AUTHORITY_ELF.to_vec(),
-    ] {
-        state
-            .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
-                program_deployment_transaction::Message::new(elf),
-            ))
-            .expect("program deployment must succeed");
-    }
+    *state = std::mem::take(state).with_programs([
+        Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF"),
+        Program::new(
+            token_mint_authority_methods::TOKEN_MINT_AUTHORITY_ELF
+                .to_vec()
+                .into(),
+        )
+        .expect("valid token-mint-authority ELF"),
+    ]);
 }
 
 fn state_for_faucet_tests() -> V03State {
@@ -303,8 +313,14 @@ fn faucet_rejects_a_token_whose_authority_is_not_the_mint_authority_pda() {
 struct PrivateKeys;
 
 impl PrivateKeys {
+    /// The authorization key is the root credential under v0.2.5: the circuit takes an
+    /// `ask` and derives the `nsk` from it, so the fixture roots here.
+    fn holding_ask() -> AuthorizationSecretKey {
+        AuthorizationSecretKey([61; 32])
+    }
+
     fn holding_nsk() -> NullifierSecretKey {
-        [61; 32]
+        NullifierSecretKey::from(&Self::holding_ask())
     }
 
     fn holding_npk() -> NullifierPublicKey {
@@ -319,8 +335,14 @@ impl PrivateKeys {
         AccountId::for_regular_private_account(&Self::holding_npk(), &Self::holding_vpk(), 0)
     }
 
+    /// The authorization key is the root credential under v0.2.5: the circuit takes an
+    /// `ask` and derives the `nsk` from it, so the fixture roots here.
+    fn recipient_ask() -> AuthorizationSecretKey {
+        AuthorizationSecretKey([62; 32])
+    }
+
     fn recipient_nsk() -> NullifierSecretKey {
-        [62; 32]
+        NullifierSecretKey::from(&Self::recipient_ask())
     }
 
     fn recipient_npk() -> NullifierPublicKey {
@@ -344,6 +366,7 @@ fn faucet_with_deps() -> ProgramWithDependencies {
                 .into(),
         )
         .expect("valid token-mint-authority ELF"),
+        Ids::token_mint_authority_program(),
         HashMap::from([(
             Ids::token_program(),
             Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF"),
@@ -368,7 +391,8 @@ fn mint_allowance_for(recipient: AccountId) -> AccountId {
 fn faucet_mint_into_private_user_holding() {
     let mut state = state_for_faucet_tests();
 
-    let holding_nsk = PrivateKeys::holding_nsk();
+    let holding_ask = PrivateKeys::holding_ask();
+    let holding_nsk = NullifierSecretKey::from(&holding_ask);
     let holding_vpk = PrivateKeys::holding_vpk();
     let holding_id = PrivateKeys::holding_id();
     let holding_account = Account {
@@ -416,7 +440,7 @@ fn faucet_mint_into_private_user_holding() {
         vec![
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(holding_nsk, &holding_vpk, membership_proof),
+            private_authorized_update_identity(holding_ask, &holding_vpk, membership_proof),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
@@ -500,7 +524,7 @@ fn faucet_mint_with_private_recipient() {
         Program::serialize_instruction(token_mint_authority_core::Instruction::FaucetMint).unwrap(),
         vec![
             private_authorized_init_identity(
-                PrivateKeys::recipient_nsk(),
+                PrivateKeys::recipient_ask(),
                 &PrivateKeys::recipient_vpk(),
                 state.commitment_root(),
             ),
@@ -555,7 +579,7 @@ fn faucet_mint_with_group_owned_recipient() {
     let mut state = state_for_faucet_tests();
 
     let alice = GroupOwner::new([41_u8; 32]);
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
     let recipient_id = alice.id;
     let allowance_id = mint_allowance_for(recipient_id);
 
@@ -590,7 +614,7 @@ fn faucet_mint_with_group_owned_recipient() {
         ],
         Program::serialize_instruction(token_mint_authority_core::Instruction::FaucetMint).unwrap(),
         vec![
-            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,

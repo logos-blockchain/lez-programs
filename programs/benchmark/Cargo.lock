@@ -534,6 +534,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 name = "benchmark"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "clock_core",
  "lee",
  "lee_core",
@@ -688,7 +689,7 @@ dependencies = [
 [[package]]
 name = "build_utils"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2#d8596eb734bf9c9ce801afb92df06098a2eb098a"
 dependencies = [
  "anyhow",
  "risc0-binfmt",
@@ -843,7 +844,7 @@ dependencies = [
 [[package]]
 name = "clock_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2#d8596eb734bf9c9ce801afb92df06098a2eb098a"
 dependencies = [
  "borsh",
  "lee_core",
@@ -2437,7 +2438,7 @@ dependencies = [
 [[package]]
 name = "lee"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2#d8596eb734bf9c9ce801afb92df06098a2eb098a"
 dependencies = [
  "anyhow",
  "borsh",
@@ -2446,10 +2447,10 @@ dependencies = [
  "k256",
  "lee_core",
  "log",
+ "program_loader_core",
  "rand 0.8.6",
  "risc0-binfmt",
  "risc0-zkvm",
- "serde",
  "serde_with",
  "sha2",
  "thiserror 2.0.18",
@@ -2458,11 +2459,10 @@ dependencies = [
 [[package]]
 name = "lee_core"
 version = "0.1.0"
-source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.0#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2#d8596eb734bf9c9ce801afb92df06098a2eb098a"
 dependencies = [
  "base58",
  "borsh",
- "bytemuck",
  "bytesize",
  "chacha20",
  "ml-kem",
@@ -3127,6 +3127,16 @@ dependencies = [
  "quote",
  "syn 2.0.118",
  "version_check",
+]
+
+[[package]]
+name = "program_loader_core"
+version = "0.1.0"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2#d8596eb734bf9c9ce801afb92df06098a2eb098a"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-binfmt",
 ]
 
 [[package]]
@@ -4357,8 +4367,8 @@ dependencies = [
 
 [[package]]
 name = "spel-framework-core"
-version = "0.6.0"
-source = "git+https://github.com/logos-co/spel.git?tag=v0.6.0#0cb7e0980535af619482cf1c823f4d394b3ebd61"
+version = "0.7.0"
+source = "git+https://github.com/logos-co/spel.git?rev=c6f73ce21e4805f8430f03afdbdedf0b7e479a5e#c6f73ce21e4805f8430f03afdbdedf0b7e479a5e"
 dependencies = [
  "base58",
  "borsh",
@@ -4374,8 +4384,8 @@ dependencies = [
 
 [[package]]
 name = "spel-framework-macros"
-version = "0.6.0"
-source = "git+https://github.com/logos-co/spel.git?tag=v0.6.0#0cb7e0980535af619482cf1c823f4d394b3ebd61"
+version = "0.7.0"
+source = "git+https://github.com/logos-co/spel.git?rev=c6f73ce21e4805f8430f03afdbdedf0b7e479a5e#c6f73ce21e4805f8430f03afdbdedf0b7e479a5e"
 dependencies = [
  "proc-macro2",
  "quote",

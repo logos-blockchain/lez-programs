@@ -1,7 +1,7 @@
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, Data},
-    program::{AccountPostState, ProgramId},
+    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::AccountStateDiff,
 };
 use twap_oracle_core::{
     compute_current_tick_account_pda, compute_price_observations_pda, CurrentTickAccount,
@@ -31,6 +31,7 @@ use twap_oracle_core::{
 ///   `compute_current_tick_account_pda(oracle_program_id, price_source_id)`.
 /// - `price_observations.account_id` does not match
 ///   `compute_price_observations_pda(oracle_program_id, price_source_id, window_duration)`.
+/// - `current_tick_account` is not owned by `oracle_program_id`.
 /// - `clock.account_id` is not [`CLOCK_01_PROGRAM_ACCOUNT_ID`].
 /// - Either account is not a valid initialised account of its respective type.
 pub fn record_tick(
@@ -39,8 +40,8 @@ pub fn record_tick(
     clock: AccountWithMetadata,
     price_source_id: AccountId,
     window_duration: u64,
-    oracle_program_id: ProgramId,
-) -> Vec<AccountPostState> {
+    oracle_program_id: AccountId,
+) -> Vec<AccountStateDiff> {
     assert_eq!(
         current_tick_account.account_id,
         compute_current_tick_account_pda(oracle_program_id, price_source_id),
@@ -50,6 +51,13 @@ pub fn record_tick(
         price_observations.account_id,
         compute_price_observations_pda(oracle_program_id, price_source_id, window_duration),
         "RecordTick: price observations account ID does not match expected PDA"
+    );
+    // Any program can claim an unused address by writing to it, so the PDA address alone does not
+    // prove the oracle created this read-only input. (The observations account is written here,
+    // which the runtime only allows for the oracle's own accounts.)
+    assert_eq!(
+        current_tick_account.account.program_owner, oracle_program_id,
+        "RecordTick: current tick account must be owned by the oracle program"
     );
     assert_eq!(
         clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
@@ -98,9 +106,9 @@ pub fn record_tick(
 
     if elapsed_ms < min_interval {
         return vec![
-            AccountPostState::new(price_observations.account.clone()),
-            AccountPostState::new(current_tick_account.account.clone()),
-            AccountPostState::new(clock.account.clone()),
+            AccountStateDiff::unchanged(price_observations),
+            AccountStateDiff::unchanged(current_tick_account),
+            AccountStateDiff::unchanged(clock),
         ];
     }
 
@@ -141,13 +149,14 @@ pub fn record_tick(
         .expect("total_entries does not overflow");
     observations.last_recorded_tick = current_tick;
 
-    let mut price_observations_post = price_observations.account.clone();
-    price_observations_post.data = Data::from(&observations);
-
     vec![
-        AccountPostState::new(price_observations_post),
-        AccountPostState::new(current_tick_account.account.clone()),
-        AccountPostState::new(clock.account.clone()),
+        AccountStateDiff::new(
+            price_observations,
+            BalanceDiff::Add(0),
+            Data::from(&observations),
+        ),
+        AccountStateDiff::unchanged(current_tick_account),
+        AccountStateDiff::unchanged(clock),
     ]
 }
 
@@ -159,9 +168,10 @@ mod tests {
     };
 
     use super::*;
+    use crate::StateDiffExt;
 
-    const ORACLE_PROGRAM_ID: ProgramId = [77u32; 8];
-    const CLOCK_PROGRAM_ID: ProgramId = [88u32; 8];
+    const ORACLE_PROGRAM_ID: AccountId = AccountId::new([77u8; 32]);
+    const CLOCK_PROGRAM_ID: AccountId = AccountId::new([88u8; 32]);
     const WINDOW_24H: u64 = 24 * 60 * 60 * 1_000;
 
     fn price_source_id() -> AccountId {
@@ -288,7 +298,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = 100_i64
             .checked_mul(elapsed_ms_i64)
@@ -310,7 +320,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = 500_000_i64
             .checked_add(
@@ -336,7 +346,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = (-100_i64)
             .checked_mul(elapsed_ms_i64)
@@ -357,7 +367,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.entries[1].timestamp, now);
     }
@@ -372,7 +382,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.write_index, 2);
     }
@@ -391,7 +401,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.write_index, 0);
     }
@@ -406,7 +416,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.total_entries, 2);
     }
@@ -425,7 +435,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.last_recorded_tick, current_tick);
     }
@@ -442,8 +452,8 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        assert_eq!(*post_states[1].account(), tick_account.account);
-        assert_eq!(*post_states[2].account(), clock.account);
+        assert_eq!(post_states[1], AccountStateDiff::unchanged(tick_account));
+        assert_eq!(post_states[2], AccountStateDiff::unchanged(clock));
     }
 
     // ── write_index = 0 path ──────────────────────────────────────────────────
@@ -463,7 +473,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = 100_i64
             .checked_mul(elapsed_ms_i64)
@@ -486,7 +496,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.write_index, 1);
         assert_eq!(obs.total_entries, 1);
@@ -505,7 +515,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.last_recorded_tick, 500);
     }
@@ -529,7 +539,7 @@ mod tests {
             tiny_window,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.write_index, 1, "guard must fire: no entry written");
         assert_eq!(
@@ -548,7 +558,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         assert_eq!(obs.write_index, 2);
         assert_eq!(obs.total_entries, 2);
@@ -572,7 +582,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = i64::from(MAX_TICK_DELTA)
             .checked_mul(elapsed_ms_i64)
@@ -597,7 +607,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let neg_max = MAX_TICK_DELTA
             .checked_neg()
@@ -621,7 +631,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = i64::from(MAX_TICK_DELTA)
             .checked_mul(elapsed_ms_i64)
@@ -643,7 +653,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = 100_i64
             .checked_mul(elapsed_ms_i64)
@@ -669,7 +679,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let clamped_tick = baseline
             .checked_add(MAX_TICK_DELTA)
@@ -693,7 +703,7 @@ mod tests {
             WINDOW_24H,
             ORACLE_PROGRAM_ID,
         );
-        let obs = PriceObservations::try_from(&post_states[0].account().data)
+        let obs = PriceObservations::try_from(post_states[0].post_data())
             .expect("valid PriceObservations");
         let expected = 100_i64
             .checked_mul(elapsed_ms_i64)
@@ -804,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "current tick account must be initialized")]
+    #[should_panic(expected = "current tick account must be owned by the oracle program")]
     fn uninitialized_current_tick_account_panics() {
         let uninit = AccountWithMetadata {
             account: Account::default(),
@@ -836,6 +846,21 @@ mod tests {
         record_tick(
             uninit,
             make_current_tick_account(0, 0),
+            clock_account_with_timestamp(min_interval()),
+            price_source_id(),
+            WINDOW_24H,
+            ORACLE_PROGRAM_ID,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "current tick account must be owned by the oracle program")]
+    fn foreign_owned_current_tick_account_panics() {
+        let mut foreign = make_current_tick_account(0, 0);
+        foreign.account.program_owner = AccountId::new([42u8; 32]);
+        record_tick(
+            make_price_observations(1, 0, 0, 0),
+            foreign,
             clock_account_with_timestamp(min_interval()),
             price_source_id(),
             WINDOW_24H,

@@ -5,59 +5,81 @@ use key_protocol::key_management::{
     secret_holders::SecretSpendingKey,
 };
 use lee_core::{
-    account::AccountId, encryption::ViewingPublicKey, CommitmentSetDigest, InputAccountIdentity,
-    MembershipProof, NullifierPublicKey, NullifierSecretKey,
+    account::AccountId, encryption::ViewingPublicKey, AuthorizationSecretKey, CommitmentSetDigest,
+    InputAccountIdentity, MembershipProof, NullifierPublicKey, NullifierSecretKey,
+    NullifierWitness, PrivateWitness, WitnessKind,
 };
 
-/// Builds a `PrivateForeignInit` identity (formerly `PrivateUnauthorized`): a third party
-/// credits a fresh private account it does not control, using only the owner's public key
-/// material (`npk`/`vpk`), no `nsk`. Since logos-execution-zone PR #621, foreign init pairs
-/// with `is_authorized = true` on the fresh pre-state.
+/// Builds a foreign-init identity: a third party credits a fresh private account it does
+/// not control, using only the owner's public key material (`npk`/`vpk`), no credential.
+///
+/// LEZ v0.2.5 collapsed the three `InputAccountIdentity::Private*` variants into a single
+/// `Private(PrivateWitness)` carrying a `kind` and a `nullifier`; this shape is the former
+/// `PrivateForeignInit`. The circuit now asserts `pre_state.is_authorized == ask.is_some()`,
+/// so a pre-state paired with this identity must carry `is_authorized = false` — the
+/// opposite of what logos-execution-zone PR #621 required under v0.2.4.
 pub fn private_foreign_init_identity(
     npk: NullifierPublicKey,
     vpk: &ViewingPublicKey,
     commitment_root: CommitmentSetDigest,
 ) -> InputAccountIdentity {
-    InputAccountIdentity::PrivateForeignInit {
+    InputAccountIdentity::Private(PrivateWitness {
         vpk: vpk.clone(),
         random_seed: [0; 32],
-        npk,
         identifier: 0,
-        commitment_root,
-    }
+        kind: WitnessKind::Regular { ask: None },
+        nullifier: NullifierWitness::Init {
+            npk,
+            commitment_root,
+        },
+    })
 }
 
-/// Builds a `PrivateAuthorizedInit` identity: the owner self-initializes a fresh private
-/// account by supplying its own `nsk` directly (`is_authorized` must be `true`).
+/// Builds an authorized-init identity: the owner self-initializes a fresh private account by
+/// supplying its own authorization key (`is_authorized` must be `true`).
+///
+/// Takes an `ask` rather than v0.2.4's `nsk`: the credential the circuit checks is the
+/// authorization key, and it derives the `npk` from it to bind the account id.
 pub fn private_authorized_init_identity(
-    nsk: NullifierSecretKey,
+    ask: AuthorizationSecretKey,
     vpk: &ViewingPublicKey,
     commitment_root: CommitmentSetDigest,
 ) -> InputAccountIdentity {
-    InputAccountIdentity::PrivateAuthorizedInit {
+    let npk = NullifierPublicKey::from(&NullifierSecretKey::from(&ask));
+    InputAccountIdentity::Private(PrivateWitness {
         vpk: vpk.clone(),
         random_seed: [0; 32],
-        nsk,
         identifier: 0,
-        commitment_root,
-    }
+        kind: WitnessKind::Regular { ask: Some(ask) },
+        nullifier: NullifierWitness::Init {
+            npk,
+            commitment_root,
+        },
+    })
 }
 
-/// Builds a `PrivateAuthorizedUpdate` identity: spends/credits an *existing* private account,
-/// requiring its own `nsk` and a membership proof of its current committed state.
+/// Builds an authorized-update identity: spends/credits an *existing* private account,
+/// requiring its authorization key and a membership proof of its current committed state.
+///
+/// Takes an `ask` rather than v0.2.4's `nsk`; the `nsk` the nullifier witness needs is
+/// derived from it, and the circuit cross-checks the two agree.
 pub fn private_authorized_update_identity(
-    nsk: NullifierSecretKey,
+    ask: AuthorizationSecretKey,
     vpk: &ViewingPublicKey,
     membership_proof: MembershipProof,
 ) -> InputAccountIdentity {
-    InputAccountIdentity::PrivateAuthorizedUpdate {
+    let nsk = NullifierSecretKey::from(&ask);
+    InputAccountIdentity::Private(PrivateWitness {
         vpk: vpk.clone(),
         random_seed: [0; 32],
-        view_tag: 0,
-        nsk,
-        membership_proof,
         identifier: 0,
-    }
+        kind: WitnessKind::Regular { ask: Some(ask) },
+        nullifier: NullifierWitness::Update {
+            view_tag: 0,
+            nsk,
+            membership_proof,
+        },
+    })
 }
 
 /// "Alice": creates a shared private account's `GroupKeyHolder` (Group Master Secret) and
@@ -92,10 +114,13 @@ impl GroupOwner {
     }
 
     /// "Bob": distributes the GMS to a new member via the real seal/unseal handshake and
-    /// returns that member's independently re-derived secret key — the member never touches
-    /// this `GroupOwner`'s `GroupKeyHolder`, only the sealed bytes.
+    /// returns that member's independently re-derived authorization key — the member never
+    /// touches this `GroupOwner`'s `GroupKeyHolder`, only the sealed bytes.
+    ///
+    /// Returns the `ask` rather than v0.2.4's `nsk`: that is what the identity helpers take
+    /// now, and the `nsk` derives from it.
     #[must_use]
-    pub fn admit_member(&self) -> NullifierSecretKey {
+    pub fn admit_member(&self) -> AuthorizationSecretKey {
         let member_sealing_keys = SecretSpendingKey([9_u8; 32]).produce_private_key_holder(None);
         let member_sealing_vpk = member_sealing_keys.generate_viewing_public_key();
         let member_sealing_vsk = member_sealing_keys.viewing_secret_key;
@@ -106,12 +131,11 @@ impl GroupOwner {
             .expect("member must unseal the GMS");
 
         let member_keys = member_holder.derive_keys_for_shared_account(&self.derivation_seed);
-        let member_nsk = member_keys.nullifier_secret_key;
         assert_eq!(
             member_keys.generate_nullifier_public_key(),
             self.npk,
             "member must derive the identical npk as the group owner from the shared GMS"
         );
-        member_nsk
+        member_keys.authorization_secret_key
     }
 }

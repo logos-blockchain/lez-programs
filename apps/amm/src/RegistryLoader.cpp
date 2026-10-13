@@ -133,19 +133,32 @@ void RegistryLoader::refresh()
     ++m_generation;
 
     // No adopted network id until applyRegistry selects one; the local / none paths
-    // below carry none, so ops fall back to AMM_PROGRAM_BIN.
+    // below carry none, so ops fall back to AMM_PROGRAM_ID.
     m_activeAmmProgramId.clear();
-
-    // local-replaces-remote: a configured local file wins outright.
-    if (hasLocalSource()) {
-        loadLocal();
-        return;
-    }
 
     // AMM_REGISTRY_URL (e2e / dev) overrides the UI-configured URL.
     QString url = qEnvironmentVariable(REGISTRY_URL_ENV);
     if (url.isEmpty())
         url = m_configuredUrl;
+
+    // local-replaces-remote: a configured local file wins outright.
+    if (hasLocalSource()) {
+        // The local files carry token/pool lists ONLY -- no programIds, no ammConfigId.
+        // So taking this path also drops the ids, leaving ops to fall back to
+        // AMM_PROGRAM_ID. That is easy to hit by accident, because a token list looks
+        // orthogonal to a program address, and the resulting failure surfaces far away
+        // as a config that cannot be read. Say so rather than silently winning.
+        if (!url.isEmpty()) {
+            qWarning().noquote()
+                << "AMM registry:" << REGISTRY_URL_ENV << "/ configured URL is set (" << url
+                << ") but IGNORED because" << TOKENS_CONFIG_ENV << "or" << POOLS_CONFIG_ENV
+                << "is set; local files take precedence and carry no program/config ids."
+                << "Unset them to use the registry.";
+        }
+        loadLocal();
+        return;
+    }
+
     if (url.isEmpty()) {
         m_registryObj = {};  // no registry ⇒ no networks to pick
         publish({}, {}, QStringLiteral("none"), {});
@@ -217,7 +230,7 @@ bool RegistryLoader::applySelection()
 
     // Adopt the active network's declared AMM program id and config-PDA id so the
     // backend can point ops at that instance (setAmmProgramId / setConfigId) without
-    // an AMM_PROGRAM_BIN / AMM_CONFIG_ID.
+    // an AMM_PROGRAM_ID / AMM_CONFIG_ID.
     m_activeAmmProgramId.clear();
     m_activeAmmConfigId.clear();
     for (const QJsonValue& entry : networks) {

@@ -11,13 +11,13 @@ use lee::{
         circuit::ProgramWithDependencies, Message, PrivacyPreservingTransaction, WitnessSet,
     },
     program::Program,
-    program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     encryption::ViewingPublicKey,
-    Commitment, InputAccountIdentity, NullifierPublicKey, NullifierSecretKey,
+    AuthorizationSecretKey, Commitment, InputAccountIdentity, NullifierPublicKey,
+    NullifierSecretKey, NullifierWitness, PrivateWitness, WitnessKind,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -40,12 +40,18 @@ impl Keys {
 }
 
 impl Ids {
-    fn token_program() -> lee_core::program::ProgramId {
-        token_methods::TOKEN_ID
+    /// The program's account id: since v0.2.5 a program is addressed by its deployed
+    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
+    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    fn token_program() -> AccountId {
+        AccountId::from(token_methods::TOKEN_ID)
     }
 
-    fn ata_program() -> lee_core::program::ProgramId {
-        ata_methods::ATA_ID
+    /// The program's account id: since v0.2.5 a program is addressed by its deployed
+    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
+    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
+    fn ata_program() -> AccountId {
+        AccountId::from(ata_methods::ATA_ID)
     }
 
     fn token_definition() -> AccountId {
@@ -120,7 +126,7 @@ impl Accounts {
 
     fn foreign_owned_token_definition() -> Account {
         Account {
-            program_owner: [99; 8],
+            program_owner: AccountId::new([99u8; 32]),
             balance: 0_u128,
             data: Data::from(&TokenDefinition::Fungible {
                 name: String::from("Foreign Gold"),
@@ -133,21 +139,16 @@ impl Accounts {
     }
 }
 
+// v0.2.5 deleted `ProgramDeploymentTransaction`; deployment is now the `program_loader`
+// pseudo-program's WriteSegment/CreateHeader flow. `with_programs` seeds each program in the
+// shape that flow produces — a loader-owned header plus its segment — without making every
+// test drive a deployment. The header lands at `AccountId::from(program.id())`, so a program's
+// account id stays derivable from its ELF here.
 fn deploy_programs(state: &mut V03State) {
-    let token_message =
-        program_deployment_transaction::Message::new(token_methods::TOKEN_ELF.to_vec());
-    state
-        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
-            token_message,
-        ))
-        .expect("token program deployment must succeed");
-
-    let ata_message = program_deployment_transaction::Message::new(ata_methods::ATA_ELF.to_vec());
-    state
-        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(
-            ata_message,
-        ))
-        .expect("ata program deployment must succeed");
+    *state = std::mem::take(state).with_programs([
+        Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF"),
+        Program::new(ata_methods::ATA_ELF.to_vec().into()).expect("valid ata ELF"),
+    ]);
 }
 
 fn state_for_ata_tests() -> V03State {
@@ -275,7 +276,7 @@ fn ata_create_rejects_existing_ata_owned_by_unexpected_token_program() {
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
     let mut foreign_ata = Accounts::owner_ata_init();
-    foreign_ata.program_owner = [99; 8];
+    foreign_ata.program_owner = AccountId::new([99u8; 32]);
     state.force_insert_account(Ids::owner_ata(), foreign_ata.clone());
 
     let instruction = ata_core::Instruction::Create {
@@ -515,7 +516,8 @@ fn ata_create_from_private_owner() {
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
     // Private owner key material
-    let owner_nsk: NullifierSecretKey = [13u8; 32];
+    let owner_ask = AuthorizationSecretKey([13u8; 32]);
+    let owner_nsk = NullifierSecretKey::from(&owner_ask);
     let owner_npk = NullifierPublicKey::from(&owner_nsk);
     // `ViewingPublicKey::from_seed` needs two 32-byte halves `(d, z)`.
     let owner_vpk = ViewingPublicKey::from_seed(&[31u8; 32], &[32u8; 32]);
@@ -526,7 +528,7 @@ fn ata_create_from_private_owner() {
     let owner_ata_id = get_associated_token_account_id(&Ids::ata_program(), &seed);
 
     // Pre-states: private uninitialized owner, public token definition, public uninitialized ATA.
-    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
+    let owner_pre = AccountWithMetadata::new(Account::default(), false, owner_id);
     let def_pre = AccountWithMetadata::new(
         Accounts::token_definition_init(),
         false,
@@ -547,6 +549,7 @@ fn ata_create_from_private_owner() {
     let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
     let program_with_deps = ProgramWithDependencies::new(
         ata_program,
+        Ids::ata_program(),
         HashMap::from([(Ids::token_program(), token_program)]),
     );
 
@@ -554,14 +557,8 @@ fn ata_create_from_private_owner() {
         vec![owner_pre, def_pre, ata_pre],
         instruction_data,
         vec![
-            // owner: new private account, not owned/spent by the caller (no nsk, no proof).
-            InputAccountIdentity::PrivateForeignInit {
-                vpk: owner_vpk,
-                random_seed: [0; 32],
-                npk: owner_npk,
-                identifier: 0,
-                commitment_root,
-            },
+            // owner: new private account, not owned/spent by the caller (no credential, no proof).
+            private_foreign_init_identity(owner_npk, &owner_vpk, commitment_root),
             // token_definition: public
             InputAccountIdentity::Public,
             // ata: public
@@ -605,7 +602,8 @@ fn ata_create_private_ata_holding_is_not_expressible() {
 
     // Fresh personal npk/vpk for the ATA holding's privacy identity — distinct from the
     // owner's plain public keypair, which only supplies the seed input.
-    let ata_nsk: NullifierSecretKey = [21u8; 32];
+    let ata_ask = AuthorizationSecretKey([21u8; 32]);
+    let ata_nsk = NullifierSecretKey::from(&ata_ask);
     let ata_npk = NullifierPublicKey::from(&ata_nsk);
     let ata_vpk = ViewingPublicKey::from_seed(&[41u8; 32], &[42u8; 32]);
 
@@ -633,6 +631,7 @@ fn ata_create_private_ata_holding_is_not_expressible() {
     let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
     let program_with_deps = ProgramWithDependencies::new(
         ata_program,
+        Ids::ata_program(),
         HashMap::from([(Ids::token_program(), token_program)]),
     );
 
@@ -642,26 +641,32 @@ fn ata_create_private_ata_holding_is_not_expressible() {
         vec![
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            InputAccountIdentity::PrivatePdaInit {
+            // A private-PDA init. v0.2.5 expresses this as `WitnessKind::Pda`, whose optional
+            // `binding` replaces the old `seed` field.
+            InputAccountIdentity::Private(PrivateWitness {
                 vpk: ata_vpk.clone(),
                 random_seed: [0; 32],
-                npk: ata_npk,
                 identifier: 0,
-                commitment_root,
-                seed: None,
-            },
+                kind: WitnessKind::Pda { binding: None },
+                nullifier: NullifierWitness::Init {
+                    npk: ata_npk,
+                    commitment_root,
+                },
+            }),
         ],
         &program_with_deps,
     );
 
     let err = result.expect_err(
         "a private-PDA ATA holding must be rejected: its account id can never satisfy both \
-         ATA's own for_public_pda address check and PrivatePdaInit's for_private_pda binding \
-         requirement simultaneously",
+         ATA's own for_public_pda address check and the private-PDA witness's for_private_pda \
+         binding requirement simultaneously",
     );
     let message = format!("{err:?}");
+    // v0.2.5 wording: `Claim::Pda` is gone, the binding now comes from the witness itself.
     assert!(
-        message.contains("has no proven (seed, npk) binding via Claim::Pda or caller pda_seeds"),
+        message
+            .contains("has no proven (seed, npk) binding via witness binding or caller pda_seeds"),
         "expected the private-PDA binding rejection, got a different error: {message}"
     );
 }
@@ -688,7 +693,8 @@ fn ata_transfer_to_existing_private_recipient() {
         },
     );
 
-    let recipient_nsk: NullifierSecretKey = [51u8; 32];
+    let recipient_ask = AuthorizationSecretKey([51u8; 32]);
+    let recipient_nsk = NullifierSecretKey::from(&recipient_ask);
     let recipient_npk = NullifierPublicKey::from(&recipient_nsk);
     let recipient_vpk = ViewingPublicKey::from_seed(&[61u8; 32], &[62u8; 32]);
     let recipient_id = AccountId::for_regular_private_account(&recipient_npk, &recipient_vpk, 0);
@@ -699,7 +705,7 @@ fn ata_transfer_to_existing_private_recipient() {
         true,
         shield_source_id,
     );
-    let fresh_recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
+    let fresh_recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
     let shield_commitment_root = state.commitment_root();
 
     let token_program_for_shield = Program::new(token_methods::TOKEN_ELF.to_vec().into())
@@ -769,6 +775,7 @@ fn ata_transfer_to_existing_private_recipient() {
     let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
     let program_with_deps = ProgramWithDependencies::new(
         ata_program,
+        Ids::ata_program(),
         HashMap::from([(Ids::token_program(), token_program)]),
     );
 
@@ -778,7 +785,7 @@ fn ata_transfer_to_existing_private_recipient() {
         vec![
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
-            private_authorized_update_identity(recipient_nsk, &recipient_vpk, membership_proof),
+            private_authorized_update_identity(recipient_ask, &recipient_vpk, membership_proof),
         ],
         &program_with_deps,
     )
@@ -833,7 +840,8 @@ fn ata_burn_with_private_owner_signing() {
     deploy_programs(&mut state);
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
 
-    let owner_nsk: NullifierSecretKey = [91u8; 32];
+    let owner_ask = AuthorizationSecretKey([91u8; 32]);
+    let owner_nsk = NullifierSecretKey::from(&owner_ask);
     let owner_npk = NullifierPublicKey::from(&owner_nsk);
     let owner_vpk = ViewingPublicKey::from_seed(&[93u8; 32], &[94u8; 32]);
     let owner_id = AccountId::for_regular_private_account(&owner_npk, &owner_vpk, 0);
@@ -873,6 +881,7 @@ fn ata_burn_with_private_owner_signing() {
     let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
     let program_with_deps = ProgramWithDependencies::new(
         ata_program,
+        Ids::ata_program(),
         HashMap::from([(Ids::token_program(), token_program)]),
     );
 
@@ -880,7 +889,7 @@ fn ata_burn_with_private_owner_signing() {
         vec![owner_pre, ata_pre, def_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
-            private_authorized_init_identity(owner_nsk, &owner_vpk, commitment_root),
+            private_authorized_init_identity(owner_ask, &owner_vpk, commitment_root),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
         ],
@@ -946,7 +955,7 @@ fn ata_group_owned_owner_signing() {
 
     let alice = GroupOwner::new([97_u8; 32]);
     let owner_id = alice.id;
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
 
     // The ATA holding must stay public (per the confirmed PDA finding), so it's seeded
     // directly rather than via a real `Create` transaction.
@@ -981,6 +990,7 @@ fn ata_group_owned_owner_signing() {
     let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
     let program_with_deps = ProgramWithDependencies::new(
         ata_program,
+        Ids::ata_program(),
         HashMap::from([(Ids::token_program(), token_program)]),
     );
 
@@ -988,7 +998,7 @@ fn ata_group_owned_owner_signing() {
         vec![owner_pre, ata_pre, def_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
-            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
         ],
@@ -1050,7 +1060,8 @@ fn ata_transfer_with_private_owner_signing() {
     state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
     state.force_insert_account(Ids::recipient_ata(), Accounts::recipient_ata_init());
 
-    let owner_nsk: NullifierSecretKey = [95u8; 32];
+    let owner_ask = AuthorizationSecretKey([95u8; 32]);
+    let owner_nsk = NullifierSecretKey::from(&owner_ask);
     let owner_npk = NullifierPublicKey::from(&owner_nsk);
     let owner_vpk = ViewingPublicKey::from_seed(&[96u8; 32], &[97u8; 32]);
     let owner_id = AccountId::for_regular_private_account(&owner_npk, &owner_vpk, 0);
@@ -1090,6 +1101,7 @@ fn ata_transfer_with_private_owner_signing() {
     let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
     let program_with_deps = ProgramWithDependencies::new(
         ata_program,
+        Ids::ata_program(),
         HashMap::from([(Ids::token_program(), token_program)]),
     );
 
@@ -1097,7 +1109,7 @@ fn ata_transfer_with_private_owner_signing() {
         vec![owner_pre, sender_ata_pre, recipient_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
-            private_authorized_init_identity(owner_nsk, &owner_vpk, commitment_root),
+            private_authorized_init_identity(owner_ask, &owner_vpk, commitment_root),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
         ],
@@ -1175,7 +1187,7 @@ fn ata_transfer_with_group_owned_owner_signing() {
     };
     state.force_insert_account(sender_ata_id, sender_ata_account.clone());
 
-    let bob_nsk = alice.admit_member();
+    let bob_ask = alice.admit_member();
 
     let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
     let sender_ata_pre = AccountWithMetadata::new(sender_ata_account, false, sender_ata_id);
@@ -1195,6 +1207,7 @@ fn ata_transfer_with_group_owned_owner_signing() {
     let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
     let program_with_deps = ProgramWithDependencies::new(
         ata_program,
+        Ids::ata_program(),
         HashMap::from([(Ids::token_program(), token_program)]),
     );
 
@@ -1202,7 +1215,7 @@ fn ata_transfer_with_group_owned_owner_signing() {
         vec![owner_pre, sender_ata_pre, recipient_pre],
         Program::serialize_instruction(instruction).unwrap(),
         vec![
-            private_authorized_init_identity(bob_nsk, &alice.vpk, state.commitment_root()),
+            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
         ],
@@ -1268,7 +1281,7 @@ fn ata_create_from_group_owned_owner() {
 
     // Group-derived owner is a fresh private account initialized via PrivateForeignInit;
     // since logos-execution-zone PR #621 its pre-state must be is_authorized == true.
-    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
+    let owner_pre = AccountWithMetadata::new(Account::default(), false, owner_id);
     let def_pre = AccountWithMetadata::new(
         state.get_account_by_id(Ids::token_definition()),
         false,
@@ -1284,6 +1297,7 @@ fn ata_create_from_group_owned_owner() {
     let token_program = Program::new(token_methods::TOKEN_ELF.to_vec().into()).unwrap();
     let program_with_deps = ProgramWithDependencies::new(
         ata_program,
+        Ids::ata_program(),
         HashMap::from([(Ids::token_program(), token_program)]),
     );
 

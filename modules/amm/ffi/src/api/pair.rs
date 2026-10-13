@@ -2,7 +2,7 @@ use amm_core::{
     compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda, compute_vault_pda,
 };
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use lee_core::{account::AccountId, program::ProgramId};
+use lee_core::account::AccountId;
 use serde_json::{json, Value};
 use twap_oracle_core::compute_current_tick_account_pda;
 
@@ -22,7 +22,7 @@ pub(super) struct PairIds {
     pub(super) current_tick: AccountId,
     pub(super) clock: AccountId,
     /// The configured TWAP oracle program — the price/observation PDAs are seeded by it.
-    pub(super) twap_oracle_program: ProgramId,
+    pub(super) twap_oracle_program: AccountId,
 }
 
 pub(super) fn pair_ids(request: PairIdsRequest) -> Result<Value, String> {
@@ -51,7 +51,7 @@ pub(super) fn is_canonical_pair(token_a: AccountId, token_b: AccountId) -> bool 
 }
 
 pub(super) fn derive_pair(
-    amm_program: ProgramId,
+    amm_program: AccountId,
     token_a: AccountId,
     token_b: AccountId,
     config_read: &AccountRead,

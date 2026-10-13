@@ -1,5 +1,8 @@
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use lee_core::{account::AccountId, program::ProgramId};
+use lee_core::{
+    account::AccountId,
+    program::{ProgramHeader, ProgramId, PROGRAM_LOADER_ACCOUNT_ID},
+};
 use risc0_binfmt::ProgramBinary;
 use serde_json::{json, Map, Value};
 use stablecoin_core::{
@@ -11,46 +14,73 @@ use stablecoin_core::{
 use super::{
     parse_stablecoin_program_id, ProgramInfoRequest, StablecoinApiError, StablecoinResult,
 };
-use crate::account::{account_id_hex, program_id_bytes};
+use crate::account::{account_id_hex, decode_account, AccountRead};
 
+/// Resolves the stablecoin program and its singleton PDAs.
+///
+/// Since LEZ v0.2.5 a program lives at the account its `program_loader` header was
+/// deployed to, chosen at deploy time, so only `stablecoinProgramId` names it. An
+/// optional `elf` is checked against the bytecode deployed there: its ImageID must
+/// equal the `image_id` of the header in `programHeader`. The ImageID is reported as
+/// `imageIdHex` (empty without a binary) and never used as an address.
 pub fn program_info(request: ProgramInfoRequest) -> StablecoinResult {
-    let configured = request
+    let program_id = request
         .stablecoin_program_id
         .as_deref()
         .map(parse_stablecoin_program_id)
-        .transpose()?;
-    let derived = request
-        .elf
-        .as_deref()
-        .map(program_id_from_binary)
-        .transpose()?;
+        .transpose()?
+        .ok_or_else(|| StablecoinApiError::new("config_missing"))?;
 
-    let program_id = match (configured, derived) {
-        (Some(configured), Some(derived)) if configured != derived => {
-            return Err(StablecoinApiError::new("program_id_mismatch"));
+    let image_id = match request.elf.as_deref() {
+        None => None,
+        Some(elf) => {
+            let image_id = image_id_from_binary(elf)?;
+            let header = request
+                .program_header
+                .as_ref()
+                .ok_or_else(|| StablecoinApiError::new("program_header_unavailable"))?;
+            if deployed_image_id(header, program_id)? != image_id {
+                return Err(StablecoinApiError::new("program_binary_mismatch"));
+            }
+            Some(image_id)
         }
-        (Some(program_id), _) | (_, Some(program_id)) => program_id,
-        (None, None) => return Err(StablecoinApiError::new("config_missing")),
     };
 
-    Ok(program_info_value(program_id))
+    let mut value = program_info_value(program_id);
+    value["imageIdHex"] = json!(image_id.map(account_id_hex).unwrap_or_default());
+    Ok(value)
 }
 
-fn program_id_from_binary(value: &str) -> Result<ProgramId, StablecoinApiError> {
+/// A binary's ImageID, as the account-id bytes a `ProgramHeader` stores it in.
+fn image_id_from_binary(value: &str) -> Result<AccountId, StablecoinApiError> {
     let bytes =
         hex::decode(value).map_err(|_| StablecoinApiError::new("invalid_program_binary"))?;
     let binary = ProgramBinary::decode(&bytes)
         .map_err(|_| StablecoinApiError::new("invalid_program_binary"))?;
-    binary
+    let image_id: ProgramId = binary
         .compute_image_id()
         .map(Into::into)
-        .map_err(|_| StablecoinApiError::new("invalid_program_binary"))
+        .map_err(|_| StablecoinApiError::new("invalid_program_binary"))?;
+    Ok(AccountId::from(image_id))
 }
 
-fn program_info_value(program_id: ProgramId) -> Value {
+/// The ImageID of the bytecode deployed at `program_id`, from its header account.
+fn deployed_image_id(
+    header: &AccountRead,
+    program_id: AccountId,
+) -> Result<AccountId, StablecoinApiError> {
+    let unavailable = || StablecoinApiError::new("program_header_unavailable");
+    let (account_id, account) = decode_account(header).map_err(|_| unavailable())?;
+    if account_id != program_id || account.program_owner != PROGRAM_LOADER_ACCOUNT_ID {
+        return Err(unavailable());
+    }
+    let header = ProgramHeader::from_bytes(account.data.as_ref()).ok_or_else(unavailable)?;
+    Ok(AccountId::from(header.image_id))
+}
+
+fn program_info_value(program_id: AccountId) -> Value {
     let mut result = Map::new();
-    let program_account_id = AccountId::new(program_id_bytes(program_id));
-    insert_id(&mut result, "programId", "programIdHex", program_account_id);
+    insert_id(&mut result, "programId", "programIdHex", program_id);
     insert_id(
         &mut result,
         "protocolParametersId",

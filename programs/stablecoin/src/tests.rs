@@ -7,19 +7,18 @@
 
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    program::{ChainedCall, Claim, ProgramId},
+    program::ChainedCall,
 };
 use stablecoin_core::{
-    compute_position_pda, compute_position_pda_seed, compute_position_vault_pda,
-    compute_position_vault_pda_seed, compute_protocol_parameters_pda, math::FIXED_POINT_ONE,
-    Position, ProtocolParameters,
+    compute_position_pda, compute_position_vault_pda, compute_position_vault_pda_seed,
+    compute_protocol_parameters_pda, math::FIXED_POINT_ONE, Position, ProtocolParameters,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
-use crate::test_support::clock_account;
+use crate::{test_support::clock_account, StateDiffExt};
 
-const STABLECOIN_PROGRAM_ID: ProgramId = [3u32; 8];
-const TOKEN_PROGRAM_ID: ProgramId = [2u32; 8];
+const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([3u8; 32]);
+const TOKEN_PROGRAM_ID: AccountId = AccountId::new([2u8; 32]);
 const TEST_POSITION_NONCE: u64 = 0;
 /// Unix milliseconds, matching the `CLOCK_01` account the guest passes in.
 const NOW: u64 = 1_700_000_000_000;
@@ -256,14 +255,14 @@ fn open_position_claims_pda_and_emits_chained_calls() {
 
     // Position is PDA-claimed and carries the encoded Position state.
     let position_post = &post_states[1];
+    // Writing the data is the claim: v0.2.5 makes the writing program the owner of a
+    // default-owned account. The PDA address is asserted by `verify_position_and_get_seed`.
+    assert!(position_post.writes_data());
     assert_eq!(
-        position_post.required_claim(),
-        Some(Claim::Pda(compute_position_pda_seed(
-            owner_id(),
-            TEST_POSITION_NONCE
-        )))
+        position_post.post_owner(STABLECOIN_PROGRAM_ID),
+        STABLECOIN_PROGRAM_ID
     );
-    let position = Position::try_from(&position_post.account().data).expect("valid Position");
+    let position = Position::try_from(position_post.post_data()).expect("valid Position");
     assert_eq!(
         position,
         Position {
@@ -275,37 +274,21 @@ fn open_position_claims_pda_and_emits_chained_calls() {
             opened_at: NOW,
         }
     );
-    // The runtime sets the program_owner on the claimed account after validating Claim::Pda.
-    assert_eq!(position_post.account().program_owner, ProgramId::default());
-
     assert_eq!(chained_calls.len(), 2);
 
-    let mut vault_authorized = uninit_vault_account();
-    vault_authorized.is_authorized = true;
     let expected_initialize = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![collateral_definition_account(), vault_authorized],
+        vec![collateral_definition_id(), vault_id()],
         &token_core::Instruction::InitializeAccount,
     )
     .with_pda_seeds(vec![compute_position_vault_pda_seed(position_id())]);
     assert_eq!(chained_calls[0], expected_initialize);
 
-    let post_init_vault = AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: collateral_definition_id(),
-                balance: 0,
-            }),
-            nonce: Nonce(0),
-        },
-        is_authorized: false,
-        account_id: vault_id(),
-    };
+    // The vault's post-InitializeAccount state is resolved by the runtime from the
+    // transaction's diff, so the call names it by id and the test no longer hand-builds it.
     let expected_transfer = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![user_holding_account(1_000), post_init_vault],
+        vec![user_holding_id(), vault_id()],
         &token_core::Instruction::Transfer {
             amount_to_transfer: collateral_amount,
         },
@@ -506,7 +489,7 @@ fn open_position_rejects_mismatched_token_definition() {
 )]
 fn open_position_rejects_definition_with_wrong_token_program() {
     let mut definition = collateral_definition_account();
-    definition.account.program_owner = [9u32; 8];
+    definition.account.program_owner = AccountId::new([9u8; 32]);
 
     crate::open_position::open_position(
         owner_account(),
@@ -617,7 +600,7 @@ fn open_position_stamps_opened_at_from_the_clock() {
         500,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.opened_at, NOW);
 }
 
@@ -639,8 +622,14 @@ fn open_position_echoes_protocol_parameters_and_clock_unchanged() {
     );
 
     assert_eq!(post_states.len(), 7);
-    assert_eq!(*post_states[5].account(), parameters.account);
-    assert_eq!(*post_states[6].account(), clock.account);
+    assert_eq!(
+        post_states[5].post_account(STABLECOIN_PROGRAM_ID),
+        parameters.account
+    );
+    assert_eq!(
+        post_states[6].post_account(STABLECOIN_PROGRAM_ID),
+        clock.account
+    );
 }
 
 // --- deposit_collateral (spec §10.5) ---
@@ -654,7 +643,7 @@ fn deposit(
     holding: AccountWithMetadata,
     parameters: AccountWithMetadata,
     amount: u128,
-) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<lee_core::program::AccountStateDiff>, Vec<ChainedCall>) {
     crate::deposit_collateral::deposit_collateral(
         owner,
         position,
@@ -680,7 +669,7 @@ fn deposit_collateral_adds_to_position_and_emits_transfer() {
 
     assert_eq!(post_states.len(), 5);
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(
         position.collateral_amount,
         starting_collateral + DEPOSIT_AMOUNT
@@ -694,8 +683,8 @@ fn deposit_collateral_adds_to_position_and_emits_transfer() {
     let expected = ChainedCall::new(
         TOKEN_PROGRAM_ID,
         vec![
-            user_holding_account(1_000),
-            vault_account_with(starting_collateral),
+            user_holding_account(1_000).account_id,
+            vault_account_with(starting_collateral).account_id,
         ],
         &token_core::Instruction::Transfer {
             amount_to_transfer: DEPOSIT_AMOUNT,
@@ -719,7 +708,7 @@ fn deposit_collateral_works_when_frozen() {
 
     assert_eq!(post_states.len(), 5);
     assert_eq!(chained_calls.len(), 1);
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, 500 + DEPOSIT_AMOUNT);
 }
 
@@ -736,7 +725,7 @@ fn deposit_collateral_allows_zero_amount() {
 
     assert_eq!(post_states.len(), 5);
     assert_eq!(chained_calls.len(), 1);
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, 500);
 }
 
@@ -753,7 +742,7 @@ fn deposit_collateral_leaves_debt_untouched() {
         DEPOSIT_AMOUNT,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, 42);
     assert_eq!(position.collateral_amount, 500 + DEPOSIT_AMOUNT);
 }
@@ -805,7 +794,7 @@ fn deposit_collateral_rejects_uninitialized_position() {
 #[should_panic(expected = "Position is not owned by this stablecoin program")]
 fn deposit_collateral_rejects_position_owned_by_other_program() {
     let mut position = init_position_account(500, 0);
-    position.account.program_owner = [9u32; 8];
+    position.account.program_owner = AccountId::new([9u8; 32]);
     deposit(
         owner_account(),
         position,
@@ -878,7 +867,7 @@ fn deposit_collateral_reconciles_a_donated_vault_balance() {
         100,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     // The chained transfer lands the vault at 601, so the position must say 601.
     assert_eq!(position.collateral_amount, 601);
 }
@@ -931,7 +920,7 @@ fn deposit_collateral_rejects_wrong_vault() {
 #[should_panic(expected = "same Token Program as the vault")]
 fn deposit_collateral_rejects_holding_with_wrong_token_program() {
     let mut holding = user_holding_account(1_000);
-    holding.account.program_owner = [9u32; 8];
+    holding.account.program_owner = AccountId::new([9u8; 32]);
     deposit(
         owner_account(),
         init_position_account(500, 0),
@@ -995,7 +984,7 @@ fn generate(
     oracle: AccountWithMetadata,
     parameters: AccountWithMetadata,
     amount: u128,
-) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<lee_core::program::AccountStateDiff>, Vec<ChainedCall>) {
     crate::generate_debt::generate_debt(
         owner_account(),
         position,
@@ -1079,7 +1068,7 @@ fn generate_debt_succeeds_when_the_projected_price_exceeds_u128() {
         1,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, 1);
 }
 
@@ -1094,17 +1083,19 @@ fn generate_debt_mints_and_increases_normalized_debt() {
     );
 
     assert_eq!(post_states.len(), 9);
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     // accumulator is exactly 1.0, so the delta equals the minted amount.
     assert_eq!(position.normalized_debt_amount, 100);
     assert_eq!(position.collateral_amount, 1_000);
 
     assert_eq!(chained_calls.len(), 1);
-    let mut definition_authorized = stablecoin_definition_account();
-    definition_authorized.is_authorized = true;
+    // Authority rides on the PDA seed below; a call carries bare ids, not flags.
     let expected = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![definition_authorized, user_stablecoin_holding_account(0)],
+        vec![
+            stablecoin_definition_account().account_id,
+            user_stablecoin_holding_account(0).account_id,
+        ],
         &token_core::Instruction::Mint {
             amount_to_mint: 100,
         },
@@ -1127,7 +1118,7 @@ fn generate_debt_rounds_the_normalized_delta_up() {
         100,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, 34);
 }
 
@@ -1141,8 +1132,14 @@ fn generate_debt_echoes_the_read_only_globals() {
         100,
     );
 
-    assert_eq!(*post_states[6].account(), fresh_oracle().account);
-    assert_eq!(*post_states[8].account(), clock_account(NOW).account);
+    assert_eq!(
+        post_states[6].post_account(STABLECOIN_PROGRAM_ID),
+        fresh_oracle().account
+    );
+    assert_eq!(
+        post_states[8].post_account(STABLECOIN_PROGRAM_ID),
+        clock_account(NOW).account
+    );
 }
 
 #[test]
@@ -1169,7 +1166,7 @@ fn generate_debt_at_the_exact_ratio_boundary_succeeds() {
         100,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, 100);
 }
 
@@ -1299,7 +1296,7 @@ fn repay(
     accumulator: AccountWithMetadata,
     parameters: AccountWithMetadata,
     amount: u128,
-) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<lee_core::program::AccountStateDiff>, Vec<ChainedCall>) {
     crate::repay_debt::repay_debt(
         owner_account(),
         position,
@@ -1325,17 +1322,17 @@ fn repay_debt_echoes_the_three_new_accounts() {
 
     assert_eq!(post_states.len(), 7);
     assert_eq!(
-        *post_states[4].account(),
+        post_states[4].post_account(STABLECOIN_PROGRAM_ID),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW).account,
         "accumulator must be echoed unchanged"
     );
     assert_eq!(
-        *post_states[5].account(),
+        post_states[5].post_account(STABLECOIN_PROGRAM_ID),
         protocol_parameters_account(false).account,
         "protocol parameters must be echoed unchanged"
     );
     assert_eq!(
-        *post_states[6].account(),
+        post_states[6].post_account(STABLECOIN_PROGRAM_ID),
         clock_account(NOW).account,
         "clock must be echoed unchanged"
     );
@@ -1353,7 +1350,7 @@ fn repay_debt_rounds_the_normalized_delta_down() {
         100,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, 300 - 33);
 }
 
@@ -1369,7 +1366,7 @@ fn repay_debt_is_allowed_while_frozen() {
     );
 
     assert_eq!(chained_calls.len(), 1);
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, 200);
 }
 
@@ -1436,7 +1433,7 @@ fn close(
     position: AccountWithMetadata,
     vault: AccountWithMetadata,
     parameters: AccountWithMetadata,
-) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<lee_core::program::AccountStateDiff>, Vec<ChainedCall>) {
     crate::close_position::close_position(
         owner_account(),
         position,
@@ -1460,14 +1457,17 @@ fn close_position_clears_the_position_and_emits_no_chained_calls() {
     assert!(chained_calls.is_empty());
     // Data is zeroed, but program_owner and nonce must survive — the runtime
     // rejects a program changing either, so the PDA cannot be released.
-    let cleared = post_states[1].account();
+    let cleared = post_states[1].post_account(STABLECOIN_PROGRAM_ID);
     assert_eq!(cleared.data, Data::default());
     assert_eq!(cleared.program_owner, STABLECOIN_PROGRAM_ID);
     // Asserted against a non-zero nonce: the default fixture nonce is 0, so
     // comparing against it would pass even if the nonce were reset.
     assert_eq!(cleared.nonce, Nonce(7));
     // The vault lingers untouched — the Token Program has no CloseHolding.
-    assert_eq!(*post_states[2].account(), init_vault_account().account);
+    assert_eq!(
+        post_states[2].post_account(STABLECOIN_PROGRAM_ID),
+        init_vault_account().account
+    );
 }
 
 #[test]
@@ -1477,7 +1477,7 @@ fn close_position_is_allowed_while_frozen() {
         init_vault_account(),
         protocol_parameters_account(true),
     );
-    assert_eq!(post_states[1].account().data, Data::default());
+    assert_eq!(*post_states[1].post_data(), Data::default());
 }
 
 #[test]
@@ -1580,15 +1580,13 @@ fn parameters_frozen(is_frozen: bool) -> AccountWithMetadata {
     })
 }
 
-fn decoded_parameters(post: &lee_core::program::AccountPostState) -> ProtocolParameters {
-    ProtocolParameters::try_from(&post.account().data).expect("valid ProtocolParameters")
+fn decoded_parameters(data: &Data) -> ProtocolParameters {
+    ProtocolParameters::try_from(data).expect("valid ProtocolParameters")
 }
 
 #[test]
 fn freeze_sets_is_frozen_and_touches_nothing_else() {
-    let before = decoded_parameters(&lee_core::program::AccountPostState::new(
-        parameters_frozen(false).account,
-    ));
+    let before = decoded_parameters(&parameters_frozen(false).account.data);
     let (post_states, chained_calls) = crate::freeze::freeze(
         freeze_authority_account(),
         parameters_frozen(false),
@@ -1597,7 +1595,7 @@ fn freeze_sets_is_frozen_and_touches_nothing_else() {
 
     assert_eq!(post_states.len(), 2);
     assert!(chained_calls.is_empty());
-    let after = decoded_parameters(&post_states[1]);
+    let after = decoded_parameters(post_states[1].post_data());
     assert!(after.is_frozen);
     assert_eq!(
         ProtocolParameters {
@@ -1609,16 +1607,16 @@ fn freeze_sets_is_frozen_and_touches_nothing_else() {
     );
     // The parameters account keeps its owner and nonce; only the data changes.
     assert_eq!(
-        post_states[1].account().program_owner,
+        post_states[1]
+            .post_account(STABLECOIN_PROGRAM_ID)
+            .program_owner,
         STABLECOIN_PROGRAM_ID
     );
 }
 
 #[test]
 fn unfreeze_clears_is_frozen_and_touches_nothing_else() {
-    let before = decoded_parameters(&lee_core::program::AccountPostState::new(
-        parameters_frozen(true).account,
-    ));
+    let before = decoded_parameters(&parameters_frozen(true).account.data);
     let (post_states, chained_calls) = crate::freeze::unfreeze(
         freeze_authority_account(),
         parameters_frozen(true),
@@ -1627,7 +1625,7 @@ fn unfreeze_clears_is_frozen_and_touches_nothing_else() {
 
     assert_eq!(post_states.len(), 2);
     assert!(chained_calls.is_empty());
-    let after = decoded_parameters(&post_states[1]);
+    let after = decoded_parameters(post_states[1].post_data());
     assert!(!after.is_frozen);
     assert_eq!(
         ProtocolParameters {
@@ -1645,7 +1643,7 @@ fn freeze_is_idempotent_when_already_frozen() {
         parameters_frozen(true),
         STABLECOIN_PROGRAM_ID,
     );
-    assert!(decoded_parameters(&post_states[1]).is_frozen);
+    assert!(decoded_parameters(post_states[1].post_data()).is_frozen);
 }
 
 #[test]
@@ -1655,7 +1653,7 @@ fn unfreeze_is_idempotent_when_already_unfrozen() {
         parameters_frozen(false),
         STABLECOIN_PROGRAM_ID,
     );
-    assert!(!decoded_parameters(&post_states[1]).is_frozen);
+    assert!(!decoded_parameters(post_states[1].post_data()).is_frozen);
 }
 
 #[test]
@@ -1717,7 +1715,7 @@ fn freeze_rejects_protocol_parameters_at_wrong_address() {
 #[should_panic(expected = "ProtocolParameters account must be owned by the stablecoin program")]
 fn unfreeze_rejects_protocol_parameters_owned_by_another_program() {
     let mut parameters = parameters_frozen(true);
-    parameters.account.program_owner = [9u32; 8];
+    parameters.account.program_owner = AccountId::new([9u8; 32]);
     crate::freeze::unfreeze(
         freeze_authority_account(),
         parameters,
@@ -1761,7 +1759,7 @@ fn withdraw(
     position: AccountWithMetadata,
     parameters: AccountWithMetadata,
     amount: u128,
-) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
+) -> (Vec<lee_core::program::AccountStateDiff>, Vec<ChainedCall>) {
     crate::withdraw_collateral::withdraw_collateral(
         owner_account(),
         position,
@@ -1843,7 +1841,7 @@ fn withdraw_collateral_of_zero_is_a_no_op_for_an_indebted_position() {
         0,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, 500_000);
     assert_eq!(position.normalized_debt_amount, 300);
     assert_eq!(chained_calls.len(), 1);
@@ -1872,7 +1870,7 @@ fn withdraw_collateral_succeeds_when_the_projected_price_exceeds_u128() {
         100_000_000_000,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, 900_000_000_000);
 }
 
@@ -1921,7 +1919,7 @@ fn withdraw_collateral_from_a_zero_debt_position_skips_the_projection() {
         500_000,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, 0);
 }
 
@@ -1990,7 +1988,7 @@ fn withdraw_collateral_rejects_redemption_price_state_at_wrong_address() {
 #[should_panic(expected = "ProtocolParameters account must be owned by the stablecoin program")]
 fn withdraw_collateral_rejects_protocol_parameters_owned_by_another_program() {
     let mut parameters = protocol_parameters_account(false);
-    parameters.account.program_owner = [9u32; 8];
+    parameters.account.program_owner = AccountId::new([9u8; 32]);
     withdraw_with_globals(
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
         crate::test_support::redemption_price_state_account(NOW),
@@ -2029,22 +2027,22 @@ fn withdraw_collateral_echoes_the_four_read_only_globals() {
     assert_eq!(post_states.len(), 8);
     assert_eq!(chained_calls.len(), 1);
     assert_eq!(
-        *post_states[4].account(),
+        post_states[4].post_account(STABLECOIN_PROGRAM_ID),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW).account,
         "accumulator must be echoed unchanged"
     );
     assert_eq!(
-        *post_states[5].account(),
+        post_states[5].post_account(STABLECOIN_PROGRAM_ID),
         crate::test_support::redemption_price_state_account(NOW).account,
         "redemption price state must be echoed unchanged"
     );
     assert_eq!(
-        *post_states[6].account(),
+        post_states[6].post_account(STABLECOIN_PROGRAM_ID),
         protocol_parameters_account(false).account,
         "protocol parameters must be echoed unchanged"
     );
     assert_eq!(
-        *post_states[7].account(),
+        post_states[7].post_account(STABLECOIN_PROGRAM_ID),
         clock_account(NOW).account,
         "clock must be echoed unchanged"
     );
@@ -2059,7 +2057,7 @@ fn withdraw_collateral_with_debt_succeeds_when_collateralization_holds() {
         100,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, 900);
     assert_eq!(position.normalized_debt_amount, 100);
 }
@@ -2073,7 +2071,7 @@ fn withdraw_collateral_at_exact_ratio_boundary_succeeds() {
         25,
     );
 
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, 75);
 }
 
@@ -2167,8 +2165,11 @@ fn withdraw_collateral_updates_position_and_emits_transfer() {
 
     // Position post-state: plain `new`, holds the decremented Position.
     let position_post = &post_states[1];
-    assert_eq!(position_post.required_claim(), None);
-    let position = Position::try_from(&position_post.account().data).expect("valid Position");
+    assert_eq!(
+        position_post.post_owner(STABLECOIN_PROGRAM_ID),
+        position_post.pre_state.account.program_owner
+    );
+    let position = Position::try_from(position_post.post_data()).expect("valid Position");
     assert_eq!(
         position,
         Position {
@@ -2180,22 +2181,26 @@ fn withdraw_collateral_updates_position_and_emits_transfer() {
             opened_at: 0,
         }
     );
-    assert_eq!(position_post.account().program_owner, STABLECOIN_PROGRAM_ID);
+    assert_eq!(
+        position_post.post_owner(STABLECOIN_PROGRAM_ID),
+        STABLECOIN_PROGRAM_ID
+    );
 
     // Vault and destination post-states are pre-transfer (mutation comes via chained call).
-    assert_eq!(post_states[2].account(), &init_vault_account().account);
     assert_eq!(
-        post_states[3].account(),
-        &destination_holding_account().account
+        post_states[2].post_account(STABLECOIN_PROGRAM_ID),
+        init_vault_account().account
+    );
+    assert_eq!(
+        post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+        destination_holding_account().account
     );
 
     // Single chained Token::Transfer with vault PDA seed.
     assert_eq!(chained_calls.len(), 1);
-    let mut vault_authorized = init_vault_account();
-    vault_authorized.is_authorized = true;
     let expected_transfer = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![vault_authorized, destination_holding_account()],
+        vec![vault_id(), destination_holding_account().account_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: amount,
         },
@@ -2219,7 +2224,7 @@ fn withdraw_collateral_allows_full_drain() {
         STABLECOIN_PROGRAM_ID,
         amount,
     );
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, 0);
     assert_eq!(position.normalized_debt_amount, 0);
 }
@@ -2239,14 +2244,12 @@ fn withdraw_collateral_allows_zero_amount() {
         STABLECOIN_PROGRAM_ID,
         0,
     );
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.collateral_amount, initial);
 
-    let mut vault_authorized = init_vault_account();
-    vault_authorized.is_authorized = true;
     let expected_transfer = ChainedCall::new(
         TOKEN_PROGRAM_ID,
-        vec![vault_authorized, destination_holding_account()],
+        vec![vault_id(), destination_holding_account().account_id],
         &token_core::Instruction::Transfer {
             amount_to_transfer: 0,
         },
@@ -2295,7 +2298,7 @@ fn withdraw_collateral_rejects_uninitialized_position() {
 #[should_panic(expected = "Position is not owned by this stablecoin program")]
 fn withdraw_collateral_rejects_position_owned_by_other_program() {
     let mut position = init_position_account(500, 0);
-    position.account.program_owner = [9u32; 8];
+    position.account.program_owner = AccountId::new([9u8; 32]);
     crate::withdraw_collateral::withdraw_collateral(
         owner_account(),
         position,
@@ -2400,7 +2403,7 @@ fn withdraw_collateral_rejects_uninitialized_user_holding() {
 )]
 fn withdraw_collateral_rejects_user_holding_with_wrong_token_program() {
     let mut destination = destination_holding_account();
-    destination.account.program_owner = [9u32; 8];
+    destination.account.program_owner = AccountId::new([9u8; 32]);
     crate::withdraw_collateral::withdraw_collateral(
         owner_account(),
         init_position_account(500, 0),
@@ -2455,8 +2458,11 @@ fn repay_debt_decreases_debt_and_emits_burn() {
 
     // Position post-state: plain `new`, holds the decremented Position.
     let position_post = &post_states[1];
-    assert_eq!(position_post.required_claim(), None);
-    let position = Position::try_from(&position_post.account().data).expect("valid Position");
+    assert_eq!(
+        position_post.post_owner(STABLECOIN_PROGRAM_ID),
+        position_post.pre_state.account.program_owner
+    );
+    let position = Position::try_from(position_post.post_data()).expect("valid Position");
     assert_eq!(
         position,
         Position {
@@ -2468,16 +2474,19 @@ fn repay_debt_decreases_debt_and_emits_burn() {
             opened_at: 0,
         }
     );
-    assert_eq!(position_post.account().program_owner, STABLECOIN_PROGRAM_ID);
+    assert_eq!(
+        position_post.post_owner(STABLECOIN_PROGRAM_ID),
+        STABLECOIN_PROGRAM_ID
+    );
 
     // Stablecoin definition and user holding post-states are pre-burn.
     assert_eq!(
-        post_states[2].account(),
-        &stablecoin_definition_account().account
+        post_states[2].post_account(STABLECOIN_PROGRAM_ID),
+        stablecoin_definition_account().account
     );
     assert_eq!(
-        post_states[3].account(),
-        &user_stablecoin_holding_account(holding_balance).account
+        post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+        user_stablecoin_holding_account(holding_balance).account
     );
 
     // Single chained Token::Burn, no PDA seeds (user-authorized burn source).
@@ -2485,8 +2494,8 @@ fn repay_debt_decreases_debt_and_emits_burn() {
     let expected_burn = ChainedCall::new(
         TOKEN_PROGRAM_ID,
         vec![
-            stablecoin_definition_account(),
-            user_stablecoin_holding_account(holding_balance),
+            stablecoin_definition_account().account_id,
+            user_stablecoin_holding_account(holding_balance).account_id,
         ],
         &token_core::Instruction::Burn {
             amount_to_burn: amount,
@@ -2509,7 +2518,7 @@ fn repay_debt_allows_full_repayment() {
         STABLECOIN_PROGRAM_ID,
         debt,
     );
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, 0);
     assert_eq!(position.collateral_amount, 500);
 }
@@ -2528,14 +2537,14 @@ fn repay_debt_allows_zero_amount() {
         STABLECOIN_PROGRAM_ID,
         0,
     );
-    let position = Position::try_from(&post_states[1].account().data).expect("valid Position");
+    let position = Position::try_from(post_states[1].post_data()).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, initial_debt);
 
     let expected_burn = ChainedCall::new(
         TOKEN_PROGRAM_ID,
         vec![
-            stablecoin_definition_account(),
-            user_stablecoin_holding_account(1_000),
+            stablecoin_definition_account().account_id,
+            user_stablecoin_holding_account(1_000).account_id,
         ],
         &token_core::Instruction::Burn { amount_to_burn: 0 },
     );
@@ -2580,7 +2589,7 @@ fn repay_debt_rejects_uninitialized_position() {
 #[should_panic(expected = "Position is not owned by this stablecoin program")]
 fn repay_debt_rejects_position_owned_by_other_program() {
     let mut position = init_position_account(500, 300);
-    position.account.program_owner = [9u32; 8];
+    position.account.program_owner = AccountId::new([9u8; 32]);
     crate::repay_debt::repay_debt(
         owner_account(),
         position,
@@ -2657,7 +2666,7 @@ fn repay_debt_rejects_uninitialized_user_holding() {
 )]
 fn repay_debt_rejects_holding_with_different_token_program() {
     let mut holding = user_stablecoin_holding_account(1_000);
-    holding.account.program_owner = [9u32; 8];
+    holding.account.program_owner = AccountId::new([9u8; 32]);
     crate::repay_debt::repay_debt(
         owner_account(),
         init_position_account(500, 300),

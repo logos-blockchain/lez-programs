@@ -240,6 +240,10 @@ Popup {
             return qsTr("Connect a wallet to withdraw.")
         case "wallet_submission_failed":
             return qsTr("The withdrawal could not be submitted.")
+        case "fee_payer_required":
+            return qsTr("No funded public account to pay the network fee.")
+        case "invalid_fee_payer":
+            return qsTr("The selected fee payer cannot pay for this transaction.")
         case "config_missing":
             return qsTr("The AMM config account has not been initialized.")
         default:

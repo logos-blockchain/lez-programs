@@ -269,6 +269,17 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
             return submission;
         }
     }
+    if (!isHex(transaction.feePayerId, 64)) {
+        submission.failure = WalletFailure::InvalidRequest;
+        return submission;
+    }
+    for (qsizetype i = 0; i < transaction.accountIds.size(); ++i) {
+        if (transaction.accountIds.at(i) == transaction.feePayerId
+            && !transaction.signingRequirements.at(i)) {
+            submission.failure = WalletFailure::InvalidRequest;
+            return submission;
+        }
+    }
 
     QVariantList signingRequirements;
     signingRequirements.reserve(transaction.signingRequirements.size());
@@ -295,7 +306,8 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
             transaction.accountIds,
             signingRequirements,
             QVariant::fromValue(instructionBytes),
-            transaction.programId);
+            transaction.programId,
+            transaction.feePayerId);
 
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(response.toUtf8(), &parseError);

@@ -17,7 +17,7 @@ pub(super) fn transfer_ownership_plan(
         return Err(String::from("config_unavailable"));
     };
 
-    let instruction = risc0_zkvm::serde::to_vec(&Instruction::UpdateConfig { new_authority })
+    let instruction = borsh::to_vec(&Instruction::UpdateConfig { new_authority })
         .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
     // Fixed IDL account order for UpdateConfig: the config account (mut, updated in place, not a
@@ -54,7 +54,7 @@ pub(super) fn withdraw_protocol_fees_plan(
         return Err(String::from("config_unavailable"));
     };
 
-    let instruction = risc0_zkvm::serde::to_vec(&Instruction::WithdrawProtocolFees { amount })
+    let instruction = borsh::to_vec(&Instruction::WithdrawProtocolFees { amount })
         .map_err(|error| format!("instruction serialization failed: {error}"))?;
 
     // Fixed IDL account order for WithdrawProtocolFees: config, the protocol-fee holding PDA (mut),

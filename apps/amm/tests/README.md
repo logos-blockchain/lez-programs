@@ -20,6 +20,7 @@ inspector (framework from
   deliberately **absent** from the token config) into a Liquidity token slot and
   verifies the app resolves it, selects it, and **persists** it to the custom-token
   store — the "add an unlisted token by id" path. No pool / submit involved.
+  Reads D's id from `testnet/custom-token-manifest.json`, written by the setup.
 - `faucet-swap.mjs` funds a **brand-new** account ("Token A Holder 2") that starts
   with no token A: it `initialize_account`s the account's token A holding, then
   submits a **FaucetMint** through the token-mint-authority program (both via `spel`,
@@ -64,7 +65,8 @@ TEST_SEQUENCER_ADDR=http://127.0.0.1:3040 apps/amm/tests/testnet/setup-amm-testn
 #    (it clears this file before + after running). Required for custom-token.mjs to
 #    avoid touching your real custom-token store.
 LEE_WALLET_HOME_DIR=$(pwd)/apps/amm/tests/testnet/.wallet \
-  AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
+  AMM_PROGRAM_ID=<deployed-amm-program-id> \
+  AMM_CONFIG_ID=<amm-config-id> \
   TOKENS_CONFIG=$(pwd)/apps/amm/tests/testnet/amm-tokens.json \
   CUSTOM_TOKEN_CONFIG=$(pwd)/apps/amm/tests/testnet/custom-tokens.json \
   nix run .#amm-ui

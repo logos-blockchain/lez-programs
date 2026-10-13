@@ -1,6 +1,6 @@
 use lee_core::{
-    account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, ProgramId},
+    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
+    program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
     compute_protocol_parameters_pda, verify_position_and_get_seed, Position, ProtocolParameters,
@@ -37,8 +37,8 @@ pub fn close_position(
     position: AccountWithMetadata,
     vault: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: ProgramId,
-) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    stablecoin_program_id: AccountId,
+) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     assert!(owner.is_authorized, "Owner authorization is missing");
 
     assert_ne!(
@@ -100,20 +100,17 @@ pub fn close_position(
     // where the two disagree, which would strand tokens behind a released PDA.
     assert_eq!(vault_balance, 0, "Vault still holds a balance");
 
-    let post_states = vec![
-        AccountPostState::new(owner.account),
-        // Clear the data only. The runtime forbids a program from changing an
-        // account's `program_owner` or `nonce` (LEE `validate_execution` rules 3
-        // and 4), so the PDA cannot actually be released — spec §10.9's
+    let state_diffs = vec![
+        AccountStateDiff::unchanged(owner),
+        // Clear the data only. A diff cannot change an account's `program_owner`
+        // or `nonce` — it does not carry them, and the runtime derives the post
+        // owner itself — so the PDA cannot actually be released; spec §10.9's
         // `Account::default()` is not expressible here. The account lingers
         // stablecoin-owned with empty data, like the vault does per §12.
-        AccountPostState::new(Account {
-            data: Data::default(),
-            ..position.account
-        }),
-        AccountPostState::new(vault.account),
-        AccountPostState::new(protocol_parameters.account),
+        AccountStateDiff::new(position, BalanceDiff::Add(0), Data::default()),
+        AccountStateDiff::unchanged(vault),
+        AccountStateDiff::unchanged(protocol_parameters),
     ];
 
-    (post_states, vec![])
+    (state_diffs, vec![])
 }

@@ -13,8 +13,19 @@ use super::{
     },
     TokenApiError, TokenResult,
 };
-use crate::account::{account_id_from_hex, account_id_hex, program_id_bytes};
+use crate::account::{account_id_from_hex, account_id_hex};
 
+/// Computes a binary's ImageID.
+///
+/// Since LEZ v0.2.5 this is **not** the program's address. A program is addressed by
+/// its deployed `ProgramHeader` account, and that account's id is chosen at deploy
+/// time -- `CreateHeader` writes the header into whatever undeployed account the
+/// deployer names. Use this to check that a binary matches a header's `image_id`
+/// field, not to work out where the program lives.
+///
+/// `imageIdBase58` is the same bytes as a base58 account id. That is the address a
+/// header *would* have if deployed at the image-id bijection address, which is a
+/// convention (the genesis/test harness uses it), not a guarantee.
 pub fn program_id(request: ProgramIdRequest) -> TokenResult {
     let elf = hex::decode(&request.elf).map_err(|_| TokenApiError::new("bad_request"))?;
     let binary = ProgramBinary::decode(&elf).map_err(|_| TokenApiError::new("bad_request"))?;
@@ -22,10 +33,10 @@ pub fn program_id(request: ProgramIdRequest) -> TokenResult {
         .compute_image_id()
         .map_err(|_| TokenApiError::new("backend_error"))?
         .into();
-    let program_id = AccountId::new(program_id_bytes(image_id));
+    let bijection_id = AccountId::from(image_id);
     Ok(json!({
-        "programId": hex::encode(program_id.into_value()),
-        "programIdBase58": program_id.to_string(),
+        "imageId": hex::encode(bijection_id.into_value()),
+        "imageIdBase58": bijection_id.to_string(),
     }))
 }
 
@@ -298,15 +309,17 @@ fn reject_zero_account_id(account_id: AccountId, code: &'static str) -> Result<(
 }
 
 fn plan_response<const N: usize>(
-    program_id: lee_core::program::ProgramId,
+    program_id: AccountId,
     account_ids: [AccountId; N],
     signing_requirements: [bool; N],
     instruction: Instruction,
 ) -> TokenResult {
+    // LEZ v0.2.5 decodes instruction data as Borsh, not RISC Zero's serde codec. The
+    // payload is therefore a byte array now, where it used to be an array of u32 words.
     let instruction =
-        risc0_zkvm::serde::to_vec(&instruction).map_err(|_| TokenApiError::new("backend_error"))?;
+        borsh::to_vec(&instruction).map_err(|_| TokenApiError::new("backend_error"))?;
     Ok(json!({
-        "programId": hex::encode(program_id_bytes(program_id)),
+        "programId": account_id_hex(program_id),
         "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
         "signingRequirements": signing_requirements.into_iter().collect::<Vec<_>>(),
         "instruction": instruction,
