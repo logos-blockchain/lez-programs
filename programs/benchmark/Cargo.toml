@@ -13,6 +13,7 @@ edition = "2021"
 [dependencies]
 lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2" }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
+borsh = "1"
 clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2" }
 twap_oracle_core = { path = "../twap_oracle/core" }
 twap-oracle-methods = { path = "../twap_oracle/methods" }

@@ -1,4 +1,4 @@
-.PHONY: build-programs clippy clippy-guest clippy-all test integration-test fmt idl changelog release
+.PHONY: build-programs clippy clippy-guest clippy-all check-benchmark test integration-test fmt idl changelog release
 
 build-programs:
 	./scripts/build-guests.sh
@@ -12,6 +12,10 @@ clippy-guest:
 	done
 
 clippy-all: clippy clippy-guest
+
+# The benchmark crate is excluded from the workspace, so workspace builds never compile it.
+check-benchmark:
+	RISC0_SKIP_BUILD=1 cargo clippy --manifest-path programs/benchmark/Cargo.toml --all-targets -- -D warnings
 
 test:
 	RISC0_DEV_MODE=1 cargo test --workspace

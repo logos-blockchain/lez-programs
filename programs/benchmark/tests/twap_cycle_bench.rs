@@ -2,13 +2,15 @@
 //!
 //! This runs the real `twap_oracle` guest ELF directly through the RISC Zero executor (no proving)
 //! with the session limit lifted, so we can measure the zkVM cycle cost of instructions that exceed
-//! the on-chain `MAX_NUM_CYCLES_PUBLIC_EXECUTION = 32 MiCycles` budget — `RecordTick` in
+//! the on-chain `DEFAULT_PUBLIC_CYCLE_BUDGET = 32 MiCycles` budget — `RecordTick` in
 //! particular, which aborts under the normal runtime and therefore can't be measured through
-//! `lee`'s `transition_from_public_transaction`.
+//! `lee`'s public-transaction path.
 //!
-//! It reproduces `lee::program::Program::execute`'s input encoding (four `env.write` calls:
-//! program id, caller program id, pre-states, instruction words) and reports the executor's
-//! user / paging / reserved / total cycle split per scenario.
+//! It writes the guest input with `lee::program::Program::write_inputs` — the exact encoding
+//! `Program::execute` uses (a `CallKind::Execute` frame, then the Borsh `ProgramInput` frame) — and
+//! reports the executor's user / paging / reserved / total cycle split per scenario. A run only
+//! counts as completed when the guest halts with exit code 0: since LEZ v0.2.5 a failing guest
+//! ends with a non-zero exit code rather than an executor error.
 //!
 //! Ignored by default (it executes the guest several times and prints a report). Run with:
 //!
@@ -16,19 +18,23 @@
 //! cargo test --manifest-path programs/benchmark/Cargo.toml -- --ignored --nocapture
 //! ```
 
+use std::borrow::Cow;
+
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
+use lee::program::{Program, DEFAULT_PUBLIC_CYCLE_BUDGET};
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
-    program::ProgramId,
+    from_frame,
+    program::{ProgramOutput, DEFAULT_PROGRAM_OWNER},
 };
-use risc0_zkvm::{default_executor, serde::to_vec, ExecutorEnv, ExecutorImpl};
+use risc0_zkvm::{default_executor, ExecutorEnv, ExecutorImpl, ExitCode};
 use twap_oracle_core::{
     compute_current_tick_account_pda, compute_price_observations_pda, CurrentTickAccount,
     Instruction, ObservationEntry, PriceObservations, OBSERVATIONS_CAPACITY,
 };
 
-/// The on-chain public-execution cycle ceiling (`MAX_NUM_CYCLES_PUBLIC_EXECUTION` in `lee`).
-const PUBLIC_EXECUTION_CYCLE_LIMIT: u64 = 1024 * 1024 * 32;
+/// The on-chain public-execution cycle ceiling.
+const PUBLIC_EXECUTION_CYCLE_LIMIT: u64 = DEFAULT_PUBLIC_CYCLE_BUDGET;
 
 /// A 24-hour window in milliseconds; `min_interval = WINDOW / OBSERVATIONS_CAPACITY ≈ 13.5 s`.
 const WINDOW_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -45,8 +51,17 @@ struct Cycles {
     total: u64,
 }
 
-fn program_id() -> ProgramId {
-    twap_oracle_methods::TWAP_ORACLE_ID
+/// The oracle's program address. Since LEZ v0.2.5 a program lives at its deployed header account,
+/// chosen at deploy time; the benchmark uses the ImageID bijection address, the deploy convention.
+fn program_id() -> AccountId {
+    AccountId::from(twap_oracle_methods::TWAP_ORACLE_ID)
+}
+
+fn program() -> Program {
+    Program::new_unchecked(
+        twap_oracle_methods::TWAP_ORACLE_ID,
+        Cow::Borrowed(twap_oracle_methods::TWAP_ORACLE_ELF),
+    )
 }
 
 fn price_source_id() -> AccountId {
@@ -87,10 +102,9 @@ fn observations_account(capacity: usize) -> AccountWithMetadata {
     };
     AccountWithMetadata {
         account: Account {
-            // Owned by the oracle: this is an *initialized* account on chain. Ownership is what
-            // makes the runtime commit the full ~100 KiB to the proof — the dominant cost, and the
-            // reason `RecordTick` (which reads this account) exceeds the budget while
-            // `CreatePriceObservations` (whose input is uninitialized) does not.
+            // Owned by the oracle: this is an *initialized* account on chain. Before LEZ v0.2.5
+            // ownership made the runtime commit the full account to the proof, the dominant cost;
+            // the unowned variant below measures whether that still holds (see README.md).
             program_owner: program_id(),
             data: Data::from(&observations),
             ..Account::default()
@@ -120,7 +134,7 @@ fn current_tick_account() -> AccountWithMetadata {
 /// much of the cost is the runtime committing the owned account vs. the Borsh round-trip itself.
 fn observations_account_unowned(capacity: usize) -> AccountWithMetadata {
     let mut meta = observations_account(capacity);
-    meta.account.program_owner = [0u32; 8];
+    meta.account.program_owner = DEFAULT_PROGRAM_OWNER;
     meta
 }
 
@@ -129,19 +143,13 @@ fn build_env<'a>(
     instruction: &Instruction,
     session_limit: Option<u64>,
 ) -> ExecutorEnv<'a> {
-    let instruction_data: Vec<u32> = to_vec(instruction).expect("instruction serializes");
+    let instruction_data =
+        Program::serialize_instruction(instruction).expect("instruction serializes");
 
     let mut builder = ExecutorEnv::builder();
-    builder.write(&program_id()).expect("write program id");
-    builder
-        .write(&None::<ProgramId>)
-        .expect("write caller program id");
-    builder
-        .write(&pre_states.to_vec())
-        .expect("write pre-states");
-    builder
-        .write(&instruction_data)
-        .expect("write instruction data");
+    program()
+        .write_inputs(program_id(), None, pre_states, &instruction_data, &mut builder)
+        .expect("write guest inputs");
     builder.session_limit(session_limit);
     builder.build().expect("env builds")
 }
@@ -152,7 +160,12 @@ fn run(pre_states: &[AccountWithMetadata], instruction: &Instruction) -> Cycles 
     let session = ExecutorImpl::from_elf(env, twap_oracle_methods::TWAP_ORACLE_ELF)
         .expect("loads ELF")
         .run()
-        .expect("guest executes without panicking");
+        .expect("guest executes");
+    assert_eq!(
+        session.exit_code,
+        ExitCode::Halted(0),
+        "guest exits without panicking"
+    );
 
     Cycles {
         user: session.user_cycles,
@@ -160,6 +173,19 @@ fn run(pre_states: &[AccountWithMetadata], instruction: &Instruction) -> Cycles 
         reserved: session.reserved_cycles,
         total: session.total_cycles,
     }
+}
+
+/// Runs the guest with the session limit lifted and decodes what it returned, to check that a
+/// scenario exercises the path it claims to measure.
+fn output(pre_states: &[AccountWithMetadata], instruction: &Instruction) -> ProgramOutput {
+    let env = build_env(pre_states, instruction, None);
+    let session = ExecutorImpl::from_elf(env, twap_oracle_methods::TWAP_ORACLE_ELF)
+        .expect("loads ELF")
+        .run()
+        .expect("guest executes");
+    let journal = session.journal.expect("guest commits a journal").bytes;
+    borsh::from_slice(from_frame(&journal).expect("journal is one frame"))
+        .expect("journal is a ProgramOutput")
 }
 
 /// Runs the guest under a hard session limit — exactly as `lee::program::Program::execute` does on
@@ -174,7 +200,7 @@ fn completes_under_limit(
     ExecutorImpl::from_elf(env, twap_oracle_methods::TWAP_ORACLE_ELF)
         .expect("loads ELF")
         .run()
-        .is_ok()
+        .is_ok_and(|session| session.exit_code == ExitCode::Halted(0))
 }
 
 /// Same as [`completes_under_limit`] but via `default_executor().execute()` — the EXACT entry point
@@ -188,7 +214,7 @@ fn completes_under_limit_via_default_executor(
     let env = build_env(pre_states, instruction, Some(limit));
     default_executor()
         .execute(env, twap_oracle_methods::TWAP_ORACLE_ELF)
-        .is_ok()
+        .is_ok_and(|info| info.exit_code == ExitCode::Halted(0))
 }
 
 /// `CreatePriceObservations` inputs: constructs and serializes the full buffer once (no
@@ -290,6 +316,17 @@ fn twap_record_tick_cycle_budget_report() {
         verdict(write_ok_de)
     );
 
+    // The write path really runs: RecordTick appends a second observation.
+    let recorded = output(&write_pre, &write_instr);
+    let observations = PriceObservations::try_from(
+        recorded.state_diffs[0]
+            .post_data
+            .as_ref()
+            .expect("RecordTick writes the observations account"),
+    )
+    .expect("observations decode");
+    assert_eq!(observations.total_entries, 2);
+
     // ── Cycle breakdown (session limit lifted). ──
     println!("\nMeasured cycle split (session limit lifted):\n");
     let create = run(&create_pre, &create_instr);
@@ -319,8 +356,8 @@ fn twap_record_tick_cycle_budget_report() {
         write.total as f64 / unowned.total as f64,
     );
 
-    // Cost-vs-capacity curve. The list spans the reduced capacity through the original 6396, which
-    // exceeds the budget — a guard against bumping OBSERVATIONS_CAPACITY back into the danger zone.
+    // Cost-vs-capacity curve, from the reduced capacity through the original 6396 (which exceeded
+    // the budget before LEZ v0.2.5), to watch for OBSERVATIONS_CAPACITY growing back into it.
     println!("\nRecordTick (owned) cost vs buffer capacity:\n");
     for capacity in [512usize, 1024, 2048, 4096, 6396] {
         let (pre, instr) = record_inputs(capacity, WINDOW_MS / capacity as u64 * 4);
