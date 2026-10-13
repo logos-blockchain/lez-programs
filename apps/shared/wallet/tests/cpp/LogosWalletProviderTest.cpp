@@ -18,6 +18,7 @@ namespace {
 const QString ACCOUNT_A(64, QLatin1Char('a'));
 const QString ACCOUNT_B(64, QLatin1Char('b'));
 const QString PROGRAM_ID(64, QLatin1Char('c'));
+const QString ACCOUNT_D(64, QLatin1Char('d'));
 
 QString publicAccountJson(const QString& owner = PROGRAM_ID,
                           const QString& balance = QStringLiteral("01000000000000000000000000000000"),
@@ -55,10 +56,12 @@ private slots:
     void preservesCreatedAccountWhenSnapshotRefreshFails();
     void dispatchesExactGenericTransaction();
     void rejectsInvalidSubmissionResponses();
+    void requiresSigningOrSeparateFeePayer();
     void exposesStableAccountModelRoles();
     void fakeProviderImplementsConsumerContract();
     void controllerOwnsUiWalletFlow();
     void controllerStopsReachabilityChecksAfterDisconnect();
+    void controllerSelectsFundedFeePayer();
 };
 
 void LogosWalletProviderTest::adoptsOpenWalletAndCachesSnapshots()
@@ -289,17 +292,19 @@ void LogosWalletProviderTest::dispatchesExactGenericTransaction()
     transaction.accountIds = { ACCOUNT_A, ACCOUNT_B };
     transaction.signingRequirements = { true, false };
     transaction.instruction = { 7, 0, 4294967295U };
+    transaction.feePayerId = ACCOUNT_D;
 
     const WalletSubmission submission = provider.submitPublicTransaction(transaction);
     QVERIFY(submission.accepted());
     QCOMPARE(submission.nativeHash, QString(64, QLatin1Char('a')));
     QCOMPARE(modules.lez_core.submitCalls, 1);
     QCOMPARE(modules.lez_core.submittedProgramId, PROGRAM_ID);
+    QCOMPARE(modules.lez_core.submittedPayerAccountId, ACCOUNT_D);
     QCOMPARE(modules.lez_core.submittedAccountIds, transaction.accountIds);
     QCOMPARE(modules.lez_core.submittedSigningRequirements,
              QVariantList({ true, false }));
-    QCOMPARE(modules.lez_core.submittedInstruction.toList(),
-             QVariantList({ 7U, 0U, 4294967295U }));
+    QCOMPARE(modules.lez_core.submittedInstruction.toByteArray(),
+             QByteArray::fromHex("0700000000000000ffffffff"));
 }
 
 void LogosWalletProviderTest::rejectsInvalidSubmissionResponses()
@@ -314,6 +319,7 @@ void LogosWalletProviderTest::rejectsInvalidSubmissionResponses()
         { ACCOUNT_A },
         { true },
         { 1 },
+        ACCOUNT_A,
     };
 
     const QStringList invalidResponses {
@@ -331,6 +337,32 @@ void LogosWalletProviderTest::rejectsInvalidSubmissionResponses()
     transaction.signingRequirements.clear();
     QCOMPARE(provider.submitPublicTransaction(transaction).failure,
              WalletFailure::InvalidRequest);
+}
+
+void LogosWalletProviderTest::requiresSigningOrSeparateFeePayer()
+{
+    LogosModules modules;
+    modules.lez_core.sequencerAddress = QStringLiteral("http://sequencer");
+    modules.lez_core.transactionResponse = QStringLiteral(
+        R"({"success":true,"tx_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})");
+    LogosWalletProvider provider(&modules);
+    QVERIFY(provider.connect({}).ok());
+
+    // Fresh, unfunded signers (a token create flow) paid for by a separate account.
+    WalletTransaction transaction { PROGRAM_ID, { ACCOUNT_A, ACCOUNT_B }, { true, false }, { 1 } };
+    QCOMPARE(provider.submitPublicTransaction(transaction).failure,
+             WalletFailure::InvalidRequest);
+    transaction.feePayerId = ACCOUNT_B;
+    QCOMPARE(provider.submitPublicTransaction(transaction).failure,
+             WalletFailure::InvalidRequest);
+    QCOMPARE(modules.lez_core.submitCalls, 0);
+
+    transaction.feePayerId = ACCOUNT_A;
+    QVERIFY(provider.submitPublicTransaction(transaction).accepted());
+    QCOMPARE(modules.lez_core.submittedPayerAccountId, ACCOUNT_A);
+    transaction.feePayerId = ACCOUNT_D;
+    QVERIFY(provider.submitPublicTransaction(transaction).accepted());
+    QCOMPARE(modules.lez_core.submittedPayerAccountId, ACCOUNT_D);
 }
 
 void LogosWalletProviderTest::exposesStableAccountModelRoles()
@@ -363,7 +395,7 @@ void LogosWalletProviderTest::fakeProviderImplementsConsumerContract()
     QVERIFY(provider.lastForceRefresh);
     QCOMPARE(provider.readPublicAccount(ACCOUNT_B).accountId, ACCOUNT_B);
     QCOMPARE(provider.readCalls, 1);
-    WalletTransaction transaction { PROGRAM_ID, { ACCOUNT_A }, { true }, { 9 } };
+    WalletTransaction transaction { PROGRAM_ID, { ACCOUNT_A }, { true }, { 9 }, ACCOUNT_A };
     QVERIFY(provider.submitPublicTransaction(transaction).accepted());
     QCOMPARE(provider.lastTransaction.instruction, transaction.instruction);
     provider.disconnect();
@@ -443,6 +475,50 @@ void LogosWalletProviderTest::controllerStopsReachabilityChecksAfterDisconnect()
     controller.start();
     QTest::qWait(50);
     QCOMPARE(finished.count(), 0);
+
+    settings.clear();
+}
+
+void LogosWalletProviderTest::controllerSelectsFundedFeePayer()
+{
+    const QString settingsApplication = QStringLiteral("WalletFeePayerTest");
+    QSettings settings(QStringLiteral("Logos"), settingsApplication);
+    settings.clear();
+
+    // u128 balances beyond 64 bits, a private account, and an unfunded one.
+    FakeWalletProvider provider;
+    provider.connectResult.snapshot.accounts = {
+        { ACCOUNT_A, QStringLiteral("0"), true },
+        { ACCOUNT_B, QStringLiteral("99999999999999999999"), true },
+        { ACCOUNT_D, QStringLiteral("100000000000000000000"), true },
+        { PROGRAM_ID, QStringLiteral("900000000000000000000"), false },
+    };
+    WalletController controller(provider, settingsApplication);
+    QVERIFY(controller.open());
+    QCOMPARE(controller.state().feePayerId, ACCOUNT_D);
+
+    QVERIFY(!controller.setFeePayer(ACCOUNT_A));
+    QVERIFY(!controller.setFeePayer(PROGRAM_ID));
+    QVERIFY(controller.setFeePayer(ACCOUNT_B.toUpper()));
+    QCOMPARE(controller.state().feePayerId, ACCOUNT_B);
+
+    // The choice survives a restart, and falls back once it can no longer pay.
+    WalletController restarted(provider, settingsApplication);
+    QVERIFY(restarted.open());
+    QCOMPARE(restarted.state().feePayerId, ACCOUNT_B);
+    provider.snapshotResult.accounts = {
+        { ACCOUNT_B, QStringLiteral("0"), true },
+        { ACCOUNT_D, QStringLiteral("1"), true },
+    };
+    restarted.refresh();
+    QCOMPARE(restarted.state().feePayerId, ACCOUNT_D);
+
+    provider.snapshotResult.accounts = { { ACCOUNT_A, QStringLiteral("0"), true } };
+    restarted.refresh();
+    QVERIFY(restarted.state().feePayerId.isEmpty());
+
+    restarted.disconnect();
+    QVERIFY(restarted.state().feePayerId.isEmpty());
 
     settings.clear();
 }

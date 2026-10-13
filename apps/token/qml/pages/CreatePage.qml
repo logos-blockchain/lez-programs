@@ -218,7 +218,9 @@ Item {
             root.submitting = false;
             if (!result || result.status !== "ok") {
                 root.prepared = false;
-                root.errorMessage = qsTr("Token Program rejected the request: %1").arg(result && result.error ? result.error : qsTr("unknown_error"));
+                root.errorMessage = result && result.error === "fee_payer_required"
+                    ? qsTr("No funded public account to pay the network fee. Fund one, then pick it as the fee payer in the wallet menu.")
+                    : qsTr("Token Program rejected the request: %1").arg(result && result.error ? result.error : qsTr("unknown_error"));
                 return;
             }
 

@@ -17,7 +17,32 @@
 namespace {
 const char SETTINGS_ORG[] = "Logos";
 const char DISCONNECTED_KEY[] = "disconnected";
+const char FEE_PAYER_KEY[] = "feePayer";
 const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
+
+// A public account with a non-zero balance. Balances are u128 decimal strings.
+bool canPayFees(const WalletAccount& account)
+{
+    if (!account.isPublic || account.balance.isEmpty())
+        return false;
+    for (const QChar c : account.balance) {
+        if (!c.isDigit())
+            return false;
+        if (c != QLatin1Char('0'))
+            return true;
+    }
+    return false;
+}
+
+// Compares u128 decimal strings without narrowing them.
+bool balanceLess(QString left, QString right)
+{
+    while (left.size() > 1 && left.startsWith(QLatin1Char('0')))
+        left.remove(0, 1);
+    while (right.size() > 1 && right.startsWith(QLatin1Char('0')))
+        right.remove(0, 1);
+    return left.size() != right.size() ? left.size() < right.size() : left < right;
+}
 
 QString toLocalPath(const QString& path)
 {
@@ -166,6 +191,8 @@ void WalletController::disconnect()
 {
     m_wallet.disconnect();
     m_state.isWalletOpen = false;
+    m_state.feePayerId.clear();
+    m_accounts.clear();
     m_accountModel->replaceAccounts({});
     QSettings(SETTINGS_ORG, m_settingsApplication).setValue(DISCONNECTED_KEY, true);
     emit stateChanged();
@@ -209,8 +236,46 @@ QString WalletController::balance(const QString& accountId, bool isPublic)
     return {};
 }
 
+bool WalletController::setFeePayer(const QString& accountId)
+{
+    const QString id = accountId.trimmed().toLower();
+    for (const WalletAccount& account : m_accounts) {
+        if (account.address.toLower() != id || !canPayFees(account))
+            continue;
+        QSettings(SETTINGS_ORG, m_settingsApplication).setValue(FEE_PAYER_KEY, id);
+        if (m_state.feePayerId != id) {
+            m_state.feePayerId = id;
+            emit stateChanged();
+        }
+        return true;
+    }
+    return false;
+}
+
+// Keeps the persisted choice while it can still pay; otherwise defaults to the
+// best-funded public account, without persisting that default.
+void WalletController::selectFeePayer(const QVector<WalletAccount>& accounts)
+{
+    const QString saved = QSettings(SETTINGS_ORG, m_settingsApplication)
+        .value(FEE_PAYER_KEY).toString();
+    const WalletAccount* best = nullptr;
+    for (const WalletAccount& account : accounts) {
+        if (!canPayFees(account))
+            continue;
+        if (account.address.toLower() == saved) {
+            m_state.feePayerId = saved;
+            return;
+        }
+        if (!best || balanceLess(best->balance, account.balance))
+            best = &account;
+    }
+    m_state.feePayerId = best ? best->address.toLower() : QString();
+}
+
 void WalletController::applySnapshot(const WalletSnapshot& snapshot)
 {
+    m_accounts = snapshot.accounts;
+    selectFeePayer(m_accounts);
     m_accountModel->replaceAccounts(snapshot.accounts);
     m_state.lastSyncedBlock = static_cast<int>(snapshot.lastSyncedBlock);
     m_state.currentBlockHeight = static_cast<int>(snapshot.currentBlockHeight);

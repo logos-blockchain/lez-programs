@@ -85,6 +85,9 @@ struct WalletTransaction {
     QStringList accountIds;
     QVector<bool> signingRequirements;
     QVector<quint32> instruction;
+    // Funded public wallet account paying the fee: a signer, or a separate
+    // account that co-signs. Required; never a non-signing participant.
+    QString feePayerId;
 };
 
 struct WalletSubmission {

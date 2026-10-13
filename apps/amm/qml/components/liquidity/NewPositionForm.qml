@@ -1065,6 +1065,8 @@ AmmActionCard {
             "no_wallet": qsTr("Connect a wallet to submit this position."),
             "wallet_unavailable": qsTr("Wallet is unavailable."),
             "wallet_submission_failed": qsTr("Wallet submission failed. Review and retry manually."),
+            "fee_payer_required": qsTr("No funded public account to pay the network fee."),
+            "invalid_fee_payer": qsTr("The selected fee payer cannot pay for this transaction."),
             "signature_rejected": qsTr("Wallet approval was rejected."),
             "submit_in_progress": qsTr("A submission is already in progress."),
             "transaction_deadline_expired": qsTr("Wallet approval expired. Retry to create a fresh request."),

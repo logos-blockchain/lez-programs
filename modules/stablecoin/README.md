@@ -63,10 +63,14 @@ Required request fields:
 | `maximumOraclePriceAgeMilliseconds` | exact `u64` decimal |
 | `initialRedemptionPrice` | exact `u128` decimal |
 | `stablecoinName` | string accepted by the Stablecoin Program |
+| `feePayerId` | funded public wallet account that pays the transaction fee |
 
 The module verifies all five derived target PDAs are uninitialized, validates
 the collateral definition, oracle asset pair, and clock accounts, then submits
-the exact nine-account instruction. Only `adminId` signs. Success adds
+the exact nine-account instruction. Only `adminId` signs. LEZ charges public
+transactions, so `feePayerId` must name a funded account in the connected
+wallet: the admin itself or a separate account, which co-signs the fee. A
+non-signing participant is rejected with `invalid_fee_payer`. Success adds
 `transactionId` to the response envelope.
 
 Pass numeric values as decimal strings. JSON integers are accepted when their

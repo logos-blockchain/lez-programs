@@ -37,7 +37,8 @@ public:
     /// `initialMinimumCollateralizationRatio`,
     /// `minimumMillisecondsBetweenRateUpdates`,
     /// `maximumOraclePriceAgeMilliseconds`, `initialRedemptionPrice`, and
-    /// `stablecoinName`. Integer values accept exact decimal strings or JSON
+    /// `stablecoinName`, plus `feePayerId`: a funded public wallet account that
+    /// pays the transaction fee (the admin or a separate account). Integer values accept exact decimal strings or JSON
     /// integers; JSON floats are rejected. Only `adminId` signs.
     LogosMap initializeProgram(const LogosMap& request);
 
@@ -47,7 +48,7 @@ private:
     std::string normalizeAccountId(const std::string& id);
     nlohmann::json readPublicAccount(const std::string& account_id);
     bool requireUninitialized(const std::string& account_id, std::string& error);
-    LogosMap submitPlan(const nlohmann::json& plan);
+    LogosMap submitPlan(const nlohmann::json& plan, const std::string& fee_payer);
 
     bool programInfoResolved_ = false;
     std::string programInfoJson_;

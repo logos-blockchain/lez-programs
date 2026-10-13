@@ -30,15 +30,6 @@ namespace {
 using json = nlohmann::json;
 
 constexpr char TOKEN_PROGRAM_BIN_ENV[] = "TOKEN_PROGRAM_BIN";
-// LEZ v0.2.5 made public transactions charge a fee, and the wallet FFI grew a
-// `payer_account_id_hex` parameter for it. Empty means "no explicit payer": the
-// module passes a null payer through to wallet-ffi, which falls back to the
-// wallet's own selection -- the transaction's first signing account self-pays.
-// That is the pre-fee behaviour, so these call sites keep it. Note the payer must
-// hold a balance, so a UI flow whose signer is an unfunded account needs a real
-// payer threaded down to here rather than this default.
-constexpr char FEE_PAYER_SELF[] = "";
-
 constexpr char TOKEN_PROGRAM_ID_ENV[] = "TOKEN_PROGRAM_ID";
 std::mutex programInfoMutex;
 
@@ -496,7 +487,8 @@ LogosMap TokenModuleImpl::walletTokenAccounts() {
     });
 }
 
-LogosMap TokenModuleImpl::submitPlan(const nlohmann::json& plan) {
+LogosMap TokenModuleImpl::submitPlan(const nlohmann::json& plan,
+                                     const std::string& fee_payer_id) {
     const auto account_ids_it = plan.find("accountIds");
     const auto signers_it = plan.find("signingRequirements");
     const auto instruction_it = plan.find("instruction");
@@ -519,13 +511,25 @@ LogosMap TokenModuleImpl::submitPlan(const nlohmann::json& plan) {
         return publicError("backend_error");
     }
 
+    // LEZ v0.2.5 charges public transactions. The payer is always explicit: the
+    // wallet's own fallback picks among the signers, which are fresh, unfunded
+    // accounts in every create flow. It may be a signer or any other funded
+    // wallet account (which co-signs), but never a non-signing participant.
+    const std::string payer = normalizeAccountId(fee_payer_id);
+    if (payer.empty()) return publicError("invalid_fee_payer");
+    for (std::size_t i = 0; i < account_ids.size(); ++i) {
+        if (lowercase(account_ids[i]) == payer && !signers[i]) {
+            return publicError("invalid_fee_payer");
+        }
+    }
+
     logos::CallError call_error;
     const std::string raw = modules().lez_core.send_generic_public_transaction(
         account_ids,
         signers,
         instruction,
         program_id,
-        FEE_PAYER_SELF,
+        payer,
         &call_error);
     if (!call_error.ok()) {
         TOKEN_TRACE("lez_core submission transport failure: " << call_error.code);
@@ -556,7 +560,9 @@ bool TokenModuleImpl::normalizeAuthority(const std::string& authority,
     return !normalized.empty();
 }
 
-LogosMap TokenModuleImpl::planAndSubmit(TokenOperation planner, nlohmann::json request) {
+LogosMap TokenModuleImpl::planAndSubmit(TokenOperation planner,
+                                        nlohmann::json request,
+                                        const std::string& fee_payer_id) {
     const json info = tokenProgramInfo();
     if (!info.is_object()) return publicError("config_missing");
     const std::string configured_program = jsonString(info, "programIdHex");
@@ -567,14 +573,15 @@ LogosMap TokenModuleImpl::planAndSubmit(TokenOperation planner, nlohmann::json r
     if (lowercase(jsonString(result.value, "programId")) != configured_program) {
         return publicError("backend_error");
     }
-    return submitPlan(result.value);
+    return submitPlan(result.value, fee_payer_id);
 }
 
 LogosMap TokenModuleImpl::createFungible(const std::string& definition_target_id,
                                          const std::string& holding_target_id,
                                          const std::string& name,
                                          const nlohmann::json& total_supply_raw,
-                                         const std::string& mint_authority) {
+                                         const std::string& mint_authority,
+                                         const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string definition = normalizeAccountId(definition_target_id);
         const std::string holding = normalizeAccountId(holding_target_id);
@@ -594,7 +601,7 @@ LogosMap TokenModuleImpl::createFungible(const std::string& definition_target_id
             {"name", name},
             {"totalSupplyRaw", total_supply_raw},
             {"mintAuthority", authority},
-        });
+        }, fee_payer_id);
     });
 }
 
@@ -607,7 +614,8 @@ LogosMap TokenModuleImpl::createFungibleWithMetadata(
     const std::string& mint_authority,
     const std::string& metadata_standard,
     const std::string& uri,
-    const std::string& creators) {
+    const std::string& creators,
+    const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string definition = normalizeAccountId(definition_target_id);
         const std::string holding = normalizeAccountId(holding_target_id);
@@ -635,7 +643,7 @@ LogosMap TokenModuleImpl::createFungibleWithMetadata(
             {"metadataStandard", metadata_standard},
             {"uri", uri},
             {"creators", creators},
-        });
+        }, fee_payer_id);
     });
 }
 
@@ -647,7 +655,8 @@ LogosMap TokenModuleImpl::createNonFungible(
     const nlohmann::json& printable_supply_raw,
     const std::string& metadata_standard,
     const std::string& uri,
-    const std::string& creators) {
+    const std::string& creators,
+    const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string definition = normalizeAccountId(definition_target_id);
         const std::string master = normalizeAccountId(master_holding_target_id);
@@ -670,12 +679,13 @@ LogosMap TokenModuleImpl::createNonFungible(
             {"metadataStandard", metadata_standard},
             {"uri", uri},
             {"creators", creators},
-        });
+        }, fee_payer_id);
     });
 }
 
 LogosMap TokenModuleImpl::initializeHolding(const std::string& definition_id,
-                                            const std::string& holding_target_id) {
+                                            const std::string& holding_target_id,
+                                            const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string definition = normalizeAccountId(definition_id);
         const std::string holding = normalizeAccountId(holding_target_id);
@@ -685,13 +695,14 @@ LogosMap TokenModuleImpl::initializeHolding(const std::string& definition_id,
         return planAndSubmit(token_initialize_holding_plan, {
             {"definitionId", definition},
             {"holdingTargetId", holding},
-        });
+        }, fee_payer_id);
     });
 }
 
 LogosMap TokenModuleImpl::transfer(const std::string& sender_holding_id,
                                    const std::string& recipient_holding_id,
-                                   const nlohmann::json& amount_raw) {
+                                   const nlohmann::json& amount_raw,
+                                   const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string sender = normalizeAccountId(sender_holding_id);
         const std::string recipient = normalizeAccountId(recipient_holding_id);
@@ -706,13 +717,14 @@ LogosMap TokenModuleImpl::transfer(const std::string& sender_holding_id,
             {"recipientHoldingId", recipient},
             {"amountRaw", amount_raw},
             {"recipientIsFresh", recipient_fresh},
-        });
+        }, fee_payer_id);
     });
 }
 
 LogosMap TokenModuleImpl::burn(const std::string& definition_id,
                                const std::string& holding_id,
-                               const nlohmann::json& amount_raw) {
+                               const nlohmann::json& amount_raw,
+                               const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string definition = normalizeAccountId(definition_id);
         const std::string holding = normalizeAccountId(holding_id);
@@ -721,13 +733,14 @@ LogosMap TokenModuleImpl::burn(const std::string& definition_id,
             {"definitionId", definition},
             {"holdingId", holding},
             {"amountRaw", amount_raw},
-        });
+        }, fee_payer_id);
     });
 }
 
 LogosMap TokenModuleImpl::mint(const std::string& definition_id,
                                const std::string& holding_id,
-                               const nlohmann::json& amount_raw) {
+                               const nlohmann::json& amount_raw,
+                               const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string definition = normalizeAccountId(definition_id);
         const std::string holding = normalizeAccountId(holding_id);
@@ -740,14 +753,15 @@ LogosMap TokenModuleImpl::mint(const std::string& definition_id,
             {"holdingId", holding},
             {"amountRaw", amount_raw},
             {"holdingIsFresh", holding_fresh},
-        });
+        }, fee_payer_id);
     });
 }
 
 LogosMap TokenModuleImpl::mintWithAuthority(const std::string& definition_id,
                                             const std::string& holding_id,
                                             const std::string& authority_id,
-                                            const nlohmann::json& amount_raw) {
+                                            const nlohmann::json& amount_raw,
+                                            const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string definition = normalizeAccountId(definition_id);
         const std::string holding = normalizeAccountId(holding_id);
@@ -763,12 +777,13 @@ LogosMap TokenModuleImpl::mintWithAuthority(const std::string& definition_id,
             {"authorityId", authority},
             {"amountRaw", amount_raw},
             {"holdingIsFresh", holding_fresh},
-        });
+        }, fee_payer_id);
     });
 }
 
 LogosMap TokenModuleImpl::setAuthority(const std::string& definition_id,
-                                       const std::string& new_authority) {
+                                       const std::string& new_authority,
+                                       const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string definition = normalizeAccountId(definition_id);
         if (definition.empty()) return publicError("invalid_account_id");
@@ -779,14 +794,15 @@ LogosMap TokenModuleImpl::setAuthority(const std::string& definition_id,
         return planAndSubmit(token_set_authority_plan, {
             {"definitionId", definition},
             {"newAuthority", authority},
-        });
+        }, fee_payer_id);
     });
 }
 
 LogosMap TokenModuleImpl::setAuthorityWithAuthority(
     const std::string& definition_id,
     const std::string& authority_id,
-    const std::string& new_authority) {
+    const std::string& new_authority,
+    const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string definition = normalizeAccountId(definition_id);
         const std::string current_authority = normalizeAccountId(authority_id);
@@ -800,12 +816,13 @@ LogosMap TokenModuleImpl::setAuthorityWithAuthority(
             {"definitionId", definition},
             {"authorityId", current_authority},
             {"newAuthority", next_authority},
-        });
+        }, fee_payer_id);
     });
 }
 
 LogosMap TokenModuleImpl::printNft(const std::string& master_holding_id,
-                                   const std::string& printed_holding_target_id) {
+                                   const std::string& printed_holding_target_id,
+                                   const std::string& fee_payer_id) {
     return guarded([&]() -> LogosMap {
         const std::string master = normalizeAccountId(master_holding_id);
         const std::string printed = normalizeAccountId(printed_holding_target_id);
@@ -815,6 +832,6 @@ LogosMap TokenModuleImpl::printNft(const std::string& master_holding_id,
         return planAndSubmit(token_print_nft_plan, {
             {"masterHoldingId", master},
             {"printedHoldingTargetId", printed},
-        });
+        }, fee_payer_id);
     });
 }

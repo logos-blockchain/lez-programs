@@ -53,6 +53,7 @@ public slots:
     QString createNew(QString configPath, QString storagePath, QString password) override;
     bool openExisting() override;
     void disconnectWallet() override;
+    bool setFeePayer(QString accountId) override;
 
     // AMM — all forwarded to the amm_module core module.
     QVariantMap resolvePoolAccount(QString defAHex, QString defBHex) override;
@@ -111,6 +112,8 @@ public slots:
 
 private:
     void syncWalletState();
+    QVariantMap submitBlocked() const;
+    QVariantMap withFeePayer(QVariantMap request) const;
     // The registry URL persisted as a global (per-user) QSettings value — the
     // source RegistryLoader falls back to when AMM_REGISTRY_URL is unset. The
     // getter returns "" when none is set.

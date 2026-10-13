@@ -53,6 +53,13 @@ except the two swaps which return a bare tx hash)
   (the per-`(config, token)` PDA) to a destination holding of that token. Takes
   `{ tokenDefinitionId, destinationId, amount }`.
 
+Every submit names its **fee payer** (LEZ charges public transactions): a funded
+public account in the connected wallet, passed as `feePayerId` in the request
+map, or as the trailing argument of the two swaps. It may be one of the signers
+or a separate account that co-signs the fee; it is never inferred, because the
+signers can all be unfunded. A missing payer, or one that takes part without
+signing, fails with `invalid_fee_payer` (an empty hash for the swaps).
+
 See **Amount / id conventions** below, and the
 [full `logoscore` runbook](../../docs/module/amm.md) for a worked call per method.
 
@@ -235,7 +242,7 @@ conventions above — small amount bare, deadline (and any big amount) quoted:
 ```bash
 logoscore call amm_module swapExactInput \
   <defA_hex> <defB_hex> <inputHolding_hex> <outputHolding_hex> \
-  1000 1 '"32503680000000"'
+  1000 1 '"32503680000000"' <feePayer_hex>
 # big amount: replace 1000 with '"1000000000000000000"'
 ```
 

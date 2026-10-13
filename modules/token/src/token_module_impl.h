@@ -49,7 +49,8 @@ public:
                             const std::string& holding_target_id,
                             const std::string& name,
                             const nlohmann::json& total_supply_raw,
-                            const std::string& mint_authority);
+                            const std::string& mint_authority,
+                            const std::string& fee_payer_id);
 
     /// Creates a metadata-backed fungible definition. All three target IDs are
     /// fresh public wallet accounts and sign. Standard is simple or expanded.
@@ -61,7 +62,8 @@ public:
                                         const std::string& mint_authority,
                                         const std::string& metadata_standard,
                                         const std::string& uri,
-                                        const std::string& creators);
+                                        const std::string& creators,
+                                        const std::string& fee_payer_id);
 
     /// Creates a non-fungible definition, master holding, and metadata. All
     /// targets must be fresh public wallet accounts and sign.
@@ -72,49 +74,58 @@ public:
                                const nlohmann::json& printable_supply_raw,
                                const std::string& metadata_standard,
                                const std::string& uri,
-                               const std::string& creators);
+                               const std::string& creators,
+                               const std::string& fee_payer_id);
 
     /// Initializes a fresh wallet-owned holding; holding target signs.
     LogosMap initializeHolding(const std::string& definition_id,
-                               const std::string& holding_target_id);
+                               const std::string& holding_target_id,
+                               const std::string& fee_payer_id);
 
     /// Transfers exact raw amount. Sender signs. Recipient signs only when its
     /// live account is empty and wallet ownership proves it is fresh.
     LogosMap transfer(const std::string& sender_holding_id,
                       const std::string& recipient_holding_id,
-                      const nlohmann::json& amount_raw);
+                      const nlohmann::json& amount_raw,
+                      const std::string& fee_payer_id);
 
     /// Burns exact raw amount. Holding signs.
     LogosMap burn(const std::string& definition_id,
                   const std::string& holding_id,
-                  const nlohmann::json& amount_raw);
+                  const nlohmann::json& amount_raw,
+                  const std::string& fee_payer_id);
 
     /// Mints through self-authority. Definition signs; holding signs only when
     /// live state and wallet ownership prove it is fresh.
     LogosMap mint(const std::string& definition_id,
                   const std::string& holding_id,
-                  const nlohmann::json& amount_raw);
+                  const nlohmann::json& amount_raw,
+                  const std::string& fee_payer_id);
 
     /// Mints through explicit external authority. Authority signs; holding
     /// signs only when live state and wallet ownership prove it is fresh.
     LogosMap mintWithAuthority(const std::string& definition_id,
                                const std::string& holding_id,
                                const std::string& authority_id,
-                               const nlohmann::json& amount_raw);
+                               const nlohmann::json& amount_raw,
+                               const std::string& fee_payer_id);
 
     /// Rotates/revokes self authority. `new_authority`: none, self, or account
     /// ID. Definition signs.
     LogosMap setAuthority(const std::string& definition_id,
-                          const std::string& new_authority);
+                          const std::string& new_authority,
+                          const std::string& fee_payer_id);
 
     /// Rotates/revokes explicit external authority. Current authority signs.
     LogosMap setAuthorityWithAuthority(const std::string& definition_id,
                                        const std::string& authority_id,
-                                       const std::string& new_authority);
+                                       const std::string& new_authority,
+                                       const std::string& fee_payer_id);
 
     /// Prints an NFT copy. Master and fully fresh printed target both sign.
     LogosMap printNft(const std::string& master_holding_id,
-                      const std::string& printed_holding_target_id);
+                      const std::string& printed_holding_target_id,
+                      const std::string& fee_payer_id);
 
 private:
     using TokenOperation = char* (*)(const char*);
@@ -135,8 +146,10 @@ private:
                             const char* payload_key);
     bool normalizeAuthority(const std::string& authority,
                             std::string& normalized);
-    LogosMap planAndSubmit(TokenOperation planner, nlohmann::json request);
-    LogosMap submitPlan(const nlohmann::json& plan);
+    LogosMap planAndSubmit(TokenOperation planner,
+                           nlohmann::json request,
+                           const std::string& fee_payer_id);
+    LogosMap submitPlan(const nlohmann::json& plan, const std::string& fee_payer_id);
 
     bool programInfoResolved_ = false;
     std::string programId_;

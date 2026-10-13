@@ -25,6 +25,15 @@
 // Public methods ARE the module's API; the Qt plugin glue is generated from
 // this header because metadata.json sets "interface": "universal". Keep the
 // header Qt-free — std types only.
+//
+// Fee payer: LEZ v0.2.5 charges public transactions, so every submitting method names
+// its payer — `request.feePayerId` for the request-map methods, the trailing
+// `fee_payer_hex` for the swaps. It must be a funded public account in the connected
+// wallet: one of the signers, or a separate account that co-signs the fee. It is never
+// inferred, because the signers may all be unfunded (fresh accounts, or no signer at
+// all for the permissionless ops). A missing payer, or one that takes part in the
+// transaction without signing, fails with `invalid_fee_payer` (an empty hash for the
+// swaps).
 class AmmModuleImpl : public LogosModuleContext {
 public:
     AmmModuleImpl() = default;
@@ -131,7 +140,8 @@ public:
                                const std::string& user_output_holding_hex,
                                const nlohmann::json& amount_in,
                                const nlohmann::json& min_out,
-                               const nlohmann::json& deadline);
+                               const nlohmann::json& deadline,
+                               const std::string& fee_payer_hex);
 
     /// Submits an on-chain SwapExactOutput transaction against the pool for
     /// (def_a_hex = token in, def_b_hex = token out). amount_out / max_in are
@@ -145,7 +155,8 @@ public:
                                 const std::string& user_output_holding_hex,
                                 const nlohmann::json& amount_out,
                                 const nlohmann::json& max_in,
-                                const nlohmann::json& deadline);
+                                const nlohmann::json& deadline,
+                                const std::string& fee_payer_hex);
 
     /// Prices creating a pool for (tokenAId, tokenBId) from the two deposit amounts.
     /// A pure preview — no chain reads, and no fee needed (the fee is not part of the
@@ -289,6 +300,12 @@ private:
     // Normalizes an account id given as 64-char hex or base58 to lowercase hex
     // (base58 via the wallet module). Empty string if it is neither.
     std::string normalizeAccountId(const std::string& id);
+
+    // The normalized fee payer for a planned transaction, or empty when it is missing
+    // or names a non-signing participant (see the class comment).
+    std::string feePayerFor(const std::string& fee_payer_id,
+                            const std::vector<std::string>& accounts,
+                            const std::vector<bool>& signers);
 
     // Reads the active instance's config account (at ammConfigId()) and returns the
     // account-read shape the amm_ffi ops embed. Null json when no config id is

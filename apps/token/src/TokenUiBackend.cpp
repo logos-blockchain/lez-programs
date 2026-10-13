@@ -145,11 +145,28 @@ void TokenUiBackend::syncWalletState()
     setCurrentBlockHeight(state.currentBlockHeight);
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
+    setFeePayerId(state.feePayerId);
+}
+
+bool TokenUiBackend::setFeePayer(QString accountId)
+{
+    return m_walletController->setFeePayer(accountId);
 }
 
 QVariantMap TokenUiBackend::walletUnavailable() const
 {
     return errorResult(QStringLiteral("wallet_unavailable"));
+}
+
+// Every submit needs an open wallet and a funded fee payer (LEZ charges public
+// transactions, and fresh create targets cannot pay). Empty when clear to submit.
+QVariantMap TokenUiBackend::submitBlocked() const
+{
+    if (!m_walletController->state().isWalletOpen)
+        return walletUnavailable();
+    if (m_walletController->state().feePayerId.isEmpty())
+        return errorResult(QStringLiteral("fee_payer_required"));
+    return {};
 }
 
 QVariantMap TokenUiBackend::refreshAfterSubmit(QVariantMap result)
@@ -349,11 +366,12 @@ QVariantMap TokenUiBackend::createFungible(QString definitionTargetId,
                                             QString holdingTargetId, QString name,
                                             QString totalSupplyRaw, QString mintAuthority)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(m_logos->token_module.createFungible(
         definitionTargetId, holdingTargetId, name,
-        QVariant::fromValue(totalSupplyRaw), mintAuthority));
+        QVariant::fromValue(totalSupplyRaw), mintAuthority,
+        m_walletController->state().feePayerId));
 }
 
 QVariantMap TokenUiBackend::createFungibleWithMetadata(
@@ -361,12 +379,13 @@ QVariantMap TokenUiBackend::createFungibleWithMetadata(
     QString name, QString totalSupplyRaw, QString mintAuthority,
     QString metadataStandard, QString uri, QString creators)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(m_logos->token_module.createFungibleWithMetadata(
         definitionTargetId, holdingTargetId, metadataTargetId, name,
         QVariant::fromValue(totalSupplyRaw), mintAuthority, metadataStandard, uri,
-        creators));
+        creators,
+        m_walletController->state().feePayerId));
 }
 
 QVariantMap TokenUiBackend::createNonFungible(
@@ -374,78 +393,87 @@ QVariantMap TokenUiBackend::createNonFungible(
     QString metadataTargetId, QString name, QString printableSupplyRaw,
     QString metadataStandard, QString uri, QString creators)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(m_logos->token_module.createNonFungible(
         definitionTargetId, masterHoldingTargetId, metadataTargetId, name,
-        QVariant::fromValue(printableSupplyRaw), metadataStandard, uri, creators));
+        QVariant::fromValue(printableSupplyRaw), metadataStandard, uri, creators,
+        m_walletController->state().feePayerId));
 }
 
 QVariantMap TokenUiBackend::initializeHolding(QString definitionId, QString holdingTargetId)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(
-        m_logos->token_module.initializeHolding(definitionId, holdingTargetId));
+        m_logos->token_module.initializeHolding(definitionId, holdingTargetId,
+        m_walletController->state().feePayerId));
 }
 
 QVariantMap TokenUiBackend::transfer(QString senderHoldingId, QString recipientHoldingId,
                                      QString amountRaw)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(m_logos->token_module.transfer(
-        senderHoldingId, recipientHoldingId, QVariant::fromValue(amountRaw)));
+        senderHoldingId, recipientHoldingId, QVariant::fromValue(amountRaw),
+        m_walletController->state().feePayerId));
 }
 
 QVariantMap TokenUiBackend::burn(QString definitionId, QString holdingId, QString amountRaw)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(m_logos->token_module.burn(
-        definitionId, holdingId, QVariant::fromValue(amountRaw)));
+        definitionId, holdingId, QVariant::fromValue(amountRaw),
+        m_walletController->state().feePayerId));
 }
 
 QVariantMap TokenUiBackend::mint(QString definitionId, QString holdingId, QString amountRaw)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(m_logos->token_module.mint(
-        definitionId, holdingId, QVariant::fromValue(amountRaw)));
+        definitionId, holdingId, QVariant::fromValue(amountRaw),
+        m_walletController->state().feePayerId));
 }
 
 QVariantMap TokenUiBackend::mintWithAuthority(QString definitionId, QString holdingId,
                                                QString authorityId, QString amountRaw)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(m_logos->token_module.mintWithAuthority(
-        definitionId, holdingId, authorityId, QVariant::fromValue(amountRaw)));
+        definitionId, holdingId, authorityId, QVariant::fromValue(amountRaw),
+        m_walletController->state().feePayerId));
 }
 
 QVariantMap TokenUiBackend::setAuthority(QString definitionId, QString newAuthority)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(
-        m_logos->token_module.setAuthority(definitionId, newAuthority));
+        m_logos->token_module.setAuthority(definitionId, newAuthority,
+        m_walletController->state().feePayerId));
 }
 
 QVariantMap TokenUiBackend::setAuthorityWithAuthority(QString definitionId,
                                                        QString authorityId,
                                                        QString newAuthority)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(m_logos->token_module.setAuthorityWithAuthority(
-        definitionId, authorityId, newAuthority));
+        definitionId, authorityId, newAuthority,
+        m_walletController->state().feePayerId));
 }
 
 QVariantMap TokenUiBackend::printNft(QString masterHoldingId,
                                      QString printedHoldingTargetId)
 {
-    if (!m_walletController->state().isWalletOpen)
-        return walletUnavailable();
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     return refreshAfterSubmit(
-        m_logos->token_module.printNft(masterHoldingId, printedHoldingTargetId));
+        m_logos->token_module.printNft(masterHoldingId, printedHoldingTargetId,
+        m_walletController->state().feePayerId));
 }

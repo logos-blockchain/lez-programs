@@ -293,6 +293,10 @@
         externalLibInputs = {
           amm_ffi = { input = self; packages.default = "amm_ffi"; };
         };
+        tests = {
+          dir = ./modules/amm/tests;
+          mockCLibs = [ "amm_ffi" ];
+        };
       };
       ammModulePkgs = ammModuleOutputs.packages or { };
 
@@ -306,6 +310,7 @@
         // (if attrs ? lgx-portable then { amm-module-lgx-portable = attrs.lgx-portable; } else { })
         // (if attrs ? install then { amm-module-install = attrs.install; } else { })
         // (if attrs ? install-portable then { amm-module-install-portable = attrs.install-portable; } else { })
+        // (if attrs ? unit-tests then { amm-module-tests = attrs.unit-tests; } else { })
       ) ammModulePkgs;
 
       # Token core module (modules/token): complete Token Program inspection
@@ -336,6 +341,7 @@
         // (if attrs ? lgx-portable then { token-module-lgx-portable = attrs.lgx-portable; } else { })
         // (if attrs ? install then { token-module-install = attrs.install; } else { })
         // (if attrs ? install-portable then { token-module-install-portable = attrs.install-portable; } else { })
+        // (if attrs ? unit-tests then { token-module-tests = attrs.unit-tests; } else { })
       ) tokenModulePkgs;
 
       # Stablecoin core module (modules/stablecoin): singleton discovery,

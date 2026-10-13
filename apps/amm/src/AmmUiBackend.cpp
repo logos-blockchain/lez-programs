@@ -157,6 +157,34 @@ void AmmUiBackend::syncWalletState()
     setCurrentBlockHeight(state.currentBlockHeight);
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
+    setFeePayerId(state.feePayerId);
+}
+
+bool AmmUiBackend::setFeePayer(QString accountId)
+{
+    return m_walletController->setFeePayer(accountId);
+}
+
+// Every submit needs this app's wallet open (its lock is authoritative even though the
+// shared wallet may remain open elsewhere) and a funded fee payer, since LEZ charges
+// public transactions. Empty when clear to submit.
+QVariantMap AmmUiBackend::submitBlocked() const
+{
+    const QString error = !isWalletOpen() ? QStringLiteral("wallet_unavailable")
+        : m_walletController->state().feePayerId.isEmpty() ? QStringLiteral("fee_payer_required")
+        : QString();
+    if (error.isEmpty())
+        return {};
+    return QVariantMap {
+        { QStringLiteral("status"), QStringLiteral("error") },
+        { QStringLiteral("error"), error },
+    };
+}
+
+QVariantMap AmmUiBackend::withFeePayer(QVariantMap request) const
+{
+    request.insert(QStringLiteral("feePayerId"), m_walletController->state().feePayerId);
+    return request;
 }
 
 QVariantMap AmmUiBackend::resolvePoolAccount(QString defAHex, QString defBHex)
@@ -173,35 +201,26 @@ QVariantMap AmmUiBackend::transferOwnership(QVariantMap request)
 {
     // Submit guard — this app's wallet-open state is authoritative even though the shared
     // wallet may remain open elsewhere (same guard as createPool / the swaps).
-    if (!isWalletOpen())
-        return QVariantMap {
-            { QStringLiteral("status"), QStringLiteral("error") },
-            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
-        };
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
 
     // No balance refresh — transferring admin authority doesn't touch token balances.
-    return m_logos->amm_module.transferOwnership(request);
+    return m_logos->amm_module.transferOwnership(withFeePayer(request));
 }
 
 QVariantMap AmmUiBackend::createPriceObservations(QVariantMap request)
 {
-    if (!isWalletOpen())
-        return QVariantMap {
-            { QStringLiteral("status"), QStringLiteral("error") },
-            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
-        };
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
     // Oracle setup doesn't touch token balances — no refresh.
-    return m_logos->amm_module.createPriceObservations(request);
+    return m_logos->amm_module.createPriceObservations(withFeePayer(request));
 }
 
 QVariantMap AmmUiBackend::createOraclePriceAccount(QVariantMap request)
 {
-    if (!isWalletOpen())
-        return QVariantMap {
-            { QStringLiteral("status"), QStringLiteral("error") },
-            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
-        };
-    return m_logos->amm_module.createOraclePriceAccount(request);
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
+    return m_logos->amm_module.createOraclePriceAccount(withFeePayer(request));
 }
 
 QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString userInputHoldingHex,
@@ -213,12 +232,13 @@ QString AmmUiBackend::swapExactInput(QString defAHex, QString defBHex, QString u
     // app may keep it open, or this app opened-then-disconnected), and the QML submit path
     // doesn't check isWalletOpen — so without this a swap could sign/submit while the UI
     // shows "Connect".
-    if (!isWalletOpen())
+    if (!isWalletOpen() || m_walletController->state().feePayerId.isEmpty())
         return {};
 
     const QString txHash = m_logos->amm_module.swapExactInput(
         defAHex, defBHex, userInputHoldingHex, userOutputHoldingHex,
-        amountInDecimal, minOutDecimal, deadlineDecimal);
+        amountInDecimal, minOutDecimal, deadlineDecimal,
+        m_walletController->state().feePayerId);
     if (!txHash.isEmpty())
         refreshBalances();
     return txHash;
@@ -249,12 +269,13 @@ QString AmmUiBackend::swapExactOutput(QString defAHex, QString defBHex, QString 
 {
     // Same connected-state submit guard as swapExactInput — this app's lock is
     // authoritative even though the shared wallet may remain open elsewhere.
-    if (!isWalletOpen())
+    if (!isWalletOpen() || m_walletController->state().feePayerId.isEmpty())
         return {};
 
     const QString txHash = m_logos->amm_module.swapExactOutput(
         defAHex, defBHex, userInputHoldingHex, userOutputHoldingHex,
-        amountOutDecimal, maxInDecimal, deadlineDecimal);
+        amountOutDecimal, maxInDecimal, deadlineDecimal,
+        m_walletController->state().feePayerId);
     if (!txHash.isEmpty())
         refreshBalances();
     return txHash;
@@ -505,16 +526,13 @@ QVariantMap AmmUiBackend::createPool(QVariantMap request)
 {
     // Same connected-state submit guard as the swaps — this app's lock is
     // authoritative even though the shared wallet may remain open elsewhere.
-    if (!isWalletOpen())
-        return QVariantMap {
-            { QStringLiteral("status"), QStringLiteral("error") },
-            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
-        };
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
 
     // The caller supplies the fresh LP holding in the request; the backend forwards to
     // the module (it creates no wallet accounts) and refreshes balances on a successful
     // submit.
-    const QVariantMap result = m_logos->amm_module.createPool(request);
+    const QVariantMap result = m_logos->amm_module.createPool(withFeePayer(request));
     if (result.value(QStringLiteral("status")).toString() == QStringLiteral("ok")
         && !result.value(QStringLiteral("transactionId")).toString().isEmpty())
         refreshBalances();
@@ -525,15 +543,12 @@ QVariantMap AmmUiBackend::addLiquidity(QVariantMap request)
 {
     // Same connected-state submit guard as createPool — this app's lock is authoritative
     // even though the shared wallet may remain open elsewhere.
-    if (!isWalletOpen())
-        return QVariantMap {
-            { QStringLiteral("status"), QStringLiteral("error") },
-            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
-        };
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
 
     // The caller supplies the fresh LP holding in the request; the backend forwards to the
     // module (it creates no wallet accounts) and refreshes balances on a successful submit.
-    const QVariantMap result = m_logos->amm_module.addLiquidity(request);
+    const QVariantMap result = m_logos->amm_module.addLiquidity(withFeePayer(request));
     if (result.value(QStringLiteral("status")).toString() == QStringLiteral("ok")
         && !result.value(QStringLiteral("transactionId")).toString().isEmpty())
         refreshBalances();
@@ -544,16 +559,13 @@ QVariantMap AmmUiBackend::removeLiquidity(QVariantMap request)
 {
     // Same connected-state submit guard as createPool/addLiquidity — this app's lock is
     // authoritative even though the shared wallet may remain open elsewhere.
-    if (!isWalletOpen())
-        return QVariantMap {
-            { QStringLiteral("status"), QStringLiteral("error") },
-            { QStringLiteral("error"), QStringLiteral("wallet_unavailable") },
-        };
+    if (const QVariantMap blocked = submitBlocked(); !blocked.isEmpty())
+        return blocked;
 
     // Every account involved already exists (the LP holding is burned from, the token
     // holdings receive), so unlike the add path there is nothing to create first —
     // forward and refresh balances once the withdrawal lands.
-    const QVariantMap result = m_logos->amm_module.removeLiquidity(request);
+    const QVariantMap result = m_logos->amm_module.removeLiquidity(withFeePayer(request));
     if (result.value(QStringLiteral("status")).toString() == QStringLiteral("ok")
         && !result.value(QStringLiteral("transactionId")).toString().isEmpty())
         refreshBalances();

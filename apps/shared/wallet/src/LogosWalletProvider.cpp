@@ -269,6 +269,17 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
             return submission;
         }
     }
+    if (!isHex(transaction.feePayerId, 64)) {
+        submission.failure = WalletFailure::InvalidRequest;
+        return submission;
+    }
+    for (qsizetype i = 0; i < transaction.accountIds.size(); ++i) {
+        if (transaction.accountIds.at(i) == transaction.feePayerId
+            && !transaction.signingRequirements.at(i)) {
+            submission.failure = WalletFailure::InvalidRequest;
+            return submission;
+        }
+    }
 
     QVariantList signingRequirements;
     signingRequirements.reserve(transaction.signingRequirements.size());
@@ -296,13 +307,7 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
             signingRequirements,
             QVariant::fromValue(instructionBytes),
             transaction.programId,
-            // LEZ v0.2.5 charges public transactions and the FFI gained a fee
-            // payer. Empty keeps the pre-fee behaviour: wallet-ffi receives a
-            // null payer and falls back to its own selection, so the first
-            // signing account self-pays. A signer with no balance will be
-            // rejected as `PayerCannotFund` -- that case needs a funded payer
-            // threaded through `transaction`, not a default here.
-            QString());
+            transaction.feePayerId);
 
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(response.toUtf8(), &parseError);

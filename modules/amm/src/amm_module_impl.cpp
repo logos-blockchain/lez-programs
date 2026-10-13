@@ -1,4 +1,5 @@
 #include "amm_module_impl.h"
+#include "amm_fee_payer.h"
 
 #include <algorithm>
 #include <cctype>
@@ -40,14 +41,6 @@ bool ammDebug() {
 // from it; since then a binary yields only an ImageID, not the program's address (see
 // AMM_PROGRAM_ID_ENV). It is read only to warn a caller who still sets it.
 constexpr char AMM_PROGRAM_BIN_ENV[] = "AMM_PROGRAM_BIN";
-// LEZ v0.2.5 made public transactions charge a fee, and the wallet FFI grew a
-// `payer_account_id_hex` parameter for it. Empty means "no explicit payer": the
-// module passes a null payer through to wallet-ffi, which falls back to the
-// wallet's own selection -- the transaction's first signing account self-pays.
-// That is the pre-fee behaviour, so these call sites keep it. Note the payer must
-// hold a balance, so a UI flow whose signer is an unfunded account needs a real
-// payer threaded down to here rather than this default.
-constexpr char FEE_PAYER_SELF[] = "";
 
 
 // Account id (base58 or hex) of the active instance's config PDA, for local /
@@ -306,6 +299,13 @@ std::string AmmModuleImpl::normalizeAccountId(const std::string& id) {
     return hex;
 }
 
+// See the class comment: the payer is explicit, and the rule lives in amm_fee_payer.
+std::string AmmModuleImpl::feePayerFor(const std::string& fee_payer_id,
+                                       const std::vector<std::string>& accounts,
+                                       const std::vector<bool>& signers) {
+    return amm_module::detail::resolveFeePayer(normalizeAccountId(fee_payer_id), accounts, signers);
+}
+
 nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
     // Matches the app-side accountReadJson: WalletAccountRead defaults status to
     // "read_failed" and only flips to "ok" when every field is well-formed hex;
@@ -515,8 +515,11 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
     AMM_TRACE("transferOwnership: SUBMIT programId=" << program_id
               << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("transferOwnership: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -570,8 +573,11 @@ LogosMap AmmModuleImpl::withdrawProtocolFees(const LogosMap& request) {
     AMM_TRACE("withdrawProtocolFees: SUBMIT programId=" << program_id
               << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("withdrawProtocolFees: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -655,8 +661,11 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
 
     AMM_TRACE("oracleSetup(" << (observations ? "observations" : "priceAccount")
               << "): SUBMIT programId=" << program_id << " accounts=" << accounts.size());
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("oracleSetup: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -804,7 +813,8 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
                                           const std::string& user_output_holding_hex,
                                           const nlohmann::json& amount_in,
                                           const nlohmann::json& min_out,
-                                          const nlohmann::json& deadline) {
+                                          const nlohmann::json& deadline,
+                                          const std::string& fee_payer_hex) {
     std::string amount_in_decimal;
     std::string min_out_decimal;
     std::string deadline_decimal;
@@ -881,8 +891,13 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
     AMM_TRACE("swapExactInput: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(fee_payer_hex, accounts, signers);
+    if (fee_payer.empty()) {
+        AMM_TRACE("swapExactInput: FAIL invalid fee payer");
+        return {};
+    }
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("swapExactInput: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -899,7 +914,8 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
                                            const std::string& user_output_holding_hex,
                                            const nlohmann::json& amount_out,
                                            const nlohmann::json& max_in,
-                                           const nlohmann::json& deadline) {
+                                           const nlohmann::json& deadline,
+                                           const std::string& fee_payer_hex) {
     std::string amount_out_decimal;
     std::string max_in_decimal;
     std::string deadline_decimal;
@@ -972,8 +988,13 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
     AMM_TRACE("swapExactOutput: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(fee_payer_hex, accounts, signers);
+    if (fee_payer.empty()) {
+        AMM_TRACE("swapExactOutput: FAIL invalid fee payer");
+        return {};
+    }
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("swapExactOutput: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1100,8 +1121,11 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     AMM_TRACE("createPool: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("createPool: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1263,8 +1287,11 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     AMM_TRACE("addLiquidity: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("addLiquidity: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1421,8 +1448,11 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     AMM_TRACE("removeLiquidity: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("removeLiquidity: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1487,8 +1517,11 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     AMM_TRACE("syncReserves: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
 
+    const std::string fee_payer = feePayerFor(jStr(request, "feePayerId"), accounts, signers);
+    if (fee_payer.empty())
+        return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, FEE_PAYER_SELF);
+        accounts, signers, instruction, program_id, fee_payer);
     AMM_TRACE("syncReserves: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);

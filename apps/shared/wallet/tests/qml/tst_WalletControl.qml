@@ -19,6 +19,14 @@ Item {
             property int publicAccountCalls: 0
             property int privateAccountCalls: 0
             property int disconnectCalls: 0
+            property string feePayerId: ""
+            property int feePayerCalls: 0
+
+            function setFeePayer(accountId) {
+                feePayerCalls++
+                feePayerId = accountId
+                return true
+            }
 
             function openExisting() {
                 openCalls++
@@ -241,6 +249,47 @@ Item {
             secondAccount.clicked()
             tryCompare(fixture.control, "selectedIndex", 1)
             compare(fixture.control.selectedAddress, "b".repeat(64))
+        }
+
+        function test_selectsFundedFeePayer() {
+            const fixture = createControl({ isWalletOpen: true, feePayerId: "a".repeat(64) }, [
+                { name: "One", address: "a".repeat(64), balance: "10", isPublic: true },
+                { name: "Two", address: "b".repeat(64), balance: "20", isPublic: false },
+                { name: "Three", address: "c".repeat(64), balance: "0", isPublic: true },
+                { name: "Four", address: "d".repeat(64), balance: "5", isPublic: true }
+            ])
+            mouseClick(findChild(fixture.control, "walletAccountButton"))
+            const label = findChild(fixture.control, "walletFeePayerLabel")
+            tryVerify(function() { return label && label.visible })
+            verify(label.text.indexOf("aaaaaa") === 0, label.text)
+            verify(label.text.indexOf("10") > 0, label.text)
+
+            mouseClick(findChild(fixture.control, "walletChangeFeePayerButton"))
+            const list = findChild(fixture.control, "walletFeePayerList")
+            tryCompare(list, "count", 4)
+            tryVerify(function() { return list.itemAtIndex(3) !== null })
+            verify(list.itemAtIndex(0).visible)
+            verify(!list.itemAtIndex(1).visible, "Private account cannot pay")
+            verify(!list.itemAtIndex(2).visible, "Unfunded account cannot pay")
+            verify(!findChild(fixture.control, "walletNoFeePayerLabel").visible)
+
+            list.itemAtIndex(3).children[0].clicked()
+            compare(fixture.backend.feePayerCalls, 1)
+            compare(fixture.backend.feePayerId, "d".repeat(64))
+            tryVerify(function() { return label.text.indexOf("dddddd") === 0 })
+        }
+
+        function test_warnsWithoutFundedFeePayer() {
+            const fixture = createControl({ isWalletOpen: true }, [
+                { name: "One", address: "a".repeat(64), balance: "0", isPublic: true }
+            ])
+            mouseClick(findChild(fixture.control, "walletAccountButton"))
+            const label = findChild(fixture.control, "walletFeePayerLabel")
+            tryVerify(function() { return label && label.visible })
+            compare(label.text, "No funded public account")
+            mouseClick(findChild(fixture.control, "walletChangeFeePayerButton"))
+            const warning = findChild(fixture.control, "walletNoFeePayerLabel")
+            tryVerify(function() { return warning && warning.visible })
         }
 
         function test_createsAccount() {

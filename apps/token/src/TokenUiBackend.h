@@ -40,6 +40,7 @@ public slots:
     QString createNew(QString configPath, QString storagePath, QString password) override;
     bool openExisting() override;
     void disconnectWallet() override;
+    bool setFeePayer(QString accountId) override;
 
     QVariantMap tokenProgramInfo() override;
     QVariantMap inspectDefinition(QString definitionId) override;
@@ -80,6 +81,7 @@ public slots:
 private:
     void syncWalletState();
     QVariantMap walletUnavailable() const;
+    QVariantMap submitBlocked() const;
     QVariantMap refreshAfterSubmit(QVariantMap result);
 
     LogosAPI* m_logosAPI;

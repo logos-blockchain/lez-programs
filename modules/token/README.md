@@ -68,9 +68,9 @@ wallet.
 
 | Method | Arguments |
 | --- | --- |
-| `createFungible` | definition target, holding target, name, total supply raw, mint authority |
-| `createFungibleWithMetadata` | definition target, holding target, metadata target, name, total supply raw, mint authority, standard, URI, creators |
-| `createNonFungible` | definition target, master holding target, metadata target, name, printable supply raw, standard, URI, creators |
+| `createFungible` | definition target, holding target, name, total supply raw, mint authority, fee payer |
+| `createFungibleWithMetadata` | definition target, holding target, metadata target, name, total supply raw, mint authority, standard, URI, creators, fee payer |
+| `createNonFungible` | definition target, master holding target, metadata target, name, printable supply raw, standard, URI, creators, fee payer |
 
 Mint-authority values:
 
@@ -80,18 +80,24 @@ Mint-authority values:
 
 Metadata standard is `simple` or `expanded`.
 
+Every operation that submits a transaction takes the fee payer as its last
+argument: a funded public account in the connected wallet. LEZ charges public
+transactions, and the accounts a create flow signs with are fresh and unfunded,
+so the payer is never inferred. It may be one of the signers or a separate
+wallet account; a non-signing participant is rejected with `invalid_fee_payer`.
+
 ### Holding and supply operations
 
 | Method | Arguments | Notes |
 | --- | --- | --- |
-| `initializeHolding` | definition, fresh holding target | NFT definitions create an unowned printed-copy holding |
-| `transfer` | sender holding, recipient holding, amount raw | supports fungible, NFT master, and printed-copy rules |
-| `burn` | definition, holding, amount raw | supports fungible and NFT variants |
-| `mint` | definition, holding, amount raw | self-authority fungible path |
-| `mintWithAuthority` | definition, holding, current authority, amount raw | external-authority fungible path |
-| `setAuthority` | definition, new authority | self-authority path |
-| `setAuthorityWithAuthority` | definition, current authority, new authority | external-authority path |
-| `printNft` | master holding, fresh printed holding target | target must not be initialized first |
+| `initializeHolding` | definition, fresh holding target, fee payer | NFT definitions create an unowned printed-copy holding |
+| `transfer` | sender holding, recipient holding, amount raw, fee payer | supports fungible, NFT master, and printed-copy rules |
+| `burn` | definition, holding, amount raw, fee payer | supports fungible and NFT variants |
+| `mint` | definition, holding, amount raw, fee payer | self-authority fungible path |
+| `mintWithAuthority` | definition, holding, current authority, amount raw, fee payer | external-authority fungible path |
+| `setAuthority` | definition, new authority, fee payer | self-authority path |
+| `setAuthorityWithAuthority` | definition, current authority, new authority, fee payer | external-authority path |
+| `printNft` | master holding, fresh printed holding target, fee payer | target must not be initialized first |
 
 `new authority` accepts the same `none`, `self`, or account-ID values as
 definition creation. Revocation with `none` is permanent.

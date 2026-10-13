@@ -497,7 +497,9 @@ Rectangle {
                     root.resetAmounts()
                     resolveDebounce.restart()
                 } else {
-                    root.swapError = qsTr("Swap failed (empty response from sequencer).")
+                    root.swapError = root.backend.feePayerId
+                        ? qsTr("Swap failed (empty response from sequencer).")
+                        : qsTr("No funded public account to pay the network fee.")
                     root.swapFailed(root.swapError)
                 }
             },
