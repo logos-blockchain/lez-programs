@@ -2,12 +2,14 @@
 
 Live on-chain accounts per network.
 
-## Testnet (v0.2.4)
+## Testnet legacy (v0.2.4)
 
 | Network | Value |
 |---|---|
-| Sequencer | `https://testnet.lez.logos.co/` |
-| Explorer | `https://explorer.testnet.lez.logos.co/` |
+| Sequencer | `https://testnet-legacy.lez.logos.co/` |
+| Explorer | `https://explorer.testnet-legacy.lez.logos.co/` |
+
+Programs built from tag `v2.0.1` with `cargo risczero build` (release profile).
 
 ### Programs
 
@@ -16,29 +18,32 @@ Live on-chain accounts per network.
 | token | `14b3bc6cc129d0359f9595ba0f60a13e4a8df08ffe8eb1a83251c47abecc67a8` | `2Pp7aXgGY9Lsox326tcY58KAD6VmzYB8wquZw83nhUyV` |
 | amm | `cf93244a56a4bb974b72a5f5fa2fe68906709dd17ce422367baef195b57c1709` | `EyHXXf4r1CfqSfLUUyDeL7Tqod89pKRydMhovhAedGkY` |
 | twap_oracle | `5681e27c27b3ece4a7c161bbf8e12e6ece6ca69925a87b77f9e193fa4a249b31` | `6pgw6c78ZkWjz3Hjmnro4yGLZTSFsw6kNpJEwKgz2SAC` |
-| token_mint_authority | `b0163189f35d29b3c4a4e6b64f3d797015e52fdbb5dae30433f810b8b007033a` | `CrNPCwYQX9CZV1CBkzfzu4Nhb3DssaDtV3Zp5CsZGrTT` |
+| token_mint_authority | `1ea6d932d240e54e53682547e6d9f08a03a42bd9bbaa8e6b4a9974fc86d1e70e` | `34eny5SUVoZX5FkQ9YgGsthnccH6CtDDvFc2ymuo4gyB` |
 
 ### Faucet mint authority
 
 | Item | Account |
 |---|---|
-| Mint-authority PDA (base58) | `GaEqKnuxYfe2ET7Lp6tgaF9jqxaRWoTZ2f978Z2ySKCP` |
-| Mint-authority PDA (hex) | `e7631c9fbf2cbe344b483c13375546539c98cfb4914009708b7439ef027135a4` |
+| Mint-authority PDA (base58) | `GmAwyCjGaT7ocZ2ePDgGFmNw9Yv51ohG421dHMukZRQC` |
+| Mint-authority PDA (hex) | `ea301b814c93699a5f788c3394082f3c28490ed95e4f3559aa3bbcf0b6ae50d1` |
 
 Set as `mint_authority` on every faucet token definition (Token A and Token B below).
 
-### Token accounts 
+### Token accounts
 
 | Label | Role | Account |
 |---|---|---|
-| token-a-def | Token A definition | `9zHnyUgGP7o2wJyt9fk56J55mzv5gsBeB9GrEJLqX4P9` |
-| token-b-def | Token B definition | `6jZvWmfhVT5HZ54wYs1mnnU2raE8e5m9ryndraHyKu4P` |
+| token-a-def | Token A definition | `642odmr8h1SYNkkeFeESuJ3wRWNUmJYY1Yi6KSdFs51s` |
+| token-b-def | Token B definition | `5AyxKGHttD31qazmaRDqBM1eF2Yd8NzobZKw3dvdkguj` |
 
 ### AMM instance
 
 | Item | Value |
 |---|---|
-| config PDA | `FQeKyLsnVTD5XxZC96FLQS2dWoHQYewv372BdmocMHr6` |
+| config PDA | `3oDQXpmuyfELVo37HRdGY5QQCtpwrWxTPbQVkB9m3W8t` |
+| owner (namespace) | `58z1Msc9GPvGpdeKnTiz9dnKAKhXSc6cnpBuSNJPQh4L` |
+| nonce | `0` (default instance) |
+| authority | `Ex8DT7BhKcNzLGm5a6VjNa7HtxCCcfYMdPFUzTEKHmkb` |
 | swap_fee_bps | `30` (0.30%) |
 | protocol_fee_bps | `0` |
 
@@ -48,14 +53,14 @@ Derived from the amm ProgramId + config + `(token-a-def, token-b-def)`.
 
 | PDA | Account |
 |---|---|
-| pool | `8rJJ14smQ1edE11UQ95dSLkMVBSdcY5aUBA88dCRiEWZ` |
-| vault_a | `4sUPDB9MWVadzFpdcUg6UEQyudQz6tExBwYLsngwZQQC` |
-| vault_b | `25G2G9JtLSaDoRECt5yze2T9sNAitRPo336nW3NxDyut` |
-| pool_definition_lp | `5V8zHawcU3yb96L8iVjUYGHqA7ShhG3gGjc3Xzek4qMz` |
-| lp_lock_holding | `FLxi26KNg3SSmZqkzP2ycEr54UhJ4ZewafuVHjUyppT8` |
-| current_tick_account | `DqFMvcUaEupqU9mt27ztdWsPC6sZTuruPoLhxfkMR71m` |
-| protocol_fee_a | `CPSyoZbgSFrYvDQEhf4HkakpwtYiuL7geszd8AWmypbs` |
-| protocol_fee_b | `HuXPJeXXn65XP5Se9ooHpUUE95hvpZueRDEsWN9qYQFi` |
+| pool | `5HpRvWvLuGAT3jkYeDVv8fqpgThS7zgB8uHbgTX4Q92k` |
+| vault_a | `7ASWbHzgK1m1ADvELrRQZz7egYzJY2t2ppRVAMmzkSWH` |
+| vault_b | `FgvDQE2M7Jey9myidy19Yzfi62hk74ia1wZYuh3N9Krq` |
+| pool_definition_lp | `Nk35PPioaesBWP74r6PZAz5C26SNcdEac6Xp5rTm6BR` |
+| lp_lock_holding | `EtYUS1Ee2cMvfEYChf9fv45RWYrgLSmo8yRFu2ajooda` |
+| current_tick_account | `8JXTD35tGndyHe4cgUvSQJ8rHvSk1eE2eJMfSwHeURnk` |
+| protocol_fee_a | `GZsW3MUo2nPJK3VnWMpebaFkVNKMv2EMBVY6JWJk5azR` |
+| protocol_fee_b | `GdDZpfiU571smwJ37qYk8swyMqz1VvgmQVBMCwHRNs4Y` |
 
 ### TWAP oracle — pool as price source (24h window)
 
@@ -63,6 +68,6 @@ Derived from the twap ProgramId + `pool` + `window_duration = 86400000`.
 
 | PDA | Account |
 |---|---|
-| current_tick_account | `DqFMvcUaEupqU9mt27ztdWsPC6sZTuruPoLhxfkMR71m` |
-| price_observations | `R5CTpqjyazqRTFYB432SdM7KoBFEgFzwmvzecvJ5DDW` |
-| oracle_price_account | `6jppmhj32NF8HeuJc12duLxARRDq1rk32WJxUFbGGhVw` |
+| current_tick_account | `8JXTD35tGndyHe4cgUvSQJ8rHvSk1eE2eJMfSwHeURnk` |
+| price_observations | `BQwDNhqKEusjix2tMaghJDzdRMeoNoCFb2vbQF2ndXDz` |
+| oracle_price_account | `BhYDumn3h28h2LPJBcEVCJLemPCaDzVKWZjTNTP5RuFb` |

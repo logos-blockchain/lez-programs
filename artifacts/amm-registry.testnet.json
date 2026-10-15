@@ -2,21 +2,21 @@
   "name": "AMM testnet registry",
   "networks": [
     {
-      "id": "testnet",
-      "name": "Testnet",
+      "id": "testnet-legacy",
+      "name": "Testnet legacy",
       "programIds": {
         "amm": "cf93244a56a4bb974b72a5f5fa2fe68906709dd17ce422367baef195b57c1709",
         "token": "14b3bc6cc129d0359f9595ba0f60a13e4a8df08ffe8eb1a83251c47abecc67a8",
-        "token_mint_authority": "b0163189f35d29b3c4a4e6b64f3d797015e52fdbb5dae30433f810b8b007033a"
+        "token_mint_authority": "1ea6d932d240e54e53682547e6d9f08a03a42bd9bbaa8e6b4a9974fc86d1e70e"
       },
-      "ammConfigId": "FQeKyLsnVTD5XxZC96FLQS2dWoHQYewv372BdmocMHr6"
+      "ammConfigId": "3oDQXpmuyfELVo37HRdGY5QQCtpwrWxTPbQVkB9m3W8t"
     }
   ],
   "tokens": [
-    { "network": "testnet", "symbol": "TKA", "name": "Token A", "definitionId": "9zHnyUgGP7o2wJyt9fk56J55mzv5gsBeB9GrEJLqX4P9" },
-    { "network": "testnet", "symbol": "TKB", "name": "Token B", "definitionId": "6jZvWmfhVT5HZ54wYs1mnnU2raE8e5m9ryndraHyKu4P" }
+    { "network": "testnet-legacy", "symbol": "TKA", "name": "Token A", "definitionId": "642odmr8h1SYNkkeFeESuJ3wRWNUmJYY1Yi6KSdFs51s" },
+    { "network": "testnet-legacy", "symbol": "TKB", "name": "Token B", "definitionId": "5AyxKGHttD31qazmaRDqBM1eF2Yd8NzobZKw3dvdkguj" }
   ],
   "pools": [
-    { "network": "testnet", "tokenA": "TKA", "tokenB": "TKB", "poolId": "8rJJ14smQ1edE11UQ95dSLkMVBSdcY5aUBA88dCRiEWZ", "tokenADefinitionId": "9zHnyUgGP7o2wJyt9fk56J55mzv5gsBeB9GrEJLqX4P9", "tokenBDefinitionId": "6jZvWmfhVT5HZ54wYs1mnnU2raE8e5m9ryndraHyKu4P" }
+    { "network": "testnet-legacy", "tokenA": "TKA", "tokenB": "TKB", "poolId": "5HpRvWvLuGAT3jkYeDVv8fqpgThS7zgB8uHbgTX4Q92k", "tokenADefinitionId": "642odmr8h1SYNkkeFeESuJ3wRWNUmJYY1Yi6KSdFs51s", "tokenBDefinitionId": "5AyxKGHttD31qazmaRDqBM1eF2Yd8NzobZKw3dvdkguj" }
   ]
 }
