@@ -44,21 +44,26 @@ End-to-end steps to deploy the programs, initialize the AMM, and create a pool u
 ## 0. Prerequisites
 
 - **Docker running** (guest builds cross-compile through it).
-- **`spel` / `wallet`** built from the
-  [`refactor/lez-v020-compat`](https://github.com/0x-r4bbit/spel/tree/refactor/lez-v020-compat)
-  branch (`github.com/0x-r4bbit/spel`). This is required for: the `program-id` command, the
-  `--` subcommand separator, the public-tx signing scheme, and the `account_id` argument
-  fix.
+- **`spel` / `wallet`** built from [`logos-co/spel`](https://github.com/logos-co/spel) at
+  the revision the guests pin (`spel-framework` `rev` in
+  `programs/*/methods/guest/Cargo.toml`), so the CLI matches the LEZ version the programs
+  are built against.
 - **Wallet home** exported in every shell you use (deploy *and* spel must point at the
   same wallet/network):
   ```bash
   export LEE_WALLET_HOME_DIR="$HOME/.lee/wallet"
   ```
-- Wallet configured to reach your sequencer (`wallet_config.json`), with the accounts you
-  need created (`wallet account ...`).
-  ```bash
-  wallet config set sequencer_addr https://testnet.lez.logos.co/
+- Wallet configured to reach your sequencer, with the accounts you need created
+  (`wallet account ...`). The sequencer lives in the `sequencers` list of
+  `$LEE_WALLET_HOME_DIR/wallet_config.json` (the old top-level `sequencer_addr` key is
+  gone, so `wallet config set sequencer_addr …` no longer applies):
+  ```json
+  "sequencers": [
+    { "sequencer_addr": "https://testnet-legacy.lez.logos.co/" }
+  ]
   ```
+  Use a dedicated wallet home per network: synced block state from one sequencer does not
+  carry over to another.
 
 ### Argument formats (used throughout)
 
@@ -151,7 +156,7 @@ Next, create the token definitions and holdings:
 spel --idl artifacts/token-idl.json \
      --program programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin \
      -- new-fungible-definition \
-     --name "TOKEN A" --total-supply 1000000000000000000000 \
+     --name "Token A" --total-supply 1000000000000000000000 \
      --definition-target-account <DEF_A> \
      --holding-target-account <HOLDING_A>
 ```
@@ -217,13 +222,17 @@ program ships a committed `examples/*_pdas` helper that derives its PDAs with it
 separated u32 limbs, a 64-char ImageID hex, or a base58 ImageID (any form `spel program-id`
 prints, plus base58), and account ids as base58.
 
+AMM instances are namespaced by `(owner, nonce)`, so pick the `<OWNER>` account that will
+sign `initialize` in step 5 now — the config PDA (and every pool PDA under it) depends on
+it. The helper derives the default instance (all-zero nonce).
+
 ```bash
 # config only (for step 5):
-cargo run -q -p amm_program --example amm_pdas -- "<AMM_PROGRAM_ID>"
+cargo run -q -p amm_program --example amm_pdas -- "<AMM_PROGRAM_ID>" "<OWNER>"
 
 # config + all pool PDAs (for step 6):
 cargo run -q -p amm_program --example amm_pdas -- \
-  "<AMM_PROGRAM_ID>" "<TWAP_PROGRAM_ID>" "<DEF_A>" "<DEF_B>"
+  "<AMM_PROGRAM_ID>" "<OWNER>" "<TWAP_PROGRAM_ID>" "<DEF_A>" "<DEF_B>"
 ```
 
 The fixed **clock** account never changes: `4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU`
@@ -233,7 +242,7 @@ The fixed **clock** account never changes: `4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4e
 
 | program | command | prints |
 |---|---|---|
-| amm | `cargo run -q -p amm_program --example amm_pdas -- <amm_pid> [<twap_pid> <defA> <defB>]` | config; + pool, vault_a/b, pool_definition_lp, lp_lock_holding, current_tick_account |
+| amm | `cargo run -q -p amm_program --example amm_pdas -- <amm_pid> <owner> [<twap_pid> <defA> <defB>]` | config; + pool, vault_a/b, pool_definition_lp, lp_lock_holding, current_tick_account, protocol_fee_a/b |
 | twap_oracle | `cargo run -q -p twap_oracle_program --example twap_oracle_pdas -- <oracle_pid> <price_source> [<window_duration>]` | current_tick_account; + price_observations, oracle_price_account (with a window) |
 | ata | `cargo run -q -p ata_program --example ata_pdas -- <ata_pid> <token_pid> <owner> <definition>` | the ATA address |
 | stablecoin | `cargo run -q -p stablecoin_program --example stablecoin_pdas -- <stablecoin_pid> <owner> <collateral_definition>` | position, position_vault |
@@ -356,8 +365,8 @@ spel --idl artifacts/twap_oracle-idl.json inspect <PRICE_OBSERVATIONS_PDA> --typ
 ## 9. Swap
 
 Swap exact input → output. Uses the pool PDAs from step 4 plus your two token holdings.
-`--token-definition-id-in` picks the direction (pass the definition id of the token you're
-spending).
+The direction comes from which holding you pass as input: the AMM reads the input
+holding's token definition and debits that side of the pool.
 
 ```bash
 spel --idl artifacts/amm-idl.json \
@@ -367,27 +376,26 @@ spel --idl artifacts/amm-idl.json \
      --pool <POOL_PDA> \
      --vault-a <VAULT_A_PDA> \
      --vault-b <VAULT_B_PDA> \
-     --user-holding-a <USER_HOLDING_A> \
-     --user-holding-b <USER_HOLDING_B> \
+     --user-input-holding <HOLDING_OF_TOKEN_SPENT> \
+     --user-output-holding <HOLDING_OF_TOKEN_RECEIVED> \
      --current-tick-account <CURRENT_TICK_PDA> \
      --clock 4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU \
      --protocol-fee-holding <PROTOCOL_FEE_PDA_FOR_INPUT_TOKEN> \
      --swap-amount-in <AMOUNT_IN> \
      --min-amount-out <MIN_OUT> \
-     --token-definition-id-in <DEF_OF_INPUT_TOKEN> \
      --deadline 18446744073709551615
 ```
 
-- **`--token-definition-id-in`**: `<DEF_A>` ⇒ A→B; `<DEF_B>` ⇒ B→A.
+- **Direction**: input = `<USER_HOLDING_A>`, output = `<USER_HOLDING_B>` ⇒ A→B; swap them
+  for B→A.
 - **`--protocol-fee-holding`**: the protocol-fee PDA **for the input token** — `protocol_fee_a`
   when spending A, `protocol_fee_b` when spending B (from step 4's `amm_pdas` output). The swap
   diverts `protocol_fee_bps` of the fee here (creating it on first use); pass it even when the
   instance's protocol fee is `0` (the account is still required and simply left untouched).
 - **`--swap-amount-in`** must be ≤ the input holding's balance; **`--min-amount-out`** is the
   slippage floor (`1` accepts any nonzero output).
-- spel signs **both** `user_holding_a` and `user_holding_b` (both are `signer` in the IDL —
-  the input side is dynamic, so both are marked; see the gotcha below). Pass both even though
-  only the input side is debited.
+- Only `user_input_holding` signs (it is the token `Transfer` sender). The output holding
+  must already exist and hold the output token.
 - No `--bin-*` needed (token program id read from `config`). `swap-exact-output` is the same
   account set with `--exact-amount-out` / `--max-amount-in` instead.
 
@@ -565,7 +573,7 @@ was created (§3). Add `--mint-authority` to `new-fungible-definition`:
 spel --idl artifacts/token-idl.json \
      --program <TOKEN_PROGRAM_ID> \
      -- new-fungible-definition \
-     --name "TOKEN A" --total-supply 1000000000000000000000 \
+     --name "Token A" --total-supply 1000000000000000000000 \
      --definition-target-account <DEF_A> \
      --holding-target-account <HOLDING_A> \
      --mint-authority <FAUCET_PDA>
@@ -656,10 +664,11 @@ spel --idl artifacts/token-idl.json inspect <USER_HOLDING> --type TokenHolding
   in the same tx, so the holding must be a fresh signed keypair, not an ATA). For
   `add_liquidity` the LP definition already exists, so an existing/pre-created holding works
   without a signature.
-- **Both swap holdings are signers.** `swap_exact_input`/`swap_exact_output` mark *both*
-  `user_holding_a` and `user_holding_b` `signer`, because the input side (a token `Transfer`
-  sender, which must be authorized) is chosen at runtime via `--token-definition-id-in`. So
-  pass and sign both even though only the input is debited. (Re-creating a pool also needs a
-  **fresh** `user_holding_lp` — the previous one is bound to the old pool's LP token.)
+- **Swaps take input/output holdings, not A/B.** `swap_exact_input`/`swap_exact_output`
+  take `user_input_holding` (the only signer) and `user_output_holding`; there is no
+  `--user-holding-a/b` or `--token-definition-id-in` any more. Swap the two holdings to
+  reverse the direction.
+- **Re-creating a pool needs a fresh `user_holding_lp`** — the previous one is bound to the
+  old pool's LP token.
 - **Same `LEE_WALLET_HOME_DIR` everywhere.** Deploying with one wallet home and running
   spel with another points them at different networks/keys.
