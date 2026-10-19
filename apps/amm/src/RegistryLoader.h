@@ -5,6 +5,7 @@
 #include <QString>
 #include <QUrl>
 #include <QVariantList>
+#include <QVariantMap>
 
 #include <QJsonObject>
 
@@ -44,6 +45,9 @@ public:
     int revision() const { return m_revision; }
     // Where the current snapshot came from: "local" | "remote" | "cache" | "none".
     QString source() const { return m_source; }
+    // Current request and published snapshot provenance are distinct while a
+    // refresh is pending or fails. Status changes do not invalidate the snapshot.
+    QVariantMap status() const;
     // The network id the snapshot was filtered to (empty for local / none).
     QString activeNetwork() const { return m_activeNetwork; }
     // The registry's declared networks as [{ id, name }] for the picker (empty for
@@ -77,13 +81,14 @@ public slots:
 
 signals:
     void changed();
+    void statusChanged();
 
 private:
     void loadLocal();
     void startRemote(const QUrl& url);
     // Parse the registry body into m_registryObj, then applySelection(). Returns
     // true when a snapshot was applied.
-    bool applyRegistry(const QByteArray& body, const QString& source);
+    bool applyRegistry(const QByteArray& body, const QString& source, const QString& url);
     // Select the active network from the stored registry, filter its tokens/pools,
     // adopt its program id, and publish. Returns true when a network was applied.
     bool applySelection();
@@ -106,6 +111,11 @@ private:
     QString m_activeAmmProgramId;
     QString m_activeAmmConfigId;
     QString m_configuredUrl;  // UI-configured registry URL (env overrides)
+    QString m_effectiveUrl;
+    QString m_snapshotUrl;
+    QString m_override;
+    bool m_loading = false;
+    QString m_fetchError;
 
     // The last-loaded registry document, kept so selectNetwork() can re-filter to a
     // different network without re-fetching. Empty for local / none sources.
