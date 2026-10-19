@@ -98,7 +98,7 @@ void WalletController::openOnStartup()
     m_state.storagePath = storage;
     m_state.walletExists = QFileInfo::exists(storage) || session.adopted;
     m_state.isWalletOpen = true;
-    applySnapshot(session.snapshot);
+    applySnapshot(session.snapshot, true);
 }
 
 QString WalletController::createDefaultWallet(const QString& password)
@@ -134,7 +134,7 @@ QString WalletController::createWallet(const QString& configPath,
     }
 
     m_state.isWalletOpen = true;
-    applySnapshot(creation.snapshot);
+    applySnapshot(creation.snapshot, true);
     return creation.mnemonic;
 }
 
@@ -158,7 +158,7 @@ bool WalletController::open()
     m_state.walletExists = true;
     m_state.isWalletOpen = true;
     QSettings(SETTINGS_ORG, m_settingsApplication).setValue(DISCONNECTED_KEY, false);
-    applySnapshot(session.snapshot);
+    applySnapshot(session.snapshot, true);
     return true;
 }
 
@@ -166,6 +166,8 @@ void WalletController::disconnect()
 {
     m_wallet.disconnect();
     m_state.isWalletOpen = false;
+    ++m_state.sessionRevision;
+    m_accountIdentities.clear();
     m_accountModel->replaceAccounts({});
     QSettings(SETTINGS_ORG, m_settingsApplication).setValue(DISCONNECTED_KEY, true);
     emit stateChanged();
@@ -209,8 +211,19 @@ QString WalletController::balance(const QString& accountId, bool isPublic)
     return {};
 }
 
-void WalletController::applySnapshot(const WalletSnapshot& snapshot)
+void WalletController::applySnapshot(const WalletSnapshot& snapshot, bool newSession)
 {
+    QStringList identities;
+    identities.reserve(snapshot.accounts.size());
+    for (const WalletAccount& account : snapshot.accounts) {
+        identities.append(account.address + (account.isPublic
+            ? QStringLiteral(":public") : QStringLiteral(":private")));
+    }
+    identities.sort();
+    if (newSession || identities != m_accountIdentities)
+        ++m_state.sessionRevision;
+    m_accountIdentities = std::move(identities);
+
     m_accountModel->replaceAccounts(snapshot.accounts);
     m_state.lastSyncedBlock = static_cast<int>(snapshot.lastSyncedBlock);
     m_state.currentBlockHeight = static_cast<int>(snapshot.currentBlockHeight);

@@ -16,6 +16,7 @@
 
 #include "LogosWalletProvider.h"
 #include "RegistryLoader.h"
+#include "SwapConfirmation.h"
 #include "WalletController.h"
 #include "logos_api.h"
 #include "logos_sdk.h"
@@ -45,6 +46,7 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
     // so ops target that network without a bin, then bump registryRevision so QML
     // replicas re-fetch tokenList()/poolList()/resolveTokens().
     connect(m_registry.get(), &RegistryLoader::changed, this, [this]() {
+        setSwapContextRevision(swapContextRevision() + 1);
         m_logos->amm_module.setAmmProgramId(QVariantMap{
             {QStringLiteral("ammProgramId"), m_registry->activeAmmProgramId()}});
         // Point ops at the active network's AMM instance by its config-PDA id
@@ -147,6 +149,11 @@ QString AmmUiBackend::getBalance(QString accountIdHex, bool isPublic)
 void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
+
+    if (SwapConfirmation::walletContextChanged(m_lastWalletState, state)) {
+        setSwapContextRevision(swapContextRevision() + 1);
+    }
+    m_lastWalletState = state;
 
     setIsWalletOpen(state.isWalletOpen);
     setWalletExists(state.walletExists);
@@ -258,6 +265,21 @@ QString AmmUiBackend::swapExactOutput(QString defAHex, QString defBHex, QString 
     if (!txHash.isEmpty())
         refreshBalances();
     return txHash;
+}
+
+QVariantMap AmmUiBackend::confirmedSwap(QVariantMap request)
+{
+    return SwapConfirmation::submit(request, swapContextRevision(), isWalletOpen(),
+        [this](const SwapConfirmation::Request& confirmed) {
+            if (confirmed.mode == QStringLiteral("swap-exact-input")) {
+                return swapExactInput(confirmed.input, confirmed.output,
+                    confirmed.inputHolding, confirmed.outputHolding,
+                    confirmed.amount, confirmed.bound, confirmed.deadline);
+            }
+            return swapExactOutput(confirmed.input, confirmed.output,
+                confirmed.inputHolding, confirmed.outputHolding,
+                confirmed.amount, confirmed.bound, confirmed.deadline);
+        });
 }
 
 QVariantList AmmUiBackend::tokenList()

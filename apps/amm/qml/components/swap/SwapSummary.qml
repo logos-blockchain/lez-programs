@@ -50,6 +50,7 @@ Item {
                 font.bold: true
                 font.pixelSize: 12
                 text: root.swapModeText
+                textFormat: Text.PlainText
             }
         }
 
@@ -73,6 +74,8 @@ Item {
                 font.bold: true
                 font.pixelSize: 12
                 text: root.feeText
+                objectName: "swapSummaryFee"
+                textFormat: Text.PlainText
             }
         }
 
@@ -96,6 +99,7 @@ Item {
                 font.bold: true
                 font.pixelSize: 12
                 text: root.priceImpactText
+                textFormat: Text.PlainText
             }
         }
 
@@ -120,6 +124,7 @@ Item {
                 font.bold: true
                 font.pixelSize: 12
                 text: root.slippageText
+                textFormat: Text.PlainText
             }
         }
 
@@ -134,6 +139,7 @@ Item {
                 color: root.theme.colors.textSecondary
                 font.pixelSize: 12
                 text: root.boundLabel
+                textFormat: Text.PlainText
             }
 
             Text {
@@ -143,6 +149,8 @@ Item {
                 font.bold: true
                 font.pixelSize: 12
                 text: root.boundText
+                objectName: "swapSummaryBound"
+                textFormat: Text.PlainText
             }
         }
     }

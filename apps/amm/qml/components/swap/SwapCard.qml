@@ -16,6 +16,14 @@ Rectangle {
     property var tokens: []
     // Real backend replica (logos.module("amm_ui")), wired from SwapPage.
     property var backend: null
+    property var runtime: typeof logos !== "undefined" ? logos : null
+    readonly property int contextRevision: root.backend ? root.backend.swapContextRevision : -1
+
+    onContextRevisionChanged: {
+        root.requestResolve()
+        root.requestQuoteIn()
+        root.requestQuoteOut()
+    }
 
     // The wallet's token holdings (backend.tokenHoldings()), fed to each slot's
     // account selector; the chosen input/output holding ids drive the submit.
@@ -110,7 +118,7 @@ Rectangle {
     onSlippageTolerancePercentChanged: { root.requestQuoteIn(); root.requestQuoteOut() }
 
     function doResolvePool() {
-        if (!root.backend || !root.sellToken || !root.buyToken)
+        if (!root.backend || !root.runtime || !root.sellToken || !root.buyToken)
             return
 
         // Capture the pair this request is for. resolvePool callbacks can arrive
@@ -121,14 +129,16 @@ Rectangle {
         // newer in-flight request owns it.
         var reqSell = root.sellToken.definitionId
         var reqBuy = root.buyToken.definitionId
+        var reqContext = root.contextRevision
         function isStale() {
-            return !root.sellToken || !root.buyToken
+            return root.contextRevision !== reqContext
+                || !root.sellToken || !root.buyToken
                 || root.sellToken.definitionId !== reqSell
                 || root.buyToken.definitionId !== reqBuy
         }
 
         root.poolLoading = true
-        logos.watch(root.backend.resolvePoolAccount(reqSell, reqBuy),
+        root.runtime.watch(root.backend.resolvePoolAccount(reqSell, reqBuy),
             function (pool) {
                 if (isStale())
                     return
@@ -189,7 +199,7 @@ Rectangle {
     }
 
     function doQuoteIn() {
-        if (!root.backend || root.editingSide !== "sell"
+        if (!root.backend || !root.runtime || root.editingSide !== "sell"
             || !root.sellToken || !root.buyToken || root.parsedSellInput <= 0) {
             root.quoteInLoading = false
             return
@@ -201,17 +211,20 @@ Rectangle {
         var reqSell = root.sellToken.definitionId
         var reqBuy = root.buyToken.definitionId
         var reqAmount = root.sellInput
+        var reqContext = root.contextRevision
+        var slippageBps = Math.round(root.slippageTolerancePercent * 100)
         function isStale() {
-            return root.editingSide !== "sell"
+            return root.contextRevision !== reqContext
+                || Math.round(root.slippageTolerancePercent * 100) !== slippageBps
+                || root.editingSide !== "sell"
                 || !root.sellToken || !root.buyToken
                 || root.sellToken.definitionId !== reqSell
                 || root.buyToken.definitionId !== reqBuy
                 || root.sellInput !== reqAmount
         }
 
-        var slippageBps = Math.round(root.slippageTolerancePercent * 100)
         root.quoteInLoading = true
-        logos.watch(root.backend.swapExactInQuote(reqSell, reqBuy, reqAmount, slippageBps),
+        root.runtime.watch(root.backend.swapExactInQuote(reqSell, reqBuy, reqAmount, slippageBps),
             function (quote) {
                 if (isStale())
                     return
@@ -283,7 +296,7 @@ Rectangle {
 
     function doQuoteOut() {
         var amountOut = root.normalizedAmountOut()
-        if (!root.backend || root.editingSide !== "buy"
+        if (!root.backend || !root.runtime || root.editingSide !== "buy"
             || !root.sellToken || !root.buyToken || amountOut === "") {
             root.quoteOutLoading = false
             return
@@ -294,18 +307,21 @@ Rectangle {
         // Staleness is keyed on the raw field text (a further edit re-quotes),
         // while the backend gets the normalized base-units amount.
         var reqInput = root.buyInput
+        var reqContext = root.contextRevision
+        var slippageBps = Math.round(root.slippageTolerancePercent * 100)
         function isStale() {
-            return root.editingSide !== "buy"
+            return root.contextRevision !== reqContext
+                || Math.round(root.slippageTolerancePercent * 100) !== slippageBps
+                || root.editingSide !== "buy"
                 || !root.sellToken || !root.buyToken
                 || root.sellToken.definitionId !== reqSell
                 || root.buyToken.definitionId !== reqBuy
                 || root.buyInput !== reqInput
         }
 
-        var slippageBps = Math.round(root.slippageTolerancePercent * 100)
         root.quoteOutLoading = true
         // tokenIn is the sold token (sell), tokenOut is the bought token (buy).
-        logos.watch(root.backend.swapExactOutQuote(reqSell, reqBuy, amountOut, slippageBps),
+        root.runtime.watch(root.backend.swapExactOutQuote(reqSell, reqBuy, amountOut, slippageBps),
             function (quote) {
                 if (isStale())
                     return
@@ -444,6 +460,17 @@ Rectangle {
     function buildSnapshot() {
         var isExactIn = editingSide === "sell"
         return {
+            "intent": {
+                "contextRevision": root.contextRevision,
+                "swapMode": isExactIn ? "swap-exact-input" : "swap-exact-output",
+                "sellDefinitionId": sellToken ? String(sellToken.definitionId) : "",
+                "buyDefinitionId": buyToken ? String(buyToken.definitionId) : "",
+                "sellHoldingId": root.sellHolding,
+                "buyHoldingId": root.buyHolding,
+                "amount": isExactIn ? root.sellInput : root.normalizedAmountOut(),
+                "bound": root.bound,
+                "deadline": "18446744073709551615"
+            },
             "sellToken": sellToken ? sellToken.symbol : "",
             "buyToken": buyToken ? buyToken.symbol : "",
             "sellAmount": isExactIn ? root.sellInput : root.quoteRequiredIn,
@@ -459,45 +486,37 @@ Rectangle {
     }
 
     // Called by SwapPage once the user confirms in SwapConfirmationDialog.
-    // Submits the real on-chain swap for the tokens/amounts in SwapCard's live
-    // state, in whichever direction the user is editing.
-    function executeSwap() {
-        if (!root.backend || !root.canSubmit)
+    // Refuse any changed preview, then submit only the captured intent. The
+    // backend checks its own context revision before forwarding the transaction.
+    function executeSwap(snapshot) {
+        if (!root.backend || !root.runtime || root.swapInProgress)
             return
+
+        if (!root.canSubmit || !snapshot
+                || JSON.stringify(snapshot) !== JSON.stringify(root.buildSnapshot())) {
+            root.swapError = qsTr("Swap details changed. Review the updated swap and confirm again.")
+            root.swapFailed(root.swapError)
+            return
+        }
 
         root.swapInProgress = true
         root.swapError = ""
 
-        // Max u64 sentinel: "ignore deadline", per AmmUiBackend.rep.
-        var deadline = "18446744073709551615"
-        var inDef = root.sellToken.definitionId
-        var outDef = root.buyToken.definitionId
-        // Holdings come from the per-slot account selector, not the token config.
-        var inHolding = root.sellHolding
-        var outHolding = root.buyHolding
-
-        // The on-chain guard is the quote's exact-integer bound: the exact-input
-        // floor (minReceived) or the exact-output ceiling (maxIn). The typed
-        // side (sellInput / buyInput) is the exact amount for that direction.
-        var pending = root.editingSide === "sell"
-            ? root.backend.swapExactInput(inDef, outDef, inHolding, outHolding,
-                                          root.sellInput, root.quoteMinReceived, deadline)
-            : root.backend.swapExactOutput(inDef, outDef, inHolding, outHolding,
-                                           root.buyInput, root.quoteMaxIn, deadline)
-
-        logos.watch(pending,
-            function (txHash) {
+        root.runtime.watch(root.backend.confirmedSwap(snapshot.intent),
+            function (result) {
                 root.swapInProgress = false
-                if (txHash && txHash.length > 0) {
+                if (result && result.status === "ok") {
                     root.swapSucceeded({
-                        "txHash": txHash,
-                        "sellToken": root.sellToken.symbol,
-                        "buyToken": root.buyToken.symbol
+                        "txHash": result.txHash,
+                        "sellToken": snapshot.sellToken,
+                        "buyToken": snapshot.buyToken
                     })
                     root.resetAmounts()
                     resolveDebounce.restart()
                 } else {
-                    root.swapError = qsTr("Swap failed (empty response from sequencer).")
+                    root.swapError = result && result.error === "swap_context_changed"
+                        ? qsTr("Wallet or network changed. Review the updated swap and confirm again.")
+                        : qsTr("Swap failed (empty response from sequencer).")
                     root.swapFailed(root.swapError)
                 }
             },

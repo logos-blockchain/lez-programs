@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 #include "WalletProvider.h"
 
@@ -10,6 +11,9 @@ class QTimer;
 class WalletAccountModel;
 
 struct WalletUiState {
+    // Changes on connection lifecycle and observed account-identity changes.
+    // The shared core exposes no notification for unobserved external restores.
+    quint64 sessionRevision = 0;
     bool isWalletOpen = false;
     bool walletExists = false;
     QString configPath;
@@ -54,12 +58,13 @@ private:
     QString defaultStoragePath() const;
 
     void openOnStartup();
-    void applySnapshot(const WalletSnapshot& snapshot);
+    void applySnapshot(const WalletSnapshot& snapshot, bool newSession = false);
     void checkReachability();
 
     WalletProvider& m_wallet;
     QString m_settingsApplication;
     WalletUiState m_state;
+    QStringList m_accountIdentities;
     WalletAccountModel* m_accountModel;
     QNetworkAccessManager* m_network;
     QTimer* m_reachabilityTimer;
