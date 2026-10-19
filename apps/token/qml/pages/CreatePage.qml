@@ -22,11 +22,12 @@ Item {
     property string errorMessage: ""
     property bool submitting: false
     property bool accountBusy: false
+    property int submissionSerial: 0
 
     signal requestInspect()
 
     onVisibleChanged: {
-        if (visible) {
+        if (visible && !root.submitting && !root.prepared) {
             step = 0;
             prepared = false;
             preparedMessage = "";
@@ -51,7 +52,8 @@ Item {
     readonly property bool validExternalAuthority: !isFungible || authorityMode !== 2 || (isAccountId(externalAuthorityField.text) && externalAuthorityField.text !== "11111111111111111111111111111111")
     readonly property bool canContinue: validSupply && validExternalAuthority
     readonly property bool canPrepare: canContinue && validDefinitionTarget && validHoldingTarget && validMetadataTarget
-    readonly property bool canSubmit: canPrepare && root.backend !== null && root.backend.isWalletOpen && !root.submitting
+    readonly property bool canSubmit: canPrepare && root.backend !== null && root.backend.isWalletOpen
+                                      && !root.submitting && !root.prepared
     readonly property int validTargetCount: (validDefinitionTarget ? 1 : 0) + (validHoldingTarget ? 1 : 0) + (hasMetadata && validMetadataTarget ? 1 : 0)
     readonly property int targetCount: hasMetadata ? 3 : 2
 
@@ -177,44 +179,62 @@ Item {
         if (!canSubmit)
             return;
 
-        var mintAuthority = !isFungible ? "" : authorityMode === 0 ? "none" : authorityMode === 1 ? "self" : externalAuthorityField.text;
-        var metadataStandardValue = metadataStandard === 0 ? "simple" : "expanded";
+        var request = {
+            fungible: isFungible,
+            hasMetadata: hasMetadata,
+            definitionTargetId: String(definitionTargetField.text),
+            holdingTargetId: String(holdingTargetField.text),
+            metadataTargetId: String(metadataTargetField.text),
+            name: String(nameField.text),
+            supply: String(supplyField.text),
+            authorityMode: authorityMode,
+            externalAuthority: String(externalAuthorityField.text),
+            mintAuthority: !isFungible ? "" : authorityMode === 0 ? "none" : authorityMode === 1 ? "self" : externalAuthorityField.text,
+            metadataStandard: metadataStandard === 0 ? "simple" : "expanded",
+            metadataStandardDisplay: metadataStandard === 0 ? "Simple" : "Expanded",
+            metadataUri: String(metadataUriField.text),
+            creators: String(creatorsField.text),
+            instruction: instructionName
+        };
+        var requestSerial = ++root.submissionSerial;
         var pending;
         root.submitting = true;
         root.errorMessage = "";
         root.preparedMessage = qsTr("Submitting to the Token Program…");
 
-        if (!isFungible && root.backend) {
+        if (!request.fungible && root.backend) {
             pending = root.backend.createNonFungible(
-                definitionTargetField.text,
-                holdingTargetField.text,
-                metadataTargetField.text,
-                nameField.text,
-                supplyField.text,
-                metadataStandardValue,
-                metadataUriField.text,
-                creatorsField.text);
-        } else if (hasMetadata && root.backend) {
+                request.definitionTargetId,
+                request.holdingTargetId,
+                request.metadataTargetId,
+                request.name,
+                request.supply,
+                request.metadataStandard,
+                request.metadataUri,
+                request.creators);
+        } else if (request.hasMetadata && root.backend) {
             pending = root.backend.createFungibleWithMetadata(
-                definitionTargetField.text,
-                holdingTargetField.text,
-                metadataTargetField.text,
-                nameField.text,
-                supplyField.text,
-                mintAuthority,
-                metadataStandardValue,
-                metadataUriField.text,
-                creatorsField.text);
+                request.definitionTargetId,
+                request.holdingTargetId,
+                request.metadataTargetId,
+                request.name,
+                request.supply,
+                request.mintAuthority,
+                request.metadataStandard,
+                request.metadataUri,
+                request.creators);
         } else if (root.backend) {
             pending = root.backend.createFungible(
-                definitionTargetField.text,
-                holdingTargetField.text,
-                nameField.text,
-                supplyField.text,
-                mintAuthority);
+                request.definitionTargetId,
+                request.holdingTargetId,
+                request.name,
+                request.supply,
+                request.mintAuthority);
         }
 
         root.watch(pending, function(result) {
+            if (requestSerial !== root.submissionSerial)
+                return;
             root.submitting = false;
             if (!result || result.status !== "ok") {
                 root.prepared = false;
@@ -223,61 +243,61 @@ Item {
             }
 
             var transactionId = String(result.transactionId || "");
-            var definitionType = isFungible ? "fungible" : "nonFungible";
+            var definitionType = request.fungible ? "fungible" : "nonFungible";
             var draft = {
-                id: definitionTargetField.text,
-                name: nameField.text.length > 0 ? nameField.text : qsTr("Untitled definition"),
+                id: request.definitionTargetId,
+                name: request.name.length > 0 ? request.name : qsTr("Untitled definition"),
                 type: definitionType,
-                definitionId: definitionTargetField.text,
-                holdingId: holdingTargetField.text,
-                metadataId: hasMetadata ? metadataTargetField.text : "",
-                rawSupply: supplyField.text,
-                displaySupply: supplyField.text,
+                definitionId: request.definitionTargetId,
+                holdingId: request.holdingTargetId,
+                metadataId: request.hasMetadata ? request.metadataTargetId : "",
+                rawSupply: request.supply,
+                displaySupply: request.supply,
                 inferredDecimals: "",
-                authorityMode: isFungible ? (authorityMode === 0 ? "fixed" : authorityMode === 1 ? "self" : "external") : "masterHolding",
-                authority: isFungible && authorityMode === 2 ? externalAuthorityField.text : authorityMode === 1 ? definitionTargetField.text : "",
-                authorityLabel: isFungible && authorityMode === 2 ? qsTr("External authority account") : "",
-                metadataStandard: hasMetadata ? (metadataStandard === 0 ? "Simple" : "Expanded") : "",
-                metadataUri: hasMetadata ? metadataUriField.text : "",
-                creators: hasMetadata ? creatorsField.text : "",
+                authorityMode: request.fungible ? (request.authorityMode === 0 ? "fixed" : request.authorityMode === 1 ? "self" : "external") : "masterHolding",
+                authority: request.fungible && request.authorityMode === 2 ? request.externalAuthority : request.authorityMode === 1 ? request.definitionTargetId : "",
+                authorityLabel: request.fungible && request.authorityMode === 2 ? qsTr("External authority account") : "",
+                metadataStandard: request.hasMetadata ? request.metadataStandardDisplay : "",
+                metadataUri: request.hasMetadata ? request.metadataUri : "",
+                creators: request.hasMetadata ? request.creators : "",
                 description: qsTr("Submitted to the Token Program."),
                 source: "pending",
-                instruction: instructionName,
-                printableCopies: !isFungible ? supplyField.text : "",
-                masterHolding: !isFungible ? holdingTargetField.text : "",
+                instruction: request.instruction,
+                printableCopies: !request.fungible ? request.supply : "",
+                masterHolding: !request.fungible ? request.holdingTargetId : "",
                 transactionId: transactionId,
                 definition: {
-                    id: definitionTargetField.text,
-                    hex: definitionTargetField.text,
-                    name: nameField.text,
+                    id: request.definitionTargetId,
+                    hex: request.definitionTargetId,
+                    name: request.name,
                     type: definitionType,
-                    totalSupplyRaw: isFungible ? supplyField.text : undefined,
-                    printableSupply: !isFungible ? supplyField.text : undefined,
-                    mintAuthority: isFungible && authorityMode === 2 ? externalAuthorityField.text : isFungible && authorityMode === 1 ? definitionTargetField.text : undefined,
-                    metadataId: hasMetadata ? metadataTargetField.text : undefined
+                    totalSupplyRaw: request.fungible ? request.supply : undefined,
+                    printableSupply: !request.fungible ? request.supply : undefined,
+                    mintAuthority: request.fungible && request.authorityMode === 2 ? request.externalAuthority : request.fungible && request.authorityMode === 1 ? request.definitionTargetId : undefined,
+                    metadataId: request.hasMetadata ? request.metadataTargetId : undefined
                 },
                 holding: {
-                    id: holdingTargetField.text,
+                    id: request.holdingTargetId,
                     wallet: "connected wallet",
-                    role: !isFungible ? "nftMaster" : "fungible",
-                    rawBalance: isFungible ? supplyField.text : undefined,
-                    printBalance: !isFungible ? supplyField.text : undefined
+                    role: !request.fungible ? "nftMaster" : "fungible",
+                    rawBalance: request.fungible ? request.supply : undefined,
+                    printBalance: !request.fungible ? request.supply : undefined
                 },
                 holdings: [{
-                    id: holdingTargetField.text,
+                    id: request.holdingTargetId,
                     wallet: "connected wallet",
-                    role: !isFungible ? "nftMaster" : "fungible",
-                    rawBalance: isFungible ? supplyField.text : undefined,
-                    printBalance: !isFungible ? supplyField.text : undefined
+                    role: !request.fungible ? "nftMaster" : "fungible",
+                    rawBalance: request.fungible ? request.supply : undefined,
+                    printBalance: !request.fungible ? request.supply : undefined
                 }]
             };
 
-            if (hasMetadata) {
+            if (request.hasMetadata) {
                 draft.metadata = {
-                    id: metadataTargetField.text,
-                    standard: metadataStandard === 0 ? "Simple" : "Expanded",
-                    uri: metadataUriField.text,
-                    creators: creatorsField.text
+                    id: request.metadataTargetId,
+                    standard: request.metadataStandardDisplay,
+                    uri: request.metadataUri,
+                    creators: request.creators
                 };
             }
 
