@@ -132,9 +132,10 @@ void RegistryLoader::refresh()
     // Supersede any in-flight remote fetch.
     ++m_generation;
 
-    // No adopted network id until applyRegistry selects one; the local / none paths
-    // below carry none, so ops fall back to AMM_PROGRAM_BIN.
+    // No adopted instance until applyRegistry selects one; the local / none paths
+    // below carry neither id, so ops fall back to AMM_PROGRAM_BIN / AMM_CONFIG_ID.
     m_activeAmmProgramId.clear();
+    m_activeAmmConfigId.clear();
 
     // local-replaces-remote: a configured local file wins outright.
     if (hasLocalSource()) {
