@@ -132,6 +132,7 @@ AmmActionCard {
                                        && !root.quoteLoading
                                        && !root.quoteStale
                                        && !root.submitting
+                                       && root.walletReady
                                        // A create-pool tx for this pair is already in flight
                                        // (transactionId set) but the pool still reads missing until
                                        // the chain processes it — block confirm so a stale

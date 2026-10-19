@@ -1,6 +1,7 @@
 #include "TokenUiBackend.h"
 
 #include <QMap>
+#include <QPointer>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -107,15 +108,21 @@ QString TokenUiBackend::getBalance(QString accountIdHex, bool isPublic)
 
 QString TokenUiBackend::createNewDefault(QString password)
 {
+    const QPointer<TokenUiBackend> guard(this);
     const QString mnemonic = m_walletController->createDefaultWallet(password);
+    if (!guard)
+        return {};
     syncWalletState();
     return mnemonic;
 }
 
 QString TokenUiBackend::createNew(QString configPath, QString storagePath, QString password)
 {
+    const QPointer<TokenUiBackend> guard(this);
     const QString mnemonic = m_walletController->createWallet(
         configPath, storagePath, password);
+    if (!guard)
+        return {};
     syncWalletState();
     return mnemonic;
 }
@@ -125,6 +132,12 @@ bool TokenUiBackend::openExisting()
     const bool opened = m_walletController->open();
     syncWalletState();
     return opened;
+}
+
+void TokenUiBackend::cancelSync()
+{
+    m_walletController->cancelSync();
+    syncWalletState();
 }
 
 void TokenUiBackend::disconnectWallet()
@@ -145,8 +158,13 @@ void TokenUiBackend::syncWalletState()
     setCurrentBlockHeight(state.currentBlockHeight);
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
-    setSyncStatus(state.syncStatus);
     setSyncError(state.syncError);
+    setSyncStatus(state.syncStatus);
+    setInitialSync(state.initialSync);
+    setSyncProgressKnown(state.syncProgressKnown);
+    setSyncCurrentBlock(state.syncCurrentBlock);
+    setSyncTargetBlock(state.syncTargetBlock);
+    setSyncRemainingBlocks(state.syncRemainingBlocks);
 }
 
 QVariantMap TokenUiBackend::walletUnavailable() const
@@ -185,14 +203,14 @@ QVariantMap TokenUiBackend::inspectMetadata(QString metadataId)
 
 QVariantMap TokenUiBackend::walletTokenAccounts()
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return m_logos->token_module.walletTokenAccounts();
 }
 
 QVariantList TokenUiBackend::walletDefinitions()
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return {};
 
     const QVariantMap accountsResult = m_logos->token_module.walletTokenAccounts();
@@ -351,7 +369,7 @@ QVariantMap TokenUiBackend::createFungible(QString definitionTargetId,
                                             QString holdingTargetId, QString name,
                                             QString totalSupplyRaw, QString mintAuthority)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(m_logos->token_module.createFungible(
         definitionTargetId, holdingTargetId, name,
@@ -363,7 +381,7 @@ QVariantMap TokenUiBackend::createFungibleWithMetadata(
     QString name, QString totalSupplyRaw, QString mintAuthority,
     QString metadataStandard, QString uri, QString creators)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(m_logos->token_module.createFungibleWithMetadata(
         definitionTargetId, holdingTargetId, metadataTargetId, name,
@@ -376,7 +394,7 @@ QVariantMap TokenUiBackend::createNonFungible(
     QString metadataTargetId, QString name, QString printableSupplyRaw,
     QString metadataStandard, QString uri, QString creators)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(m_logos->token_module.createNonFungible(
         definitionTargetId, masterHoldingTargetId, metadataTargetId, name,
@@ -385,7 +403,7 @@ QVariantMap TokenUiBackend::createNonFungible(
 
 QVariantMap TokenUiBackend::initializeHolding(QString definitionId, QString holdingTargetId)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(
         m_logos->token_module.initializeHolding(definitionId, holdingTargetId));
@@ -394,7 +412,7 @@ QVariantMap TokenUiBackend::initializeHolding(QString definitionId, QString hold
 QVariantMap TokenUiBackend::transfer(QString senderHoldingId, QString recipientHoldingId,
                                      QString amountRaw)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(m_logos->token_module.transfer(
         senderHoldingId, recipientHoldingId, QVariant::fromValue(amountRaw)));
@@ -402,7 +420,7 @@ QVariantMap TokenUiBackend::transfer(QString senderHoldingId, QString recipientH
 
 QVariantMap TokenUiBackend::burn(QString definitionId, QString holdingId, QString amountRaw)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(m_logos->token_module.burn(
         definitionId, holdingId, QVariant::fromValue(amountRaw)));
@@ -410,7 +428,7 @@ QVariantMap TokenUiBackend::burn(QString definitionId, QString holdingId, QStrin
 
 QVariantMap TokenUiBackend::mint(QString definitionId, QString holdingId, QString amountRaw)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(m_logos->token_module.mint(
         definitionId, holdingId, QVariant::fromValue(amountRaw)));
@@ -419,7 +437,7 @@ QVariantMap TokenUiBackend::mint(QString definitionId, QString holdingId, QStrin
 QVariantMap TokenUiBackend::mintWithAuthority(QString definitionId, QString holdingId,
                                                QString authorityId, QString amountRaw)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(m_logos->token_module.mintWithAuthority(
         definitionId, holdingId, authorityId, QVariant::fromValue(amountRaw)));
@@ -427,7 +445,7 @@ QVariantMap TokenUiBackend::mintWithAuthority(QString definitionId, QString hold
 
 QVariantMap TokenUiBackend::setAuthority(QString definitionId, QString newAuthority)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(
         m_logos->token_module.setAuthority(definitionId, newAuthority));
@@ -437,7 +455,7 @@ QVariantMap TokenUiBackend::setAuthorityWithAuthority(QString definitionId,
                                                        QString authorityId,
                                                        QString newAuthority)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(m_logos->token_module.setAuthorityWithAuthority(
         definitionId, authorityId, newAuthority));
@@ -446,7 +464,7 @@ QVariantMap TokenUiBackend::setAuthorityWithAuthority(QString definitionId,
 QVariantMap TokenUiBackend::printNft(QString masterHoldingId,
                                      QString printedHoldingTargetId)
 {
-    if (!m_walletController->state().isWalletOpen)
+    if (!m_walletController->state().canSubmit())
         return walletUnavailable();
     return refreshAfterSubmit(
         m_logos->token_module.printNft(masterHoldingId, printedHoldingTargetId));

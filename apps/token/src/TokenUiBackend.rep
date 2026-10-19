@@ -15,10 +15,16 @@ class TokenUiBackend
     // Whether the configured sequencer answered the last reachability probe.
     // Defaults true so the UI doesn't flash a warning before the first check.
     PROP(bool sequencerReachable READONLY)
-    // Wallet startup and refresh state. `isWalletOpen` remains false until the
-    // capability handshake and first snapshot both complete.
+    // Wallet startup and refresh state. `initialSync` blocks use of a newly
+    // opened or created wallet until its first snapshot completes; background
+    // refreshes retain the last usable wallet state.
     PROP(QString syncStatus READONLY)
     PROP(QString syncError READONLY)
+    PROP(bool initialSync READONLY)
+    PROP(bool syncProgressKnown READONLY)
+    PROP(int syncCurrentBlock READONLY)
+    PROP(int syncTargetBlock READONLY)
+    PROP(int syncRemainingBlocks READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
@@ -39,6 +45,7 @@ class TokenUiBackend
     SLOT(bool openExisting())
     // Close this app's wallet view (lock); does not delete the wallet and, in
     // Basecamp, does not close the wallet other apps share.
+    SLOT(void cancelSync())
     SLOT(void disconnectWallet())
 
     // Token Program reads. walletDefinitions() joins the module's account

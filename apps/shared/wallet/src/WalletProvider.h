@@ -47,6 +47,13 @@ struct WalletAccount {
     bool isPublic = true;
 };
 
+struct WalletSyncProgress {
+    bool known = false;
+    quint64 currentBlock = 0;
+    quint64 targetBlock = 0;
+    quint64 remainingBlocks = 0;
+};
+
 struct WalletSnapshot {
     WalletFailure failure = WalletFailure::None;
     QVector<WalletAccount> accounts;
@@ -101,15 +108,20 @@ class WalletProvider {
 public:
     using SessionCallback = std::function<void(WalletSession)>;
     using SnapshotCallback = std::function<void(WalletSnapshot)>;
+    using ProgressCallback = std::function<void(WalletSyncProgress)>;
 
     virtual ~WalletProvider() = default;
 
     virtual WalletSession connect(const WalletPaths& paths) = 0;
-    virtual void connectAsync(const WalletPaths& paths, SessionCallback callback) = 0;
+    virtual void connectAsync(const WalletPaths& paths,
+                              SessionCallback callback,
+                              ProgressCallback progress = {}) = 0;
     virtual WalletCreation createWallet(const WalletPaths& paths,
                                         const QString& password) = 0;
     virtual WalletSnapshot snapshot(bool forceRefresh = false) = 0;
-    virtual void snapshotAsync(bool forceRefresh, SnapshotCallback callback) = 0;
+    virtual void snapshotAsync(bool forceRefresh,
+                                SnapshotCallback callback,
+                                ProgressCallback progress = {}) = 0;
     virtual void clearSnapshot() = 0;
     virtual WalletAccountCreation createAccount(bool isPublic) = 0;
     virtual WalletAccountRead readPublicAccount(const QString& accountId) const = 0;
