@@ -15,13 +15,23 @@ class QJsonArray;
 // in-memory snapshot the backend's QtRO slots read synchronously.
 //
 // Source, resolved per refresh() (local-replaces-remote):
-//   * If TOKENS_CONFIG / AMM_POOLS_CONFIG are set, the local JSON files (bare
-//     `[...]` arrays, dev / local-sequencer testing) — parsed synchronously.
-//   * Else if AMM_REGISTRY_URL is set, a single remote registry document
-//     (Uniswap-token-list style, multi-network): `{ networks:[{id, programIds}],
-//     tokens:[{network, ...}], pools:[{network, ...}] }`. Fetched asynchronously
-//     (QNetworkAccessManager) with an on-disk cache served meanwhile
-//     (stale-while-revalidate). Entries are filtered to the active network.
+//   * Either nonempty TOKENS_CONFIG / AMM_POOLS_CONFIG selects local files for
+//     both lists (bare `[...]` arrays), parsed synchronously without filtering.
+//     Each missing/unreadable/invalid file yields an empty list; no remote fallback.
+//   * Else nonempty AMM_REGISTRY_URL overrides setConfiguredUrl(). A selected URL
+//     supplies a multi-network document: `{ networks:[{id, programIds}],
+//     tokens:[{network, ...}], pools:[{network, ...}] }`, fetched asynchronously.
+//     Only when both current lists are empty, try the disk cache first; its stored
+//     URL must match the requested URL. Otherwise retain the current snapshot
+//     while fetching, even when the URL changes. Network errors and non-object
+//     JSON retain it; an object without a usable network publishes empty lists.
+//     Registry/cache entries are filtered to the active network.
+//   * No local source or URL publishes empty lists with source "none".
+//
+// Source labels are "local", "remote", "cache" and "none". Cache is local disk
+// storage of registry content, not an authenticity guarantee. The loader checks
+// no registry signature or on-chain identities for list metadata; token names,
+// symbols and pool labels remain source-provided.
 //
 // Active network = the user's selection (selectNetwork), else AMM_NETWORK if it
 // names a declared network, else the first declared network. Network identity can't
@@ -63,9 +73,10 @@ public:
     // it takes precedence over the remote registry (local-replaces-remote).
     static bool hasLocalSource();
 
-    // The registry URL to fetch when AMM_REGISTRY_URL is unset — the value the user
+    // The registry URL to fetch when AMM_REGISTRY_URL is empty — the value the user
     // configured in the wallet config UI (persisted by the backend). Empty ⇒ no
-    // remote source. Takes effect on the next refresh().
+    // remote source unless the env overrides. Local files win over either URL.
+    // Takes effect on the next refresh().
     void setConfiguredUrl(const QString& url) { m_configuredUrl = url; }
 
 public slots:

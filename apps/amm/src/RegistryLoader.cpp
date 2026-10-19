@@ -64,8 +64,8 @@ namespace {
 
     // Parses a pools array into the QVariantList the Pools UI renders, keeping
     // only entries for `networkFilter` (empty ⇒ keep all). tokenA/tokenB (display
-    // symbols) and a numeric feeBps are required; the id fields pass through when
-    // present so the entry can be resolved on-chain.
+    // symbols) are required; the id fields pass through when present so the entry
+    // can be resolved on-chain. The swap fee comes from the AMM config.
     QVariantList parsePools(const QJsonArray& arr, const QString& networkFilter)
     {
         QVariantList out;
@@ -309,7 +309,8 @@ void RegistryLoader::loadDiskCache(const QString& url)
     if (!file.open(QIODevice::ReadOnly))
         return;
     const QJsonObject obj = QJsonDocument::fromJson(file.readAll()).object();
-    // Only trust a cache written for this same source URL.
+    // Only apply a cache whose stored URL matches this source URL. This is a
+    // source-selection check; it does not authenticate the cached document.
     if (obj.value(QStringLiteral("url")).toString() != url)
         return;
 

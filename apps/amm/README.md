@@ -136,12 +136,11 @@ core module from `result-core/` and the UI plugin from `result-lgx/`:
 4. Choose the core module `.lgx` from `result-core/`, then the UI plugin `.lgx`
    from `result-lgx/`
 
-To actually use the on-chain views (**Swap** and **Liquidity**) you must also
-set `AMM_PROGRAM_BIN` and `TOKENS_CONFIG` (both explained below). Both views read
-the same two — the AMM program id is derived from `AMM_PROGRAM_BIN`, the token
-set from `TOKENS_CONFIG`, and the sequencer from the wallet config. Run this
-**from the repo root** — use absolute paths (`$(pwd)/…`), because `nix run` may
-not preserve the working directory, so relative paths won't resolve:
+The **Swap** and **Liquidity** views use the registry snapshot described below.
+A registry can supply tokens, pools and the selected network's AMM program id.
+For local-file setup, set `AMM_PROGRAM_BIN` and `TOKENS_CONFIG`; the sequencer
+comes from the wallet config. Run this **from the repo root** — use absolute
+paths (`$(pwd)/…`), because `nix run` may not preserve the working directory:
 
 ```bash
 AMM_PROGRAM_BIN=$(pwd)/programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin \
@@ -149,16 +148,51 @@ TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
 nix run .#amm-ui
 ```
 
-Without `AMM_PROGRAM_BIN` the Swap and Liquidity views stay disabled; without
-`TOKENS_CONFIG` the token picker is empty. Each is detailed below.
+In local-file mode, `AMM_PROGRAM_BIN` supplies the AMM program identity and
+`TOKENS_CONFIG` supplies the token list. A remote registry can provide these
+without either variable.
 
-### AMM program binary (required for swaps and liquidity)
+### Registry sources and metadata
 
-To execute a swap, the app must submit a transaction against the **exact AMM
-program you deployed** (its ELF determines the program id, and therefore every
-pool/vault/config PDA and the transaction's target). The app therefore needs the
-deployed `amm.bin` bytes at runtime — it does **not** derive them from the wallet
-module (whose embedded AMM program may differ from your deployment).
+`tokenList()` and `poolList()` return the latest `RegistryLoader` snapshot;
+calling either slot performs no file, network or chain read. On refresh, the
+loader chooses sources in this order:
+
+1. If either `TOKENS_CONFIG` or `AMM_POOLS_CONFIG` is nonempty, both lists use
+   local JSON files. An unset, unreadable or invalid file produces an empty
+   corresponding list. Local mode never falls back to a registry URL.
+2. Otherwise, a nonempty `AMM_REGISTRY_URL` overrides the registry URL saved in
+   the wallet config UI. There is no built-in default URL.
+3. With no local source and no URL, both lists are empty (`none`).
+
+A URL supplies a multi-network JSON object with `networks`, `tokens` and `pools`
+arrays. The selected network filters the tokens and pools; selection prefers
+an explicit user pick, then a declared `AMM_NETWORK`, then the first declared
+network. The loader also adopts that network's `programIds.amm` and
+`ammConfigId` values for module calls.
+
+While fetching, an existing snapshot remains visible, even after changing the
+URL. Only when both current lists are empty does the loader first try
+`amm-registry-cache.json` in its app-data directory; the stored URL must match
+the requested URL. A successful applicable fetch publishes a `remote` snapshot
+and writes the cache with the reply URL. The `cache` label means local disk
+storage of a prior registry document. Network errors or non-object JSON retain
+the existing snapshot; a JSON object without a usable network publishes empty
+lists. `registryRevision` changes when a snapshot is published, so views can
+fetch the lists again.
+
+Token names, symbols and pool labels are source-provided metadata. The loader
+verifies no registry signature and does not check those labels or token/pool
+identities against chain state. Cache storage adds no authenticity guarantee;
+display labels alone do not establish which asset an account represents.
+
+### AMM program binary (local-file setup)
+
+To execute a swap, the app must target the **exact AMM program you deployed**.
+When the selected registry network supplies no AMM program id, the app derives
+it from `AMM_PROGRAM_BIN` (the binary's RISC Zero Image ID determines program
+identity and its derived addresses). It does not use the wallet module's
+embedded AMM program, which may differ from your deployment.
 
 Point the app at your deployed binary with the `AMM_PROGRAM_BIN` environment
 variable (absolute path):
@@ -171,20 +205,22 @@ This is the same `amm.bin` you deployed via the testnet runbook
 (`programs/amm/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/amm.bin`).
 The app reads it, derives the AMM program id (the binary's RISC Zero Image ID,
 via `amm_ffi`'s `program_id` op), and reads the on-chain AMM config account to
-discover the TWAP oracle program id for the pool's current-tick PDA. If `AMM_PROGRAM_BIN` is unset or unreadable, the
-Swap view stays disabled (no pool can be resolved).
+discover the TWAP oracle program id for the pool's current-tick PDA. Without a
+registry-supplied program id, an unset or unreadable `AMM_PROGRAM_BIN` prevents
+pool resolution.
 
 > **Golden rule (from the runbook):** recompiling the AMM changes its program id
 > and *every* derived PDA. After any redeploy, point `AMM_PROGRAM_BIN` at the new
 > `amm.bin` — never mix a stale binary with a fresh deployment.
 
-### Token list config (required for the Swap token picker)
+### Token list config (local-file setup)
 
-The Swap view's token picker is config-driven: it doesn't derive tokens from
-chain state, it reads a flat JSON list from the `TOKENS_CONFIG` environment
-variable (absolute path). Each entry needs, at minimum, the token's
-`definitionId` and **your own** `holding` account address for that token (the
-account the wallet will sign transfers from/to for that token):
+In local mode, the Swap token picker uses the flat JSON array at `TOKENS_CONFIG`
+(absolute path). Each entry needs a nonempty `definitionId`. The source can also
+supply `symbol`, `name`, `holding` and `decimals`; these slots do not validate
+those fields against chain state. A holding, when supplied, should be **your
+own** account for that token. Shared registries omit per-wallet holdings; the
+app resolves them from the connected wallet:
 
 ```json
 [
@@ -206,16 +242,16 @@ cp apps/amm/amm-tokens.json.example apps/amm/amm-tokens.json   # then replace th
 
 `amm-tokens.json` is git-ignored so your own accounts never get committed.
 
-If `TOKENS_CONFIG` is unset, unreadable, or not a valid JSON array, the token
-picker stays empty (a `qWarning` naming the exact cause is logged to stderr; no
-swap can be started). `definitionId`/`holding` may be given as base58 (as the
-wallet/runbook display them) or hex — the app normalizes both to hex.
+When local mode is selected, an unset, unreadable or invalid `TOKENS_CONFIG`
+yields an empty token list. If both local-file variables are empty, the registry
+URL may supply tokens instead. `definitionId`/`holding` may be given as base58
+(as the wallet/runbook display them) or hex; the module normalizes ids when used.
 
-### Known-pools config (optional, for the Pools list)
+### Known-pools config (local-file setup)
 
-The Pools view is config-driven the same way: it reads a flat JSON list from the
-`AMM_POOLS_CONFIG` environment variable (absolute path) and renders one row per
-entry. `tokenA`/`tokenB` are the display symbols;
+In local mode, the Pools view uses the flat JSON array at `AMM_POOLS_CONFIG`
+(absolute path) and renders the parsed entries. Remote and cached registries
+provide the same entry shape after filtering to the active network. `tokenA`/`tokenB` are the display symbols;
 `poolId`/`tokenADefinitionId`/`tokenBDefinitionId` identify the pool on-chain.
 The swap fee is not a pool field — it is instance-wide (`AmmConfig.swapFeeBps`),
 read from the config. (An instance may also set a `protocolFeeBps` — a cut of the
@@ -241,8 +277,9 @@ Copy the checked-in template to start (`amm-pools.json` is git-ignored):
 cp apps/amm/amm-pools.json.example apps/amm/amm-pools.json   # then replace the REPLACE_… placeholders
 ```
 
-If `AMM_POOLS_CONFIG` is unset, unreadable, or not a valid JSON array, the Pools
-list shows its empty state. Entries missing `tokenA` or `tokenB` are skipped
+When local mode is selected, an unset, unreadable or invalid `AMM_POOLS_CONFIG`
+yields an empty pool list. If both local-file variables are empty, the registry
+URL may supply pools instead. Entries missing `tokenA` or `tokenB` are skipped
 individually. The AMM testnet setup script writes this file for the pool(s) it
 seeds (see below).
 
@@ -250,8 +287,8 @@ The **Pool** tab in the nav bar is a dropdown with two entries. *Create pool*
 opens the new-position / add-liquidity form. *View positions* lists the wallet's
 liquidity positions: the program has no "list my positions" read and an LP
 definition id cannot be reversed back to its pool, so the app resolves every
-pool in this config and matches each pool's `lpDefinitionId` against the
-wallet's token holdings. A pool that is not in the config therefore cannot
+pool in the current snapshot and matches each pool's `lpDefinitionId` against
+the wallet's token holdings. A pool absent from the snapshot therefore cannot
 appear, however many LP tokens the wallet holds for it. Each row shows the pair,
 the instance swap fee, the wallet's claim on both reserves (`reserve × lpBalance / lpSupply`,
 floored like the program's own payout), and its share of the pool. The list
@@ -273,7 +310,7 @@ supply, an estimate of the fees accrued into the reserves, and the pool's
 account ids. Its **Swap** and **Add liquidity** buttons switch tabs with the
 pair preselected. Both the detail view and the preselection need
 `tokenADefinitionId`/`tokenBDefinitionId` on the entry, and the ids must match
-the ones in `TOKENS_CONFIG` (Swap) and in the token selector's resolved list
+the ones in the registry token snapshot (Swap) and the token selector's resolved list
 (Add liquidity); an entry without them still lists, but its detail view can only
 report that the ids are missing. Volume and transaction history are not shown —
 the AMM program stores no history to read them from.
@@ -318,8 +355,8 @@ Run everything **from the repository root** (the `apps/amm` flake can't resolve
 **Prerequisites** for the swap test to complete:
 
 - a token list with ≥2 tokens — copy `apps/amm/amm-tokens.json.example` to
-  `apps/amm/amm-tokens.json` and fill it in (see [Token list config](#token-list-config-required-for-the-swap-token-picker)),
-- the AMM program binary (see [AMM program binary](#amm-program-binary-required-for-swaps)),
+  `apps/amm/amm-tokens.json` and fill it in (see [Token list config](#token-list-config-local-file-setup)),
+- the AMM program binary (see [AMM program binary](#amm-program-binary-local-file-setup)),
 - a running sequencer with a pool + liquidity for that token pair, and an open
   wallet — otherwise the swap resolves to "No pool / no liquidity" and can't submit.
 
