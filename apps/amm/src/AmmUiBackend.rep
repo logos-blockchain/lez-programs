@@ -8,6 +8,9 @@ class AmmUiBackend
     // False while startup or reconnect is still resolving wallet state. This
     // stays distinct from isWalletOpen because a disconnected wallet is ready.
     PROP(bool walletStateReady READONLY)
+    PROP(QString walletSyncStatus READONLY)
+    PROP(QString walletSyncError READONLY)
+    PROP(bool walletCanSubmit READONLY)
     PROP(bool walletExists READONLY)
     PROP(QString configPath READONLY)
     PROP(QString storagePath READONLY)
@@ -34,6 +37,17 @@ class AmmUiBackend
     // The registry's declared networks as [{ id, name }] for the network picker
     // (empty for local / none sources). Auto-syncs on each registry refresh / pick.
     PROP(QVariantList networks READONLY)
+    PROP(QString primaryAccountAddress READONLY)
+    PROP(QString primaryAccountName READONLY)
+
+    // Network identity verified from the configured wallet sequencer. Separate
+    // from activeNetwork, which selects a registry network.
+    PROP(QString walletNetwork READONLY)
+    PROP(QString networkStatus READONLY)
+    PROP(QString networkFingerprint READONLY)
+    PROP(QVariantList assets READONLY)
+    PROP(QString assetStatus READONLY)
+    PROP(QString assetError READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
@@ -41,6 +55,8 @@ class AmmUiBackend
     SLOT(void refreshAccounts())
     SLOT(void refreshBalances())
     SLOT(QString getBalance(QString accountIdHex, bool isPublic))
+    SLOT(bool setAccountAlias(QString accountId, QString alias))
+    SLOT(bool setPrimaryAccount(QString accountId))
 
     // Wallet lifecycle. createNewDefault() is the happy path: it creates a
     // fresh wallet at the canonical walletHome with no path picking. createNew()
@@ -208,8 +224,9 @@ class AmmUiBackend
     // the configured tokens (TOKENS_CONFIG) plus the user's persisted custom tokens
     // (see addCustomToken) — the same "known list" shape the swap side shows. Tokens
     // the wallet merely holds are NOT auto-listed; add an unlisted one by id. Returns
-    // [{ definitionId (base58), name, totalSupply, holdingId, balance }] — every row
-    // the same shape, held tokens first (holdingId "" / balance "0" when not held).
+    // [{ definitionId (base58), definitionIdHex, name, totalSupply, holdingId,
+    // balance }] — every row the same shape, held tokens first (holdingId "" /
+    // balance "0" when not held).
     SLOT(QVariantList resolveTokens())
 
     // Adds a user-pasted custom token id (base58 or hex) to the persisted set, after

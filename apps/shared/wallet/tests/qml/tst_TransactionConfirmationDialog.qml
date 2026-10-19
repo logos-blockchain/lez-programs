@@ -103,6 +103,38 @@ Item {
             tryCompare(dialog, "opened", false)
         }
 
+        function test_activityStateDoesNotBlockCancellation() {
+            const dialog = createTemporaryObject(dialogComponent, root)
+            verify(dialog, "Dialog exists")
+            dialog.openWithSnapshot({ amount: "5" })
+            tryCompare(dialog, "opened", true)
+
+            dialog.activityBusy = true
+            const cancelButton = findChild(dialog, "transactionCancelButton")
+            const confirmButton = findChild(dialog, "transactionConfirmButton")
+            verify(cancelButton.enabled)
+            verify(!confirmButton.enabled)
+
+            dialog.cancel()
+            tryCompare(dialog, "opened", false)
+        }
+
+        function test_cancelUsesTheConfirmationButtonShape() {
+            const dialog = createTemporaryObject(dialogComponent, root)
+            verify(dialog, "Dialog exists")
+            dialog.roundedCancelButton = true
+            dialog.openWithSnapshot({ amount: "5" })
+            tryCompare(dialog, "opened", true)
+
+            const cancelButtonLoader = findChild(dialog, "transactionCancelButtonLoader")
+            const confirmButton = findChild(dialog, "transactionConfirmButton")
+            verify(cancelButtonLoader)
+            tryVerify(function() {
+                return cancelButtonLoader.item
+                    && cancelButtonLoader.item.background.radius === confirmButton.background.radius
+            })
+        }
+
         function test_keepsActionsInsideShortViewport() {
             const viewport = createTemporaryObject(viewportComponent, root)
             verify(viewport, "Short viewport exists")

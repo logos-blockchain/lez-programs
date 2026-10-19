@@ -1,0 +1,17 @@
+[package]
+name = "wallet-idl-decoder"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[lib]
+name = "wallet_idl_decoder"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hex = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+spel-framework-core = { git = "https://github.com/logos-co/spel.git", tag = "v0.6.0" }

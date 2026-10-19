@@ -22,6 +22,28 @@ set(LOGOS_WALLET_GENERATED_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/generated_code"
     CACHE PATH "Path to generated Logos SDK sources"
 )
+# LogosModule.cmake stages external libraries after this shared target is
+# configured. Resolve the decoder from the staged dependency before adding the
+# shared wallet module so its static target can link successfully.
+if(NOT LOGOS_WALLET_IDL_DECODER_LIBRARY)
+    set(token_wallet_decoder_search_path "${CMAKE_CURRENT_SOURCE_DIR}/lib")
+    if(DEFINED ENV{LOGOS_EXT_ROOT_WALLET_IDL_DECODER})
+        set(token_wallet_decoder_search_path
+            "$ENV{LOGOS_EXT_ROOT_WALLET_IDL_DECODER}/lib")
+    endif()
+    find_library(TOKEN_WALLET_IDL_DECODER_LIBRARY
+        NAMES wallet_idl_decoder
+        PATHS "${token_wallet_decoder_search_path}"
+        NO_DEFAULT_PATH
+    )
+    if(TOKEN_WALLET_IDL_DECODER_LIBRARY)
+        set(LOGOS_WALLET_IDL_DECODER_LIBRARY
+            "${TOKEN_WALLET_IDL_DECODER_LIBRARY}"
+            CACHE FILEPATH
+            "wallet_idl_decoder library required by logos_wallet_access"
+        )
+    endif()
+endif()
 add_subdirectory("${LOGOS_WALLET_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/shared-wallet")
 
 # UI module with a hand-written C++ adapter. The adapter forwards token
@@ -41,4 +63,6 @@ logos_module(
         Qt6::Gui
     LINK_TARGETS
         logos_wallet_access
+    EXTERNAL_LIBS
+        wallet_idl_decoder
 )
