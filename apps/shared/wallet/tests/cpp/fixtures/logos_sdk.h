@@ -6,10 +6,30 @@
 #include <QVariant>
 #include <QVariantList>
 
+#include <functional>
+#include <utility>
+#include <vector>
+
 class LogosAPI;
 
-class FakeExecutionZone {
+class FakeLezCore {
 public:
+    // Match the generated lez_core caller contract; delay selected replies to
+    // exercise module teardown while IPC is in flight.
+    QString deferredMethod;
+    int deferredOccurrence = 1;
+    std::vector<std::function<void()>> pendingReplies;
+
+    void completePendingReplies()
+    {
+        auto replies = std::move(pendingReplies);
+        pendingReplies.clear();
+        for (auto& reply : replies)
+            reply();
+    }
+
+    QString versionValue = QStringLiteral("1.0");
+    int versionFailuresRemaining = 0;
     int openResult = 0;
     int saveResult = 0;
     int syncResult = 0;
@@ -25,6 +45,7 @@ public:
     QHash<QString, QString> balances;
 
     int openCalls = 0;
+    int versionCalls = 0;
     int saveCalls = 0;
     int syncCalls = 0;
     int listCalls = 0;
@@ -42,6 +63,22 @@ public:
     QVariant submittedInstruction;
     QString submittedProgramId;
 
+    QString version()
+    {
+        ++versionCalls;
+        if (versionFailuresRemaining != 0) {
+            if (versionFailuresRemaining > 0)
+                --versionFailuresRemaining;
+            return {};
+        }
+        return versionValue;
+    }
+
+    void versionAsync(std::function<void(QString)> callback)
+    {
+        deliver(QStringLiteral("version"), std::move(callback), version());
+    }
+
     int open(const QString& config, const QString& storage, const QString& statistics)
     {
         ++openCalls;
@@ -49,6 +86,14 @@ public:
         openedStorage = storage;
         openedStatistics = statistics;
         return openResult;
+    }
+
+    void openAsync(const QString& config,
+                   const QString& storage,
+                   const QString& statistics,
+                   std::function<void(int)> callback)
+    {
+        deliver(QStringLiteral("open"), std::move(callback), open(config, storage, statistics));
     }
 
     QString create_new(const QString& config,
@@ -69,24 +114,54 @@ public:
         return saveResult;
     }
 
+    void saveAsync(std::function<void(int)> callback)
+    {
+        deliver(QStringLiteral("save"), std::move(callback), save());
+    }
+
     QString create_account_public() { return publicAccountId; }
     QString create_account_private() { return privateAccountId; }
 
     int get_last_synced_block() const { return lastSyncedBlock; }
     int get_current_block_height() const { return currentBlockHeight; }
 
-    int sync_to_block(quint64)
+    void get_last_synced_blockAsync(std::function<void(int)> callback)
+    {
+        deliver(QStringLiteral("get_last_synced_block"), std::move(callback), get_last_synced_block());
+    }
+
+    void get_current_block_heightAsync(std::function<void(int)> callback)
+    {
+        deliver(QStringLiteral("get_current_block_height"), std::move(callback), get_current_block_height());
+    }
+
+    int sync_to_block(int)
     {
         ++syncCalls;
         return syncResult;
     }
 
+    void sync_to_blockAsync(int blockId, std::function<void(int)> callback)
+    {
+        deliver(QStringLiteral("sync_to_block"), std::move(callback), sync_to_block(blockId));
+    }
+
     QString get_sequencer_addr() const { return sequencerAddress; }
+
+    void get_sequencer_addrAsync(std::function<void(QString)> callback)
+    {
+        deliver(QStringLiteral("get_sequencer_addr"), std::move(callback), get_sequencer_addr());
+    }
 
     QVariantList list_accounts()
     {
         ++listCalls;
         return accounts;
+    }
+
+    void list_accountsAsync(std::function<void(QVariantList)> callback)
+    {
+        deliver(QStringLiteral("list_accounts"), std::move(callback), list_accounts());
     }
 
     QString get_account_public(const QString& accountId)
@@ -95,9 +170,22 @@ public:
         return publicAccounts.value(accountId);
     }
 
+    void get_account_publicAsync(const QString& accountId,
+                                 std::function<void(QString)> callback)
+    {
+        deliver(QStringLiteral("get_account_public"), std::move(callback), get_account_public(accountId));
+    }
+
     QString get_balance(const QString& accountId, bool) const
     {
         return balances.value(accountId);
+    }
+
+    void get_balanceAsync(const QString& accountId,
+                          bool isPublic,
+                          std::function<void(QString)> callback)
+    {
+        deliver(QStringLiteral("get_balance"), std::move(callback), get_balance(accountId, isPublic));
     }
 
     QString send_generic_public_transaction(
@@ -113,11 +201,25 @@ public:
         submittedProgramId = programId;
         return transactionResponse;
     }
+
+private:
+    template<typename Result>
+    void deliver(const QString& method, std::function<void(Result)> callback, Result result)
+    {
+        if (method == deferredMethod && --deferredOccurrence == 0) {
+            pendingReplies.push_back([callback = std::move(callback),
+                                      result = std::move(result)]() mutable {
+                callback(std::move(result));
+            });
+            return;
+        }
+        callback(std::move(result));
+    }
 };
 
 struct LogosModules {
     LogosModules() = default;
     explicit LogosModules(LogosAPI*) { }
 
-    FakeExecutionZone lez_core;
+    FakeLezCore lez_core;
 };

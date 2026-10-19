@@ -21,6 +21,8 @@ QString walletFailureCode(WalletFailure failure)
         return QStringLiteral("invalid_request");
     case WalletFailure::SubmissionFailed:
         return QStringLiteral("submission_failed");
+    case WalletFailure::CapabilityUnavailable:
+        return QStringLiteral("capability_unavailable");
     }
     return QStringLiteral("wallet_unavailable");
 }

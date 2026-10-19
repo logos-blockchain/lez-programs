@@ -18,6 +18,9 @@ class AmmUiBackend
     // Whether the configured sequencer answered the last reachability probe.
     // Defaults true so the UI doesn't flash a warning before the first check.
     PROP(bool sequencerReachable READONLY)
+    // Wallet startup and refresh state, including asynchronous open failures.
+    PROP(QString syncStatus READONLY)
+    PROP(QString syncError READONLY)
     // Bumps on every known-tokens / known-pools registry refresh so QML replicas
     // re-fetch tokenList()/poolList()/resolveTokens(). Starts at 0; the backend
     // sets it once the initial snapshot has loaded (and again on each refresh).

@@ -4,6 +4,8 @@
 #include <QStringList>
 #include <QVector>
 
+#include <functional>
+
 enum class WalletFailure {
     None,
     WalletMissing,
@@ -14,6 +16,7 @@ enum class WalletFailure {
     ReadFailed,
     InvalidRequest,
     SubmissionFailed,
+    CapabilityUnavailable,
 };
 
 QString walletFailureCode(WalletFailure failure);
@@ -96,12 +99,17 @@ struct WalletSubmission {
 
 class WalletProvider {
 public:
+    using SessionCallback = std::function<void(WalletSession)>;
+    using SnapshotCallback = std::function<void(WalletSnapshot)>;
+
     virtual ~WalletProvider() = default;
 
     virtual WalletSession connect(const WalletPaths& paths) = 0;
+    virtual void connectAsync(const WalletPaths& paths, SessionCallback callback) = 0;
     virtual WalletCreation createWallet(const WalletPaths& paths,
                                         const QString& password) = 0;
     virtual WalletSnapshot snapshot(bool forceRefresh = false) = 0;
+    virtual void snapshotAsync(bool forceRefresh, SnapshotCallback callback) = 0;
     virtual void clearSnapshot() = 0;
     virtual WalletAccountCreation createAccount(bool isPublic) = 0;
     virtual WalletAccountRead readPublicAccount(const QString& accountId) const = 0;

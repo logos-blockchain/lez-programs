@@ -18,13 +18,13 @@ if(LOGOS_WALLET_BUILD_ACCESS
 endif()
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core)
+qt_standard_project_setup()
 if(LOGOS_WALLET_BUILD_ACCESS OR BUILD_TESTING)
     find_package(Qt6 6.8 REQUIRED COMPONENTS Network)
 endif()
-set(CMAKE_AUTOMOC ON)
 
 if(LOGOS_WALLET_BUILD_ACCESS)
-    add_library(logos_wallet_access STATIC
+    qt_add_library(logos_wallet_access STATIC
         src/WalletProvider.h
         src/WalletProvider.cpp
         src/LogosWalletProvider.h
@@ -35,7 +35,6 @@ if(LOGOS_WALLET_BUILD_ACCESS)
         src/WalletController.cpp
     )
     set_target_properties(logos_wallet_access PROPERTIES
-        AUTOMOC ON
         POSITION_INDEPENDENT_CODE ON
     )
     target_compile_features(logos_wallet_access PUBLIC cxx_std_17)
@@ -137,7 +136,7 @@ endif()
 if(BUILD_TESTING)
     find_package(Qt6 6.8 REQUIRED COMPONENTS Test)
 
-    add_executable(logos_wallet_access_test
+    qt_add_executable(logos_wallet_access_test
         tests/cpp/LogosWalletProviderTest.cpp
         src/WalletProvider.cpp
         src/LogosWalletProvider.cpp
@@ -146,7 +145,6 @@ if(BUILD_TESTING)
         src/WalletController.cpp
         src/WalletController.h
     )
-    set_target_properties(logos_wallet_access_test PROPERTIES AUTOMOC ON)
     target_compile_features(logos_wallet_access_test PRIVATE cxx_std_17)
     target_include_directories(logos_wallet_access_test PRIVATE
         tests/cpp/fixtures
@@ -162,7 +160,7 @@ if(BUILD_TESTING)
 
     if(LOGOS_WALLET_BUILD_QML)
         find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
-        add_executable(logos_wallet_qml_test tests/qml/main.cpp)
+        qt_add_executable(logos_wallet_qml_test tests/qml/main.cpp)
         target_compile_definitions(logos_wallet_qml_test PRIVATE
             QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/qml"
         )
@@ -172,5 +170,31 @@ if(BUILD_TESTING)
         set_tests_properties(logos_wallet_qml PROPERTIES ENVIRONMENT
             "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QML2_IMPORT_PATH=${CMAKE_CURRENT_BINARY_DIR}/qml;QML_IMPORT_PATH=${CMAKE_CURRENT_BINARY_DIR}/qml"
         )
+
+        find_package(Qt6 6.8 QUIET COMPONENTS RemoteObjects)
+        if(TARGET Qt6::RemoteObjects)
+            qt_add_executable(logos_wallet_amm_qml_test tests/amm_qml/main.cpp)
+            qt_add_repc_replicas(logos_wallet_amm_qml_test
+                "${CMAKE_CURRENT_SOURCE_DIR}/../../amm/src/AmmUiBackend.rep"
+            )
+            target_compile_definitions(logos_wallet_amm_qml_test PRIVATE
+                QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/amm_qml"
+            )
+            target_include_directories(logos_wallet_amm_qml_test PRIVATE
+                "${CMAKE_CURRENT_BINARY_DIR}"
+            )
+            target_link_libraries(logos_wallet_amm_qml_test PRIVATE
+                Qt6::Qml
+                Qt6::QuickTest
+                Qt6::RemoteObjects
+            )
+            add_dependencies(logos_wallet_amm_qml_test logos_wallet_qmlplugin)
+            add_test(NAME logos_wallet_amm_qml COMMAND logos_wallet_amm_qml_test)
+            set_tests_properties(logos_wallet_amm_qml PROPERTIES ENVIRONMENT
+                "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QML2_IMPORT_PATH=${CMAKE_CURRENT_BINARY_DIR}/qml;QML_IMPORT_PATH=${CMAKE_CURRENT_BINARY_DIR}/qml"
+            )
+        else()
+            message(STATUS "Skipping AMM wallet contract test: Qt RemoteObjects unavailable")
+        endif()
     endif()
 endif()

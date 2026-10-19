@@ -14,8 +14,11 @@ Item {
     property real viewportWidth: width
     property int selectedIndex: 0
     property bool busy: false
+    property bool waitingForWallet: false
 
     readonly property bool connected: root.wallet !== null && root.wallet.isWalletOpen
+    readonly property bool synchronizing: root.wallet !== null
+        && (root.wallet.syncStatus === "opening" || root.wallet.syncStatus === "syncing")
     readonly property bool compactLayout: root.compact || root.viewportWidth < 680
     readonly property string selectedAddress: root.accountAt(root.selectedIndex, "address")
     readonly property string selectedName: root.accountAt(root.selectedIndex, "name")
@@ -73,16 +76,24 @@ Item {
         if (!root.wallet || root.busy)
             return
         root.busy = true
+        root.waitingForWallet = true
         try {
             root.watchResult(root.wallet.openExisting(), function(ok) {
-                root.busy = false
-                if (!ok)
+                if (!ok) {
+                    root.waitingForWallet = false
+                    root.busy = false
                     root.showError(qsTr("Wallet could not be opened."))
+                } else if (!root.synchronizing) {
+                    root.waitingForWallet = false
+                    root.busy = false
+                }
             }, function(error) {
+                root.waitingForWallet = false
                 root.busy = false
                 root.showError(qsTr("Wallet could not be opened: %1").arg(error))
             })
         } catch (error) {
+            root.waitingForWallet = false
             root.busy = false
             root.showError(qsTr("Wallet could not be opened: %1").arg(error))
         }
@@ -111,6 +122,27 @@ Item {
         function onRowsRemoved() { root.clampSelection() }
     }
 
+    Connections {
+        target: root.wallet
+        ignoreUnknownSignals: true
+
+        function onSyncStatusChanged() {
+            if (!root.waitingForWallet || !root.wallet)
+                return
+            if (root.wallet.syncStatus === "ready") {
+                root.waitingForWallet = false
+                root.busy = false
+            } else if (root.wallet.syncStatus === "error"
+                       || root.wallet.syncStatus === "closed") {
+                root.waitingForWallet = false
+                root.busy = false
+                root.showError(root.wallet.syncError
+                    ? qsTr("Wallet could not be opened: %1").arg(root.wallet.syncError)
+                    : qsTr("Wallet could not be opened."))
+            }
+        }
+    }
+
     onConnectedChanged: {
         if (!root.connected) {
             root.selectedIndex = 0
@@ -129,10 +161,10 @@ Item {
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         visible: !root.connected
-        enabled: root.wallet !== null && !root.busy
+        enabled: root.wallet !== null && !root.busy && !root.synchronizing
         implicitHeight: 40
         implicitWidth: root.compactLayout ? 40 : 108
-        text: root.compactLayout ? "" : root.busy ? qsTr("Connecting...") : qsTr("Connect")
+        text: root.compactLayout ? "" : root.busy || root.synchronizing ? qsTr("Connecting...") : qsTr("Connect")
         display: root.compactLayout ? AbstractButton.IconOnly : AbstractButton.TextBesideIcon
         icon.source: Qt.resolvedUrl("icons/account.svg")
         icon.color: "#ffffff"
@@ -179,7 +211,7 @@ Item {
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         visible: root.connected
-        enabled: !root.busy
+        enabled: !root.busy && !root.synchronizing
         implicitHeight: 40
         implicitWidth: root.compactLayout ? 44 : Math.max(140, accountButtonLabel.implicitWidth + 58)
         Accessible.name: qsTr("Wallet account %1").arg(root.selectedAddress)

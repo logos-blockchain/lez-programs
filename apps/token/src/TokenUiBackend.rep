@@ -15,6 +15,10 @@ class TokenUiBackend
     // Whether the configured sequencer answered the last reachability probe.
     // Defaults true so the UI doesn't flash a warning before the first check.
     PROP(bool sequencerReachable READONLY)
+    // Wallet startup and refresh state. `isWalletOpen` remains false until the
+    // capability handshake and first snapshot both complete.
+    PROP(QString syncStatus READONLY)
+    PROP(QString syncError READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
