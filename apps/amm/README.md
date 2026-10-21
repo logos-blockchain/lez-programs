@@ -13,8 +13,11 @@ wallet FFI through `m_logos->lez_core.*` and exposes an async QtRO
 surface (`src/AmmUiBackend.rep`) plus an account list model to the QML view.
 
 **Onboarding is non-invasive.** The app opens straight to the Trade screen; the
-navbar shows **Connect** (opens a password-only modal) or **Connected** + the
-account selector. There is no path picking — the wallet uses LEZ's canonical
+navbar shows **Connect** or **Connected** + the account selector. **Connect**
+opens an existing wallet, or adopts the shared wallet, without a password prompt.
+If no wallet exists, it opens the wallet-creation dialog, which asks for a
+password and confirmation, then displays the recovery phrase. There is no path
+picking — the wallet uses LEZ's canonical
 home, `~/.lee/wallet/` (override with `LEE_WALLET_HOME_DIR`, the same var LEZ
 honors), and its config (`wallet_config.json`) self-initializes.
 
@@ -22,10 +25,24 @@ Account/keystore sharing follows the runtime:
 
 - **Standalone** (`nix run .#amm-ui`): own core-module instance, but the canonical
   `~/.lee/wallet` keystore is shared with the LEZ wallet UI and any other LEZ
-  app on the machine. A previously-created wallet auto-opens on launch.
+  app on the machine. A previously-created wallet auto-opens on launch unless
+  this app was explicitly disconnected.
 - **Inside Basecamp**: the core wallet module is a single shared instance, so on
-  startup the backend **adopts** the already-open wallet (see
-  `openOrAdoptWallet()`), surfacing **shared** accounts across apps.
+  startup the backend **adopts** the already-open wallet through
+  `LogosWalletProvider::connect()`, surfacing **shared** accounts across apps.
+  The same app-local disconnected preference applies.
+
+**Disconnect** clears this app's account list, blocks its transaction submission
+paths, and skips automatic connection on subsequent launches until **Connect**
+is used. It leaves the shared wallet open for other apps; it does not lock the
+wallet or erase its signing keys. Reconnecting requires no password. The current
+`lez_core` API exposes neither a password-taking `open` nor a wallet lock/close
+operation.
+
+The pinned wallet backend currently ignores the creation password and stores
+wallet keys in unencrypted JSON (see its [storage implementation](https://github.com/logos-blockchain/logos-execution-zone/blob/9edf4a622fe966199beed71685c6f0b855db0784/lez/wallet/src/storage.rs#L31-L84)).
+The password field therefore provides no encryption or unlock protection. Protect
+access to the wallet home with operating-system file permissions.
 
 > Follow-up: the app reconstructs the wallet paths itself because the
 > `lez_core` module only exposes path-taking `create_new`/`open`.
