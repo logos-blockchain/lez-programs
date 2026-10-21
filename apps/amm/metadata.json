@@ -9,7 +9,7 @@
   "main": "amm_ui_plugin",
   "view": "qml/Main.qml",
   "icon": "icons/amm.png",
-  "dependencies": ["lez_core", "amm_module"],
+  "dependencies": [{ "name": "lez_core", "version": "0.4.3" }, "amm_module"],
 
   "nix": {
     "packages": {

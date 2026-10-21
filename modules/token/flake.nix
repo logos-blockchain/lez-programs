@@ -6,10 +6,10 @@
 
     # Core wallet module dependency. The input name must match the
     # metadata.json `dependencies` entry so the builder resolves it as a module
-    # dependency. Same rev the repo-root flake and the apps/token flake pin: the
-    # 0.4.1-interim build (byte-string fix on a v0.2.4 wallet-ffi). See the root
+    # dependency. Same rev the repo-root flake and the apps/token flake pin: lez_core 0.4.3
+    # (byte-string fix on the v0.2.4 legacy wallet-ffi). See the root
     # flake.nix for the full rationale.
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=acf0cd501b262c4c15969e3735e85318297b85bf";
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=673d1153563d730768d546f4d4635629c4dec1bd";
 
     # The repo-root flake supplies the token_ffi crate. token_ffi is a Cargo
     # workspace member (it path-depends on token_core under programs/*), so it

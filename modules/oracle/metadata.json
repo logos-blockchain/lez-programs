@@ -7,7 +7,7 @@
   "description": "Universal Logos core module for canonical oracle prices and TWAP feeds",
   "main": "oracle_module_plugin",
   "dependencies": [
-    "lez_core"
+    { "name": "lez_core", "version": "0.4.3" }
   ],
   "nix": {
     "packages": {
