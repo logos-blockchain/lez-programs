@@ -183,8 +183,9 @@ pub fn initialize_program(
         "maximum_oracle_price_age_milliseconds",
     );
     assert!(
-        params.initial_redemption_price > 0,
-        "initial_redemption_price must be positive"
+        (stablecoin_core::MINIMUM_REDEMPTION_PRICE..=stablecoin_core::MAXIMUM_REDEMPTION_PRICE)
+            .contains(&params.initial_redemption_price),
+        "initial_redemption_price must be within the §8 redemption-price bounds"
     );
     assert!(
         !params.stablecoin_name.is_empty(),
@@ -823,10 +824,32 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "initial_redemption_price must be positive")]
+    #[should_panic(
+        expected = "initial_redemption_price must be within the §8 redemption-price bounds"
+    )]
     fn rejects_zero_initial_redemption_price() {
         let mut p = ok_params();
         p.initial_redemption_price = 0;
+        let _ = invoke(p);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "initial_redemption_price must be within the §8 redemption-price bounds"
+    )]
+    fn rejects_initial_redemption_price_below_the_floor() {
+        let mut p = ok_params();
+        p.initial_redemption_price = stablecoin_core::MINIMUM_REDEMPTION_PRICE - 1;
+        let _ = invoke(p);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "initial_redemption_price must be within the §8 redemption-price bounds"
+    )]
+    fn rejects_initial_redemption_price_above_the_ceiling() {
+        let mut p = ok_params();
+        p.initial_redemption_price = stablecoin_core::MAXIMUM_REDEMPTION_PRICE + 1;
         let _ = invoke(p);
     }
 

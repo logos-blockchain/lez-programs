@@ -8,8 +8,8 @@ use lee_core::{
     program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
-    compute_redemption_price_state_pda, controller::run_controller_tick,
-    math::compute_current_redemption_price, ControllerOutput, ProtocolParameters,
+    bound_redemption_price, compute_redemption_price_state_pda, controller::run_controller_tick,
+    math::compute_current_redemption_price_wide, ControllerOutput, ProtocolParameters,
     RedemptionPriceState,
 };
 use twap_oracle_core::OraclePriceAccount;
@@ -142,6 +142,10 @@ pub(crate) fn decode_oracle(
 /// Shared with [`crate::refresh_globals`] — the redemption half is identical in
 /// both. The projection deliberately runs BEFORE the tick and uses the OLD rate;
 /// the tick then produces the NEW rate that later reads compound against.
+///
+/// The projection is computed in `U512` and clamped into the §8 redemption-price
+/// bounds, so re-anchoring never panics on overflow, even from state written
+/// before those bounds existed.
 pub(crate) fn advance_redemption_price(
     params: &ProtocolParameters,
     redemption: &RedemptionPriceState,
@@ -149,12 +153,12 @@ pub(crate) fn advance_redemption_price(
     now: u64,
 ) -> Data {
     let milliseconds_elapsed = now.saturating_sub(redemption.last_updated_at);
-    let current_price = compute_current_redemption_price(
+    let current_price = bound_redemption_price(compute_current_redemption_price_wide(
         redemption.redemption_price_at_last_update,
         redemption.redemption_rate_per_millisecond,
         redemption.last_updated_at,
         now,
-    );
+    ));
 
     let ControllerOutput {
         redemption_rate_per_millisecond,
@@ -185,7 +189,7 @@ pub(crate) fn advance_redemption_price(
 )]
 mod tests {
     use lee_core::account::AccountId;
-    use stablecoin_core::math::FIXED_POINT_ONE;
+    use stablecoin_core::math::{compute_current_redemption_price, FIXED_POINT_ONE};
 
     use super::*;
     use crate::{
@@ -265,6 +269,55 @@ mod tests {
         );
         let decoded = RedemptionPriceState::try_from(post_states[2].post_data()).unwrap();
         assert!(decoded.redemption_rate_per_millisecond < FIXED_POINT_ONE);
+    }
+
+    #[test]
+    fn re_anchors_without_panicking_when_the_u128_projection_would_overflow() {
+        // A rate allowed by the old ±10^-5 clamp, a day after the last update:
+        // the u128 projection overflows. The update must clamp to the ceiling.
+        let mut state = redemption_price_state_account(NOW - 86_400_000);
+        let mut decoded = RedemptionPriceState::try_from(&state.account.data).unwrap();
+        decoded.redemption_rate_per_millisecond = FIXED_POINT_ONE + FIXED_POINT_ONE / 100_000;
+        state.account.data = Data::from(&decoded);
+
+        let (post_states, _) = update_redemption_rate(
+            caller_account(),
+            protocol_parameters_account(ParameterOverrides::default()),
+            state,
+            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            clock_account(NOW),
+            STABLECOIN_PROGRAM_ID,
+        );
+        let after = RedemptionPriceState::try_from(post_states[2].post_data()).unwrap();
+        assert_eq!(
+            after.redemption_price_at_last_update,
+            stablecoin_core::MAXIMUM_REDEMPTION_PRICE
+        );
+        // At the ceiling the controller may not push the price any higher.
+        assert!(after.redemption_rate_per_millisecond <= FIXED_POINT_ONE);
+    }
+
+    #[test]
+    fn re_anchors_at_the_floor_when_the_projection_decays_to_zero() {
+        let mut state = redemption_price_state_account(NOW - 86_400_000);
+        let mut decoded = RedemptionPriceState::try_from(&state.account.data).unwrap();
+        decoded.redemption_rate_per_millisecond = FIXED_POINT_ONE - FIXED_POINT_ONE / 100_000;
+        state.account.data = Data::from(&decoded);
+
+        let (post_states, _) = update_redemption_rate(
+            caller_account(),
+            protocol_parameters_account(ParameterOverrides::default()),
+            state,
+            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            clock_account(NOW),
+            STABLECOIN_PROGRAM_ID,
+        );
+        let after = RedemptionPriceState::try_from(post_states[2].post_data()).unwrap();
+        assert_eq!(
+            after.redemption_price_at_last_update,
+            stablecoin_core::MINIMUM_REDEMPTION_PRICE
+        );
+        assert!(after.redemption_rate_per_millisecond >= FIXED_POINT_ONE);
     }
 
     #[test]

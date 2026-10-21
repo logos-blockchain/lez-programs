@@ -35,6 +35,9 @@ pub mod refresh_globals;
 /// Repay outstanding stablecoin debt against an existing position.
 pub mod repay_debt;
 
+/// Return the redemption-rate controller to rest: rate `1.0`, integral `0`.
+pub mod reset_redemption_rate_controller;
+
 /// Permissionless poke: run one redemption-rate controller tick.
 pub mod update_redemption_rate;
 

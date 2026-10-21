@@ -729,6 +729,36 @@
           "type": "u128"
         }
       ]
+    },
+    {
+      "name": "reset_redemption_rate_controller",
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "redemption_price_state",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [

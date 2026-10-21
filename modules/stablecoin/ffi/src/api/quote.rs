@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use stablecoin_core::{
-    math::compute_current_redemption_price, run_controller_tick, INTEGRAL_CLAMP, RATE_DELTA_CLAMP,
+    bound_redemption_price, math::compute_current_redemption_price_wide, run_controller_tick,
+    INTEGRAL_CLAMP, RATE_DELTA_CLAMP,
 };
 use twap_oracle_core::OraclePriceAccount;
 
@@ -26,12 +27,13 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
 
     let elapsed_milliseconds = now.saturating_sub(redemption.last_updated_at);
     let oracle_age_milliseconds = now.saturating_sub(oracle.timestamp);
-    let current_redemption_price = compute_current_redemption_price(
+    // Mirrors the program's re-anchor: a U512 projection clamped into the §8 bounds.
+    let current_redemption_price = bound_redemption_price(compute_current_redemption_price_wide(
         redemption.redemption_price_at_last_update,
         redemption.redemption_rate_per_millisecond,
         redemption.last_updated_at,
         now,
-    );
+    ));
 
     let mut errors = Vec::new();
     if oracle_age_milliseconds > parameters.maximum_oracle_price_age_milliseconds {
