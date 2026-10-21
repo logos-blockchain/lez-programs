@@ -1,0 +1,29 @@
+{
+  "name": "oracle_module",
+  "version": "0.1.0",
+  "type": "core",
+  "interface": "universal",
+  "category": "oracle",
+  "description": "Universal Logos core module for canonical oracle prices and TWAP feeds",
+  "main": "oracle_module_plugin",
+  "dependencies": [
+    "lez_core"
+  ],
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [
+      {
+        "name": "oracle_ffi"
+      }
+    ],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}
