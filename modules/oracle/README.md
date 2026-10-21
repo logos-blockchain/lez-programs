@@ -16,9 +16,10 @@ No alternative price layout or provider plugin system is introduced.
 
 All public methods return a `LogosMap` with either
 `{"status":"ok","error":"",...}` or
-`{"status":"error","error":"<stable_code>"}`. Only these three methods are
-exported in this scaffold; account readers and transaction methods below are a
-roadmap, not callable placeholders.
+`{"status":"error","error":"<stable_code>"}`. The module exports three
+discovery methods (below) and six [transaction methods](#transactions), one per
+TWAP oracle instruction. The account readers in the
+[roadmap](#api-roadmap-and-dependency-order) are not implemented yet.
 
 ### `setOracleProgramId({oracleProgramId})`
 
@@ -62,6 +63,56 @@ crate's helpers and the currently selected program id:
 current-tick address shared across windows; each source/window has separate
 observations and price addresses. Base and quote assets are stored data, never
 PDA seeds. Derivation does not establish account existence or initialization.
+
+## Transactions
+
+Each method plans one TWAP oracle instruction in Rust (PDAs, argument checks,
+instruction words, signer flags), checks the accounts it touches on-chain, and
+submits through `lez_core`. Arguments are decimal strings; account ids are
+base58 or hex. Prices are Q64.64 (`18446744073709551616` = 1.0, quote per base).
+
+| Method | Request | Signs | Requires |
+| --- | --- | --- | --- |
+| `createCurrentTickAccount` | `{priceSourceId, initialPrice}` | source | current tick absent |
+| `createPriceObservations` | `{priceSourceId, initialTick, windowDurationMs}` | source | observations absent |
+| `createOraclePriceAccount` | `{priceSourceId, baseAssetId, quoteAssetId, initialPrice, windowDurationMs}` | source | price account absent |
+| `updateCurrentTick` | `{priceSourceId, price}` | source | current tick exists |
+| `recordTick` | `{priceSourceId, windowDurationMs}` | nobody | observations and current tick exist |
+| `publishPrice` | `{priceSourceId, windowDurationMs}` | nobody | observations, price account and current tick exist |
+
+- **Source writes** (the first four) need `priceSourceId` to be a public account
+  in the wallet: it signs. A missing or private source returns
+  `source_not_signable`.
+- **Maintenance** (`recordTick`, `publishPrice`) is permissionless and submits
+  with no signer.
+- **Account checks.** A creation whose target already exists (any non-default
+  account) returns `already_initialized`. An account that must exist but is
+  default, or is owned by another program, returns `account_not_initialized`. A
+  failed read returns `account_read_failed`. These mirror the program's own
+  checks, so callers get a stable code instead of a transaction that fails
+  on-chain.
+- **Arguments.** `windowDurationMs` below 2048 (`OBSERVATIONS_CAPACITY`) returns
+  `invalid_window`; a zero `initialPrice` for `createOraclePriceAccount` returns
+  `invalid_price` (zero is the "no valid price" sentinel). `initialTick` is a
+  signed `i32`.
+- **Results.** Success returns `transactionId` plus the operation's account ids
+  (base58 and `...Hex`): `priceSourceId`, `clockId`, and whichever of
+  `currentTickAccountId`, `priceObservationsId`, `priceAccountId`, `baseAssetId`,
+  `quoteAssetId` it touches.
+
+A feed is set up in this order: `createCurrentTickAccount`, then per window
+`createPriceObservations` and `createOraclePriceAccount`. After that the source
+calls `updateCurrentTick` whenever its price changes, and anyone calls
+`recordTick` and `publishPrice`. The program applies some instructions as
+no-ops, and they still succeed:
+
+- `recordTick` skips a sample taken sooner than `windowDurationMs / 2048` after
+  the previous one.
+- `publishPrice` writes nothing until the window has two observations (the
+  creation sample plus one `recordTick`).
+
+A `transactionId` means the sequencer accepted the transaction, not that it
+changed state; read the accounts to confirm.
 
 ## Wire and validation contracts
 
@@ -128,6 +179,11 @@ JSON and return allocated UTF-8 JSON:
 | --- | --- |
 | `oracle_program_info` | `{oracleProgramId?, elf?}` |
 | `oracle_feed_addresses` | `{oracleProgramId, priceSourceId, windowDurationMs}` |
+| `oracle_create_current_tick_account_plan` | `{oracleProgramId, priceSourceId, initialPrice}` |
+| `oracle_create_price_observations_plan` | `{oracleProgramId, priceSourceId, initialTick, windowDurationMs}` |
+| `oracle_create_oracle_price_account_plan` | `{oracleProgramId, priceSourceId, baseAssetId, quoteAssetId, initialPrice, windowDurationMs}` |
+| `oracle_update_current_tick_plan` | `{oracleProgramId, priceSourceId, price}` |
+| `oracle_record_tick_plan`, `oracle_publish_price_plan` | `{oracleProgramId, priceSourceId, windowDurationMs}` |
 | `oracle_free` | The pointer returned by this library; null is accepted |
 
 `elf` is hex-encoded binary data. Envelopes
@@ -140,11 +196,12 @@ cbindgen. C++ uses RAII to free successful and failed responses.
 
 ## Shared transaction architecture
 
-Submission is private in issue 01. A friend test seam exercises the real adapter
-without exporting a raw-plan or submission method. Later public operations
-must collect live named account snapshots and use typed Rust validation first.
-Applications cannot supply trusted account bytes or their own authorization
-flags through the public discovery API.
+The transaction methods share one path. Each `oracle_*_plan` returns
+`{plan, identities}`; C++ checks that the plan targets the resolved program and
+that every identity's base58 and hex spellings agree, runs the account checks
+above, then submits. There is no public raw-plan or submission method:
+applications cannot supply their own accounts, instruction bytes or signer
+flags.
 
 A plan contains `programId` (hex), ordered `accountIds` (hex), equally sized
 `signingRequirements` (booleans), and `instruction` (`risc0_zkvm::serde::to_vec`
@@ -186,14 +243,15 @@ leave accounts unchanged.
 
 `oracle_module_support::stableFfiError` is a **closed allowlist**. Every other
 code maps to `backend_error`; raw Rust/provider diagnostics are never public
-errors. Each later issue must extend the allowlist before returning its new
-domain codes.
+errors. New domain codes must be added to the allowlist before they are
+returned.
 
-| Category | Issue 01 codes |
+| Category | Codes |
 | --- | --- |
-| Request and numeric input | `bad_request`, `invalid_account_id`, `invalid_numeric_value`, `invalid_window` |
+| Request and numeric input | `bad_request`, `invalid_account_id`, `invalid_numeric_value`, `invalid_window`, `invalid_price` |
 | Deployment | `config_missing`, `invalid_program_id`, `invalid_program_binary`, `program_binary_mismatch` |
 | Reads and clock | `account_read_failed`, `invalid_clock` |
+| Account state | `already_initialized`, `account_not_initialized` |
 | Authority | `source_not_signable` |
 | Transport/internal | `wallet_submission_failed`, `backend_error` |
 
@@ -203,23 +261,22 @@ All work targets the `lez-v0.2.x` line (LEZ v0.2.4) and its dependency pins. The
 issues were written for LEZ v0.2.5; on v0.2.4 their `feePayerId` arguments and
 loader-header checks do not apply.
 
+Issues 01 and 04–07 are implemented here; 02, 03 and 08 are not.
+
 | Issue | API/deliverable | Prerequisites |
 | --- | --- | --- |
-| [01 / #437](https://github.com/logos-blockchain/lez-programs/issues/437) | `setOracleProgramId`, `programInfo`, `feedAddresses`; shared contracts | This scaffold |
+| [01 / #437](https://github.com/logos-blockchain/lez-programs/issues/437) | `setOracleProgramId`, `programInfo`, `feedAddresses`; shared contracts | Done |
 | [02 / #438](https://github.com/logos-blockchain/lez-programs/issues/438) | `priceAccount({priceAccountId, expectedOwnerId})`; `queryPrice` additionally takes `baseAssetId`, `quoteAssetId`, `expectedSourceId`, `maxAgeMs` | 01 |
 | [03 / #439](https://github.com/logos-blockchain/lez-programs/issues/439) | `currentTick({priceSourceId})`; `priceObservations({priceSourceId, windowDurationMs})` | 01 |
-| [04 / #440](https://github.com/logos-blockchain/lez-programs/issues/440) | `createCurrentTickAccount`, `createPriceObservations`, `createOraclePriceAccount` | 01 |
-| [05 / #441](https://github.com/logos-blockchain/lez-programs/issues/441) | `updateCurrentTick({priceSourceId, price})` | 03; 04 supplies accounts for journeys |
-| [06 / #442](https://github.com/logos-blockchain/lez-programs/issues/442) | `recordTick({priceSourceId, windowDurationMs})` | 03 |
-| [07 / #443](https://github.com/logos-blockchain/lez-programs/issues/443) | `publishPrice({priceSourceId, windowDurationMs})` | 02 + 03 |
+| [04 / #440](https://github.com/logos-blockchain/lez-programs/issues/440) | `createCurrentTickAccount`, `createPriceObservations`, `createOraclePriceAccount` | Done |
+| [05 / #441](https://github.com/logos-blockchain/lez-programs/issues/441) | `updateCurrentTick({priceSourceId, price})` | Done |
+| [06 / #442](https://github.com/logos-blockchain/lez-programs/issues/442) | `recordTick({priceSourceId, windowDurationMs})` | Done |
+| [07 / #443](https://github.com/logos-blockchain/lez-programs/issues/443) | `publishPrice({priceSourceId, windowDurationMs})` | Done |
 | [08 / #444](https://github.com/logos-blockchain/lez-programs/issues/444) | Complete direct-source, AMM, keeper, and consumer journeys | 02–07 + [Stablecoin scale normalization #445](https://github.com/logos-blockchain/lez-programs/issues/445) |
 
-All creation methods require `priceSourceId`.
-`createCurrentTickAccount` additionally takes `initialPrice`;
-`createPriceObservations` takes signed `initialTick` and `windowDurationMs`;
-`createOraclePriceAccount` takes `baseAssetId`, `quoteAssetId`, `initialPrice`,
-and `windowDurationMs`. Canonical price reads will work independently of selected
-TWAP configuration. The read APIs select neither a primary feed nor a fallback.
+The transaction methods landed without the readers from 02 and 03: their
+account checks use plain account reads, not decoded TWAP state. Canonical price
+reads will work independently of selected TWAP configuration. The read APIs select neither a primary feed nor a fallback.
 
 Source authority belongs to the source account: direct writes require its
 wallet signature. AMM pool PDAs retain authorization through existing AMM chained
@@ -272,7 +329,26 @@ logoscore call oracle_module feedAddresses \
   'json:{"priceSourceId":"<source address>","windowDurationMs":"60000"}'
 ```
 
-Read-only discovery needs no source authority. The host supplies `lez_core`.
+Setting up and running a feed for a source account held by the host's wallet
+(price 1.0, one-day window):
+
+```sh
+logoscore call oracle_module createCurrentTickAccount \
+  'json:{"priceSourceId":"<source>","initialPrice":"18446744073709551616"}'
+logoscore call oracle_module createPriceObservations \
+  'json:{"priceSourceId":"<source>","initialTick":"0","windowDurationMs":"86400000"}'
+logoscore call oracle_module createOraclePriceAccount \
+  'json:{"priceSourceId":"<source>","baseAssetId":"<base>","quoteAssetId":"<quote>","initialPrice":"18446744073709551616","windowDurationMs":"86400000"}'
+logoscore call oracle_module updateCurrentTick \
+  'json:{"priceSourceId":"<source>","price":"18446744073709551616"}'
+logoscore call oracle_module recordTick \
+  'json:{"priceSourceId":"<source>","windowDurationMs":"86400000"}'
+logoscore call oracle_module publishPrice \
+  'json:{"priceSourceId":"<source>","windowDurationMs":"86400000"}'
+```
+
+Discovery needs no source authority; the source writes need the source's key in
+the wallet. The host supplies `lez_core`.
 The test package uses the generated dependency API and mocks transport/FFI
 failures, and Rust tests use the built TWAP guest for ImageID checks.
 Repository formatting, lint, unit/integration, guest, and IDL checks remain the

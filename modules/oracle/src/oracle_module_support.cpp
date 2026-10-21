@@ -72,6 +72,22 @@ json publicAccountRead(const std::string& id, const std::string& response, bool 
     return read;
 }
 
+AccountState accountState(const json& read, const std::string& program_id_hex) {
+    if (!read.is_object() || !hasString(read, "status") || read["status"] != "ok" ||
+        !read.contains("account") || !read["account"].is_object())
+        return AccountState::ReadFailed;
+    const json& account = read["account"];
+    for (const auto* field : {"program_owner", "balance", "nonce", "data"}) {
+        if (!hasString(account, field)) return AccountState::ReadFailed;
+    }
+    const std::string owner = account["program_owner"].get<std::string>();
+    const bool is_default = owner == std::string(64, '0') &&
+                            account["balance"] == std::string(32, '0') &&
+                            account["nonce"] == std::string(32, '0') && account["data"] == "";
+    if (is_default) return AccountState::Uninitialized;
+    return owner == program_id_hex ? AccountState::ProgramOwned : AccountState::OtherOwned;
+}
+
 FfiResult callFfi(char* (*operation)(const char*), const json& request) {
     const std::string payload = request.dump();
     const std::unique_ptr<char, decltype(&oracle_free)> response(operation(payload.c_str()),
@@ -100,7 +116,10 @@ std::string stableFfiError(const std::string& error) {
         "invalid_account_id",
         "invalid_numeric_value",
         "invalid_window",
+        "invalid_price",
         "account_read_failed",
+        "already_initialized",
+        "account_not_initialized",
         "invalid_clock",
         "source_not_signable",
         "wallet_submission_failed",

@@ -73,7 +73,8 @@ LOGOS_TEST(normalize_ids_and_closed_error_allowlist) {
     for (const auto* code :
          {"bad_request", "config_missing", "invalid_program_id", "invalid_program_binary",
           "program_binary_mismatch", "invalid_account_id", "invalid_numeric_value",
-          "invalid_window", "account_read_failed", "invalid_clock", "source_not_signable",
+          "invalid_window", "invalid_price", "account_read_failed", "already_initialized",
+          "account_not_initialized", "invalid_clock", "source_not_signable",
           "wallet_submission_failed", "backend_error"}) {
         LOGOS_ASSERT_EQ(support::stableFfiError(code), std::string(code));
     }
@@ -166,4 +167,29 @@ LOGOS_TEST(transaction_hash_must_be_lowercase_hex_and_reply_must_succeed) {
         LOGOS_ASSERT_TRUE(support::transactionId(reply.dump()).empty());
     }
     LOGOS_ASSERT_TRUE(support::transactionId("not-json").empty());
+}
+
+LOGOS_TEST(account_state_separates_default_program_owned_and_foreign_accounts) {
+    using support::AccountState;
+    const auto state = [](const json& snapshot) {
+        return support::accountState(support::publicAccountRead(ID, snapshot.dump()), ID);
+    };
+    LOGOS_ASSERT_TRUE(state(snapshot()) == AccountState::Uninitialized);
+    auto owned = snapshot();
+    owned["program_owner"] = ID;
+    LOGOS_ASSERT_TRUE(state(owned) == AccountState::ProgramOwned);
+    owned["program_owner"] = SOURCE;
+    LOGOS_ASSERT_TRUE(state(owned) == AccountState::OtherOwned);
+    // Any non-default field means the account exists, even without an owner.
+    for (const auto& [field, value] :
+         std::vector<std::pair<std::string, std::string>>{{"balance", "01" + std::string(30, '0')},
+                                                          {"nonce", "01" + std::string(30, '0')},
+                                                          {"data", "00"}}) {
+        auto changed = snapshot();
+        changed[field] = value;
+        LOGOS_ASSERT_TRUE(state(changed) == AccountState::OtherOwned);
+    }
+    LOGOS_ASSERT_TRUE(support::accountState(support::publicAccountRead(ID, ""), ID) ==
+                      AccountState::ReadFailed);
+    LOGOS_ASSERT_TRUE(support::accountState(json::object(), ID) == AccountState::ReadFailed);
 }

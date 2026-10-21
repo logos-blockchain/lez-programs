@@ -5,7 +5,11 @@ use std::{
 
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::api::{self, FeedAddressesRequest, OracleResult, ProgramInfoRequest};
+use crate::api::{
+    self, CreateCurrentTickAccountRequest, CreateOraclePriceAccountRequest,
+    CreatePriceObservationsRequest, FeedAddressesRequest, FeedMaintenanceRequest, OracleResult,
+    ProgramInfoRequest, UpdateCurrentTickRequest,
+};
 
 #[derive(Serialize)]
 struct Envelope {
@@ -102,6 +106,78 @@ pub unsafe extern "C" fn oracle_feed_addresses(request_json: *const c_char) -> *
     unsafe { call::<FeedAddressesRequest>(request_json, api::feed_addresses) }
 }
 
+/// Plans `CreateCurrentTickAccount` for a price source.
+///
+/// # Safety
+/// `request_json` must be null or a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn oracle_create_current_tick_account_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from the caller contract.
+    unsafe {
+        call::<CreateCurrentTickAccountRequest>(request_json, api::create_current_tick_account)
+    }
+}
+
+/// Plans `CreatePriceObservations` for a price source and window.
+///
+/// # Safety
+/// `request_json` must be null or a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn oracle_create_price_observations_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from the caller contract.
+    unsafe { call::<CreatePriceObservationsRequest>(request_json, api::create_price_observations) }
+}
+
+/// Plans `CreateOraclePriceAccount` for a price source and window.
+///
+/// # Safety
+/// `request_json` must be null or a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn oracle_create_oracle_price_account_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from the caller contract.
+    unsafe {
+        call::<CreateOraclePriceAccountRequest>(request_json, api::create_oracle_price_account)
+    }
+}
+
+/// Plans `UpdateCurrentTick` for a price source.
+///
+/// # Safety
+/// `request_json` must be null or a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn oracle_update_current_tick_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from the caller contract.
+    unsafe { call::<UpdateCurrentTickRequest>(request_json, api::update_current_tick) }
+}
+
+/// Plans the permissionless `RecordTick` for a price source and window.
+///
+/// # Safety
+/// `request_json` must be null or a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn oracle_record_tick_plan(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from the caller contract.
+    unsafe { call::<FeedMaintenanceRequest>(request_json, api::record_tick) }
+}
+
+/// Plans the permissionless `PublishPrice` for a price source and window.
+///
+/// # Safety
+/// `request_json` must be null or a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn oracle_publish_price_plan(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from the caller contract.
+    unsafe { call::<FeedMaintenanceRequest>(request_json, api::publish_price) }
+}
+
 /// Releases a string returned by this library. Null is accepted.
 ///
 /// # Safety
@@ -139,7 +215,16 @@ mod tests {
 
     #[test]
     fn malformed_requests_return_owned_error_envelopes() {
-        for operation in [oracle_program_info, oracle_feed_addresses] {
+        for operation in [
+            oracle_program_info,
+            oracle_feed_addresses,
+            oracle_create_current_tick_account_plan,
+            oracle_create_price_observations_plan,
+            oracle_create_oracle_price_account_plan,
+            oracle_update_current_tick_plan,
+            oracle_record_tick_plan,
+            oracle_publish_price_plan,
+        ] {
             // SAFETY: Null is an explicitly accepted invalid request.
             assert_eq!(
                 unsafe { response(operation(std::ptr::null())) },

@@ -31,6 +31,54 @@ char *oracle_program_info(const char *request_json);
 char *oracle_feed_addresses(const char *request_json);
 
 /**
+ * Plans `CreateCurrentTickAccount` for a price source.
+ *
+ * # Safety
+ * `request_json` must be null or a live NUL-terminated UTF-8 string.
+ */
+char *oracle_create_current_tick_account_plan(const char *request_json);
+
+/**
+ * Plans `CreatePriceObservations` for a price source and window.
+ *
+ * # Safety
+ * `request_json` must be null or a live NUL-terminated UTF-8 string.
+ */
+char *oracle_create_price_observations_plan(const char *request_json);
+
+/**
+ * Plans `CreateOraclePriceAccount` for a price source and window.
+ *
+ * # Safety
+ * `request_json` must be null or a live NUL-terminated UTF-8 string.
+ */
+char *oracle_create_oracle_price_account_plan(const char *request_json);
+
+/**
+ * Plans `UpdateCurrentTick` for a price source.
+ *
+ * # Safety
+ * `request_json` must be null or a live NUL-terminated UTF-8 string.
+ */
+char *oracle_update_current_tick_plan(const char *request_json);
+
+/**
+ * Plans the permissionless `RecordTick` for a price source and window.
+ *
+ * # Safety
+ * `request_json` must be null or a live NUL-terminated UTF-8 string.
+ */
+char *oracle_record_tick_plan(const char *request_json);
+
+/**
+ * Plans the permissionless `PublishPrice` for a price source and window.
+ *
+ * # Safety
+ * `request_json` must be null or a live NUL-terminated UTF-8 string.
+ */
+char *oracle_publish_price_plan(const char *request_json);
+
+/**
  * Releases a string returned by this library. Null is accepted.
  *
  * # Safety

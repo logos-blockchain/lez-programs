@@ -1,6 +1,8 @@
-//! Typed discovery and shared validation; no wallet or network access.
+//! Typed discovery, transaction planning, and shared validation; no wallet or
+//! network access.
 
 pub mod numeric;
+pub mod plan;
 pub mod price;
 mod program;
 pub mod twap;
@@ -9,6 +11,12 @@ use std::{error::Error, fmt};
 
 use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{account::AccountId, program::ProgramId};
+pub use plan::{
+    create_current_tick_account, create_oracle_price_account, create_price_observations,
+    publish_price, record_tick, update_current_tick, CreateCurrentTickAccountRequest,
+    CreateOraclePriceAccountRequest, CreatePriceObservationsRequest, FeedMaintenanceRequest,
+    UpdateCurrentTickRequest,
+};
 pub use program::program_info;
 use serde::Deserialize;
 use serde_json::Value;

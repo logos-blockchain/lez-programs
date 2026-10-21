@@ -19,6 +19,11 @@ bool isCanonicalAccountIdHex(const std::string& value);
 nlohmann::json publicAccountRead(const std::string& id, const std::string& response,
                                  bool transport_ok = true);
 
+enum class AccountState { ReadFailed, Uninitialized, ProgramOwned, OtherOwned };
+// Classifies a publicAccountRead result. Uninitialized means Account::default()
+// exactly, which is what the program requires of every account it creates.
+AccountState accountState(const nlohmann::json& read, const std::string& program_id_hex);
+
 struct FfiResult {
     bool ok = false;
     nlohmann::json value;

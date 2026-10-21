@@ -423,3 +423,270 @@ fn plans_preserve_instruction_words_account_order_and_production_signers() {
     )
     .is_err());
 }
+
+mod planners {
+    use serde_json::Value;
+
+    use super::*;
+    use crate::api::{
+        create_current_tick_account, create_oracle_price_account, create_price_observations,
+        publish_price, record_tick, update_current_tick, CreateCurrentTickAccountRequest,
+        CreateOraclePriceAccountRequest, CreatePriceObservationsRequest, FeedMaintenanceRequest,
+        UpdateCurrentTickRequest,
+    };
+
+    const WINDOW: u64 = 86_400_000;
+
+    fn program() -> String {
+        account_id_hex(id(1))
+    }
+
+    fn source() -> String {
+        account_id_hex(id(2))
+    }
+
+    fn tick() -> AccountId {
+        compute_current_tick_account_pda(pid(1), id(2))
+    }
+
+    fn observations() -> AccountId {
+        compute_price_observations_pda(pid(1), id(2), WINDOW)
+    }
+
+    fn price() -> AccountId {
+        compute_oracle_price_account_pda(pid(1), id(2), WINDOW)
+    }
+
+    fn maintenance(window: &str) -> FeedMaintenanceRequest {
+        FeedMaintenanceRequest {
+            oracle_program_id: program(),
+            price_source_id: source(),
+            window_duration_ms: window.into(),
+        }
+    }
+
+    /// Checks the plan's program, accounts, signers and exact instruction words.
+    fn assert_plan(
+        value: &Value,
+        accounts: &[AccountId],
+        signers: &[bool],
+        instruction: &Instruction,
+    ) {
+        let plan = &value["plan"];
+        assert_eq!(plan["programId"], account_id_hex(id(1)));
+        let expected: Vec<String> = accounts.iter().copied().map(account_id_hex).collect();
+        assert_eq!(plan["accountIds"], json!(expected));
+        assert_eq!(plan["signingRequirements"], json!(signers));
+        let words: Vec<u32> =
+            serde_json::from_value(plan["instruction"].clone()).expect("word array");
+        assert_eq!(
+            words,
+            risc0_zkvm::serde::to_vec(instruction).expect("expected instruction")
+        );
+    }
+
+    fn assert_identity(value: &Value, key: &str, expected: AccountId) {
+        assert_eq!(value["identities"][key], expected.to_string());
+        assert_eq!(
+            value["identities"][format!("{key}Hex")],
+            account_id_hex(expected)
+        );
+    }
+
+    #[test]
+    fn source_writes_sign_with_the_source_at_index_one() {
+        let value = create_current_tick_account(CreateCurrentTickAccountRequest {
+            oracle_program_id: program(),
+            price_source_id: source(),
+            initial_price: u128::MAX.to_string(),
+        })
+        .expect("current tick plan");
+        assert_plan(
+            &value,
+            &[tick(), id(2), CLOCK_01_PROGRAM_ACCOUNT_ID],
+            &[false, true, false],
+            &Instruction::CreateCurrentTickAccount {
+                initial_price: u128::MAX,
+            },
+        );
+        assert_identity(&value, "currentTickAccountId", tick());
+        assert_identity(&value, "priceSourceId", id(2));
+        assert_identity(&value, "clockId", CLOCK_01_PROGRAM_ACCOUNT_ID);
+
+        let value = create_price_observations(CreatePriceObservationsRequest {
+            oracle_program_id: program(),
+            price_source_id: source(),
+            initial_tick: i32::MIN.to_string(),
+            window_duration_ms: WINDOW.to_string(),
+        })
+        .expect("observations plan");
+        assert_plan(
+            &value,
+            &[observations(), id(2), CLOCK_01_PROGRAM_ACCOUNT_ID],
+            &[false, true, false],
+            &Instruction::CreatePriceObservations {
+                initial_tick: i32::MIN,
+                window_duration: WINDOW,
+            },
+        );
+        assert_identity(&value, "priceObservationsId", observations());
+
+        let value = create_oracle_price_account(CreateOraclePriceAccountRequest {
+            oracle_program_id: program(),
+            price_source_id: source(),
+            base_asset_id: account_id_hex(id(4)),
+            quote_asset_id: account_id_hex(id(5)),
+            initial_price: (1_u128 << 64).to_string(),
+            window_duration_ms: WINDOW.to_string(),
+        })
+        .expect("price account plan");
+        assert_plan(
+            &value,
+            &[price(), id(2), CLOCK_01_PROGRAM_ACCOUNT_ID],
+            &[false, true, false],
+            &Instruction::CreateOraclePriceAccount {
+                base_asset: id(4),
+                quote_asset: id(5),
+                initial_price: 1 << 64,
+                window_duration: WINDOW,
+            },
+        );
+        assert_identity(&value, "priceAccountId", price());
+        assert_identity(&value, "baseAssetId", id(4));
+        assert_identity(&value, "quoteAssetId", id(5));
+
+        let value = update_current_tick(UpdateCurrentTickRequest {
+            oracle_program_id: program(),
+            price_source_id: source(),
+            price: "0".into(),
+        })
+        .expect("update plan");
+        assert_plan(
+            &value,
+            &[tick(), id(2), CLOCK_01_PROGRAM_ACCOUNT_ID],
+            &[false, true, false],
+            &Instruction::UpdateCurrentTick { price: 0 },
+        );
+        assert_identity(&value, "currentTickAccountId", tick());
+    }
+
+    #[test]
+    fn maintenance_is_permissionless() {
+        let value = record_tick(maintenance(&WINDOW.to_string())).expect("record plan");
+        assert_plan(
+            &value,
+            &[observations(), tick(), CLOCK_01_PROGRAM_ACCOUNT_ID],
+            &[false, false, false],
+            &Instruction::RecordTick {
+                price_source_id: id(2),
+                window_duration: WINDOW,
+            },
+        );
+        assert_identity(&value, "priceObservationsId", observations());
+        assert_identity(&value, "currentTickAccountId", tick());
+
+        let value = publish_price(maintenance(&WINDOW.to_string())).expect("publish plan");
+        assert_plan(
+            &value,
+            &[observations(), price(), tick(), CLOCK_01_PROGRAM_ACCOUNT_ID],
+            &[false, false, false, false],
+            &Instruction::PublishPrice {
+                price_source_id: id(2),
+                window_duration: WINDOW,
+            },
+        );
+        assert_identity(&value, "priceAccountId", price());
+    }
+
+    #[test]
+    fn windows_feed_the_same_addresses_as_discovery() {
+        let discovered = feed_addresses(FeedAddressesRequest {
+            oracle_program_id: program(),
+            price_source_id: source(),
+            window_duration_ms: WINDOW.to_string(),
+        })
+        .expect("discovery");
+        let planned = publish_price(maintenance(&WINDOW.to_string())).expect("publish plan");
+        for key in [
+            "priceObservationsId",
+            "priceAccountId",
+            "currentTickAccountId",
+            "clockId",
+        ] {
+            assert_eq!(planned["identities"][key], discovered[key]);
+        }
+    }
+
+    #[test]
+    fn planners_reject_invalid_arguments() {
+        let window_errors = [(OBSERVATIONS_CAPACITY - 1).to_string(), "0".into()];
+        for window in &window_errors {
+            error(record_tick(maintenance(window)), "invalid_window");
+            error(publish_price(maintenance(window)), "invalid_window");
+            error(
+                create_price_observations(CreatePriceObservationsRequest {
+                    oracle_program_id: program(),
+                    price_source_id: source(),
+                    initial_tick: "0".into(),
+                    window_duration_ms: window.clone(),
+                }),
+                "invalid_window",
+            );
+        }
+        for value in ["", "+1", "1.0", "1e3", "-1"] {
+            error(
+                create_current_tick_account(CreateCurrentTickAccountRequest {
+                    oracle_program_id: program(),
+                    price_source_id: source(),
+                    initial_price: value.into(),
+                }),
+                "invalid_numeric_value",
+            );
+            error(
+                update_current_tick(UpdateCurrentTickRequest {
+                    oracle_program_id: program(),
+                    price_source_id: source(),
+                    price: value.into(),
+                }),
+                "invalid_numeric_value",
+            );
+        }
+        error(
+            create_price_observations(CreatePriceObservationsRequest {
+                oracle_program_id: program(),
+                price_source_id: source(),
+                initial_tick: "2147483648".into(),
+                window_duration_ms: WINDOW.to_string(),
+            }),
+            "invalid_numeric_value",
+        );
+
+        let price_request = |base: String, quote: String, initial: &str| {
+            create_oracle_price_account(CreateOraclePriceAccountRequest {
+                oracle_program_id: program(),
+                price_source_id: source(),
+                base_asset_id: base,
+                quote_asset_id: quote,
+                initial_price: initial.into(),
+                window_duration_ms: WINDOW.to_string(),
+            })
+        };
+        let asset = || account_id_hex(id(4));
+        error(price_request(asset(), asset(), "0"), "invalid_price");
+        error(
+            price_request("00".repeat(32), asset(), "1"),
+            "invalid_account_id",
+        );
+        error(
+            price_request(asset(), "bad".into(), "1"),
+            "invalid_account_id",
+        );
+
+        let mut request = maintenance(&WINDOW.to_string());
+        request.oracle_program_id = "00".repeat(32);
+        error(record_tick(request), "invalid_program_id");
+        let mut request = maintenance(&WINDOW.to_string());
+        request.price_source_id = "AB".repeat(32);
+        error(publish_price(request), "invalid_account_id");
+    }
+}
