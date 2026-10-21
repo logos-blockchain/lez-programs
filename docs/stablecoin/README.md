@@ -141,7 +141,7 @@ These two are usually run by keeper bots. A LEZ transaction carries a single ins
 
 **Closing out.** When a position's debt and collateral are both zero, `close_position` (§10.9) clears the `Position` account. This does **not** free the nonce for reuse: the vault PDA at `hash(position_id)` lingers (the Token Program has no `CloseHolding`), so reopening at the same `(owner, nonce)` always fails `open_position`'s vault-uninitialized check — the user must pick a fresh nonce. See §11 and §14.
 
-**Admin tunes parameters.** The admin can change the stability fee (which auto-applies any pending interest first so the new rate doesn't apply retroactively), tighten or loosen the collateralization ratio, change the controller gains, point at a different oracle, adjust the timing intervals, or rotate the admin / freeze-authority handles. None of these touch any position directly. The admin CANNOT touch a position, mint or burn stablecoin, reset the redemption price, or change the stablecoin / collateral definitions — those are fixed at setup.
+**Admin tunes parameters.** The admin can change the stability fee (which auto-applies any pending interest first so the new rate doesn't apply retroactively), tighten or loosen the collateralization ratio, change the controller gains, point at a different oracle, adjust the timing intervals, or rotate the admin / freeze-authority handles. None of these touch any position directly. The admin CANNOT touch a position, mint or burn stablecoin, reset the redemption price, or change the stablecoin / collateral definitions — those are fixed at setup. The admin or the freeze authority CAN return the controller to rest (`reset_redemption_rate_controller`, §10.19): the rate goes back to `1.0` and the integral to `0`, but the price stays where it currently projects.
 
 **Emergency.** If something goes wrong (a broken oracle, an exploit in progress), the freeze authority calls `freeze` (§10.17). That sets `is_frozen = true` in `ProtocolParameters`. After that, operations that increase risk (`open_position`, `generate_debt`, `withdraw_collateral`) fail; operations that reduce risk (`deposit_collateral`, `repay_debt`, `close_position`), keeper updates, and admin changes still work so users can pay down debt and operators can fix the problem. The admin may point at a clean oracle via `set_market_price_oracle`, and the freeze authority calls `unfreeze` to resume normal operation.
 
@@ -363,15 +363,17 @@ Edge cases:
 - `per_millisecond_rate = FIXED_POINT_ONE` → returns `FIXED_POINT_ONE` regardless of `milliseconds_elapsed`.
 - `per_millisecond_rate < FIXED_POINT_ONE` → result < `FIXED_POINT_ONE` (compounding decay).
 - Overflow guard: callers clamp the elapsed window to `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` before calling (§5.3). This is load-bearing, not decorative: over an *unbounded* window, any `per_millisecond_rate > FIXED_POINT_ONE` eventually overflows `rate ^ milliseconds_elapsed` regardless of how close to `1.0` it is — the §8 rate bound alone does **not** prevent it.
-- **The clamp bounds the window; it does not make overflow impossible.** At the rate
-  ceilings §8 currently permits, `compound_rate` still overflows `u128` well inside
-  the seven-day window — a redemption rate at `RATE_DELTA_CLAMP` overflows a `1.0`
-  anchor after 2_655_318 ms (~44 minutes), and `stability_fee_per_millisecond` at its
-  `2.0` cap overflows after just **39 ms**. Those ceilings are §15 placeholders, far looser than any
-  realistic rate (see §8). Values that are only ever **compared** therefore use the
-  saturating `u512` projections of §5.3 instead; values that are **stored** (the two
-  pokes' anchors, `generate_debt`'s normalized-debt delta) stay `u128` and will panic
-  at those ceilings.
+- **The clamp bounds the window; it does not make overflow impossible on its own.**
+  For the redemption price, `RATE_DELTA_CLAMP` (`±10^-11` per ms) and
+  `MAXIMUM_REDEMPTION_PRICE` (`u128::MAX / 2`) together keep a full window inside
+  `u128`: at the clamp the price grows by at most ~0.6% over seven days. The
+  `stability_fee_per_millisecond` cap of `2.0` is still far looser: at it the
+  accumulator overflows after just **39 ms**. That ceiling is a §15 placeholder (see
+  §8). Values that are only ever **compared** therefore use the saturating `u512`
+  projections of §5.3; the redemption-price re-anchor (§6.4, §10.19) projects in
+  `u512` and clamps into the §8 price bounds; the remaining **stored** values (the
+  fee accumulator anchor, `generate_debt`'s normalized-debt delta) stay `u128` and
+  will panic at the fee ceiling.
 
 **In plain English:** this is just `rate ^ milliseconds_elapsed` — what a per-millisecond multiplier becomes after that many milliseconds. The naive way is `milliseconds_elapsed` separate multiplications. Exponentiation-by-squaring does it in `log₂(milliseconds_elapsed)` multiplications instead — for a year's worth of milliseconds (~31.5 billion), that's ~35 muls instead of 31.5 billion.
 
@@ -407,8 +409,10 @@ computed in `u512` with **saturating** multiplication rather than panicking. Sat
 is the safe direction — §6.2's left-hand side cannot exceed `u128::MAX ×
 FIXED_POINT_ONE^3` (~`10^119`), while the smallest value these can saturate to is
 ~`10^127`, so a saturated projection always loses the comparison, which is the correct
-answer for debt whose value has outgrown the type. The `u128` versions remain in use
-where the result is **stored** (§10.2, §10.3) or divides a stored amount (§10.7).
+answer for debt whose value has outgrown the type. The redemption-price re-anchor in §10.3 and §10.19
+also uses the wide projection, clamped into the §8 price bounds, so it never panics.
+The `u128` versions remain in use where the result is **stored** (§10.2) or divides a
+stored amount (§10.7).
 
 **In plain English:** instead of writing "current_accumulator = X" to disk on every block (which would require touching every position's account on every fee tick), we store an **anchor** plus the **per-millisecond rate**, and compute the current value on the fly by rolling the anchor forward via `compound_rate`. Reads are slightly more expensive (one `compound_rate` call); writes happen only on real anchor updates (the pokes in §10.2 / §10.3).
 
@@ -515,11 +519,13 @@ Net effect: the protocol's "implicit fee credit" (`Σ nominal_debt − total_sup
 ### 6.4 PI controller (`update_redemption_rate`)
 
 ```
-// 1. Project current redemption price from the anchor.
+// 1. Project current redemption price from the anchor (in u512, so it cannot
+//    overflow), then clamp it into the §8 price bounds.
 dt = now - state.last_updated_at
-current_redemption_price = state.redemption_price_at_last_update
-                         * compound_rate(state.redemption_rate_per_millisecond, dt)
-                         / FIXED_POINT_ONE
+current_redemption_price = clamp(state.redemption_price_at_last_update
+                                 * compound_rate(state.redemption_rate_per_millisecond, dt)
+                                 / FIXED_POINT_ONE,
+                                 MINIMUM_REDEMPTION_PRICE, MAXIMUM_REDEMPTION_PRICE)
 
 // 2. Compute signed error.
 //    error > 0 when redemption_price > market_price (protocol's target above market valuation).
@@ -540,12 +546,17 @@ rate_adjustment   = proportional_term + new_integral
 //   Vice versa when above. Matches RAI's PIRawPerSecondCalculator, whose final step is
 //   redemptionRate = RAY + (Kp·error + Ki·∫) with error = redemptionPrice − marketPrice.
 
-// 5. Clamp the per-update rate adjustment (rate-explosion guard, RFP R2).
+// 5. Clamp the rate adjustment (rate-explosion guard, RFP R2).
 rate_adjustment = clamp(rate_adjustment, -RATE_DELTA_CLAMP, RATE_DELTA_CLAMP)
+new_rate = (FIXED_POINT_ONE as i256 + rate_adjustment) as u128
+
+// 5a. At a price bound the rate may only point back inside the band.
+if current_redemption_price <= MINIMUM_REDEMPTION_PRICE: new_rate = max(new_rate, FIXED_POINT_ONE)
+if current_redemption_price >= MAXIMUM_REDEMPTION_PRICE: new_rate = min(new_rate, FIXED_POINT_ONE)
 
 // 6. Persist.
 state.redemption_price_at_last_update = current_redemption_price
-state.redemption_rate_per_millisecond      = (FIXED_POINT_ONE as i256 + rate_adjustment) as u128
+state.redemption_rate_per_millisecond      = new_rate
 state.controller_integral_term        = new_integral
 state.last_updated_at                 = now
 ```
@@ -633,7 +644,7 @@ These are properties the protocol maintains across every state-changing instruct
 
 2. **Stability fee accumulator monotonicity.** `accumulated_rate_at_last_accrual` is monotonically non-decreasing while `stability_fee_per_millisecond ≥ FIXED_POINT_ONE` (enforced by `set_stability_fee_per_millisecond`'s bound check).
 
-3. **Redemption price positivity.** `redemption_price_at_last_update > 0` at all times. Initial value at init must be > 0; the controller's `rate_adjustment` clamp keeps `redemption_rate_per_millisecond > 0`, so subsequent projections stay positive.
+3. **Redemption price bounds.** `MINIMUM_REDEMPTION_PRICE ≤ redemption_price_at_last_update ≤ MAXIMUM_REDEMPTION_PRICE` after every write. `initialize_program` enforces it for the initial value, and every re-anchor (§6.4, §10.19) clamps into the band. A rate below `1.0` alone does **not** keep the price positive, since integer compounding does reach zero; the floor does. Between writes the projection can drift past a bound by at most one window at `RATE_DELTA_CLAMP` (~0.6%), and the controller then only steers back inside.
 
 4. **Position addressing.** For every `Position` account `P` owned by the stablecoin program, `P.account_id == compute_position_pda(stablecoin_program_id, P.owner_account_id, P.position_nonce)`.
 
@@ -655,19 +666,21 @@ These are properties the protocol maintains across every state-changing instruct
 | `controller_proportional_gain` magnitude | `|x| ≤ FIXED_POINT_ONE * 10^3` | Practical upper bound for rate-explosion guard (RFP R2). Real values are tiny (≈10^6–10^12 raw) because they scale price-error × per-ms rate-output. Rescaled `÷10^3` from the per-second formulation. |
 | `controller_integral_gain` magnitude | `|x| ≤ FIXED_POINT_ONE` | As proportional, but rescaled `÷10^6` (it also multiplies `Δt`, now in ms): real values ≈10^3–10^9 raw. |
 | `INTEGRAL_CLAMP` | `± FIXED_POINT_ONE * 10^6` | Anti-windup; rescaled `÷10^3` to ms. Constant in v1; future-promotable to `ProtocolParameters`. |
-| `RATE_DELTA_CLAMP` | `± FIXED_POINT_ONE / 100_000` | Max single-update per-ms rate adjustment (≈±0.001%); rescaled `÷10^3` to ms so a ~1/sec keeper cadence still caps near ±1%/s. Constant in v1. |
+| `RATE_DELTA_CLAMP` | `± FIXED_POINT_ONE / 10^11` | Max deviation of `redemption_rate_per_millisecond` from `1.0` (`±10^-11` per ms). The rate compounds every millisecond regardless of keeper cadence, so this bounds drift per unit of **time**: at most `×e^±0.315` (≈ `×1.37` / `×0.73`) per year and ~0.6% per seven-day window. That keeps a full window inside `u128` from `MAXIMUM_REDEMPTION_PRICE` and far from zero at `MINIMUM_REDEMPTION_PRICE`. Constant in v1; final value from §15 tuning. |
+| `MINIMUM_REDEMPTION_PRICE` | `10^9` (`10^-18` collateral per stablecoin unit) | Floor. At or below it the controller may only raise the rate to `≥ 1.0`, and re-anchors clamp up to it. Integer compounding below `1.0` reaches zero eventually, and a price near zero makes any collateral enough to mint against. Low enough for any realistic pair of token decimals. Constant in v1. |
+| `MAXIMUM_REDEMPTION_PRICE` | `u128::MAX / 2` | Ceiling. At or above it the controller may only lower the rate to `≤ 1.0`, and re-anchors clamp down to it. The `×2` headroom covers a full window at `RATE_DELTA_CLAMP`, so the `u128` projection cannot overflow. Constant in v1. |
 | `minimum_milliseconds_between_rate_updates` | `1 ≤ x ≤ 86_400_000` | Min 1 ms (no zero-spam), max 1 day (RFP F2 "rate updates within a small number of blocks"). |
 | `maximum_oracle_price_age_milliseconds` | `1 ≤ x ≤ 86_400_000` | Stale beyond a day is obviously bad; aggressive freshness is a tuning parameter. |
-| `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` | `604_800_000` (7 days) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Seven days is the top of the range the design considered — it maximises tolerance of keeper neglect and stays far from overflow for any *realistic* rate (a ~5%/yr fee is `1 + 1.5×10^-12` per ms, giving a `1.0009×` factor over the full window; overflow needs a rate above ~`1 + 4×10^-8` per ms). **But the ceilings this table permits are far above that threshold** — `RATE_DELTA_CLAMP` allows `1 + 10^-5` per ms, ~250× past it, and `stability_fee_per_millisecond` allows `2.0` — so the clamp does **not** make `compound_rate` overflow-free as written; see §5.2. Reconciling the bands with the type is §15 tuning work. Constant in v1. |
-| `initial_redemption_price` | `> 0` | Must be positive; admin chooses an initial value reflecting the launch peg target. |
+| `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` | `604_800_000` (7 days) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Seven days is the top of the range the design considered — it maximises tolerance of keeper neglect and stays far from overflow for any *realistic* rate (a ~5%/yr fee is `1 + 1.5×10^-12` per ms, giving a `1.0009×` factor over the full window; overflow needs a rate above ~`1 + 4×10^-8` per ms). `RATE_DELTA_CLAMP` (`1 ± 10^-11` per ms) is well inside that threshold. **But `stability_fee_per_millisecond` allows `2.0`**, far above it, so the clamp does **not** make the accumulator's `compound_rate` overflow-free as written; see §5.2. Reconciling the bands with the type is §15 tuning work. Constant in v1. |
+| `initial_redemption_price` | `MINIMUM_REDEMPTION_PRICE ≤ x ≤ MAXIMUM_REDEMPTION_PRICE` | Admin chooses an initial value reflecting the launch peg target, inside the controller's price bounds. |
 
 All bounds enforced in `initialize_program` and the corresponding `set_*` instruction.
 
-**Time-unit note (milliseconds).** The runtime clock is in **milliseconds**, so every timestamp (`opened_at`, `last_accrued_at`, `last_updated_at`), the interval bounds, the per-millisecond rates, and the gain/clamp magnitudes above are all ms-denominated. The gains and clamps were **rescaled directly to per-millisecond terms** by deterministic factors — `Kp ÷10^3`, `Ki ÷10^6` (it also multiplies `Δt`, now 1000× larger), `INTEGRAL_CLAMP ÷10^3`, `RATE_DELTA_CLAMP ÷10^3` — which exactly preserves the per-second behavior they encoded. This is a units rescale, **not** validation: those magnitudes were always v1 estimates, so the final values are locked against simulation in the §15 tuning pass — a step that exists independently of the time unit. The interval bounds are exact.
+**Time-unit note (milliseconds).** The runtime clock is in **milliseconds**, so every timestamp (`opened_at`, `last_accrued_at`, `last_updated_at`), the interval bounds, the per-millisecond rates, and the gain/clamp magnitudes above are all ms-denominated. The gains and clamps were **rescaled directly to per-millisecond terms** by deterministic factors — `Kp ÷10^3`, `Ki ÷10^6` (it also multiplies `Δt`, now 1000× larger), `INTEGRAL_CLAMP ÷10^3`, `RATE_DELTA_CLAMP ÷10^3` — which exactly preserves the per-second behavior they encoded. (`RATE_DELTA_CLAMP` was later re-derived from a yearly drift ceiling instead, because the rescaled value allowed ±1%/s of compounding.) This is a units rescale, **not** validation: those magnitudes were always v1 estimates, so the final values are locked against simulation in the §15 tuning pass — a step that exists independently of the time unit. The interval bounds are exact.
 
 ## 9. Instruction set
 
-19 instructions in 5 groups (the combined poke `refresh_globals` is numbered 3a, grouped with the other two pokes). Full per-instruction details in § 10.
+20 instructions in 5 groups (the combined poke `refresh_globals` is numbered 3a, grouped with the other two pokes). Full per-instruction details in § 10.
 
 ### 9.1 Bootstrap
 
@@ -712,6 +725,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 |---|---|---|---|
 | 17 | `freeze` | freeze authority | Sets `is_frozen = true`. |
 | 18 | `unfreeze` | freeze authority | Sets `is_frozen = false`. |
+| 19 | `reset_redemption_rate_controller` | admin or freeze authority | Re-anchors the redemption price at its current projection; rate := `1.0`, integral := `0`. Allowed while frozen (§10.19). |
 
 ## 10. Per-instruction details
 
@@ -1220,6 +1234,44 @@ flowchart TD
     Ins --> Post
 ```
 
+### 10.19 `reset_redemption_rate_controller`
+
+**Signature:** `fn reset_redemption_rate_controller();`
+
+**Inputs (4 accounts):**
+
+1. `authority` — authorized; `authority.account_id` is `protocol_parameters.admin_account_id` or `protocol_parameters.freeze_authority_account_id`.
+2. `protocol_parameters` — initialized, read-only.
+3. `redemption_price_state` — initialized, writable.
+4. `clock` — the system `CLOCK_01` account; read-only.
+
+**Output state changes (`redemption_price_state` only):**
+
+```
+redemption_price_at_last_update = clamp(project_u512(state, now), MINIMUM_REDEMPTION_PRICE, MAXIMUM_REDEMPTION_PRICE)
+redemption_rate_per_millisecond = FIXED_POINT_ONE
+controller_integral_term        = 0
+last_updated_at                 = now
+```
+
+**Chained calls:** none.
+
+**Panics if:** `authority.is_authorized = false`; the signer is neither the admin nor the freeze authority; `protocol_parameters` or `redemption_price_state` uninitialized / wrong owner / wrong PDA; wrong clock account. Never on the projection.
+
+**Why it exists.** A bad oracle reading, or gains tuned too hot, can leave the controller wound up: the integral saturated and the rate pinned at `RATE_DELTA_CLAMP`. Setting the gains to zero does not help, because with `Ki = 0` the integral term is frozen in place and the rate stays at `1 + I`. This instruction stops the drift **without repricing the system**: the price stays where it projects to now, so no position's collateralization changes at the moment of the call. That is why it is allowed even though resetting the redemption price itself is not (§3). Allowed while frozen, so the usual incident response is freeze → fix the oracle or gains → reset → unfreeze. Idempotent.
+
+```mermaid
+flowchart TD
+    subgraph In["Inputs (4)"]
+        a1[authority<br/>auth, admin or freeze authority] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[redemption_price_state<br/>write] ~~~ a4[clock<br/>CLOCK_01]
+    end
+    subgraph Post["Post-state"]
+        p1[redemption_price_state<br/>anchor := current projection,<br/>rate := 1.0, integral := 0]
+    end
+    In --> Ins((reset_redemption_rate_controller))
+    Ins --> Post
+```
+
 ## 11. Edge cases
 
 - **Empty position** (`collateral_amount = 0`, `normalized_debt_amount = 0`) — valid intermediate state. `withdraw_collateral` with `amount = 0` is a no-op. `close_position` is the only path that clears the account.
@@ -1261,7 +1313,7 @@ flowchart TD
 
 This design is the input to the writing-plans skill. The plan should:
 
-1. Decompose the 18 instructions into landable issues (per-instruction or small bundles) with clear deps.
+1. Decompose the 20 instructions into landable issues (per-instruction or small bundles) with clear deps.
 2. Account for the data-model migration from the current scaffold (`Position` field renames + the global PDAs that don't exist yet).
 3. Include the `idl-gen` regeneration step per the `Makefile` `idl` target.
 4. Include integration test coverage for the multi-step flows (open → generate → repay → close, oracle staleness scenarios, frozen scenarios, admin parameter sweeps).
@@ -1420,7 +1472,7 @@ Effect:
 |---|---|---|---|
 | `ProtocolParameters` | market_price_oracle_id | bad_oracle | new_good_oracle |
 
-Validates the new oracle's `base_asset` / `quote_asset` match the stablecoin/collateral. The redemption price isn't reset (no admin escape hatch by design).
+Validates the new oracle's `base_asset` / `quote_asset` match the stablecoin/collateral. The redemption price isn't reset (no admin escape hatch by design). The freeze authority then calls `reset_redemption_rate_controller()` (§10.19): the price stays where it projects now, but the wound-up integral goes to `0` and the rate to `1.0`.
 
 **Step 5 — t = T + 2 hours: Freeze authority calls `unfreeze()`**
 
@@ -1428,7 +1480,7 @@ Validates the new oracle's `base_asset` / `quote_asset` match the stablecoin/col
 |---|---|---|---|
 | `ProtocolParameters` | is_frozen | true | false |
 
-Trading resumes. A keeper calls `update_redemption_rate()`, which now reads the correct oracle price and slowly walks the redemption rate / price back to a stable regime (the integral term is at the windup clamp, so the controller's recovery is metered, not snappy — accepted trade-off).
+Trading resumes. A keeper calls `update_redemption_rate()`, which now reads the correct oracle price and walks the redemption rate / price back to a stable regime from a clean controller state. Without the reset, the integral term would still sit at the windup clamp and the recovery would lag.
 
 **What this scenario doesn't fix:**
 

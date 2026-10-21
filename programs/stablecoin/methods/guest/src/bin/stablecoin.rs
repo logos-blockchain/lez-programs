@@ -650,4 +650,32 @@ mod stablecoin {
         ))
     }
 
+    /// Return the redemption-rate controller to rest (spec §10.19; host fn
+    /// `stablecoin_program::reset_redemption_rate_controller`). Callable by the
+    /// admin or the freeze authority. Idempotent.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn reset_redemption_rate_controller(
+        ctx: ProgramContext,
+        #[account(signer)] authority: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+        #[account(mut)] redemption_price_state: AccountWithMetadata,
+        clock: AccountWithMetadata,
+    ) -> SpelResult {
+        let (post_states, chained_calls) =
+            stablecoin_program::reset_redemption_rate_controller::reset_redemption_rate_controller(
+                authority,
+                protocol_parameters,
+                redemption_price_state,
+                clock,
+                ctx.self_account_id,
+            );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
 }

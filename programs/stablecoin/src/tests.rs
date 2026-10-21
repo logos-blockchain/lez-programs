@@ -976,6 +976,11 @@ fn deposit_collateral_rejects_overflow() {
 // 0.75 x nominal debt. Oracle is fresh and used only as a liveness gate.
 
 const ORACLE_PRICE: u128 = FIXED_POINT_ONE / 4;
+/// The per-millisecond rate step the controller allowed before the clamp was
+/// tightened in spec §8. The current controller can no longer produce it, but a
+/// state written under it must still be handled safely, so the projection
+/// tests below use it.
+const LEGACY_RATE_DELTA: u128 = FIXED_POINT_ONE / 100_000;
 
 #[allow(clippy::too_many_arguments, reason = "mirrors the host fn ABI")]
 fn generate(
@@ -1033,10 +1038,7 @@ fn generate_debt_rejects_a_redemption_price_that_projects_to_zero() {
         stablecoin_definition_account(),
         user_stablecoin_holding_account(0),
         unit_accumulator(),
-        redemption_state_with(
-            FIXED_POINT_ONE - stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
-            NOW - 7_000_000,
-        ),
+        redemption_state_with(FIXED_POINT_ONE - LEGACY_RATE_DELTA, NOW - 7_000_000),
         fresh_oracle(),
         protocol_parameters_account(false),
         clock_account(NOW),
@@ -1045,7 +1047,7 @@ fn generate_debt_rejects_a_redemption_price_that_projects_to_zero() {
     );
 }
 
-/// The mirror of the withdraw_collateral case: a rate at the controller's upper
+/// The mirror of the withdraw_collateral case: a rate at the legacy upper
 /// clamp projects the price past `u128` in 2_700_000 ms. The mint below is
 /// comfortably collateralized against that price — about 585_174_061_358
 /// required against 1_000_000_000_000 — so it must compare, not overflow.
@@ -1057,10 +1059,7 @@ fn generate_debt_succeeds_when_the_projected_price_exceeds_u128() {
         stablecoin_definition_account(),
         user_stablecoin_holding_account(0),
         unit_accumulator(),
-        redemption_state_with(
-            FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
-            NOW - 2_700_000,
-        ),
+        redemption_state_with(FIXED_POINT_ONE + LEGACY_RATE_DELTA, NOW - 2_700_000),
         fresh_oracle(),
         protocol_parameters_account_with_ratio(FIXED_POINT_ONE * 11 / 10),
         clock_account(NOW),
@@ -1794,7 +1793,7 @@ fn redemption_state_with(rate_per_millisecond: u128, last_updated_at: u64) -> Ac
     }
 }
 
-/// A rate one clamp below 1.0 decays the projected price to exactly zero over
+/// A rate one legacy clamp below 1.0 decays the projected price to exactly zero over
 /// 7_000_000 ms. If the check runs against that, required collateral becomes
 /// zero and an indebted position can be drained completely.
 #[test]
@@ -1807,10 +1806,7 @@ fn withdraw_collateral_rejects_a_redemption_price_that_projects_to_zero() {
         init_vault_account(),
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
-        redemption_state_with(
-            FIXED_POINT_ONE - stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
-            NOW - elapsed,
-        ),
+        redemption_state_with(FIXED_POINT_ONE - LEGACY_RATE_DELTA, NOW - elapsed),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -1831,10 +1827,7 @@ fn withdraw_collateral_of_zero_is_a_no_op_for_an_indebted_position() {
         init_vault_account(),
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
-        redemption_state_with(
-            FIXED_POINT_ONE - stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
-            NOW - elapsed,
-        ),
+        redemption_state_with(FIXED_POINT_ONE - LEGACY_RATE_DELTA, NOW - elapsed),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -1847,7 +1840,7 @@ fn withdraw_collateral_of_zero_is_a_no_op_for_an_indebted_position() {
     assert_eq!(chained_calls.len(), 1);
 }
 
-/// A rate one clamp above 1.0 projects the price past `u128` in 2_700_000 ms.
+/// A rate one legacy clamp above 1.0 projects the price past `u128` in 2_700_000 ms.
 /// The position below is comfortably collateralized against that price — about
 /// 585_174_061_358 required against 900_000_000_000 left — so the withdrawal
 /// must compare and succeed rather than overflow on the way to the comparison.
@@ -1860,10 +1853,7 @@ fn withdraw_collateral_succeeds_when_the_projected_price_exceeds_u128() {
         init_vault_account(),
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
-        redemption_state_with(
-            FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
-            NOW - elapsed,
-        ),
+        redemption_state_with(FIXED_POINT_ONE + LEGACY_RATE_DELTA, NOW - elapsed),
         protocol_parameters_account_with_ratio(FIXED_POINT_ONE * 11 / 10),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -1886,10 +1876,7 @@ fn withdraw_collateral_rejects_when_the_projected_price_exceeds_the_collateral()
         init_vault_account(),
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
-        redemption_state_with(
-            FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
-            NOW - elapsed,
-        ),
+        redemption_state_with(FIXED_POINT_ONE + LEGACY_RATE_DELTA, NOW - elapsed),
         protocol_parameters_account_with_ratio(FIXED_POINT_ONE * 11 / 10),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
@@ -1897,7 +1884,7 @@ fn withdraw_collateral_rejects_when_the_projected_price_exceeds_the_collateral()
     );
 }
 
-/// The mirror case: a rate one clamp above 1.0 projects past `u128` in
+/// The mirror case: a rate one legacy clamp above 1.0 projects past `u128` in
 /// 2_700_000 ms. A zero-debt position needs no collateralization check at all,
 /// so computing the projection must not block the withdrawal.
 #[test]
@@ -1909,10 +1896,7 @@ fn withdraw_collateral_from_a_zero_debt_position_skips_the_projection() {
         init_vault_account(),
         destination_holding_account(),
         crate::test_support::accumulator_account(FIXED_POINT_ONE, NOW),
-        redemption_state_with(
-            FIXED_POINT_ONE + stablecoin_core::RATE_DELTA_CLAMP.unsigned_abs(),
-            NOW - elapsed,
-        ),
+        redemption_state_with(FIXED_POINT_ONE + LEGACY_RATE_DELTA, NOW - elapsed),
         protocol_parameters_account(false),
         clock_account(NOW),
         STABLECOIN_PROGRAM_ID,
