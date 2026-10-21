@@ -113,7 +113,7 @@ mod tests {
         test_support::{
             accumulator_account, caller_account, clock_account, oracle_account,
             protocol_parameters_account, redemption_price_state_account, uninitialized,
-            ParameterOverrides, ACCUMULATOR_ANCHOR, MARKET_PRICE_BELOW_ANCHOR, NOW,
+            ParameterOverrides, ACCUMULATOR_ANCHOR, NOW, ORACLE_PRICE_BELOW_ANCHOR,
             STABLECOIN_PROGRAM_ID, T0,
         },
         StateDiffExt,
@@ -150,7 +150,7 @@ mod tests {
             ParameterOverrides::default(),
             T0,
             NOW,
-            MARKET_PRICE_BELOW_ANCHOR,
+            ORACLE_PRICE_BELOW_ANCHOR,
         )
     }
 
@@ -187,7 +187,7 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -210,7 +210,7 @@ mod tests {
             ParameterOverrides::default(),
             recent,
             NOW,
-            MARKET_PRICE_BELOW_ANCHOR,
+            ORACLE_PRICE_BELOW_ANCHOR,
         );
 
         assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
@@ -227,7 +227,7 @@ mod tests {
             ParameterOverrides::default(),
             T0,
             NOW - 1_000_000,
-            MARKET_PRICE_BELOW_ANCHOR,
+            ORACLE_PRICE_BELOW_ANCHOR,
         );
 
         assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
@@ -265,7 +265,7 @@ mod tests {
             },
             T0,
             NOW,
-            MARKET_PRICE_BELOW_ANCHOR,
+            ORACLE_PRICE_BELOW_ANCHOR,
         );
         assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
         assert_eq!(decode_redemption(&post_states[3]).last_updated_at, NOW);
@@ -284,7 +284,7 @@ mod tests {
         );
         assert_eq!(
             post_states[4].post_account(STABLECOIN_PROGRAM_ID),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR).account
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR).account
         );
         assert_eq!(
             post_states[5].post_account(STABLECOIN_PROGRAM_ID),
@@ -302,7 +302,7 @@ mod tests {
             protocol_parameters_account(ParameterOverrides::default()),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -318,7 +318,7 @@ mod tests {
             )),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -332,7 +332,7 @@ mod tests {
             protocol_parameters_account(ParameterOverrides::default()),
             uninitialized(compute_stability_fee_accumulator_pda(STABLECOIN_PROGRAM_ID)),
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -346,7 +346,7 @@ mod tests {
             protocol_parameters_account(ParameterOverrides::default()),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
             uninitialized(compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID)),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -364,7 +364,7 @@ mod tests {
             protocol_parameters_account(ParameterOverrides::default()),
             accumulator,
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -377,7 +377,7 @@ mod tests {
     fn rejects_oracle_id_mismatch() {
         // A wrong oracle account is a caller error, not a transient condition —
         // so unlike staleness, this one panics here too.
-        let mut oracle = oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR);
+        let mut oracle = oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR);
         oracle.account_id = AccountId::new([0xDE; 32]);
         let _ = refresh_globals(
             caller_account(),
@@ -400,7 +400,7 @@ mod tests {
             protocol_parameters_account(ParameterOverrides::default()),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock,
             STABLECOIN_PROGRAM_ID,
         );

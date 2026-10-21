@@ -317,7 +317,7 @@ fn related_plans(parameters: &ProtocolParameters) -> Vec<(&'static str, bool, St
             Data::from(&RedemptionPriceState { redemption_price_at_last_update: FIXED_POINT_ONE,
                 redemption_rate_per_millisecond: FIXED_POINT_ONE, controller_integral_term: 0, last_updated_at: 1_000 })),
         "marketPriceOracle": read_value(id(5), AccountId::new([0x33; 32]), Data::from(&OraclePriceAccount {
-            base_asset: definition_id, quote_asset: id(4), price: FIXED_POINT_ONE, timestamp: 1_500,
+            base_asset: definition_id, quote_asset: id(4), price: 1 << 64, timestamp: 1_500,
             source_id: id(6), confidence_interval: 0 })),
         "clock": read_value(CLOCK_01_PROGRAM_ACCOUNT_ID, AccountId::new([0x44; 32]), Data::try_from(
             ClockAccountData { block_id: 1, timestamp: 1_500 }.to_bytes()).expect("clock fits")),

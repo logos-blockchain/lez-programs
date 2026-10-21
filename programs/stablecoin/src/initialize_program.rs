@@ -366,7 +366,8 @@ mod tests {
                 data: Data::from(&OraclePriceAccount {
                     base_asset: stablecoin_def_id(),
                     quote_asset: collateral_definition_id(),
-                    price: FIXED_POINT_ONE / 2,
+                    // 0.5 in the oracle's Q64.64 encoding.
+                    price: 1 << 63,
                     timestamp: NOW,
                     source_id: oracle_source_id(),
                     confidence_interval: 0,

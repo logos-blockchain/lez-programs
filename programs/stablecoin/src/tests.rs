@@ -975,7 +975,7 @@ fn deposit_collateral_rejects_overflow() {
 // accumulator 1.0, redemption price 0.5, ratio 1.5x → required collateral is
 // 0.75 x nominal debt. Oracle is fresh and used only as a liveness gate.
 
-const ORACLE_PRICE: u128 = FIXED_POINT_ONE / 4;
+const ORACLE_PRICE: u128 = crate::test_support::ORACLE_PRICE_BELOW_ANCHOR;
 
 #[allow(clippy::too_many_arguments, reason = "mirrors the host fn ABI")]
 fn generate(

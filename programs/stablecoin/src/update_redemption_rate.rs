@@ -8,9 +8,10 @@ use lee_core::{
     program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
-    compute_redemption_price_state_pda, controller::run_controller_tick,
-    math::compute_current_redemption_price, ControllerOutput, ProtocolParameters,
-    RedemptionPriceState,
+    compute_redemption_price_state_pda,
+    controller::run_controller_tick,
+    math::{compute_current_redemption_price, oracle_price_to_fixed_point},
+    ControllerOutput, ProtocolParameters, RedemptionPriceState,
 };
 use twap_oracle_core::OraclePriceAccount;
 
@@ -136,8 +137,11 @@ pub(crate) fn decode_oracle(
         .expect("Market price oracle must decode as OraclePriceAccount")
 }
 
-/// Project the redemption price to `now`, run one controller tick against
-/// `market_price`, and return the re-anchored account data.
+/// Project the redemption price to `now`, run one controller tick against the
+/// oracle's market price, and return the re-anchored account data.
+///
+/// `oracle_price` is the raw `Q64.64` `OraclePriceAccount::price`; it is
+/// converted to the redemption price's fixed-point scale before the tick.
 ///
 /// Shared with [`crate::refresh_globals`] — the redemption half is identical in
 /// both. The projection deliberately runs BEFORE the tick and uses the OLD rate;
@@ -145,7 +149,7 @@ pub(crate) fn decode_oracle(
 pub(crate) fn advance_redemption_price(
     params: &ProtocolParameters,
     redemption: &RedemptionPriceState,
-    market_price: u128,
+    oracle_price: u128,
     now: u64,
 ) -> Data {
     let milliseconds_elapsed = now.saturating_sub(redemption.last_updated_at);
@@ -161,7 +165,7 @@ pub(crate) fn advance_redemption_price(
         controller_integral_term,
     } = run_controller_tick(
         current_price,
-        market_price,
+        oracle_price_to_fixed_point(oracle_price),
         redemption.controller_integral_term,
         params.controller_proportional_gain,
         params.controller_integral_gain,
@@ -193,7 +197,8 @@ mod tests {
             caller_account, clock_account, oracle_account, protocol_parameters_account,
             redemption_price_state_account, redemption_price_state_account_with_integral_term,
             uninitialized, ParameterOverrides, MARKET_PRICE_BELOW_ANCHOR, NOW,
-            REDEMPTION_PRICE_ANCHOR, STABLECOIN_PROGRAM_ID, T0,
+            ORACLE_PRICE_ABOVE_ANCHOR, ORACLE_PRICE_BELOW_ANCHOR, REDEMPTION_PRICE_ANCHOR,
+            STABLECOIN_PROGRAM_ID, T0,
         },
         StateDiffExt,
     };
@@ -203,7 +208,7 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         )
@@ -259,12 +264,41 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             redemption_price_state_account(T0),
-            oracle_account(NOW, REDEMPTION_PRICE_ANCHOR * 2),
+            oracle_account(NOW, ORACLE_PRICE_ABOVE_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
         let decoded = RedemptionPriceState::try_from(post_states[2].post_data()).unwrap();
         assert!(decoded.redemption_rate_per_millisecond < FIXED_POINT_ONE);
+    }
+
+    #[test]
+    fn oracle_fixtures_encode_the_fixed_point_test_prices() {
+        assert_eq!(
+            oracle_price_to_fixed_point(ORACLE_PRICE_BELOW_ANCHOR),
+            MARKET_PRICE_BELOW_ANCHOR
+        );
+        assert_eq!(
+            oracle_price_to_fixed_point(ORACLE_PRICE_ABOVE_ANCHOR),
+            REDEMPTION_PRICE_ANCHOR * 2
+        );
+    }
+
+    #[test]
+    fn oracle_at_the_redemption_price_leaves_the_rate_at_one() {
+        // 0.5 in Q64.64 is 1 << 63. Read at the right scale it equals the 0.5
+        // anchor exactly, so there is no error and the rate stays at 1.0.
+        let (post_states, _) = update_redemption_rate(
+            caller_account(),
+            protocol_parameters_account(ParameterOverrides::default()),
+            redemption_price_state_account(T0),
+            oracle_account(NOW, 1 << 63),
+            clock_account(NOW),
+            STABLECOIN_PROGRAM_ID,
+        );
+        let decoded = RedemptionPriceState::try_from(post_states[2].post_data()).unwrap();
+        assert_eq!(decoded.redemption_rate_per_millisecond, FIXED_POINT_ONE);
+        assert_eq!(decoded.controller_integral_term, 0);
     }
 
     #[test]
@@ -278,7 +312,7 @@ mod tests {
                 ..ParameterOverrides::default()
             }),
             redemption_price_state_account_with_integral_term(T0, standing),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -296,7 +330,7 @@ mod tests {
         );
         assert_eq!(
             post_states[3].post_account(STABLECOIN_PROGRAM_ID),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR).account
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR).account
         );
         assert_eq!(
             post_states[4].post_account(STABLECOIN_PROGRAM_ID),
@@ -313,7 +347,7 @@ mod tests {
                 ..ParameterOverrides::default()
             }),
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -330,7 +364,7 @@ mod tests {
             caller,
             protocol_parameters_account(ParameterOverrides::default()),
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -345,7 +379,7 @@ mod tests {
                 STABLECOIN_PROGRAM_ID,
             )),
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -358,7 +392,7 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             uninitialized(compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID)),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -373,7 +407,7 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             state,
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -390,7 +424,7 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             state,
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -414,7 +448,7 @@ mod tests {
         expected = "Market price oracle account_id does not match ProtocolParameters.market_price_oracle_id"
     )]
     fn rejects_oracle_id_mismatch() {
-        let mut oracle = oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR);
+        let mut oracle = oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR);
         oracle.account_id = AccountId::new([0xDE; 32]);
         let _ = update_redemption_rate(
             caller_account(),
@@ -434,7 +468,7 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             redemption_price_state_account(T0),
-            oracle_account(NOW - 1_000_000, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW - 1_000_000, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -461,7 +495,7 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             redemption_price_state_account(NOW - 100_000),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -476,7 +510,7 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             redemption_price_state_account(T0),
-            oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR),
+            oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock,
             STABLECOIN_PROGRAM_ID,
         );

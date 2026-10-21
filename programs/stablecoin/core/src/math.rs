@@ -5,6 +5,7 @@
 //! `10^27`. Multiplications use `U256` intermediates to avoid overflow.
 
 use alloy_primitives::{U256, U512};
+use twap_oracle_core::PRICE_FRACTIONAL_BITS;
 
 /// The value `1.0` in our 27-decimal fixed-point representation.
 ///
@@ -65,6 +66,23 @@ pub fn mul_div_ceil(a: u128, b: u128, c: u128) -> u128 {
     ceiled
         .try_into()
         .expect("mul_div_ceil: result exceeds u128")
+}
+
+/// Convert an `OraclePriceAccount::price` into this program's fixed-point scale.
+///
+/// Oracle prices are `Q64.64` (`price / 2^PRICE_FRACTIONAL_BITS`, see
+/// `twap_oracle_core`), while the redemption price the controller compares them
+/// with is scaled by [`FIXED_POINT_ONE`]. Both quote raw collateral units per raw
+/// stablecoin unit, so only the scale differs.
+///
+/// Rounds toward zero. Any non-zero oracle price maps to a non-zero result, since
+/// one `Q64.64` unit is about `5.4 × 10^7` fixed-point units. Saturates at
+/// `u128::MAX` (a real price above about `3.4 × 10^11`) rather than panicking,
+/// so an absurd observation cannot block the pokes that read it.
+#[must_use]
+pub fn oracle_price_to_fixed_point(oracle_price: u128) -> u128 {
+    let scaled = (U256::from(oracle_price) * U256::from(FIXED_POINT_ONE)) >> PRICE_FRACTIONAL_BITS;
+    scaled.try_into().unwrap_or(u128::MAX)
 }
 
 /// Compute `per_millisecond_rate^milliseconds_elapsed` in fixed-point semantics, where
@@ -286,6 +304,40 @@ mod tests {
     #[test]
     fn fixed_point_one_is_ten_to_the_twenty_seventh() {
         assert_eq!(FIXED_POINT_ONE, 1_000_000_000_000_000_000_000_000_000_u128);
+    }
+
+    #[test]
+    fn oracle_price_to_fixed_point_converts_exact_q64_64_values() {
+        assert_eq!(oracle_price_to_fixed_point(1 << 64), FIXED_POINT_ONE);
+        assert_eq!(oracle_price_to_fixed_point(1 << 63), FIXED_POINT_ONE / 2);
+        assert_eq!(
+            oracle_price_to_fixed_point(3 << 63),
+            FIXED_POINT_ONE * 3 / 2
+        );
+        assert_eq!(oracle_price_to_fixed_point(0), 0);
+    }
+
+    #[test]
+    fn oracle_price_to_fixed_point_keeps_the_smallest_price_non_zero() {
+        assert_eq!(oracle_price_to_fixed_point(1), FIXED_POINT_ONE >> 64);
+        assert!(oracle_price_to_fixed_point(1) > 0);
+    }
+
+    #[test]
+    fn oracle_price_to_fixed_point_saturates_instead_of_overflowing() {
+        assert_eq!(oracle_price_to_fixed_point(u128::MAX), u128::MAX);
+    }
+
+    #[test]
+    fn oracle_price_to_fixed_point_reads_twap_oracle_ticks() {
+        // Tick 0 is exactly 1.0; ±6_932 ticks is about 2× / 0.5× (1.0001^6932 ≈ 2.0).
+        assert_eq!(
+            oracle_price_to_fixed_point(twap_oracle_core::tick_to_oracle_price(0)),
+            FIXED_POINT_ONE
+        );
+        let halved = oracle_price_to_fixed_point(twap_oracle_core::tick_to_oracle_price(-6_932));
+        let expected = FIXED_POINT_ONE / 2;
+        assert!(halved.abs_diff(expected) < expected / 1_000, "got {halved}");
     }
 
     #[test]

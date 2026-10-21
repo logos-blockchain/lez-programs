@@ -342,7 +342,8 @@ impl Accounts {
         Self::oracle_with(
             base_asset,
             quote_asset,
-            stablecoin_core::math::FIXED_POINT_ONE / 2,
+            // 0.5 in the oracle's Q64.64 encoding.
+            1 << 63,
             0,
         )
     }
@@ -1822,7 +1823,8 @@ fn bootstrapped_owner_state(start: u64) -> V03State {
         Accounts::oracle_with(
             Ids::stablecoin_definition_pda(),
             Ids::collateral_definition(),
-            stablecoin_core::math::FIXED_POINT_ONE / 4,
+            // 0.25 in the oracle's Q64.64 encoding.
+            1 << 62,
             start,
         ),
     );
@@ -2858,7 +2860,8 @@ fn stablecoin_update_redemption_rate_drifts_redemption_price() {
         Accounts::oracle_with(
             Ids::stablecoin_definition_pda(),
             Ids::collateral_definition(),
-            FIXED_POINT_ONE / 4,
+            // 0.25 in the oracle's Q64.64 encoding.
+            1 << 62,
             now,
         ),
     );
@@ -2924,7 +2927,8 @@ fn stablecoin_refresh_globals_advances_both_then_fee_only_when_oracle_stale() {
         Accounts::oracle_with(
             Ids::stablecoin_definition_pda(),
             Ids::collateral_definition(),
-            FIXED_POINT_ONE / 4,
+            // 0.25 in the oracle's Q64.64 encoding.
+            1 << 62,
             first,
         ),
     );

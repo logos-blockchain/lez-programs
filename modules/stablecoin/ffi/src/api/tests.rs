@@ -328,7 +328,7 @@ fn update_request(is_frozen: bool) -> UpdateRedemptionRatePlanRequest {
         caller_id: account_id_hex(id(15)),
         protocol_parameters: poke_parameters_read(&poke_parameters(is_frozen)),
         redemption_price_state: poke_redemption_read(POKE_LAST_UPDATE),
-        market_price_oracle: poke_oracle_read(FIXED_POINT_ONE, POKE_NOW),
+        market_price_oracle: poke_oracle_read(1 << 64, POKE_NOW),
         clock: poke_clock_read(POKE_NOW),
     }
 }
@@ -340,7 +340,7 @@ fn refresh_request(is_frozen: bool) -> RefreshGlobalsPlanRequest {
         protocol_parameters: poke_parameters_read(&poke_parameters(is_frozen)),
         stability_fee_accumulator: poke_accumulator_read(),
         redemption_price_state: poke_redemption_read(POKE_LAST_UPDATE),
-        market_price_oracle: poke_oracle_read(FIXED_POINT_ONE, POKE_NOW),
+        market_price_oracle: poke_oracle_read(1 << 64, POKE_NOW),
         clock: poke_clock_read(POKE_NOW),
     }
 }
@@ -1158,7 +1158,7 @@ fn poke_plans_pin_instruction_words_accounts_and_caller_only_signing() {
 #[test]
 fn strict_update_plan_reuses_quote_gate_order() {
     let mut stale = update_request(false);
-    stale.market_price_oracle = poke_oracle_read(FIXED_POINT_ONE, POKE_NOW - 51);
+    stale.market_price_oracle = poke_oracle_read(1 << 64, POKE_NOW - 51);
     assert_error(update_redemption_rate_plan(stale), "oracle_stale");
 
     let mut zero = update_request(false);
@@ -1181,7 +1181,7 @@ fn strict_update_plan_reuses_quote_gate_order() {
 #[test]
 fn refresh_plan_keeps_controller_quote_gates_soft() {
     let mut stale = refresh_request(false);
-    stale.market_price_oracle = poke_oracle_read(FIXED_POINT_ONE, POKE_NOW - 51);
+    stale.market_price_oracle = poke_oracle_read(1 << 64, POKE_NOW - 51);
     assert!(refresh_globals_plan(stale).is_ok());
 
     let mut zero = refresh_request(false);

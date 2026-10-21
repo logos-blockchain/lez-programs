@@ -582,7 +582,10 @@ mod tests {
     }
 
     fn new_oracle_account() -> AccountWithMetadata {
-        let mut oracle = crate::test_support::oracle_account(NOW, FIXED_POINT_ONE / 4);
+        let mut oracle = crate::test_support::oracle_account(
+            NOW,
+            crate::test_support::ORACLE_PRICE_BELOW_ANCHOR,
+        );
         oracle.account_id = AccountId::new([0x3Au8; 32]);
         oracle
     }

@@ -329,6 +329,7 @@ pub struct Position {
 ### 4.5 External account shapes (read-only, reused)
 
 - `OraclePriceAccount` from `twap_oracle_core` — required at oracle reads: `base_asset = stablecoin_definition_id`, `quote_asset = collateral_definition_id`, `price > 0`, `now − timestamp ≤ maximum_oracle_price_age_milliseconds`.
+  - **Scale:** `price` is `Q64.64` (`price / 2^64` raw collateral units per raw stablecoin unit; `twap_oracle_core::PRICE_FRACTIONAL_BITS`), not `FIXED_POINT_ONE`-scaled. Every producer must use this encoding. The controller converts it with `oracle_price_to_fixed_point` (`price × FIXED_POINT_ONE / 2^64`, rounded down, saturating at `u128::MAX`) before comparing it with the redemption price (§6.4).
 - `TokenDefinition::Fungible` from `token_core` — stablecoin (PDA-derived under us; owned by Token Program) and collateral (externally created).
 - `TokenHolding::Fungible` from `token_core` — vault and user holdings.
 
@@ -522,8 +523,10 @@ current_redemption_price = state.redemption_price_at_last_update
                          / FIXED_POINT_ONE
 
 // 2. Compute signed error.
+//    oracle.price is Q64.64 (§4.5); convert it to the FIXED_POINT_ONE scale first.
 //    error > 0 when redemption_price > market_price (protocol's target above market valuation).
-error: i256 = (current_redemption_price as i256) - (oracle.price as i256)
+market_price = oracle.price * FIXED_POINT_ONE / 2^64
+error: i256 = (current_redemption_price as i256) - (market_price as i256)
 
 // 3. Update integral state (clamped for anti-windup).
 integral_delta = (params.controller_integral_gain as i256) * error * (dt as i256) / FIXED_POINT_ONE
@@ -569,12 +572,12 @@ Their sum is the rate adjustment, added to `1.0`. Because there is **no negation
 
 ```mermaid
 flowchart LR
-    Oracle[(MarketPriceOracle<br/>oracle.price)]
+    Oracle[(MarketPriceOracle<br/>oracle.price, Q64.64)]
     StateOld[(RedemptionPriceState<br/>at last update)]
 
     StateOld -->|project forward via<br/>compound_rate| CurRP[current_redemption_price]
-    CurRP --> Err{{error = current_redemption_price − oracle.price}}
-    Oracle --> Err
+    CurRP --> Err{{error = current_redemption_price − market_price}}
+    Oracle -->|"× FIXED_POINT_ONE / 2^64"| Err
 
     Err --> P[proportional_term<br/>= Kp × error / FIXED_POINT_ONE]
     Err --> IDelta[integral_delta<br/>= Ki × error × Δt / FIXED_POINT_ONE]
@@ -1374,7 +1377,7 @@ A misbehaving oracle and the freeze authority's response.
 
 A keeper calls `update_redemption_rate()`. Oracle staleness check passes (timestamp fresh).
 
-- `error = current_redemption_price − oracle.price = 0.5 − 0.0001 ≈ 0.5` (in fixed-point).
+- `error = current_redemption_price − market_price = 0.5 − 0.0001 ≈ 0.5` (in fixed-point, after converting the `Q64.64` oracle price).
 - Controller computes massive negative `rate_adjustment`, hits `RATE_DELTA_CLAMP` floor at −1% per call.
 - `RedemptionPriceState`: rate now `0.99 × FIXED_POINT_ONE` (decay), price anchor rolled forward to `~0.5`, integral term grew negatively, last_updated_at = T + 100.
 

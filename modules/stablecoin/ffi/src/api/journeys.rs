@@ -150,7 +150,8 @@ impl JourneyState {
             oracle: OraclePriceAccount {
                 base_asset: id(3),
                 quote_asset: id(4),
-                price: FIXED_POINT_ONE / 2,
+                // 0.5 in the oracle's Q64.64 encoding.
+                price: 1 << 63,
                 timestamp: DUE,
                 source_id: id(6),
                 confidence_interval: 0,
@@ -623,7 +624,8 @@ fn journey_quotes_and_persists_successive_controller_updates() {
 
     state.clock.timestamp = LATER;
     state.oracle.timestamp = LATER;
-    state.oracle.price = FIXED_POINT_ONE * 3 / 2;
+    // 1.5 in Q64.64.
+    state.oracle.price = 3 << 63;
     let second_quote = redemption_rate_update_quote(state.quote_request())
         .expect("second controller quote must be ready");
     assert_eq!(second_quote["canSubmit"], true);
@@ -706,7 +708,7 @@ fn journey_recovers_from_blocked_updates_with_fee_only_refreshes() {
             state
         },
         "oracle_price_zero",
-        |state| state.oracle.price = FIXED_POINT_ONE / 2,
+        |state| state.oracle.price = 1 << 63,
     );
     assert_eq!(zero_price.redemption.last_updated_at, DUE);
 
@@ -764,7 +766,7 @@ fn journey_recovers_from_blocked_updates_with_fee_only_refreshes() {
             state
         },
         "oracle_price_zero",
-        |state| state.oracle.price = FIXED_POINT_ONE / 2,
+        |state| state.oracle.price = 1 << 63,
     );
     assert_eq!(frozen.redemption.last_updated_at, DUE);
     assert!(frozen.parameters.is_frozen);

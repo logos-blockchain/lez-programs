@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use stablecoin_core::{
-    math::compute_current_redemption_price, run_controller_tick, INTEGRAL_CLAMP, RATE_DELTA_CLAMP,
+    math::{compute_current_redemption_price, oracle_price_to_fixed_point},
+    run_controller_tick, INTEGRAL_CLAMP, RATE_DELTA_CLAMP,
 };
 use twap_oracle_core::OraclePriceAccount;
 
@@ -26,6 +27,8 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
 
     let elapsed_milliseconds = now.saturating_sub(redemption.last_updated_at);
     let oracle_age_milliseconds = now.saturating_sub(oracle.timestamp);
+    // The oracle publishes Q64.64; the controller compares on the fixed-point scale.
+    let market_price = oracle_price_to_fixed_point(oracle.price);
     let current_redemption_price = compute_current_redemption_price(
         redemption.redemption_price_at_last_update,
         redemption.redemption_rate_per_millisecond,
@@ -62,7 +65,7 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
     let (next_rate, next_integral) = if can_submit {
         let output = run_controller_tick(
             current_redemption_price,
-            oracle.price,
+            market_price,
             redemption.controller_integral_term,
             parameters.controller_proportional_gain,
             parameters.controller_integral_gain,
@@ -80,7 +83,7 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
         "canSubmit": can_submit,
         "code": if can_submit { "ready" } else { "blocked" },
         "currentRedemptionPrice": current_redemption_price.to_string(),
-        "marketPrice": oracle.price.to_string(),
+        "marketPrice": market_price.to_string(),
         "elapsedMilliseconds": elapsed_milliseconds.to_string(),
         "nextRedemptionRatePerMillisecond": next_rate,
         "nextControllerIntegralTerm": next_integral,
@@ -285,7 +288,7 @@ mod tests {
             let quoted = value(request(&params, &state, &observation, 100 + elapsed));
             let expected = run_controller_tick(
                 price,
-                market_price,
+                oracle_price_to_fixed_point(market_price),
                 integral,
                 proportional_gain,
                 integral_gain,
@@ -295,7 +298,10 @@ mod tests {
             assert_eq!(quoted["canSubmit"], true);
             assert_eq!(quoted["code"], "ready");
             assert_eq!(quoted["currentRedemptionPrice"], price.to_string());
-            assert_eq!(quoted["marketPrice"], market_price.to_string());
+            assert_eq!(
+                quoted["marketPrice"],
+                oracle_price_to_fixed_point(market_price).to_string()
+            );
             assert_eq!(quoted["elapsedMilliseconds"], elapsed.to_string());
             assert_eq!(
                 quoted["nextRedemptionRatePerMillisecond"],
@@ -366,7 +372,7 @@ mod tests {
             let quoted = value(request(&params, &state, &observation, elapsed));
             let expected = run_controller_tick(
                 price,
-                market_price,
+                oracle_price_to_fixed_point(market_price),
                 integral,
                 proportional_gain,
                 integral_gain,
@@ -393,7 +399,8 @@ mod tests {
         params.controller_integral_gain = FIXED_POINT_ONE as i128;
         let price = FIXED_POINT_ONE + 1;
         let state = redemption(price, 0, 0);
-        let observation = oracle(oracle_id, FIXED_POINT_ONE, elapsed);
+        // 1.0 in the oracle's Q64.64 encoding.
+        let observation = oracle(oracle_id, 1 << 64, elapsed);
 
         let quoted = value(request(&params, &state, &observation, elapsed));
         let expected = run_controller_tick(

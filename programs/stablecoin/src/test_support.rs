@@ -35,6 +35,10 @@ pub(crate) const REDEMPTION_PRICE_ANCHOR: u128 = FIXED_POINT_ONE / 2;
 /// A market price below the redemption anchor, so `error > 0` and a positive
 /// `Kp` drives the rate above `FIXED_POINT_ONE`.
 pub(crate) const MARKET_PRICE_BELOW_ANCHOR: u128 = FIXED_POINT_ONE / 4;
+/// [`MARKET_PRICE_BELOW_ANCHOR`] as the oracle publishes it: `0.25` in `Q64.64`.
+pub(crate) const ORACLE_PRICE_BELOW_ANCHOR: u128 = 1 << 62;
+/// `1.0` in the oracle's `Q64.64` encoding — above the redemption anchor.
+pub(crate) const ORACLE_PRICE_ABOVE_ANCHOR: u128 = 1 << 64;
 
 /// Knobs the poke tests actually vary. Everything else is fixed.
 pub(crate) struct ParameterOverrides {
