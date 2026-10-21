@@ -168,10 +168,10 @@ pub fn generate_debt(
         normalized_debt_amount: new_debt,
         ..position_data
     };
-    // Projected in `U512`: a redemption rate at the controller's permitted limit
-    // outgrows `u128` about 45 minutes out, and this value is only ever compared,
-    // never stored. `current_accumulator` stays narrow — it divides `amount`
-    // above, so a debt delta it cannot express is not a mint we can price.
+    // Projected in `U512`: the §8 bounds keep a fresh state's projection inside
+    // `u128`, but a state written under the old, looser rate clamp can outgrow it,
+    // and this value is only ever compared, never stored. `current_accumulator` stays narrow — it
+    // divides `amount` above, so a debt delta it cannot express is not a mint we can price.
     let current_redemption_price = compute_current_redemption_price_wide(
         redemption.redemption_price_at_last_update,
         redemption.redemption_rate_per_millisecond,

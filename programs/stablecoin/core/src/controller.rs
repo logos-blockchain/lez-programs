@@ -6,7 +6,7 @@
 //! redemption rate plus the new integral term, with anti-windup and
 //! rate-explosion clamps applied.
 
-use alloy_primitives::I256;
+use alloy_primitives::{I256, U512};
 
 use crate::math::FIXED_POINT_ONE;
 
@@ -17,12 +17,48 @@ use crate::math::FIXED_POINT_ONE;
 /// integrator. Placeholder pending the §15 simulation tuning pass.
 pub const INTEGRAL_CLAMP: i128 = (FIXED_POINT_ONE as i128) * 1_000_000;
 
-/// Per-update rate-adjustment clamp (rate-explosion guard), per spec §8:
-/// `± FIXED_POINT_ONE / 100_000` — about ±0.001% per call, so even a
-/// once-per-second keeper cadence caps near ±1%/s.
+/// Rate-adjustment clamp (rate-explosion guard), per spec §8:
+/// `± FIXED_POINT_ONE / 10^11`, i.e. `±10^-11` per millisecond.
+///
+/// The redemption rate compounds every millisecond whether or not a keeper
+/// calls in, so this bounds the drift per unit of *time*, not per call. At the
+/// clamp the redemption price moves by at most about `×1.37` or `×0.73` a year
+/// (`e^±0.315`), and by at most about `0.6%` across a full
+/// [`crate::math::MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS`] window. Together with
+/// [`MAXIMUM_REDEMPTION_PRICE`] that keeps every `u128` projection in range.
 ///
 /// Placeholder pending the §15 simulation tuning pass.
-pub const RATE_DELTA_CLAMP: i128 = (FIXED_POINT_ONE / 100_000) as i128;
+pub const RATE_DELTA_CLAMP: i128 = (FIXED_POINT_ONE / 100_000_000_000) as i128;
+
+/// Lowest redemption price the controller will steer toward, per spec §8:
+/// `10^9`, i.e. `10^-18` collateral units per stablecoin unit.
+///
+/// Integer compounding at a rate below `1.0` reaches zero eventually, and a
+/// redemption price near zero makes any collateral look like enough to mint
+/// against. At or below this floor the controller may only raise the price.
+/// Low enough for any realistic pair of token decimals.
+pub const MINIMUM_REDEMPTION_PRICE: u128 = 1_000_000_000;
+
+/// Highest redemption price the controller will steer toward, per spec §8:
+/// `u128::MAX / 2`.
+///
+/// At or above this ceiling the controller may only lower the price. A full
+/// compounding window at [`RATE_DELTA_CLAMP`] grows the price by about `0.6%`,
+/// far less than the `×2` headroom, so the `u128` projection cannot overflow.
+pub const MAXIMUM_REDEMPTION_PRICE: u128 = u128::MAX / 2;
+
+/// Clamp a projected redemption price into
+/// `[MINIMUM_REDEMPTION_PRICE, MAXIMUM_REDEMPTION_PRICE]`.
+///
+/// Takes the `U512` projection so a state written before these bounds existed
+/// re-anchors instead of panicking.
+#[must_use]
+pub fn bound_redemption_price(projected_redemption_price: U512) -> u128 {
+    let capped = projected_redemption_price.min(U512::from(MAXIMUM_REDEMPTION_PRICE));
+    u128::try_from(capped)
+        .expect("capped redemption price fits u128")
+        .max(MINIMUM_REDEMPTION_PRICE)
+}
 
 /// Result of one controller tick — the two values the caller persists into
 /// [`crate::RedemptionPriceState`].
@@ -31,6 +67,9 @@ pub struct ControllerOutput {
     /// New `redemption_rate_per_millisecond` (fixed-point, unsigned).
     /// Guaranteed `> 0` and within
     /// `[FIXED_POINT_ONE − RATE_DELTA_CLAMP, FIXED_POINT_ONE + RATE_DELTA_CLAMP]`.
+    /// Never below `FIXED_POINT_ONE` when the price is at
+    /// [`MINIMUM_REDEMPTION_PRICE`] or lower, and never above it when the price is
+    /// at [`MAXIMUM_REDEMPTION_PRICE`] or higher.
     pub redemption_rate_per_millisecond: u128,
     /// Updated integral term (signed fixed-point), hard-clamped to
     /// `[−INTEGRAL_CLAMP, +INTEGRAL_CLAMP]`.
@@ -107,9 +146,18 @@ pub fn run_controller_tick(
 
     // RATE_DELTA_CLAMP is far below FIXED_POINT_ONE, so this stays positive;
     // the floor at 1 is belt-and-suspenders against a future clamp change.
-    let redemption_rate_per_millisecond = (FIXED_POINT_ONE as i128)
+    let unbounded_rate = (FIXED_POINT_ONE as i128)
         .saturating_add(rate_adjustment)
         .max(1) as u128;
+
+    // At a price bound the rate may only point back inside the band.
+    let redemption_rate_per_millisecond = if current_redemption_price <= MINIMUM_REDEMPTION_PRICE {
+        unbounded_rate.max(FIXED_POINT_ONE)
+    } else if current_redemption_price >= MAXIMUM_REDEMPTION_PRICE {
+        unbounded_rate.min(FIXED_POINT_ONE)
+    } else {
+        unbounded_rate
+    };
 
     ControllerOutput {
         redemption_rate_per_millisecond,
@@ -148,7 +196,115 @@ mod tests {
 
     #[test]
     fn rate_delta_clamp_matches_spec_section_eight() {
-        assert_eq!(RATE_DELTA_CLAMP, (FIXED_POINT_ONE / 100_000) as i128);
+        assert_eq!(
+            RATE_DELTA_CLAMP,
+            (FIXED_POINT_ONE / 100_000_000_000) as i128
+        );
+    }
+
+    #[test]
+    fn a_full_window_at_the_upward_clamp_cannot_overflow_from_the_ceiling() {
+        let rate = FIXED_POINT_ONE + RATE_DELTA_CLAMP as u128;
+        let projected = crate::math::compute_current_redemption_price(
+            MAXIMUM_REDEMPTION_PRICE,
+            rate,
+            0,
+            crate::math::MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+        );
+        // About 0.6% growth over seven days.
+        assert!(projected > MAXIMUM_REDEMPTION_PRICE);
+        assert!(projected < MAXIMUM_REDEMPTION_PRICE / 100 * 101);
+    }
+
+    #[test]
+    fn a_full_window_at_the_downward_clamp_stays_well_above_zero() {
+        let rate = FIXED_POINT_ONE - RATE_DELTA_CLAMP as u128;
+        let projected = crate::math::compute_current_redemption_price(
+            MINIMUM_REDEMPTION_PRICE,
+            rate,
+            0,
+            crate::math::MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+        );
+        assert!(projected < MINIMUM_REDEMPTION_PRICE);
+        assert!(projected > MINIMUM_REDEMPTION_PRICE / 100 * 99);
+    }
+
+    #[test]
+    fn a_year_at_the_clamp_moves_the_price_by_less_than_half() {
+        // Compounded one week at a time, as keepers re-anchoring would.
+        let week = crate::math::MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS;
+        let up = FIXED_POINT_ONE + RATE_DELTA_CLAMP as u128;
+        let down = FIXED_POINT_ONE - RATE_DELTA_CLAMP as u128;
+        let (mut high, mut low) = (FIXED_POINT_ONE, FIXED_POINT_ONE);
+        for _ in 0..52 {
+            high = crate::math::compute_current_redemption_price(high, up, 0, week);
+            low = crate::math::compute_current_redemption_price(low, down, 0, week);
+        }
+        assert!(high < FIXED_POINT_ONE / 2 * 3, "got {high}");
+        assert!(low > FIXED_POINT_ONE / 2, "got {low}");
+    }
+
+    #[test]
+    fn at_the_price_floor_the_rate_cannot_fall_below_one() {
+        // Market far above the redemption price would normally push the rate down.
+        let output = run_controller_tick(
+            MINIMUM_REDEMPTION_PRICE,
+            FIXED_POINT_ONE,
+            0,
+            FIXED_POINT_ONE as i128,
+            0,
+            1,
+        );
+        assert_eq!(output.redemption_rate_per_millisecond, FIXED_POINT_ONE);
+    }
+
+    #[test]
+    fn at_the_price_floor_the_rate_may_still_rise() {
+        let output = run_controller_tick(
+            MINIMUM_REDEMPTION_PRICE,
+            0,
+            0,
+            FIXED_POINT_ONE as i128,
+            0,
+            1,
+        );
+        assert!(output.redemption_rate_per_millisecond > FIXED_POINT_ONE);
+    }
+
+    #[test]
+    fn at_the_price_ceiling_the_rate_cannot_rise_above_one() {
+        let output = run_controller_tick(
+            MAXIMUM_REDEMPTION_PRICE,
+            FIXED_POINT_ONE,
+            0,
+            FIXED_POINT_ONE as i128,
+            0,
+            1,
+        );
+        assert_eq!(output.redemption_rate_per_millisecond, FIXED_POINT_ONE);
+    }
+
+    #[test]
+    fn at_the_price_ceiling_the_rate_may_still_fall() {
+        let output = run_controller_tick(
+            MAXIMUM_REDEMPTION_PRICE,
+            u128::MAX,
+            0,
+            FIXED_POINT_ONE as i128,
+            0,
+            1,
+        );
+        assert!(output.redemption_rate_per_millisecond < FIXED_POINT_ONE);
+    }
+
+    #[test]
+    fn bound_redemption_price_clamps_into_the_band() {
+        assert_eq!(bound_redemption_price(U512::ZERO), MINIMUM_REDEMPTION_PRICE);
+        assert_eq!(
+            bound_redemption_price(U512::from(FIXED_POINT_ONE)),
+            FIXED_POINT_ONE
+        );
+        assert_eq!(bound_redemption_price(U512::MAX), MAXIMUM_REDEMPTION_PRICE);
     }
 
     #[test]
@@ -305,7 +461,7 @@ mod tests {
         // Worst case the §8 bounds and the §5.3 elapsed-window clamp permit:
         // max gains, an enormous price error, and a full compounding window.
         let output = run_controller_tick(
-            u128::MAX / 2,
+            MAXIMUM_REDEMPTION_PRICE - 1,
             0,
             INTEGRAL_CLAMP,
             (FIXED_POINT_ONE as i128) * 1_000,

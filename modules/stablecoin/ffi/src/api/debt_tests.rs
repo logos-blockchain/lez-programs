@@ -10,7 +10,6 @@ use stablecoin_core::{
         MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
     },
     Instruction, Position, ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator,
-    RATE_DELTA_CLAMP,
 };
 use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::OraclePriceAccount;
@@ -25,6 +24,11 @@ use crate::{
     account::{account_id_hex, account_read, decode_account},
     AccountRead,
 };
+
+/// The per-millisecond rate step the controller allowed before the spec §8
+/// clamp was tightened. The controller can no longer produce it, but a state
+/// written under it must still be handled, so these tests use it.
+const LEGACY_RATE_DELTA: u128 = FIXED_POINT_ONE / 100_000;
 
 const PROGRAM: AccountId = AccountId::new([0x11; 32]);
 const TOKEN_PROGRAM: AccountId = AccountId::new([0x22; 32]);
@@ -432,8 +436,7 @@ fn zero_mints_do_not_bypass_freeze_health_pricing_or_zero_redemption_price() {
     fixture.parameters.is_frozen = false;
     fixture.now = START + 7_000_000;
     fixture.oracle.timestamp = fixture.now;
-    fixture.redemption.redemption_rate_per_millisecond =
-        FIXED_POINT_ONE - RATE_DELTA_CLAMP.unsigned_abs();
+    fixture.redemption.redemption_rate_per_millisecond = FIXED_POINT_ONE - LEGACY_RATE_DELTA;
     error(fixture.request(json!("0")), "redemption_price_zero");
     fixture.parameters.stability_fee_per_millisecond = FIXED_POINT_ONE * 2;
     error(fixture.request(json!("0")), "debt_pricing_arithmetic_error");
@@ -482,8 +485,7 @@ fn checked_pricing_matches_native_narrow_math_and_time_window() {
 #[test]
 fn borrowing_accepts_wide_redemption_projection_and_maximum_amounts_losslessly() {
     let mut wide = Fixture::new(10_000_000_000_000, 0);
-    wide.redemption.redemption_rate_per_millisecond =
-        FIXED_POINT_ONE + RATE_DELTA_CLAMP.unsigned_abs();
+    wide.redemption.redemption_rate_per_millisecond = FIXED_POINT_ONE + LEGACY_RATE_DELTA;
     wide.now = START + 2_700_000;
     wide.oracle.timestamp = wide.now;
     execute(&wide, 1, 1);

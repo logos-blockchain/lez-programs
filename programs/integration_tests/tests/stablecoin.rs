@@ -2901,6 +2901,74 @@ fn stablecoin_update_redemption_rate_drifts_redemption_price() {
 }
 
 #[test]
+fn stablecoin_reset_redemption_rate_controller_returns_the_controller_to_rest() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let start: u64 = 1_700_000_000_000;
+    let mut state = initialize_protocol(
+        start,
+        i128::try_from(FIXED_POINT_ONE).expect("FIXED_POINT_ONE fits i128"),
+    );
+
+    // Drive the rate off 1.0 with a market price below the 0.5 target.
+    let now = start + 600_000;
+    state.force_insert_account(
+        Ids::oracle(),
+        Accounts::oracle_with(
+            Ids::stablecoin_definition_pda(),
+            Ids::collateral_definition(),
+            FIXED_POINT_ONE / 4,
+            now,
+        ),
+    );
+    submit_poke(
+        &mut state,
+        now,
+        2,
+        stablecoin_core::Instruction::UpdateRedemptionRate,
+        vec![
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            compute_redemption_price_state_pda(Ids::stablecoin_program()),
+            Ids::oracle(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+    )
+    .expect("update_redemption_rate must succeed");
+    let driven = read_redemption_price_state(&state);
+    assert!(driven.redemption_rate_per_millisecond > FIXED_POINT_ONE);
+
+    // An hour later the admin resets the controller.
+    let later = now + 3_600_000;
+    submit_poke(
+        &mut state,
+        later,
+        3,
+        stablecoin_core::Instruction::ResetRedemptionRateController,
+        vec![
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            compute_redemption_price_state_pda(Ids::stablecoin_program()),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+    )
+    .expect("reset_redemption_rate_controller must succeed");
+
+    let reset = read_redemption_price_state(&state);
+    // Re-anchored at the price the old rate projected to; no jump.
+    assert_eq!(
+        reset.redemption_price_at_last_update,
+        stablecoin_core::math::compute_current_redemption_price(
+            driven.redemption_price_at_last_update,
+            driven.redemption_rate_per_millisecond,
+            driven.last_updated_at,
+            later,
+        )
+    );
+    assert_eq!(reset.redemption_rate_per_millisecond, FIXED_POINT_ONE);
+    assert_eq!(reset.controller_integral_term, 0);
+    assert_eq!(reset.last_updated_at, later);
+}
+
+#[test]
 fn stablecoin_refresh_globals_advances_both_then_fee_only_when_oracle_stale() {
     use stablecoin_core::math::FIXED_POINT_ONE;
 
