@@ -5322,6 +5322,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "oracle_ffi"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "cbindgen",
+ "clock_core",
+ "hex",
+ "lee_core",
+ "risc0-binfmt",
+ "serde",
+ "serde_json",
+ "twap-oracle-methods",
+ "twap_oracle_core",
+]
+
+[[package]]
 name = "overwatch"
 version = "0.1.0"
 source = "git+https://github.com/logos-co/Overwatch?rev=ae887f41f5a626c341179026ad7f03953ff2072e#ae887f41f5a626c341179026ad7f03953ff2072e"

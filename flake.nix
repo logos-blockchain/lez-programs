@@ -134,6 +134,12 @@
           header = "token_ffi.h";
         };
 
+        oracleFfi = mkHostFfi {
+          package = "oracle_ffi";
+          sourceDir = "modules/oracle/ffi";
+          header = "oracle_ffi.h";
+        };
+
         stablecoinFfi = mkHostFfi {
           package = "stablecoin_ffi";
           sourceDir = "modules/stablecoin/ffi";
@@ -143,6 +149,7 @@
       {
         packages.default = ammFfi;
         packages.amm_ffi = ammFfi;
+        packages.oracle_ffi = oracleFfi;
         packages.stablecoin_ffi = stablecoinFfi;
         packages.token_ffi = tokenFfi;
       }
@@ -374,6 +381,32 @@
         // (if attrs ? unit-tests then { stablecoin-module-tests = attrs.unit-tests; } else { })
       ) stablecoinModulePkgs;
 
+      # Headless oracle discovery and shared transaction transport.
+      oracleModuleOutputs = logos-module-builder.lib.mkLogosModule {
+        src = ./modules/oracle;
+        configFile = ./modules/oracle/metadata.json;
+        flakeInputs = inputs;
+        externalLibInputs = {
+          oracle_ffi = { input = self; packages.default = "oracle_ffi"; };
+        };
+        tests = {
+          dir = ./modules/oracle/tests;
+          mockCLibs = [ "oracle_ffi" ];
+        };
+      };
+      oracleModulePkgs = oracleModuleOutputs.packages or { };
+
+      # Preserve module-specific names for install artifacts and tests; bare
+      # builder names collide when several core modules share one root flake.
+      oracleModuleAliases = builtins.mapAttrs (
+        system: attrs:
+        (if attrs ? lgx then { oracle-module-lgx = attrs.lgx; } else { })
+        // (if attrs ? lgx-portable then { oracle-module-lgx-portable = attrs.lgx-portable; } else { })
+        // (if attrs ? install-portable then { oracle-module-install-portable = attrs.install-portable; } else { })
+        // (if attrs ? install then { oracle-module-install = attrs.install; } else { })
+        // (if attrs ? unit-tests then { oracle-module-tests = attrs.unit-tests; } else { })
+      ) oracleModulePkgs;
+
       # Wrap the app launcher to export DYLD_FALLBACK_LIBRARY_PATH pointing at the
       # amm_ffi lib. The logos module builder links the plugin against
       # @rpath/libamm_ffi.dylib but does NOT stage that dylib into the
@@ -447,6 +480,8 @@
           ammModAliasPkgs = ammModuleAliases.${system} or { };
           tokenModSysPkgs = tokenModulePkgs.${system} or { };
           tokenModAliasPkgs = tokenModuleAliases.${system} or { };
+          oracleModSysPkgs = oracleModulePkgs.${system} or { };
+          oracleModAliasPkgs = oracleModuleAliases.${system} or { };
           stablecoinModSysPkgs = stablecoinModulePkgs.${system} or { };
           stablecoinModAliasPkgs = stablecoinModuleAliases.${system} or { };
         in
@@ -466,6 +501,9 @@
         // (builtins.removeAttrs stablecoinModSysPkgs [ "default" ])
         // (if stablecoinModSysPkgs ? default then { stablecoin-module = stablecoinModSysPkgs.default; } else { })
         // stablecoinModAliasPkgs
+        // (builtins.removeAttrs oracleModSysPkgs [ "default" ])
+        // (if oracleModSysPkgs ? default then { oracle-module = oracleModSysPkgs.default; } else { })
+        // oracleModAliasPkgs
       ) crateOutputs.packages;
     in
     (builtins.removeAttrs appOutputs [ "apps" "packages" ])

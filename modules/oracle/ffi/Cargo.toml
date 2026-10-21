@@ -1,0 +1,23 @@
+[package]
+name = "oracle_ffi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+borsh = { workspace = true }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2" }
+hex = "0.4"
+lee_core = { workspace = true }
+risc0-binfmt = { version = "=3.0.4", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+twap_oracle_core = { workspace = true }
+
+[build-dependencies]
+cbindgen = "0.28"
+
+[dev-dependencies]
+twap-oracle-methods = { path = "../../../programs/twap_oracle/methods" }
