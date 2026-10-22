@@ -54,13 +54,17 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
         setNetworks(m_registry->networks());
         setActiveNetwork(m_registry->activeNetwork());
         setRegistryRevision(m_registry->revision());
+        publishRegistryStatus();
     });
+    connect(m_registry.get(), &RegistryLoader::statusChanged,
+            this, &AmmUiBackend::publishRegistryStatus);
 
     // Seed the configured registry URL from the persisted global setting so the
     // first refresh() and the config field both see it (AMM_REGISTRY_URL overrides).
     const QString configuredUrl = loadRegistryUrlSetting();
     setRegistryUrl(configuredUrl);
     m_registry->setConfiguredUrl(configuredUrl);
+    publishRegistryStatus();
 
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);
@@ -142,6 +146,18 @@ void AmmUiBackend::refreshBalances()
 QString AmmUiBackend::getBalance(QString accountIdHex, bool isPublic)
 {
     return m_walletController->balance(accountIdHex, isPublic);
+}
+
+void AmmUiBackend::publishRegistryStatus()
+{
+    const QVariantMap status = m_registry->status();
+    setRegistryRequestUrl(status.value(QStringLiteral("requestUrl")).toString());
+    setRegistrySnapshotSource(status.value(QStringLiteral("source")).toString());
+    setRegistrySnapshotOrigin(status.value(QStringLiteral("snapshotOrigin")).toString());
+    setRegistryRefreshState(status.value(QStringLiteral("refreshState")).toString());
+    setRegistryRefreshError(status.value(QStringLiteral("refreshError")).toString());
+    setRegistryOverrideKind(status.value(QStringLiteral("overrideKind")).toString());
+    setRegistryNetworkNote(status.value(QStringLiteral("networkNote")).toString());
 }
 
 void AmmUiBackend::syncWalletState()

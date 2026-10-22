@@ -76,7 +76,7 @@ Popup {
 
         Label {
             Layout.fillWidth: true
-            text: qsTr("URL of the known-tokens / known-pools registry the app loads. Leave empty to load none.")
+            text: qsTr("Saved registry URL. This preference is not necessarily the snapshot on screen. Leave empty to configure none.")
             color: theme.colors.textSecondary
             font.pixelSize: 11
             wrapMode: Text.WordWrap
@@ -94,6 +94,48 @@ Popup {
                 color: theme.colors.inputBg
                 border.color: theme.colors.border
                 border.width: 1
+            }
+        }
+
+        Label {
+            id: registryStatus
+            objectName: "settingsRegistryStatus"
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: theme.colors.textSecondary
+            font.pixelSize: 11
+            text: {
+                const backend = root.backend
+                if (!backend)
+                    return ""
+                const source = backend.registrySnapshotSource || "none"
+                const origin = backend.registrySnapshotOrigin || ""
+                const requestUrl = backend.registryRequestUrl || ""
+                const state = backend.registryRefreshState || "idle"
+                const lines = []
+                if (source === "local")
+                    lines.push(qsTr("Lists are coming from local token files."))
+                else if (source === "cache")
+                    lines.push(qsTr("Lists are the cached snapshot from %1.").arg(origin))
+                else if (source === "remote" && origin.length > 0)
+                    lines.push(qsTr("Lists were loaded from %1.").arg(origin))
+                else if (source === "remote")
+                    lines.push(qsTr("Lists were loaded from a registry."))
+                else
+                    lines.push(qsTr("No registry snapshot is loaded."))
+                if (backend.registryOverrideKind === "env_url")
+                    lines.push(qsTr("AMM_REGISTRY_URL overrides the saved URL. Requesting %1.").arg(requestUrl))
+                else if (backend.registryOverrideKind === "local_files")
+                    lines.push(qsTr("Local files override the saved URL."))
+                else if (state === "loading" && requestUrl.length > 0 && requestUrl !== origin)
+                    lines.push(qsTr("Refreshing from %1.").arg(requestUrl))
+                if (state === "loading")
+                    lines.push(qsTr("Refresh in progress."))
+                else if (state === "failed")
+                    lines.push(qsTr("The last refresh failed: %1").arg(backend.registryRefreshError || qsTr("unknown error")))
+                if (backend.registryNetworkNote)
+                    lines.push(backend.registryNetworkNote)
+                return lines.join("\n")
             }
         }
 

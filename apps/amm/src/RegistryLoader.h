@@ -5,11 +5,13 @@
 #include <QString>
 #include <QUrl>
 #include <QVariantList>
+#include <QVariantMap>
 
 #include <QJsonObject>
 
 class QNetworkAccessManager;
 class QJsonArray;
+class RegistryLoaderTest;
 
 // Loads the AMM app's "known tokens" and "known pools" and serves them as an
 // in-memory snapshot the backend's QtRO slots read synchronously.
@@ -44,6 +46,11 @@ public:
     int revision() const { return m_revision; }
     // Where the current snapshot came from: "local" | "remote" | "cache" | "none".
     QString source() const { return m_source; }
+    // Provenance of the snapshot currently published, separate from the saved
+    // URL and from a request that has not replaced it yet. Keys: source,
+    // snapshotOrigin, requestUrl, refreshState (idle|loading|ready|failed),
+    // refreshError, overrideKind (""|local_files|env_url), networkNote.
+    QVariantMap status() const;
     // The network id the snapshot was filtered to (empty for local / none).
     QString activeNetwork() const { return m_activeNetwork; }
     // The registry's declared networks as [{ id, name }] for the picker (empty for
@@ -77,20 +84,28 @@ public slots:
 
 signals:
     void changed();
+    // Refresh state or request identity changed. Also emitted with changed()
+    // when a new snapshot is published.
+    void statusChanged();
 
 private:
+    friend class RegistryLoaderTest;
+
     void loadLocal();
     void startRemote(const QUrl& url);
-    // Parse the registry body into m_registryObj, then applySelection(). Returns
-    // true when a snapshot was applied.
-    bool applyRegistry(const QByteArray& body, const QString& source);
+    void failRefresh(const QString& error);
+    // Parse the registry body into m_registryObj, then applySelection(). origin
+    // is the URL that produced this body; it becomes the snapshot origin only
+    // when a snapshot is published. Returns true when a snapshot was applied.
+    bool applyRegistry(const QByteArray& body, const QString& source, const QString& origin);
     // Select the active network from the stored registry, filter its tokens/pools,
     // adopt its program id, and publish. Returns true when a network was applied.
     bool applySelection();
     QString selectActiveNetwork(const QJsonArray& networks) const;
 
     void publish(const QVariantList& tokens, const QVariantList& pools,
-                 const QString& source, const QString& network);
+                 const QString& source, const QString& network, const QString& origin);
+    QString networkNote() const;
 
     void loadDiskCache(const QString& url);
     void saveDiskCache(const QString& url, const QByteArray& body) const;
@@ -102,6 +117,12 @@ private:
     QVariantList m_pools;
     int m_revision = 0;
     QString m_source = QStringLiteral("none");
+    QString m_snapshotOrigin;
+    QString m_requestUrl;
+    QString m_refreshState = QStringLiteral("idle");
+    QString m_refreshError;
+    QString m_overrideKind;
+    QString m_appliedOrigin;
     QString m_activeNetwork;
     QString m_activeAmmProgramId;
     QString m_activeAmmConfigId;

@@ -27,11 +27,24 @@ class AmmUiBackend
     // re-fetch tokenList()/poolList()/resolveTokens(). Starts at 0; the backend
     // sets it once the initial snapshot has loaded (and again on each refresh).
     PROP(int registryRevision READONLY)
-    // The user-configured registry URL, persisted as a global (per-user) setting
-    // and edited in the wallet config UI. The env AMM_REGISTRY_URL overrides it when
-    // set (e2e / dev); empty means no registry is configured. Bound by the config
-    // field; saveRegistryUrl() writes it.
+    // The saved registry URL. This is configuration, not necessarily the snapshot
+    // on screen: AMM_REGISTRY_URL and local token files can override it, and a
+    // failed refresh keeps the previous snapshot. saveRegistryUrl() writes it.
     PROP(QString registryUrl READONLY)
+    // Effective URL this refresh is requesting. Empty when no remote URL applies.
+    PROP(QString registryRequestUrl READONLY)
+    // Snapshot source: "local" | "remote" | "cache" | "none".
+    PROP(QString registrySnapshotSource READONLY)
+    // URL that produced the snapshot currently shown. Stays put until a new
+    // snapshot replaces it, so a pending or failed URL is not described as the origin.
+    PROP(QString registrySnapshotOrigin READONLY)
+    // idle | loading | ready | failed.
+    PROP(QString registryRefreshState READONLY)
+    PROP(QString registryRefreshError READONLY)
+    // "" | "local_files" | "env_url".
+    PROP(QString registryOverrideKind READONLY)
+    // Why the network picker has nothing to show. Empty when networks are available.
+    PROP(QString registryNetworkNote READONLY)
     // The id of the network the registry data is currently filtered to (see
     // networks/selectNetwork()). Empty for local / none sources. Lets the network
     // picker mark the current selection; updates on each registry refresh / pick.

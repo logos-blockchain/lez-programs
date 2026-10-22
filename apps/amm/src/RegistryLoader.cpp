@@ -127,6 +127,34 @@ bool RegistryLoader::hasLocalSource()
         || !qEnvironmentVariableIsEmpty(POOLS_CONFIG_ENV);
 }
 
+QVariantMap RegistryLoader::status() const
+{
+    return QVariantMap{
+        {QStringLiteral("source"), m_source},
+        {QStringLiteral("snapshotOrigin"), m_snapshotOrigin},
+        {QStringLiteral("requestUrl"), m_requestUrl},
+        {QStringLiteral("refreshState"), m_refreshState},
+        {QStringLiteral("refreshError"), m_refreshError},
+        {QStringLiteral("overrideKind"), m_overrideKind},
+        {QStringLiteral("networkNote"), networkNote()},
+    };
+}
+
+QString RegistryLoader::networkNote() const
+{
+    if (!networks().isEmpty())
+        return {};
+    if (m_overrideKind == QStringLiteral("local_files") || m_source == QStringLiteral("local"))
+        return QStringLiteral("Local token files do not declare networks.");
+    if (m_refreshState == QStringLiteral("loading"))
+        return QStringLiteral("Networks appear after the registry loads.");
+    if (m_refreshState == QStringLiteral("failed"))
+        return QStringLiteral("The registry request failed, so no networks are available.");
+    if (m_source == QStringLiteral("remote") || m_source == QStringLiteral("cache"))
+        return QStringLiteral("This registry does not declare any networks.");
+    return QStringLiteral("No registry is configured.");
+}
+
 void RegistryLoader::refresh()
 {
     // Supersede any in-flight remote fetch.
@@ -136,10 +164,16 @@ void RegistryLoader::refresh()
     // below carry none, so ops fall back to AMM_PROGRAM_ID.
     m_activeAmmProgramId.clear();
 
-    // AMM_REGISTRY_URL (e2e / dev) overrides the UI-configured URL.
-    QString url = qEnvironmentVariable(REGISTRY_URL_ENV);
+    // AMM_REGISTRY_URL (e2e / dev) overrides the UI-configured URL. The saved
+    // URL stays a preference; requestUrl is what this refresh actually uses.
+    const QString envUrl = qEnvironmentVariable(REGISTRY_URL_ENV);
+    QString url = envUrl;
     if (url.isEmpty())
         url = m_configuredUrl;
+    m_requestUrl = url;
+    m_overrideKind = hasLocalSource() ? QStringLiteral("local_files")
+        : envUrl.isEmpty() ? QString()
+                           : QStringLiteral("env_url");
 
     // local-replaces-remote: a configured local file wins outright.
     if (hasLocalSource()) {
@@ -155,15 +189,24 @@ void RegistryLoader::refresh()
                 << "is set; local files take precedence and carry no program/config ids."
                 << "Unset them to use the registry.";
         }
+        m_refreshState = QStringLiteral("ready");
+        m_refreshError.clear();
         loadLocal();
         return;
     }
 
     if (url.isEmpty()) {
         m_registryObj = {};  // no registry ⇒ no networks to pick
-        publish({}, {}, QStringLiteral("none"), {});
+        m_refreshState = QStringLiteral("ready");
+        m_refreshError.clear();
+        publish({}, {}, QStringLiteral("none"), {}, {});
         return;
     }
+
+    // A new request must not relabel the snapshot already on screen.
+    m_refreshState = QStringLiteral("loading");
+    m_refreshError.clear();
+    emit statusChanged();
 
     // stale-while-revalidate: serve the on-disk cache immediately when we have
     // nothing yet, then revalidate against the network below.
@@ -179,7 +222,7 @@ void RegistryLoader::loadLocal()
     // Local files are bare arrays with no network tag — no filtering.
     publish(parseTokens(jsonArrayFromBytes(readConfigFileBytes(TOKENS_CONFIG_ENV)), {}),
             parsePools(jsonArrayFromBytes(readConfigFileBytes(POOLS_CONFIG_ENV)), {}),
-            QStringLiteral("local"), {});
+            QStringLiteral("local"), {}, {});
 }
 
 void RegistryLoader::startRemote(const QUrl& url)
@@ -192,19 +235,33 @@ void RegistryLoader::startRemote(const QUrl& url)
             return;  // superseded by a newer refresh
         if (reply->error() != QNetworkReply::NoError) {
             qWarning() << "AMM registry: fetch failed:" << reply->errorString();
+            failRefresh(reply->errorString());
             return;  // keep serving whatever we have (cache / previous)
         }
 
         const QByteArray body = reply->readAll();
-        if (applyRegistry(body, QStringLiteral("remote"))) {
+        if (applyRegistry(body, QStringLiteral("remote"), m_requestUrl)) {
+            m_refreshState = QStringLiteral("ready");
+            m_refreshError.clear();
+            emit statusChanged();
             // Key the cache by the effective URL (env or UI-configured), matching
             // what loadDiskCache() looks up.
             saveDiskCache(reply->url().toString(), body);
+        } else {
+            failRefresh(QStringLiteral("The registry document was not valid JSON."));
         }
     });
 }
 
-bool RegistryLoader::applyRegistry(const QByteArray& body, const QString& source)
+void RegistryLoader::failRefresh(const QString& error)
+{
+    m_refreshState = QStringLiteral("failed");
+    m_refreshError = error;
+    emit statusChanged();
+}
+
+bool RegistryLoader::applyRegistry(const QByteArray& body, const QString& source,
+                                   const QString& origin)
 {
     const QJsonDocument doc = QJsonDocument::fromJson(body);
     if (!doc.isObject()) {
@@ -213,7 +270,11 @@ bool RegistryLoader::applyRegistry(const QByteArray& body, const QString& source
     }
     m_registryObj = doc.object();
     m_lastSource = source;
-    return applySelection();
+    m_appliedOrigin = origin;
+    // A document with no declared network still replaces the snapshot. Only a
+    // body that is not a JSON object fails the refresh.
+    applySelection();
+    return true;
 }
 
 bool RegistryLoader::applySelection()
@@ -224,7 +285,7 @@ bool RegistryLoader::applySelection()
         qWarning() << "AMM registry: no networks declared; nothing applied";
         m_activeAmmProgramId.clear();
         m_activeAmmConfigId.clear();
-        publish({}, {}, m_lastSource, {});
+        publish({}, {}, m_lastSource, {}, m_appliedOrigin);
         return false;
     }
 
@@ -247,7 +308,7 @@ bool RegistryLoader::applySelection()
 
     publish(parseTokens(m_registryObj.value(QStringLiteral("tokens")).toArray(), activeId),
             parsePools(m_registryObj.value(QStringLiteral("pools")).toArray(), activeId),
-            m_lastSource, activeId);
+            m_lastSource, activeId, m_appliedOrigin);
     return true;
 }
 
@@ -306,14 +367,17 @@ QString RegistryLoader::selectActiveNetwork(const QJsonArray& networks) const
 }
 
 void RegistryLoader::publish(const QVariantList& tokens, const QVariantList& pools,
-                             const QString& source, const QString& network)
+                             const QString& source, const QString& network,
+                             const QString& origin)
 {
     m_tokens = tokens;
     m_pools = pools;
     m_source = source;
+    m_snapshotOrigin = origin;
     m_activeNetwork = network;
     ++m_revision;
     emit changed();
+    emit statusChanged();
 }
 
 void RegistryLoader::loadDiskCache(const QString& url)
@@ -330,7 +394,7 @@ void RegistryLoader::loadDiskCache(const QString& url)
     // network may resolve differently than when it was written).
     const QByteArray body =
         QJsonDocument(obj.value(QStringLiteral("registry")).toObject()).toJson(QJsonDocument::Compact);
-    applyRegistry(body, QStringLiteral("cache"));
+    applyRegistry(body, QStringLiteral("cache"), url);
 }
 
 void RegistryLoader::saveDiskCache(const QString& url, const QByteArray& body) const

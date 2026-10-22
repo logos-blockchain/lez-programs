@@ -112,6 +112,7 @@ public slots:
 
 private:
     void syncWalletState();
+    void publishRegistryStatus();
     QVariantMap submitBlocked() const;
     QVariantMap withFeePayer(QVariantMap request) const;
     // The registry URL persisted as a global (per-user) QSettings value — the
