@@ -24,8 +24,8 @@ Item {
     readonly property int poolCount: root.pools ? root.pools.length : 0
     readonly property bool showEmptyState: root.poolCount === 0
 
-    // Config-driven known pools, loaded from AmmUiBackend::poolList() (which
-    // reads the AMM_POOLS_CONFIG JSON file). Each entry is rendered generically,
+    // Config-driven known pools, loaded from AmmUiBackend::poolList() (the
+    // RegistryLoader snapshot). Each entry is rendered generically,
     // so adding pairs to the config needs no change here. Empty until the
     // backend is ready and the call resolves.
     property var pools: []

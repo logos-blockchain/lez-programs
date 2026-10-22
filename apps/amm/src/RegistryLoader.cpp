@@ -133,8 +133,11 @@ void RegistryLoader::refresh()
     ++m_generation;
 
     // No adopted network id until applyRegistry selects one; the local / none paths
-    // below carry none, so ops fall back to AMM_PROGRAM_ID.
+    // below carry none, so ops fall back to AMM_PROGRAM_ID and AMM_CONFIG_ID.
+    // Both ids are cleared together. Leaving the config id set would keep the
+    // previous registry's instance after the program id has already been dropped.
     m_activeAmmProgramId.clear();
+    m_activeAmmConfigId.clear();
 
     // AMM_REGISTRY_URL (e2e / dev) overrides the UI-configured URL.
     QString url = qEnvironmentVariable(REGISTRY_URL_ENV);

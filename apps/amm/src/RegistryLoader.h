@@ -10,6 +10,7 @@
 
 class QNetworkAccessManager;
 class QJsonArray;
+class RegistryLoaderTest;
 
 // Loads the AMM app's "known tokens" and "known pools" and serves them as an
 // in-memory snapshot the backend's QtRO slots read synchronously.
@@ -79,6 +80,8 @@ signals:
     void changed();
 
 private:
+    friend class RegistryLoaderTest;
+
     void loadLocal();
     void startRemote(const QUrl& url);
     // Parse the registry body into m_registryObj, then applySelection(). Returns

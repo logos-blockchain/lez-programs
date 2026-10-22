@@ -122,12 +122,13 @@ class AmmUiBackend
     // deadlineDecimal is a decimal-string u64 unix timestamp in MILLISECONDS.
     // Same return contract as swapExactInput (tx hash, empty string on failure).
     SLOT(QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountOutDecimal, QString maxInDecimal, QString deadlineDecimal))
-    // Reads the token list config at TOKENS_CONFIG (absolute path, JSON array
-    // of { symbol, name, definitionId, holding, decimals }) and returns it as
-    // a QVariantList of QVariantMap entries. Read app-side (like poolList); ids
-    // pass through as configured (base58 or hex) and the swap/quote module
-    // methods normalize them. Returns an empty list if TOKENS_CONFIG is
-    // unset/unreadable/invalid.
+    // Returns the current RegistryLoader token snapshot as a QVariantList of
+    // QVariantMap entries ({ symbol, name, definitionId, holding, decimals }).
+    // The snapshot comes from local files (TOKENS_CONFIG / AMM_POOLS_CONFIG),
+    // a fetched registry (AMM_REGISTRY_URL or the saved URL), or that URL's
+    // disk cache — not from a fresh file read on this call. Ids pass through
+    // as configured (base58 or hex) and the swap/quote module methods
+    // normalize them. Returns an empty list when the snapshot is empty.
     SLOT(QVariantList tokenList())
 
     // Server-side create-pool preview from the two deposit amounts. `request`
@@ -198,12 +199,12 @@ class AmmUiBackend
     // definitionIdHex, balanceRaw }] — one row per holding account, every token,
     // including zero-balance holdings. The selector narrows to a token by id.
     SLOT(QVariantList tokenHoldings())
-    // Reads the known-pools config at AMM_POOLS_CONFIG (absolute path, JSON array
-    // of { tokenA, tokenB, feeBps, poolId, tokenADefinitionId, tokenBDefinitionId })
-    // and returns it as a QVariantList of QVariantMap entries. tokenA/tokenB are
+    // Returns the current RegistryLoader pool snapshot as a QVariantList of
+    // QVariantMap entries ({ tokenA, tokenB, poolId, tokenADefinitionId,
+    // tokenBDefinitionId }). Same source order as tokenList(). tokenA/tokenB are
     // display symbols; the id fields identify the pool on-chain. Returns an empty
-    // list if AMM_POOLS_CONFIG is unset/unreadable/invalid. This is app config, not
-    // an on-chain read, so it lives in the backend rather than the amm_module.
+    // list when the snapshot has no pools. This is app config, not an on-chain
+    // read, so it lives in the backend rather than the amm_module.
     SLOT(QVariantList poolList())
 
     // The AMM's supported fee tiers as raw basis points, ascending: [1, 5, 30,
@@ -213,7 +214,7 @@ class AmmUiBackend
     SLOT(QVariantList feeTiers())
 
     // Resolves the liquidity token selector's rows. The backend owns the id set:
-    // the configured tokens (TOKENS_CONFIG) plus the user's persisted custom tokens
+    // the registry token snapshot plus the user's persisted custom tokens
     // (see addCustomToken) — the same "known list" shape the swap side shows. Tokens
     // the wallet merely holds are NOT auto-listed; add an unlisted one by id. Returns
     // [{ definitionId (base58), name, totalSupply, holdingId, balance }] — every row

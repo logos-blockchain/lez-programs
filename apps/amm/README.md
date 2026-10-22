@@ -12,20 +12,36 @@ This app is a `ui_qml` module with a hand-written C++ backend
 wallet FFI through `m_logos->lez_core.*` and exposes an async QtRO
 surface (`src/AmmUiBackend.rep`) plus an account list model to the QML view.
 
-**Onboarding is non-invasive.** The app opens straight to the Trade screen; the
-navbar shows **Connect** (opens a password-only modal) or **Connected** + the
-account selector. There is no path picking — the wallet uses LEZ's canonical
-home, `~/.lee/wallet/` (override with `LEE_WALLET_HOME_DIR`, the same var LEZ
-honors), and its config (`wallet_config.json`) self-initializes.
+**Onboarding is non-invasive.** The app opens straight to the Trade screen. The
+navbar shows **Connect**, or **Connected** plus the account selector. There is
+no path picking — the wallet uses LEZ's canonical home, `~/.lee/wallet/`
+(override with `LEE_WALLET_HOME_DIR`, the same var LEZ honors), and its config
+(`wallet_config.json`) self-initializes.
+
+**Connect** and wallet creation are different flows:
+
+- When a wallet already exists, **Connect** calls `openExisting()`. That adopts
+  an already-open shared wallet session, or opens the canonical wallet. Neither
+  path asks for a password.
+- When no wallet exists, **Connect** opens the create-wallet dialog. The
+  password entered there is passed to `lez_core.create_new` for creation. A
+  later **Connect** does not use that dialog as an unlock prompt.
+
+Startup auto-connects an existing wallet unless this app was disconnected
+before. **Disconnect** records that preference for this app, clears this app's
+open state and fee payer, and leaves the shared `lez_core` wallet available to
+other apps. It is not a process-wide lock or close. Swap and liquidity
+submission stay rejected while this app shows **Connect**.
 
 Account/keystore sharing follows the runtime:
 
 - **Standalone** (`nix run .#amm-ui`): own core-module instance, but the canonical
   `~/.lee/wallet` keystore is shared with the LEZ wallet UI and any other LEZ
-  app on the machine. A previously-created wallet auto-opens on launch.
+  app on the machine. A previously-created wallet auto-opens on launch unless
+  this app was disconnected.
 - **Inside Basecamp**: the core wallet module is a single shared instance, so on
-  startup the backend **adopts** the already-open wallet (see
-  `openOrAdoptWallet()`), surfacing **shared** accounts across apps.
+  startup `WalletController::openOnStartup()` adopts that already-open wallet,
+  surfacing **shared** accounts across apps.
 
 > Follow-up: the app reconstructs the wallet paths itself because the
 > `lez_core` module only exposes path-taking `create_new`/`open`.
@@ -137,12 +153,13 @@ core module from `result-core/` and the UI plugin from `result-lgx/`:
    from `result-lgx/`
 
 To actually use the on-chain views (**Swap** and **Liquidity**) without a
-registry you must also set `AMM_PROGRAM_ID`, `AMM_CONFIG_ID` and `TOKENS_CONFIG`
-(explained below). Both views read the same ones — the AMM program from
-`AMM_PROGRAM_ID`, its instance from `AMM_CONFIG_ID`, the token set from
-`TOKENS_CONFIG`, and the sequencer from the wallet config. Run this
-**from the repo root** — use absolute paths (`$(pwd)/…`), because `nix run` may
-not preserve the working directory, so relative paths won't resolve:
+registry you must also set `AMM_PROGRAM_ID`, `AMM_CONFIG_ID` and a token list
+(explained below). Both views read the same ones — the AMM program from the
+registry network or `AMM_PROGRAM_ID`, its instance from the registry network or
+`AMM_CONFIG_ID`, the token and pool lists from the registry snapshot, and the
+sequencer from the wallet config. Run this **from the repo root** — use
+absolute paths (`$(pwd)/…`), because `nix run` may not preserve the working
+directory, so relative paths won't resolve:
 
 ```bash
 AMM_PROGRAM_ID=<deployed-amm-program-id> \
@@ -151,8 +168,8 @@ TOKENS_CONFIG=$(pwd)/apps/amm/amm-tokens.json \
 nix run .#amm-ui
 ```
 
-Without a program id (from a registry or `AMM_PROGRAM_ID`) the Swap and
-Liquidity views stay disabled; without `TOKENS_CONFIG` the token picker is
+Without a program id (from a registry network or `AMM_PROGRAM_ID`) the Swap and
+Liquidity views stay disabled. Without a registry snapshot the token picker is
 empty. Each is detailed below.
 
 ### AMM program id (required for swaps and liquidity)
@@ -180,13 +197,39 @@ disabled (no pool can be resolved).
 > and *every* derived PDA. After any redeploy, update `AMM_PROGRAM_ID` (and
 > `AMM_CONFIG_ID`) — never point the app at a stale deployment.
 
-### Token list config (required for the Swap token picker)
+### Where the token and pool lists come from
+
+`tokenList()` and `poolList()` return the latest `RegistryLoader` snapshot.
+They do not read a file on each call. `refresh()` picks that snapshot in this
+order:
+
+1. Local files, when `TOKENS_CONFIG` or `AMM_POOLS_CONFIG` is set. Either
+   variable selects this path, and it wins over a remote registry. These files
+   are bare JSON arrays and carry no network, program id, or config id.
+2. Otherwise `AMM_REGISTRY_URL`, when it is set.
+3. Otherwise the registry URL saved in Settings.
+4. When none of those is set, the snapshot is empty (`source` `"none"`).
+
+A remote refresh can serve the on-disk cache for that same URL first
+(`source` `"cache"`), then replace it when the fetch succeeds (`source`
+`"remote"`). A failed fetch keeps the snapshot already on screen. Registry
+entries are filtered to the active network. Symbols, names, and decimals in
+the snapshot are display metadata from that file or registry. They are not
+chain-verified, and a placeholder id in the list is not proof that a later
+transaction will accept it.
+
+Clearing the saved URL, or switching onto the local-file path, drops the
+registry's selected program id and config id. Later operations then use
+`AMM_PROGRAM_ID` and `AMM_CONFIG_ID`.
+
+### Token list config (local-file source for the Swap token picker)
 
 The Swap view's token picker is config-driven: it doesn't derive tokens from
-chain state, it reads a flat JSON list from the `TOKENS_CONFIG` environment
-variable (absolute path). Each entry needs, at minimum, the token's
-`definitionId` and **your own** `holding` account address for that token (the
-account the wallet will sign transfers from/to for that token):
+chain state. On the local-file path it reads a flat JSON list from the
+`TOKENS_CONFIG` environment variable (absolute path). Each entry needs, at
+minimum, the token's `definitionId` and **your own** `holding` account address
+for that token (the account the wallet will sign transfers from/to for that
+token):
 
 ```json
 [
@@ -208,16 +251,17 @@ cp apps/amm/amm-tokens.json.example apps/amm/amm-tokens.json   # then replace th
 
 `amm-tokens.json` is git-ignored so your own accounts never get committed.
 
-If `TOKENS_CONFIG` is unset, unreadable, or not a valid JSON array, the token
-picker stays empty (a `qWarning` naming the exact cause is logged to stderr; no
-swap can be started). `definitionId`/`holding` may be given as base58 (as the
-wallet/runbook display them) or hex — the app normalizes both to hex.
+If no registry snapshot is loaded, the token picker stays empty and no swap can
+be started. On the local-file path, an unset, unreadable, or invalid
+`TOKENS_CONFIG` produces that empty snapshot. `definitionId`/`holding` may be
+given as base58 (as the wallet/runbook display them) or hex — the app
+normalizes both to hex.
 
-### Known-pools config (optional, for the Pools list)
+### Known-pools config (local-file source for the Pools list)
 
-The Pools view is config-driven the same way: it reads a flat JSON list from the
-`AMM_POOLS_CONFIG` environment variable (absolute path) and renders one row per
-entry. `tokenA`/`tokenB` are the display symbols;
+The Pools view uses the same snapshot. On the local-file path it reads a flat
+JSON list from the `AMM_POOLS_CONFIG` environment variable (absolute path) and
+renders one row per entry. `tokenA`/`tokenB` are the display symbols;
 `poolId`/`tokenADefinitionId`/`tokenBDefinitionId` identify the pool on-chain.
 The swap fee is not a pool field — it is instance-wide (`AmmConfig.swapFeeBps`),
 read from the config. (An instance may also set a `protocolFeeBps` — a cut of the
@@ -243,8 +287,9 @@ Copy the checked-in template to start (`amm-pools.json` is git-ignored):
 cp apps/amm/amm-pools.json.example apps/amm/amm-pools.json   # then replace the REPLACE_… placeholders
 ```
 
-If `AMM_POOLS_CONFIG` is unset, unreadable, or not a valid JSON array, the Pools
-list shows its empty state. Entries missing `tokenA` or `tokenB` are skipped
+If the snapshot has no pools, the Pools list shows its empty state. On the
+local-file path that happens when `AMM_POOLS_CONFIG` is unset, unreadable, or
+not a valid JSON array. Entries missing `tokenA` or `tokenB` are skipped
 individually. The AMM testnet setup script writes this file for the pool(s) it
 seeds (see below).
 
@@ -275,7 +320,7 @@ supply, an estimate of the fees accrued into the reserves, and the pool's
 account ids. Its **Swap** and **Add liquidity** buttons switch tabs with the
 pair preselected. Both the detail view and the preselection need
 `tokenADefinitionId`/`tokenBDefinitionId` on the entry, and the ids must match
-the ones in `TOKENS_CONFIG` (Swap) and in the token selector's resolved list
+the ones in the token snapshot (Swap) and in the token selector's resolved list
 (Add liquidity); an entry without them still lists, but its detail view can only
 report that the ids are missing. Volume and transaction history are not shown —
 the AMM program stores no history to read them from.
