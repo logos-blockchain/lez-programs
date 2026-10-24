@@ -369,11 +369,13 @@ pub enum Instruction {
         /// `user_collateral_holding`.
         amount: u128,
     },
-    /// Repay `amount` of outstanding stablecoin debt against an existing position.
+    /// Repay outstanding debt, burning at most the signed `amount` of stablecoins.
     ///
     /// Allowed while frozen — repaying only improves the protocol's position (§7).
-    /// The normalized-debt decrement is rounded **down** (§6.3), so debt shrinks
-    /// by at most what was burned.
+    /// Full repayment burns the ceiling of current debt and retains any unused
+    /// buffer. Partial repayment burns `amount` and rounds the normalized-debt
+    /// decrement **down** (§6.3). Read confirmed state to determine the actual burn
+    /// and whether execution-time debt was fully cleared.
     ///
     /// Required accounts (7), in order:
     /// 1. `owner` — authorized; bound to the position via PDA re-derivation.
@@ -389,7 +391,7 @@ pub enum Instruction {
     /// `token_program_id` is derived from `user_stablecoin_holding.account.program_owner`.
     /// `position_nonce` (for position PDA verification) is read from the decoded [`Position`].
     RepayDebt {
-        /// Amount of stablecoin debt to repay (also the amount burned from the user's holding).
+        /// Maximum stablecoin burn authorized; execution caps this at current debt.
         amount: u128,
     },
 }
