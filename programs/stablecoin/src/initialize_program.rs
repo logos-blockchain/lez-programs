@@ -282,6 +282,7 @@ pub fn initialize_program(
 )]
 mod tests {
     use lee_core::account::Nonce;
+    use stablecoin_core::math::MAX_STABILITY_FEE_PER_MILLISECOND;
 
     use super::*;
     use crate::StateDiffExt;
@@ -784,9 +785,9 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "initial_stability_fee_per_millisecond above sane upper bound")]
-    fn rejects_stability_fee_above_2x() {
+    fn rejects_stability_fee_above_the_yearly_ceiling() {
         let mut p = ok_params();
-        p.initial_stability_fee_per_millisecond = FIXED_POINT_ONE * 2 + 1;
+        p.initial_stability_fee_per_millisecond = MAX_STABILITY_FEE_PER_MILLISECOND + 1;
         let _ = invoke(p);
     }
 

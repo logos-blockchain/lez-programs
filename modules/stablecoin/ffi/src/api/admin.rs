@@ -1,6 +1,9 @@
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::account::AccountId;
-use stablecoin_core::{math::FIXED_POINT_ONE, Instruction, ProtocolParameters};
+use stablecoin_core::{
+    math::{FIXED_POINT_ONE, MAX_STABILITY_FEE_PER_MILLISECOND},
+    Instruction, ProtocolParameters,
+};
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
@@ -59,7 +62,7 @@ pub fn set_stability_fee_per_millisecond_plan(
 ) -> StablecoinResult {
     let context = ValidatedAdmin::read(&request.context)?;
     let new_rate = parse_u128(&request.new_rate)?;
-    if !(FIXED_POINT_ONE..=FIXED_POINT_ONE * 2).contains(&new_rate) {
+    if !(FIXED_POINT_ONE..=MAX_STABILITY_FEE_PER_MILLISECOND).contains(&new_rate) {
         return Err(StablecoinApiError::new("stability_fee_out_of_band"));
     }
     let (accumulator_id, accumulator) = validated_stability_fee_accumulator(

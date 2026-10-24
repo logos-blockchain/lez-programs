@@ -88,7 +88,8 @@ pub enum Instruction {
         /// rotated post-init via `set_freeze_authority`.
         freeze_authority_account_id: AccountId,
         /// Per-millisecond stability fee multiplier in fixed-point. Bound:
-        /// `FIXED_POINT_ONE <= x <= FIXED_POINT_ONE * 2` (see spec §8).
+        /// `FIXED_POINT_ONE <= x <= MAX_STABILITY_FEE_PER_MILLISECOND`
+        /// (a yearly-derived ceiling; see spec §8).
         initial_stability_fee_per_millisecond: u128,
         /// PI controller `Kp`. Signed. Bound: `|x| <= FIXED_POINT_ONE * 10^3`.
         initial_controller_proportional_gain: i128,

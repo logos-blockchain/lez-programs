@@ -56,9 +56,14 @@ pub fn set_stability_fee_per_millisecond(
     // Accrue *before* the rate is replaced. `advance_fee_accumulator` reads the
     // rate out of `parameters`, so calling it first is what makes the change
     // non-retroactive — and it is the same helper `accrue_stability_fee` uses, so
-    // the two can never disagree about how a gap accrues.
-    let accumulator_data =
-        crate::accrue_stability_fee::advance_fee_accumulator(&parameters, &accumulator, now);
+    // the two can never disagree about how a gap accrues. The saturating variant
+    // never panics: this instruction is the only way to replace a bad rate, so a
+    // poisoned accumulator must not block it (issue #427).
+    let accumulator_data = crate::accrue_stability_fee::advance_fee_accumulator_saturating(
+        &parameters,
+        &accumulator,
+        now,
+    );
 
     parameters.stability_fee_per_millisecond = new_rate;
 
@@ -314,7 +319,10 @@ pub fn set_market_price_oracle(
 )]
 mod tests {
     use lee_core::account::{Account, AccountId};
-    use stablecoin_core::math::{compute_current_accumulated_rate, FIXED_POINT_ONE};
+    use stablecoin_core::math::{
+        compute_current_accumulated_rate, FIXED_POINT_ONE, MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+        MAX_STABILITY_FEE_PER_MILLISECOND,
+    };
 
     use super::*;
     use crate::{
@@ -452,7 +460,7 @@ mod tests {
 
     #[test]
     fn accepts_both_band_endpoints() {
-        for rate in [FIXED_POINT_ONE, FIXED_POINT_ONE * 2] {
+        for rate in [FIXED_POINT_ONE, MAX_STABILITY_FEE_PER_MILLISECOND] {
             let (post_states, _) = set_rate(
                 admin_account(),
                 parameters_at(OLD_RATE),
@@ -484,8 +492,31 @@ mod tests {
             parameters_at(OLD_RATE),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
             NOW,
-            FIXED_POINT_ONE * 2 + 1,
+            MAX_STABILITY_FEE_PER_MILLISECOND + 1,
         );
+    }
+
+    /// The catch-up accrual runs at the old rate first, so a pre-fix rate over
+    /// a near-max anchor would panic the exact projection inside the only
+    /// instruction that can fix it (issue #427).
+    #[test]
+    fn setter_survives_and_saturates_a_poisoned_accumulator() {
+        let now = T0 + MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS;
+        let (post_states, _) = set_rate(
+            admin_account(),
+            parameters_at(FIXED_POINT_ONE * 2),
+            accumulator_account(u128::MAX - FIXED_POINT_ONE, T0),
+            now,
+            FIXED_POINT_ONE,
+        );
+        assert_eq!(
+            decoded(&post_states[1]).stability_fee_per_millisecond,
+            FIXED_POINT_ONE
+        );
+        let accumulator = StabilityFeeAccumulator::try_from(post_states[2].post_data())
+            .expect("valid StabilityFeeAccumulator");
+        assert_eq!(accumulator.accumulated_rate_at_last_accrual, u128::MAX);
+        assert_eq!(accumulator.last_accrued_at, now);
     }
 
     #[test]

@@ -10,7 +10,8 @@ use lee_core::{
     program::{AccountStateDiff, ChainedCall},
 };
 use stablecoin_core::{
-    compute_stability_fee_accumulator_pda, math::compute_current_accumulated_rate,
+    compute_stability_fee_accumulator_pda,
+    math::{compute_current_accumulated_rate, compute_current_accumulated_rate_saturating},
     ProtocolParameters, StabilityFeeAccumulator,
 };
 
@@ -117,6 +118,31 @@ pub(crate) fn advance_fee_accumulator(
     Data::from(&updated)
 }
 
+/// [`advance_fee_accumulator`] with the projection saturated at `u128::MAX`.
+///
+/// Same formula and `Δt` clamp; never panics. Used only by
+/// `set_stability_fee_per_millisecond`, whose catch-up accrual must survive a
+/// poisoned accumulator — it is the only instruction that can install a
+/// recovery rate (issue #427). The permissionless pokes keep the exact
+/// projection, which the tightened §8 bound keeps far from overflow.
+pub(crate) fn advance_fee_accumulator_saturating(
+    params: &ProtocolParameters,
+    accumulator: &StabilityFeeAccumulator,
+    now: u64,
+) -> Data {
+    let updated = StabilityFeeAccumulator {
+        accumulated_rate_at_last_accrual: compute_current_accumulated_rate_saturating(
+            accumulator.accumulated_rate_at_last_accrual,
+            params.stability_fee_per_millisecond,
+            accumulator.last_accrued_at,
+            now,
+        ),
+        last_accrued_at: now,
+    };
+
+    Data::from(&updated)
+}
+
 /// Read the millisecond wall-clock timestamp from the system `CLOCK_01` account.
 ///
 /// Shared by all three pokes.
@@ -185,6 +211,27 @@ mod tests {
         assert_eq!(decoded.accumulated_rate_at_last_accrual, expected);
         assert!(decoded.accumulated_rate_at_last_accrual > ACCUMULATOR_ANCHOR);
         assert_eq!(decoded.last_accrued_at, NOW);
+    }
+
+    #[test]
+    fn saturating_advance_caps_a_poisoned_anchor() {
+        let parameters = ProtocolParameters::try_from(
+            &protocol_parameters_account(ParameterOverrides {
+                stability_fee_per_millisecond: FIXED_POINT_ONE * 2,
+                ..Default::default()
+            })
+            .account
+            .data,
+        )
+        .expect("valid ProtocolParameters");
+        let poisoned = StabilityFeeAccumulator {
+            accumulated_rate_at_last_accrual: u128::MAX - FIXED_POINT_ONE,
+            last_accrued_at: T0,
+        };
+        let data = advance_fee_accumulator_saturating(&parameters, &poisoned, T0 + 604_800_000);
+        let decoded = StabilityFeeAccumulator::try_from(&data).expect("decode");
+        assert_eq!(decoded.accumulated_rate_at_last_accrual, u128::MAX);
+        assert_eq!(decoded.last_accrued_at, T0 + 604_800_000);
     }
 
     #[test]

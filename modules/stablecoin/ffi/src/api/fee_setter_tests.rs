@@ -7,6 +7,7 @@ use stablecoin_core::{
     compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda,
     math::{
         compute_current_accumulated_rate, FIXED_POINT_ONE, MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+        MAX_STABILITY_FEE_PER_MILLISECOND,
     },
     Instruction, ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator,
 };
@@ -261,12 +262,21 @@ fn fee_setter_pins_configured_program_ids_serialization_and_guest_account_contra
 #[test]
 fn fee_setter_uses_lossless_u128_parser_and_inclusive_protocol_band() {
     let fixture = Fixture::new();
-    for rate in [FIXED_POINT_ONE, FIXED_POINT_ONE + 1, FIXED_POINT_ONE * 2] {
+    for rate in [
+        FIXED_POINT_ONE,
+        FIXED_POINT_ONE + 1,
+        MAX_STABILITY_FEE_PER_MILLISECOND,
+    ] {
         let request = fixture.request(rate);
         let response = plan(request).expect("inclusive valid rate");
         fixture.clone().execute(&response);
     }
-    for rate in [0, FIXED_POINT_ONE - 1, FIXED_POINT_ONE * 2 + 1, u128::MAX] {
+    for rate in [
+        0,
+        FIXED_POINT_ONE - 1,
+        MAX_STABILITY_FEE_PER_MILLISECOND + 1,
+        u128::MAX,
+    ] {
         failure(fixture.request(rate), "stability_fee_out_of_band");
     }
     for value in [json!(0), json!(9_007_199_254_740_993_u64), json!(u64::MAX)] {
@@ -298,7 +308,7 @@ fn fee_setter_native_journey_accrues_old_rate_then_new_rate_and_preserves_other_
     let mut fixture = Fixture::new();
     fixture.parameters.is_frozen = true;
     let before = fixture.clone();
-    let new_rate = FIXED_POINT_ONE * 2;
+    let new_rate = MAX_STABILITY_FEE_PER_MILLISECOND;
     let expected = compute_current_accumulated_rate(
         before.accumulator.accumulated_rate_at_last_accrual,
         before.parameters.stability_fee_per_millisecond,
@@ -325,9 +335,11 @@ fn fee_setter_native_journey_accrues_old_rate_then_new_rate_and_preserves_other_
         "stabilityFeeAccumulator": request["stabilityFeeAccumulator"], "clock": request["clock"],
     })).expect("accrual request")).expect("subsequent accrual");
     fixture.execute(&accrue);
+    // Two more milliseconds at the new rate (the old fixture rate 2.0 made
+    // this a clean ×4; the yearly ceiling compounds by 1 + ~4.4×10⁻¹¹).
     assert_eq!(
         fixture.accumulator.accumulated_rate_at_last_accrual,
-        expected * 4
+        compute_current_accumulated_rate(expected, new_rate, before.now, before.now + 2)
     );
     assert_eq!(fixture.accumulator.last_accrued_at, before.now + 2);
     assert_eq!(fixture.parameters, expected_parameters);

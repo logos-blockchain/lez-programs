@@ -20,6 +20,19 @@ pub const FIXED_POINT_ONE: u128 = 10u128.pow(27);
 /// it, fee accrual and redemption drift pause until someone pokes.
 pub const MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS: u64 = 604_800_000;
 
+/// Upper bound for `stability_fee_per_millisecond` (spec §8, issue #427).
+///
+/// Per-millisecond factor `1 + 2.2×10⁻¹¹`, i.e. `FIXED_POINT_ONE +
+/// 22×10¹⁵`: compounding a full 365-day year grows ≈ ×2.0015 (~+100%/yr).
+/// At this ceiling a full [`MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS`]
+/// window compounds only ≈ ×1.0134 — far below the ~`1 + 4×10⁻⁸`/ms
+/// rate at which a single window overflows — and the anchor
+/// doubles at most yearly, so the raw `u128` accumulator (RAY-scaled) keeps
+/// ≈38 years of headroom even with the fee pinned at the ceiling. The
+/// pre-fix bound (`FIXED_POINT_ONE * 2`) overflowed in tens of milliseconds
+/// (issue #427).
+pub const MAX_STABILITY_FEE_PER_MILLISECOND: u128 = FIXED_POINT_ONE + 22_000_000_000_000_000;
+
 /// `(a * b) / c` computed via `U256` intermediates and rounded toward zero.
 ///
 /// # Panics
@@ -244,8 +257,9 @@ fn project_forward_wide(
 }
 
 /// [`compute_current_accumulated_rate`] widened to `U512`, for the read-side
-/// §6.2 check. A stability fee at its permitted upper bound overflows the
-/// `u128` projection well inside the compounding window.
+/// §6.2 check. With the fee bounded by [`MAX_STABILITY_FEE_PER_MILLISECOND`]
+/// the `u128` projection holds for decades; only an already-poisoned anchor
+/// (pre-fix state) can push it past `u128` inside the compounding window.
 #[must_use]
 pub fn compute_current_accumulated_rate_wide(
     accumulated_rate_at_last_accrual: u128,
@@ -259,6 +273,29 @@ pub fn compute_current_accumulated_rate_wide(
         last_accrued_at,
         now,
     )
+}
+
+/// [`compute_current_accumulated_rate`] saturated at `u128::MAX`, for the fee
+/// setter's catch-up accrual. Identical formula and `Δt` clamp; never panics,
+/// so a poisoned accumulator cannot block installing a recovery rate
+/// (issue #427). Equals the exact projection whenever that does not overflow.
+#[must_use]
+pub fn compute_current_accumulated_rate_saturating(
+    accumulated_rate_at_last_accrual: u128,
+    stability_fee_per_millisecond: u128,
+    last_accrued_at: u64,
+    now: u64,
+) -> u128 {
+    u128::try_from(
+        compute_current_accumulated_rate_wide(
+            accumulated_rate_at_last_accrual,
+            stability_fee_per_millisecond,
+            last_accrued_at,
+            now,
+        )
+        .min(U512::from(u128::MAX)),
+    )
+    .expect("capped at u128::MAX")
 }
 
 /// [`compute_current_redemption_price`] widened to `U512`, for the read-side
@@ -605,5 +642,66 @@ mod tests {
         assert!(
             compute_current_redemption_price_wide(FIXED_POINT_ONE, rate, 0, 7_000_000).is_zero()
         );
+    }
+
+    #[test]
+    fn saturating_projection_matches_the_exact_projection_without_overflow() {
+        let anchor = FIXED_POINT_ONE * 12345 / 10000; // 1.2345
+        let rate = FIXED_POINT_ONE + 1_500_000_000_000_000; // ~5%/yr
+        assert_eq!(
+            compute_current_accumulated_rate_saturating(
+                anchor,
+                rate,
+                100,
+                100 + MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS
+            ),
+            compute_current_accumulated_rate(
+                anchor,
+                rate,
+                100,
+                100 + MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS
+            ),
+        );
+    }
+
+    /// The exact projection panics on a poisoned anchor; the setter's catch-up
+    /// must not (issue #427).
+    #[test]
+    fn saturating_projection_caps_a_poisoned_anchor_at_u128_max() {
+        assert_eq!(
+            compute_current_accumulated_rate_saturating(
+                u128::MAX,
+                FIXED_POINT_ONE * 2,
+                0,
+                MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS
+            ),
+            u128::MAX,
+        );
+    }
+
+    #[test]
+    fn yearly_ceiling_doubles_at_most_yearly() {
+        // 1 + 2.2×10⁻¹¹ per ms over a 365-day year compounds to ≈ ×2.0015.
+        assert!(
+            compound_rate(MAX_STABILITY_FEE_PER_MILLISECOND, 31_536_000_000) <= FIXED_POINT_ONE * 3
+        );
+    }
+
+    /// Three decades of weekly pokes at the ceiling stay inside the raw
+    /// `u128` anchor (RAY-scaled); the exact horizon is ≈38 years of
+    /// compounding at the bound.
+    #[test]
+    fn yearly_ceiling_keeps_decades_of_pokes_inside_u128() {
+        let mut anchor = FIXED_POINT_ONE;
+        for week in 0..30_u64 * 52 {
+            let now = week * MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS;
+            anchor = compute_current_accumulated_rate(
+                anchor,
+                MAX_STABILITY_FEE_PER_MILLISECOND,
+                now,
+                now + MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+            );
+            assert!(anchor < u128::MAX, "overflow at week {week}");
+        }
     }
 }
