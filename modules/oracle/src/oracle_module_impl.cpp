@@ -356,3 +356,41 @@ LogosMap OracleModuleImpl::priceAccount(const LogosMap& request) {
         return success(result.value);
     });
 }
+
+LogosMap OracleModuleImpl::queryPrice(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        const json input = request;
+        if (!hasStrings(input, {"priceAccountId", "expectedOwnerId", "baseAssetId",
+                                "quoteAssetId", "expectedSourceId", "maxAgeMs"}))
+            return failure("bad_request");
+        const std::string account_id =
+            normalizeAccountId(input["priceAccountId"].get<std::string>());
+        const std::string owner = normalizeAccountId(input["expectedOwnerId"].get<std::string>());
+        const std::string base = normalizeAccountId(input["baseAssetId"].get<std::string>());
+        const std::string quote = normalizeAccountId(input["quoteAssetId"].get<std::string>());
+        const std::string source =
+            normalizeAccountId(input["expectedSourceId"].get<std::string>());
+        if (account_id.empty() || owner.empty() || base.empty() || quote.empty() ||
+            source.empty())
+            return failure("invalid_account_id");
+        // The canonical clock is resolved and fetched internally on every call;
+        // reads never depend on the selected TWAP deployment.
+        const auto address = support::callFfi(oracle_clock_address, json::object());
+        if (!address.ok || !validIdentity(address.value, "clockId"))
+            return failure("backend_error");
+        const json read = readPublicAccount(account_id);
+        const json clock_read = readPublicAccount(stringField(address.value, "clockIdHex"));
+        const auto result = support::callFfi(
+            oracle_query_price,
+            {{"priceAccountId", account_id},
+             {"expectedOwnerId", owner},
+             {"baseAssetId", base},
+             {"quoteAssetId", quote},
+             {"expectedSourceId", source},
+             {"maxAgeMs", input["maxAgeMs"]},
+             {"read", read},
+             {"clockRead", clock_read}});
+        if (!result.ok) return failure(result.error);
+        return success(result.value);
+    });
+}

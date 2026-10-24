@@ -15,6 +15,8 @@ extern std::string oracleLastProgramRequest;
 extern std::string oracleLastFeedRequest;
 extern std::string oracleLastPlanRequest;
 extern std::string oracleLastPriceAccountRequest;
+extern std::string oracleLastQueryPriceRequest;
+extern std::string oracleLastClockAddressRequest;
 
 namespace {
 using json = nlohmann::json;
@@ -722,4 +724,103 @@ LOGOS_TEST(price_account_inputs_and_ffi_errors_have_stable_codes) {
     f.context.mockCFunction("oracle_price_account")
         .returns(R"({"ok":false,"error":"guest panic"})");
     assertError(f.module.priceAccount(base.get<LogosMap>()), "backend_error");
+}
+
+LOGOS_TEST(query_price_fetches_the_canonical_clock_internally) {
+    Fixture f;
+    // Reads are configuration-free: no program id or binary is resolvable.
+    Environment absent("TWAP_ORACLE_PROGRAM_ID", nullptr);
+    f.account(PRICE_ACCOUNT, ownedSnapshot());
+    f.account(CLOCK, ownedSnapshot());
+    f.context.mockCFunction("oracle_clock_address")
+        .returns(json{{"ok", true},
+                      {"value", json{{"clockId", CLOCK58}, {"clockIdHex", CLOCK}}}}.dump());
+    const json validated = {{"priceAccountId", PRICE_ACCOUNT58},
+                            {"priceAccountIdHex", PRICE_ACCOUNT},
+                            {"price", "18446744073709551616"},
+                            {"timestampMs", "1000000"},
+                            {"checkedAtMs", "1001000"},
+                            {"ageMs", "1000"},
+                            {"priceFractionalBits", 64}};
+    f.context.mockCFunction("oracle_query_price")
+        .returns(json{{"ok", true}, {"value", validated}}.dump());
+    // A caller-supplied clockRead must never reach Rust; the provider's
+    // snapshot of the canonical clock is the only clock data in the request.
+    const auto result = f.module.queryPrice({{"priceAccountId", PRICE_ACCOUNT58},
+                                             {"expectedOwnerId", PROGRAM58},
+                                             {"baseAssetId", PRICE58},
+                                             {"quoteAssetId", OTHER58},
+                                             {"expectedSourceId", SOURCE58},
+                                             {"maxAgeMs", "2000"},
+                                             {"clockRead", "caller-injected"}});
+    LOGOS_ASSERT_EQ(result.at("status"), json("ok"));
+    LOGOS_ASSERT_EQ(result.at("ageMs"), json("1000"));
+    LOGOS_ASSERT_EQ(oracleLastClockAddressRequest, "{}");
+    const json request = json::parse(oracleLastQueryPriceRequest);
+    LOGOS_ASSERT_EQ(request.size(), std::size_t{8});
+    LOGOS_ASSERT_EQ(request["priceAccountId"], json(PRICE_ACCOUNT));
+    LOGOS_ASSERT_EQ(request["expectedOwnerId"], json(PROGRAM));
+    LOGOS_ASSERT_EQ(request["baseAssetId"], json(PRICE));
+    LOGOS_ASSERT_EQ(request["quoteAssetId"], json(OTHER_PROGRAM));
+    LOGOS_ASSERT_EQ(request["expectedSourceId"], json(SOURCE));
+    LOGOS_ASSERT_EQ(request["maxAgeMs"], json("2000"));
+    LOGOS_ASSERT_EQ(request["read"]["account"]["data"], json("abcd"));
+    LOGOS_ASSERT_EQ(request["clockRead"]["id"], json(CLOCK));
+    LOGOS_ASSERT_EQ(request["clockRead"]["account"]["data"], json("abcd"));
+    LOGOS_ASSERT_EQ(f.context.cFunctionCallCount("oracle_clock_address"), 1);
+    LOGOS_ASSERT_EQ(f.context.cFunctionCallCount("oracle_program_info"), 0);
+    LOGOS_ASSERT_EQ(oracleLastProgramRequest, std::string());
+    LOGOS_ASSERT_EQ(f.context.moduleCallCount("lez_core", "get_account_public"), 2);
+    LOGOS_ASSERT_EQ(f.context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+}
+
+LOGOS_TEST(query_price_inputs_and_ffi_errors_have_stable_codes) {
+    Fixture f;
+    f.account(PRICE_ACCOUNT, ownedSnapshot());
+    f.account(CLOCK, ownedSnapshot());
+    f.context.mockCFunction("oracle_clock_address")
+        .returns(json{{"ok", true},
+                      {"value", json{{"clockId", CLOCK58}, {"clockIdHex", CLOCK}}}}.dump());
+    f.context.mockCFunction("oracle_query_price")
+        .returns(json{{"ok", true}, {"value", json::object()}}.dump());
+    const json base = {{"priceAccountId", PRICE_ACCOUNT58},
+                       {"expectedOwnerId", PROGRAM58},
+                       {"baseAssetId", PRICE58},
+                       {"quoteAssetId", OTHER58},
+                       {"expectedSourceId", SOURCE58},
+                       {"maxAgeMs", "2000"}};
+    for (const auto* key : {"priceAccountId", "expectedOwnerId", "baseAssetId", "quoteAssetId",
+                            "expectedSourceId", "maxAgeMs"}) {
+        auto missing = base;
+        missing.erase(key);
+        assertError(f.module.queryPrice(missing.get<LogosMap>()), "bad_request");
+        auto numeric = base;
+        numeric[key] = 1;
+        assertError(f.module.queryPrice(numeric.get<LogosMap>()), "bad_request");
+    }
+    for (const auto* key : {"priceAccountId", "expectedOwnerId", "baseAssetId", "quoteAssetId",
+                            "expectedSourceId"}) {
+        auto unnormalizable = base;
+        unnormalizable[key] = "invalid!";
+        assertError(f.module.queryPrice(unnormalizable.get<LogosMap>()), "invalid_account_id");
+    }
+    LOGOS_ASSERT_EQ(f.context.cFunctionCallCount("oracle_query_price"), 0);
+    for (const auto* code : {"oracle_asset_mismatch", "oracle_source_mismatch",
+                             "oracle_price_zero", "oracle_timestamp_zero",
+                             "oracle_future_timestamp", "oracle_stale",
+                             "invalid_numeric_value"}) {
+        f.context.mockCFunction("oracle_query_price")
+            .returns(json{{"ok", false}, {"error", code}}.dump());
+        assertError(f.module.queryPrice(base.get<LogosMap>()), code);
+    }
+    // A clock address that fails or lies never reaches the query.
+    f.context.mockCFunction("oracle_clock_address")
+        .returns(R"({"ok":false,"error":"backend_error"})");
+    assertError(f.module.queryPrice(base.get<LogosMap>()), "backend_error");
+    f.context.mockCFunction("oracle_clock_address")
+        .returns(json{{"ok", true},
+                      {"value", json{{"clockId", CLOCK58},
+                                     {"clockIdHex", OTHER_PROGRAM}}}}.dump());
+    assertError(f.module.queryPrice(base.get<LogosMap>()), "backend_error");
+    LOGOS_ASSERT_EQ(f.context.cFunctionCallCount("oracle_query_price"), 7);
 }

@@ -37,6 +37,13 @@ public:
     /// deployment. Fetches current state on every call; no signer, no submission.
     LogosMap priceAccount(const LogosMap& request);
 
+    /// The same read as priceAccount, plus the caller's consumer policy: the
+    /// expected asset pair and source, a nonzero price and timestamp, and a
+    /// decimal-string maxAgeMs freshness limit checked against the canonical
+    /// CLOCK_01 account fetched internally on every call. Reads work without
+    /// TWAP configuration; no signer, no submission.
+    LogosMap queryPrice(const LogosMap& request);
+
     /// {priceSourceId, initialPrice}: create the source's current-tick account.
     /// initialPrice is a Q64.64 spot price; the source must be a public wallet
     /// account (it signs) and the account must not exist yet.
