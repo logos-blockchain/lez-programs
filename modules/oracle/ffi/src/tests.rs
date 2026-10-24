@@ -15,8 +15,9 @@ use crate::{
         numeric::*,
         price::{validate_price_account, OraclePriceAccount, PriceAccountError},
     },
-    decode_account, feed_addresses, price_account, program_info, validate_clock, AccountRead,
-    FeedAddressesRequest, OracleResult, PriceAccountRequest, ProgramInfoRequest, TransactionPlan,
+    clock_address, decode_account, feed_addresses, price_account, program_info, query_price,
+    validate_clock, AccountRead, ClockAddressRequest, FeedAddressesRequest, OracleResult,
+    PriceAccountRequest, ProgramInfoRequest, QueryPriceRequest, TransactionPlan,
 };
 
 fn id(seed: u8) -> AccountId {
@@ -480,6 +481,181 @@ fn price_account_rejects_malformed_ids() {
         variant.expected_owner_id = value;
         error(price_account(variant), "invalid_account_id");
     }
+}
+
+#[test]
+fn query_price_validates_the_consumer_contract_in_order() {
+    const T: u64 = 1_000_000;
+    let price = OraclePriceAccount {
+        base_asset: id(4),
+        quote_asset: id(5),
+        price: 1 << 64,
+        timestamp: T,
+        source_id: id(6),
+        confidence_interval: 1,
+    };
+    let clock = ClockAccountData {
+        block_id: 1,
+        timestamp: T + 1000,
+    };
+    let clock_read = |at: AccountId, clock: ClockAccountData| {
+        account_read(
+            at,
+            &account(pid(8), Data::try_from(clock.to_bytes()).expect("clock bytes")),
+        )
+    };
+    let read = account_read(id(20), &account(pid(21), Data::from(&price)));
+    let request = || QueryPriceRequest {
+        price_account_id: account_id_hex(id(20)),
+        expected_owner_id: account_id_hex(id(21)),
+        base_asset_id: account_id_hex(id(4)),
+        quote_asset_id: account_id_hex(id(5)),
+        expected_source_id: account_id_hex(id(6)),
+        max_age_ms: "2000".into(),
+        read: read.clone(),
+        clock_read: clock_read(CLOCK_01_PROGRAM_ACCOUNT_ID, clock),
+    };
+    let value = query_price(request()).expect("fresh priced snapshot");
+    assert_eq!(value["price"], (1_u128 << 64).to_string());
+    assert_eq!(value["timestampMs"], T.to_string());
+    assert_eq!(value["checkedAtMs"], (T + 1000).to_string());
+    assert_eq!(value["ageMs"], "1000");
+
+    // The asset check precedes staleness: a reversed pair reports the pair,
+    // never the age that would also fail.
+    let mut variant = request();
+    variant.base_asset_id = account_id_hex(id(5));
+    variant.quote_asset_id = account_id_hex(id(4));
+    variant.max_age_ms = "1".into();
+    error(query_price(variant), "oracle_asset_mismatch");
+    let mut variant = request();
+    variant.expected_source_id = account_id_hex(id(7));
+    error(query_price(variant), "oracle_source_mismatch");
+    let mut zero_price = price.clone();
+    zero_price.price = 0;
+    let mut variant = request();
+    variant.read = account_read(id(20), &account(pid(21), Data::from(&zero_price)));
+    error(query_price(variant), "oracle_price_zero");
+    let mut zero_timestamp = price.clone();
+    zero_timestamp.timestamp = 0;
+    let mut variant = request();
+    variant.read = account_read(id(20), &account(pid(21), Data::from(&zero_timestamp)));
+    error(query_price(variant), "oracle_timestamp_zero");
+    let mut variant = request();
+    variant.clock_read = AccountRead {
+        status: "account_read_failed".into(),
+        account: None,
+        ..clock_read(CLOCK_01_PROGRAM_ACCOUNT_ID, clock)
+    };
+    error(query_price(variant), "account_read_failed");
+    let mut variant = request();
+    variant.clock_read = clock_read(id(3), clock);
+    error(query_price(variant), "invalid_clock");
+    let mut variant = request();
+    variant
+        .clock_read
+        .account
+        .as_mut()
+        .expect("snapshot")
+        .data
+        .push_str("00");
+    error(query_price(variant), "invalid_clock");
+    for malformed in ["1.5", "", "2e3"] {
+        let mut variant = request();
+        variant.max_age_ms = malformed.into();
+        error(query_price(variant), "invalid_numeric_value");
+    }
+    for malformed in ["00".repeat(32), "AB".repeat(32), id(3).to_string()] {
+        let mut variant = request();
+        variant.base_asset_id = malformed.clone();
+        error(query_price(variant), "invalid_account_id");
+        let mut variant = request();
+        variant.quote_asset_id = malformed.clone();
+        error(query_price(variant), "invalid_account_id");
+        let mut variant = request();
+        variant.expected_source_id = malformed;
+        error(query_price(variant), "invalid_account_id");
+    }
+}
+
+#[test]
+fn query_price_rejects_future_timestamps() {
+    const T: u64 = 1_000_000;
+    let price = OraclePriceAccount {
+        base_asset: id(4),
+        quote_asset: id(5),
+        price: 1 << 64,
+        timestamp: T + 5000,
+        source_id: id(6),
+        confidence_interval: 1,
+    };
+    let clock = ClockAccountData {
+        block_id: 1,
+        timestamp: T,
+    };
+    error(
+        query_price(QueryPriceRequest {
+            price_account_id: account_id_hex(id(20)),
+            expected_owner_id: account_id_hex(id(21)),
+            base_asset_id: account_id_hex(id(4)),
+            quote_asset_id: account_id_hex(id(5)),
+            expected_source_id: account_id_hex(id(6)),
+            // A huge limit keeps staleness out of the picture: a future stored
+            // timestamp must fail on its own, never look fresh.
+            max_age_ms: u64::MAX.to_string(),
+            read: account_read(id(20), &account(pid(21), Data::from(&price))),
+            clock_read: account_read(
+                CLOCK_01_PROGRAM_ACCOUNT_ID,
+                &account(pid(8), Data::try_from(clock.to_bytes()).expect("clock bytes")),
+            ),
+        }),
+        "oracle_future_timestamp",
+    );
+}
+
+#[test]
+fn query_price_enforces_the_age_boundary() {
+    const T: u64 = 1_000_000;
+    let price = OraclePriceAccount {
+        base_asset: id(4),
+        quote_asset: id(5),
+        price: 1 << 64,
+        timestamp: T,
+        source_id: id(6),
+        confidence_interval: 1,
+    };
+    let clock = ClockAccountData {
+        block_id: 1,
+        timestamp: T + 2000,
+    };
+    let read = account_read(id(20), &account(pid(21), Data::from(&price)));
+    let request = |max_age: &str| QueryPriceRequest {
+        price_account_id: account_id_hex(id(20)),
+        expected_owner_id: account_id_hex(id(21)),
+        base_asset_id: account_id_hex(id(4)),
+        quote_asset_id: account_id_hex(id(5)),
+        expected_source_id: account_id_hex(id(6)),
+        max_age_ms: max_age.into(),
+        read: read.clone(),
+        clock_read: account_read(
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+            &account(pid(8), Data::try_from(clock.to_bytes()).expect("clock bytes")),
+        ),
+    };
+    let value = query_price(request("2000")).expect("age exactly at the limit is valid");
+    assert_eq!(value["checkedAtMs"], (T + 2000).to_string());
+    assert_eq!(value["ageMs"], "2000");
+    error(query_price(request("1999")), "oracle_stale");
+}
+
+#[test]
+fn clock_address_returns_canonical_clock_without_configuration() {
+    let value = clock_address(ClockAddressRequest {}).expect("canonical clock address");
+    assert_eq!(value["clockId"], CLOCK_01_PROGRAM_ACCOUNT_ID.to_string());
+    assert_eq!(
+        value["clockIdHex"],
+        account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID)
+    );
 }
 
 #[test]

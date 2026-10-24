@@ -17,7 +17,10 @@ pub use plan::{
     CreateOraclePriceAccountRequest, CreatePriceObservationsRequest, FeedMaintenanceRequest,
     UpdateCurrentTickRequest,
 };
-pub use price::{price_account, PriceAccountRequest};
+pub use price::{
+    clock_address, price_account, query_price, ClockAddressRequest, PriceAccountRequest,
+    QueryPriceRequest,
+};
 pub use program::program_info;
 use serde::Deserialize;
 use serde_json::Value;

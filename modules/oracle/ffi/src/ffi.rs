@@ -6,9 +6,9 @@ use std::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::api::{
-    self, CreateCurrentTickAccountRequest, CreateOraclePriceAccountRequest,
+    self, ClockAddressRequest, CreateCurrentTickAccountRequest, CreateOraclePriceAccountRequest,
     CreatePriceObservationsRequest, FeedAddressesRequest, FeedMaintenanceRequest, OracleResult,
-    PriceAccountRequest, ProgramInfoRequest, UpdateCurrentTickRequest,
+    PriceAccountRequest, ProgramInfoRequest, QueryPriceRequest, UpdateCurrentTickRequest,
 };
 
 #[derive(Serialize)]
@@ -114,6 +114,27 @@ pub unsafe extern "C" fn oracle_feed_addresses(request_json: *const c_char) -> *
 pub unsafe extern "C" fn oracle_price_account(request_json: *const c_char) -> *mut c_char {
     // SAFETY: Forwarded from the caller contract.
     unsafe { call::<PriceAccountRequest>(request_json, api::price_account) }
+}
+
+/// Validates the stored snapshot against consumer expectations using the
+/// host-fetched canonical clock read.
+///
+/// # Safety
+/// `request_json` must be null or a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn oracle_query_price(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from the caller contract.
+    unsafe { call::<QueryPriceRequest>(request_json, api::query_price) }
+}
+
+/// Returns the canonical CLOCK_01 address without any program configuration.
+///
+/// # Safety
+/// `request_json` must be null or a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn oracle_clock_address(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from the caller contract.
+    unsafe { call::<ClockAddressRequest>(request_json, api::clock_address) }
 }
 
 /// Plans `CreateCurrentTickAccount` for a price source.
@@ -229,6 +250,8 @@ mod tests {
             oracle_program_info,
             oracle_feed_addresses,
             oracle_price_account,
+            oracle_query_price,
+            oracle_clock_address,
             oracle_create_current_tick_account_plan,
             oracle_create_price_observations_plan,
             oracle_create_oracle_price_account_plan,

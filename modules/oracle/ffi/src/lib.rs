@@ -11,8 +11,9 @@ mod tests;
 
 pub use account::{decode_account, AccountRead, WalletAccount};
 pub use api::{
-    create_current_tick_account, create_oracle_price_account, create_price_observations,
-    feed_addresses, price_account, program_info, publish_price, record_tick, update_current_tick,
-    validate_clock, FeedAddressesRequest, OracleApiError, OracleResult, PriceAccountRequest,
-    ProgramInfoRequest, TransactionPlan,
+    clock_address, create_current_tick_account, create_oracle_price_account,
+    create_price_observations, feed_addresses, price_account, program_info, publish_price,
+    query_price, record_tick, update_current_tick, validate_clock, ClockAddressRequest,
+    FeedAddressesRequest, OracleApiError, OracleResult, PriceAccountRequest, ProgramInfoRequest,
+    QueryPriceRequest, TransactionPlan,
 };
