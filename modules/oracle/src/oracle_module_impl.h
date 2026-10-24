@@ -7,9 +7,10 @@
 #include <mutex>
 #include <string>
 
-// Universal, Qt-free oracle orchestration: discovery plus one method per TWAP
-// oracle instruction. Rust owns codecs, PDAs, validation, and instruction
-// plans; lez_core owns wallet lifecycle and transaction submission.
+// Universal, Qt-free oracle orchestration: discovery, canonical price reads,
+// plus one method per TWAP oracle instruction. Rust owns codecs, PDAs,
+// validation, and instruction plans; lez_core owns wallet lifecycle and
+// transaction submission.
 //
 // Every transaction method returns {status:"ok", error:"", transactionId, ...}
 // with the operation's account ids (base58 and ...Hex), or
@@ -28,6 +29,13 @@ public:
     /// Derive current-tick, observations, price, and clock IDs from priceSourceId
     /// and decimal-string windowDurationMs. Does not assert account existence.
     LogosMap feedAddresses(const LogosMap& request);
+
+    /// {priceAccountId, expectedOwnerId}: read the stored canonical price
+    /// snapshot at the exact account id, validated against the expected owner
+    /// program. Returns stored data — including zero or stale prices — without
+    /// judging usability; explicit ids make it independent of the selected TWAP
+    /// deployment. Fetches current state on every call; no signer, no submission.
+    LogosMap priceAccount(const LogosMap& request);
 
     /// {priceSourceId, initialPrice}: create the source's current-tick account.
     /// initialPrice is a Q64.64 spot price; the source must be a public wallet

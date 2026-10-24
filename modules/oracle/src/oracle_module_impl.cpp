@@ -335,3 +335,24 @@ LogosMap OracleModuleImpl::publishPrice(const LogosMap& request) {
              {"currentTickAccountId", true}});
     });
 }
+
+LogosMap OracleModuleImpl::priceAccount(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        const json input = request;
+        if (!hasStrings(input, {"priceAccountId", "expectedOwnerId"})) return failure("bad_request");
+        const std::string account_id =
+            normalizeAccountId(input["priceAccountId"].get<std::string>());
+        const std::string owner = normalizeAccountId(input["expectedOwnerId"].get<std::string>());
+        if (account_id.empty() || owner.empty()) return failure("invalid_account_id");
+        // Explicit account and owner ids: no program resolution, and the read
+        // is always the provider's current snapshot, never caller-supplied.
+        const json read = readPublicAccount(account_id);
+        const auto result =
+            support::callFfi(oracle_price_account,
+                             {{"priceAccountId", account_id},
+                              {"expectedOwnerId", owner},
+                              {"read", read}});
+        if (!result.ok) return failure(result.error);
+        return success(result.value);
+    });
+}

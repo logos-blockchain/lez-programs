@@ -12,6 +12,7 @@ extern "C" {
 std::string oracleLastProgramRequest;
 std::string oracleLastFeedRequest;
 std::string oracleLastPlanRequest;
+std::string oracleLastPriceAccountRequest;
 
 namespace {
 char* response(const char* function) {
@@ -32,6 +33,10 @@ extern "C" char* oracle_program_info(const char* request) {
 extern "C" char* oracle_feed_addresses(const char* request) {
     oracleLastFeedRequest = request;
     return response("oracle_feed_addresses");
+}
+extern "C" char* oracle_price_account(const char* request) {
+    oracleLastPriceAccountRequest = request;
+    return response("oracle_price_account");
 }
 // One mock per planner; each records its last request for wire assertions.
 #define ORACLE_PLAN_MOCK(name)                          \

@@ -14,6 +14,7 @@
 extern std::string oracleLastProgramRequest;
 extern std::string oracleLastFeedRequest;
 extern std::string oracleLastPlanRequest;
+extern std::string oracleLastPriceAccountRequest;
 
 namespace {
 using json = nlohmann::json;
@@ -649,4 +650,76 @@ LOGOS_TEST(create_oracle_price_account_normalizes_asset_ids) {
     hex["baseAssetId"] = std::string(64, '5');
     LOGOS_ASSERT_EQ((f.module.*op.method)(hex.get<LogosMap>()).at("status"), json("ok"));
     LOGOS_ASSERT_EQ(json::parse(oracleLastPlanRequest)["baseAssetId"], json(PRICE));
+}
+
+LOGOS_TEST(price_account_returns_stored_snapshots_from_provider_reads) {
+    Fixture f;
+    f.account(PRICE_ACCOUNT, ownedSnapshot());
+    const json snapshot = {{"priceAccountId", PRICE_ACCOUNT58},
+                           {"priceAccountIdHex", PRICE_ACCOUNT},
+                           {"ownerId", PROGRAM58},
+                           {"ownerIdHex", PROGRAM},
+                           {"baseAssetId", PRICE58},
+                           {"baseAssetIdHex", PRICE},
+                           {"quoteAssetId", OTHER58},
+                           {"quoteAssetIdHex", OTHER_PROGRAM},
+                           {"sourceId", SOURCE58},
+                           {"sourceIdHex", SOURCE},
+                           {"price", "18446744073709551616"},
+                           {"timestampMs", "86400000"},
+                           {"confidenceInterval", "0"},
+                           {"priceFractionalBits", 64}};
+    f.context.mockCFunction("oracle_price_account")
+        .returns(json{{"ok", true}, {"value", snapshot}}.dump());
+    // A caller-supplied "read" must never reach Rust; the provider's snapshot is
+    // the only account data in the FFI request.
+    const auto result = f.module.priceAccount({{"priceAccountId", PRICE_ACCOUNT58},
+                                               {"expectedOwnerId", PROGRAM58},
+                                               {"read", "caller-injected"}});
+    LOGOS_ASSERT_EQ(result.at("status"), json("ok"));
+    LOGOS_ASSERT_EQ(result.at("error"), json(""));
+    LOGOS_ASSERT_EQ(result.at("price"), json("18446744073709551616"));
+    LOGOS_ASSERT_EQ(result.at("priceFractionalBits"), json(64));
+    const json request = json::parse(oracleLastPriceAccountRequest);
+    LOGOS_ASSERT_EQ(request.size(), std::size_t{3});
+    LOGOS_ASSERT_EQ(request["priceAccountId"], json(PRICE_ACCOUNT));
+    LOGOS_ASSERT_EQ(request["expectedOwnerId"], json(PROGRAM));
+    LOGOS_ASSERT_EQ(request["read"]["status"], json("ok"));
+    LOGOS_ASSERT_EQ(request["read"]["account"]["program_owner"], json(PROGRAM));
+    LOGOS_ASSERT_EQ(request["read"]["account"]["data"], json("abcd"));
+    // Reads need no program configuration and touch exactly one account.
+    LOGOS_ASSERT_EQ(f.context.cFunctionCallCount("oracle_program_info"), 0);
+    LOGOS_ASSERT_EQ(f.context.cFunctionCallCount("oracle_price_account"), 1);
+    LOGOS_ASSERT_EQ(f.context.moduleCallCount("lez_core", "get_account_public"), 1);
+    LOGOS_ASSERT_EQ(f.context.moduleCallCount("lez_core", "list_accounts"), 0);
+    LOGOS_ASSERT_EQ(f.context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+}
+
+LOGOS_TEST(price_account_inputs_and_ffi_errors_have_stable_codes) {
+    Fixture f;
+    f.account(PRICE_ACCOUNT, ownedSnapshot());
+    f.context.mockCFunction("oracle_price_account")
+        .returns(json{{"ok", true}, {"value", json::object()}}.dump());
+    const json base = {{"priceAccountId", PRICE_ACCOUNT58}, {"expectedOwnerId", PROGRAM58}};
+    for (const auto* key : {"priceAccountId", "expectedOwnerId"}) {
+        auto missing = base;
+        missing.erase(key);
+        assertError(f.module.priceAccount(missing.get<LogosMap>()), "bad_request");
+        auto numeric = base;
+        numeric[key] = 1;
+        assertError(f.module.priceAccount(numeric.get<LogosMap>()), "bad_request");
+        auto unnormalizable = base;
+        unnormalizable[key] = "invalid!";
+        assertError(f.module.priceAccount(unnormalizable.get<LogosMap>()), "invalid_account_id");
+    }
+    LOGOS_ASSERT_EQ(f.context.cFunctionCallCount("oracle_price_account"), 0);
+    for (const auto* code : {"account_read_failed", "price_account_id_mismatch", "not_found",
+                             "oracle_owner_mismatch", "invalid_account_data"}) {
+        f.context.mockCFunction("oracle_price_account")
+            .returns(json{{"ok", false}, {"error", code}}.dump());
+        assertError(f.module.priceAccount(base.get<LogosMap>()), code);
+    }
+    f.context.mockCFunction("oracle_price_account")
+        .returns(R"({"ok":false,"error":"guest panic"})");
+    assertError(f.module.priceAccount(base.get<LogosMap>()), "backend_error");
 }
