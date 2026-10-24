@@ -17,6 +17,7 @@ pub use plan::{
     CreateOraclePriceAccountRequest, CreatePriceObservationsRequest, FeedMaintenanceRequest,
     UpdateCurrentTickRequest,
 };
+pub use price::{price_account, PriceAccountRequest};
 pub use program::program_info;
 use serde::Deserialize;
 use serde_json::Value;
@@ -76,6 +77,16 @@ pub(crate) fn parse_oracle_program_id(value: &str) -> Result<ProgramId, OracleAp
     let id = parse_program_id(value).map_err(|_| OracleApiError::new("invalid_program_id"))?;
     if id == ProgramId::default() {
         return Err(OracleApiError::new("invalid_program_id"));
+    }
+    Ok(id)
+}
+
+/// Owner expectations spell the program id like an account id, so malformed
+/// input is an `invalid_account_id`, never an `invalid_program_id`.
+pub(crate) fn parse_owner_program_id(value: &str) -> Result<ProgramId, OracleApiError> {
+    let id = parse_program_id(value).map_err(|_| OracleApiError::new("invalid_account_id"))?;
+    if id == ProgramId::default() {
+        return Err(OracleApiError::new("invalid_account_id"));
     }
     Ok(id)
 }

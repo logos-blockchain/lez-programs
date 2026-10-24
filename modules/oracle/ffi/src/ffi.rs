@@ -8,7 +8,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::api::{
     self, CreateCurrentTickAccountRequest, CreateOraclePriceAccountRequest,
     CreatePriceObservationsRequest, FeedAddressesRequest, FeedMaintenanceRequest, OracleResult,
-    ProgramInfoRequest, UpdateCurrentTickRequest,
+    PriceAccountRequest, ProgramInfoRequest, UpdateCurrentTickRequest,
 };
 
 #[derive(Serialize)]
@@ -104,6 +104,16 @@ pub unsafe extern "C" fn oracle_program_info(request_json: *const c_char) -> *mu
 pub unsafe extern "C" fn oracle_feed_addresses(request_json: *const c_char) -> *mut c_char {
     // SAFETY: Forwarded from the caller contract.
     unsafe { call::<FeedAddressesRequest>(request_json, api::feed_addresses) }
+}
+
+/// Returns the stored canonical price snapshot verbatim, without consumer policy.
+///
+/// # Safety
+/// `request_json` must be null or a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn oracle_price_account(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: Forwarded from the caller contract.
+    unsafe { call::<PriceAccountRequest>(request_json, api::price_account) }
 }
 
 /// Plans `CreateCurrentTickAccount` for a price source.
@@ -218,6 +228,7 @@ mod tests {
         for operation in [
             oracle_program_info,
             oracle_feed_addresses,
+            oracle_price_account,
             oracle_create_current_tick_account_plan,
             oracle_create_price_observations_plan,
             oracle_create_oracle_price_account_plan,

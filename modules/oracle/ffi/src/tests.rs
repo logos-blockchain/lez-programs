@@ -15,8 +15,8 @@ use crate::{
         numeric::*,
         price::{validate_price_account, OraclePriceAccount, PriceAccountError},
     },
-    decode_account, feed_addresses, program_info, validate_clock, AccountRead,
-    FeedAddressesRequest, OracleResult, ProgramInfoRequest, TransactionPlan,
+    decode_account, feed_addresses, price_account, program_info, validate_clock, AccountRead,
+    FeedAddressesRequest, OracleResult, PriceAccountRequest, ProgramInfoRequest, TransactionPlan,
 };
 
 fn id(seed: u8) -> AccountId {
@@ -341,6 +341,145 @@ fn canonical_price_contract_is_independent_of_twap_addresses() {
         .expect("stored zero"),
         zero
     );
+}
+
+#[test]
+fn price_account_returns_stored_snapshot_with_exact_fields() {
+    let price = OraclePriceAccount {
+        base_asset: id(4),
+        quote_asset: id(5),
+        price: u128::MAX,
+        timestamp: u64::MAX,
+        source_id: id(6),
+        confidence_interval: u128::MAX,
+    };
+    let value = price_account(PriceAccountRequest {
+        price_account_id: account_id_hex(id(20)),
+        expected_owner_id: account_id_hex(id(21)),
+        read: account_read(id(20), &account(pid(21), Data::from(&price))),
+    })
+    .expect("stored snapshot");
+    for (key, expected) in [
+        ("priceAccountId", id(20)),
+        ("ownerId", id(21)),
+        ("baseAssetId", id(4)),
+        ("quoteAssetId", id(5)),
+        ("sourceId", id(6)),
+    ] {
+        assert_eq!(value[key], expected.to_string());
+        assert_eq!(value[format!("{key}Hex")], account_id_hex(expected));
+    }
+    assert_eq!(value["price"], u128::MAX.to_string());
+    assert_eq!(value["timestampMs"], u64::MAX.to_string());
+    assert_eq!(value["confidenceInterval"], u128::MAX.to_string());
+    assert_eq!(value["priceFractionalBits"], 64);
+    let odd = OraclePriceAccount {
+        price: 9_007_199_254_740_993,
+        ..price
+    };
+    let value = price_account(PriceAccountRequest {
+        price_account_id: account_id_hex(id(20)),
+        expected_owner_id: account_id_hex(id(21)),
+        read: account_read(id(20), &account(pid(21), Data::from(&odd))),
+    })
+    .expect("odd price above javascript precision");
+    assert_eq!(value["price"], "9007199254740993");
+}
+
+#[test]
+fn price_account_maps_validation_errors_to_stable_codes() {
+    let price = OraclePriceAccount {
+        base_asset: id(4),
+        quote_asset: id(5),
+        price: 1 << 64,
+        timestamp: 1,
+        source_id: id(6),
+        confidence_interval: 1,
+    };
+    let read = account_read(id(20), &account(pid(21), Data::from(&price)));
+    let request = || PriceAccountRequest {
+        price_account_id: account_id_hex(id(20)),
+        expected_owner_id: account_id_hex(id(21)),
+        read: read.clone(),
+    };
+    let failed = AccountRead {
+        status: "account_read_failed".into(),
+        account: None,
+        ..read.clone()
+    };
+    let mut variant = request();
+    variant.read = failed;
+    error(price_account(variant), "account_read_failed");
+    let mut variant = request();
+    variant.price_account_id = account_id_hex(id(19));
+    error(price_account(variant), "price_account_id_mismatch");
+    let mut variant = request();
+    variant.read = account_read(id(20), &Account::default());
+    error(price_account(variant), "not_found");
+    let mut variant = request();
+    variant.expected_owner_id = account_id_hex(id(19));
+    error(price_account(variant), "oracle_owner_mismatch");
+    let mut variant = request();
+    variant
+        .read
+        .account
+        .as_mut()
+        .expect("snapshot")
+        .data
+        .push_str("00");
+    error(price_account(variant), "invalid_account_data");
+}
+
+#[test]
+fn price_account_preserves_zero_and_stale_snapshots() {
+    let zero = OraclePriceAccount {
+        base_asset: id(4),
+        quote_asset: id(5),
+        price: 0,
+        timestamp: 0,
+        source_id: id(6),
+        confidence_interval: 0,
+    };
+    let value = price_account(PriceAccountRequest {
+        price_account_id: account_id_hex(id(20)),
+        expected_owner_id: account_id_hex(id(21)),
+        read: account_read(id(20), &account(pid(21), Data::from(&zero))),
+    })
+    .expect("raw reads do not judge stored snapshots");
+    assert_eq!(value["price"], "0");
+    assert_eq!(value["timestampMs"], "0");
+    assert_eq!(value["confidenceInterval"], "0");
+}
+
+#[test]
+fn price_account_rejects_malformed_ids() {
+    let price = OraclePriceAccount {
+        base_asset: id(4),
+        quote_asset: id(5),
+        price: 1 << 64,
+        timestamp: 1,
+        source_id: id(6),
+        confidence_interval: 1,
+    };
+    let read = account_read(id(20), &account(pid(21), Data::from(&price)));
+    let request = || PriceAccountRequest {
+        price_account_id: account_id_hex(id(20)),
+        expected_owner_id: account_id_hex(id(21)),
+        read: read.clone(),
+    };
+    for value in [
+        "00".repeat(32),
+        "AB".repeat(32),
+        "ab".repeat(31),
+        id(3).to_string(),
+    ] {
+        let mut variant = request();
+        variant.price_account_id = value.clone();
+        error(price_account(variant), "invalid_account_id");
+        let mut variant = request();
+        variant.expected_owner_id = value;
+        error(price_account(variant), "invalid_account_id");
+    }
 }
 
 #[test]

@@ -37,7 +37,7 @@ pub fn program_info(request: ProgramInfoRequest) -> OracleResult {
     Ok(Value::Object(result))
 }
 
-fn base58_program_id(program_id: ProgramId) -> String {
+pub(crate) fn base58_program_id(program_id: ProgramId) -> String {
     AccountId::new(program_id_bytes(program_id)).to_string()
 }
 
