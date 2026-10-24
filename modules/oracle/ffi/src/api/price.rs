@@ -89,10 +89,7 @@ fn price_snapshot(
     insert_id(&mut result, "quoteAssetId", price.quote_asset);
     insert_id(&mut result, "sourceId", price.source_id);
     result.insert("price".to_owned(), json!(price.price.to_string()));
-    result.insert(
-        "timestampMs".to_owned(),
-        json!(price.timestamp.to_string()),
-    );
+    result.insert("timestampMs".to_owned(), json!(price.timestamp.to_string()));
     result.insert(
         "confidenceInterval".to_owned(),
         json!(price.confidence_interval.to_string()),
@@ -173,10 +170,7 @@ pub fn query_price(request: QueryPriceRequest) -> OracleResult {
         return Err(OracleApiError::new("oracle_stale"));
     }
     let mut result = price_snapshot(&price, expected_id, expected_owner);
-    result.insert(
-        "checkedAtMs".to_owned(),
-        json!(clock.timestamp.to_string()),
-    );
+    result.insert("checkedAtMs".to_owned(), json!(clock.timestamp.to_string()));
     result.insert("ageMs".to_owned(), json!(age.to_string()));
     Ok(Value::Object(result))
 }
@@ -192,9 +186,11 @@ impl<'de> Deserialize<'de> for ClockAddressRequest {
         struct Empty;
         impl<'de> serde::de::Visitor<'de> for Empty {
             type Value = ClockAddressRequest;
+
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str("exactly an empty object")
             }
+
             fn visit_map<A: serde::de::MapAccess<'de>>(
                 self,
                 mut map: A,

@@ -31,6 +31,31 @@ char *oracle_program_info(const char *request_json);
 char *oracle_feed_addresses(const char *request_json);
 
 /**
+ * Returns the stored canonical price snapshot verbatim, without consumer policy.
+ *
+ * # Safety
+ * `request_json` must be null or a live NUL-terminated UTF-8 string.
+ */
+char *oracle_price_account(const char *request_json);
+
+/**
+ * Validates the stored snapshot against consumer expectations using the
+ * host-fetched canonical clock read.
+ *
+ * # Safety
+ * `request_json` must be null or a live NUL-terminated UTF-8 string.
+ */
+char *oracle_query_price(const char *request_json);
+
+/**
+ * Returns the canonical CLOCK_01 address without any program configuration.
+ *
+ * # Safety
+ * `request_json` must be null or a live NUL-terminated UTF-8 string.
+ */
+char *oracle_clock_address(const char *request_json);
+
+/**
  * Plans `CreateCurrentTickAccount` for a price source.
  *
  * # Safety

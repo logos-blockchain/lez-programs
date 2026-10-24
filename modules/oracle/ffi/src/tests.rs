@@ -501,7 +501,10 @@ fn query_price_validates_the_consumer_contract_in_order() {
     let clock_read = |at: AccountId, clock: ClockAccountData| {
         account_read(
             at,
-            &account(pid(8), Data::try_from(clock.to_bytes()).expect("clock bytes")),
+            &account(
+                pid(8),
+                Data::try_from(clock.to_bytes()).expect("clock bytes"),
+            ),
         )
     };
     let read = account_read(id(20), &account(pid(21), Data::from(&price)));
@@ -606,7 +609,10 @@ fn query_price_rejects_future_timestamps() {
             read: account_read(id(20), &account(pid(21), Data::from(&price))),
             clock_read: account_read(
                 CLOCK_01_PROGRAM_ACCOUNT_ID,
-                &account(pid(8), Data::try_from(clock.to_bytes()).expect("clock bytes")),
+                &account(
+                    pid(8),
+                    Data::try_from(clock.to_bytes()).expect("clock bytes"),
+                ),
             ),
         }),
         "oracle_future_timestamp",
@@ -639,7 +645,10 @@ fn query_price_enforces_the_age_boundary() {
         read: read.clone(),
         clock_read: account_read(
             CLOCK_01_PROGRAM_ACCOUNT_ID,
-            &account(pid(8), Data::try_from(clock.to_bytes()).expect("clock bytes")),
+            &account(
+                pid(8),
+                Data::try_from(clock.to_bytes()).expect("clock bytes"),
+            ),
         ),
     };
     let value = query_price(request("2000")).expect("age exactly at the limit is valid");

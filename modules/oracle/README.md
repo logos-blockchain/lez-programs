@@ -17,9 +17,11 @@ No alternative price layout or provider plugin system is introduced.
 All public methods return a `LogosMap` with either
 `{"status":"ok","error":"",...}` or
 `{"status":"error","error":"<stable_code>"}`. The module exports three
-discovery methods (below) and six [transaction methods](#transactions), one per
-TWAP oracle instruction. The account readers in the
-[roadmap](#api-roadmap-and-dependency-order) are not implemented yet.
+discovery methods (below), two [canonical price
+reads](#canonical-price-reads), and six [transaction
+methods](#transactions), one per TWAP oracle instruction. The tick and
+observation readers in the [roadmap](#api-roadmap-and-dependency-order) are
+not implemented yet.
 
 ### `setOracleProgramId({oracleProgramId})`
 
@@ -63,6 +65,58 @@ crate's helpers and the currently selected program id:
 current-tick address shared across windows; each source/window has separate
 observations and price addresses. Base and quote assets are stored data, never
 PDA seeds. Derivation does not establish account existence or initialization.
+
+## Canonical price reads
+
+Both reads take explicit account and owner ids, so they work without any TWAP
+program configuration and never consult the selected deployment. Rust owns
+validation; C++ normalizes ids, fetches current state through `lez_core` on
+every call, and passes provider snapshots only — caller-supplied account bytes
+never reach the FFI. Reads sign and submit nothing.
+
+### `priceAccount({priceAccountId, expectedOwnerId})`
+
+Returns the stored canonical snapshot verbatim. Zero prices, zero timestamps,
+and stale data are data, not errors: usability is the consumer's policy.
+
+| Field | Meaning |
+| --- | --- |
+| `priceAccountId` / `...Hex` | The exact account that was read |
+| `ownerId` / `...Hex` | Owning program (ImageID) from the snapshot |
+| `baseAssetId`, `quoteAssetId`, `sourceId` (+ `...Hex`) | Stored identities |
+| `price`, `timestampMs`, `confidenceInterval` | Exact decimal strings; `price` is stored Q64.64 |
+| `priceFractionalBits` | Always `64` — the real price is `price / 2^64` |
+
+### `queryPrice({priceAccountId, expectedOwnerId, baseAssetId, quoteAssetId, expectedSourceId, maxAgeMs})`
+
+The same read plus the caller's consumer policy. The canonical `CLOCK_01`
+account is fetched internally on every call — its address comes from a
+configuration-free FFI, not from `programInfo` — and validation fails closed:
+a usable price is never returned after any check fails. Checks run in order:
+
+| Check | Error |
+| --- | --- |
+| Account read, id, existence, owner, exact Borsh | `account_read_failed`, `price_account_id_mismatch`, `not_found`, `oracle_owner_mismatch`, `invalid_account_data` |
+| Base and quote assets match | `oracle_asset_mismatch` |
+| Source matches | `oracle_source_mismatch` |
+| Price nonzero | `oracle_price_zero` |
+| Timestamp nonzero | `oracle_timestamp_zero` |
+| Clock readable and canonical | `account_read_failed`, `invalid_clock` |
+| Stored timestamp no later than the canonical clock | `oracle_future_timestamp` |
+| `ageMs <= maxAgeMs` — age exactly at the limit is valid | `oracle_stale` |
+
+The response is the `priceAccount` snapshot plus `checkedAtMs` (the canonical
+clock timestamp read for this call) and `ageMs`, as exact decimal strings. A
+TWAP discovery-to-query journey:
+
+```text
+addresses ← feedAddresses({priceSourceId, windowDurationMs})
+queryPrice({priceAccountId: addresses.priceAccountId,
+            expectedOwnerId: <trusted oracle ImageID>,
+            baseAssetId, quoteAssetId,
+            expectedSourceId: priceSourceId,
+            maxAgeMs: <consumer freshness limit>})
+```
 
 ## Transactions
 
@@ -130,8 +184,8 @@ scientific notation, whitespace, and overflow are rejected. Numeric text errors
 return `invalid_numeric_value`; a non-string/missing discovery field is a
 `bad_request`. Leading zeroes are accepted without changing the value.
 
-Canonical prices use **Q64.64**, identified by `priceFractionalBits: 64` in the
-planned price responses. The real price is `price / 2^64`, quote units per base
+Canonical prices use **Q64.64**, identified by `priceFractionalBits: 64` in
+price responses. The real price is `price / 2^64`, quote units per base
 unit. `18446744073709551616` means unity. Timestamps and durations are
 **milliseconds**. The module does not infer token decimals, invert a price, or
 convert it to a consumer's fixed-point scale. A zero confidence interval means
@@ -251,6 +305,7 @@ returned.
 | Request and numeric input | `bad_request`, `invalid_account_id`, `invalid_numeric_value`, `invalid_window`, `invalid_price` |
 | Deployment | `config_missing`, `invalid_program_id`, `invalid_program_binary`, `program_binary_mismatch` |
 | Reads and clock | `account_read_failed`, `invalid_clock` |
+| Canonical price reads | `price_account_id_mismatch`, `not_found`, `oracle_owner_mismatch`, `invalid_account_data`, `oracle_asset_mismatch`, `oracle_source_mismatch`, `oracle_price_zero`, `oracle_timestamp_zero`, `oracle_future_timestamp`, `oracle_stale` |
 | Account state | `already_initialized`, `account_not_initialized` |
 | Authority | `source_not_signable` |
 | Transport/internal | `wallet_submission_failed`, `backend_error` |
@@ -261,12 +316,12 @@ All work targets the `lez-v0.2.x` line (LEZ v0.2.4) and its dependency pins. The
 issues were written for LEZ v0.2.5; on v0.2.4 their `feePayerId` arguments and
 loader-header checks do not apply.
 
-Issues 01 and 04–07 are implemented here; 02, 03 and 08 are not.
+Issues 01, 02 and 04–07 are implemented here; 03 and 08 are not.
 
 | Issue | API/deliverable | Prerequisites |
 | --- | --- | --- |
 | [01 / #437](https://github.com/logos-blockchain/lez-programs/issues/437) | `setOracleProgramId`, `programInfo`, `feedAddresses`; shared contracts | Done |
-| [02 / #438](https://github.com/logos-blockchain/lez-programs/issues/438) | `priceAccount({priceAccountId, expectedOwnerId})`; `queryPrice` additionally takes `baseAssetId`, `quoteAssetId`, `expectedSourceId`, `maxAgeMs` | 01 |
+| [02 / #438](https://github.com/logos-blockchain/lez-programs/issues/438) | `priceAccount({priceAccountId, expectedOwnerId})`; `queryPrice` additionally takes `baseAssetId`, `quoteAssetId`, `expectedSourceId`, `maxAgeMs` | Done |
 | [03 / #439](https://github.com/logos-blockchain/lez-programs/issues/439) | `currentTick({priceSourceId})`; `priceObservations({priceSourceId, windowDurationMs})` | 01 |
 | [04 / #440](https://github.com/logos-blockchain/lez-programs/issues/440) | `createCurrentTickAccount`, `createPriceObservations`, `createOraclePriceAccount` | Done |
 | [05 / #441](https://github.com/logos-blockchain/lez-programs/issues/441) | `updateCurrentTick({priceSourceId, price})` | Done |
@@ -274,9 +329,9 @@ Issues 01 and 04–07 are implemented here; 02, 03 and 08 are not.
 | [07 / #443](https://github.com/logos-blockchain/lez-programs/issues/443) | `publishPrice({priceSourceId, windowDurationMs})` | Done |
 | [08 / #444](https://github.com/logos-blockchain/lez-programs/issues/444) | Complete direct-source, AMM, keeper, and consumer journeys | 02–07 + [Stablecoin scale normalization #445](https://github.com/logos-blockchain/lez-programs/issues/445) |
 
-The transaction methods landed without the readers from 02 and 03: their
-account checks use plain account reads, not decoded TWAP state. Canonical price
-reads will work independently of selected TWAP configuration. The read APIs select neither a primary feed nor a fallback.
+The transaction methods landed without the readers from 03: their account
+checks use plain account reads, not decoded TWAP state. Canonical price
+reads work independently of selected TWAP configuration. The read APIs select neither a primary feed nor a fallback.
 
 Source authority belongs to the source account: direct writes require its
 wallet signature. AMM pool PDAs retain authorization through existing AMM chained
