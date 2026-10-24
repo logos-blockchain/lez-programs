@@ -639,6 +639,10 @@ LOGOS_TEST(real_ffi_freeze_blocks_risk_increases_but_recovery_and_pokes_work_and
         return envelope["value"];
     };
     const json position = addresses("7"); const json settled = addresses("6"); const json fresh = addresses("8");
+    const json indebted = addresses("9");
+    expectRead(indebted["positionIdHex"].get<std::string>(), PROGRAM_OWNER_HEX,
+        positionData(CALLER_ID_HEX, indebted["vaultIdHex"].get<std::string>(), 9, "100", "1"));
+    expectRead(indebted["vaultIdHex"].get<std::string>(), TOKEN_OWNER_HEX, collateralHoldingData("100"));
     for (const auto& entry : {std::make_pair(position, 7), std::make_pair(settled, 6)}) {
         const std::string position_id = entry.first["positionIdHex"];
         const std::string vault_id = entry.first["vaultIdHex"];
@@ -668,20 +672,54 @@ LOGOS_TEST(real_ffi_freeze_blocks_risk_increases_but_recovery_and_pokes_work_and
     assertOk(module.freeze(withPayer({{"freezeAuthorityId", CALLER_ID_HEX}})));
     parameters.replace(parameters.size() - 2, 2, "01"); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
     LOGOS_ASSERT_EQ(module.openPosition(withPayer(open))["error"].get<std::string>(), std::string("protocol_frozen"));
-    LOGOS_ASSERT_EQ(module.withdrawCollateral(withPayer(collateral))["error"].get<std::string>(), std::string("protocol_frozen"));
+    LogosMap indebted_withdrawal = collateral;
+    indebted_withdrawal["positionNonce"] = "9";
+    const LogosMap rejected = module.withdrawCollateral(withPayer(indebted_withdrawal));
+    LOGOS_ASSERT_EQ(rejected["error"].get<std::string>(), std::string("protocol_frozen"));
+    LOGOS_ASSERT_TRUE(rejected.find("transactionId") == rejected.end());
     LOGOS_ASSERT_EQ(module.generateDebt(withPayer(debt))["error"].get<std::string>(), std::string("protocol_frozen"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+
+    const LogosMap withdrawn = module.withdrawCollateral(withPayer(collateral));
+    assertOk(withdrawn);
+    LOGOS_ASSERT_EQ(withdrawn["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+    const std::string position_id = position["positionIdHex"].get<std::string>();
+    const std::string vault_id = position["vaultIdHex"].get<std::string>();
+    const std::string accumulator_id = info["stabilityFeeAccumulatorIdHex"].get<std::string>();
+    const std::string redemption_id = info["redemptionPriceStateIdHex"].get<std::string>();
+    const std::string clock_id = info["clockIdHex"].get<std::string>();
+    const std::string planner_payload = json{
+        {"stablecoinProgramId", PROGRAM_ID_HEX}, {"ownerId", CALLER_ID_HEX},
+        {"positionNonce", "7"}, {"amount", "0"}, {"userCollateralHoldingId", idHex(8)},
+        {"position", accountReadValue(position_id, PROGRAM_OWNER_HEX, positionData(CALLER_ID_HEX, vault_id, 7, "0", "0"))},
+        {"vault", accountReadValue(vault_id, TOKEN_OWNER_HEX, collateralHoldingData("0"))},
+        {"userCollateralHolding", accountReadValue(idHex(8), TOKEN_OWNER_HEX, collateralHoldingData("0"))},
+        {"stabilityFeeAccumulator", accountReadValue(accumulator_id, PROGRAM_OWNER_HEX, accumulatorData(FIXED_ONE, START))},
+        {"redemptionPriceState", accountReadValue(redemption_id, PROGRAM_OWNER_HEX, redemptionData(FIXED_ONE, FIXED_ONE, "0", START))},
+        {"protocolParameters", accountReadValue(protocol_id, PROGRAM_OWNER_HEX, parameters)},
+        {"clock", accountReadValue(clock_id, PROGRAM_OWNER_HEX, clockData(DUE))},
+    }.dump();
+    std::unique_ptr<char, decltype(&stablecoin_free)> planned(
+        stablecoin_withdraw_collateral_plan(planner_payload.c_str()), &stablecoin_free);
+    LOGOS_ASSERT_TRUE(planned != nullptr);
+    const json plan = json::parse(planned.get()).at("value");
+    LOGOS_ASSERT_EQ(plan["accountIds"], json::array({CALLER_ID_HEX, position_id, vault_id, idHex(8),
+        accumulator_id, redemption_id, protocol_id, clock_id}));
+    LOGOS_ASSERT_EQ(plan["signingRequirements"], json::array({true, false, false, false, false, false, false, false}));
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
+        submissionArguments(plan, std::vector<std::size_t>{0}, PROGRAM_ID_HEX)));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 2);
     assertOk(module.depositCollateral(withPayer(collateral))); assertOk(module.repayDebt(withPayer(debt)));
     assertOk(module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX)); assertOk(module.updateRedemptionRate(CALLER_ID_HEX, CALLER_ID_HEX));
     assertOk(module.refreshGlobals(CALLER_ID_HEX, CALLER_ID_HEX));
-    // Close a distinct settled Position; restored borrowing/withdrawal uses
-    // the still-open main Position, not the account whose data was cleared.
+    // Close a distinct settled Position; later borrowing and withdrawal use
+    // the still-open positions, not the account whose data was cleared.
     assertOk(module.closePosition(withPayer({{"ownerId", CALLER_ID_HEX}, {"positionNonce", "6"}})));
-    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 7);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 8);
     assertOk(module.unfreeze(withPayer({{"freezeAuthorityId", CALLER_ID_HEX}})));
     parameters.replace(parameters.size() - 2, 2, "00"); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
-    assertOk(module.openPosition(withPayer(open))); assertOk(module.withdrawCollateral(withPayer(collateral))); assertOk(module.generateDebt(withPayer(debt)));
-    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 11);
+    assertOk(module.openPosition(withPayer(open))); assertOk(module.withdrawCollateral(withPayer(indebted_withdrawal))); assertOk(module.generateDebt(withPayer(debt)));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 12);
 }
 
 LOGOS_TEST(real_ffi_all_six_admin_setters_use_exact_plans_while_frozen_and_fail_preflight_without_resubmission) {
@@ -1271,9 +1309,10 @@ LOGOS_TEST(real_ffi_withdrawal_rechecks_health_and_accepts_external_destination)
     expectRead(destination_id,TOKEN_OWNER_HEX,collateralHoldingData("0"));
     expectRead(clock_id,PROGRAM_OWNER_HEX,clockData(DUE + 60'000'000));
     parameters.replace(320,32,u128Le("2000000000000000000000000000"));
+    parameters.replace(parameters.size() - 2, 2, "01");
     expectRead(protocol_id,PROGRAM_OWNER_HEX,parameters);
     request["amount"] = maximum;
-    assertOk(module.withdrawCollateral(withPayer(request))); // Zero debt skips even enormous fee projections.
+    assertOk(module.withdrawCollateral(withPayer(request))); // Frozen zero-debt positions skip even enormous fee projections.
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","get_account_public"),26);
     request["amount"] = 1.5;

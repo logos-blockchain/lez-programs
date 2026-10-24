@@ -355,9 +355,16 @@ amount; a direct vault donation is unavailable until `depositCollateral`
 reconciles it. Preflight also checks live vault availability and destination
 balance overflow, including inconsistent observations from separate RPC reads.
 
-Frozen withdrawals fail, including zero amounts. For nonzero withdrawals with
-nonzero debt, preflight checks the remaining collateral using the program's
-wide projections, canonical clock and seven-day clamp:
+While frozen, withdrawals fail with `protocol_frozen` if the validated Position
+has nonzero `normalizedDebtAmount`, including one normalized unit and
+zero-amount requests. An authenticated owner with exactly zero normalized debt
+may withdraw partial, full, or zero amounts while frozen. The exception uses
+stored normalized debt, never a floored nominal-debt quote or a caller-supplied
+assertion. Global, clock, and Position validation precede the freeze gate, so
+malformed inputs can return their own validation errors before `protocol_frozen`.
+For nonzero withdrawals with nonzero debt, preflight checks the remaining
+collateral using the program's wide projections, canonical clock and seven-day
+clamp:
 
 ```text
 remainingCollateral * FIXED_POINT_ONE^3 >= normalizedDebt
@@ -370,9 +377,13 @@ debt flooring, narrowing to `u128`, market-oracle read or controller gate is
 used. This operation uses the program's conservative wide projection, rather
 than the exact-display requirements of `positionHealth`.
 
-Zero amounts and zero-debt positions skip projections and the health gate, but
-still require valid Position, global, clock and token accounts, an unfrozen
-protocol and the owner's wallet signature. Every call reads current state;
+Zero amounts and exactly zero-debt positions skip both projections and the
+health gate. A debt-free withdrawal retains that behavior while frozen, even if
+valid historical rates would project the redemption price to zero or saturate
+the fee projection. No market oracle is read, so a stale oracle adds no gate.
+Valid Position, global, clock and token accounts, live balance checks, the
+owner's wallet signature, and the freeze policy above still apply. Debt, globals,
+clock, and the freeze flag remain unchanged. Every call reads current state;
 an earlier health quote does not authorize a later withdrawal.
 
 Stable errors include `protocol_frozen`, `withdraw_amount_exceeds_collateral`,
@@ -472,7 +483,9 @@ A direct vault donation blocks closure even if recorded collateral is zero.
 `closePosition` does not repay debt, reconcile collateral, sweep donations or
 submit any preliminary transactions. Use the separate `depositCollateral`
 zero-amount reconciliation and `withdrawCollateral` workflow to recover a
-donation first; withdrawal requires the protocol to be unfrozen.
+donation first. With exactly zero normalized debt, reconciliation, withdrawal,
+and closure can all complete while the protocol remains frozen; all ordinary
+account, signature, token, and balance checks still apply.
 
 Stable closure errors are `position_has_debt`, `position_has_collateral` and
 `vault_not_empty`, plus the existing numeric, account-read, PDA, ownership and
@@ -629,8 +642,14 @@ validates live authority/state and submits once, returning the wallet's actual
 transaction result. The module never fabricates an ID for a local no-op and
 does not treat the frozen flag as a submission blocker for these operations.
 
-While frozen, `openPosition`, `withdrawCollateral` and `generateDebt` fail with
-`protocol_frozen`, including zero-amount calls. `depositCollateral`, `repayDebt`,
+While frozen, `openPosition` and `generateDebt` fail with `protocol_frozen`,
+including zero-amount calls. `withdrawCollateral` returns the same error when
+the validated Position has nonzero normalized debt, even for a zero amount.
+An authenticated owner with exactly zero normalized debt can still withdraw
+partial, full, or zero amounts, then close an empty position. This deliberately
+permits debt-free collateral outflows during an emergency: freeze controls
+debt-increasing paths and withdrawals backing debt, while debt-free owners can
+exit without waiting for unfreeze. `depositCollateral`, `repayDebt`,
 `closePosition` and permissionless maintenance remain available when their own
 preconditions are met. Unfreeze restores the gated paths; it does not bypass
 their ordinary account, balance, health, oracle or wallet checks.

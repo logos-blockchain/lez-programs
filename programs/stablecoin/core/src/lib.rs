@@ -327,10 +327,11 @@ pub enum Instruction {
     },
     /// Emergency kill switch: halt the risk-increasing instructions (spec §10.17).
     ///
-    /// Sets `ProtocolParameters.is_frozen`. While frozen, `OpenPosition`,
-    /// `WithdrawCollateral` and `GenerateDebt` panic; `DepositCollateral`,
-    /// `RepayDebt`, `ClosePosition` and the permissionless pokes keep working (§7).
-    /// Idempotent.
+    /// Sets `ProtocolParameters.is_frozen`. While frozen, `OpenPosition` and
+    /// `GenerateDebt` panic; `WithdrawCollateral` is allowed only when the validated
+    /// position has exactly zero normalized debt. `DepositCollateral`, `RepayDebt`,
+    /// `ClosePosition` and the permissionless pokes keep working (§7). A freeze
+    /// therefore does not stop debt-free collateral outflows. Idempotent.
     ///
     /// Required accounts (2), in order:
     /// 1. `freeze_authority` — authorized; must equal
@@ -342,9 +343,12 @@ pub enum Instruction {
     Unfreeze,
     /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
     ///
-    /// Blocked while the protocol is frozen. The §6.2 collateralization
+    /// While frozen, allowed only when the validated position has exactly zero
+    /// normalized debt, including for a zero amount. The §6.2 collateralization
     /// invariant is checked *after* the decrement, against debt and redemption
-    /// price both projected forward to the clock timestamp (§5.3).
+    /// price both projected forward to the clock timestamp (§5.3). Zero amounts
+    /// and zero-debt positions skip these projections, while retaining all account
+    /// validation. Malformed globals, clock or position can fail before the frozen error.
     ///
     /// Required accounts (8), in order:
     /// 1. `owner` — authorized.
