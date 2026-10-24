@@ -6,7 +6,7 @@
       "name": "initialize_program",
       "accounts": [
         {
-          "name": "admin",
+          "name": "deployment_authority",
           "writable": false,
           "signer": true,
           "init": false
@@ -96,6 +96,10 @@
         {
           "name": "stablecoin_name",
           "type": "string"
+        },
+        {
+          "name": "initial_admin_account_id",
+          "type": "account_id"
         }
       ]
     },

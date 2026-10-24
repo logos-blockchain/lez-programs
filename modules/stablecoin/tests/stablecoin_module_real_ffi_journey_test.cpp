@@ -1023,6 +1023,88 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 3);
 }
 
+LOGOS_TEST(real_ffi_initialize_uses_configured_header_signature_and_selected_admin) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const LogosMap info = module.programInfo();
+    assertOk(info);
+    const std::string collateral_id = idHex(4);
+    const std::string oracle_id = idHex(5);
+    const std::string freeze_authority_id = idHex(2);
+    const std::string clock_id = info["clockIdHex"].get<std::string>();
+    const std::string definition_id = info["stablecoinDefinitionIdHex"].get<std::string>();
+    QStringList account_ids{QString::fromStdString(PROGRAM_ID_HEX)};
+    for (const char* field : {
+             "protocolParametersIdHex",
+             "stabilityFeeAccumulatorIdHex",
+             "redemptionPriceStateIdHex",
+             "stablecoinDefinitionIdHex",
+             "stablecoinMasterHoldingIdHex",
+         }) {
+        const std::string account_id = info[field].get<std::string>();
+        expectMissing(account_id);
+        account_ids.push_back(QString::fromStdString(account_id));
+    }
+    account_ids.push_back(QString::fromStdString(collateral_id));
+    account_ids.push_back(QString::fromStdString(oracle_id));
+    account_ids.push_back(QString::fromStdString(clock_id));
+    std::string oracle = oracleData(FIXED_ONE, START);
+    oracle.replace(0, 64, definition_id);
+    expectRead(collateral_id, TOKEN_OWNER_HEX, collateralDefinitionData());
+    expectRead(oracle_id, ORACLE_OWNER_HEX, oracle);
+    expectRead(clock_id, PROGRAM_OWNER_HEX, clockData(START));
+    context.mockModule("lez_core", "send_generic_public_transaction")
+        .returns(successfulTransaction());
+
+    const std::string ratio = "1500000000000000000000000000";
+    const LogosMap response = module.initializeProgram({
+        {"adminId", CALLER_ID_HEX},
+        {"freezeAuthorityId", freeze_authority_id},
+        {"collateralDefinitionId", collateral_id},
+        {"marketPriceOracleId", oracle_id},
+        {"initialStabilityFeePerMillisecond", FIXED_ONE},
+        {"initialControllerProportionalGain", "0"},
+        {"initialControllerIntegralGain", "0"},
+        {"initialMinimumCollateralizationRatio", ratio},
+        {"minimumMillisecondsBetweenRateUpdates", "300000"},
+        {"maximumOraclePriceAgeMilliseconds", "900000"},
+        {"initialRedemptionPrice", FIXED_ONE},
+        {"stablecoinName", "Bootstrap"},
+        {"feePayerId", CALLER_ID_HEX},
+        // A caller cannot substitute a different deployment for the configured one.
+        {"stablecoinProgramId", idHex(99)},
+    });
+
+    assertOk(response);
+    LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+    // Pin tag zero, existing argument order, and the appended selected admin ID.
+    std::string instruction_hex = "00" + freeze_authority_id + u128Le(FIXED_ONE)
+        + i128Le("0") + i128Le("0") + u128Le(ratio);
+    appendU64(instruction_hex, 300'000);
+    appendU64(instruction_hex, 900'000);
+    instruction_hex += u128Le(FIXED_ONE) + "09000000" + bytesHex("Bootstrap")
+        + CALLER_ID_HEX;
+    const QByteArray instruction = QByteArray::fromHex(
+        QByteArray::fromStdString(instruction_hex));
+    const QVariantList signers{true, false, false, false, false, false, false, false, false};
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith(
+        "lez_core", "send_generic_public_transaction", {
+            QVariant(account_ids),
+            QVariant(signers),
+            QVariant(instruction),
+            QVariant(QString::fromStdString(PROGRAM_ID_HEX)),
+            // The selected admin pays the fee separately from the header signer.
+            QVariant(QString::fromStdString(CALLER_ID_HEX)),
+        }));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 8);
+}
+
 LOGOS_TEST(real_ffi_journey_opens_position_with_two_wallet_signers) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);

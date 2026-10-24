@@ -212,11 +212,17 @@ Required request fields:
 
 The module verifies all five derived target PDAs are uninitialized, validates
 the collateral definition, oracle asset pair, and clock accounts, then submits
-the exact nine-account instruction. Only `adminId` signs. LEZ charges public
-transactions, so `feePayerId` must name a funded account in the connected
-wallet: the admin itself or a separate account, which co-signs the fee. A
-non-signing participant is rejected with `invalid_fee_payer`. Success adds
-`transactionId` to the response envelope.
+the exact nine-account instruction. The configured stablecoin program header
+occupies the first account slot and signs bootstrap; its authorization capability
+must be available to the connected wallet. `adminId` selects the authority stored
+in protocol parameters and is serialized as `initial_admin_account_id`; it does
+not replace the header signature. The admin may be the header itself or another
+account.
+
+LEZ charges public transactions, so `feePayerId` must name a funded account in the
+connected wallet: the header itself or a separate account, including the selected
+admin, which co-signs the fee. A non-signing participant is rejected with
+`invalid_fee_payer`. Success adds `transactionId` to the response envelope.
 
 Pass numeric values as decimal strings. JSON integers are accepted when their
 exact value survives parsing. JSON floating-point values are always rejected.
