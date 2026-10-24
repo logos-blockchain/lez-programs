@@ -11,7 +11,7 @@ use token_core::TokenHolding;
 ///
 /// The position's data is zeroed but the account itself lingers: LEE's
 /// `validate_execution` forbids a program from changing an account's
-/// `program_owner` or `nonce`, so the PDA cannot be released and §10.9's
+/// `program_owner` or `nonce`, so the PDA cannot be released and an
 /// `Account::default()` post-state is not expressible. A consequence worth
 /// knowing: the `(owner, position_nonce)` pair cannot be reused afterwards,
 /// because `open_position` requires an uninitialized position account.
@@ -97,15 +97,15 @@ pub fn close_position(
         }
     };
     // The position's own accounting already reads zero; this catches the case
-    // where the two disagree, which would strand tokens behind a released PDA.
+    // where the two disagree, which would strand tokens behind a cleared position.
     assert_eq!(vault_balance, 0, "Vault still holds a balance");
 
     let state_diffs = vec![
         AccountStateDiff::unchanged(owner),
         // Clear the data only. A diff cannot change an account's `program_owner`
         // or `nonce` — it does not carry them, and the runtime derives the post
-        // owner itself — so the PDA cannot actually be released; spec §10.9's
-        // `Account::default()` is not expressible here. The account lingers
+        // owner itself — so the PDA cannot actually be released; an
+        // `Account::default()` post-state is not expressible here. The account lingers
         // stablecoin-owned with empty data, like the vault does per §12.
         AccountStateDiff::new(position, BalanceDiff::Add(0), Data::default()),
         AccountStateDiff::unchanged(vault),

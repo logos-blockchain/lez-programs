@@ -25,7 +25,7 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
     let now = clock_timestamp(&request.clock)?;
 
     let elapsed_milliseconds = now.saturating_sub(redemption.last_updated_at);
-    let oracle_age_milliseconds = now.saturating_sub(oracle.timestamp);
+    let oracle_age_milliseconds = now.checked_sub(oracle.timestamp);
     let current_redemption_price = compute_current_redemption_price(
         redemption.redemption_price_at_last_update,
         redemption.redemption_rate_per_millisecond,
@@ -34,15 +34,25 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
     );
 
     let mut errors = Vec::new();
-    if oracle_age_milliseconds > parameters.maximum_oracle_price_age_milliseconds {
-        errors.push(blocker(
-            "oracle_stale",
+    match oracle_age_milliseconds {
+        None => errors.push(blocker(
+            "oracle_future",
             json!({
-                "oracleAgeMilliseconds": oracle_age_milliseconds.to_string(),
-                "maximumOraclePriceAgeMilliseconds":
-                    parameters.maximum_oracle_price_age_milliseconds.to_string(),
+                "clockTimestamp": now.to_string(),
+                "oracleTimestamp": oracle.timestamp.to_string(),
             }),
-        ));
+        )),
+        Some(age) if age > parameters.maximum_oracle_price_age_milliseconds => {
+            errors.push(blocker(
+                "oracle_stale",
+                json!({
+                    "oracleAgeMilliseconds": age.to_string(),
+                    "maximumOraclePriceAgeMilliseconds":
+                        parameters.maximum_oracle_price_age_milliseconds.to_string(),
+                }),
+            ));
+        }
+        Some(_) => {}
     }
     if oracle.price == 0 {
         errors.push(blocker("oracle_price_zero", json!({"marketPrice": "0"})));
@@ -485,13 +495,24 @@ mod tests {
     }
 
     #[test]
-    fn inverted_timestamps_saturate_and_frozen_state_does_not_block() {
+    fn future_global_timestamps_still_saturate_and_frozen_state_does_not_block() {
         let oracle_id = id(5);
         let params = parameters(oracle_id);
         let future_state = redemption(FIXED_POINT_ONE, 0, 200);
-        let future_observation = oracle(oracle_id, FIXED_POINT_ONE, 300);
-        let inverted = value(request(&params, &future_state, &future_observation, 100));
+        let current_observation = oracle(oracle_id, FIXED_POINT_ONE, 100);
+        let inverted = value(request(&params, &future_state, &current_observation, 100));
         assert_eq!(inverted["elapsedMilliseconds"], "0");
+        assert_eq!(
+            inverted["currentRedemptionPrice"],
+            FIXED_POINT_ONE.to_string()
+        );
+        assert_eq!(
+            inverted["errors"]
+                .as_array()
+                .expect("errors are an array")
+                .len(),
+            1
+        );
         assert_eq!(inverted["errors"][0]["code"], "rate_update_too_soon");
 
         let mut frozen = params;
@@ -502,6 +523,69 @@ mod tests {
             value(request(&frozen, &due_state, &current_observation, 100))["canSubmit"],
             true
         );
+    }
+
+    #[test]
+    fn future_observations_block_without_controller_outputs_or_stale_classification() {
+        let oracle_id = id(5);
+        let params = parameters(oracle_id);
+        let state = redemption(FIXED_POINT_ONE, 0, 0);
+        for now in [0, 100] {
+            for timestamp in [now + 1, u64::MAX] {
+                let observation = oracle(oracle_id, FIXED_POINT_ONE, timestamp);
+                let quoted = value(request(&params, &state, &observation, now));
+                assert_eq!(quoted["canSubmit"], false);
+                assert_eq!(quoted["code"], "blocked");
+                assert_eq!(
+                    quoted["errors"][0],
+                    json!({
+                        "code": "oracle_future",
+                        "recoverable": true,
+                        "blockingFields": [],
+                        "details": {
+                            "clockTimestamp": now.to_string(),
+                            "oracleTimestamp": timestamp.to_string(),
+                        },
+                    })
+                );
+                let errors = quoted["errors"].as_array().expect("errors are an array");
+                if now == 0 {
+                    assert_eq!(errors.len(), 2);
+                    assert_eq!(errors[1]["code"], "rate_update_too_soon");
+                } else {
+                    assert_eq!(errors.len(), 1);
+                }
+                assert!(quoted["nextRedemptionRatePerMillisecond"].is_null());
+                assert!(quoted["nextControllerIntegralTerm"].is_null());
+            }
+            let current = oracle(oracle_id, FIXED_POINT_ONE, now);
+            assert_eq!(
+                value(request(&params, &state, &current, now))["canSubmit"],
+                now != 0
+            );
+        }
+    }
+
+    #[test]
+    fn future_zero_price_and_too_soon_blockers_keep_deterministic_order() {
+        let oracle_id = id(5);
+        let params = parameters(oracle_id);
+        let state = redemption(FIXED_POINT_ONE, 0, 100);
+        let observation = oracle(oracle_id, 0, 101);
+        let quoted = value(request(&params, &state, &observation, 100));
+        let codes: Vec<_> = quoted["errors"]
+            .as_array()
+            .expect("errors are an array")
+            .iter()
+            .map(|error| error["code"].as_str().expect("code is a string"))
+            .collect();
+        assert_eq!(
+            codes,
+            ["oracle_future", "oracle_price_zero", "rate_update_too_soon"]
+        );
+        assert_eq!(quoted["canSubmit"], false);
+        assert!(quoted["nextRedemptionRatePerMillisecond"].is_null());
+        assert!(quoted["nextControllerIntegralTerm"].is_null());
     }
 
     #[test]

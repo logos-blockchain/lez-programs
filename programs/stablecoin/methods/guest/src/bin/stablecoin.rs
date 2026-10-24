@@ -112,7 +112,7 @@ mod stablecoin {
     /// re-anchor the redemption price (spec §10.3; host fn
     /// `stablecoin_program::update_redemption_rate`).
     ///
-    /// Strict: panics on a not-yet-due interval or a stale / zero-price oracle.
+    /// Strict: panics on a not-yet-due interval or a future-dated / stale / zero-price oracle.
     /// Wall-clock time is read from the system `CLOCK_01` account passed as the
     /// 5th input.
     ///
@@ -145,7 +145,8 @@ mod stablecoin {
 
     /// Permissionless combined poke: always accrue the stability fee, and run
     /// the redemption-rate tick too when its interval is due and the oracle is
-    /// fresh — best-effort, skipping rather than panicking (spec §10.3a; host fn
+    /// not future-dated, fresh, and non-zero — best-effort, skipping rather than
+    /// panicking (spec §10.3a; host fn
     /// `stablecoin_program::refresh_globals`).
     ///
     /// A LEZ transaction carries exactly one instruction, so this is the only

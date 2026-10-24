@@ -159,10 +159,17 @@ and market prices, elapsed milliseconds, next redemption rate, next controller
 integral term, and integral/rate clamp bounds. All numeric values are exact
 decimal strings.
 
-A stale oracle, zero oracle price, or not-yet-due update returns a successful
-read-only quote with `canSubmit: false`, `code: "blocked"`, machine-readable
+A future or stale oracle, zero oracle price, or not-yet-due update returns a
+successful read-only quote with `canSubmit: false`, `code: "blocked"`, machine-readable
 `errors`, and explicit `null` next-controller values. Multiple blockers are
-reported in on-chain gate order. The frozen flag does not block this operation.
+reported in on-chain gate order: `oracle_future` or `oracle_stale` (mutually
+exclusive), then `oracle_price_zero`, then `rate_update_too_soon`. The
+`oracle_future` blocker includes the actual clock and observation timestamps
+as decimal strings.
+Observations at the clock timestamp or at the exact maximum age are eligible.
+Stored global-state projections retain saturating elapsed-time subtraction;
+that does not make future oracle observations usable. The frozen flag does not
+block this operation.
 
 ### Permissionless maintenance transactions
 
@@ -184,11 +191,12 @@ orders:
 | `refreshGlobals` | caller, Protocol Parameters, Stability Fee Accumulator, Redemption Price State, configured market-price oracle, `CLOCK_01` |
 
 `updateRedemptionRate` runs the live quote preflight and does not submit when
-the first on-chain gate is `oracle_stale`, `oracle_price_zero`, or
+the first on-chain gate is `oracle_future`, `oracle_stale`, `oracle_price_zero`, or
 `rate_update_too_soon`. `refreshGlobals` intentionally submits under those soft
 gates: its fee-accrual half still runs while the on-chain instruction may skip
 the controller update. A frozen protocol does not block any of the three
-maintenance methods.
+maintenance methods. Every transaction call reads current state again; an
+earlier quote does not authorize a later submission.
 
 ### `initializeProgram(request)`
 
