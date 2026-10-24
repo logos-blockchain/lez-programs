@@ -1463,6 +1463,8 @@ std::vector<AdminSetterCase> adminSetterCases() {
             {{"newRate", "1000000000000000000000000000"}}, "stability_fee_out_of_band", false, true},
         {&StablecoinModuleImpl::setMinimumCollateralizationRatio, "stablecoin_set_minimum_collateralization_ratio_plan",
             {{"newRatio", "1100000000000000000000000000"}}, "collateralization_ratio_out_of_band", false},
+        {&StablecoinModuleImpl::setDebtLimits, "stablecoin_set_debt_limits_plan",
+            {{"minimumDebtAmount", "10"}, {"debtCeiling", "1000"}}, "invalid_debt_limits", false},
         {&StablecoinModuleImpl::setControllerGains, "stablecoin_set_controller_gains_plan",
             {{"newProportionalGain", "-9007199254740993"}, {"newIntegralGain", "9007199254740993"}}, "controller_gains_out_of_band", false},
         {&StablecoinModuleImpl::setTimingParameters, "stablecoin_set_timing_parameters_plan",
@@ -2376,6 +2378,7 @@ LOGOS_TEST(repay_debt_rejects_bad_requests_reads_and_planner_errors) {
     }
     for (const std::string& error : {"invalid_numeric_value", "repay_amount_exceeds_debt",
                                     "insufficient_stablecoin_balance", "repayment_arithmetic_error",
+                                    "debt_below_minimum", "total_debt_arithmetic_error",
                                     "stablecoin_definition_mismatch", "invalid_stablecoin_definition",
                                     "invalid_user_stablecoin_holding", "invalid_clock"}) {
         LogosTestContext context("stablecoin_module");

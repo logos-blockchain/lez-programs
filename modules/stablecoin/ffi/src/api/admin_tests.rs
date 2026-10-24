@@ -38,16 +38,18 @@ enum Setter {
     Admin,
     FreezeAuthority,
     Oracle,
+    DebtLimits,
 }
 
 impl Setter {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Ratio,
         Self::Gains,
         Self::Timing,
         Self::Admin,
         Self::FreezeAuthority,
         Self::Oracle,
+        Self::DebtLimits,
     ];
 
     fn name(self) -> &'static str {
@@ -58,11 +60,15 @@ impl Setter {
             Self::Admin => "set_admin",
             Self::FreezeAuthority => "set_freeze_authority",
             Self::Oracle => "set_market_price_oracle",
+            Self::DebtLimits => "set_debt_limits",
         }
     }
 
     fn plan(self, request: Value) -> StablecoinResult {
         match self {
+            Self::DebtLimits => {
+                set_debt_limits_plan(serde_json::from_value(request).expect("limits request"))
+            }
             Self::Ratio => set_minimum_collateralization_ratio_plan(
                 serde_json::from_value(request).expect("ratio request"),
             ),
@@ -84,6 +90,7 @@ impl Setter {
 
     fn ffi(self) -> unsafe extern "C" fn(*const c_char) -> *mut c_char {
         match self {
+            Self::DebtLimits => crate::ffi::stablecoin_set_debt_limits_plan,
             Self::Ratio => crate::ffi::stablecoin_set_minimum_collateralization_ratio_plan,
             Self::Gains => crate::ffi::stablecoin_set_controller_gains_plan,
             Self::Timing => crate::ffi::stablecoin_set_timing_parameters_plan,
@@ -102,6 +109,9 @@ struct Fixture {
 impl Fixture {
     fn new(frozen: bool) -> Self {
         let parameters = ProtocolParameters {
+            schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+            minimum_debt_amount: 1,
+            debt_ceiling: u128::MAX,
             admin_account_id: id(1),
             freeze_authority_account_id: id(2),
             stablecoin_definition_id: compute_stablecoin_definition_pda(PROGRAM),
@@ -133,6 +143,9 @@ impl Fixture {
             "protocolParameters": read_value(compute_protocol_parameters_pda(PROGRAM), PROGRAM, Data::from(&self.parameters)),
         });
         let fields = match setter {
+            Setter::DebtLimits => {
+                json!({"minimumDebtAmount": "9007199254740993", "debtCeiling": u128::MAX.to_string()})
+            }
             Setter::Ratio => json!({"newRatio": (FIXED_POINT_ONE * 10).to_string()}),
             Setter::Gains => {
                 json!({"newProportionalGain": "-9007199254740993", "newIntegralGain": "9007199254740993"})
@@ -189,6 +202,16 @@ fn native_execute(plan: &Value, request: &Value) -> Account {
     let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
     let instruction: Instruction = borsh::from_slice(&words).expect("instruction");
     let (posts, calls) = match instruction {
+        Instruction::SetDebtLimits {
+            minimum_debt_amount,
+            debt_ceiling,
+        } => stablecoin_program::admin::set_debt_limits(
+            admin,
+            parameters,
+            PROGRAM,
+            minimum_debt_amount,
+            debt_ceiling,
+        ),
         Instruction::SetMinimumCollateralizationRatio { new_ratio } => {
             stablecoin_program::admin::set_minimum_collateralization_ratio(
                 admin, parameters, PROGRAM, new_ratio,
@@ -299,6 +322,14 @@ fn all_setters_pin_arguments_account_order_and_guest_flags_and_match_native_muta
                 serde_json::from_value(plan["instruction"].clone()).expect("words");
             let mut expected = fixture.parameters.clone();
             let instruction = match setter {
+                Setter::DebtLimits => {
+                    expected.minimum_debt_amount = 9_007_199_254_740_993;
+                    expected.debt_ceiling = u128::MAX;
+                    Instruction::SetDebtLimits {
+                        minimum_debt_amount: expected.minimum_debt_amount,
+                        debt_ceiling: expected.debt_ceiling,
+                    }
+                }
                 Setter::Ratio => {
                     expected.minimum_collateralization_ratio = FIXED_POINT_ONE * 10;
                     Instruction::SetMinimumCollateralizationRatio {
@@ -412,6 +443,16 @@ fn ratio_signed_gains_and_timing_accept_inclusive_bands_and_reject_one_unit_outs
 fn setters_reject_floats_malformed_decimals_and_out_of_type_values_without_narrowing() {
     let fixture = Fixture::new(false);
     for (setter, field, overflow) in [
+        (
+            Setter::DebtLimits,
+            "minimumDebtAmount",
+            "340282366920938463463374607431768211456",
+        ),
+        (
+            Setter::DebtLimits,
+            "debtCeiling",
+            "340282366920938463463374607431768211456",
+        ),
         (
             Setter::Ratio,
             "newRatio",
@@ -627,7 +668,7 @@ fn oracle_replacement_accepts_other_producers_and_stale_zero_observations_but_re
 }
 
 #[test]
-fn all_six_c_boundaries_roundtrip_flat_requests_and_reject_null_or_incomplete_json() {
+fn all_setter_c_boundaries_roundtrip_flat_requests_and_reject_null_or_incomplete_json() {
     let fixture = Fixture::new(false);
     for setter in Setter::ALL {
         let payload = CString::new(fixture.request(setter).to_string()).expect("JSON no NUL");
@@ -658,5 +699,30 @@ fn all_six_c_boundaries_roundtrip_flat_requests_and_reject_null_or_incomplete_js
             // SAFETY: response is a live, unfreed library allocation.
             unsafe { crate::ffi::stablecoin_free(response_pointer) };
         }
+    }
+}
+
+#[test]
+fn debt_limit_setter_validates_both_limits_and_accepts_lowered_ceiling() {
+    let fixture = Fixture::new(true);
+    for (minimum, ceiling) in [(0, 100), (2, 1), (0, 0)] {
+        let mut request = fixture.request(Setter::DebtLimits);
+        request["minimumDebtAmount"] = json!(minimum.to_string());
+        request["debtCeiling"] = json!(ceiling.to_string());
+        failure(Setter::DebtLimits, request, "invalid_debt_limits");
+    }
+    for (minimum, ceiling) in [(1, 1), (u128::MAX, u128::MAX)] {
+        let mut request = fixture.request(Setter::DebtLimits);
+        request["minimumDebtAmount"] = json!(minimum.to_string());
+        request["debtCeiling"] = json!(ceiling.to_string());
+        let plan = Setter::DebtLimits
+            .plan(request.clone())
+            .expect("valid limits");
+        let account = native_execute(&plan, &request);
+        let parameters = ProtocolParameters::try_from(&account.data).expect("parameters");
+        assert_eq!(
+            (parameters.minimum_debt_amount, parameters.debt_ceiling),
+            (minimum, ceiling)
+        );
     }
 }

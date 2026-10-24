@@ -22,6 +22,8 @@ const PROTOCOL_PARAMETERS_PDA_DOMAIN: &[u8; 32] = b"STABLECOIN__PROTOCOL_PARAMS_
 #[account_type]
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct ProtocolParameters {
+    /// Account layout version, must equal `GLOBAL_SCHEMA_VERSION`.
+    pub schema_version: u8,
     /// Authority required for every parameter-update and admin-rotation
     /// instruction.
     pub admin_account_id: AccountId,
@@ -54,13 +56,30 @@ pub struct ProtocolParameters {
     pub maximum_oracle_price_age_milliseconds: u64,
     /// `true` blocks `open_position`, `generate_debt`, `withdraw_collateral`.
     pub is_frozen: bool,
+    /// Minimum positive accrued position debt, in raw stablecoin atomic units.
+    pub minimum_debt_amount: u128,
+    /// Aggregate accrued debt ceiling for new borrowing, in raw atomic units.
+    pub debt_ceiling: u128,
 }
 
 impl TryFrom<&Data> for ProtocolParameters {
     type Error = std::io::Error;
 
     fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        Self::try_from_slice(data.as_ref())
+        if data.as_ref().len() == 241 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Legacy stablecoin global account schema is unsupported",
+            ));
+        }
+        let decoded = Self::try_from_slice(data.as_ref())?;
+        if decoded.schema_version != crate::GLOBAL_SCHEMA_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Unsupported stablecoin global account schema",
+            ));
+        }
+        Ok(decoded)
     }
 }
 
@@ -102,6 +121,9 @@ mod tests {
 
     fn sample_params() -> ProtocolParameters {
         ProtocolParameters {
+            schema_version: crate::GLOBAL_SCHEMA_VERSION,
+            minimum_debt_amount: 10,
+            debt_ceiling: 1_000_000,
             admin_account_id: AccountId::new([0xAA; 32]),
             freeze_authority_account_id: AccountId::new([0xFF; 32]),
             stablecoin_definition_id: AccountId::new([0x01; 32]),
@@ -158,5 +180,48 @@ mod tests {
         let seed_a = compute_protocol_parameters_pda_seed();
         let seed_b = compute_protocol_parameters_pda_seed();
         assert_eq!(seed_a, seed_b);
+    }
+    #[test]
+    fn canonical_v2_layout_and_strict_decoding() {
+        let params = sample_params();
+        let bytes = borsh::to_vec(&params).expect("encode");
+        let mut expected = vec![2];
+        for byte in [0xAA, 0xFF, 0x01, 0x02, 0x03] {
+            expected.extend_from_slice(&[byte; 32]);
+        }
+        expected.extend_from_slice(&(FIXED_POINT_ONE + 1_500_000_000_000_000).to_le_bytes());
+        expected.extend_from_slice(&(-123_456_789_i128).to_le_bytes());
+        expected.extend_from_slice(&987_654_321_i128.to_le_bytes());
+        expected.extend_from_slice(&(FIXED_POINT_ONE * 3 / 2).to_le_bytes());
+        expected.extend_from_slice(&300_000_u64.to_le_bytes());
+        expected.extend_from_slice(&900_000_u64.to_le_bytes());
+        expected.push(0);
+        expected.extend_from_slice(&10_u128.to_le_bytes());
+        expected.extend_from_slice(&1_000_000_u128.to_le_bytes());
+        assert_eq!(bytes.len(), 274);
+        assert_eq!(bytes, expected);
+
+        let legacy = Data::try_from(bytes[1..242].to_vec()).expect("data");
+        assert_eq!(
+            ProtocolParameters::try_from(&legacy)
+                .expect_err("legacy")
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        let mut unsupported = bytes.clone();
+        unsupported[0] = 3;
+        assert_eq!(
+            ProtocolParameters::try_from(&Data::try_from(unsupported).expect("data"))
+                .expect_err("version")
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(ProtocolParameters::try_from(&Data::try_from(trailing).expect("data")).is_err());
+        assert!(ProtocolParameters::try_from(
+            &Data::try_from(bytes[..273].to_vec()).expect("data")
+        )
+        .is_err());
     }
 }

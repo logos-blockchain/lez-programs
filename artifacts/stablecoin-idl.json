@@ -96,6 +96,14 @@
         {
           "name": "stablecoin_name",
           "type": "string"
+        },
+        {
+          "name": "minimum_debt_amount",
+          "type": "u128"
+        },
+        {
+          "name": "debt_ceiling",
+          "type": "u128"
         }
       ]
     },
@@ -334,7 +342,7 @@
         },
         {
           "name": "stability_fee_accumulator",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -706,7 +714,7 @@
         },
         {
           "name": "stability_fee_accumulator",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -729,6 +737,33 @@
           "type": "u128"
         }
       ]
+    },
+    {
+      "name": "set_debt_limits",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "minimum_debt_amount",
+          "type": "u128"
+        },
+        {
+          "name": "debt_ceiling",
+          "type": "u128"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -737,6 +772,10 @@
       "type": {
         "kind": "struct",
         "fields": [
+          {
+            "name": "schema_version",
+            "type": "u8"
+          },
           {
             "name": "admin_account_id",
             "type": "account_id"
@@ -784,6 +823,14 @@
           {
             "name": "is_frozen",
             "type": "bool"
+          },
+          {
+            "name": "minimum_debt_amount",
+            "type": "u128"
+          },
+          {
+            "name": "debt_ceiling",
+            "type": "u128"
           }
         ]
       }
@@ -818,12 +865,20 @@
         "kind": "struct",
         "fields": [
           {
+            "name": "schema_version",
+            "type": "u8"
+          },
+          {
             "name": "accumulated_rate_at_last_accrual",
             "type": "u128"
           },
           {
             "name": "last_accrued_at",
             "type": "u64"
+          },
+          {
+            "name": "total_normalized_debt_amount",
+            "type": "u128"
           }
         ]
       }

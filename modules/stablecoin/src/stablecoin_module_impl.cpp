@@ -718,6 +718,14 @@ LogosMap StablecoinModuleImpl::setMinimumCollateralizationRatio(const LogosMap& 
     });
 }
 
+LogosMap StablecoinModuleImpl::setDebtLimits(const LogosMap& request) {
+    return guarded([&]() -> LogosMap {
+        if (!request.is_object() || request.find("minimumDebtAmount") == request.end()
+            || request.find("debtCeiling") == request.end()) return publicError("bad_request");
+        return adminPlanAndSubmit(stablecoin_set_debt_limits_plan, request);
+    });
+}
+
 LogosMap StablecoinModuleImpl::setControllerGains(const LogosMap& request) {
     return guarded([&]() -> LogosMap {
         if (!request.is_object() || request.find("newProportionalGain") == request.end()
@@ -1423,6 +1431,8 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
                  "minimumMillisecondsBetweenRateUpdates",
                  "maximumOraclePriceAgeMilliseconds",
                  "initialRedemptionPrice",
+                 "minimumDebtAmount",
+                 "debtCeiling",
              }) {
             if (request.find(key) == request.end()) return publicError("bad_request");
         }
@@ -1484,6 +1494,8 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
              request["maximumOraclePriceAgeMilliseconds"]},
             {"initialRedemptionPrice", request["initialRedemptionPrice"]},
             {"stablecoinName", request["stablecoinName"]},
+            {"minimumDebtAmount", request["minimumDebtAmount"]},
+            {"debtCeiling", request["debtCeiling"]},
         }, jsonString(info, "programIdHex"), fee_payer, 9);
     });
 }

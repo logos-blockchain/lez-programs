@@ -56,7 +56,7 @@ pub(super) fn validated_protocol_parameters(
         return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
     }
     let parameters = ProtocolParameters::try_from(&account.data)
-        .map_err(|_| StablecoinApiError::new("invalid_protocol_parameters_data"))?;
+        .map_err(|error| schema_error(error, "invalid_protocol_parameters_data"))?;
     Ok((account_id, parameters))
 }
 
@@ -75,7 +75,7 @@ pub(super) fn validated_stability_fee_accumulator(
         return Err(StablecoinApiError::new("stablecoin_program_mismatch"));
     }
     let accumulator = StabilityFeeAccumulator::try_from(&account.data)
-        .map_err(|_| StablecoinApiError::new("invalid_stability_fee_accumulator_data"))?;
+        .map_err(|error| schema_error(error, "invalid_stability_fee_accumulator_data"))?;
     Ok((account_id, accumulator))
 }
 
@@ -105,6 +105,9 @@ fn parameters_value(
     json!({
         "accountId": account_id.to_string(),
         "accountIdHex": account_id_hex(account_id),
+        "schemaVersion": parameters.schema_version.to_string(),
+        "minimumDebtAmount": parameters.minimum_debt_amount.to_string(),
+        "debtCeiling": parameters.debt_ceiling.to_string(),
         "adminId": parameters.admin_account_id.to_string(),
         "adminIdHex": account_id_hex(parameters.admin_account_id),
         "freezeAuthorityId": parameters.freeze_authority_account_id.to_string(),
@@ -134,6 +137,8 @@ fn stability_fee_accumulator_value(
     json!({
         "accountId": account_id.to_string(),
         "accountIdHex": account_id_hex(account_id),
+        "schemaVersion": accumulator.schema_version.to_string(),
+        "totalNormalizedDebtAmount": accumulator.total_normalized_debt_amount.to_string(),
         "accumulatedRateAtLastAccrual":
             accumulator.accumulated_rate_at_last_accrual.to_string(),
         "lastAccruedAt": accumulator.last_accrued_at.to_string(),
@@ -151,5 +156,13 @@ fn redemption_price_state_value(
         "redemptionRatePerMillisecond": state.redemption_rate_per_millisecond.to_string(),
         "controllerIntegralTerm": state.controller_integral_term.to_string(),
         "lastUpdatedAt": state.last_updated_at.to_string(),
+    })
+}
+
+fn schema_error(error: std::io::Error, malformed_code: &'static str) -> StablecoinApiError {
+    StablecoinApiError::new(if error.kind() == std::io::ErrorKind::Unsupported {
+        "unsupported_account_schema"
+    } else {
+        malformed_code
     })
 }

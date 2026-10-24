@@ -3,6 +3,7 @@ use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use stablecoin_core::{
     collateralization::collateralization_values,
     compute_stablecoin_definition_pda,
+    debt_limits::{meets_debt_floor, within_debt_ceiling},
     math::{
         compute_current_redemption_price_wide, FIXED_POINT_ONE,
         MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
@@ -121,6 +122,23 @@ pub fn generate_debt_plan(request: GenerateDebtPlanRequest) -> StablecoinResult 
         .normalized_debt_amount
         .checked_add(debt_delta)
         .ok_or_else(|| StablecoinApiError::new("normalized_debt_overflow"))?;
+    let new_total = accumulator
+        .total_normalized_debt_amount
+        .checked_add(debt_delta)
+        .ok_or_else(|| StablecoinApiError::new("total_debt_arithmetic_error"))?;
+    if debt_delta != 0
+        && !meets_debt_floor(
+            new_debt,
+            current_accumulator,
+            parameters.minimum_debt_amount,
+        )
+    {
+        return Err(StablecoinApiError::new("debt_below_minimum"));
+    }
+    if amount != 0 && !within_debt_ceiling(new_total, current_accumulator, parameters.debt_ceiling)
+    {
+        return Err(StablecoinApiError::new("debt_ceiling_exceeded"));
+    }
     let price = compute_current_redemption_price_wide(
         redemption.redemption_price_at_last_update,
         redemption.redemption_rate_per_millisecond,

@@ -293,6 +293,9 @@ impl Accounts {
             program_owner: Ids::stablecoin_program(),
             balance: 0,
             data: Data::from(&stablecoin_core::ProtocolParameters {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                minimum_debt_amount: 1,
+                debt_ceiling: u128::MAX,
                 admin_account_id: Ids::admin(),
                 freeze_authority_account_id: Ids::freeze_authority(),
                 stablecoin_definition_id: Ids::stablecoin_definition(),
@@ -312,11 +315,13 @@ impl Accounts {
         }
     }
 
-    fn stability_fee_accumulator_init() -> Account {
+    fn stability_fee_accumulator_init(total_normalized_debt_amount: u128) -> Account {
         Account {
             program_owner: Ids::stablecoin_program(),
             balance: 0,
             data: Data::from(&stablecoin_core::StabilityFeeAccumulator {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                total_normalized_debt_amount,
                 accumulated_rate_at_last_accrual: stablecoin_core::math::FIXED_POINT_ONE,
                 last_accrued_at: OPEN_POSITION_NOW,
             }),
@@ -434,7 +439,7 @@ fn state_for_stablecoin_tests() -> V03State {
     );
     state.force_insert_account(
         compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        Accounts::stability_fee_accumulator_init(),
+        Accounts::stability_fee_accumulator_init(0),
     );
     state.force_insert_account(
         compute_redemption_price_state_pda(Ids::stablecoin_program()),
@@ -470,7 +475,7 @@ fn state_for_stablecoin_repay_tests() -> V03State {
     );
     state.force_insert_account(
         compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        Accounts::stability_fee_accumulator_init(),
+        Accounts::stability_fee_accumulator_init(Balances::initial_debt()),
     );
     seed_clock(&mut state, OPEN_POSITION_NOW);
     state
@@ -679,6 +684,10 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
         Balances::initial_debt() - Balances::debt_repay_amount()
     );
     assert_eq!(position.collateral_amount, Balances::collateral_deposit());
+    assert_eq!(
+        read_accumulator(&state).total_normalized_debt_amount,
+        position.normalized_debt_amount
+    );
 
     // Stablecoin total supply decreased by the burn amount.
     let definition =
@@ -711,17 +720,17 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
     }
 }
 
-/// Seeds the three read-only globals and the clock that the fee-aware position
+/// Seeds the three globals and the clock that the fee-aware position
 /// instructions read. The privacy tests build their state by hand rather than via
 /// `initialize_program`, so they need these inserted explicitly.
-fn seed_stablecoin_globals(state: &mut V03State) {
+fn seed_stablecoin_globals(state: &mut V03State, total_normalized_debt_amount: u128) {
     state.force_insert_account(
         compute_protocol_parameters_pda(Ids::stablecoin_program()),
         Accounts::protocol_parameters_init(),
     );
     state.force_insert_account(
         compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        Accounts::stability_fee_accumulator_init(),
+        Accounts::stability_fee_accumulator_init(total_normalized_debt_amount),
     );
     state.force_insert_account(
         compute_redemption_price_state_pda(Ids::stablecoin_program()),
@@ -885,7 +894,7 @@ fn stablecoin_open_position_via_privacy_transaction() {
 fn stablecoin_withdraw_collateral_private_destination() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state);
+    seed_stablecoin_globals(&mut state, 0);
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1029,7 +1038,7 @@ fn stablecoin_withdraw_collateral_private_destination() {
 fn stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state);
+    seed_stablecoin_globals(&mut state, 0);
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1121,7 +1130,7 @@ fn stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible(
 fn stablecoin_withdraw_collateral_group_owned_destination() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state);
+    seed_stablecoin_globals(&mut state, 0);
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1255,7 +1264,7 @@ fn stablecoin_withdraw_collateral_group_owned_destination() {
 fn stablecoin_repay_debt_private_stablecoin_holding() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state);
+    seed_stablecoin_globals(&mut state, Balances::initial_debt());
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1375,6 +1384,10 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
         Position::try_from(&state.get_account_by_id(position_id).data).expect("valid Position");
     assert_eq!(position.normalized_debt_amount, initial_debt - repay_amount);
     assert_eq!(position.collateral_amount, position_collateral);
+    assert_eq!(
+        read_accumulator(&state).total_normalized_debt_amount,
+        position.normalized_debt_amount
+    );
 
     match TokenDefinition::try_from(&state.get_account_by_id(Ids::stablecoin_definition()).data)
         .expect("valid TokenDefinition")
@@ -1411,7 +1424,7 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
 fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state);
+    seed_stablecoin_globals(&mut state, Balances::initial_debt());
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1539,7 +1552,7 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
 fn stablecoin_group_owned_position_owner() {
     let mut state = V03State::new();
     deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state);
+    seed_stablecoin_globals(&mut state, 0);
     state.force_insert_account(
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
@@ -1734,6 +1747,8 @@ fn initialize_protocol(now: u64, controller_proportional_gain: i128) -> V03State
             protocol_config::MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS,
         initial_redemption_price: protocol_config::INITIAL_REDEMPTION_PRICE,
         stablecoin_name: String::from("test-stable"),
+        minimum_debt_amount: 1,
+        debt_ceiling: 1_000_000_000,
     };
 
     let message = public_transaction::Message::try_new(
@@ -1960,6 +1975,10 @@ fn stablecoin_full_position_lifecycle() {
     );
     let borrowed = read_position(&state);
     assert_eq!(borrowed.normalized_debt_amount, LIFECYCLE_BORROW);
+    assert_eq!(
+        read_accumulator(&state).total_normalized_debt_amount,
+        LIFECYCLE_BORROW
+    );
     assert_fungible_balance_of(
         &state,
         Ids::user_stablecoin_holding(),
@@ -1984,6 +2003,7 @@ fn stablecoin_full_position_lifecycle() {
     .expect("accrue_stability_fee must succeed");
     block += 1;
     let accumulator = read_accumulator(&state);
+    assert_eq!(accumulator.total_normalized_debt_amount, LIFECYCLE_BORROW);
     assert!(
         accumulator.accumulated_rate_at_last_accrual > FIXED_POINT_ONE,
         "an hour of stability fee must move the accumulator above 1.0"
@@ -2031,6 +2051,7 @@ fn stablecoin_full_position_lifecycle() {
         "repay_debt",
     );
     assert_eq!(read_position(&state).normalized_debt_amount, 0);
+    assert_eq!(read_accumulator(&state).total_normalized_debt_amount, 0);
     // The books stay consistent, and the gap is the fee: the owner burned more
     // than was minted, so the buffer absorbed the difference.
     let remaining = LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW - nominal_debt;
@@ -2092,6 +2113,7 @@ fn stablecoin_full_position_lifecycle() {
     // changing `program_owner` or `nonce`, so the PDA cannot be released.
     assert_eq!(closed.program_owner, Ids::stablecoin_program());
     assert_fungible_balance(&state, Ids::vault(), 0);
+    assert_eq!(read_accumulator(&state).total_normalized_debt_amount, 0);
 }
 
 fn submit(
@@ -2716,6 +2738,9 @@ fn stablecoin_initialize_program_creates_globals_and_stablecoin_definition() {
             .data,
     )
     .expect("valid ProtocolParameters");
+    assert_eq!(pp.schema_version, stablecoin_core::GLOBAL_SCHEMA_VERSION);
+    assert_eq!(pp.minimum_debt_amount, 1);
+    assert_eq!(pp.debt_ceiling, 1_000_000_000);
     assert_eq!(pp.admin_account_id, Ids::admin());
     assert_eq!(pp.freeze_authority_account_id, Ids::freeze_authority());
     assert_eq!(
@@ -2735,6 +2760,8 @@ fn stablecoin_initialize_program_creates_globals_and_stablecoin_definition() {
             .data,
     )
     .expect("valid StabilityFeeAccumulator");
+    assert_eq!(acc.schema_version, stablecoin_core::GLOBAL_SCHEMA_VERSION);
+    assert_eq!(acc.total_normalized_debt_amount, 0);
     assert_eq!(acc.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
     assert_eq!(acc.last_accrued_at, now);
 
@@ -2967,4 +2994,644 @@ fn stablecoin_refresh_globals_advances_both_then_fee_only_when_oracle_stale() {
     );
     // Redemption half skipped without panicking — byte-identical to pass 1.
     assert_eq!(redemption_after_second, redemption_after_first);
+}
+
+/// Run two independent borrowers against the same global counter. Every debt
+/// comes from the guest mint path; only the empty token holding is seeded.
+#[test]
+fn stablecoin_two_positions_enforce_debt_limits_and_preserve_atomic_accounting() {
+    use stablecoin_core::{math::FIXED_POINT_ONE, Instruction};
+
+    let start = 1_700_000_000_000;
+    let mut state = bootstrapped_owner_state(start);
+    let mut block = 2;
+    let second_owner_key = PrivateKey::try_new([46; 32]).expect("valid second owner key");
+    let second_owner = AccountId::from(&PublicKey::new_from_private_key(&second_owner_key));
+    let second_position = compute_position_pda(Ids::stablecoin_program(), second_owner, 0);
+    let second_vault = compute_position_vault_pda(Ids::stablecoin_program(), second_position);
+    state.force_insert_account(
+        second_owner,
+        Account {
+            program_owner: AccountId::new([7; 32]),
+            ..Account::default()
+        },
+    );
+    let params = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    let accumulator = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
+    let redemption = compute_redemption_price_state_pda(Ids::stablecoin_program());
+    let owner_key = Keys::owner();
+    let admin_key = Keys::admin();
+    let holding_key = Keys::user_stablecoin_holding();
+    let owner = (&owner_key, Ids::owner());
+    let other = (&second_owner_key, second_owner);
+    let admin = (&admin_key, Ids::admin());
+    let holding = (&holding_key, Ids::user_stablecoin_holding());
+    let mint_accounts = |owner_id, position_id| {
+        vec![
+            owner_id,
+            position_id,
+            Ids::stablecoin_definition_pda(),
+            Ids::user_stablecoin_holding(),
+            accumulator,
+            redemption,
+            Ids::oracle(),
+            params,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ]
+    };
+    let repay_accounts = |owner_id, position_id, holding_id| {
+        vec![
+            owner_id,
+            position_id,
+            Ids::stablecoin_definition_pda(),
+            holding_id,
+            accumulator,
+            params,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ]
+    };
+    let total_matches_positions = |state: &V03State, expected| {
+        let first = read_position(state).normalized_debt_amount;
+        let second = Position::try_from(&state.get_account_by_id(second_position).data)
+            .expect("valid second Position")
+            .normalized_debt_amount;
+        assert_eq!(first.checked_add(second), Some(expected));
+        assert_eq!(
+            read_accumulator(state).total_normalized_debt_amount,
+            expected
+        );
+    };
+    let tracked_accounts = [
+        Ids::owner(),
+        second_owner,
+        Ids::position(),
+        second_position,
+        accumulator,
+        Ids::stablecoin_definition_pda(),
+        Ids::user_stablecoin_holding(),
+    ];
+    let snapshot =
+        |state: &V03State| tracked_accounts.map(|account_id| state.get_account_by_id(account_id));
+
+    // Hold A at Q so all boundary amounts below are exact atomic units.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::admin(),
+            params,
+            accumulator,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![admin],
+        Instruction::SetStabilityFeePerMillisecond {
+            new_rate: FIXED_POINT_ONE,
+        },
+        "set unit stability fee",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![Ids::admin(), params],
+        vec![admin],
+        Instruction::SetDebtLimits {
+            minimum_debt_amount: 10,
+            debt_ceiling: 150,
+        },
+        "set explicit limits",
+    );
+    for (signer, position, vault) in [
+        (owner, Ids::position(), Ids::vault()),
+        (other, second_position, second_vault),
+    ] {
+        submit(
+            &mut state,
+            &mut block,
+            start,
+            vec![
+                signer.1,
+                position,
+                vault,
+                Ids::user_holding(),
+                Ids::collateral_definition(),
+                params,
+                CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ],
+            vec![signer, (&Keys::user_holding(), Ids::user_holding())],
+            Instruction::OpenPosition {
+                position_nonce: 0,
+                initial_collateral_amount: 1_000,
+            },
+            "open debt-free position",
+        );
+        assert_eq!(read_accumulator(&state).total_normalized_debt_amount, 0);
+    }
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        mint_accounts(Ids::owner(), Ids::position()),
+        vec![owner],
+        Instruction::GenerateDebt { amount: 100 },
+        "borrow first position",
+    );
+    total_matches_positions(&state, 100);
+    let before = snapshot(&state);
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            mint_accounts(second_owner, second_position),
+            vec![other],
+            Instruction::GenerateDebt { amount: 9 },
+        ),
+        "Position debt is below minimum_debt_amount",
+        "borrow below floor",
+    );
+    assert_eq!(snapshot(&state), before);
+
+    // Both borrowers sign when T=100, where either 50-unit mint would fit.
+    // Their signer nonces are independent. Public execution must re-read the
+    // shared accumulator, so only the first admission succeeds at the ceiling.
+    let pending_mints: Vec<PublicTransaction> =
+        [(owner, Ids::position()), (other, second_position)]
+            .into_iter()
+            .map(|(signer, position)| {
+                let message = public_transaction::Message::try_new(
+                    Ids::stablecoin_program(),
+                    mint_accounts(signer.1, position),
+                    vec![current_nonce(&state, signer.1)],
+                    Instruction::GenerateDebt { amount: 50 },
+                )
+                .expect("valid independently signed mint");
+                let witnesses = public_transaction::WitnessSet::for_message(&message, &[signer.0]);
+                PublicTransaction::new(message, witnesses)
+            })
+            .collect();
+    let mut mints = pending_mints.into_iter();
+    let first_mint = mints.next().expect("first mint");
+    let second_mint = mints.next().expect("second mint");
+    state
+        .transition_from_public_transaction(&first_mint, block, start)
+        .expect("first competing mint reaches ceiling");
+    block += 1;
+    total_matches_positions(&state, 150);
+    let at_ceiling = snapshot(&state);
+    assert_rejected_with(
+        state
+            .transition_from_public_transaction(&second_mint, block, start)
+            .map(|_| ()),
+        "Global debt ceiling exceeded",
+        "second competing mint",
+    );
+    assert_eq!(snapshot(&state), at_ceiling);
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        repay_accounts(
+            Ids::owner(),
+            Ids::position(),
+            Ids::user_stablecoin_holding(),
+        ),
+        vec![owner, holding],
+        Instruction::RepayDebt { amount: 50 },
+        "repay frees capacity",
+    );
+    total_matches_positions(&state, 100);
+    state
+        .transition_from_public_transaction(&second_mint, block, start)
+        .expect("same pending mint succeeds after headroom is restored");
+    block += 1;
+    total_matches_positions(&state, 150);
+
+    let before = snapshot(&state);
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            repay_accounts(
+                Ids::owner(),
+                Ids::position(),
+                Ids::user_stablecoin_holding(),
+            ),
+            vec![owner, holding],
+            Instruction::RepayDebt { amount: 91 },
+        ),
+        "Position debt is below minimum_debt_amount",
+        "partial repayment below floor",
+    );
+    assert_eq!(snapshot(&state), before);
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        repay_accounts(
+            Ids::owner(),
+            Ids::position(),
+            Ids::user_stablecoin_holding(),
+        ),
+        vec![owner, holding],
+        Instruction::RepayDebt { amount: 90 },
+        "repay to exact floor",
+    );
+    total_matches_positions(&state, 60);
+    assert_eq!(read_position(&state).normalized_debt_amount, 10);
+
+    // Deliberate downstream fault injection: this violates the self-mint
+    // authority established by initialize_program. It tests rollback only,
+    // not a state reachable through the stablecoin's public instructions.
+    let valid_definition = state.get_account_by_id(Ids::stablecoin_definition_pda());
+    let mut faulty_definition = valid_definition.clone();
+    let mut decoded_definition =
+        TokenDefinition::try_from(&faulty_definition.data).expect("valid TokenDefinition");
+    if let TokenDefinition::Fungible { authority, .. } = &mut decoded_definition {
+        *authority = None;
+    }
+    faulty_definition.data = Data::from(&decoded_definition);
+    state.force_insert_account(Ids::stablecoin_definition_pda(), faulty_definition);
+    let before = snapshot(&state);
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            mint_accounts(Ids::owner(), Ids::position()),
+            vec![owner],
+            Instruction::GenerateDebt { amount: 90 },
+        ),
+        "Mint authority check failed: authority revoked, supply is fixed",
+        "chained mint rollback under injected authority fault",
+    );
+    assert_eq!(snapshot(&state), before);
+    state.force_insert_account(Ids::stablecoin_definition_pda(), valid_definition);
+
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        mint_accounts(Ids::owner(), Ids::position()),
+        vec![owner],
+        Instruction::GenerateDebt { amount: 90 },
+        "restore total to exact ceiling",
+    );
+    total_matches_positions(&state, 150);
+
+    // Burning tokens directly does not extinguish any position's debt or free
+    // borrowing capacity, even though circulating supply falls.
+    let supply_before = read_total_supply(&state, Ids::stablecoin_definition_pda());
+    let burn_message = public_transaction::Message::try_new(
+        Ids::token_program(),
+        vec![
+            Ids::stablecoin_definition_pda(),
+            Ids::user_stablecoin_holding(),
+        ],
+        vec![current_nonce(&state, Ids::user_stablecoin_holding())],
+        token_core::Instruction::Burn { amount_to_burn: 5 },
+    )
+    .expect("valid direct burn");
+    let burn_witnesses =
+        public_transaction::WitnessSet::for_message(&burn_message, &[&holding_key]);
+    state
+        .transition_from_public_transaction(
+            &PublicTransaction::new(burn_message, burn_witnesses),
+            block,
+            start,
+        )
+        .expect("ordinary token burn succeeds");
+    block += 1;
+    assert_eq!(
+        read_total_supply(&state, Ids::stablecoin_definition_pda()),
+        supply_before - 5
+    );
+    total_matches_positions(&state, 150);
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            mint_accounts(second_owner, second_position),
+            vec![other],
+            Instruction::GenerateDebt { amount: 1 },
+        ),
+        "Global debt ceiling exceeded",
+        "token burn creates no debt headroom",
+    );
+
+    // A valid empty holding reaches Token::Burn and fails there. Neither the
+    // proposed position reduction nor the aggregate reduction may commit.
+    let empty_key = PrivateKey::try_new([47; 32]).expect("valid empty holding key");
+    let empty_id = AccountId::from(&PublicKey::new_from_private_key(&empty_key));
+    state.force_insert_account(
+        empty_id,
+        Account {
+            program_owner: Ids::token_program(),
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::stablecoin_definition_pda(),
+                balance: 0,
+            }),
+            ..Account::default()
+        },
+    );
+    let before = snapshot(&state);
+    let empty_before = state.get_account_by_id(empty_id);
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            repay_accounts(Ids::owner(), Ids::position(), empty_id),
+            vec![owner, (&empty_key, empty_id)],
+            Instruction::RepayDebt { amount: 10 },
+        ),
+        "Insufficient balance to burn",
+        "chained burn rollback",
+    );
+    assert_eq!(snapshot(&state), before);
+    assert_eq!(state.get_account_by_id(empty_id), empty_before);
+
+    // Raising the floor leaves existing positions unchanged. Zero operations
+    // stay valid; positive debt changes must reach the new floor or settle.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![Ids::admin(), params],
+        vec![admin],
+        Instruction::SetDebtLimits {
+            minimum_debt_amount: 120,
+            debt_ceiling: 150,
+        },
+        "raise floor",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            params,
+        ],
+        vec![owner, (&Keys::user_holding(), Ids::user_holding())],
+        Instruction::DepositCollateral { amount: 1 },
+        "deposit below raised debt floor",
+    );
+    total_matches_positions(&state, 150);
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        mint_accounts(Ids::owner(), Ids::position()),
+        vec![owner],
+        Instruction::GenerateDebt { amount: 0 },
+        "zero mint below raised floor",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        repay_accounts(
+            Ids::owner(),
+            Ids::position(),
+            Ids::user_stablecoin_holding(),
+        ),
+        vec![owner, holding],
+        Instruction::RepayDebt { amount: 0 },
+        "zero repayment below raised floor",
+    );
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            start,
+            repay_accounts(
+                Ids::owner(),
+                Ids::position(),
+                Ids::user_stablecoin_holding(),
+            ),
+            vec![owner, holding],
+            Instruction::RepayDebt { amount: 1 },
+        ),
+        "Position debt is below minimum_debt_amount",
+        "raised floor restricts partial repayment",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![Ids::freeze_authority(), params],
+        vec![(&Keys::freeze_authority(), Ids::freeze_authority())],
+        Instruction::Freeze,
+        "freeze",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        repay_accounts(
+            Ids::owner(),
+            Ids::position(),
+            Ids::user_stablecoin_holding(),
+        ),
+        vec![owner, holding],
+        Instruction::RepayDebt { amount: 100 },
+        "settle below raised floor while frozen",
+    );
+    total_matches_positions(&state, 50);
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![Ids::freeze_authority(), params],
+        vec![(&Keys::freeze_authority(), Ids::freeze_authority())],
+        Instruction::Unfreeze,
+        "unfreeze",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        mint_accounts(second_owner, second_position),
+        vec![other],
+        Instruction::GenerateDebt { amount: 70 },
+        "borrow up to raised floor",
+    );
+    total_matches_positions(&state, 120);
+
+    // Fee growth may cross the admission ceiling without blocking accrual,
+    // refresh, rate changes, or repayments that satisfy the position floor.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::admin(),
+            params,
+            accumulator,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![admin],
+        Instruction::SetStabilityFeePerMillisecond {
+            new_rate: FIXED_POINT_ONE * 3 / 2,
+        },
+        "set growth rate",
+    );
+    let later = start + 1;
+    submit(
+        &mut state,
+        &mut block,
+        later,
+        vec![
+            Ids::admin(),
+            params,
+            accumulator,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![admin],
+        Instruction::AccrueStabilityFee,
+        "accrue beyond debt ceiling",
+    );
+    total_matches_positions(&state, 120);
+    assert_eq!(
+        read_accumulator(&state).accumulated_rate_at_last_accrual,
+        FIXED_POINT_ONE * 3 / 2
+    );
+    submit(
+        &mut state,
+        &mut block,
+        later,
+        vec![Ids::admin(), params],
+        vec![admin],
+        Instruction::SetDebtLimits {
+            minimum_debt_amount: 120,
+            debt_ceiling: 120,
+        },
+        "lower ceiling below current accrued debt",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        later,
+        vec![
+            Ids::admin(),
+            params,
+            accumulator,
+            redemption,
+            Ids::oracle(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![admin],
+        Instruction::RefreshGlobals,
+        "refresh beyond debt ceiling",
+    );
+    total_matches_positions(&state, 120);
+    submit(
+        &mut state,
+        &mut block,
+        later,
+        vec![
+            Ids::admin(),
+            params,
+            accumulator,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![admin],
+        Instruction::SetStabilityFeePerMillisecond {
+            new_rate: FIXED_POINT_ONE,
+        },
+        "retune beyond debt ceiling",
+    );
+    total_matches_positions(&state, 120);
+    assert_rejected_with(
+        try_submit(
+            &mut state,
+            &mut block,
+            later,
+            mint_accounts(second_owner, second_position),
+            vec![other],
+            Instruction::GenerateDebt { amount: 1 },
+        ),
+        "Global debt ceiling exceeded",
+        "accrued debt blocks further borrowing",
+    );
+    for expected_total in [100, 80] {
+        submit(
+            &mut state,
+            &mut block,
+            later,
+            repay_accounts(
+                second_owner,
+                second_position,
+                Ids::user_stablecoin_holding(),
+            ),
+            vec![other, holding],
+            Instruction::RepayDebt { amount: 30 },
+            "repay above ceiling and then to floor",
+        );
+        total_matches_positions(&state, expected_total);
+    }
+    // A positive burn with floor(amount*Q/A)=0 keeps its existing semantics.
+    submit(
+        &mut state,
+        &mut block,
+        later,
+        repay_accounts(
+            second_owner,
+            second_position,
+            Ids::user_stablecoin_holding(),
+        ),
+        vec![other, holding],
+        Instruction::RepayDebt { amount: 1 },
+        "zero normalized repayment delta",
+    );
+    total_matches_positions(&state, 80);
+    submit(
+        &mut state,
+        &mut block,
+        later,
+        repay_accounts(
+            second_owner,
+            second_position,
+            Ids::user_stablecoin_holding(),
+        ),
+        vec![other, holding],
+        Instruction::RepayDebt { amount: 120 },
+        "settle accrued second position",
+    );
+    total_matches_positions(&state, 0);
+    submit(
+        &mut state,
+        &mut block,
+        later,
+        vec![
+            second_owner,
+            second_position,
+            second_vault,
+            Ids::user_holding(),
+            accumulator,
+            redemption,
+            params,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![other],
+        Instruction::WithdrawCollateral { amount: 1_000 },
+        "withdraw settled collateral",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        later,
+        vec![second_owner, second_position, second_vault, params],
+        vec![other],
+        Instruction::ClosePosition,
+        "close settled second position",
+    );
+    assert_eq!(read_accumulator(&state).total_normalized_debt_amount, 0);
 }

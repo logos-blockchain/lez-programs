@@ -6,6 +6,12 @@ pub mod collateralization;
 
 pub mod math;
 
+/// Exact debt admission comparisons shared by runtime and clients.
+pub mod debt_limits;
+
+/// Global account layout used by fresh deployments; legacy layouts are unsupported.
+pub const GLOBAL_SCHEMA_VERSION: u8 = 2;
+
 pub mod protocol_parameters;
 
 pub mod redemption_price_state;
@@ -106,6 +112,10 @@ pub enum Instruction {
         initial_redemption_price: u128,
         /// Name baked into the stablecoin's `TokenDefinition::Fungible`.
         stablecoin_name: String,
+        /// Minimum positive position debt, in raw stablecoin atomic units.
+        minimum_debt_amount: u128,
+        /// New-borrowing ceiling on accrued aggregate debt, in raw atomic units.
+        debt_ceiling: u128,
     },
     /// Advance the stability-fee accumulator to the clock's timestamp.
     /// Permissionless and idempotent — there is no minimum-interval throttle;
@@ -221,7 +231,7 @@ pub enum Instruction {
     ///    equal `protocol_parameters.stablecoin_definition_id`.
     /// 4. `user_stablecoin_holding` — initialized mint destination; NOT required to be authorized.
     ///    Same Token Program and definition as `stablecoin_definition`.
-    /// 5. `stability_fee_accumulator` — initialized, read-only; at its canonical PDA.
+    /// 5. `stability_fee_accumulator` — initialized, writable; at its canonical PDA.
     /// 6. `redemption_price_state` — initialized, read-only; at its canonical PDA.
     /// 7. `market_price_oracle` — initialized, read-only; must equal
     ///    `protocol_parameters.market_price_oracle_id`. Liveness gate only — its price is not
@@ -382,7 +392,7 @@ pub enum Instruction {
     ///    equal `protocol_parameters.stablecoin_definition_id`.
     /// 4. `user_stablecoin_holding` — authorized, initialized; same Token Program and definition
     ///    as `stablecoin_definition`.
-    /// 5. `stability_fee_accumulator` — initialized, read-only; at its canonical PDA.
+    /// 5. `stability_fee_accumulator` — initialized, writable; at its canonical PDA.
     /// 6. `protocol_parameters` — initialized, read-only; at its canonical PDA.
     /// 7. `clock` — the system `CLOCK_01` account; read-only.
     ///
@@ -391,6 +401,14 @@ pub enum Instruction {
     RepayDebt {
         /// Amount of stablecoin debt to repay (also the amount burned from the user's holding).
         amount: u128,
+    },
+    /// Atomically update both debt limits. Requires the authorized admin and writable
+    /// canonical protocol parameters, in that order. Both amounts are raw atomic units.
+    SetDebtLimits {
+        /// Positive minimum for any changed nonzero position debt.
+        minimum_debt_amount: u128,
+        /// Positive borrowing ceiling, at least the minimum debt.
+        debt_ceiling: u128,
     },
 }
 
@@ -694,8 +712,15 @@ mod instruction_tests {
             maximum_oracle_price_age_milliseconds: 900_000,
             initial_redemption_price: FIXED_POINT_ONE / 2,
             stablecoin_name: "test-stable".to_owned(),
+            minimum_debt_amount: 10,
+            debt_ceiling: 1_000_000,
         };
         let encoded = borsh::to_vec(&original).expect("serialize");
+        assert_eq!(encoded.first(), Some(&0));
+        assert!(
+            Instruction::try_from_slice(&encoded[..encoded.len() - 32]).is_err(),
+            "legacy initialization payload must fail"
+        );
         let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         match decoded {
             Instruction::InitializeProgram {
@@ -708,7 +733,11 @@ mod instruction_tests {
                 maximum_oracle_price_age_milliseconds,
                 initial_redemption_price,
                 stablecoin_name,
+                minimum_debt_amount,
+                debt_ceiling,
             } => {
+                assert_eq!(minimum_debt_amount, 10);
+                assert_eq!(debt_ceiling, 1_000_000);
                 assert_eq!(freeze_authority_account_id, AccountId::new([0xFF; 32]));
                 assert_eq!(
                     initial_stability_fee_per_millisecond,
@@ -726,6 +755,53 @@ mod instruction_tests {
                 assert_eq!(stablecoin_name, "test-stable");
             }
             _ => panic!("decoded into wrong variant"),
+        }
+    }
+    #[test]
+    fn instruction_tags_remain_append_only() {
+        let instructions = [
+            Instruction::AccrueStabilityFee,
+            Instruction::UpdateRedemptionRate,
+            Instruction::RefreshGlobals,
+            Instruction::OpenPosition {
+                initial_collateral_amount: 1,
+                position_nonce: 0,
+            },
+            Instruction::DepositCollateral { amount: 1 },
+            Instruction::GenerateDebt { amount: 1 },
+            Instruction::ClosePosition,
+            Instruction::SetMinimumCollateralizationRatio { new_ratio: 1 },
+            Instruction::SetControllerGains {
+                new_proportional_gain: 0,
+                new_integral_gain: 0,
+            },
+            Instruction::SetMarketPriceOracle,
+            Instruction::SetTimingParameters {
+                new_minimum_milliseconds_between_rate_updates: 1,
+                new_maximum_oracle_price_age_milliseconds: 1,
+            },
+            Instruction::SetAdmin {
+                new_admin_account_id: AccountId::new([1; 32]),
+            },
+            Instruction::SetFreezeAuthority {
+                new_freeze_authority_account_id: AccountId::new([2; 32]),
+            },
+            Instruction::SetStabilityFeePerMillisecond {
+                new_rate: FIXED_POINT_ONE,
+            },
+            Instruction::Freeze,
+            Instruction::Unfreeze,
+            Instruction::WithdrawCollateral { amount: 1 },
+            Instruction::RepayDebt { amount: 1 },
+            Instruction::SetDebtLimits {
+                minimum_debt_amount: 10,
+                debt_ceiling: 1_000,
+            },
+        ];
+        for (tag, instruction) in (1_u8..).zip(instructions) {
+            let bytes = borsh::to_vec(&instruction).expect("encode");
+            assert_eq!(bytes.first(), Some(&tag));
+            assert!(Instruction::try_from_slice(&bytes).is_ok());
         }
     }
 }

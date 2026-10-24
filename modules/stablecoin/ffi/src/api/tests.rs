@@ -74,6 +74,9 @@ fn assert_error(result: StablecoinResult, expected: &str) {
 
 fn protocol_parameters() -> ProtocolParameters {
     ProtocolParameters {
+        schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+        minimum_debt_amount: 1,
+        debt_ceiling: u128::MAX,
         admin_account_id: id(1),
         freeze_authority_account_id: id(2),
         stablecoin_definition_id: id(3),
@@ -102,6 +105,8 @@ fn protocol_request(parameters: &ProtocolParameters) -> DecodeProtocolParameters
 
 fn stability_fee_accumulator() -> StabilityFeeAccumulator {
     StabilityFeeAccumulator {
+        schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+        total_normalized_debt_amount: 0,
         accumulated_rate_at_last_accrual: u128::MAX,
         last_accrued_at: u64::MAX,
     }
@@ -226,6 +231,8 @@ fn initialize_request() -> InitializeProgramPlanRequest {
         maximum_oracle_price_age_milliseconds: json!(u64::MAX.to_string()),
         initial_redemption_price: json!("\"340282366920938463463374607431768211455\""),
         stablecoin_name: String::from("Exact Stablecoin"),
+        minimum_debt_amount: json!("1"),
+        debt_ceiling: json!(u128::MAX.to_string()),
     }
 }
 
@@ -234,6 +241,9 @@ const POKE_LAST_UPDATE: u64 = 900;
 
 fn poke_parameters(is_frozen: bool) -> ProtocolParameters {
     ProtocolParameters {
+        schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+        minimum_debt_amount: 1,
+        debt_ceiling: u128::MAX,
         admin_account_id: id(1),
         freeze_authority_account_id: id(2),
         stablecoin_definition_id: id(3),
@@ -262,6 +272,8 @@ fn poke_accumulator_read() -> crate::AccountRead {
         &account(
             STABLECOIN_PROGRAM_ID,
             Data::from(&StabilityFeeAccumulator {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                total_normalized_debt_amount: 0,
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
                 last_accrued_at: POKE_LAST_UPDATE,
             }),
@@ -593,6 +605,9 @@ fn program_info_rejects_missing_and_invalid_inputs() {
 fn protocol_parameters_decode_preserves_exact_numeric_and_id_fields() {
     let parameters = protocol_parameters();
     let value = ok(decode_protocol_parameters(protocol_request(&parameters)));
+    assert_eq!(value["schemaVersion"], "2");
+    assert_eq!(value["minimumDebtAmount"], "1");
+    assert_eq!(value["debtCeiling"], u128::MAX.to_string());
 
     assert_eq!(
         value["adminIdHex"],
@@ -648,7 +663,8 @@ fn protocol_parameters_decode_rejects_wrong_pda_owner_and_non_exact_data() {
 
 #[test]
 fn stability_fee_accumulator_decode_preserves_fixed_id_and_boundary_values() {
-    let accumulator = stability_fee_accumulator();
+    let mut accumulator = stability_fee_accumulator();
+    accumulator.total_normalized_debt_amount = u128::MAX;
     let value = ok(decode_stability_fee_accumulator(accumulator_request(
         &accumulator,
     )));
@@ -661,6 +677,8 @@ fn stability_fee_accumulator_decode_preserves_fixed_id_and_boundary_values() {
         value["accountIdHex"],
         "369aed6f31e8b5a47faba313c65a343b67425e7fa9d4cee387f8e29fb3310e0e"
     );
+    assert_eq!(value["schemaVersion"], "2");
+    assert_eq!(value["totalNormalizedDebtAmount"], u128::MAX.to_string());
     assert_eq!(value["accumulatedRateAtLastAccrual"], u128::MAX.to_string());
     assert_eq!(value["lastAccruedAt"], u64::MAX.to_string());
 }
@@ -1004,6 +1022,8 @@ fn initialize_plan_round_trips_all_boundary_values_and_exact_account_contract() 
         maximum_oracle_price_age_milliseconds,
         initial_redemption_price,
         stablecoin_name,
+        minimum_debt_amount,
+        debt_ceiling,
     } = decode_instruction(&plan["instruction"])
     else {
         panic!("expected InitializeProgram");
@@ -1020,6 +1040,8 @@ fn initialize_plan_round_trips_all_boundary_values_and_exact_account_contract() 
     assert_eq!(maximum_oracle_price_age_milliseconds, u64::MAX);
     assert_eq!(initial_redemption_price, u128::MAX);
     assert_eq!(stablecoin_name, "Exact Stablecoin");
+    assert_eq!(minimum_debt_amount, 1);
+    assert_eq!(debt_ceiling, u128::MAX);
 }
 
 #[test]
@@ -1706,4 +1728,64 @@ fn deposit_collateral_plan_checks_position_vault_parameters_and_token_bindings()
         deposit_collateral_plan(wrong_parameters),
         "protocol_parameters_pda_mismatch",
     );
+}
+
+#[test]
+fn initialize_requires_explicit_valid_debt_limits() {
+    for (minimum, ceiling) in [(0, 100), (2, 1)] {
+        let mut request = initialize_request();
+        request.minimum_debt_amount = json!(minimum.to_string());
+        request.debt_ceiling = json!(ceiling.to_string());
+        assert_error(initialize_program_plan(request), "invalid_debt_limits");
+    }
+    for field in ["minimumDebtAmount", "debtCeiling"] {
+        let mut request = initialize_request();
+        if field == "minimumDebtAmount" {
+            request.minimum_debt_amount = Value::Null;
+        } else {
+            request.debt_ceiling = Value::Null;
+        }
+        assert_error(initialize_program_plan(request), "invalid_numeric_value");
+    }
+}
+
+#[test]
+fn global_account_decoders_reject_legacy_and_unsupported_schema() {
+    let parameters = protocol_parameters();
+    let accumulator = stability_fee_accumulator();
+    let encoded_parameters = Data::from(&parameters).as_ref().to_vec();
+    let encoded_accumulator = Data::from(&accumulator).as_ref().to_vec();
+    // Strip version and appended fields to reconstruct the exact legacy layouts.
+    let legacy_parameters = encoded_parameters[1..encoded_parameters.len() - 32].to_vec();
+    let legacy_accumulator = encoded_accumulator[1..encoded_accumulator.len() - 16].to_vec();
+    let mut future_parameters = encoded_parameters;
+    future_parameters[0] = 3;
+    let mut future_accumulator = encoded_accumulator;
+    future_accumulator[0] = 3;
+    for data in [legacy_parameters, future_parameters] {
+        let mut request = protocol_request(&parameters);
+        request
+            .protocol_parameters
+            .account
+            .as_mut()
+            .expect("account")
+            .data = hex::encode(data);
+        assert_error(
+            decode_protocol_parameters(request),
+            "unsupported_account_schema",
+        );
+    }
+    for data in [legacy_accumulator, future_accumulator] {
+        let mut request = accumulator_request(&accumulator);
+        request
+            .stability_fee_accumulator
+            .account
+            .as_mut()
+            .expect("account")
+            .data = hex::encode(data);
+        assert_error(
+            decode_stability_fee_accumulator(request),
+            "unsupported_account_schema",
+        );
+    }
 }

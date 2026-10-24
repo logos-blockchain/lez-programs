@@ -112,6 +112,9 @@ pub(crate) fn protocol_parameters_account(overrides: ParameterOverrides) -> Acco
             program_owner: STABLECOIN_PROGRAM_ID,
             balance: 0,
             data: Data::from(&ProtocolParameters {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                minimum_debt_amount: 1,
+                debt_ceiling: u128::MAX,
                 admin_account_id: admin_id(),
                 freeze_authority_account_id: freeze_authority_id(),
                 stablecoin_definition_id: stablecoin_definition_id(),
@@ -139,6 +142,8 @@ pub(crate) fn accumulator_account(anchor: u128, last_accrued_at: u64) -> Account
             program_owner: STABLECOIN_PROGRAM_ID,
             balance: 0,
             data: Data::from(&StabilityFeeAccumulator {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                total_normalized_debt_amount: 0,
                 accumulated_rate_at_last_accrual: anchor,
                 last_accrued_at,
             }),

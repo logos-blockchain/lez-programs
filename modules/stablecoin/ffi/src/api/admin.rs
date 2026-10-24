@@ -1,6 +1,8 @@
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::account::AccountId;
-use stablecoin_core::{math::FIXED_POINT_ONE, Instruction, ProtocolParameters};
+use stablecoin_core::{
+    debt_limits::valid_debt_limits, math::FIXED_POINT_ONE, Instruction, ProtocolParameters,
+};
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
@@ -12,7 +14,7 @@ use super::{
         required_account,
     },
     projection::clock_timestamp,
-    AdminPlanContext, SetAdminPlanRequest, SetControllerGainsPlanRequest,
+    AdminPlanContext, SetAdminPlanRequest, SetControllerGainsPlanRequest, SetDebtLimitsPlanRequest,
     SetFreezeAuthorityPlanRequest, SetMarketPriceOraclePlanRequest,
     SetMinimumCollateralizationRatioPlanRequest, SetStabilityFeePerMillisecondPlanRequest,
     SetTimingParametersPlanRequest, StablecoinApiError, StablecoinResult,
@@ -180,4 +182,18 @@ pub fn set_market_price_oracle_plan(request: SetMarketPriceOraclePlanRequest) ->
         [true, false, false],
         Instruction::SetMarketPriceOracle,
     )
+}
+
+/// Update both debt limits atomically, including below current accrued debt.
+pub fn set_debt_limits_plan(request: SetDebtLimitsPlanRequest) -> StablecoinResult {
+    let context = ValidatedAdmin::read(&request.context)?;
+    let minimum_debt_amount = parse_u128(&request.minimum_debt_amount)?;
+    let debt_ceiling = parse_u128(&request.debt_ceiling)?;
+    if !valid_debt_limits(minimum_debt_amount, debt_ceiling) {
+        return Err(StablecoinApiError::new("invalid_debt_limits"));
+    }
+    context.plan(Instruction::SetDebtLimits {
+        minimum_debt_amount,
+        debt_ceiling,
+    })
 }

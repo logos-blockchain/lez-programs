@@ -38,6 +38,10 @@ pub fn current_global_state(request: CurrentGlobalStateRequest) -> StablecoinRes
     );
 
     Ok(json!({
+        "schemaVersion": accumulator.schema_version.to_string(),
+        "minimumDebtAmount": parameters.minimum_debt_amount.to_string(),
+        "debtCeiling": parameters.debt_ceiling.to_string(),
+        "totalNormalizedDebtAmount": accumulator.total_normalized_debt_amount.to_string(),
         "accumulatedRateAtLastAccrual":
             accumulator.accumulated_rate_at_last_accrual.to_string(),
         "lastAccruedAt": accumulator.last_accrued_at.to_string(),
@@ -100,6 +104,9 @@ mod tests {
         projected_at: u64,
     ) -> CurrentGlobalStateRequest {
         let parameters = ProtocolParameters {
+            schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+            minimum_debt_amount: 1,
+            debt_ceiling: u128::MAX,
             admin_account_id: id(1),
             freeze_authority_account_id: id(2),
             stablecoin_definition_id: id(3),
@@ -114,6 +121,8 @@ mod tests {
             is_frozen: false,
         };
         let accumulator = StabilityFeeAccumulator {
+            schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+            total_normalized_debt_amount: 0,
             accumulated_rate_at_last_accrual,
             last_accrued_at,
         };
@@ -186,6 +195,10 @@ mod tests {
         assert_eq!(projected["lastAccruedAt"], "99");
         assert_eq!(projected["lastUpdatedAt"], "99");
         assert_eq!(projected["projectedAt"], "99");
+        assert_eq!(projected["schemaVersion"], "2");
+        assert_eq!(projected["minimumDebtAmount"], "1");
+        assert_eq!(projected["debtCeiling"], u128::MAX.to_string());
+        assert_eq!(projected["totalNormalizedDebtAmount"], "0");
     }
 
     #[test]
