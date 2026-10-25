@@ -90,9 +90,10 @@ pub enum Instruction {
         /// Per-millisecond stability fee multiplier in fixed-point. Bound:
         /// `FIXED_POINT_ONE <= x <= FIXED_POINT_ONE * 2` (see spec §8).
         initial_stability_fee_per_millisecond: u128,
-        /// PI controller `Kp`. Signed. Bound: `|x| <= FIXED_POINT_ONE * 10^3`.
+        /// PI controller `Kp`. Signed. Bound: `0 <= x <= FIXED_POINT_ONE`
+        /// (negative gain is positive feedback; issue #428).
         initial_controller_proportional_gain: i128,
-        /// PI controller `Ki`. Signed. Bound: `|x| <= FIXED_POINT_ONE`.
+        /// PI controller `Ki`. Signed. Bound: `0 <= x <= FIXED_POINT_ONE`.
         initial_controller_integral_gain: i128,
         /// Minimum collateralization ratio in fixed-point. Bound:
         /// `FIXED_POINT_ONE * 1.1 <= x <= FIXED_POINT_ONE * 10`.

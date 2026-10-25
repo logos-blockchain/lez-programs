@@ -652,9 +652,9 @@ These are properties the protocol maintains across every state-changing instruct
 | `FIXED_POINT_ONE` | `10^27` | RAY precision; standard. |
 | `stability_fee_per_millisecond` | `FIXED_POINT_ONE ≤ x ≤ FIXED_POINT_ONE * 2` | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). Upper bound is an anti-typo sanity cap (≈100%/ms) — it does **not** prevent `compound_rate` overflow, and neither does the elapsed-window clamp: at this cap the `u128` projection overflows after just **39 ms** (§5.2). Only the §6.2 check is immune, via the saturating `u512` projections; `accrue_stability_fee` and `generate_debt`'s debt sizing would panic. Tightening this cap is §15 tuning work. Real values are `1 + ε` where `ε ≈ 1.5×10^15` for ~5% annual. |
 | `minimum_collateralization_ratio` | `FIXED_POINT_ONE * 1.1 ≤ x ≤ FIXED_POINT_ONE * 10` | Lower bound = 110% (any less is liquidation-immediate); upper bound = 1000% (sanity cap). Real values are 130–200%. |
-| `controller_proportional_gain` magnitude | `|x| ≤ FIXED_POINT_ONE * 10^3` | Practical upper bound for rate-explosion guard (RFP R2). Real values are tiny (≈10^6–10^12 raw) because they scale price-error × per-ms rate-output. Rescaled `÷10^3` from the per-second formulation. |
-| `controller_integral_gain` magnitude | `|x| ≤ FIXED_POINT_ONE` | As proportional, but rescaled `÷10^6` (it also multiplies `Δt`, now in ms): real values ≈10^3–10^9 raw. |
-| `INTEGRAL_CLAMP` | `± FIXED_POINT_ONE * 10^6` | Anti-windup; rescaled `÷10^3` to ms. Constant in v1; future-promotable to `ProtocolParameters`. |
+| `controller_proportional_gain` | `0 ≤ x ≤ FIXED_POINT_ONE` | **Non-negative**: a negative gain is positive feedback and drives the rate away from its target, so the band rejects it [#428](https://github.com/logos-blockchain/lez-programs/issues/428). The magnitude cap `FIXED_POINT_ONE` still sits ≥10^15× above the real values (≈10^6–10^12 raw, which scale price-error × per-ms rate-output) while being 1000× tighter than the pre-fix `FIXED_POINT_ONE * 10^3`, which left the cap ~18 orders of magnitude above anything realistic. |
+| `controller_integral_gain` | `0 ≤ x ≤ FIXED_POINT_ONE` | Non-negative for the same reason as `Kp` [#428](https://github.com/logos-blockchain/lez-programs/issues/428); real values ≈10^3–10^9 raw (it also multiplies `Δt`, now in ms). |
+| `INTEGRAL_CLAMP` | `± FIXED_POINT_ONE / 100_000` (= `RATE_DELTA_CLAMP`, by reference) | Anti-windup at the **same magnitude as the output clamp**, so a saturated integral cannot hold the rate pinned beyond the output clamp's own scale [#428](https://github.com/logos-blockchain/lez-programs/issues/428). The pre-fix `± FIXED_POINT_ONE * 10^6` was 10^11× the output clamp, letting a wound-up integral pin the rate essentially forever. With realistic `Ki` (≈10^3–10^9 raw) the clamp is never reached in tuning and acts purely as an anti-catastrophe bound. Constant in v1; future-promotable to `ProtocolParameters`. |
 | `RATE_DELTA_CLAMP` | `± FIXED_POINT_ONE / 100_000` | Max single-update per-ms rate adjustment (≈±0.001%); rescaled `÷10^3` to ms so a ~1/sec keeper cadence still caps near ±1%/s. Constant in v1. |
 | `minimum_milliseconds_between_rate_updates` | `1 ≤ x ≤ 86_400_000` | Min 1 ms (no zero-spam), max 1 day (RFP F2 "rate updates within a small number of blocks"). |
 | `maximum_oracle_price_age_milliseconds` | `1 ≤ x ≤ 86_400_000` | Stale beyond a day is obviously bad; aggressive freshness is a tuning parameter. |
@@ -1457,7 +1457,7 @@ One `update_redemption_rate` computing a new rate from the price gap (§6.4), th
 4. Terms:
    - `P = Kp × error = 0.4 × 0.02 = 0.008`
    - `integral_delta = Ki × error × Δt = 0.0001 × 0.02 × 1000 = 0.002`
-   - `new_integral = 0 + 0.002 = 0.002` (within `INTEGRAL_CLAMP`)
+   - `new_integral = 0 + 0.002 = 0.002` (illustrative only — these exaggerated constants sit above the v1 §8 clamps)
    - `rate_adjustment = P + new_integral = 0.008 + 0.002 = 0.010`
 5. New rate: `redemption_rate_per_millisecond = 1.0 + 0.010 = 1.01`.
 6. Persist (the anchor, rate, and memory all change here, and only here):

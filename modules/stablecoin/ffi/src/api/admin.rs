@@ -1,6 +1,9 @@
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::account::AccountId;
-use stablecoin_core::{math::FIXED_POINT_ONE, Instruction, ProtocolParameters};
+use stablecoin_core::{
+    math::{FIXED_POINT_ONE, MAX_INTEGRAL_GAIN, MAX_PROPORTIONAL_GAIN},
+    Instruction, ProtocolParameters,
+};
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
@@ -102,12 +105,18 @@ pub fn set_minimum_collateralization_ratio_plan(
 }
 
 /// Plan both signed gains in one instruction without resetting redemption state.
+///
+/// The band is non-negative and capped by the `stablecoin_core::math`
+/// constants — a negative gain is positive feedback and drives the redemption
+/// rate away from its target (issue #428).
 pub fn set_controller_gains_plan(request: SetControllerGainsPlanRequest) -> StablecoinResult {
     let context = ValidatedAdmin::read(&request.context)?;
     let new_proportional_gain = parse_i128(&request.new_proportional_gain)?;
     let new_integral_gain = parse_i128(&request.new_integral_gain)?;
-    if new_proportional_gain.unsigned_abs() > FIXED_POINT_ONE * 1_000
-        || new_integral_gain.unsigned_abs() > FIXED_POINT_ONE
+    if new_proportional_gain < 0
+        || new_proportional_gain as u128 > MAX_PROPORTIONAL_GAIN
+        || new_integral_gain < 0
+        || new_integral_gain as u128 > MAX_INTEGRAL_GAIN
     {
         return Err(StablecoinApiError::new("controller_gains_out_of_band"));
     }

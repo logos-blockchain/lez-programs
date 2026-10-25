@@ -153,7 +153,7 @@ pub fn set_minimum_collateralization_ratio(
 ///
 /// # Panics
 /// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
-/// - Either gain magnitude is outside its §8 band.
+/// - Either gain is negative or its magnitude is outside its §8 band.
 /// - `protocol_parameters` is invalid.
 pub fn set_controller_gains(
     admin: AccountWithMetadata,
@@ -657,10 +657,10 @@ mod tests {
         let integral_term_before = ProtocolParameters::try_from(&parameters.account.data)
             .expect("valid ProtocolParameters");
         let (post_states, _) =
-            set_controller_gains(admin_account(), parameters, STABLECOIN_PROGRAM_ID, -42, 7);
+            set_controller_gains(admin_account(), parameters, STABLECOIN_PROGRAM_ID, 42, 7);
 
         let after = decoded(&post_states[1]);
-        assert_eq!(after.controller_proportional_gain, -42);
+        assert_eq!(after.controller_proportional_gain, 42);
         assert_eq!(after.controller_integral_gain, 7);
         // Retuning must not discard the controller's accumulated history; the
         // integral *term* lives on RedemptionPriceState and is untouched here.

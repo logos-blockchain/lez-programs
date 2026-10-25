@@ -20,6 +20,22 @@ pub const FIXED_POINT_ONE: u128 = 10u128.pow(27);
 /// it, fee accrual and redemption drift pause until someone pokes.
 pub const MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS: u64 = 604_800_000;
 
+/// Upper bound for `controller_proportional_gain` (spec §8, issue #428).
+///
+/// Non-negative: a negative gain is positive feedback and drives the system
+/// away from its target, so the band rejects either gain below zero. The
+/// magnitude cap sits at `FIXED_POINT_ONE` — still ≥10¹⁵× above §8's real
+/// values (≈10⁶–10¹² raw) but 1000× tighter than the pre-fix
+/// `FIXED_POINT_ONE * 10³`, which left the cap ~18 orders of magnitude above
+/// anything realistic.
+pub const MAX_PROPORTIONAL_GAIN: u128 = FIXED_POINT_ONE;
+
+/// Upper bound for `controller_integral_gain` (spec §8, issue #428).
+///
+/// Non-negative for the same reason as [`MAX_PROPORTIONAL_GAIN`]; magnitude
+/// cap unchanged at `FIXED_POINT_ONE` (real values ≈10³–10⁹ raw).
+pub const MAX_INTEGRAL_GAIN: u128 = FIXED_POINT_ONE;
+
 /// `(a * b) / c` computed via `U256` intermediates and rounded toward zero.
 ///
 /// # Panics

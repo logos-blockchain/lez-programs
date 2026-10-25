@@ -130,8 +130,11 @@ impl JourneyState {
                 collateral_definition_id: id(4),
                 market_price_oracle_id: id(5),
                 stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000,
-                controller_proportional_gain: FIXED_POINT_ONE as i128,
-                controller_integral_gain: FIXED_POINT_ONE as i128 / 100,
+                // §8-scale gains (Kp ≈ 10¹², Ki ≈ 10⁹ raw): keeps every journey
+                // unclamped now that INTEGRAL_CLAMP matches RATE_DELTA_CLAMP
+                // (issue #428), so successive updates stay distinguishable.
+                controller_proportional_gain: 1_000_000_000_000,
+                controller_integral_gain: 1_000_000_000,
                 minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
                 minimum_milliseconds_between_rate_updates: MIN_UPDATE_INTERVAL,
                 maximum_oracle_price_age_milliseconds: MAX_ORACLE_AGE,

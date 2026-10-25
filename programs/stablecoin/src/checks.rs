@@ -8,8 +8,9 @@
 use alloy_primitives::U512;
 use lee_core::account::{Account, AccountId, AccountWithMetadata, Data};
 use stablecoin_core::{
-    collateralization::collateralization_values, math::FIXED_POINT_ONE, Position,
-    ProtocolParameters,
+    collateralization::collateralization_values,
+    math::{FIXED_POINT_ONE, MAX_INTEGRAL_GAIN, MAX_PROPORTIONAL_GAIN},
+    Position, ProtocolParameters,
 };
 
 /// Assert that `position` satisfies the collateralization invariant from spec §6.2:
@@ -78,14 +79,12 @@ pub fn assert_position_is_collateralized(
 }
 
 // --- Sane-band constants per spec §8 -----------------------------------------
+// `MAX_PROPORTIONAL_GAIN` and `MAX_INTEGRAL_GAIN` live in
+// `stablecoin_core::math` with their derivations.
 
 pub(crate) const MAX_STABILITY_FEE_PER_MILLISECOND: u128 = FIXED_POINT_ONE * 2;
 pub(crate) const MIN_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 110 / 100; // 1.1x
 pub(crate) const MAX_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 10;
-// Gain magnitude caps (spec §8; placeholders pending the §15 tuning pass):
-// |Kp| <= FIXED_POINT_ONE * 10^3, |Ki| <= FIXED_POINT_ONE.
-pub(crate) const MAX_PROPORTIONAL_GAIN_MAGNITUDE: u128 = FIXED_POINT_ONE * 1_000;
-pub(crate) const MAX_INTEGRAL_GAIN_MAGNITUDE: u128 = FIXED_POINT_ONE;
 pub(crate) const MAX_TIMING_MILLISECONDS: u64 = 86_400_000; // 1 day
 
 /// The two-part gate every admin instruction performs: the caller signed, and the
@@ -126,15 +125,17 @@ pub(crate) fn assert_collateralization_ratio_in_band(ratio: u128, label: &str) {
     assert!(ratio <= MAX_COLLATERALIZATION_RATIO, "{label} above 10x");
 }
 
-/// Spec §8 magnitude caps on the PI gains. Either sign is legal; only the
-/// magnitude is bounded.
+/// Spec §8 caps on the PI gains. Both gains must be **non-negative**: a
+/// negative gain is positive feedback and drives the redemption rate away
+/// from its target (issue #428). Magnitudes are bounded by the
+/// `stablecoin_core::math` constants.
 pub(crate) fn assert_controller_gains_in_band(proportional_gain: i128, integral_gain: i128) {
     assert!(
-        proportional_gain.unsigned_abs() <= MAX_PROPORTIONAL_GAIN_MAGNITUDE,
+        proportional_gain >= 0 && proportional_gain as u128 <= MAX_PROPORTIONAL_GAIN,
         "controller_proportional_gain out of band"
     );
     assert!(
-        integral_gain.unsigned_abs() <= MAX_INTEGRAL_GAIN_MAGNITUDE,
+        integral_gain >= 0 && integral_gain as u128 <= MAX_INTEGRAL_GAIN,
         "controller_integral_gain out of band"
     );
 }
@@ -344,24 +345,36 @@ mod tests {
     }
 
     #[test]
-    fn controller_gain_band_accepts_the_magnitude_limits_in_both_signs() {
-        let kp = i128::try_from(MAX_PROPORTIONAL_GAIN_MAGNITUDE).expect("fits i128");
-        let ki = i128::try_from(MAX_INTEGRAL_GAIN_MAGNITUDE).expect("fits i128");
+    fn controller_gain_band_accepts_zero_and_both_limits() {
+        let kp = i128::try_from(MAX_PROPORTIONAL_GAIN).expect("fits i128");
+        let ki = i128::try_from(MAX_INTEGRAL_GAIN).expect("fits i128");
+        assert_controller_gains_in_band(0, 0);
         assert_controller_gains_in_band(kp, ki);
-        assert_controller_gains_in_band(-kp, -ki);
+    }
+
+    #[test]
+    #[should_panic(expected = "controller_proportional_gain out of band")]
+    fn controller_gain_band_rejects_a_negative_proportional_gain() {
+        assert_controller_gains_in_band(-1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "controller_integral_gain out of band")]
+    fn controller_gain_band_rejects_a_negative_integral_gain() {
+        assert_controller_gains_in_band(0, -1);
     }
 
     #[test]
     #[should_panic(expected = "controller_proportional_gain out of band")]
     fn controller_gain_band_rejects_an_oversized_proportional_gain() {
-        let kp = i128::try_from(MAX_PROPORTIONAL_GAIN_MAGNITUDE).expect("fits i128") + 1;
+        let kp = i128::try_from(MAX_PROPORTIONAL_GAIN).expect("fits i128") + 1;
         assert_controller_gains_in_band(kp, 0);
     }
 
     #[test]
     #[should_panic(expected = "controller_integral_gain out of band")]
     fn controller_gain_band_rejects_an_oversized_integral_gain() {
-        let ki = i128::try_from(MAX_INTEGRAL_GAIN_MAGNITUDE).expect("fits i128") + 1;
+        let ki = i128::try_from(MAX_INTEGRAL_GAIN).expect("fits i128") + 1;
         assert_controller_gains_in_band(0, ki);
     }
 
