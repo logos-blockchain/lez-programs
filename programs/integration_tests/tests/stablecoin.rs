@@ -1795,7 +1795,13 @@ fn submit_poke(
 /// fresh oracle observation, and a market-acquired stablecoin buffer (credited
 /// to `total_supply` so the books stay consistent).
 fn bootstrapped_owner_state(start: u64) -> V03State {
-    let mut state = initialize_protocol(start, 0);
+    bootstrapped_owner_state_with_gain(start, 0)
+}
+
+/// [`bootstrapped_owner_state`] with a live proportional gain, for tests that
+/// exercise the controller's feedback (a zero gain pins the rate at 1.0).
+fn bootstrapped_owner_state_with_gain(start: u64, proportional_gain: i128) -> V03State {
+    let mut state = initialize_protocol(start, proportional_gain);
     state.force_insert_account(
         Ids::freeze_authority(),
         Account {
@@ -2092,6 +2098,169 @@ fn stablecoin_full_position_lifecycle() {
     // changing `program_owner` or `nonce`, so the PDA cannot be released.
     assert_eq!(closed.program_owner, Ids::stablecoin_program());
     assert_fungible_balance(&state, Ids::vault(), 0);
+}
+
+/// Spec §17 (launch sequence): the oracle bootstrap that breaks the launch
+/// deadlock (issue #429). `initialize_program` needs an existing
+/// `OraclePriceAccount` for the stablecoin definition, but a TWAP oracle only
+/// exists for a pool that needs stablecoin supply, and RedStone will not price
+/// a token that does not exist yet. The launch path out is a custom admin-fed
+/// oracle in the same account layout: initialize binds it, `generate_debt`
+/// creates the supply, and `set_market_price_oracle` rotates to the real
+/// producer once the asset exists. This is the only test that exercises the
+/// rotation end to end.
+#[test]
+fn stablecoin_launch_sequence_bootstraps_through_the_oracle_deadlock() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let start: u64 = 1_700_000_000_000;
+    // A live proportional gain: the rotation proof ends with a controller poke,
+    // and a zero gain would pin the rate at exactly 1.0 regardless of error.
+    let mut state = bootstrapped_owner_state_with_gain(
+        start,
+        i128::try_from(FIXED_POINT_ONE).expect("FIXED_POINT_ONE fits i128"),
+    );
+    let mut block = 1u64;
+
+    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    let accumulator_pda = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
+    let redemption_pda = compute_redemption_price_state_pda(Ids::stablecoin_program());
+
+    // Phase 0–1: the `Ids::oracle()` account is the launch oracle — an
+    // admin-fed `OraclePriceAccount` (owner [9u8; 32], not a TWAP PDA) that
+    // exists before the asset does: `oracle_init` at price 0.5 for
+    // `initialize_program` to bind, re-inserted with a fresh observation at
+    // timestamp `start` before any position opens. Initialize binds it.
+    assert_eq!(
+        read_parameters(&state).market_price_oracle_id,
+        Ids::oracle(),
+        "initialize must bind the pre-existing custom oracle"
+    );
+
+    // Phase 2: positions create supply. With debt minted, the dependency cycle
+    // (oracle needs supply, supply needs an oracle) is broken.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            Ids::collateral_definition(),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![
+            (&Keys::owner(), Ids::owner()),
+            (&Keys::user_holding(), Ids::user_holding()),
+        ],
+        stablecoin_core::Instruction::OpenPosition {
+            position_nonce: Ids::position_nonce(),
+            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
+        },
+        "launch open_position",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::stablecoin_definition_pda(),
+            Ids::user_stablecoin_holding(),
+            accumulator_pda,
+            redemption_pda,
+            Ids::oracle(),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![(&Keys::owner(), Ids::owner())],
+        stablecoin_core::Instruction::GenerateDebt {
+            amount: LIFECYCLE_BORROW,
+        },
+        "launch generate_debt",
+    );
+    assert_eq!(
+        read_position(&state).normalized_debt_amount,
+        LIFECYCLE_BORROW
+    );
+    assert_eq!(
+        read_total_supply(&state, Ids::stablecoin_definition_pda()),
+        LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW,
+        "the minted debt is the supply the AMM/TWAP pool needs"
+    );
+
+    // Phase 3–4: a real producer arrives (here: a second admin-fed oracle with
+    // a distinct owner, the shape a TWAP/RedStone writer would present — same
+    // `OraclePriceAccount` layout, different program_owner). The admin rotates
+    // to it; producer identity and observation age are intentionally not
+    // rotation gates — the admin is trusted.
+    let twap_oracle_id = AccountId::new([0x71; 32]);
+    let rotation_time = start + 600_000; // past the 300_000 ms rate interval
+    state.force_insert_account(
+        twap_oracle_id,
+        Account {
+            program_owner: AccountId::new([0x77; 32]),
+            balance: 0_u128,
+            data: Data::from(&twap_oracle_core::OraclePriceAccount {
+                base_asset: Ids::stablecoin_definition_pda(),
+                quote_asset: Ids::collateral_definition(),
+                // Priced below the 0.5 redemption anchor so the controller's
+                // error is positive and the post-rotation rate assertion is
+                // meaningful (a 0.5 oracle would make the error exactly zero).
+                price: FIXED_POINT_ONE / 4,
+                timestamp: rotation_time,
+                source_id: twap_oracle_id,
+                confidence_interval: 0,
+            }),
+            nonce: Nonce(0),
+        },
+    );
+    submit(
+        &mut state,
+        &mut block,
+        rotation_time,
+        vec![Ids::admin(), params_pda, twap_oracle_id],
+        vec![(&Keys::admin(), Ids::admin())],
+        stablecoin_core::Instruction::SetMarketPriceOracle,
+        "launch oracle rotation",
+    );
+    assert_eq!(
+        read_parameters(&state).market_price_oracle_id,
+        twap_oracle_id,
+        "the protocol must now consume the replacement producer"
+    );
+
+    // The rotated oracle is live: the controller consumes it in the same block
+    // window (fresh timestamp, nonzero price), re-anchoring the redemption
+    // price state through the new producer.
+    submit_poke(
+        &mut state,
+        rotation_time,
+        block,
+        stablecoin_core::Instruction::UpdateRedemptionRate,
+        vec![
+            params_pda,
+            redemption_pda,
+            twap_oracle_id,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+    )
+    .expect("update_redemption_rate must consume the rotated oracle");
+    let after = read_redemption_price_state(&state);
+    assert_eq!(after.last_updated_at, rotation_time);
+    // Positive error (redemption anchor 0.5 above market 0.25) with the live
+    // Kp = 1.0 drives the rate up, capped per update by RATE_DELTA_CLAMP —
+    // the same negative-feedback contract as §6.4.
+    assert_eq!(
+        after.redemption_rate_per_millisecond,
+        FIXED_POINT_ONE
+            + u128::try_from(stablecoin_core::RATE_DELTA_CLAMP)
+                .expect("RATE_DELTA_CLAMP is positive"),
+    );
 }
 
 fn submit(

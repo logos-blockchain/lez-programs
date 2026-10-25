@@ -60,6 +60,7 @@
     - [16.1 Alice's full lifecycle](#161-alices-full-lifecycle)
     - [16.2 Emergency freeze](#162-emergency-freeze)
     - [16.3 Redemption price & controller walkthrough](#163-redemption-price--controller-walkthrough)
+17. [Launch sequence (oracle bootstrap)](#17-launch-sequence-oracle-bootstrap)
 
 ---
 
@@ -674,6 +675,11 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 | # | Instruction | Caller | One-line |
 |---|---|---|---|
 | 1 | `initialize_program` | admin (one-shot) | Create all five global PDAs (three native + the stablecoin definition and its paired master holding, both via chained `Token::NewFungibleDefinition`), bind collateral + oracle + initial params, set initial redemption price. |
+
+`initialize_program` binds an oracle that must already exist (§10.1) — including
+at launch, when the planned producers cannot exist yet. The launch sequence that
+resolves this (custom admin-fed oracle → debt → rotate via `set_market_price_oracle`)
+is specified in [§17](#17-launch-sequence-oracle-bootstrap).
 
 ### 9.2 Permissionless pokes
 
@@ -1501,3 +1507,38 @@ None of these are saved — all are computed from the same stored `(0.50, 1.01, 
 Two things to notice: the current gap is now small, so `P` dropped sharply (`0.008 → 0.0029`); but the **memory still holds `0.002`** from the earlier sustained gap, keeping part of the correction alive even though the current gap is nearly closed — that is exactly the integral's job. As the market reaches the target, `error → 0`, both terms stop adding, the rate settles to `1.0`, and the redemption price holds.
 
 **One-line summary:** `current_redemption_price` at any time = `redemption_price_at_last_update × redemption_rate_per_millisecond ^ (now − last_updated_at)`. Those three saved numbers change only when `update_redemption_rate` runs (which also updates `controller_integral_term`, starting at `0` and remembering past gaps). `Kp` / `Ki` are fixed dials. Between updates, raise the rate to the elapsed milliseconds and multiply by the anchor.
+
+## 17. Launch sequence (oracle bootstrap)
+
+`initialize_program` requires an existing `OraclePriceAccount` whose base asset
+is the stablecoin definition (§10.1). At launch that requirement is a deadlock:
+a TWAP oracle exists only for an initialized AMM pool with reserves, a pool
+needs stablecoin supply, supply needs `initialize_program` and then
+`generate_debt` — which needs a fresh oracle — and RedStone will not price a
+token that does not exist yet (issue
+[#429](https://github.com/logos-blockchain/lez-programs/issues/429)).
+
+The resolution is that **any** account presenting the canonical
+`OraclePriceAccount` layout can serve as the launch oracle — the rotation
+instruction checks the asset pair, not the producer — so the launcher seeds one
+admin-fed observation and swaps it for a real producer once the asset exists:
+
+| Phase | Actor | Action |
+|---|---|---|
+| 0 | Launcher (admin wallet) | Write a custom `OraclePriceAccount` for the not-yet-existing stablecoin definition (base = stablecoin definition, quote = collateral definition, launch price, current timestamp). No program owns it; it is an ordinary public account. |
+| 1 | Admin | `initialize_program`, binding the phase-0 oracle as `market_price_oracle_id`. |
+| 2 | Users | `open_position` + `generate_debt` — stablecoin supply now exists and the dependency cycle is broken. |
+| 3 | Launcher / AMM | Create the AMM pool and its TWAP oracle (or list the asset with RedStone); real observations start accumulating in the same `OraclePriceAccount` layout. |
+| 4 | Admin | `set_market_price_oracle` rotates `market_price_oracle_id` to the real producer's account. Producer identity, price, and observation age are intentionally **not** rotation gates (§10.10–10.16): the admin is trusted at exactly the same level as at initialize. |
+| 5 | Producers / keepers | TWAP publication or RedStone writes keep the bound oracle fresh; permissionless pokes (`update_redemption_rate`, `refresh_globals`) consume it. |
+
+The sequence is exercised end to end by the integration test
+`stablecoin_launch_sequence_bootstraps_through_the_oracle_deadlock`
+(`programs/integration_tests/tests/stablecoin.rs`) — the only *integration*
+(through-the-guest) coverage of the `set_market_price_oracle` rotation, whose
+host-side unit tests live in `programs/stablecoin/src/admin.rs`.
+
+*Alternative considered:* protocol-level support (an admin-seeded launch price
+or a bootstrap phase inside `initialize_program`) would remove the manual
+phase-0 write but changes initialization behavior; that is a design decision
+for the maintainers and is intentionally not part of this design.
