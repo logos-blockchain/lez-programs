@@ -12,6 +12,17 @@ use lee_core::{
 use serde::{Deserialize, Serialize};
 use spel_framework_macros::account_type;
 
+/// Upper bound on `stability_fee_per_millisecond`, per spec §8: about 100% a
+/// year (`1 + 2.1965 × 10^-11` per millisecond; `e^(2.1965e-11 × 3.15576e10) ≈ 2`).
+///
+/// This is what keeps the stored accumulator inside `u128`. At the bound a full
+/// seven-day compounding window grows it by about 1.3%, so no single accrual can
+/// overflow, and starting from `1.0` the accumulator needs about 38 years at the
+/// maximum fee to approach `u128::MAX`. The old `2 × FIXED_POINT_ONE` cap
+/// overflowed the accumulator 38 ms after an accrual.
+pub const MAXIMUM_STABILITY_FEE_PER_MILLISECOND: u128 =
+    crate::math::FIXED_POINT_ONE + 21_965_000_000_000_000;
+
 /// PDA seed for the single-instance [`ProtocolParameters`] account.
 const PROTOCOL_PARAMETERS_PDA_DOMAIN: &[u8; 32] = b"STABLECOIN__PROTOCOL_PARAMS_____";
 
@@ -98,6 +109,38 @@ pub fn compute_protocol_parameters_pda(stablecoin_program_id: AccountId) -> Acco
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_maximum_stability_fee_is_about_one_hundred_percent_a_year() {
+        // Compounded one week at a time, as keepers re-anchoring would.
+        let week = crate::math::MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS;
+        let one = crate::math::FIXED_POINT_ONE;
+        let mut accumulator = one;
+        for _ in 0..52 {
+            accumulator = crate::math::compute_current_accumulated_rate(
+                accumulator,
+                MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
+                0,
+                week,
+            );
+        }
+        // 52 weeks is 364 days, so a little under ×2.
+        assert!(accumulator > one / 10 * 19, "got {accumulator}");
+        assert!(accumulator < one * 2, "got {accumulator}");
+    }
+
+    #[test]
+    fn a_full_window_at_the_maximum_fee_cannot_overflow_a_large_accumulator() {
+        let anchor = u128::MAX / 2;
+        let projected = crate::math::compute_current_accumulated_rate(
+            anchor,
+            MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
+            0,
+            crate::math::MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+        );
+        assert!(projected > anchor);
+        assert!(projected < anchor / 100 * 102);
+    }
     use crate::math::FIXED_POINT_ONE;
 
     fn sample_params() -> ProtocolParameters {
