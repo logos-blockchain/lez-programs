@@ -94,9 +94,9 @@ pub enum Instruction {
         /// `FIXED_POINT_ONE <= x <= MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (about
         /// 100% a year; see spec §8).
         initial_stability_fee_per_millisecond: u128,
-        /// PI controller `Kp`. Signed. Bound: `|x| <= FIXED_POINT_ONE * 10^3`.
+        /// PI controller `Kp`. Bound: `0 <= x <= MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN`.
         initial_controller_proportional_gain: i128,
-        /// PI controller `Ki`. Signed. Bound: `|x| <= FIXED_POINT_ONE`.
+        /// PI controller `Ki`. Bound: `0 <= x <= MAXIMUM_CONTROLLER_INTEGRAL_GAIN`.
         initial_controller_integral_gain: i128,
         /// Minimum collateralization ratio in fixed-point. Bound:
         /// `FIXED_POINT_ONE * 1.1 <= x <= FIXED_POINT_ONE * 10`.

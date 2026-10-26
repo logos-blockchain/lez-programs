@@ -10,12 +10,18 @@ use alloy_primitives::{I256, U512};
 
 use crate::math::FIXED_POINT_ONE;
 
-/// Anti-windup clamp on the integral term, per spec §8:
-/// `± FIXED_POINT_ONE × 10^6`.
+/// Anti-windup clamp on the integral term, per spec §8: equal to
+/// [`RATE_DELTA_CLAMP`].
+///
+/// The integral term is added straight into the rate adjustment, so it is in
+/// rate units. Bounding it by the output clamp means a saturated integral just
+/// saturates the output, and starts moving the rate back the moment the error
+/// reverses. A larger bound would let it wind up far past what the output can
+/// express and keep the rate pinned long after the market turned.
 ///
 /// This is a HARD clamp — v1's deliberate divergence from RAI's leaky
 /// integrator. Placeholder pending the §15 simulation tuning pass.
-pub const INTEGRAL_CLAMP: i128 = (FIXED_POINT_ONE as i128) * 1_000_000;
+pub const INTEGRAL_CLAMP: i128 = RATE_DELTA_CLAMP;
 
 /// Rate-adjustment clamp (rate-explosion guard), per spec §8:
 /// `± FIXED_POINT_ONE / 10^11`, i.e. `±10^-11` per millisecond.
@@ -191,7 +197,24 @@ mod tests {
 
     #[test]
     fn integral_clamp_matches_spec_section_eight() {
-        assert_eq!(INTEGRAL_CLAMP, (FIXED_POINT_ONE as i128) * 1_000_000);
+        assert_eq!(INTEGRAL_CLAMP, RATE_DELTA_CLAMP);
+    }
+
+    #[test]
+    fn a_saturated_integral_unwinds_as_soon_as_the_error_reverses() {
+        // Saturated upward, then one tick of a reversed error. With Ki = 1.0 and
+        // a tiny error held for long enough, the integral moves by more than two
+        // clamps, so it lands at the opposite bound and the rate falls at once.
+        let output = run_controller_tick(
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE + 1_000_000_000_000,
+            INTEGRAL_CLAMP,
+            0,
+            FIXED_POINT_ONE as i128,
+            3_600_000,
+        );
+        assert_eq!(output.controller_integral_term, -INTEGRAL_CLAMP);
+        assert!(output.redemption_rate_per_millisecond < FIXED_POINT_ONE);
     }
 
     #[test]

@@ -135,7 +135,7 @@ impl Fixture {
         let fields = match setter {
             Setter::Ratio => json!({"newRatio": (FIXED_POINT_ONE * 10).to_string()}),
             Setter::Gains => {
-                json!({"newProportionalGain": "-9007199254740993", "newIntegralGain": "9007199254740993"})
+                json!({"newProportionalGain": "9007199254740993", "newIntegralGain": "9007199254740995"})
             }
             Setter::Timing => {
                 json!({"newMinimumMillisecondsBetweenRateUpdates": "1", "newMaximumOraclePriceAgeMilliseconds": "86400000"})
@@ -306,8 +306,8 @@ fn all_setters_pin_arguments_account_order_and_guest_flags_and_match_native_muta
                     }
                 }
                 Setter::Gains => {
-                    expected.controller_proportional_gain = -9_007_199_254_740_993;
-                    expected.controller_integral_gain = 9_007_199_254_740_993;
+                    expected.controller_proportional_gain = 9_007_199_254_740_993;
+                    expected.controller_integral_gain = 9_007_199_254_740_995;
                     Instruction::SetControllerGains {
                         new_proportional_gain: expected.controller_proportional_gain,
                         new_integral_gain: expected.controller_integral_gain,
@@ -351,7 +351,7 @@ fn all_setters_pin_arguments_account_order_and_guest_flags_and_match_native_muta
 }
 
 #[test]
-fn ratio_signed_gains_and_timing_accept_inclusive_bands_and_reject_one_unit_outside() {
+fn ratio_gains_and_timing_accept_inclusive_bands_and_reject_one_unit_outside() {
     let fixture = Fixture::new(false);
     for ratio in [FIXED_POINT_ONE * 110 / 100, FIXED_POINT_ONE * 10] {
         let mut request = fixture.request(Setter::Ratio);
@@ -374,15 +374,16 @@ fn ratio_signed_gains_and_timing_accept_inclusive_bands_and_reject_one_unit_outs
         ("newProportionalGain", (FIXED_POINT_ONE * 1_000) as i128),
         ("newIntegralGain", FIXED_POINT_ONE as i128),
     ] {
-        for gain in [-cap, 0, cap] {
+        for gain in [0, cap] {
             let mut request = fixture.request(Setter::Gains);
             request[field] = json!(gain.to_string());
             let plan = Setter::Gains
                 .plan(request.clone())
-                .expect("inclusive signed gains");
+                .expect("inclusive gains");
             native_execute(&plan, &request);
         }
-        for gain in [-cap - 1, cap + 1, i128::MIN, i128::MAX] {
+        // A negative gain is positive feedback, so the band starts at zero.
+        for gain in [-1, -cap, cap + 1, i128::MIN, i128::MAX] {
             let mut request = fixture.request(Setter::Gains);
             request[field] = json!(gain.to_string());
             failure(Setter::Gains, request, "controller_gains_out_of_band");
@@ -454,7 +455,7 @@ fn setters_reject_floats_malformed_decimals_and_out_of_type_values_without_narro
     }
     let mut request = fixture.request(Setter::Gains);
     request["newProportionalGain"] = json!(u64::MAX);
-    request["newIntegralGain"] = json!(-9_007_199_254_740_993_i64);
+    request["newIntegralGain"] = json!(9_007_199_254_740_993_u64);
     let plan = Setter::Gains
         .plan(request.clone())
         .expect("lossless signed and unsigned JSON integers");
@@ -464,7 +465,7 @@ fn setters_reject_floats_malformed_decimals_and_out_of_type_values_without_narro
         parameters.controller_proportional_gain,
         i128::from(u64::MAX)
     );
-    assert_eq!(parameters.controller_integral_gain, -9_007_199_254_740_993);
+    assert_eq!(parameters.controller_integral_gain, 9_007_199_254_740_993);
 }
 
 #[test]
@@ -555,7 +556,7 @@ fn immediate_role_rotation_changes_authority_and_does_not_require_distinct_handl
 fn gains_leave_redemption_state_and_integral_term_outside_the_execution_write_set() {
     let fixture = Fixture::new(true);
     let mut request = fixture.request(Setter::Gains);
-    request["newProportionalGain"] = json!("-42");
+    request["newProportionalGain"] = json!("42");
     request["newIntegralGain"] = json!("7");
     let plan = Setter::Gains.plan(request.clone()).expect("gains");
     let redemption_id = compute_redemption_price_state_pda(PROGRAM);

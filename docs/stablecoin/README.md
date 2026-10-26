@@ -252,9 +252,9 @@ pub struct ProtocolParameters {
     /// Per-millisecond multiplicative stability fee. Stored as `(1 + r_per_millisecond) * FIXED_POINT_ONE`.
     /// Updatable by admin via `set_stability_fee_per_millisecond` (auto-accrues first).
     pub stability_fee_per_millisecond: u128,
-    /// PI controller Kp. Signed.
+    /// PI controller Kp. Non-negative (§8).
     pub controller_proportional_gain: i128,
-    /// PI controller Ki. Signed.
+    /// PI controller Ki. Non-negative (§8).
     pub controller_integral_gain: i128,
     /// Minimum collateralization ratio in fixed-point. e.g. `1.5 * FIXED_POINT_ONE` = 150%.
     pub minimum_collateralization_ratio: u128,
@@ -566,11 +566,11 @@ state.controller_integral_term        = new_integral
 state.last_updated_at                 = now
 ```
 
-The signs work out so that **positive gains drive the system toward stability** (negative feedback): with no negation on `rate_adjustment`, the correction carries the same sign as `error = redemption − market`, exactly matching RAI's `redemptionRate = RAY + (Kp·error + Ki·∫)`. Operators tune gain magnitude; the stabilizing direction is embedded in the controller, not the gain.
+The signs work out so that **positive gains drive the system toward stability** (negative feedback): with no negation on `rate_adjustment`, the correction carries the same sign as `error = redemption − market`, exactly matching RAI's `redemptionRate = RAY + (Kp·error + Ki·∫)`. Operators tune gain magnitude; the stabilizing direction is embedded in the controller, not the gain. That is why the §8 bands reject negative gains: a negative gain would be positive feedback and drive the redemption price away from the market.
 
 `INTEGRAL_CLAMP` and `RATE_DELTA_CLAMP` are constants in v1 (§ 8). Promoting them to `ProtocolParameters` admin-tunable fields is a future revision (no on-chain migration needed — additive).
 
-**Anti-windup — clamp vs leak (deliberate divergence from RAI).** v1 bounds the integral with a hard clamp (`clamp(new_integral, ±INTEGRAL_CLAMP)`) — conditional integration / saturation. RAI instead uses a *leaky* integrator: it scales the accumulated deviation by a per-second decay factor (`rpow(perSecondCumulativeLeak, Δt)`) before adding the new term, so stale error fades exponentially rather than sitting pinned at a bound. Both are valid anti-windup. v1 picks the clamp because it's simpler, deterministic, and adds no extra parameter; the trade-off is *windup-on-release* — under a long sustained deviation the clamped integral saturates and then unwinds with some lag when the error reverses, whereas the leak never fully saturates. This is a conscious choice, not an oversight; adopting RAI's leak is the planned upgrade once the controller is tuned against simulation (§14, §15).
+**Anti-windup — clamp vs leak (deliberate divergence from RAI).** v1 bounds the integral with a hard clamp (`clamp(new_integral, ±INTEGRAL_CLAMP)`) — conditional integration / saturation. RAI instead uses a *leaky* integrator: it scales the accumulated deviation by a per-second decay factor (`rpow(perSecondCumulativeLeak, Δt)`) before adding the new term, so stale error fades exponentially rather than sitting pinned at a bound. Both are valid anti-windup. v1 picks the clamp because it's simpler, deterministic, and adds no extra parameter; the trade-off is *windup-on-release* — under a long sustained deviation the clamped integral saturates, whereas the leak never fully saturates. Setting `INTEGRAL_CLAMP = RATE_DELTA_CLAMP` keeps that lag short: a saturated integral exactly saturates the output, so the rate starts moving back as soon as the error reverses. A wound-up controller can also be reset outright (§10.19). This is a conscious choice, not an oversight; adopting RAI's leak is the planned upgrade once the controller is tuned against simulation (§14, §15).
 
 **In plain English.** The controller steers one number — the **redemption price**, the protocol's official value for the coin — so that the **market price** (from the oracle) is pulled toward it. It never moves the price directly; it sets the *speed and direction* the redemption price changes, the `redemption_rate_per_millisecond` (above `1.0` ⇒ price goes up over time, below `1.0` ⇒ down, exactly `1.0` ⇒ held).
 
@@ -687,9 +687,9 @@ These are properties the protocol maintains across every state-changing instruct
 | `FIXED_POINT_ONE` | `10^27` | RAY precision; standard. |
 | `stability_fee_per_millisecond` | `FIXED_POINT_ONE ≤ x ≤ MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (`FIXED_POINT_ONE + 2.1965×10^16`, about 100% a year) | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). The upper bound is the overflow guard for the stored accumulator: ~1.3% growth per seven-day window, ~38 years from `1.0` to `u128::MAX` at the maximum. It also keeps `set_stability_fee_per_millisecond`'s catch-up accrual at the old rate from panicking, which the earlier `2.0` cap did after 38 ms. Real values are `1 + ε` where `ε ≈ 1.5×10^15` for ~5% annual. |
 | `minimum_collateralization_ratio` | `FIXED_POINT_ONE * 1.1 ≤ x ≤ FIXED_POINT_ONE * 10` | Lower bound = 110% (any less is liquidation-immediate); upper bound = 1000% (sanity cap). Real values are 130–200%. |
-| `controller_proportional_gain` magnitude | `|x| ≤ FIXED_POINT_ONE * 10^3` | Practical upper bound for rate-explosion guard (RFP R2). Real values are tiny (≈10^6–10^12 raw) because they scale price-error × per-ms rate-output. Rescaled `÷10^3` from the per-second formulation. |
-| `controller_integral_gain` magnitude | `|x| ≤ FIXED_POINT_ONE` | As proportional, but rescaled `÷10^6` (it also multiplies `Δt`, now in ms): real values ≈10^3–10^9 raw. |
-| `INTEGRAL_CLAMP` | `± FIXED_POINT_ONE * 10^6` | Anti-windup; rescaled `÷10^3` to ms. Constant in v1; future-promotable to `ProtocolParameters`. |
+| `controller_proportional_gain` | `0 ≤ x ≤ MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN` (`FIXED_POINT_ONE * 10^3`) | Non-negative: the controller embeds the stabilizing sign (§6.4), so a negative gain is positive feedback. The upper cap is only a typo guard; `RATE_DELTA_CLAMP` is what bounds the effect of any gain on the rate (RFP R2). It stays wide because the gain multiplies a raw price error whose scale depends on the two tokens' decimals, by up to many orders of magnitude. |
+| `controller_integral_gain` | `0 ≤ x ≤ MAXIMUM_CONTROLLER_INTEGRAL_GAIN` (`FIXED_POINT_ONE`) | As proportional (it also multiplies `Δt`, in ms). |
+| `INTEGRAL_CLAMP` | `± RATE_DELTA_CLAMP` | Anti-windup. The integral term is in rate units (it is added straight into the rate adjustment), so it is bounded by the output clamp: a saturated integral saturates the output and no more, and unwinds as soon as the error reverses. Constant in v1; future-promotable to `ProtocolParameters`. |
 | `RATE_DELTA_CLAMP` | `± FIXED_POINT_ONE / 10^11` | Max deviation of `redemption_rate_per_millisecond` from `1.0` (`±10^-11` per ms). The rate compounds every millisecond regardless of keeper cadence, so this bounds drift per unit of **time**: at most `×e^±0.315` (≈ `×1.37` / `×0.73`) per year and ~0.6% per seven-day window. That keeps a full window inside `u128` from `MAXIMUM_REDEMPTION_PRICE` and far from zero at `MINIMUM_REDEMPTION_PRICE`. Constant in v1; final value from §15 tuning. |
 | `MINIMUM_REDEMPTION_PRICE` | `10^9` (`10^-18` collateral per stablecoin unit) | Floor. At or below it the controller may only raise the rate to `≥ 1.0`, and re-anchors clamp up to it. Integer compounding below `1.0` reaches zero eventually, and a price near zero makes any collateral enough to mint against. Low enough for any realistic pair of token decimals. Constant in v1. |
 | `MAXIMUM_REDEMPTION_PRICE` | `u128::MAX / 2` | Ceiling. At or above it the controller may only lower the rate to `≤ 1.0`, and re-anchors clamp down to it. The `×2` headroom covers a full window at `RATE_DELTA_CLAMP`, so the `u128` projection cannot overflow. Constant in v1. |
@@ -1522,7 +1522,7 @@ The attacker still holds the stablecoin they minted during the attack. The posit
 
 ### 16.3 Redemption price & controller walkthrough
 
-One `update_redemption_rate` computing a new rate from the price gap (§6.4), then how `current_redemption_price` is projected at later times (§5.3), then the next update re-anchoring. As in §16's preamble, magnitudes are illustrative; here the per-millisecond rate is **deliberately exaggerated** (real values are far closer to `1.0`) so the arithmetic is legible. On-chain every value is also × `FIXED_POINT_ONE`.
+One `update_redemption_rate` computing a new rate from the price gap (§6.4), then how `current_redemption_price` is projected at later times (§5.3), then the next update re-anchoring. As in §16's preamble, magnitudes are illustrative; here the per-millisecond rate is **deliberately exaggerated** (real values are far closer to `1.0`) so the arithmetic is legible. At these magnitudes the §8 clamps (`RATE_DELTA_CLAMP`, `INTEGRAL_CLAMP`, both `±10^-11` per ms) would cap every term, so the walkthrough ignores them. On-chain every value is also × `FIXED_POINT_ONE`.
 
 **Constants (illustrative):** `Kp = 0.4`, `Ki = 0.0001`.
 
@@ -1543,7 +1543,7 @@ One `update_redemption_rate` computing a new rate from the price gap (§6.4), th
 4. Terms:
    - `P = Kp × error = 0.4 × 0.02 = 0.008`
    - `integral_delta = Ki × error × Δt = 0.0001 × 0.02 × 1000 = 0.002`
-   - `new_integral = 0 + 0.002 = 0.002` (within `INTEGRAL_CLAMP`)
+   - `new_integral = 0 + 0.002 = 0.002` (clamps ignored, see above)
    - `rate_adjustment = P + new_integral = 0.008 + 0.002 = 0.010`
 5. New rate: `redemption_rate_per_millisecond = 1.0 + 0.010 = 1.01`.
 6. Persist (the anchor, rate, and memory all change here, and only here):
