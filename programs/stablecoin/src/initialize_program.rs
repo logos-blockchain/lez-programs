@@ -210,6 +210,7 @@ pub fn initialize_program(
     let accumulator_value = StabilityFeeAccumulator {
         accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
         last_accrued_at: now,
+        total_normalized_debt: 0,
     };
     let redemption_value = RedemptionPriceState {
         redemption_price_at_last_update: params.initial_redemption_price,

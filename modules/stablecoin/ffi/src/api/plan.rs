@@ -330,11 +330,12 @@ pub fn repay_debt_plan(request: RepayDebtPlanRequest) -> StablecoinResult {
             position_id,
             definition_id,
             holding_id,
+            compute_stablecoin_master_holding_pda(program_id),
             accumulator_id,
             parameters_id,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        [true, false, false, true, false, false, false],
+        [true, false, false, true, false, false, false, false],
         Instruction::RepayDebt { amount },
     )
 }
@@ -342,7 +343,7 @@ pub fn repay_debt_plan(request: RepayDebtPlanRequest) -> StablecoinResult {
 pub fn accrue_stability_fee_plan(request: AccrueStabilityFeePlanRequest) -> StablecoinResult {
     let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
     let caller = parse_account_id(&request.caller_id)?;
-    validated_protocol_parameters(program_id, &request.protocol_parameters)?;
+    let (_, parameters) = validated_protocol_parameters(program_id, &request.protocol_parameters)?;
     validated_stability_fee_accumulator(program_id, &request.stability_fee_accumulator)?;
     clock_timestamp(&request.clock)?;
 
@@ -352,9 +353,11 @@ pub fn accrue_stability_fee_plan(request: AccrueStabilityFeePlanRequest) -> Stab
             caller,
             compute_protocol_parameters_pda(program_id),
             compute_stability_fee_accumulator_pda(program_id),
+            parameters.stablecoin_definition_id,
+            compute_stablecoin_master_holding_pda(program_id),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        [true, false, false, false],
+        [true, false, false, false, false, false],
         Instruction::AccrueStabilityFee,
     )
 }
@@ -405,11 +408,13 @@ pub fn refresh_globals_plan(request: RefreshGlobalsPlanRequest) -> StablecoinRes
             caller,
             compute_protocol_parameters_pda(program_id),
             compute_stability_fee_accumulator_pda(program_id),
+            parameters.stablecoin_definition_id,
+            compute_stablecoin_master_holding_pda(program_id),
             compute_redemption_price_state_pda(program_id),
             parameters.market_price_oracle_id,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        [true, false, false, false, false, false],
+        [true, false, false, false, false, false, false, false],
         Instruction::RefreshGlobals,
     )
 }

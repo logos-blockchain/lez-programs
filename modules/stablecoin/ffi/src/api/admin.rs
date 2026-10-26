@@ -1,6 +1,8 @@
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::account::AccountId;
-use stablecoin_core::{math::FIXED_POINT_ONE, Instruction, ProtocolParameters};
+use stablecoin_core::{
+    compute_stablecoin_master_holding_pda, math::FIXED_POINT_ONE, Instruction, ProtocolParameters,
+};
 use twap_oracle_core::OraclePriceAccount;
 
 use super::{
@@ -80,9 +82,11 @@ pub fn set_stability_fee_per_millisecond_plan(
             context.admin,
             context.parameters_id,
             accumulator_id,
+            context.parameters.stablecoin_definition_id,
+            compute_stablecoin_master_holding_pda(context.program_id),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        [true, false, false, false],
+        [true, false, false, false, false, false],
         Instruction::SetStabilityFeePerMillisecond { new_rate },
     )
 }

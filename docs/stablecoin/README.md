@@ -78,7 +78,7 @@ This document is the design for the **on-chain program**. The CLI, mini-app, and
 | Stablecoin ownership | Program-owned PDA, created by `initialize_program` | Mint/Burn chained calls authorize via the stablecoin program PDA seed. Single source of truth. |
 | Position addressing | PDA seed = `(owner_account_id, position_nonce)` | Multiple positions per owner. Matches RAI / DAI / Liquity. |
 | Price model | Single oracle quoting stablecoin in collateral units; redemption price in collateral-per-stablecoin | One oracle read on the hot path. Closed-loop unit system; no external reference asset. Single point of failure mitigated by staleness gate + freeze authority. |
-| Fee accrual | Pure RAI virtual accrual — no surplus mint | Fees grow only as `accumulated_rate` multiplier. Nominal debt eventually exceeds supply; users acquire stablecoin from market to repay (the controller drives that demand). |
+| Fee accrual | RAI accumulator with surplus mint (`SAFEEngine.updateAccumulatedRate`) | Fees grow as the `accumulated_rate` multiplier, and every accrual mints `total_normalized_debt × Δaccumulator` to the protocol's surplus holding (§6.6). Supply therefore keeps pace with total nominal debt (RFP R1); `generate_debt` / `repay_debt` accrue first, like RAI's proxies calling `taxSingle`. |
 | Rate plumbing | Lazy globals + permissionless pokes | Position ops read but don't write globals → no contention. Concurrent permissionless `accrue_stability_fee` and `update_redemption_rate` don't conflict. |
 | Authority model | Inline `admin_account_id` and `freeze_authority_account_id` in `ProtocolParameters` | Adapts trivially to RFP-001 / RFP-002 when they land. |
 | Lifecycle granularity | Granular per-op + `close_position` | Six position-facing instructions, each with a single state transition. |
@@ -159,7 +159,7 @@ Five single-instance accounts hold all the globally-shared state. Each is a PDA 
 
 *Holds:* the compounded stability-fee rate at the last accrual, plus the wall-clock timestamp of that accrual.
 
-*Why:* implements the RAI accumulator trick (§6.1) — instead of writing interest into every position on every accrual, we maintain one global multiplier. Each position's nominal debt is then `normalized_debt × accumulator`, computed lazily at read time. Read by every debt-touching op; written only by `accrue_stability_fee` and the auto-accrue path in `set_stability_fee_per_millisecond`.
+*Why:* implements the RAI accumulator trick (§6.1) — instead of writing interest into every position on every accrual, we maintain one global multiplier. Each position's nominal debt is then `normalized_debt × accumulator`, computed lazily at read time. It also carries `total_normalized_debt`, so each accrual can mint the fees on the whole debt to the surplus holding (§6.6). Read by every debt-touching op; written by every instruction that accrues (§6.6).
 
 **`RedemptionPriceState`** — PDA seed `"REDEMPTION_PRICE_STATE"`, owned by the stablecoin program.
 
@@ -175,18 +175,17 @@ Five single-instance accounts hold all the globally-shared state. Each is a PDA 
 
 **`StablecoinMasterHolding`** — PDA seed `"STABLECOIN_MASTER_HOLDING"`, owned by the **Token Program** (PDA-derived under the stablecoin program).
 
-*Holds:* a `TokenHolding::Fungible` for the stablecoin with `balance = 0` permanently.
+*Holds:* a `TokenHolding::Fungible` for the stablecoin. It starts at `balance = 0` and receives every accrued stability fee: it is the protocol's **surplus holding** (§6.6, RAI's accounting-engine coin balance).
 
-*Why this exists at all:* a Token-Program-API artifact. `Token::NewFungibleDefinition` always creates a definition AND a paired holding in the same call, and mints `total_supply` units into that holding. There's no variant that creates a definition alone. We pass `total_supply = 0` — our stablecoin starts with **zero** supply because every coin in existence must come from a user calling `generate_debt` against real collateral (a non-zero initial supply would be free, unbacked money). The master holding is therefore born empty and never touched again. Modeling it as a deterministic stablecoin-program PDA contains the artifact at a known, addressable location instead of leaking it into someone's user account.
+*Why this exists at all:* a Token-Program-API artifact. `Token::NewFungibleDefinition` always creates a definition AND a paired holding in the same call, and mints `total_supply` units into that holding. There's no variant that creates a definition alone. We pass `total_supply = 0` — our stablecoin starts with **zero** supply because every coin in existence must come from a user calling `generate_debt` against real collateral (a non-zero initial supply would be free, unbacked money). The master holding is therefore born empty. Because it is a deterministic stablecoin-program PDA at a known address, it doubles as the surplus holding that fee accruals mint into (§6.6).
 
-A future Token Program extension (`Token::NewFungibleDefinitionWithoutHolding`, tracked in §14 follow-ups) would let `initialize_program` drop this account entirely.
 
 **Why split the globals?** Each one has exactly one writer family:
 
 - `ProtocolParameters` ← `initialize_program`, admin `set_*`, `freeze` / `unfreeze`.
-- `StabilityFeeAccumulator` ← `initialize_program`, `accrue_stability_fee`, `refresh_globals` (fee half), `set_stability_fee_per_millisecond` (auto-accrues inline).
+- `StabilityFeeAccumulator` ← `initialize_program`, `accrue_stability_fee`, `refresh_globals` (fee half), `set_stability_fee_per_millisecond` (auto-accrues inline), and `generate_debt` / `repay_debt` (accrue first, then adjust `total_normalized_debt`).
 - `RedemptionPriceState` ← `initialize_program`, `update_redemption_rate`, `refresh_globals` (redemption half).
-- `StablecoinDefinition` + `StablecoinMasterHolding` ← `initialize_program` via chained `Token::NewFungibleDefinition`; afterwards the definition's `total_supply` is incremented / decremented by `Token::Mint` / `Token::Burn` from `generate_debt` / `repay_debt`. The master holding is never touched again.
+- `StablecoinDefinition` + `StablecoinMasterHolding` ← `initialize_program` via chained `Token::NewFungibleDefinition`; afterwards the definition's `total_supply` is incremented / decremented by `Token::Mint` / `Token::Burn` from `generate_debt` / `repay_debt`, and by the surplus `Token::Mint` of every fee accrual, which credits the master holding (§6.6).
 
 That strict writer separation means a keeper calling `accrue_stability_fee`, another keeper calling `update_redemption_rate`, and a user calling `withdraw_collateral` in the same block don't contend on any account. (The combined `refresh_globals` poke (§10.3a) is the deliberate exception — it writes *both* global accounts — but it's a single-keeper convenience; you wouldn't run it concurrently with the individual pokes.)
 
@@ -281,6 +280,10 @@ pub struct StabilityFeeAccumulator {
     /// Unix milliseconds of the last accrue. Current accumulator on the read side =
     /// `anchor * compound_rate(rate, now - last_accrued_at) / FIXED_POINT_ONE`.
     pub last_accrued_at: u64,
+    /// Σ `position.normalized_debt_amount` (RAI's `debtAmount`). Kept in step by
+    /// `generate_debt` / `repay_debt`; each accrual mints
+    /// `total_normalized_debt × Δaccumulator / FIXED_POINT_ONE` to the surplus holding (§6.6).
+    pub total_normalized_debt: u128,
 }
 ```
 
@@ -501,8 +504,8 @@ position.normalized_debt_amount = position.normalized_debt_amount.checked_add(de
 // repay_debt: decrease normalized_debt by amount-divided-by-accumulator,
 // ROUND DOWN — the borrower burned exactly `amount` stablecoins, and we want their
 // nominal_debt to shrink by AT MOST `amount`. Rounding the decrement down means
-// their debt drops slightly less than they paid; the rounding remainder becomes
-// extra fee credit for the protocol.
+// their debt drops slightly less than they paid; the rounding remainder stays
+// with the protocol.
 let delta = mul_div_floor(amount, FIXED_POINT_ONE, current_accumulator);
 position.normalized_debt_amount = position.normalized_debt_amount.checked_sub(delta)?;
 // `checked_sub` panicking covers overrepay.
@@ -511,9 +514,9 @@ position.normalized_debt_amount = position.normalized_debt_amount.checked_sub(de
 **In plain English:** integer math has to drop fractions somewhere. We always drop them in the direction that keeps the protocol whole.
 
 - **`generate_debt` rounds UP.** User gets exactly `amount` stablecoins; their nominal debt grows by `≥ amount`. They owe slightly more than they walked away with → protocol's total debt ≥ total supply.
-- **`repay_debt` rounds DOWN.** User burns exactly `amount` stablecoins; their nominal debt shrinks by `≤ amount`. They paid `amount` but debt only dropped by ≤ that → protocol keeps the rounding remainder as fee credit.
+- **`repay_debt` rounds DOWN.** User burns exactly `amount` stablecoins; their nominal debt shrinks by `≤ amount`. They paid `amount` but debt only dropped by ≤ that → protocol keeps the rounding remainder.
 
-Net effect: the protocol's "implicit fee credit" (`Σ nominal_debt − total_supply`, see §7 invariant 7) can only grow over time, never shrink. The integer dust always sticks to the protocol's side.
+Net effect: `Σ nominal_debt − total_supply` (§7 invariant 7) is never negative, and is only integer dust. The dust always sticks to the protocol's side.
 
 **Dust trade-off on full repay.** Because we round the decrement down, fully clearing a position can require burning slightly more than the nominal debt (≤ one accumulator unit of overpayment). v1 accepts this. UX-side, the SDK can either show "exact" + "with dust buffer" amounts, or expose a `repay_all` helper that picks the right number off-chain.
 
@@ -626,7 +629,7 @@ The same few names for the fee/debt machinery recur across §4, §5, and §6. Co
 **Operations:**
 
 - **`compound_rate(rate, millis)`** — `rate ^ millis` in fixed point, via exponentiation-by-squaring (§5.2).
-- **`accrue_stability_fee`** — the permissionless "poke" that refreshes the accumulator anchor: rolls the live value into `accumulated_rate_at_last_accrual` and sets `last_accrued_at = now` (§10.2). The only writer of the accumulator besides init and the auto-accrue in `set_stability_fee_per_millisecond`.
+- **`accrue_stability_fee`** — the permissionless "poke" that refreshes the accumulator anchor: rolls the live value into `accumulated_rate_at_last_accrual` and sets `last_accrued_at = now` (§10.2). Every other accruing instruction (§6.6) writes the accumulator the same way.
 - **`FIXED_POINT_ONE`** — the value `1.0` in this system (`10^27`). Every rate / multiplier / price is stored as `actual_value × FIXED_POINT_ONE` (§5.1).
 
 **The redemption-price side mirrors this exactly** — same anchor + per-millisecond-rate + timestamp pattern, projected the same way (§5.3), re-anchored only by its own poke. Different fields:
@@ -638,6 +641,25 @@ The same few names for the fee/debt machinery recur across §4, §5, and §6. Co
 | last-touched timestamp | `last_accrued_at` | `last_updated_at` |
 | live projection | `current_accumulated_rate` | `current_redemption_price` |
 | re-anchored by | `accrue_stability_fee` (§10.2) | `update_redemption_rate` (§10.3) |
+
+### 6.6 Fee accrual and the surplus mint
+
+Every instruction that accrues — `accrue_stability_fee`, `refresh_globals` (fee half), `set_stability_fee_per_millisecond` (at the old rate), `generate_debt` and `repay_debt` — runs the same step, RAI's `SAFEEngine.updateAccumulatedRate`:
+
+```
+new_accumulator = current_accumulated_rate(state, params, now)        // §5.3
+accrued_fees    = ⌊total_normalized_debt × (new_accumulator − state.accumulated_rate_at_last_accrual) / FIXED_POINT_ONE⌋
+state.accumulated_rate_at_last_accrual = new_accumulator
+state.last_accrued_at                  = now
+if accrued_fees > 0:
+    chained Token::Mint { amount_to_mint: accrued_fees }
+        accounts:  [stablecoin_definition, stablecoin_master_holding]
+        pda_seeds: [stablecoin_definition_seed]
+```
+
+`generate_debt` and `repay_debt` accrue **before** they change the position, then price the change at the persisted accumulator and add it to / subtract it from `total_normalized_debt`. (RAI's core uses the stored rate, and its proxies call `taxSingle` first. Accruing inside the instruction makes that ordering mandatory.) Each of these instructions therefore takes the stablecoin definition and the master holding, and writes the accumulator.
+
+**In plain English:** when fees accrue, the protocol prints exactly the coins the borrowers now owe on top of what they borrowed, and keeps them in its own holding. Supply always matches total debt (RFP R1), so the coins needed to repay everything exist. Today the surplus just accumulates; spending it — RAI auctions it for its governance token — is RFP-014's job (§14).
 
 ## 7. Cross-instruction invariants
 
@@ -655,7 +677,7 @@ These are properties the protocol maintains across every state-changing instruct
 
 6. **Single collateral.** For every vault account `V`, `V.data` decodes as `TokenHolding::Fungible { definition_id: protocol_parameters.collateral_definition_id, .. }`.
 
-7. **Supply ≤ total open principal.** `stablecoin_definition.total_supply` is the sum of `(stablecoin minted to users) − (stablecoin burned by users)` integrated over `generate_debt` / `repay_debt`. This equals the **mint-side** debt across positions, NOT the nominal debt (which includes accrued fees). The gap `Σ(nominal_debt) − total_supply` is the protocol's accumulated fee credit (RAI's "system surplus" in concept; not materialized on-chain in this design).
+7. **Supply tracks total debt (RFP R1).** `stablecoin_definition.total_supply` = (minted to users) − (burned by users) + (fees minted to the surplus holding). After every accrual, `total_supply` equals `Σ nominal_debt` at the persisted accumulator, up to integer dust that always favours the protocol (§6.3, §6.6). Between accruals, the projected nominal debt runs ahead of supply by the fees not yet accrued, exactly as in RAI. `total_normalized_debt` equals `Σ position.normalized_debt_amount` after every instruction.
 
 8. **Frozen ⇒ debt-extending ops blocked.** `is_frozen = true` implies `open_position`, `generate_debt`, `withdraw_collateral` all panic. Other ops continue to work.
 
@@ -797,19 +819,22 @@ flowchart TD
 
 **Signature:** `fn accrue_stability_fee();`
 
-**Inputs (4 accounts):**
+**Inputs (6 accounts):**
 
 1. `caller` — authorized; satisfies runtime's ≥1-authorized requirement. Not retained.
 2. `protocol_parameters` — initialized, read-only.
 3. `stability_fee_accumulator` — initialized, writable.
-4. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
+4. `stablecoin_definition` — initialized, writable (chained Mint); must equal `protocol_parameters.stablecoin_definition_id`.
+5. `stablecoin_master_holding` — the surplus holding; initialized, writable (chained Mint); at its canonical PDA; same Token Program as the definition.
+6. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Output state changes:**
 
 - `stability_fee_accumulator.accumulated_rate_at_last_accrual` ← `anchor × compound_rate(stability_fee_per_millisecond, now − last_accrued_at) / FIXED_POINT_ONE`
 - `stability_fee_accumulator.last_accrued_at` ← `now`
+- `stablecoin_master_holding.balance` and `stablecoin_definition.total_supply` ← `old + accrued_fees` (chained Mint, §6.6).
 
-**Chained calls:** none.
+**Chained calls:** the §6.6 surplus `Token::Mint`, when `accrued_fees > 0`.
 
 **Panics if:** `caller.is_authorized = false`; either global uninitialized; overflow in `compound_rate`. The `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` clamp of §5.3 bounds `dt` but does **not** rule this out — the new anchor is *stored*, so it must fit `u128`, and `stability_fee_per_millisecond` at its §8 ceiling overflows after 39 ms (§5.2). Unreachable at any realistic fee.
 
@@ -817,11 +842,12 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (4)"]
-        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[stability_fee_accumulator<br/>write] ~~~ a4[clock<br/>CLOCK_01]
+    subgraph In["Inputs (6)"]
+        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[stability_fee_accumulator<br/>write] ~~~ a4[stablecoin_definition<br/>write, chained] ~~~ a5[stablecoin_master_holding<br/>write, chained] ~~~ a6[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[stability_fee_accumulator<br/>anchor x compound_rate<br/>last_accrued_at = now]
+        p2[stablecoin_master_holding<br/>+ accrued fees]
     end
     In --> Ins((accrue_stability_fee))
     Ins --> Post
@@ -863,14 +889,16 @@ flowchart TD
 
 A convenience poke that advances **both** globals in one instruction. Because a LEZ transaction carries a single instruction, this is the only way to refresh the fee accumulator and the redemption rate in one transaction. It is **best-effort**: it always performs the fee accrual, performs the redemption update only if its interval is due and the oracle is fresh, and **skips rather than panics** otherwise. The standalone `accrue_stability_fee` (§10.2) and `update_redemption_rate` (§10.3) remain for callers that want to touch just one global — and, for `update_redemption_rate`, strict loud-failing semantics on a stale oracle (see "Why keep all three" below).
 
-**Inputs (6 accounts)** — the union of §10.2 and §10.3:
+**Inputs (8 accounts)** — the union of §10.2 and §10.3:
 
 1. `caller` — authorized.
 2. `protocol_parameters` — initialized, read-only.
 3. `stability_fee_accumulator` — initialized, writable.
-4. `redemption_price_state` — initialized, writable.
-5. `market_price_oracle` — initialized, read-only. Must equal `protocol_parameters.market_price_oracle_id`.
-6. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
+4. `stablecoin_definition` — as §10.2.
+5. `stablecoin_master_holding` — as §10.2.
+6. `redemption_price_state` — initialized, writable.
+7. `market_price_oracle` — read-only. Must equal `protocol_parameters.market_price_oracle_id`.
+8. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Behavior:**
 
@@ -878,9 +906,9 @@ A convenience poke that advances **both** globals in one instruction. Because a 
 - **Redemption half** — if `now − redemption_price_state.last_updated_at ≥ minimum_milliseconds_between_rate_updates` **and** the oracle is fresh (`now − oracle.timestamp ≤ maximum_oracle_price_age_milliseconds`) **and** `oracle.price > 0`: run the PI controller and re-anchor exactly as §10.3. Else: skip (no write).
 - The fee half always runs; if the redemption half skips, the call just advances the accumulator alone.
 
-**Chained calls:** none.
+**Chained calls:** the §6.6 surplus `Token::Mint` of the fee half, when `accrued_fees > 0`.
 
-**Panics if:** `caller.is_authorized = false`; any of `protocol_parameters` / `stability_fee_accumulator` / `redemption_price_state` uninitialized or wrong owner; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`. It does **NOT** panic when the redemption half's interval hasn't elapsed or the oracle is stale / zero — those conditions skip the redemption half (the fee half always runs). Allowed when frozen (like the individual pokes).
+**Panics if:** `caller.is_authorized = false`; any of `protocol_parameters` / `stability_fee_accumulator` / `redemption_price_state` uninitialized or wrong owner; the surplus accounts fail §10.2's checks; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`. It does **NOT** panic when the redemption half's interval hasn't elapsed or the oracle is stale / zero — those conditions skip the redemption half (the fee half always runs). Allowed when frozen (like the individual pokes).
 
 **Why keep all three (independent need):**
 
@@ -890,8 +918,8 @@ A convenience poke that advances **both** globals in one instruction. Because a 
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (6)"]
-        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[stability_fee_accumulator<br/>write] ~~~ a4[redemption_price_state<br/>write] ~~~ a5[market_price_oracle<br/>read] ~~~ a6[clock<br/>CLOCK_01]
+    subgraph In["Inputs (8)"]
+        a1[caller<br/>auth] ~~~ a2[protocol_parameters<br/>read] ~~~ a3[stability_fee_accumulator<br/>write] ~~~ a4[stablecoin_definition<br/>write, chained] ~~~ a5[stablecoin_master_holding<br/>write, chained] ~~~ a6[redemption_price_state<br/>write] ~~~ a7[market_price_oracle<br/>read] ~~~ a8[clock<br/>CLOCK_01]
     end
     In --> Ins((refresh_globals<br/>best-effort))
     Ins -->|fee interval due| F[accrue — as §10.2]
@@ -1026,27 +1054,29 @@ flowchart TD
 2. `position` — initialized, writable; PDA verified.
 3. `stablecoin_definition` — initialized, writable (chained Mint); must equal `protocol_parameters.stablecoin_definition_id`.
 4. `user_stablecoin_holding` — initialized; `definition_id = stablecoin_definition.account_id`; same Token Program. NOT required to be authorized (Mint destination).
-5. `stability_fee_accumulator` — initialized, read-only.
-6. `redemption_price_state` — initialized, read-only.
-7. `market_price_oracle` — initialized, read-only; for staleness gate only. Must equal `protocol_parameters.market_price_oracle_id`.
-8. `protocol_parameters` — initialized, read-only.
-9. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
+5. `stablecoin_master_holding` — the surplus holding, as §10.2.
+6. `stability_fee_accumulator` — initialized, writable (accrued first, §6.6).
+7. `redemption_price_state` — initialized, read-only.
+8. `market_price_oracle` — initialized, read-only; for staleness gate only. Must equal `protocol_parameters.market_price_oracle_id`.
+9. `protocol_parameters` — initialized, read-only.
+10. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Outputs:**
 
-- `position.normalized_debt_amount` ← `old + ⌈amount × FIXED_POINT_ONE / current_accumulator⌉` (round UP, § 6.3).
-- `stablecoin_definition.total_supply` ← `old + amount` (chained Mint).
-- `user_stablecoin_holding.balance` ← `old + amount` (chained Mint).
+- `stability_fee_accumulator` ← accrued to `now` (§6.6); `total_normalized_debt` ← `old + delta`.
+- `position.normalized_debt_amount` ← `old + delta`, where `delta = ⌈amount × FIXED_POINT_ONE / current_accumulator⌉` (round UP, § 6.3) and `current_accumulator` is the freshly persisted one.
+- `stablecoin_definition.total_supply` ← `old + accrued_fees + amount` (chained Mints).
+- `stablecoin_master_holding.balance` ← `old + accrued_fees`; `user_stablecoin_holding.balance` ← `old + amount`.
 
-**Chained calls:** `Token::Mint { amount_to_mint: amount }` · accounts: `[stablecoin_definition (auth via stablecoin program PDA seed), user_stablecoin_holding]` · pda_seeds: `[stablecoin_definition_seed]`.
+**Chained calls:** the §6.6 surplus `Token::Mint` (when `accrued_fees > 0`), then `Token::Mint { amount_to_mint: amount }` · accounts: `[stablecoin_definition (auth via stablecoin program PDA seed), user_stablecoin_holding]` · pda_seeds: `[stablecoin_definition_seed]`.
 
 **Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`; `now − oracle.timestamp > maximum_oracle_price_age_milliseconds`; `oracle.timestamp > now` (a future-dated observation is rejected outright, not treated as fresh); `protocol_parameters.is_frozen = true`; the redemption price projects to **zero** (§6.2); collateralization check (§ 6.2) fails post-mint; arithmetic overflow.
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (9)"]
-        a1[owner<br/>auth] ~~~ a2[position<br/>write] ~~~ a3[stablecoin_definition<br/>write, chained] ~~~ a4[user_stablecoin_holding<br/>init]
-        a5[stability_fee_accumulator<br/>read] ~~~ a6[redemption_price_state<br/>read] ~~~ a7[market_price_oracle<br/>read, staleness gate] ~~~ a8[protocol_parameters<br/>read] ~~~ a9[clock<br/>CLOCK_01]
+    subgraph In["Inputs (10)"]
+        a1[owner<br/>auth] ~~~ a2[position<br/>write] ~~~ a3[stablecoin_definition<br/>write, chained] ~~~ a4[user_stablecoin_holding<br/>init] ~~~ a5[stablecoin_master_holding<br/>write, chained]
+        a6[stability_fee_accumulator<br/>write, accrued] ~~~ a7[redemption_price_state<br/>read] ~~~ a8[market_price_oracle<br/>read, staleness gate] ~~~ a9[protocol_parameters<br/>read] ~~~ a10[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[position<br/>normalized_debt += ceil amt/acc<br/>collateralization check] ~~~ p2[stablecoin_definition<br/>total_supply += amount] ~~~ p3[user_stablecoin_holding<br/>balance += amount]
@@ -1066,25 +1096,27 @@ flowchart TD
 2. `position` — initialized, writable; PDA verified.
 3. `stablecoin_definition` — initialized, writable (chained Burn); must equal `protocol_parameters.stablecoin_definition_id`.
 4. `user_stablecoin_holding` — authorized, initialized; `definition_id = stablecoin_definition.account_id`; same Token Program.
-5. `stability_fee_accumulator` — initialized, read-only.
-6. `protocol_parameters` — initialized, read-only.
-7. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
+5. `stablecoin_master_holding` — the surplus holding, as §10.2.
+6. `stability_fee_accumulator` — initialized, writable (accrued first, §6.6).
+7. `protocol_parameters` — initialized, read-only.
+8. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Outputs:**
 
-- `position.normalized_debt_amount` ← `old − ⌊amount × FIXED_POINT_ONE / current_accumulator⌋` (round DOWN, § 6.3); `checked_sub` panics on overrepay.
-- `stablecoin_definition.total_supply` ← `old − amount`.
-- `user_stablecoin_holding.balance` ← `old − amount`.
+- `stability_fee_accumulator` ← accrued to `now` (§6.6); `total_normalized_debt` ← `old − delta`.
+- `position.normalized_debt_amount` ← `old − delta`, where `delta = ⌊amount × FIXED_POINT_ONE / current_accumulator⌋` (round DOWN, § 6.3) at the freshly persisted accumulator; `checked_sub` panics on overrepay.
+- `stablecoin_definition.total_supply` ← `old + accrued_fees − amount`.
+- `stablecoin_master_holding.balance` ← `old + accrued_fees`; `user_stablecoin_holding.balance` ← `old − amount`.
 
-**Chained calls:** `Token::Burn { amount_to_burn: amount }` · accounts: `[stablecoin_definition, user_stablecoin_holding (user-authorized)]` · no PDA seeds.
+**Chained calls:** the §6.6 surplus `Token::Mint` (when `accrued_fees > 0`), then `Token::Burn { amount_to_burn: amount }` · accounts: `[stablecoin_definition, user_stablecoin_holding (user-authorized)]` · no PDA seeds.
 
 **Panics if:** `owner.is_authorized = false`; `user_stablecoin_holding.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; overrepay (`⌊amount × FIXED_POINT_ONE / current_accumulator⌋ > position.normalized_debt_amount`, mirroring the floor decrement of §6.3 / the output above). Allowed when frozen.
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (7)"]
-        a1[owner<br/>auth] ~~~ a2[position<br/>write] ~~~ a3[stablecoin_definition<br/>write, chained]
-        a4[user_stablecoin_holding<br/>auth + init] ~~~ a5[stability_fee_accumulator<br/>read] ~~~ a6[protocol_parameters<br/>read] ~~~ a7[clock<br/>CLOCK_01]
+    subgraph In["Inputs (8)"]
+        a1[owner<br/>auth] ~~~ a2[position<br/>write] ~~~ a3[stablecoin_definition<br/>write, chained] ~~~ a4[user_stablecoin_holding<br/>auth + init]
+        a5[stablecoin_master_holding<br/>write, chained] ~~~ a6[stability_fee_accumulator<br/>write, accrued] ~~~ a7[protocol_parameters<br/>read] ~~~ a8[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[position<br/>normalized_debt -= floor amt/acc] ~~~ p2[stablecoin_definition<br/>total_supply -= amount] ~~~ p3[user_stablecoin_holding<br/>balance -= amount]
@@ -1149,7 +1181,7 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 | `redemption_price_at_last_update` | param to init (initial price) | **not directly settable by admin** — only drifts via `update_redemption_rate` (controller) |
 | `redemption_rate_per_millisecond` | always `FIXED_POINT_ONE` at init | controller-managed (only `update_redemption_rate` writes it) |
 | `controller_integral_term` | always `0` at init | controller-managed (only `update_redemption_rate` writes it) |
-| `accumulated_rate_at_last_accrual` | always `FIXED_POINT_ONE` at init | grows monotonically via `accrue_stability_fee` and the auto-accrue in `set_stability_fee_per_millisecond` |
+| `accumulated_rate_at_last_accrual` | always `FIXED_POINT_ONE` at init | grows monotonically via every accruing instruction (§6.6) |
 | `stablecoin name` | param to init | **NO — immutable** (lives in `TokenDefinition::Fungible`; no token-program setter) |
 
 **What admin CAN do:**
@@ -1179,7 +1211,7 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 
 All seven share the same skeleton:
 
-**Inputs (2 base + 0-2 extras):**
+**Inputs (2 base + 0-4 extras):**
 
 - `admin` — authorized; `admin.account_id == protocol_parameters.admin_account_id`.
 - `protocol_parameters` — initialized, writable.
@@ -1194,7 +1226,7 @@ that takes the `clock` account (§ 5.4); the other six omit it.
 
 | # | Instruction | Param(s) | Fields rewritten | Extra accounts | Special note |
 |---|---|---|---|---|---|
-| 10 | `set_stability_fee_per_millisecond` | `new_rate: u128` | `stability_fee_per_millisecond` | `stability_fee_accumulator` (writable), `clock` | Auto-accrues forward at the OLD rate up to `now` first — hence the clock. |
+| 10 | `set_stability_fee_per_millisecond` | `new_rate: u128` | `stability_fee_per_millisecond` | `stability_fee_accumulator` (writable), `stablecoin_definition` and `stablecoin_master_holding` (writable, as §10.2), `clock` | Auto-accrues forward at the OLD rate up to `now` first and mints the accrued fees (§6.6) — hence the clock and the surplus accounts. |
 | 11 | `set_minimum_collateralization_ratio` | `new_ratio: u128` | `minimum_collateralization_ratio` | — | Tightening leaves existing positions retroactively under-collateralized; they cannot increase debt or withdraw collateral until back above. No mass-liquidation here (RFP-014 out of scope). |
 | 12 | `set_controller_gains` | `new_proportional_gain: i128, new_integral_gain: i128` | `controller_proportional_gain`, `controller_integral_gain` | — | Does NOT reset `controller_integral_term`. |
 | 13 | `set_market_price_oracle` | (no scalar) | `market_price_oracle_id` | `new_oracle` (read-only) | Validates `OraclePriceAccount` shape, base/quote ids. `program_owner` not pinned. |
@@ -1204,7 +1236,7 @@ that takes the `clock` account (§ 5.4); the other six omit it.
 
 ```mermaid
 flowchart TD
-    subgraph In["Base inputs (2 + 0..2)"]
+    subgraph In["Base inputs (2 + 0..4)"]
         a1[admin<br/>auth, == admin_account_id] ~~~ a2[protocol_parameters<br/>write] ~~~ ax[stability_fee_accumulator<br/>write — only set_stability_fee] ~~~ ay[new_oracle<br/>read — only set_market_price_oracle]
     end
     subgraph Post["Post-state"]
@@ -1310,7 +1342,7 @@ flowchart TD
 - **Promote `INTEGRAL_CLAMP` and `RATE_DELTA_CLAMP` to admin-tunable.** Constants for v1 to keep the surface small. Promotion is additive (new `ProtocolParameters` fields + new admin setters); no migration of existing state.
 - **Leaky integrator (RAI parity).** v1 uses a hard `INTEGRAL_CLAMP` for anti-windup (§6.4); RAI uses a per-second integral *leak* (`perSecondCumulativeLeak`) that exponentially decays stale deviation. Switching to the leak — better dynamics under sustained deviations, at the cost of a new tunable parameter (with its own §8 bound) and a change to the §6.4 integral math — is deferred to the controller-tuning pass (§15). Deliberate divergence, not an oversight.
 - **Liquidation-specific instructions.** Tracked under RFP-014.
-- **Surplus extraction.** When RFP-014 lands, the implicit fee credit (§ 7 invariant 7) becomes extractable. May require a one-shot `materialize_surplus` instruction that mints the gap into a designated holding.
+- **Spending the surplus.** Accrued fees are minted into the master holding (§6.6) and stay there. Releasing them — RAI auctions surplus for its governance token, or a debt-buffer policy — belongs with RFP-014.
 
 ## 15. Implementation plan handoff
 
@@ -1389,7 +1421,7 @@ Computation:
 | `stablecoin_definition` | total_supply | S + 200 | S − 11 (net) |
 | Alice's stablecoin holding | balance | 211 | 0 |
 
-Alice slightly overpaid (211 nominal vs 210.26 owed). The extra 0.74 went to the protocol as fee credit (this is the rounding remainder; in real magnitudes it's negligible).
+Alice slightly overpaid (211 nominal vs 210.26 owed). The extra 0.74 is the rounding remainder and stays with the protocol; in real magnitudes it's negligible.
 
 **Step 5 — t = 365 days + 2s: `withdraw_collateral(amount = 600)`**
 
@@ -1413,7 +1445,7 @@ Alice slightly overpaid (211 nominal vs 210.26 owed). The extra 0.74 went to the
 **Net result over the year:**
 
 - Alice locked 600 collateral, borrowed 200 stablecoin, repaid 211 stablecoin. Net cost: ~11 stablecoin (the protocol's accrued stability fee).
-- The protocol's "accumulated fee credit" gap (§7 invariant 7) grew by ~11 over the year just from Alice's position. Over thousands of positions, this is the fee revenue the protocol implicitly holds. Surplus extraction is a future-RFP capability (§14).
+- The ~11 of fees on Alice's position over the year were minted to the surplus holding as they accrued (§6.6), so supply kept pace with her debt. Over thousands of positions, this is the protocol's fee revenue; spending it is a future-RFP capability (§14).
 
 ### 16.2 Emergency freeze
 
@@ -1487,7 +1519,7 @@ Trading resumes. A keeper calls `update_redemption_rate()`, which now reads the 
 
 **What this scenario doesn't fix:**
 
-The attacker still holds the stablecoin they minted during the attack. The protocol's `Σ(nominal_debt) − total_supply` gap got worse (the position's collateral is now far below what it should be backing). Recovery requires the **liquidation engine of RFP-014** — until that lands, the protocol's accumulated fee credit absorbs the loss, and if it's not enough, the protocol is effectively under-collateralized in aggregate. This is the inherent limit of "freeze without liquidation" — the freeze stops the bleeding mid-attack but doesn't undo prior damage.
+The attacker still holds the stablecoin they minted during the attack. The position's collateral is now far below what its debt should be backing. Recovery requires the **liquidation engine of RFP-014** — until that lands, the surplus holding (§6.6) is the only buffer, and if it's not enough, the protocol is effectively under-collateralized in aggregate. This is the inherent limit of "freeze without liquidation" — the freeze stops the bleeding mid-attack but doesn't undo prior damage.
 
 ### 16.3 Redemption price & controller walkthrough
 

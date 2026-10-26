@@ -6,10 +6,7 @@ use lee_core::{
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
     compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda_seed,
-    math::{
-        compute_current_accumulated_rate, compute_current_redemption_price_wide, mul_div_ceil,
-        FIXED_POINT_ONE,
-    },
+    math::{compute_current_redemption_price_wide, mul_div_ceil, FIXED_POINT_ONE},
     verify_position_and_get_seed, Position, ProtocolParameters, RedemptionPriceState,
     StabilityFeeAccumulator,
 };
@@ -22,6 +19,11 @@ use token_core::TokenHolding;
 /// The position's `normalized_debt_amount` grows by
 /// `⌈amount × FIXED_POINT_ONE / current_accumulator⌉`, rounded **up** per §6.3 so
 /// the borrower's nominal debt grows by at least `amount`.
+///
+/// Accrues first, like RAI's proxies calling `taxSingle` before touching a SAFE:
+/// the accumulator is persisted at `now`, the fees accrued on the existing debt
+/// are minted to the surplus holding (§6.6), and the new debt is priced at the
+/// persisted accumulator and added to `total_normalized_debt`.
 ///
 /// The §6.2 collateralization invariant is checked *after* the mint, against the
 /// accumulator and redemption price projected forward to the clock timestamp.
@@ -40,17 +42,20 @@ use token_core::TokenHolding;
 ///   observation is older than `maximum_oracle_price_age_milliseconds`.
 /// - `user_stablecoin_holding` is uninitialized, owned by a different Token Program than the
 ///   definition, or holds a different definition.
+/// - `stablecoin_master_holding` fails the surplus-account checks of
+///   [`crate::checks::surplus_mint_call`].
 /// - `clock` is not the initialized system `CLOCK_01` account.
 /// - The debt addition overflows, or §6.2 fails post-mint.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the nine account inputs mirror the spec §10.7 ABI"
+    reason = "the ten account inputs mirror the spec §10.7 ABI"
 )]
 pub fn generate_debt(
     owner: AccountWithMetadata,
     position: AccountWithMetadata,
     stablecoin_definition: AccountWithMetadata,
     user_stablecoin_holding: AccountWithMetadata,
+    stablecoin_master_holding: AccountWithMetadata,
     stability_fee_accumulator: AccountWithMetadata,
     redemption_price_state: AccountWithMetadata,
     market_price_oracle: AccountWithMetadata,
@@ -150,12 +155,15 @@ pub fn generate_debt(
         "User stablecoin holding does not match the stablecoin definition"
     );
 
-    let current_accumulator = compute_current_accumulated_rate(
-        accumulator.accumulated_rate_at_last_accrual,
-        parameters.stability_fee_per_millisecond,
-        accumulator.last_accrued_at,
-        now,
+    let mut accrual = crate::accrue_stability_fee::accrue_fees(&parameters, &accumulator, now);
+    let surplus_mint = crate::checks::surplus_mint_call(
+        &stablecoin_definition,
+        &stablecoin_master_holding,
+        &parameters,
+        stablecoin_program_id,
+        accrual.accrued_fees,
     );
+    let current_accumulator = accrual.accumulator.accumulated_rate_at_last_accrual;
     // Round UP (§6.3): the borrower receives exactly `amount`, so nominal debt
     // must grow by at least `amount`. The remainder stays with the protocol.
     let debt_delta = mul_div_ceil(amount, FIXED_POINT_ONE, current_accumulator);
@@ -163,6 +171,11 @@ pub fn generate_debt(
         .normalized_debt_amount
         .checked_add(debt_delta)
         .expect("Position normalized_debt_amount overflow");
+    accrual.accumulator.total_normalized_debt = accrual
+        .accumulator
+        .total_normalized_debt
+        .checked_add(debt_delta)
+        .expect("Total normalized debt overflow");
 
     let updated_position = Position {
         normalized_debt_amount: new_debt,
@@ -200,7 +213,12 @@ pub fn generate_debt(
         AccountStateDiff::new(position, BalanceDiff::Add(0), Data::from(&updated_position)),
         AccountStateDiff::unchanged(stablecoin_definition),
         AccountStateDiff::unchanged(user_stablecoin_holding),
-        AccountStateDiff::unchanged(stability_fee_accumulator),
+        AccountStateDiff::unchanged(stablecoin_master_holding),
+        AccountStateDiff::new(
+            stability_fee_accumulator,
+            BalanceDiff::Add(0),
+            Data::from(&accrual.accumulator),
+        ),
         AccountStateDiff::unchanged(redemption_price_state),
         AccountStateDiff::unchanged(market_price_oracle),
         AccountStateDiff::unchanged(protocol_parameters),
@@ -219,5 +237,8 @@ pub fn generate_debt(
     )
     .with_pda_seeds(vec![compute_stablecoin_definition_pda_seed()]);
 
-    (state_diffs, vec![mint_call])
+    (
+        state_diffs,
+        surplus_mint.into_iter().chain([mint_call]).collect(),
+    )
 }

@@ -6,10 +6,13 @@
 //! means the two can't drift apart.
 
 use alloy_primitives::U512;
-use lee_core::account::{Account, AccountId, AccountWithMetadata, Data};
+use lee_core::{
+    account::{Account, AccountId, AccountWithMetadata, Data},
+    program::ChainedCall,
+};
 use stablecoin_core::{
-    collateralization::collateralization_values, math::FIXED_POINT_ONE, Position,
-    ProtocolParameters,
+    collateralization::collateralization_values, compute_stablecoin_definition_pda_seed,
+    compute_stablecoin_master_holding_pda, math::FIXED_POINT_ONE, Position, ProtocolParameters,
 };
 
 /// Assert that `position` satisfies the collateralization invariant from spec §6.2:
@@ -147,6 +150,68 @@ pub(crate) fn assert_timing_milliseconds_in_band(milliseconds: u64, label: &str)
         milliseconds <= MAX_TIMING_MILLISECONDS,
         "{label} above maximum 86_400_000ms"
     );
+}
+
+/// Validate the accounts a fee accrual mints into and build the chained
+/// `Token::Mint` of `accrued_fees` to the surplus holding (spec §6.6).
+///
+/// The surplus holding is the stablecoin master holding `initialize_program`
+/// created at its PDA. The definition is its own mint authority, so the call is
+/// authorized with the definition's PDA seed, exactly like `generate_debt`'s.
+/// The accounts are validated even when nothing accrued, so a bad account list
+/// fails the same way whatever the clock says. Returns `None` when there is
+/// nothing to mint.
+///
+/// # Panics
+/// - `stablecoin_definition` does not match `ProtocolParameters.stablecoin_definition_id`, or is
+///   uninitialized.
+/// - `stablecoin_master_holding` is not at its canonical PDA, is uninitialized, or is owned by a
+///   different Token Program than the definition.
+pub(crate) fn surplus_mint_call(
+    stablecoin_definition: &AccountWithMetadata,
+    stablecoin_master_holding: &AccountWithMetadata,
+    parameters: &ProtocolParameters,
+    stablecoin_program_id: AccountId,
+    accrued_fees: u128,
+) -> Option<ChainedCall> {
+    assert_eq!(
+        stablecoin_definition.account_id, parameters.stablecoin_definition_id,
+        "Stablecoin definition does not match the one bound at initialize_program"
+    );
+    assert_ne!(
+        stablecoin_definition.account,
+        Account::default(),
+        "Stablecoin definition account must be initialized"
+    );
+    assert_eq!(
+        stablecoin_master_holding.account_id,
+        compute_stablecoin_master_holding_pda(stablecoin_program_id),
+        "Stablecoin master holding account ID does not match expected PDA derivation"
+    );
+    assert_ne!(
+        stablecoin_master_holding.account,
+        Account::default(),
+        "Stablecoin master holding must be initialized"
+    );
+    let token_program_id = stablecoin_definition.account.program_owner;
+    assert_eq!(
+        stablecoin_master_holding.account.program_owner, token_program_id,
+        "Stablecoin master holding must be owned by the same Token Program as the definition"
+    );
+
+    (accrued_fees > 0).then(|| {
+        ChainedCall::new(
+            token_program_id,
+            vec![
+                stablecoin_definition.account_id,
+                stablecoin_master_holding.account_id,
+            ],
+            &token_core::Instruction::Mint {
+                amount_to_mint: accrued_fees,
+            },
+        )
+        .with_pda_seeds(vec![compute_stablecoin_definition_pda_seed()])
+    })
 }
 
 /// Validate a read-only global: initialized, program-owned, and at its canonical

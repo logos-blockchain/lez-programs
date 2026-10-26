@@ -1,9 +1,10 @@
 //! Global lazy accumulator for stability fees.
 //!
-//! Created at [`initialize_program`] time, advanced by `accrue_stability_fee`
-//! and by the auto-accrue inline in `set_stability_fee_per_millisecond`. Read by
-//! every debt-touching instruction to compute current nominal debt from
-//! normalized debt.
+//! Created at [`initialize_program`] time. Every instruction that accrues fees
+//! advances it and mints the accrued fees to the protocol's surplus holding:
+//! `accrue_stability_fee`, `refresh_globals`, `set_stability_fee_per_millisecond`,
+//! `generate_debt` and `repay_debt`. Read by every debt-touching instruction to
+//! compute current nominal debt from normalized debt.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
@@ -29,6 +30,13 @@ pub struct StabilityFeeAccumulator {
     pub accumulated_rate_at_last_accrual: u128,
     /// Unix milliseconds of the last accrual.
     pub last_accrued_at: u64,
+    /// Sum of every position's `normalized_debt_amount` (RAI's `debtAmount`).
+    ///
+    /// Each accrual mints `total_normalized_debt × Δaccumulator / FIXED_POINT_ONE`
+    /// stablecoin to the protocol's surplus holding, so the supply keeps pace with
+    /// the total nominal debt (spec §6.6, RFP R1). `generate_debt` and
+    /// `repay_debt` keep it in step with the positions.
+    pub total_normalized_debt: u128,
 }
 
 impl TryFrom<&Data> for StabilityFeeAccumulator {
@@ -76,11 +84,12 @@ mod tests {
         StabilityFeeAccumulator {
             accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
             last_accrued_at: 1_700_000_000,
+            total_normalized_debt: 0,
         }
     }
 
     #[test]
-    fn borsh_roundtrip_preserves_both_fields() {
+    fn borsh_roundtrip_preserves_every_field() {
         let state = sample();
         let data: Data = (&state).into();
         let decoded = StabilityFeeAccumulator::try_from(&data).expect("decode");
@@ -92,6 +101,7 @@ mod tests {
         let state = StabilityFeeAccumulator {
             accumulated_rate_at_last_accrual: FIXED_POINT_ONE * 12345 / 10000, // 1.2345
             last_accrued_at: 2_000_000_000,
+            total_normalized_debt: 123_456_789_000_000_000_000,
         };
         let data: Data = (&state).into();
         let decoded = StabilityFeeAccumulator::try_from(&data).expect("decode");

@@ -16,6 +16,7 @@ use crate::account::account_id_hex;
 
 const PROGRAM: AccountId = AccountId::new([0x11; 32]);
 const START: u64 = 1_000;
+const TOKEN_PROGRAM: AccountId = AccountId::new([0x22; 32]);
 
 fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
@@ -66,6 +67,7 @@ impl Fixture {
             accumulator: StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE + 9_007_199_254_740_993,
                 last_accrued_at: START,
+                total_normalized_debt: 0,
             },
             redemption: RedemptionPriceState {
                 redemption_price_at_last_update: FIXED_POINT_ONE + 23,
@@ -77,11 +79,15 @@ impl Fixture {
         }
     }
 
-    fn accounts(&self) -> [Account; 4] {
+    fn accounts(&self) -> [Account; 6] {
         [
             account(AccountId::new([0; 32]), Data::default()),
             account(PROGRAM, Data::from(&self.parameters)),
             account(PROGRAM, Data::from(&self.accumulator)),
+            // The stablecoin definition and surplus holding only need to exist
+            // under one Token Program; nothing accrues without outstanding debt.
+            account(TOKEN_PROGRAM, Data::default()),
+            account(TOKEN_PROGRAM, Data::default()),
             account(
                 AccountId::new([0; 32]),
                 Data::try_from(
@@ -104,7 +110,7 @@ impl Fixture {
             "newRate": new_rate.to_string(),
             "protocolParameters": read_value(compute_protocol_parameters_pda(PROGRAM), &accounts[1]),
             "stabilityFeeAccumulator": read_value(compute_stability_fee_accumulator_pda(PROGRAM), &accounts[2]),
-            "clock": read_value(CLOCK_01_PROGRAM_ACCOUNT_ID, &accounts[3]),
+            "clock": read_value(CLOCK_01_PROGRAM_ACCOUNT_ID, &accounts[5]),
         })
     }
 
@@ -134,6 +140,8 @@ impl Fixture {
                     metadata[1].clone(),
                     metadata[2].clone(),
                     metadata[3].clone(),
+                    metadata[4].clone(),
+                    metadata[5].clone(),
                     PROGRAM,
                     new_rate,
                 )
@@ -144,15 +152,17 @@ impl Fixture {
                     metadata[1].clone(),
                     metadata[2].clone(),
                     metadata[3].clone(),
+                    metadata[4].clone(),
+                    metadata[5].clone(),
                     PROGRAM,
                 )
             }
             other => panic!("unexpected instruction: {other:?}"),
         };
         assert!(calls.is_empty());
-        assert_eq!(posts.len(), 4);
+        assert_eq!(posts.len(), 6);
         assert_eq!(post_account(&posts[0], PROGRAM), before[0]);
-        assert_eq!(post_account(&posts[3], PROGRAM), before[3]);
+        assert_eq!(post_account(&posts[5], PROGRAM), before[5]);
         for index in [1, 2] {
             assert_eq!(
                 post_account(&posts[index], PROGRAM).balance,
@@ -198,12 +208,16 @@ fn fee_setter_pins_configured_program_ids_serialization_and_guest_account_contra
             request["adminId"],
             request["protocolParameters"]["id"],
             request["stabilityFeeAccumulator"]["id"],
+            account_id_hex(id(3)),
+            account_id_hex(stablecoin_core::compute_stablecoin_master_holding_pda(
+                PROGRAM
+            )),
             account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID),
         ])
     );
     assert_eq!(
         result["signingRequirements"],
-        json!([true, false, false, false])
+        json!([true, false, false, false, false, false])
     );
     assert_eq!(
         result["instruction"],
@@ -227,6 +241,8 @@ fn fee_setter_pins_configured_program_ids_serialization_and_guest_account_contra
             {"name":"admin", "writable":false, "signer":true, "init":false},
             {"name":"protocol_parameters", "writable":true, "signer":false, "init":false},
             {"name":"stability_fee_accumulator", "writable":true, "signer":false, "init":false},
+            {"name":"stablecoin_definition", "writable":true, "signer":false, "init":false},
+            {"name":"stablecoin_master_holding", "writable":true, "signer":false, "init":false},
             {"name":"clock", "writable":false, "signer":false, "init":false},
         ])
     );

@@ -257,6 +257,19 @@ impl Accounts {
         }
     }
 
+    /// The surplus holding fee accruals mint into: the stablecoin master holding.
+    fn stablecoin_master_holding_init() -> Account {
+        Account {
+            program_owner: Ids::token_program(),
+            balance: 0_u128,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::stablecoin_definition(),
+                balance: 0,
+            }),
+            nonce: Nonce(0),
+        }
+    }
+
     fn user_stablecoin_holding_init() -> Account {
         Account {
             program_owner: Ids::token_program(),
@@ -319,6 +332,9 @@ impl Accounts {
             data: Data::from(&stablecoin_core::StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: stablecoin_core::math::FIXED_POINT_ONE,
                 last_accrued_at: OPEN_POSITION_NOW,
+                // More than every position fixture's debt combined, so a repay never
+                // underflows the total. Nothing accrues: the clock stays at the anchor.
+                total_normalized_debt: 1 << 100,
             }),
             nonce: Nonce(0),
         }
@@ -461,6 +477,10 @@ fn state_for_stablecoin_repay_tests() -> V03State {
         Accounts::stablecoin_definition_init(),
     );
     state.force_insert_account(Ids::position(), Accounts::position_with_debt_init());
+    state.force_insert_account(
+        compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+        Accounts::stablecoin_master_holding_init(),
+    );
     state.force_insert_account(
         Ids::user_stablecoin_holding(),
         Accounts::user_stablecoin_holding_init(),
@@ -652,6 +672,7 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
             Ids::position(),
             Ids::stablecoin_definition(),
             Ids::user_stablecoin_holding(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
             compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
             compute_protocol_parameters_pda(Ids::stablecoin_program()),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
@@ -717,6 +738,10 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
 /// `initialize_program`, so they need these inserted explicitly.
 fn seed_stablecoin_globals(state: &mut V03State) {
     state.force_insert_account(
+        compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+        Accounts::stablecoin_master_holding_init(),
+    );
+    state.force_insert_account(
         compute_protocol_parameters_pda(Ids::stablecoin_program()),
         Accounts::protocol_parameters_init(),
     );
@@ -754,9 +779,13 @@ fn withdraw_global_pre_states(state: &V03State) -> Vec<AccountWithMetadata> {
     ]
 }
 
-/// The three trailing public inputs of `RepayDebt`, in ABI order.
+/// The four trailing public inputs of `RepayDebt`, in ABI order.
 fn repay_global_pre_states(state: &V03State) -> Vec<AccountWithMetadata> {
     vec![
+        public_pre_state(
+            state,
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+        ),
         public_pre_state(
             state,
             compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
@@ -1357,6 +1386,7 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
+            InputAccountIdentity::Public,
         ],
         &stablecoin_with_token_deps(),
     )
@@ -1498,6 +1528,7 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             private_authorized_update_identity(bob_ask, &holding_vpk, membership_proof),
+            InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
             InputAccountIdentity::Public,
@@ -1948,6 +1979,7 @@ fn stablecoin_full_position_lifecycle() {
             Ids::position(),
             Ids::stablecoin_definition_pda(),
             Ids::user_stablecoin_holding(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
             accumulator_pda,
             redemption_pda,
             Ids::oracle(),
@@ -1975,13 +2007,24 @@ fn stablecoin_full_position_lifecycle() {
     );
 
     // 4. Let an hour of fees accrue, then poke.
+    let accumulator_before = read_accumulator(&state);
+    assert_eq!(
+        accumulator_before.total_normalized_debt, borrowed.normalized_debt_amount,
+        "generate_debt must add the position's debt to the protocol-wide total"
+    );
     let after_accrual = start + 3_600_000;
     submit_poke(
         &mut state,
         after_accrual,
         block,
         stablecoin_core::Instruction::AccrueStabilityFee,
-        vec![params_pda, accumulator_pda, CLOCK_01_PROGRAM_ACCOUNT_ID],
+        vec![
+            params_pda,
+            accumulator_pda,
+            Ids::stablecoin_definition_pda(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
     )
     .expect("accrue_stability_fee must succeed");
     block += 1;
@@ -1989,6 +2032,32 @@ fn stablecoin_full_position_lifecycle() {
     assert!(
         accumulator.accumulated_rate_at_last_accrual > FIXED_POINT_ONE,
         "an hour of stability fee must move the accumulator above 1.0"
+    );
+    // RFP R1: the accrued fees are minted to the surplus holding, so the supply
+    // backing this position's debt keeps pace with its nominal debt (to within
+    // the one-unit rounding of the mint and the accrual).
+    let surplus = stablecoin_core::math::mul_div(
+        accumulator_before.total_normalized_debt,
+        accumulator.accumulated_rate_at_last_accrual
+            - accumulator_before.accumulated_rate_at_last_accrual,
+        FIXED_POINT_ONE,
+    );
+    assert_fungible_balance_of(
+        &state,
+        compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+        Ids::stablecoin_definition_pda(),
+        surplus,
+    );
+    let supply_backing_debt =
+        read_total_supply(&state, Ids::stablecoin_definition_pda()) - LIFECYCLE_STABLECOIN_BUFFER;
+    let nominal_debt_now = stablecoin_core::math::mul_div(
+        borrowed.normalized_debt_amount,
+        accumulator.accumulated_rate_at_last_accrual,
+        FIXED_POINT_ONE,
+    );
+    assert!(
+        nominal_debt_now.abs_diff(supply_backing_debt) <= 1,
+        "supply {supply_backing_debt} must match the nominal debt {nominal_debt_now}"
     );
 
     // 5. Repay the whole debt. It costs more than was minted — that gap is the fee.
@@ -2016,6 +2085,7 @@ fn stablecoin_full_position_lifecycle() {
             Ids::position(),
             Ids::stablecoin_definition_pda(),
             Ids::user_stablecoin_holding(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
             accumulator_pda,
             params_pda,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
@@ -2044,8 +2114,8 @@ fn stablecoin_full_position_lifecycle() {
     );
     assert_eq!(
         read_total_supply(&state, Ids::stablecoin_definition_pda()),
-        remaining,
-        "total_supply must track the burn"
+        remaining + surplus,
+        "total_supply must track the burn; the surplus holding keeps the fees"
     );
     assert!(
         remaining < LIFECYCLE_STABLECOIN_BUFFER,
@@ -2192,6 +2262,8 @@ fn stablecoin_admin_retunes_parameters_then_rotates_the_role() {
             Ids::admin(),
             params_pda,
             accumulator_pda,
+            Ids::stablecoin_definition_pda(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         vec![admin],
@@ -2380,6 +2452,7 @@ fn stablecoin_freeze_blocks_risky_ops() {
         Ids::position(),
         Ids::stablecoin_definition_pda(),
         Ids::user_stablecoin_holding(),
+        compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
         accumulator_pda,
         redemption_pda,
         Ids::oracle(),
@@ -2511,6 +2584,7 @@ fn stablecoin_freeze_blocks_risky_ops() {
             Ids::position(),
             Ids::stablecoin_definition_pda(),
             Ids::user_stablecoin_holding(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
             accumulator_pda,
             params_pda,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
@@ -2532,7 +2606,13 @@ fn stablecoin_freeze_blocks_risky_ops() {
         start + 60_000,
         block,
         stablecoin_core::Instruction::AccrueStabilityFee,
-        vec![params_pda, accumulator_pda, CLOCK_01_PROGRAM_ACCOUNT_ID],
+        vec![
+            params_pda,
+            accumulator_pda,
+            Ids::stablecoin_definition_pda(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
     )
     .expect("accrue_stability_fee must work while frozen");
     block += 1;
@@ -2820,6 +2900,8 @@ fn stablecoin_accrue_stability_fee_advances_accumulator() {
         vec![
             compute_protocol_parameters_pda(Ids::stablecoin_program()),
             compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            Ids::stablecoin_definition_pda(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
     )
@@ -2982,6 +3064,8 @@ fn stablecoin_refresh_globals_advances_both_then_fee_only_when_oracle_stale() {
         vec![
             compute_protocol_parameters_pda(Ids::stablecoin_program()),
             compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            Ids::stablecoin_definition_pda(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
             compute_redemption_price_state_pda(Ids::stablecoin_program()),
             Ids::oracle(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,

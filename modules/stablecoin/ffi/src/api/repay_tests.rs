@@ -6,7 +6,8 @@ use serde_json::{json, Value};
 use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
     compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda,
-    math::FIXED_POINT_ONE, Instruction, Position, ProtocolParameters, StabilityFeeAccumulator,
+    compute_stablecoin_master_holding_pda, math::FIXED_POINT_ONE, Instruction, Position,
+    ProtocolParameters, StabilityFeeAccumulator,
 };
 use token_core::{TokenDefinition, TokenHolding};
 
@@ -24,6 +25,22 @@ const PROGRAM: AccountId = AccountId::new([0x11; 32]);
 const TOKEN_PROGRAM: AccountId = AccountId::new([0x22; 32]);
 const NOW: u64 = 1_000;
 const NONCE: u64 = u64::MAX;
+
+/// The surplus holding a fee accrual mints into: the stablecoin master holding.
+fn surplus_holding() -> (AccountId, Account) {
+    (
+        compute_stablecoin_master_holding_pda(PROGRAM),
+        Account {
+            program_owner: TOKEN_PROGRAM,
+            balance: 0,
+            nonce: Nonce(0),
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: compute_stablecoin_definition_pda(PROGRAM),
+                balance: 0,
+            }),
+        },
+    )
+}
 
 fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
@@ -98,6 +115,7 @@ fn request(amount: Value) -> RepayDebtPlanRequest {
             Data::from(&StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE * 3 / 2,
                 last_accrued_at: NOW,
+                total_normalized_debt: 1 << 100,
             }),
         ),
         protocol_parameters: read(
@@ -155,6 +173,7 @@ fn repay_plan_pins_instruction_pdas_signers_and_guest_idl() {
             request.position.id,
             request.stablecoin_definition.id,
             request.user_stablecoin_holding.id,
+            account_id_hex(compute_stablecoin_master_holding_pda(PROGRAM)),
             request.stability_fee_accumulator.id,
             request.protocol_parameters.id,
             request.clock.id,
@@ -162,7 +181,7 @@ fn repay_plan_pins_instruction_pdas_signers_and_guest_idl() {
     );
     assert_eq!(
         plan["signingRequirements"],
-        json!([true, false, false, true, false, false, false])
+        json!([true, false, false, true, false, false, false, false])
     );
     let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
     let instruction: Instruction = borsh::from_slice(&words).expect("instruction");
@@ -211,8 +230,14 @@ fn repay_plan_pins_instruction_pdas_signers_and_guest_idl() {
                 json!(false)
             ),
             (
-                json!("stability_fee_accumulator"),
+                json!("stablecoin_master_holding"),
+                json!(true),
                 json!(false),
+                json!(false)
+            ),
+            (
+                json!("stability_fee_accumulator"),
+                json!(true),
                 json!(false),
                 json!(false)
             ),
@@ -254,6 +279,10 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
             .map(|(account_id, signer)| {
                 let (account_id, account) = if account_id == &request.owner_id {
                     (id(20), Account::default())
+                } else if account_id
+                    == &account_id_hex(compute_stablecoin_master_holding_pda(PROGRAM))
+                {
+                    surplus_holding()
                 } else {
                     decode_account(
                         reads
@@ -266,8 +295,8 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
                 AccountWithMetadata::new(account, signer, account_id)
             })
             .collect();
-        let [owner, position_input, definition, holding, accumulator, parameters, clock]: [_; 7] =
-            inputs.try_into().expect("seven accounts");
+        let [owner, position_input, definition, holding, master_holding, accumulator, parameters, clock]: [_; 8] =
+            inputs.try_into().expect("eight accounts");
         let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
         let Instruction::RepayDebt { amount } = borsh::from_slice(&words).expect("instruction")
         else {
@@ -278,6 +307,7 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
             position_input,
             definition,
             holding,
+            master_holding,
             accumulator,
             parameters,
             clock,
@@ -290,9 +320,8 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
         let mut expected = position(&request);
         expected.normalized_debt_amount = remaining;
         assert_eq!(updated, expected);
-        let [call] = calls.as_slice() else {
-            panic!("one chained burn");
-        };
+        // Any accrued fees are minted to the surplus holding first; the burn is last.
+        let call = calls.last().expect("a chained burn");
         assert_eq!(call.program_account_id, TOKEN_PROGRAM);
         let token_core::Instruction::Burn { amount_to_burn } =
             borsh::from_slice(&call.instruction_data).expect("burn instruction")
@@ -349,6 +378,7 @@ fn repay_plan_preserves_full_width_integers_and_rejects_lossy_values() {
             Data::from(&StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
                 last_accrued_at: NOW,
+                total_normalized_debt: 1 << 100,
             }),
         );
         let plan = repay_debt_plan(request).expect("full width amount");
@@ -422,6 +452,7 @@ fn repay_plan_projects_current_fees_and_reports_unrepresentable_arithmetic() {
         Data::from(&StabilityFeeAccumulator {
             accumulated_rate_at_last_accrual: u128::MAX,
             last_accrued_at: NOW,
+            total_normalized_debt: 1 << 100,
         }),
     );
     error(request, "repayment_arithmetic_error");
