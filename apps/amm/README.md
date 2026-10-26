@@ -200,6 +200,10 @@ account the wallet will sign transfers from/to for that token):
 ]
 ```
 
+`TOKENS_CONFIG`, `AMM_POOLS_CONFIG`, `AMM_REGISTRY_URL` and `AMM_NETWORK` are
+read once when the app starts; changing them later has no effect until a
+restart. The files themselves are re-read on every registry refresh.
+
 The quickest start is to copy the checked-in template and edit it:
 
 ```bash

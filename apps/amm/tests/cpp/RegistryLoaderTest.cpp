@@ -15,11 +15,20 @@ class RegistryLoaderTest : public QObject {
 
 private slots:
     void initTestCase();
+    void init();
     void cleanupTestCase();
-    void clearsRegistryIdentity_data();
-    void clearsRegistryIdentity();
+    void clearsRegistryIdentityWhenUrlCleared();
+    void ignoresEnvironmentChangesAfterConstruction();
+    void startupLocalSourceWinsAndCarriesNoIds();
 
 private:
+    // Writes a one-network registry declaring `programId` / `configId` and returns
+    // its file URL.
+    QString writeRegistry(const QString& name, const QString& programId,
+                          const QString& configId);
+    // Writes a local tokens file with one token and returns its path.
+    QString writeLocalTokens(const QString& name, const QString& symbol);
+
     QTemporaryDir m_tempDir;
 };
 
@@ -28,6 +37,10 @@ void RegistryLoaderTest::initTestCase()
     QVERIFY(m_tempDir.isValid());
     QStandardPaths::setTestModeEnabled(true);
     QCoreApplication::setApplicationName(QDir(m_tempDir.path()).dirName());
+}
+
+void RegistryLoaderTest::init()
+{
     qunsetenv("AMM_REGISTRY_URL");
     qunsetenv("AMM_NETWORK");
     qunsetenv("TOKENS_CONFIG");
@@ -39,24 +52,9 @@ void RegistryLoaderTest::cleanupTestCase()
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
 }
 
-void RegistryLoaderTest::clearsRegistryIdentity_data()
+QString RegistryLoaderTest::writeRegistry(const QString& name, const QString& programId,
+                                          const QString& configId)
 {
-    QTest::addColumn<QByteArray>("localEnv");
-    QTest::addColumn<QString>("expectedSource");
-    QTest::newRow("clear-url") << QByteArray{} << QStringLiteral("none");
-    QTest::newRow("local-tokens") << QByteArray("TOKENS_CONFIG") << QStringLiteral("local");
-    QTest::newRow("local-pools") << QByteArray("AMM_POOLS_CONFIG") << QStringLiteral("local");
-}
-
-void RegistryLoaderTest::clearsRegistryIdentity()
-{
-    QFETCH(QByteArray, localEnv);
-    QFETCH(QString, expectedSource);
-    qunsetenv("TOKENS_CONFIG");
-    qunsetenv("AMM_POOLS_CONFIG");
-
-    const QString programId(64, QLatin1Char('a'));
-    const QString configId(64, QLatin1Char('b'));
     const QJsonObject registry{
         {QStringLiteral("networks"), QJsonArray{QJsonObject{
             {QStringLiteral("id"), QStringLiteral("testnet")},
@@ -64,15 +62,36 @@ void RegistryLoaderTest::clearsRegistryIdentity()
             {QStringLiteral("ammConfigId"), configId},
         }}},
     };
-    QFile registryFile(m_tempDir.filePath(QString::fromLatin1(QTest::currentDataTag()) + ".json"));
-    QVERIFY(registryFile.open(QIODevice::WriteOnly));
-    const QByteArray registryBytes = QJsonDocument(registry).toJson();
-    QCOMPARE(registryFile.write(registryBytes), registryBytes.size());
-    registryFile.close();
+    QFile file(m_tempDir.filePath(name));
+    if (!file.open(QIODevice::WriteOnly))
+        return {};
+    file.write(QJsonDocument(registry).toJson());
+    return QUrl::fromLocalFile(file.fileName()).toString();
+}
+
+QString RegistryLoaderTest::writeLocalTokens(const QString& name, const QString& symbol)
+{
+    const QJsonArray tokens{QJsonObject{
+        {QStringLiteral("symbol"), symbol},
+        {QStringLiteral("definitionId"), QString(64, QLatin1Char('c'))},
+    }};
+    QFile file(m_tempDir.filePath(name));
+    if (!file.open(QIODevice::WriteOnly))
+        return {};
+    file.write(QJsonDocument(tokens).toJson());
+    return file.fileName();
+}
+
+void RegistryLoaderTest::clearsRegistryIdentityWhenUrlCleared()
+{
+    const QString programId(64, QLatin1Char('a'));
+    const QString configId(64, QLatin1Char('b'));
+    const QString url = writeRegistry(QStringLiteral("clear.json"), programId, configId);
+    QVERIFY(!url.isEmpty());
 
     RegistryLoader loader;
     QSignalSpy changed(&loader, &RegistryLoader::changed);
-    loader.setConfiguredUrl(QUrl::fromLocalFile(registryFile.fileName()).toString());
+    loader.setConfiguredUrl(url);
     loader.refresh();
     QTRY_COMPARE(loader.source(), QStringLiteral("remote"));
     QCOMPARE(loader.activeAmmProgramId(), programId);
@@ -88,23 +107,77 @@ void RegistryLoaderTest::clearsRegistryIdentity()
         publishedConfigId = loader.activeAmmConfigId();
     });
 
-    if (localEnv.isEmpty()) {
-        loader.setConfiguredUrl({});
-    } else {
-        QFile localFile(m_tempDir.filePath("local.json"));
-        QVERIFY(localFile.open(QIODevice::WriteOnly));
-        QCOMPARE(localFile.write("[]"), 2);
-        localFile.close();
-        qputenv(localEnv.constData(), localFile.fileName().toUtf8());
-    }
+    loader.setConfiguredUrl({});
     loader.refresh();
 
     QCOMPARE(changed.count(), 1);
-    QCOMPARE(loader.source(), expectedSource);
+    QCOMPARE(loader.source(), QStringLiteral("none"));
     QVERIFY(loader.networks().isEmpty());
     QVERIFY(loader.activeNetwork().isEmpty());
     QVERIFY(publishedProgramId.isEmpty());
     QVERIFY(publishedConfigId.isEmpty());
+}
+
+// The source and its ids are fixed when the loader is built: code in the host process
+// that sets TOKENS_CONFIG or AMM_REGISTRY_URL later must not swap the token list or the
+// AMM instance on the next refresh.
+void RegistryLoaderTest::ignoresEnvironmentChangesAfterConstruction()
+{
+    const QString programId(64, QLatin1Char('a'));
+    const QString configId(64, QLatin1Char('b'));
+    const QString url = writeRegistry(QStringLiteral("user.json"), programId, configId);
+    const QString attackerUrl = writeRegistry(QStringLiteral("attacker.json"),
+                                              QString(64, QLatin1Char('d')),
+                                              QString(64, QLatin1Char('e')));
+    const QString attackerTokens =
+        writeLocalTokens(QStringLiteral("attacker-tokens.json"), QStringLiteral("FAKE"));
+    QVERIFY(!url.isEmpty() && !attackerUrl.isEmpty() && !attackerTokens.isEmpty());
+
+    RegistryLoader loader;
+    loader.setConfiguredUrl(url);
+    loader.refresh();
+    QTRY_COMPARE(loader.source(), QStringLiteral("remote"));
+
+    qputenv("TOKENS_CONFIG", attackerTokens.toUtf8());
+    qputenv("AMM_REGISTRY_URL", attackerUrl.toUtf8());
+    QVERIFY(!loader.hasLocalSource());
+    QSignalSpy changed(&loader, &RegistryLoader::changed);
+    loader.refresh();
+    // The cache is served first; wait for the fetched snapshot.
+    QTRY_VERIFY(!changed.isEmpty() && loader.source() == QStringLiteral("remote"));
+
+    QCOMPARE(loader.activeAmmProgramId(), programId);
+    QCOMPARE(loader.activeAmmConfigId(), configId);
+}
+
+void RegistryLoaderTest::startupLocalSourceWinsAndCarriesNoIds()
+{
+    const QString url = writeRegistry(QStringLiteral("ignored.json"),
+                                      QString(64, QLatin1Char('a')),
+                                      QString(64, QLatin1Char('b')));
+    const QString tokens = writeLocalTokens(QStringLiteral("dev-tokens.json"),
+                                            QStringLiteral("DEV"));
+    QVERIFY(!url.isEmpty() && !tokens.isEmpty());
+    qputenv("TOKENS_CONFIG", tokens.toUtf8());
+
+    RegistryLoader loader;
+    QVERIFY(loader.hasLocalSource());
+    loader.setConfiguredUrl(url);
+    loader.refresh();
+
+    QCOMPARE(loader.source(), QStringLiteral("local"));
+    QCOMPARE(loader.tokens().size(), 1);
+    QVERIFY(loader.activeAmmProgramId().isEmpty());
+    QVERIFY(loader.activeAmmConfigId().isEmpty());
+    QVERIFY(loader.networks().isEmpty());
+
+    // Unsetting it later does not switch back either: the refresh re-publishes the
+    // local snapshot synchronously instead of starting a registry fetch.
+    qunsetenv("TOKENS_CONFIG");
+    QSignalSpy changed(&loader, &RegistryLoader::changed);
+    loader.refresh();
+    QCOMPARE(changed.count(), 1);
+    QCOMPARE(loader.source(), QStringLiteral("local"));
 }
 
 QTEST_GUILESS_MAIN(RegistryLoaderTest)

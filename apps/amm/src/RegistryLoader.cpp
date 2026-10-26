@@ -99,9 +99,8 @@ namespace {
         return out;
     }
 
-    QByteArray readConfigFileBytes(const char* envVar)
+    QByteArray readConfigFileBytes(const QString& path)
     {
-        const QString path = qEnvironmentVariable(envVar);
         if (path.isEmpty())
             return {};
         QFile file(path);
@@ -117,15 +116,21 @@ namespace {
     }
 }
 
+// The environment is read once, here: these variables pick the source and its ids, so
+// letting a later setenv() in the host process swap them on the next refresh() would
+// let it replace the token list or the AMM instance under the user's configured URL.
 RegistryLoader::RegistryLoader(QObject* parent)
     : QObject(parent)
+    , m_tokensConfigPath(qEnvironmentVariable(TOKENS_CONFIG_ENV))
+    , m_poolsConfigPath(qEnvironmentVariable(POOLS_CONFIG_ENV))
+    , m_envRegistryUrl(qEnvironmentVariable(REGISTRY_URL_ENV))
+    , m_envNetwork(qEnvironmentVariable(NETWORK_ENV))
 {
 }
 
-bool RegistryLoader::hasLocalSource()
+bool RegistryLoader::hasLocalSource() const
 {
-    return !qEnvironmentVariableIsEmpty(TOKENS_CONFIG_ENV)
-        || !qEnvironmentVariableIsEmpty(POOLS_CONFIG_ENV);
+    return !m_tokensConfigPath.isEmpty() || !m_poolsConfigPath.isEmpty();
 }
 
 QVariantMap RegistryLoader::status() const
@@ -155,8 +160,8 @@ void RegistryLoader::refresh()
     m_activeAmmConfigId.clear();
 
     // AMM_REGISTRY_URL (e2e / dev) overrides the UI-configured URL.
-    const bool envUrl = !qEnvironmentVariableIsEmpty(REGISTRY_URL_ENV);
-    QString url = qEnvironmentVariable(REGISTRY_URL_ENV);
+    const bool envUrl = !m_envRegistryUrl.isEmpty();
+    QString url = m_envRegistryUrl;
     if (url.isEmpty())
         url = m_configuredUrl;
 
@@ -175,9 +180,9 @@ void RegistryLoader::refresh()
                 << "Unset them to use the registry.";
         }
         QStringList overrides;
-        if (!qEnvironmentVariableIsEmpty(TOKENS_CONFIG_ENV))
+        if (!m_tokensConfigPath.isEmpty())
             overrides.append(QString::fromLatin1(TOKENS_CONFIG_ENV));
-        if (!qEnvironmentVariableIsEmpty(POOLS_CONFIG_ENV))
+        if (!m_poolsConfigPath.isEmpty())
             overrides.append(QString::fromLatin1(POOLS_CONFIG_ENV));
         m_override = overrides.join(QStringLiteral(", "));
         m_snapshotUrl.clear();
@@ -210,8 +215,8 @@ void RegistryLoader::loadLocal()
 {
     m_registryObj = {};  // local files carry no networks to pick
     // Local files are bare arrays with no network tag — no filtering.
-    publish(parseTokens(jsonArrayFromBytes(readConfigFileBytes(TOKENS_CONFIG_ENV)), {}),
-            parsePools(jsonArrayFromBytes(readConfigFileBytes(POOLS_CONFIG_ENV)), {}),
+    publish(parseTokens(jsonArrayFromBytes(readConfigFileBytes(m_tokensConfigPath)), {}),
+            parsePools(jsonArrayFromBytes(readConfigFileBytes(m_poolsConfigPath)), {}),
             QStringLiteral("local"), {});
 }
 
@@ -338,9 +343,8 @@ QString RegistryLoader::selectActiveNetwork(const QJsonArray& networks) const
         return m_selectedNetwork;
 
     // AMM_NETWORK sets the initial default (e2e / dev), if it names one.
-    const QString forced = qEnvironmentVariable(NETWORK_ENV);
-    if (!forced.isEmpty() && declares(forced))
-        return forced;
+    if (!m_envNetwork.isEmpty() && declares(m_envNetwork))
+        return m_envNetwork;
 
     // Otherwise default to the first declared network.
     return networks.at(0).toObject().value(QStringLiteral("id")).toString();

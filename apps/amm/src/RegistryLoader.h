@@ -15,7 +15,9 @@ class QJsonArray;
 // Loads the AMM app's "known tokens" and "known pools" and serves them as an
 // in-memory snapshot the backend's QtRO slots read synchronously.
 //
-// Source, resolved per refresh() (local-replaces-remote):
+// Source, resolved per refresh() (local-replaces-remote) from environment read once
+// at construction, so changing it later has no effect (the local files themselves are
+// re-read on each refresh):
 //   * If TOKENS_CONFIG / AMM_POOLS_CONFIG are set, the local JSON files (bare
 //     `[...]` arrays, dev / local-sequencer testing) — parsed synchronously.
 //   * Else if AMM_REGISTRY_URL is set, a single remote registry document
@@ -63,9 +65,9 @@ public:
     // (setConfigId) so ops target that instance. Empty when the network omits it.
     QString activeAmmConfigId() const { return m_activeAmmConfigId; }
 
-    // Whether a local-file source (TOKENS_CONFIG / AMM_POOLS_CONFIG) is configured —
-    // it takes precedence over the remote registry (local-replaces-remote).
-    static bool hasLocalSource();
+    // Whether a local-file source (TOKENS_CONFIG / AMM_POOLS_CONFIG) was configured at
+    // construction — it takes precedence over the remote registry (local-replaces-remote).
+    bool hasLocalSource() const;
 
     // The registry URL to fetch when AMM_REGISTRY_URL is unset — the value the user
     // configured in the wallet config UI (persisted by the backend). Empty ⇒ no
@@ -116,6 +118,12 @@ private:
     QString m_override;
     bool m_loading = false;
     QString m_fetchError;
+
+    // Environment captured at construction (see the constructor).
+    const QString m_tokensConfigPath;  // TOKENS_CONFIG
+    const QString m_poolsConfigPath;   // AMM_POOLS_CONFIG
+    const QString m_envRegistryUrl;    // AMM_REGISTRY_URL
+    const QString m_envNetwork;        // AMM_NETWORK
 
     // The last-loaded registry document, kept so selectNetwork() can re-filter to a
     // different network without re-fetching. Empty for local / none sources.
