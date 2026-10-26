@@ -787,9 +787,10 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "initial_stability_fee_per_millisecond above sane upper bound")]
-    fn rejects_stability_fee_above_2x() {
+    fn rejects_stability_fee_above_the_yearly_cap() {
         let mut p = ok_params();
-        p.initial_stability_fee_per_millisecond = FIXED_POINT_ONE * 2 + 1;
+        p.initial_stability_fee_per_millisecond =
+            crate::checks::MAX_STABILITY_FEE_PER_MILLISECOND + 1;
         let _ = invoke(p);
     }
 

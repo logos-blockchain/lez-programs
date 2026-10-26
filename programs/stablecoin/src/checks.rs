@@ -82,7 +82,7 @@ pub fn assert_position_is_collateralized(
 
 // --- Sane-band constants per spec §8 -----------------------------------------
 
-pub(crate) const MAX_STABILITY_FEE_PER_MILLISECOND: u128 = FIXED_POINT_ONE * 2;
+pub(crate) use stablecoin_core::protocol_parameters::MAXIMUM_STABILITY_FEE_PER_MILLISECOND as MAX_STABILITY_FEE_PER_MILLISECOND;
 pub(crate) const MIN_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 110 / 100; // 1.1x
 pub(crate) const MAX_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 10;
 // Gain magnitude caps (spec §8; placeholders pending the §15 tuning pass):
@@ -111,10 +111,12 @@ pub(crate) fn assert_admin_authorized(
     );
 }
 
-/// Spec §8: `FIXED_POINT_ONE <= rate <= 2 x FIXED_POINT_ONE`.
+/// Spec §8: `FIXED_POINT_ONE <= rate <= MAXIMUM_STABILITY_FEE_PER_MILLISECOND`
+/// (about 100% a year).
 ///
-/// The lower bound keeps the fee from decaying debt; the upper bound is an
-/// anti-typo cap, not an overflow guard — that is the compounding-window clamp.
+/// The lower bound keeps the fee from decaying debt. The upper bound is the
+/// overflow guard: it keeps every accrual, including the setter's catch-up at the
+/// old rate, inside `u128` (see the constant's docs).
 pub(crate) fn assert_stability_fee_in_band(rate: u128, label: &str) {
     assert!(rate >= FIXED_POINT_ONE, "{label} below FIXED_POINT_ONE");
     assert!(

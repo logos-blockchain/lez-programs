@@ -368,16 +368,15 @@ Edge cases:
 - `per_millisecond_rate < FIXED_POINT_ONE` → result < `FIXED_POINT_ONE` (compounding decay).
 - Overflow guard: callers clamp the elapsed window to `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` before calling (§5.3). This is load-bearing, not decorative: over an *unbounded* window, any `per_millisecond_rate > FIXED_POINT_ONE` eventually overflows `rate ^ milliseconds_elapsed` regardless of how close to `1.0` it is — the §8 rate bound alone does **not** prevent it.
 - **The clamp bounds the window; it does not make overflow impossible on its own.**
-  For the redemption price, `RATE_DELTA_CLAMP` (`±10^-11` per ms) and
-  `MAXIMUM_REDEMPTION_PRICE` (`u128::MAX / 2`) together keep a full window inside
-  `u128`: at the clamp the price grows by at most ~0.6% over seven days. The
-  `stability_fee_per_millisecond` cap of `2.0` is still far looser: at it the
-  accumulator overflows after just **39 ms**. That ceiling is a §15 placeholder (see
-  §8). Values that are only ever **compared** therefore use the saturating `u512`
-  projections of §5.3; the redemption-price re-anchor (§6.4, §10.19) projects in
-  `u512` and clamps into the §8 price bounds; the remaining **stored** values (the
-  fee accumulator anchor, `generate_debt`'s normalized-debt delta) stay `u128` and
-  will panic at the fee ceiling.
+  The §8 rate bounds do the rest. For the redemption price, `RATE_DELTA_CLAMP`
+  (`±10^-11` per ms) and `MAXIMUM_REDEMPTION_PRICE` (`u128::MAX / 2`) keep a full
+  window inside `u128`: at the clamp the price grows by at most ~0.6% over seven
+  days. For the fee accumulator, `MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (about
+  100% a year) grows it by at most ~1.3% per window, and from `1.0` it needs about
+  38 years at the maximum fee to approach `u128::MAX`. Values that are only ever
+  **compared** still use the saturating `u512` projections of §5.3, and the
+  redemption-price re-anchor (§6.4, §10.19) projects in `u512` and clamps, so
+  state written under the old, looser bounds cannot panic those paths.
 
 **In plain English:** this is just `rate ^ milliseconds_elapsed` — what a per-millisecond multiplier becomes after that many milliseconds. The naive way is `milliseconds_elapsed` separate multiplications. Exponentiation-by-squaring does it in `log₂(milliseconds_elapsed)` multiplications instead — for a year's worth of milliseconds (~31.5 billion), that's ~35 muls instead of 31.5 billion.
 
@@ -686,7 +685,7 @@ These are properties the protocol maintains across every state-changing instruct
 | Constant / parameter | Bound | Rationale |
 |---|---|---|
 | `FIXED_POINT_ONE` | `10^27` | RAY precision; standard. |
-| `stability_fee_per_millisecond` | `FIXED_POINT_ONE ≤ x ≤ FIXED_POINT_ONE * 2` | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). Upper bound is an anti-typo sanity cap (≈100%/ms) — it does **not** prevent `compound_rate` overflow, and neither does the elapsed-window clamp: at this cap the `u128` projection overflows after just **39 ms** (§5.2). Only the §6.2 check is immune, via the saturating `u512` projections; `accrue_stability_fee` and `generate_debt`'s debt sizing would panic. Tightening this cap is §15 tuning work. Real values are `1 + ε` where `ε ≈ 1.5×10^15` for ~5% annual. |
+| `stability_fee_per_millisecond` | `FIXED_POINT_ONE ≤ x ≤ MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (`FIXED_POINT_ONE + 2.1965×10^16`, about 100% a year) | Lower bound = no decay (RFP "fees accrue continuously" implies positive rate). The upper bound is the overflow guard for the stored accumulator: ~1.3% growth per seven-day window, ~38 years from `1.0` to `u128::MAX` at the maximum. It also keeps `set_stability_fee_per_millisecond`'s catch-up accrual at the old rate from panicking, which the earlier `2.0` cap did after 38 ms. Real values are `1 + ε` where `ε ≈ 1.5×10^15` for ~5% annual. |
 | `minimum_collateralization_ratio` | `FIXED_POINT_ONE * 1.1 ≤ x ≤ FIXED_POINT_ONE * 10` | Lower bound = 110% (any less is liquidation-immediate); upper bound = 1000% (sanity cap). Real values are 130–200%. |
 | `controller_proportional_gain` magnitude | `|x| ≤ FIXED_POINT_ONE * 10^3` | Practical upper bound for rate-explosion guard (RFP R2). Real values are tiny (≈10^6–10^12 raw) because they scale price-error × per-ms rate-output. Rescaled `÷10^3` from the per-second formulation. |
 | `controller_integral_gain` magnitude | `|x| ≤ FIXED_POINT_ONE` | As proportional, but rescaled `÷10^6` (it also multiplies `Δt`, now in ms): real values ≈10^3–10^9 raw. |
@@ -696,7 +695,7 @@ These are properties the protocol maintains across every state-changing instruct
 | `MAXIMUM_REDEMPTION_PRICE` | `u128::MAX / 2` | Ceiling. At or above it the controller may only lower the rate to `≤ 1.0`, and re-anchors clamp down to it. The `×2` headroom covers a full window at `RATE_DELTA_CLAMP`, so the `u128` projection cannot overflow. Constant in v1. |
 | `minimum_milliseconds_between_rate_updates` | `1 ≤ x ≤ 86_400_000` | Min 1 ms (no zero-spam), max 1 day (RFP F2 "rate updates within a small number of blocks"). |
 | `maximum_oracle_price_age_milliseconds` | `1 ≤ x ≤ 86_400_000` | Stale beyond a day is obviously bad; aggressive freshness is a tuning parameter. |
-| `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` | `604_800_000` (7 days) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Seven days is the top of the range the design considered — it maximises tolerance of keeper neglect and stays far from overflow for any *realistic* rate (a ~5%/yr fee is `1 + 1.5×10^-12` per ms, giving a `1.0009×` factor over the full window; overflow needs a rate above ~`1 + 4×10^-8` per ms). `RATE_DELTA_CLAMP` (`1 ± 10^-11` per ms) is well inside that threshold. **But `stability_fee_per_millisecond` allows `2.0`**, far above it, so the clamp does **not** make the accumulator's `compound_rate` overflow-free as written; see §5.2. Reconciling the bands with the type is §15 tuning work. Constant in v1. |
+| `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` | `604_800_000` (7 days) | Hard cap on the `dt` passed to `compound_rate` (§5.3), bounding worst-case `rate ^ dt` regardless of the rate value. Necessary because no rate bound alone makes overflow impossible over an unbounded window. Trade-off: fee accrual and redemption drift pause beyond the window under total keeper neglect. Seven days is the top of the range the design considered — it maximises tolerance of keeper neglect and stays far from overflow for any *realistic* rate (a ~5%/yr fee is `1 + 1.5×10^-12` per ms, giving a `1.0009×` factor over the full window; overflow needs a rate above ~`1 + 4×10^-8` per ms). `RATE_DELTA_CLAMP` (`1 ± 10^-11` per ms) and `MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (`1 + 2.2×10^-11` per ms) are both well inside that threshold. Constant in v1. |
 | `initial_redemption_price` | `MINIMUM_REDEMPTION_PRICE ≤ x ≤ MAXIMUM_REDEMPTION_PRICE` | Admin chooses an initial value reflecting the launch peg target, inside the controller's price bounds. |
 
 All bounds enforced in `initialize_program` and the corresponding `set_*` instruction.
@@ -836,7 +835,7 @@ flowchart TD
 
 **Chained calls:** the §6.6 surplus `Token::Mint`, when `accrued_fees > 0`.
 
-**Panics if:** `caller.is_authorized = false`; either global uninitialized; overflow in `compound_rate`. The `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` clamp of §5.3 bounds `dt` but does **not** rule this out — the new anchor is *stored*, so it must fit `u128`, and `stability_fee_per_millisecond` at its §8 ceiling overflows after 39 ms (§5.2). Unreachable at any realistic fee.
+**Panics if:** `caller.is_authorized = false`; either global uninitialized; overflow in `compound_rate`. The `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` clamp of §5.3 bounds `dt` but does **not** rule this out — the new anchor is *stored*, so it must fit `u128`. The §8 fee bound keeps that ~38 years away even at the maximum fee (§5.2).
 
 **Note:** `accrue_stability_fee` has no minimum-interval throttle. Accrual is idempotent and lazy (§5.3, §6.1): calling it more or less often doesn't change the result — the read-side projection keeps every position current regardless of cadence — so redundant calls are harmless, self-funded no-ops rather than something to guard against. (The oracle-driven `update_redemption_rate` keeps its throttle, because there frequency *is* a control-cadence choice.)
 
