@@ -375,12 +375,6 @@
           "init": false
         },
         {
-          "name": "market_price_oracle",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
           "name": "protocol_parameters",
           "writable": false,
           "signer": false,

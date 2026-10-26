@@ -1720,6 +1720,17 @@ mod protocol_config {
 /// live controller (a zero gain pins the redemption rate at `FIXED_POINT_ONE`,
 /// which would make the update assertions vacuous).
 fn initialize_protocol(now: u64, controller_proportional_gain: i128) -> V03State {
+    initialize_protocol_with_oracle(now, controller_proportional_gain, true)
+}
+
+/// [`initialize_protocol`], optionally binding the market-price oracle's address
+/// without creating it — the RAI-style launch, where the oracle only exists once
+/// the stablecoin trades (spec §3.2).
+fn initialize_protocol_with_oracle(
+    now: u64,
+    controller_proportional_gain: i128,
+    oracle_exists: bool,
+) -> V03State {
     use stablecoin_core::math::FIXED_POINT_ONE;
 
     // `V03State::new()` no longer auto-creates the clock account; seed CLOCK_01 with this
@@ -1734,13 +1745,15 @@ fn initialize_protocol(now: u64, controller_proportional_gain: i128) -> V03State
         Ids::collateral_definition(),
         Accounts::collateral_definition_init(),
     );
-    state.force_insert_account(
-        Ids::oracle(),
-        Accounts::oracle_init(
-            Ids::stablecoin_definition_pda(),
-            Ids::collateral_definition(),
-        ),
-    );
+    if oracle_exists {
+        state.force_insert_account(
+            Ids::oracle(),
+            Accounts::oracle_init(
+                Ids::stablecoin_definition_pda(),
+                Ids::collateral_definition(),
+            ),
+        );
+    }
     // Seed the admin (the initialize + poke signer) as a non-default-owned account. A
     // default-owned signer works on its first sign (pre-state is still Account::default()),
     // but once its nonce bumps the spel-framework output filter drops it (non-default state
@@ -1827,7 +1840,12 @@ fn submit_poke(
 /// fresh oracle observation, and a market-acquired stablecoin buffer (credited
 /// to `total_supply` so the books stay consistent).
 fn bootstrapped_owner_state(start: u64) -> V03State {
-    let mut state = initialize_protocol(start, 0);
+    bootstrapped_owner_state_with_oracle(start, true)
+}
+
+/// [`bootstrapped_owner_state`], optionally without ever creating the oracle.
+fn bootstrapped_owner_state_with_oracle(start: u64, oracle_exists: bool) -> V03State {
+    let mut state = initialize_protocol_with_oracle(start, 0, oracle_exists);
     state.force_insert_account(
         Ids::freeze_authority(),
         Account {
@@ -1847,18 +1865,20 @@ fn bootstrapped_owner_state(start: u64) -> V03State {
         },
     );
     state.force_insert_account(Ids::user_holding(), Accounts::user_holding_init());
-    // A fresh observation: the bootstrap fixture's oracle is anchored at 0, which
-    // `generate_debt`'s staleness gate rejects against a real wall clock.
-    state.force_insert_account(
-        Ids::oracle(),
-        Accounts::oracle_with(
-            Ids::stablecoin_definition_pda(),
-            Ids::collateral_definition(),
-            // 0.25 in the oracle's Q64.64 encoding.
-            1 << 62,
-            start,
-        ),
-    );
+    // A fresh observation for the controller pokes: the bootstrap fixture's
+    // oracle is anchored at 0, which they read as stale against a real clock.
+    if oracle_exists {
+        state.force_insert_account(
+            Ids::oracle(),
+            Accounts::oracle_with(
+                Ids::stablecoin_definition_pda(),
+                Ids::collateral_definition(),
+                // 0.25 in the oracle's Q64.64 encoding.
+                1 << 62,
+                start,
+            ),
+        );
+    }
     state.force_insert_account(
         Ids::user_stablecoin_holding(),
         Account {
@@ -1982,7 +2002,6 @@ fn stablecoin_full_position_lifecycle() {
             compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
             accumulator_pda,
             redemption_pda,
-            Ids::oracle(),
             params_pda,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
@@ -2455,7 +2474,6 @@ fn stablecoin_freeze_blocks_risky_ops() {
         compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
         accumulator_pda,
         redemption_pda,
-        Ids::oracle(),
         params_pda,
         CLOCK_01_PROGRAM_ACCOUNT_ID,
     ];
@@ -2982,6 +3000,145 @@ fn stablecoin_update_redemption_rate_drifts_redemption_price() {
     assert_eq!(after.last_updated_at, now);
 }
 
+/// RAI-style launch (spec §3.2): the admin binds the address of a market-price
+/// oracle that does not exist yet. Borrowing works from day one, fees accrue, and
+/// the controller simply waits; once the oracle exists, it starts running.
+#[test]
+fn stablecoin_launches_before_the_market_price_oracle_exists() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let start: u64 = 1_700_000_000_000;
+    let mut state = bootstrapped_owner_state_with_oracle(start, false);
+    assert_eq!(
+        state.get_account_by_id(Ids::oracle()),
+        Account::default(),
+        "the bound oracle does not exist yet"
+    );
+    let mut block = 1u64;
+    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    let accumulator_pda = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
+    let redemption_pda = compute_redemption_price_state_pda(Ids::stablecoin_program());
+    let master_holding = compute_stablecoin_master_holding_pda(Ids::stablecoin_program());
+
+    // Open and borrow: neither reads the market-price oracle.
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            Ids::collateral_definition(),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![
+            (&Keys::owner(), Ids::owner()),
+            (&Keys::user_holding(), Ids::user_holding()),
+        ],
+        stablecoin_core::Instruction::OpenPosition {
+            position_nonce: Ids::position_nonce(),
+            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
+        },
+        "open_position",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::stablecoin_definition_pda(),
+            Ids::user_stablecoin_holding(),
+            master_holding,
+            accumulator_pda,
+            redemption_pda,
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![(&Keys::owner(), Ids::owner())],
+        stablecoin_core::Instruction::GenerateDebt {
+            amount: LIFECYCLE_BORROW,
+        },
+        "generate_debt before the oracle exists",
+    );
+    assert_fungible_balance_of(
+        &state,
+        Ids::user_stablecoin_holding(),
+        Ids::stablecoin_definition_pda(),
+        LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW,
+    );
+
+    let refresh_accounts = vec![
+        params_pda,
+        accumulator_pda,
+        Ids::stablecoin_definition_pda(),
+        master_holding,
+        redemption_pda,
+        Ids::oracle(),
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    ];
+    let update_accounts = vec![
+        params_pda,
+        redemption_pda,
+        Ids::oracle(),
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    ];
+
+    // Ten minutes on: refresh accrues fees but leaves the controller alone.
+    let later = start + 600_000;
+    submit_poke(
+        &mut state,
+        later,
+        block,
+        stablecoin_core::Instruction::RefreshGlobals,
+        refresh_accounts.clone(),
+    )
+    .expect("refresh_globals must succeed without an oracle");
+    block += 1;
+    assert_eq!(read_accumulator(&state).last_accrued_at, later);
+    let waiting = read_redemption_price_state(&state);
+    assert_eq!(waiting.last_updated_at, start);
+    assert_eq!(waiting.redemption_rate_per_millisecond, FIXED_POINT_ONE);
+
+    // The strict poke reports the missing oracle, like RAI's updateRate reverting.
+    assert_rejected_with(
+        submit_poke(
+            &mut state,
+            later,
+            block,
+            stablecoin_core::Instruction::UpdateRedemptionRate,
+            update_accounts.clone(),
+        ),
+        "Market price oracle account must be initialized",
+        "update_redemption_rate before the oracle exists",
+    );
+
+    // The market forms and the oracle appears at the bound address.
+    state.force_insert_account(
+        Ids::oracle(),
+        Accounts::oracle_with(
+            Ids::stablecoin_definition_pda(),
+            Ids::collateral_definition(),
+            // 0.25 in the oracle's Q64.64 encoding.
+            1 << 62,
+            later,
+        ),
+    );
+    submit_poke(
+        &mut state,
+        later,
+        block,
+        stablecoin_core::Instruction::UpdateRedemptionRate,
+        update_accounts,
+    )
+    .expect("update_redemption_rate must run once the oracle exists");
+    assert_eq!(read_redemption_price_state(&state).last_updated_at, later);
+}
+
 #[test]
 fn stablecoin_reset_redemption_rate_controller_returns_the_controller_to_rest() {
     use stablecoin_core::math::FIXED_POINT_ONE;
@@ -2999,7 +3156,8 @@ fn stablecoin_reset_redemption_rate_controller_returns_the_controller_to_rest() 
         Accounts::oracle_with(
             Ids::stablecoin_definition_pda(),
             Ids::collateral_definition(),
-            FIXED_POINT_ONE / 4,
+            // 0.25 in the oracle's Q64.64 encoding.
+            1 << 62,
             now,
         ),
     );

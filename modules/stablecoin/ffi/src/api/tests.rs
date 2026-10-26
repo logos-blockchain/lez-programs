@@ -1100,6 +1100,15 @@ fn initialize_plan_validates_required_account_shapes_and_assets() {
 }
 
 #[test]
+fn initialize_plan_accepts_an_oracle_that_does_not_exist_yet() {
+    // RAI-style launch (spec §3.2): bind the address of an oracle that will
+    // only exist once the stablecoin trades.
+    let mut request = initialize_request();
+    request.market_price_oracle = account_read(id(11), &Account::default());
+    ok(initialize_program_plan(request));
+}
+
+#[test]
 fn poke_plans_pin_instruction_words_accounts_and_caller_only_signing() {
     let caller = account_id_hex(id(15));
     let parameters = account_id_hex(compute_protocol_parameters_pda(STABLECOIN_PROGRAM_ID));

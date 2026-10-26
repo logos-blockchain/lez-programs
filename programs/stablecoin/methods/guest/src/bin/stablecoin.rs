@@ -275,7 +275,7 @@ mod stablecoin {
     /// Mint stablecoins against an existing position (spec §10.7; host fn
     /// `stablecoin_program::generate_debt`).
     ///
-    /// Blocked while frozen. The oracle is a liveness gate only. Wall-clock time
+    /// Blocked while frozen. Never reads the market-price oracle. Wall-clock time
     /// comes from the system `CLOCK_01` account passed as the 9th input.
     ///
     /// # Errors
@@ -295,7 +295,6 @@ mod stablecoin {
         #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
         #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
         redemption_price_state: AccountWithMetadata,
-        market_price_oracle: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         clock: AccountWithMetadata,
         amount: u128,
@@ -308,7 +307,6 @@ mod stablecoin {
             stablecoin_master_holding,
             stability_fee_accumulator,
             redemption_price_state,
-            market_price_oracle,
             protocol_parameters,
             clock,
             ctx.self_account_id,
