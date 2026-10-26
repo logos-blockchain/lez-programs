@@ -11,7 +11,7 @@ use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use serde_json::{json, Value};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
-    compute_stability_fee_accumulator_pda,
+    compute_stability_fee_accumulator_pda, compute_stablecoin_master_holding_pda,
     math::{FIXED_POINT_ONE, MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS},
     Instruction, ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator,
 };
@@ -140,6 +140,7 @@ impl JourneyState {
             accumulator: StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
                 last_accrued_at: START,
+                total_normalized_debt: 0,
             },
             redemption: RedemptionPriceState {
                 redemption_price_at_last_update: FIXED_POINT_ONE,
@@ -289,6 +290,28 @@ impl JourneyState {
         )
     }
 
+    fn master_holding_id() -> AccountId {
+        compute_stablecoin_master_holding_pda(STABLECOIN_PROGRAM_ID)
+    }
+
+    /// The stablecoin definition and the surplus holding a fee accrual mints into.
+    /// With no outstanding debt nothing accrues, so they only need to exist under
+    /// one Token Program.
+    fn surplus_accounts(&self) -> [AccountWithMetadata; 2] {
+        [
+            AccountWithMetadata::new(
+                account(TOKEN_PROGRAM_ID, Data::default()),
+                false,
+                self.parameters.stablecoin_definition_id,
+            ),
+            AccountWithMetadata::new(
+                account(TOKEN_PROGRAM_ID, Data::default()),
+                false,
+                Self::master_holding_id(),
+            ),
+        ]
+    }
+
     fn redemption_account(&self) -> AccountWithMetadata {
         AccountWithMetadata::new(
             account(STABLECOIN_PROGRAM_ID, Data::from(&self.redemption)),
@@ -319,10 +342,13 @@ impl JourneyState {
     fn execute_instruction(&mut self, instruction: Instruction) {
         match instruction {
             Instruction::AccrueStabilityFee => {
+                let [definition, master_holding] = self.surplus_accounts();
                 let (posts, calls) = accrue_stability_fee(
                     self.caller(),
                     self.protocol_account(),
                     self.accumulator_account(),
+                    definition,
+                    master_holding,
                     self.clock_account(),
                     STABLECOIN_PROGRAM_ID,
                 );
@@ -356,10 +382,13 @@ impl JourneyState {
                 .expect("update output must decode");
             }
             Instruction::RefreshGlobals => {
+                let [definition, master_holding] = self.surplus_accounts();
                 let (posts, calls) = refresh_globals(
                     self.caller(),
                     self.protocol_account(),
                     self.accumulator_account(),
+                    definition,
+                    master_holding,
                     self.redemption_account(),
                     self.oracle_account(),
                     self.clock_account(),
@@ -376,7 +405,7 @@ impl JourneyState {
                 .expect("refresh accumulator output must decode");
                 self.redemption = RedemptionPriceState::try_from(
                     &post_account(
-                        posts.get(3).expect("refresh redemption post state"),
+                        posts.get(5).expect("refresh redemption post state"),
                         STABLECOIN_PROGRAM_ID,
                     )
                     .data,
@@ -415,6 +444,8 @@ fn exercise_soft_blocker(
             JourneyState::caller_id(),
             JourneyState::protocol_id(),
             JourneyState::accumulator_id(),
+            state.parameters.stablecoin_definition_id,
+            JourneyState::master_holding_id(),
             JourneyState::redemption_id(),
             state.parameters.market_price_oracle_id,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
@@ -532,6 +563,8 @@ fn journey_projects_fees_then_persists_only_the_accumulator() {
             JourneyState::caller_id(),
             JourneyState::protocol_id(),
             JourneyState::accumulator_id(),
+            state.parameters.stablecoin_definition_id,
+            JourneyState::master_holding_id(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         1,
@@ -667,6 +700,8 @@ fn journey_quotes_and_persists_successive_controller_updates() {
             JourneyState::caller_id(),
             JourneyState::protocol_id(),
             JourneyState::accumulator_id(),
+            combined.parameters.stablecoin_definition_id,
+            JourneyState::master_holding_id(),
             JourneyState::redemption_id(),
             combined.parameters.market_price_oracle_id,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
@@ -888,6 +923,8 @@ fn journey_recovers_from_bad_callers_and_account_reads_without_retries() {
             JourneyState::caller_id(),
             JourneyState::protocol_id(),
             JourneyState::accumulator_id(),
+            state.parameters.stablecoin_definition_id,
+            JourneyState::master_holding_id(),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         1,
@@ -952,6 +989,8 @@ fn journey_survives_long_idle_periods_and_preserves_exact_values() {
             JourneyState::caller_id(),
             JourneyState::protocol_id(),
             JourneyState::accumulator_id(),
+            idle.parameters.stablecoin_definition_id,
+            JourneyState::master_holding_id(),
             JourneyState::redemption_id(),
             idle.parameters.market_price_oracle_id,
             CLOCK_01_PROGRAM_ACCOUNT_ID,

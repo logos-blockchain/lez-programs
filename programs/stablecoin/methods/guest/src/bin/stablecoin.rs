@@ -92,6 +92,8 @@ mod stablecoin {
         #[account(signer)] caller: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stablecoin_definition: AccountWithMetadata,
+        #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
         clock: AccountWithMetadata,
     ) -> SpelResult {
         let (post_states, chained_calls) =
@@ -99,6 +101,8 @@ mod stablecoin {
                 caller,
                 protocol_parameters,
                 stability_fee_accumulator,
+                stablecoin_definition,
+                stablecoin_master_holding,
                 clock,
                 ctx.self_account_id,
             );
@@ -156,11 +160,17 @@ mod stablecoin {
     /// Returns the host program's panic-converted error if any precondition
     /// fails — see the host fn for the full list.
     #[instruction]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "eight account inputs mirror the host function's ABI"
+    )]
     pub fn refresh_globals(
         ctx: ProgramContext,
         #[account(signer)] caller: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stablecoin_definition: AccountWithMetadata,
+        #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
         #[account(mut)] redemption_price_state: AccountWithMetadata,
         market_price_oracle: AccountWithMetadata,
         clock: AccountWithMetadata,
@@ -169,6 +179,8 @@ mod stablecoin {
             caller,
             protocol_parameters,
             stability_fee_accumulator,
+            stablecoin_definition,
+            stablecoin_master_holding,
             redemption_price_state,
             market_price_oracle,
             clock,
@@ -280,7 +292,8 @@ mod stablecoin {
         #[account(mut)] position: AccountWithMetadata,
         #[account(mut)] stablecoin_definition: AccountWithMetadata,
         #[account(mut)] user_stablecoin_holding: AccountWithMetadata,
-        stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
+        #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
         redemption_price_state: AccountWithMetadata,
         market_price_oracle: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
@@ -292,6 +305,7 @@ mod stablecoin {
             position,
             stablecoin_definition,
             user_stablecoin_holding,
+            stablecoin_master_holding,
             stability_fee_accumulator,
             redemption_price_state,
             market_price_oracle,
@@ -398,7 +412,8 @@ mod stablecoin {
         #[account(mut)] position: AccountWithMetadata,
         #[account(mut)] stablecoin_definition: AccountWithMetadata,
         #[account(mut, signer)] user_stablecoin_holding: AccountWithMetadata,
-        stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
+        #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         clock: AccountWithMetadata,
         amount: u128,
@@ -408,6 +423,7 @@ mod stablecoin {
             position,
             stablecoin_definition,
             user_stablecoin_holding,
+            stablecoin_master_holding,
             stability_fee_accumulator,
             protocol_parameters,
             clock,
@@ -430,11 +446,17 @@ mod stablecoin {
     /// Returns the host program's panic-converted error if any precondition
     /// fails — see the host fn for the full list.
     #[instruction]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "six account inputs + the new rate mirror the host function's ABI"
+    )]
     pub fn set_stability_fee_per_millisecond(
         ctx: ProgramContext,
         #[account(signer)] admin: AccountWithMetadata,
         #[account(mut)] protocol_parameters: AccountWithMetadata,
         #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stablecoin_definition: AccountWithMetadata,
+        #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
         clock: AccountWithMetadata,
         new_rate: u128,
     ) -> SpelResult {
@@ -443,6 +465,8 @@ mod stablecoin {
                 admin,
                 protocol_parameters,
                 stability_fee_accumulator,
+                stablecoin_definition,
+                stablecoin_master_holding,
                 clock,
                 ctx.self_account_id,
                 new_rate,

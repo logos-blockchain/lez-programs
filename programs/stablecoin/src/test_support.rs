@@ -8,14 +8,16 @@ use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::account::{Account, AccountId, AccountWithMetadata, Data, Nonce};
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
-    compute_stability_fee_accumulator_pda, math::FIXED_POINT_ONE, ProtocolParameters,
-    RedemptionPriceState, StabilityFeeAccumulator,
+    compute_stability_fee_accumulator_pda, compute_stablecoin_master_holding_pda,
+    math::FIXED_POINT_ONE, ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator,
 };
+use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::OraclePriceAccount;
 
 pub(crate) const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([3u8; 32]);
 pub(crate) const ORACLE_PROGRAM_ID: AccountId = AccountId::new([4u8; 32]);
 pub(crate) const CLOCK_PROGRAM_ID: AccountId = AccountId::new([5u8; 32]);
+pub(crate) const TOKEN_PROGRAM_ID: AccountId = AccountId::new([2u8; 32]);
 
 /// Timestamps are Unix milliseconds, matching the `CLOCK_01` account.
 pub(crate) const T0: u64 = 1_700_000_000_000;
@@ -141,11 +143,62 @@ pub(crate) fn accumulator_account(anchor: u128, last_accrued_at: u64) -> Account
             data: Data::from(&StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: anchor,
                 last_accrued_at,
+                total_normalized_debt: 0,
             }),
             nonce: Nonce(0),
         },
         is_authorized: false,
         account_id: accumulator_id(),
+    }
+}
+
+/// The accumulator with outstanding debt, so an accrual mints surplus.
+pub(crate) fn accumulator_account_with_debt(
+    anchor: u128,
+    last_accrued_at: u64,
+    total_normalized_debt: u128,
+) -> AccountWithMetadata {
+    let mut account = accumulator_account(anchor, last_accrued_at);
+    account.account.data = Data::from(&StabilityFeeAccumulator {
+        accumulated_rate_at_last_accrual: anchor,
+        last_accrued_at,
+        total_normalized_debt,
+    });
+    account
+}
+
+pub(crate) fn stablecoin_definition_account() -> AccountWithMetadata {
+    AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: "STABLE".to_owned(),
+                total_supply: 0,
+                metadata_id: None,
+                authority: Some(stablecoin_definition_id()),
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: false,
+        account_id: stablecoin_definition_id(),
+    }
+}
+
+/// The surplus holding: the stablecoin master holding at its PDA.
+pub(crate) fn stablecoin_master_holding_account() -> AccountWithMetadata {
+    AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            balance: 0,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: stablecoin_definition_id(),
+                balance: 0,
+            }),
+            nonce: Nonce(0),
+        },
+        is_authorized: false,
+        account_id: compute_stablecoin_master_holding_pda(STABLECOIN_PROGRAM_ID),
     }
 }
 

@@ -18,18 +18,27 @@ use twap_oracle_core::OraclePriceAccount;
 ///
 /// Accrues the fee accumulator forward at the **old** rate first, so the new rate
 /// applies only from `now` onward and never retroactively to the elapsed gap.
-/// That is why this is the one setter that takes the clock and the accumulator.
+/// That is why this is the one setter that takes the clock, the accumulator, and
+/// the stablecoin definition and master holding the accrued fees are minted to.
 ///
 /// # Panics
 /// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
 /// - `new_rate` is outside the §8 band.
 /// - `protocol_parameters` or `stability_fee_accumulator` is uninitialized, wrongly owned, not at
 ///   its canonical PDA, or does not decode.
+/// - `stablecoin_definition` or `stablecoin_master_holding` fails the surplus-account checks of
+///   [`crate::checks::surplus_mint_call`].
 /// - `clock` is not the initialized system `CLOCK_01` account.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the six account inputs mirror the spec §10.10 ABI"
+)]
 pub fn set_stability_fee_per_millisecond(
     admin: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     stability_fee_accumulator: AccountWithMetadata,
+    stablecoin_definition: AccountWithMetadata,
+    stablecoin_master_holding: AccountWithMetadata,
     clock: AccountWithMetadata,
     stablecoin_program_id: AccountId,
     new_rate: u128,
@@ -53,12 +62,18 @@ pub fn set_stability_fee_per_millisecond(
     .expect("StabilityFeeAccumulator must decode");
 
     let now = crate::accrue_stability_fee::read_clock(&clock);
-    // Accrue *before* the rate is replaced. `advance_fee_accumulator` reads the
-    // rate out of `parameters`, so calling it first is what makes the change
-    // non-retroactive — and it is the same helper `accrue_stability_fee` uses, so
-    // the two can never disagree about how a gap accrues.
-    let accumulator_data =
-        crate::accrue_stability_fee::advance_fee_accumulator(&parameters, &accumulator, now);
+    // Accrue *before* the rate is replaced. `accrue_fees` reads the rate out of
+    // `parameters`, so calling it first is what makes the change non-retroactive
+    // — and it is the same helper `accrue_stability_fee` uses, so the two can
+    // never disagree about how a gap accrues or how much surplus it mints.
+    let accrual = crate::accrue_stability_fee::accrue_fees(&parameters, &accumulator, now);
+    let surplus_mint = crate::checks::surplus_mint_call(
+        &stablecoin_definition,
+        &stablecoin_master_holding,
+        &parameters,
+        stablecoin_program_id,
+        accrual.accrued_fees,
+    );
 
     parameters.stability_fee_per_millisecond = new_rate;
 
@@ -72,12 +87,14 @@ pub fn set_stability_fee_per_millisecond(
         AccountStateDiff::new(
             stability_fee_accumulator,
             BalanceDiff::Add(0),
-            accumulator_data,
+            Data::from(&accrual.accumulator),
         ),
+        AccountStateDiff::unchanged(stablecoin_definition),
+        AccountStateDiff::unchanged(stablecoin_master_holding),
         AccountStateDiff::unchanged(clock),
     ];
 
-    (state_diffs, vec![])
+    (state_diffs, surplus_mint.into_iter().collect())
 }
 
 /// The shape all six simple setters share: validate the parameters account at its
@@ -355,6 +372,8 @@ mod tests {
             admin,
             parameters,
             accumulator,
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             clock_account(now),
             STABLECOIN_PROGRAM_ID,
             new_rate,
@@ -375,14 +394,15 @@ mod tests {
             NEW_RATE,
         );
 
-        assert_eq!(post_states.len(), 4);
+        assert_eq!(post_states.len(), 6);
+        // No outstanding debt, so the catch-up accrual mints nothing.
         assert!(chained_calls.is_empty());
         assert_eq!(
             decoded(&post_states[1]).stability_fee_per_millisecond,
             NEW_RATE
         );
         assert_eq!(
-            post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+            post_states[5].post_account(STABLECOIN_PROGRAM_ID),
             clock_account(NOW).account
         );
     }

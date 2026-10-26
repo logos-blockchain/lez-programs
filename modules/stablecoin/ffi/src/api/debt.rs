@@ -2,7 +2,7 @@ use alloy_primitives::{U256, U512};
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use stablecoin_core::{
     collateralization::collateralization_values,
-    compute_stablecoin_definition_pda,
+    compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda,
     math::{
         compute_current_redemption_price_wide, FIXED_POINT_ONE,
         MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
@@ -148,13 +148,16 @@ pub fn generate_debt_plan(request: GenerateDebtPlanRequest) -> StablecoinResult 
             position_id,
             definition_id,
             destination_id,
+            compute_stablecoin_master_holding_pda(program_id),
             accumulator_id,
             redemption_id,
             parameters.market_price_oracle_id,
             parameters_id,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        [true, false, false, false, false, false, false, false, false],
+        [
+            true, false, false, false, false, false, false, false, false, false,
+        ],
         Instruction::GenerateDebt { amount },
     )
 }

@@ -5,6 +5,7 @@ use stablecoin_core::{
     compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
     compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
     compute_stablecoin_definition_pda, compute_stablecoin_definition_pda_seed,
+    compute_stablecoin_master_holding_pda,
     math::{
         compute_current_accumulated_rate, mul_div_ceil, FIXED_POINT_ONE,
         MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
@@ -34,6 +35,22 @@ const PROGRAM: AccountId = AccountId::new([0x11; 32]);
 const TOKEN_PROGRAM: AccountId = AccountId::new([0x22; 32]);
 const START: u64 = 1_000;
 const NONCE: u64 = u64::MAX;
+/// The surplus holding a fee accrual mints into: the stablecoin master holding.
+fn surplus_holding() -> (AccountId, Account) {
+    (
+        compute_stablecoin_master_holding_pda(PROGRAM),
+        Account {
+            program_owner: TOKEN_PROGRAM,
+            balance: 0,
+            nonce: Nonce(0),
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: compute_stablecoin_definition_pda(PROGRAM),
+                balance: 0,
+            }),
+        },
+    )
+}
+
 fn id(seed: u8) -> AccountId {
     AccountId::new([seed; 32])
 }
@@ -87,6 +104,7 @@ impl Fixture {
             accumulator: StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE * 3 / 2,
                 last_accrued_at: START,
+                total_normalized_debt: 0,
             },
             redemption: RedemptionPriceState {
                 redemption_price_at_last_update: FIXED_POINT_ONE,
@@ -200,6 +218,9 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
         .map(|(account_id, signer)| {
             let (account_id, account) = if account_id == &request.owner_id {
                 (id(20), Account::default())
+            } else if account_id == &account_id_hex(compute_stablecoin_master_holding_pda(PROGRAM))
+            {
+                surplus_holding()
             } else {
                 decode_account(
                     reads
@@ -212,7 +233,7 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
             AccountWithMetadata::new(account, signer, account_id)
         })
         .collect();
-    let [owner,position,definition,destination,accumulator,redemption,oracle,parameters,clock]:[_;9]=inputs.try_into().expect("nine inputs");
+    let [owner,position,definition,destination,master_holding,accumulator,redemption,oracle,parameters,clock]:[_;10]=inputs.try_into().expect("ten inputs");
     assert!(!definition.is_authorized);
     assert!(!destination.is_authorized);
     let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
@@ -225,6 +246,7 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
         position,
         definition,
         destination,
+        master_holding,
         accumulator,
         redemption,
         oracle,
@@ -239,9 +261,8 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
     let mut expected = fixture.position.clone();
     expected.normalized_debt_amount += expected_delta;
     assert_eq!(actual, expected);
-    let [call] = calls.as_slice() else {
-        panic!("one mint");
-    };
+    // Any accrued fees are minted to the surplus holding first; the borrow is last.
+    let call = calls.last().expect("a chained mint");
     assert_eq!(call.program_account_id, TOKEN_PROGRAM);
     assert_eq!(
         call.pda_seeds,
@@ -283,7 +304,7 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
 }
 
 #[test]
-fn borrowing_pins_nine_account_abi_and_owner_only_signature() {
+fn borrowing_pins_ten_account_abi_and_owner_only_signature() {
     let fixture = Fixture::new(100, 0);
     let request = fixture.request(json!("1"));
     let plan = generate_debt_plan(request.clone()).expect("plan");
@@ -295,6 +316,7 @@ fn borrowing_pins_nine_account_abi_and_owner_only_signature() {
             request.position.id,
             request.stablecoin_definition.id,
             request.user_stablecoin_holding.id,
+            account_id_hex(compute_stablecoin_master_holding_pda(PROGRAM)),
             request.stability_fee_accumulator.id,
             request.redemption_price_state.id,
             request.market_price_oracle.id,
@@ -304,7 +326,7 @@ fn borrowing_pins_nine_account_abi_and_owner_only_signature() {
     );
     assert_eq!(
         plan["signingRequirements"],
-        json!([true, false, false, false, false, false, false, false, false])
+        json!([true, false, false, false, false, false, false, false, false, false])
     );
     let idl: Value =
         serde_json::from_str(include_str!("../../../../../artifacts/stablecoin-idl.json"))
@@ -346,8 +368,14 @@ fn borrowing_pins_nine_account_abi_and_owner_only_signature() {
                 json!(false)
             ),
             (
-                json!("stability_fee_accumulator"),
+                json!("stablecoin_master_holding"),
+                json!(true),
                 json!(false),
+                json!(false)
+            ),
+            (
+                json!("stability_fee_accumulator"),
+                json!(true),
                 json!(false),
                 json!(false)
             ),

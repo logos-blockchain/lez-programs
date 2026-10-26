@@ -104,6 +104,7 @@ fn stability_fee_accumulator() -> StabilityFeeAccumulator {
     StabilityFeeAccumulator {
         accumulated_rate_at_last_accrual: u128::MAX,
         last_accrued_at: u64::MAX,
+        total_normalized_debt: 0,
     }
 }
 
@@ -264,6 +265,7 @@ fn poke_accumulator_read() -> crate::AccountRead {
             Data::from(&StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
                 last_accrued_at: POKE_LAST_UPDATE,
+                total_normalized_debt: 0,
             }),
         ),
     )
@@ -1105,16 +1107,20 @@ fn poke_plans_pin_instruction_words_accounts_and_caller_only_signing() {
     let redemption = account_id_hex(compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID));
     let oracle = account_id_hex(id(5));
     let clock = account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID);
+    let definition = account_id_hex(id(3));
+    let surplus = account_id_hex(stablecoin_core::compute_stablecoin_master_holding_pda(
+        STABLECOIN_PROGRAM_ID,
+    ));
 
     let accrue = ok(accrue_stability_fee_plan(accrue_request(false)));
     assert_eq!(accrue["programId"], program_id_hex());
     assert_eq!(
         accrue["accountIds"],
-        json!([caller, parameters, accumulator, clock])
+        json!([caller, parameters, accumulator, definition, surplus, clock])
     );
     assert_eq!(
         accrue["signingRequirements"],
-        json!([true, false, false, false])
+        json!([true, false, false, false, false, false])
     );
     assert_eq!(accrue["instruction"], json!([1]));
     assert!(matches!(
@@ -1142,11 +1148,20 @@ fn poke_plans_pin_instruction_words_accounts_and_caller_only_signing() {
     assert_eq!(refresh["programId"], program_id_hex());
     assert_eq!(
         refresh["accountIds"],
-        json!([caller, parameters, accumulator, redemption, oracle, clock])
+        json!([
+            caller,
+            parameters,
+            accumulator,
+            definition,
+            surplus,
+            redemption,
+            oracle,
+            clock
+        ])
     );
     assert_eq!(
         refresh["signingRequirements"],
-        json!([true, false, false, false, false, false])
+        json!([true, false, false, false, false, false, false, false])
     );
     assert_eq!(refresh["instruction"], json!([3]));
     assert!(matches!(

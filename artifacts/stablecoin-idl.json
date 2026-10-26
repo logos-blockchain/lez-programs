@@ -121,6 +121,18 @@
           "init": false
         },
         {
+          "name": "stablecoin_definition",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_master_holding",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "clock",
           "writable": false,
           "signer": false,
@@ -182,6 +194,18 @@
         },
         {
           "name": "stability_fee_accumulator",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_definition",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_master_holding",
           "writable": true,
           "signer": false,
           "init": false
@@ -333,8 +357,14 @@
           "init": false
         },
         {
+          "name": "stablecoin_master_holding",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "stability_fee_accumulator",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -569,6 +599,18 @@
           "init": false
         },
         {
+          "name": "stablecoin_definition",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "stablecoin_master_holding",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "clock",
           "writable": false,
           "signer": false,
@@ -705,8 +747,14 @@
           "init": false
         },
         {
+          "name": "stablecoin_master_holding",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "stability_fee_accumulator",
-          "writable": false,
+          "writable": true,
           "signer": false,
           "init": false
         },
@@ -854,6 +902,10 @@
           {
             "name": "last_accrued_at",
             "type": "u64"
+          },
+          {
+            "name": "total_normalized_debt",
+            "type": "u128"
           }
         ]
       }
