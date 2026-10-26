@@ -164,7 +164,8 @@ pub fn set_freeze_authority_plan(request: SetFreezeAuthorityPlanRequest) -> Stab
 }
 
 /// Plan oracle replacement by the admin. Producer identity, price, observation
-/// age and the frozen flag are intentionally not gates for this native setter.
+/// age, the frozen flag, and whether the oracle exists yet are intentionally not
+/// gates for this native setter.
 pub fn set_market_price_oracle_plan(request: SetMarketPriceOraclePlanRequest) -> StablecoinResult {
     let context = ValidatedAdmin::read(&request.context)?;
     let new_oracle_id = parse_account_id(&request.new_oracle_id)?;
@@ -172,12 +173,15 @@ pub fn set_market_price_oracle_plan(request: SetMarketPriceOraclePlanRequest) ->
     if read_id != new_oracle_id {
         return Err(StablecoinApiError::new("market_price_oracle_mismatch"));
     }
-    let oracle = OraclePriceAccount::try_from(&account.data)
-        .map_err(|_| StablecoinApiError::new("invalid_market_price_oracle"))?;
-    if oracle.base_asset != context.parameters.stablecoin_definition_id
-        || oracle.quote_asset != context.parameters.collateral_definition_id
-    {
-        return Err(StablecoinApiError::new("oracle_asset_mismatch"));
+    // Like initialize_program, the new oracle may not exist yet (spec §3.2).
+    if account != lee_core::account::Account::default() {
+        let oracle = OraclePriceAccount::try_from(&account.data)
+            .map_err(|_| StablecoinApiError::new("invalid_market_price_oracle"))?;
+        if oracle.base_asset != context.parameters.stablecoin_definition_id
+            || oracle.quote_asset != context.parameters.collateral_definition_id
+        {
+            return Err(StablecoinApiError::new("oracle_asset_mismatch"));
+        }
     }
     // A public oracle can also be a wallet-controlled admin handle. Passing it
     // twice would violate the runtime's distinct-account requirement.

@@ -13,7 +13,7 @@ use lee_core::{
 
 use crate::{
     accrue_stability_fee::{accrue_fees, decode_fee_accrual_inputs, read_clock},
-    update_redemption_rate::{advance_redemption_price, decode_oracle, decode_redemption_inputs},
+    update_redemption_rate::{advance_redemption_price, decode_redemption_inputs, read_oracle},
 };
 
 /// Advance both globals in one instruction, best-effort.
@@ -23,7 +23,8 @@ use crate::{
 ///
 /// Panics ONLY on caller authorization, an uninitialized / foreign-owned /
 /// wrong-PDA global, an oracle id mismatch, or a wrong clock account. A
-/// not-yet-due interval and a stale or zero-price oracle are SOFT — they skip
+/// not-yet-due interval and an oracle that is stale, reports zero, or has no
+/// usable observation at all (e.g. bound before it exists) are SOFT — they skip
 /// the redemption half instead of failing the transaction. Never blocked by the
 /// frozen flag.
 ///
@@ -56,7 +57,7 @@ pub fn refresh_globals(
         &redemption_price_state,
         stablecoin_program_id,
     );
-    let oracle = decode_oracle(&market_price_oracle, &params);
+    let oracle = read_oracle(&market_price_oracle, &params);
     let now = read_clock(&clock);
 
     // Fee half — always runs. It has no throttle and needs no oracle, so it
@@ -70,25 +71,28 @@ pub fn refresh_globals(
         accrual.accrued_fees,
     );
 
-    // Redemption half — three soft gates. Failing any one of them leaves the
+    // Redemption half — soft gates. Failing any one of them leaves the
     // redemption state untouched rather than panicking (the asymmetry with
-    // `update_redemption_rate` is intentional; spec §10.3a).
+    // `update_redemption_rate` is intentional; spec §10.3a). An oracle with no
+    // usable observation — including one bound before it exists — is one of them.
     let interval_due = now.saturating_sub(redemption.last_updated_at)
         >= params.minimum_milliseconds_between_rate_updates;
-    let oracle_fresh =
-        now.saturating_sub(oracle.timestamp) <= params.maximum_oracle_price_age_milliseconds;
-    let oracle_price_usable = oracle.price > 0;
+    let usable_price = oracle
+        .filter(|oracle| {
+            now.saturating_sub(oracle.timestamp) <= params.maximum_oracle_price_age_milliseconds
+                && oracle.price > 0
+        })
+        .map(|oracle| oracle.price);
 
     // A soft gate that does not fire now reports the account as genuinely
     // unchanged rather than rewriting identical data.
-    let redemption_diff = if interval_due && oracle_fresh && oracle_price_usable {
-        AccountStateDiff::new(
+    let redemption_diff = match usable_price {
+        Some(oracle_price) if interval_due => AccountStateDiff::new(
             redemption_price_state,
             BalanceDiff::Add(0),
-            advance_redemption_price(&params, &redemption, oracle.price, now),
-        )
-    } else {
-        AccountStateDiff::unchanged(redemption_price_state)
+            advance_redemption_price(&params, &redemption, oracle_price, now),
+        ),
+        _ => AccountStateDiff::unchanged(redemption_price_state),
     };
 
     let state_diffs = vec![
@@ -262,6 +266,51 @@ mod tests {
 
         assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
         assert_eq!(decode_redemption(&post_states[5]).last_updated_at, T0);
+    }
+
+    /// Refresh with an explicit oracle account in the oracle slot.
+    fn invoke_with_oracle(
+        oracle: AccountWithMetadata,
+    ) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
+        refresh_globals(
+            caller_account(),
+            protocol_parameters_account(ParameterOverrides::default()),
+            accumulator_account(ACCUMULATOR_ANCHOR, T0),
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
+            redemption_price_state_account(T0),
+            oracle,
+            clock_account(NOW),
+            STABLECOIN_PROGRAM_ID,
+        )
+    }
+
+    #[test]
+    fn redemption_half_skips_while_the_bound_oracle_does_not_exist_yet() {
+        // The launch state (spec §3.2): the oracle's address is bound, but nothing
+        // has created it yet. Fees still accrue; the controller waits.
+        let (post_states, _) = invoke_with_oracle(uninitialized(crate::test_support::oracle_id()));
+        assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
+        assert_eq!(
+            post_states[5].post_account(STABLECOIN_PROGRAM_ID),
+            redemption_price_state_account(T0).account
+        );
+    }
+
+    #[test]
+    fn redemption_half_skips_when_the_oracle_quotes_another_pair() {
+        let mut oracle = oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR);
+        let mut decoded =
+            twap_oracle_core::OraclePriceAccount::try_from(&oracle.account.data).unwrap();
+        decoded.base_asset = AccountId::new([0xAB; 32]);
+        oracle.account.data = lee_core::account::Data::from(&decoded);
+
+        let (post_states, _) = invoke_with_oracle(oracle);
+        assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
+        assert_eq!(
+            post_states[5].post_account(STABLECOIN_PROGRAM_ID),
+            redemption_price_state_account(T0).account
+        );
     }
 
     #[test]

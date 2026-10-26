@@ -42,11 +42,19 @@ pub fn update_redemption_rate(
         &redemption_price_state,
         stablecoin_program_id,
     );
-    let oracle = decode_oracle(&market_price_oracle, &params);
+    assert_ne!(
+        market_price_oracle.account,
+        Account::default(),
+        "Market price oracle account must be initialized"
+    );
+    let oracle = read_oracle(&market_price_oracle, &params).expect(
+        "Market price oracle must be an OraclePriceAccount quoting the stablecoin in collateral",
+    );
     let now = read_clock(&clock);
 
-    // Hard gates. `refresh_globals` treats these same three conditions as soft
-    // skips; here they are failures (spec §10.3 vs §10.3a).
+    // Hard gates. `refresh_globals` treats these same conditions as soft skips;
+    // here they are failures (spec §10.3 vs §10.3a), like RAI's
+    // `RateSetter.updateRate` reverting on an invalid oracle value.
     assert!(
         now.saturating_sub(oracle.timestamp) <= params.maximum_oracle_price_age_milliseconds,
         "Market price oracle observation is stale"
@@ -112,28 +120,34 @@ pub(crate) fn decode_redemption_inputs(
     (params, redemption)
 }
 
-/// Validate the oracle account and decode its observation.
+/// Read the bound market-price oracle, or `None` when it has no usable
+/// observation — RAI's `orcl.getResultWithValidity()`.
 ///
-/// The oracle's `account_id` must equal
-/// `ProtocolParameters.market_price_oracle_id`. Its `program_owner` is
-/// deliberately NOT pinned, so a future aggregator or an alternative producer
-/// can replace the TWAP oracle without a code change here. Shared with
-/// [`crate::refresh_globals`], where the id mismatch is likewise a hard panic.
-pub(crate) fn decode_oracle(
+/// The oracle's `account_id` must equal `ProtocolParameters.market_price_oracle_id`;
+/// passing a different account is a caller error and panics. The account itself
+/// may legitimately not exist yet: the admin can bind the oracle's address
+/// before the market it prices exists (spec §3.2). That, an account that does not
+/// decode as an `OraclePriceAccount`, and one that does not quote the stablecoin
+/// in collateral all read as `None`.
+///
+/// `program_owner` is deliberately NOT pinned, so a future aggregator or an
+/// alternative producer can replace the TWAP oracle without a code change here.
+/// Shared with [`crate::refresh_globals`].
+pub(crate) fn read_oracle(
     market_price_oracle: &AccountWithMetadata,
     params: &ProtocolParameters,
-) -> OraclePriceAccount {
-    assert_ne!(
-        market_price_oracle.account,
-        Account::default(),
-        "Market price oracle account must be initialized"
-    );
+) -> Option<OraclePriceAccount> {
     assert_eq!(
         market_price_oracle.account_id, params.market_price_oracle_id,
         "Market price oracle account_id does not match ProtocolParameters.market_price_oracle_id"
     );
-    OraclePriceAccount::try_from(&market_price_oracle.account.data)
-        .expect("Market price oracle must decode as OraclePriceAccount")
+    if market_price_oracle.account == Account::default() {
+        return None;
+    }
+    let oracle = OraclePriceAccount::try_from(&market_price_oracle.account.data).ok()?;
+    (oracle.base_asset == params.stablecoin_definition_id
+        && oracle.quote_asset == params.collateral_definition_id)
+        .then_some(oracle)
 }
 
 /// Project the redemption price to `now`, run one controller tick against
@@ -457,6 +471,25 @@ mod tests {
             protocol_parameters_account(ParameterOverrides::default()),
             redemption_price_state_account(T0),
             uninitialized(crate::test_support::oracle_id()),
+            clock_account(NOW),
+            STABLECOIN_PROGRAM_ID,
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Market price oracle must be an OraclePriceAccount quoting the stablecoin in collateral"
+    )]
+    fn rejects_an_oracle_quoting_another_pair() {
+        let mut oracle = oracle_account(NOW, MARKET_PRICE_BELOW_ANCHOR);
+        let mut decoded = OraclePriceAccount::try_from(&oracle.account.data).unwrap();
+        decoded.quote_asset = AccountId::new([0xAB; 32]);
+        oracle.account.data = Data::from(&decoded);
+        let _ = update_redemption_rate(
+            caller_account(),
+            protocol_parameters_account(ParameterOverrides::default()),
+            redemption_price_state_account(T0),
+            oracle,
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );

@@ -27,7 +27,8 @@ use token_core::TokenHolding;
 ///
 /// The §6.2 collateralization invariant is checked *after* the mint, against the
 /// accumulator and redemption price projected forward to the clock timestamp.
-/// The oracle is read for its staleness gate only; its price is not used.
+/// The market-price oracle is not an input: as in RAI, borrowing never reads the
+/// market price, which only steers the redemption rate (spec §10.3).
 ///
 /// # Panics
 /// - `owner` is not authorized.
@@ -38,8 +39,6 @@ use token_core::TokenHolding;
 /// - `protocol_parameters.is_frozen` is set.
 /// - `stablecoin_definition.account_id` does not match
 ///   `protocol_parameters.stablecoin_definition_id`, or it is uninitialized.
-/// - `market_price_oracle` does not match `protocol_parameters.market_price_oracle_id`, or its
-///   observation is older than `maximum_oracle_price_age_milliseconds`.
 /// - `user_stablecoin_holding` is uninitialized, owned by a different Token Program than the
 ///   definition, or holds a different definition.
 /// - `stablecoin_master_holding` fails the surplus-account checks of
@@ -48,7 +47,7 @@ use token_core::TokenHolding;
 /// - The debt addition overflows, or §6.2 fails post-mint.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the ten account inputs mirror the spec §10.7 ABI"
+    reason = "the nine account inputs mirror the spec §10.7 ABI"
 )]
 pub fn generate_debt(
     owner: AccountWithMetadata,
@@ -58,7 +57,6 @@ pub fn generate_debt(
     stablecoin_master_holding: AccountWithMetadata,
     stability_fee_accumulator: AccountWithMetadata,
     redemption_price_state: AccountWithMetadata,
-    market_price_oracle: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     clock: AccountWithMetadata,
     stablecoin_program_id: AccountId,
@@ -114,18 +112,6 @@ pub fn generate_debt(
     .expect("RedemptionPriceState must decode");
 
     let now = crate::accrue_stability_fee::read_clock(&clock);
-
-    // The oracle is a liveness gate only — spec §10.7 never consumes its price.
-    let oracle = crate::update_redemption_rate::decode_oracle(&market_price_oracle, &parameters);
-    // A saturating subtraction would report age 0 for a future-dated observation,
-    // reading as maximally fresh and defeating the gate. Reject it outright.
-    let oracle_age = now
-        .checked_sub(oracle.timestamp)
-        .expect("Market price oracle observation is dated in the future");
-    assert!(
-        oracle_age <= parameters.maximum_oracle_price_age_milliseconds,
-        "Market price oracle observation is stale"
-    );
 
     assert_eq!(
         stablecoin_definition.account_id, parameters.stablecoin_definition_id,
@@ -220,7 +206,6 @@ pub fn generate_debt(
             Data::from(&accrual.accumulator),
         ),
         AccountStateDiff::unchanged(redemption_price_state),
-        AccountStateDiff::unchanged(market_price_oracle),
         AccountStateDiff::unchanged(protocol_parameters),
         AccountStateDiff::unchanged(clock),
     ];

@@ -20,7 +20,6 @@ use super::{
     plan::{parse_account_id, parse_decimal_u64, parse_u128, plan_response, required_account},
     position::validated_position,
     projection::clock_timestamp,
-    quote::validated_market_price_oracle,
     GenerateDebtPlanRequest, StablecoinApiError, StablecoinResult,
 };
 
@@ -42,16 +41,6 @@ pub fn generate_debt_plan(request: GenerateDebtPlanRequest) -> StablecoinResult 
     let (redemption_id, redemption) =
         validated_redemption_price_state(program_id, &request.redemption_price_state)?;
     let now = clock_timestamp(&request.clock)?;
-    let oracle = validated_market_price_oracle(
-        &request.market_price_oracle,
-        parameters.market_price_oracle_id,
-    )?;
-    let age = now
-        .checked_sub(oracle.timestamp)
-        .ok_or_else(|| StablecoinApiError::new("oracle_future"))?;
-    if age > parameters.maximum_oracle_price_age_milliseconds {
-        return Err(StablecoinApiError::new("oracle_stale"));
-    }
 
     let (definition_id, definition_account) = required_account(&request.stablecoin_definition)?;
     if definition_id != parameters.stablecoin_definition_id
@@ -151,13 +140,10 @@ pub fn generate_debt_plan(request: GenerateDebtPlanRequest) -> StablecoinResult 
             compute_stablecoin_master_holding_pda(program_id),
             accumulator_id,
             redemption_id,
-            parameters.market_price_oracle_id,
             parameters_id,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        [
-            true, false, false, false, false, false, false, false, false, false,
-        ],
+        [true, false, false, false, false, false, false, false, false],
         Instruction::GenerateDebt { amount },
     )
 }

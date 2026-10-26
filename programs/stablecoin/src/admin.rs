@@ -279,15 +279,17 @@ pub fn set_freeze_authority(
 
 /// Rotate the market-price oracle (spec §10.13).
 ///
-/// Validates the replacement's shape and that its base/quote pair matches the
-/// definitions bound at bootstrap, so the controller cannot be pointed at an
-/// oracle quoting a different market. `program_owner` is deliberately not pinned:
-/// any producer emitting a well-formed `OraclePriceAccount` is acceptable.
+/// The replacement may not exist yet, exactly as at `initialize_program`: the
+/// controller simply does not run until it does (spec §3.2). One that exists must
+/// decode and its base/quote pair must match the definitions bound at bootstrap,
+/// so the controller cannot be pointed at an oracle quoting a different market.
+/// `program_owner` is deliberately not pinned: any producer emitting a
+/// well-formed `OraclePriceAccount` is acceptable.
 ///
 /// # Panics
 /// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
-/// - `new_oracle` is uninitialized, does not decode as an `OraclePriceAccount`, or its `base_asset`
-///   / `quote_asset` do not match the bound definitions.
+/// - `new_oracle` is initialized but does not decode as an `OraclePriceAccount`, or its
+///   `base_asset` / `quote_asset` do not match the bound definitions.
 /// - `protocol_parameters` is invalid.
 pub fn set_market_price_oracle(
     admin: AccountWithMetadata,
@@ -301,21 +303,18 @@ pub fn set_market_price_oracle(
         protocol_parameters,
         stablecoin_program_id,
         |parameters| {
-            assert_ne!(
-                new_oracle.account,
-                Account::default(),
-                "New market price oracle must be initialized"
-            );
-            let oracle = OraclePriceAccount::try_from(&new_oracle.account.data)
-                .expect("New market price oracle must decode as OraclePriceAccount");
-            assert_eq!(
-                oracle.base_asset, parameters.stablecoin_definition_id,
-                "New oracle base_asset must equal the stablecoin definition's account_id"
-            );
-            assert_eq!(
-                oracle.quote_asset, parameters.collateral_definition_id,
-                "New oracle quote_asset must equal the collateral definition's account_id"
-            );
+            if new_oracle.account != Account::default() {
+                let oracle = OraclePriceAccount::try_from(&new_oracle.account.data)
+                    .expect("New market price oracle must decode as OraclePriceAccount");
+                assert_eq!(
+                    oracle.base_asset, parameters.stablecoin_definition_id,
+                    "New oracle base_asset must equal the stablecoin definition's account_id"
+                );
+                assert_eq!(
+                    oracle.quote_asset, parameters.collateral_definition_id,
+                    "New oracle quote_asset must equal the collateral definition's account_id"
+                );
+            }
             parameters.market_price_oracle_id = new_oracle_id;
         },
     );
@@ -825,13 +824,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "New market price oracle must be initialized")]
-    fn set_market_price_oracle_rejects_an_uninitialized_oracle() {
-        set_market_price_oracle(
+    fn set_market_price_oracle_binds_an_oracle_that_does_not_exist_yet() {
+        // Like RAI pointing its rate setter at a feed that is not valid yet: the
+        // controller just does not run until the oracle exists (spec §3.2).
+        let future_oracle = AccountId::new([0x3Au8; 32]);
+        let (post_states, _) = set_market_price_oracle(
             admin_account(),
             params(),
-            uninitialized(AccountId::new([0x3Au8; 32])),
+            uninitialized(future_oracle),
             STABLECOIN_PROGRAM_ID,
+        );
+        assert_eq!(
+            decoded(&post_states[1]).market_price_oracle_id,
+            future_oracle
         );
     }
 

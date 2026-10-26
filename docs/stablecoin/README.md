@@ -77,6 +77,7 @@ This document is the design for the **on-chain program**. The CLI, mini-app, and
 | Instance model | Single deployment = one stablecoin + one collateral | Matches RFP's RAI framing and singular phrasing. Adding a second collateral means deploying the program again as a separate instance with its own distinct stablecoin. |
 | Stablecoin ownership | Program-owned PDA, created by `initialize_program` | Mint/Burn chained calls authorize via the stablecoin program PDA seed. Single source of truth. |
 | Position addressing | PDA seed = `(owner_account_id, position_nonce)` | Multiple positions per owner. Matches RAI / DAI / Liquity. |
+| Launch | RAI-style: the market-price oracle only steers the redemption rate | `initialize_program` sets the redemption price and may bind an oracle address that does not exist yet. Borrowing never reads the market price, so the protocol works from day one; the controller waits (rate `1.0`) until the oracle exists. See "Day 0" below. |
 | Price model | Single oracle quoting stablecoin in collateral units; redemption price in collateral-per-stablecoin | One oracle read on the hot path. Closed-loop unit system; no external reference asset. Single point of failure mitigated by staleness gate + freeze authority. |
 | Fee accrual | RAI accumulator with surplus mint (`SAFEEngine.updateAccumulatedRate`) | Fees grow as the `accumulated_rate` multiplier, and every accrual mints `total_normalized_debt × Δaccumulator` to the protocol's surplus holding (§6.6). Supply therefore keeps pace with total nominal debt (RFP R1); `generate_debt` / `repay_debt` accrue first, like RAI's proxies calling `taxSingle`. |
 | Rate plumbing | Lazy globals + permissionless pokes | Position ops read but don't write globals → no contention. Concurrent permissionless `accrue_stability_fee` and `update_redemption_rate` don't conflict. |
@@ -122,7 +123,16 @@ flowchart TB
 
 A walkthrough of who calls what and what changes when. Detailed mechanics are in §10; this is the overall flow.
 
-**Day 0 — setup.** The deployer publishes the program binary, then calls `initialize_program` (§10.1). That one call creates all five program-owned accounts: the stablecoin `TokenDefinition` (via a chained `Token::NewFungibleDefinition`), its required paired master holding (empty), the `ProtocolParameters` account, and the two state-tracking accounts (`StabilityFeeAccumulator` and `RedemptionPriceState`). The same call sets which collateral and oracle the protocol uses, picks the admin and freeze-authority accounts, and stores the initial fee rate, controller gains, safety ratio, and timing parameters. Once it returns, the protocol exists and users can start interacting.
+**Day 0 — setup.** The deployer publishes the program binary, then calls `initialize_program` (§10.1). That one call creates all five program-owned accounts: the stablecoin `TokenDefinition` (via a chained `Token::NewFungibleDefinition`), its required paired master holding (empty), the `ProtocolParameters` account, and the two state-tracking accounts (`StabilityFeeAccumulator` and `RedemptionPriceState`). The same call sets which collateral and oracle the protocol uses, picks the admin and freeze-authority accounts, and stores the initial redemption price, fee rate, controller gains, safety ratio, and timing parameters. Once it returns, the protocol exists and users can start interacting.
+
+**Day 0 — launching before a market exists (as RAI does).** The stablecoin has no market price until someone trades it, and the TWAP oracle that will report that price can only be created from an AMM pool that holds stablecoin. The design breaks that circle the way RAI does: the deployer fixes the starting redemption price, and the market price only ever *steers* it.
+
+1. Call `initialize_program` with the address of the oracle that will exist later — typically the AMM pool's TWAP `OraclePriceAccount` PDA, which is predictable from the pool's token definitions. The account does not need to exist yet (§10.1); RAI likewise deploys its rate setter against a TWAP feed that is not yet valid.
+2. Users open positions and borrow straight away. Minting never reads the oracle (§10.7); collateralization uses the redemption price.
+3. Keepers' `refresh_globals` accrues fees and skips the controller; `update_redemption_rate` fails with "oracle must be initialized". The rate stays `1.0`, so the redemption price holds at its initial value.
+4. Someone seeds the AMM pool with the minted stablecoin and collateral and creates the pool's oracle at the bound address. From the next poke on, the controller runs.
+
+If the oracle's final address is not known at launch, bind any placeholder address and switch with `set_market_price_oracle` once the real oracle exists; the setter accepts a not-yet-existing oracle too.
 
 **Running the protocol — keepers advance the globals.** Two instructions any account can call keep the protocol's globals current:
 
@@ -131,7 +141,7 @@ A walkthrough of who calls what and what changes when. Detailed mechanics are in
 
 These two are usually run by keeper bots. A LEZ transaction carries a single instruction, so a keeper that wants to advance both globals at once calls the combined `refresh_globals` poke (§10.3a); otherwise it sends `accrue_stability_fee` and `update_redemption_rate` as two separate transactions. They cost gas but earn no reward — anyone with money in the protocol wants the globals fresh before they act.
 
-**A user opens a position and borrows.** A user picks a `position_nonce` (any integer — 0, 7, whatever) and calls `open_position` (§10.4) with some collateral. Two accounts get created: their `Position` (at `hash(owner, nonce)`, owned by the stablecoin program, starting with zero debt) and a `PositionVault` (at `hash(position)`, owned by the Token Program) that holds the collateral tokens. They can then call `generate_debt` (§10.7) to mint stablecoin into their own holding. The mint increases the position's normalized debt; the collateralization check prevents over-borrowing; the call fails if the oracle is stale or the protocol is frozen.
+**A user opens a position and borrows.** A user picks a `position_nonce` (any integer — 0, 7, whatever) and calls `open_position` (§10.4) with some collateral. Two accounts get created: their `Position` (at `hash(owner, nonce)`, owned by the stablecoin program, starting with zero debt) and a `PositionVault` (at `hash(position)`, owned by the Token Program) that holds the collateral tokens. They can then call `generate_debt` (§10.7) to mint stablecoin into their own holding. The mint increases the position's normalized debt; the collateralization check prevents over-borrowing; the call fails if the protocol is frozen.
 
 **Time passes; debt grows; users adjust.** As keepers advance the fee multiplier, every position's debt grows even though no per-position write happens (the RAI accumulator approach, §6.1). Users can:
 
@@ -207,13 +217,13 @@ Created on demand by `open_position` and cleared by `close_position`. Both accou
 
 ### 3.3 External accounts (read-only, bound or configured)
 
-These already exist on chain before any stablecoin interaction; the program just references them.
+The collateral definition already exists on chain before any stablecoin interaction; the oracle may only appear later (see "Day 0" above). The program just references them.
 
 **`OraclePriceAccount`** (market price) — referenced via `ProtocolParameters.market_price_oracle_id`. Owned by whichever oracle program produced it (typically `twap_oracle`, but any producer that emits this struct shape is acceptable).
 
 *Holds:* the standard `OraclePriceAccount` shape from `twap_oracle_core` — base/quote asset ids, the price, an observation timestamp, source id, and confidence interval.
 
-*Why:* the protocol's only source of market-side truth — what is one stablecoin actually worth in collateral, right now. Read by `update_redemption_rate` (the controller's feedback signal) and as a staleness gate on `generate_debt` (RFP R3). The producer is rotated by the admin via `set_market_price_oracle`; we don't pin its `program_owner`, so future multi-oracle aggregators slot in unchanged.
+*Why:* the protocol's only source of market-side truth — what is one stablecoin actually worth in collateral, right now. Read only by the controller (`update_redemption_rate`, `refresh_globals`): as in RAI, the market price steers the redemption rate and nothing else, so borrowing does not read it. Its staleness gate (RFP R3) therefore guards the controller: a stale oracle never moves the rate. A bound oracle that does not exist yet, does not decode, or quotes another pair reads as "no observation" (RAI's `getResultWithValidity`). The producer is rotated by the admin via `set_market_price_oracle`; we don't pin its `program_owner`, so future multi-oracle aggregators slot in unchanged.
 
 **Collateral `TokenDefinition`** — referenced via `ProtocolParameters.collateral_definition_id` (set at init, IMMUTABLE). Owned by the Token Program.
 
@@ -724,7 +734,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 | 4 | `open_position` | owner | blocked | Claim Position PDA + vault PDA, deposit initial collateral. |
 | 5 | `deposit_collateral` | owner | ok | Add collateral to an existing position. |
 | 6 | `withdraw_collateral` | owner | blocked | Remove collateral, subject to collateralization. |
-| 7 | `generate_debt` | owner | blocked | Mint stablecoin, increase normalized debt, subject to collateralization. Oracle staleness gate. |
+| 7 | `generate_debt` | owner | blocked | Accrue, then mint stablecoin and increase normalized debt, subject to collateralization. Does not read the oracle. |
 | 8 | `repay_debt` | owner | ok | Burn stablecoin, decrease normalized debt. |
 | 9 | `close_position` | owner | ok | Clear Position PDA when debt = 0 and collateral = 0. Vault lingers (see § 14). |
 
@@ -735,7 +745,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 | 10 | `set_stability_fee_per_millisecond` | admin | Auto-accrues first; then updates the rate. |
 | 11 | `set_minimum_collateralization_ratio` | admin | Update the safety ratio. |
 | 12 | `set_controller_gains` | admin | Update Kp + Ki atomically. |
-| 13 | `set_market_price_oracle` | admin | Rotate oracle id; validate new oracle's base/quote. |
+| 13 | `set_market_price_oracle` | admin | Rotate oracle id; validate the new oracle's base/quote if it exists yet. |
 | 14 | `set_timing_parameters` | admin | Update the two timing fields atomically. |
 | 15 | `set_admin` | admin | One-step admin rotation. |
 | 16 | `set_freeze_authority` | admin | One-step freeze authority rotation. |
@@ -779,7 +789,7 @@ fn initialize_program(
 5. `stablecoin_definition` — uninitialized, PDA-to-claim via chained `Token::NewFungibleDefinition`.
 6. `stablecoin_master_holding` — uninitialized, PDA-to-claim via the same chained call (Token Program API artifact; receives `total_supply = 0`, never used again).
 7. `collateral_definition` — initialized, read-only; persisted into `ProtocolParameters.collateral_definition_id`. Validated as `TokenDefinition::Fungible`.
-8. `market_price_oracle` — initialized, read-only. Validated: `OraclePriceAccount`, `base_asset = stablecoin_definition.account_id` (PDA derivation predicted), `quote_asset = collateral_definition.account_id`.
+8. `market_price_oracle` — read-only; **may be uninitialized** (bound before it exists, see "Day 0"). If it exists it is validated: `OraclePriceAccount`, `base_asset = stablecoin_definition.account_id` (PDA derivation predicted), `quote_asset = collateral_definition.account_id`.
 9. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Outputs:**
@@ -858,14 +868,14 @@ flowchart TD
 1. `caller` — authorized.
 2. `protocol_parameters` — initialized, read-only.
 3. `redemption_price_state` — initialized, writable.
-4. `market_price_oracle` — initialized, read-only. Must equal `protocol_parameters.market_price_oracle_id`.
+4. `market_price_oracle` — initialized, read-only. Must equal `protocol_parameters.market_price_oracle_id`, and quote the stablecoin in collateral.
 5. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
 
 **Output state changes (`redemption_price_state` only):** per § 6.4.
 
 **Chained calls:** none.
 
-**Panics if:** `caller.is_authorized = false`; any input uninitialized / wrong owner; oracle id mismatch; `now − oracle.timestamp > maximum_oracle_price_age_milliseconds`; `oracle.price = 0`; `now − last_updated_at < minimum_milliseconds_between_rate_updates`.
+**Panics if:** `caller.is_authorized = false`; any input uninitialized / wrong owner (including an oracle that does not exist yet — RAI's `updateRate` likewise reverts on an invalid feed); oracle id mismatch; the oracle does not decode or does not quote the stablecoin in collateral; `now − oracle.timestamp > maximum_oracle_price_age_milliseconds`; `oracle.price = 0`; `now − last_updated_at < minimum_milliseconds_between_rate_updates`.
 
 ```mermaid
 flowchart TD
@@ -899,7 +909,7 @@ A convenience poke that advances **both** globals in one instruction. Because a 
 **Behavior:**
 
 - **Fee half** — always rolls the accumulator forward exactly as §10.2 (there is no fee-accrual interval gate). Never depends on the oracle.
-- **Redemption half** — if `now − redemption_price_state.last_updated_at ≥ minimum_milliseconds_between_rate_updates` **and** the oracle is fresh (`now − oracle.timestamp ≤ maximum_oracle_price_age_milliseconds`) **and** `oracle.price > 0`: run the PI controller and re-anchor exactly as §10.3. Else: skip (no write).
+- **Redemption half** — if `now − redemption_price_state.last_updated_at ≥ minimum_milliseconds_between_rate_updates` **and** the oracle has a usable observation (it exists, decodes, and quotes the stablecoin in collateral) **and** it is fresh (`now − oracle.timestamp ≤ maximum_oracle_price_age_milliseconds`) **and** `oracle.price > 0`: run the PI controller and re-anchor exactly as §10.3. Else: skip (no write). The "no usable observation" case covers launch, before the bound oracle exists (§3 "Day 0").
 - The fee half always runs; if the redemption half skips, the call just advances the accumulator alone.
 
 **Chained calls:** the §6.6 surplus `Token::Mint` of the fee half, when `accrued_fees > 0`.
@@ -1053,9 +1063,10 @@ flowchart TD
 5. `stablecoin_master_holding` — the surplus holding, as §10.2.
 6. `stability_fee_accumulator` — initialized, writable (accrued first, §6.6).
 7. `redemption_price_state` — initialized, read-only.
-8. `market_price_oracle` — initialized, read-only; for staleness gate only. Must equal `protocol_parameters.market_price_oracle_id`.
-9. `protocol_parameters` — initialized, read-only.
-10. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
+8. `protocol_parameters` — initialized, read-only.
+9. `clock` — the system `CLOCK_01` account; read-only. Supplies `now` (see § 5.4). Echoed unchanged in the post-state.
+
+There is no oracle input: as in RAI, borrowing never reads the market price (§3.3).
 
 **Outputs:**
 
@@ -1066,13 +1077,13 @@ flowchart TD
 
 **Chained calls:** the §6.6 surplus `Token::Mint` (when `accrued_fees > 0`), then `Token::Mint { amount_to_mint: amount }` · accounts: `[stablecoin_definition (auth via stablecoin program PDA seed), user_stablecoin_holding]` · pda_seeds: `[stablecoin_definition_seed]`.
 
-**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; `market_price_oracle.account_id ≠ protocol_parameters.market_price_oracle_id`; `now − oracle.timestamp > maximum_oracle_price_age_milliseconds`; `oracle.timestamp > now` (a future-dated observation is rejected outright, not treated as fresh); `protocol_parameters.is_frozen = true`; the redemption price projects to **zero** (§6.2); collateralization check (§ 6.2) fails post-mint; arithmetic overflow.
+**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; `stablecoin_definition.account_id ≠ protocol_parameters.stablecoin_definition_id`; user holding's `definition_id` mismatch or different Token Program; the surplus accounts fail §10.2's checks; `protocol_parameters.is_frozen = true`; the redemption price projects to **zero** (§6.2); collateralization check (§ 6.2) fails post-mint; arithmetic overflow.
 
 ```mermaid
 flowchart TD
-    subgraph In["Inputs (10)"]
+    subgraph In["Inputs (9)"]
         a1[owner<br/>auth] ~~~ a2[position<br/>write] ~~~ a3[stablecoin_definition<br/>write, chained] ~~~ a4[user_stablecoin_holding<br/>init] ~~~ a5[stablecoin_master_holding<br/>write, chained]
-        a6[stability_fee_accumulator<br/>write, accrued] ~~~ a7[redemption_price_state<br/>read] ~~~ a8[market_price_oracle<br/>read, staleness gate] ~~~ a9[protocol_parameters<br/>read] ~~~ a10[clock<br/>CLOCK_01]
+        a6[stability_fee_accumulator<br/>write, accrued] ~~~ a7[redemption_price_state<br/>read] ~~~ a8[protocol_parameters<br/>read] ~~~ a9[clock<br/>CLOCK_01]
     end
     subgraph Post["Post-state"]
         p1[position<br/>normalized_debt += ceil amt/acc<br/>collateralization check] ~~~ p2[stablecoin_definition<br/>total_supply += amount] ~~~ p3[user_stablecoin_holding<br/>balance += amount]
@@ -1166,7 +1177,7 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 | `freeze_authority_account_id` | param to init | yes — `set_freeze_authority` |
 | `stablecoin_definition_id` | PDA claimed at init | **NO — immutable** (changing breaks supply accounting) |
 | `collateral_definition_id` | param to init | **NO — immutable** (changing orphans every vault) |
-| `market_price_oracle_id` | param to init | yes — `set_market_price_oracle` (validates new oracle's base/quote) |
+| `market_price_oracle_id` | param to init (the oracle may not exist yet) | yes — `set_market_price_oracle` (validates the new oracle's base/quote if it exists) |
 | `stability_fee_per_millisecond` | param to init | yes — `set_stability_fee_per_millisecond` (auto-accrues at OLD rate first) |
 | `controller_proportional_gain` | param to init | yes — `set_controller_gains` (bundled with Ki) |
 | `controller_integral_gain` | param to init | yes — `set_controller_gains` (bundled with Kp) |
@@ -1225,7 +1236,7 @@ that takes the `clock` account (§ 5.4); the other six omit it.
 | 10 | `set_stability_fee_per_millisecond` | `new_rate: u128` | `stability_fee_per_millisecond` | `stability_fee_accumulator` (writable), `stablecoin_definition` and `stablecoin_master_holding` (writable, as §10.2), `clock` | Auto-accrues forward at the OLD rate up to `now` first and mints the accrued fees (§6.6) — hence the clock and the surplus accounts. |
 | 11 | `set_minimum_collateralization_ratio` | `new_ratio: u128` | `minimum_collateralization_ratio` | — | Tightening leaves existing positions retroactively under-collateralized; they cannot increase debt or withdraw collateral until back above. No mass-liquidation here (RFP-014 out of scope). |
 | 12 | `set_controller_gains` | `new_proportional_gain: i128, new_integral_gain: i128` | `controller_proportional_gain`, `controller_integral_gain` | — | Does NOT reset `controller_integral_term`. |
-| 13 | `set_market_price_oracle` | (no scalar) | `market_price_oracle_id` | `new_oracle` (read-only) | Validates `OraclePriceAccount` shape, base/quote ids. `program_owner` not pinned. |
+| 13 | `set_market_price_oracle` | (no scalar) | `market_price_oracle_id` | `new_oracle` (read-only) | May not exist yet (see "Day 0"); if it exists, validates `OraclePriceAccount` shape and base/quote ids. `program_owner` not pinned. |
 | 14 | `set_timing_parameters` | two `u64`s | `minimum_milliseconds_between_rate_updates`, `maximum_oracle_price_age_milliseconds` | — | Bundled. |
 | 15 | `set_admin` | `new_admin_account_id: AccountId` | `admin_account_id` | — | One-step rotation. |
 | 16 | `set_freeze_authority` | `new_freeze_authority_account_id: AccountId` | `freeze_authority_account_id` | — | One-step rotation. |
@@ -1307,8 +1318,8 @@ flowchart TD
 
 - **Empty position** (`collateral_amount = 0`, `normalized_debt_amount = 0`) — valid intermediate state. `withdraw_collateral` with `amount = 0` is a no-op. `close_position` is the only path that clears the account.
 - **Long time since last poke.** `compound_rate` handles large `dt` via exponentiation by squaring (O(log dt)), but the result is NOT self-bounding: at extreme `dt` any rate > `FIXED_POINT_ONE` overflows. Callers therefore clamp `dt` to `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` (§5.3). The trade-off is that fee accrual and redemption drift pause beyond the window if no one pokes for that long; permissionless, cheap pokes make this a catastrophic-neglect-only scenario.
-- **Stale oracle but unfrozen.** `update_redemption_rate` panics, so the rate stops drifting at whatever it last was. `generate_debt` also panics (RFP R3). Existing positions, `deposit_collateral`, `repay_debt`, `withdraw_collateral` all continue. Withdrawing requires the collateralization check, which uses the projected redemption price from the OLD rate — operationally fine.
-- **Frozen + stale oracle.** `withdraw_collateral` blocked (frozen). `generate_debt` blocked twice (frozen + stale). `deposit_collateral`, `repay_debt`, `close_position` work. Anyone can still call `accrue_stability_fee` (rate-independent).
+- **Stale or missing oracle but unfrozen.** `update_redemption_rate` panics and `refresh_globals` skips the controller, so the rate stops changing at whatever it last was (RFP R3: a stale price never moves the rate). As in RAI, every position instruction — including `generate_debt` — continues, since none of them reads the market price. Withdrawing requires the collateralization check, which uses the projected redemption price from the OLD rate — operationally fine.
+- **Frozen + stale oracle.** `withdraw_collateral` and `generate_debt` blocked (frozen). `deposit_collateral`, `repay_debt`, `close_position` work. Anyone can still call `accrue_stability_fee` (rate-independent).
 - **Admin tightens `minimum_collateralization_ratio`.** Existing positions with healthy-old-ratio but underwater-new-ratio cannot `generate_debt` or `withdraw_collateral`. They CAN `deposit_collateral` to recover, or `repay_debt` to reduce their debt.
 - **Position re-open at same nonce after close.** Fails — the vault PDA at `hash(position_id)` lingers from before. By design — pick a fresh nonce (intentional limitation). See § 14.
 - **Overrepay on `repay_debt`.** Panics via `checked_sub`; protects against user error sending more burn than nominal debt at this instant.

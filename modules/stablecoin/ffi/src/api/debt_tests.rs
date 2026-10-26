@@ -167,7 +167,12 @@ impl Fixture {
                 PROGRAM,
                 Data::from(&self.redemption),
             ),
-            market_price_oracle: read(id(5), AccountId::new([0x33; 32]), Data::from(&self.oracle)),
+            // Ignored by the plan (spec §10.7), but still sent by existing callers.
+            market_price_oracle: Some(read(
+                id(5),
+                AccountId::new([0x33; 32]),
+                Data::from(&self.oracle),
+            )),
             protocol_parameters: read(
                 compute_protocol_parameters_pda(PROGRAM),
                 PROGRAM,
@@ -205,7 +210,6 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
         &request.user_stablecoin_holding,
         &request.stability_fee_accumulator,
         &request.redemption_price_state,
-        &request.market_price_oracle,
         &request.protocol_parameters,
         &request.clock,
     ];
@@ -233,7 +237,7 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
             AccountWithMetadata::new(account, signer, account_id)
         })
         .collect();
-    let [owner,position,definition,destination,master_holding,accumulator,redemption,oracle,parameters,clock]:[_;10]=inputs.try_into().expect("ten inputs");
+    let [owner,position,definition,destination,master_holding,accumulator,redemption,parameters,clock]:[_;9]=inputs.try_into().expect("nine inputs");
     assert!(!definition.is_authorized);
     assert!(!destination.is_authorized);
     let words: Vec<u8> = serde_json::from_value(plan["instruction"].clone()).expect("words");
@@ -249,7 +253,6 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
         master_holding,
         accumulator,
         redemption,
-        oracle,
         parameters,
         clock,
         PROGRAM,
@@ -304,7 +307,7 @@ fn execute(fixture: &Fixture, amount: u128, expected_delta: u128) {
 }
 
 #[test]
-fn borrowing_pins_ten_account_abi_and_owner_only_signature() {
+fn borrowing_pins_nine_account_abi_and_owner_only_signature() {
     let fixture = Fixture::new(100, 0);
     let request = fixture.request(json!("1"));
     let plan = generate_debt_plan(request.clone()).expect("plan");
@@ -319,14 +322,13 @@ fn borrowing_pins_ten_account_abi_and_owner_only_signature() {
             account_id_hex(compute_stablecoin_master_holding_pda(PROGRAM)),
             request.stability_fee_accumulator.id,
             request.redemption_price_state.id,
-            request.market_price_oracle.id,
             request.protocol_parameters.id,
             request.clock.id
         ])
     );
     assert_eq!(
         plan["signingRequirements"],
-        json!([true, false, false, false, false, false, false, false, false, false])
+        json!([true, false, false, false, false, false, false, false, false])
     );
     let idl: Value =
         serde_json::from_str(include_str!("../../../../../artifacts/stablecoin-idl.json"))
@@ -386,12 +388,6 @@ fn borrowing_pins_ten_account_abi_and_owner_only_signature() {
                 json!(false)
             ),
             (
-                json!("market_price_oracle"),
-                json!(false),
-                json!(false),
-                json!(false)
-            ),
-            (
                 json!("protocol_parameters"),
                 json!(false),
                 json!(false),
@@ -423,33 +419,17 @@ fn borrowing_rounds_up_and_executes_the_pda_authorized_token_mint() {
 }
 
 #[test]
-fn oracle_freshness_is_inclusive_and_not_a_controller_quote_gate() {
+fn borrowing_never_reads_the_market_price_oracle() {
+    // As in RAI, the market price only steers the redemption rate: a stale,
+    // future-dated or missing oracle does not stop borrowing (spec §10.7).
     let mut fixture = Fixture::new(100, 0);
-    fixture.oracle.timestamp = START - 50;
-    // Fresh zero-market-price oracle and a too-soon controller update are allowed.
+    fixture.oracle.timestamp = 0;
     execute(&fixture, 1, 1);
-    fixture.oracle.timestamp -= 1;
-    error(fixture.request(json!("0")), "oracle_stale");
-    fixture.oracle.timestamp = START + 1;
-    error(fixture.request(json!("0")), "oracle_future");
-    fixture.oracle.timestamp = START;
+    fixture.oracle.timestamp = START + 1_000_000;
+    execute(&fixture, 1, 1);
     let mut request = fixture.request(json!("1"));
-    // The instruction deliberately does not pin the producer or asset fields.
-    request
-        .market_price_oracle
-        .account
-        .as_mut()
-        .expect("account")
-        .program_owner = account_id_hex(AccountId::new([0x99; 32]));
-    fixture.oracle.base_asset = id(90);
-    fixture.oracle.quote_asset = id(91);
-    request
-        .market_price_oracle
-        .account
-        .as_mut()
-        .expect("account")
-        .data = hex::encode(Data::from(&fixture.oracle).as_ref());
-    generate_debt_plan(request).expect("liveness only, as in native decode_oracle");
+    request.market_price_oracle = None;
+    generate_debt_plan(request).expect("the oracle is not an input");
 }
 
 #[test]
@@ -644,7 +624,7 @@ fn borrowing_validates_definition_authority_destination_and_position_identity() 
 }
 
 #[test]
-fn borrowing_validates_all_eight_reads_even_for_zero_amount() {
+fn borrowing_validates_all_seven_reads_even_for_zero_amount() {
     let fixture = Fixture::new(100, 0);
     let data_errors = [
         "invalid_position_data",
@@ -652,7 +632,6 @@ fn borrowing_validates_all_eight_reads_even_for_zero_amount() {
         "invalid_user_stablecoin_holding",
         "invalid_stability_fee_accumulator_data",
         "invalid_redemption_price_state_data",
-        "invalid_market_price_oracle",
         "invalid_protocol_parameters_data",
         "invalid_clock",
     ];
@@ -662,11 +641,10 @@ fn borrowing_validates_all_eight_reads_even_for_zero_amount() {
         "invalid_user_stablecoin_holding",
         "stability_fee_accumulator_pda_mismatch",
         "redemption_price_state_pda_mismatch",
-        "market_price_oracle_mismatch",
         "protocol_parameters_pda_mismatch",
         "invalid_clock",
     ];
-    for index in 0..8 {
+    for index in 0..7 {
         for mutation in 0..4 {
             let mut request = fixture.request(json!("0"));
             let reads = [
@@ -675,7 +653,6 @@ fn borrowing_validates_all_eight_reads_even_for_zero_amount() {
                 &mut request.user_stablecoin_holding,
                 &mut request.stability_fee_accumulator,
                 &mut request.redemption_price_state,
-                &mut request.market_price_oracle,
                 &mut request.protocol_parameters,
                 &mut request.clock,
             ];

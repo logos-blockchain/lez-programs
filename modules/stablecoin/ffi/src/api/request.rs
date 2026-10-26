@@ -309,7 +309,10 @@ pub struct GenerateDebtPlanRequest {
     pub user_stablecoin_holding: AccountRead,
     pub stability_fee_accumulator: AccountRead,
     pub redemption_price_state: AccountRead,
-    pub market_price_oracle: AccountRead,
+    /// Ignored: borrowing does not read the market-price oracle (spec §10.7).
+    /// Still accepted so existing callers keep working.
+    #[serde(default)]
+    pub market_price_oracle: Option<AccountRead>,
     pub protocol_parameters: AccountRead,
     pub clock: AccountRead,
 }
