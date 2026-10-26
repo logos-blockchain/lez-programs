@@ -364,7 +364,7 @@ pub unsafe extern "C" fn stablecoin_set_minimum_collateralization_ratio_plan(
 }
 
 #[unsafe(no_mangle)]
-/// Builds a paired signed-gain plan for `SetControllerGains`.
+/// Builds a paired gain plan for `SetControllerGains`; both gains must be non-negative.
 ///
 /// # Safety
 /// `request_json` must be null or point to a live NUL-terminated byte string.

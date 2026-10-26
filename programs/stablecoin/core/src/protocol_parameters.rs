@@ -23,6 +23,21 @@ use spel_framework_macros::account_type;
 pub const MAXIMUM_STABILITY_FEE_PER_MILLISECOND: u128 =
     crate::math::FIXED_POINT_ONE + 21_965_000_000_000_000;
 
+/// Upper bound on `controller_proportional_gain`, per spec §8. The band is
+/// `0 ..= MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN`: a negative gain is positive
+/// feedback and drives the redemption price away from the market.
+///
+/// The cap is a typo guard, not the safety bound — `RATE_DELTA_CLAMP` bounds what
+/// any gain can do to the rate. It stays wide because the gain multiplies a price
+/// error whose raw scale depends on the two tokens' decimals (spec §8).
+pub const MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN: i128 =
+    (crate::math::FIXED_POINT_ONE as i128) * 1_000;
+
+/// Upper bound on `controller_integral_gain`, per spec §8. The band is
+/// `0 ..= MAXIMUM_CONTROLLER_INTEGRAL_GAIN`, for the same reasons as
+/// [`MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN`].
+pub const MAXIMUM_CONTROLLER_INTEGRAL_GAIN: i128 = crate::math::FIXED_POINT_ONE as i128;
+
 /// PDA seed for the single-instance [`ProtocolParameters`] account.
 const PROTOCOL_PARAMETERS_PDA_DOMAIN: &[u8; 32] = b"STABLECOIN__PROTOCOL_PARAMS_____";
 

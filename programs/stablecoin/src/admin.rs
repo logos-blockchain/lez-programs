@@ -680,10 +680,10 @@ mod tests {
         let integral_term_before = ProtocolParameters::try_from(&parameters.account.data)
             .expect("valid ProtocolParameters");
         let (post_states, _) =
-            set_controller_gains(admin_account(), parameters, STABLECOIN_PROGRAM_ID, -42, 7);
+            set_controller_gains(admin_account(), parameters, STABLECOIN_PROGRAM_ID, 42, 7);
 
         let after = decoded(&post_states[1]);
-        assert_eq!(after.controller_proportional_gain, -42);
+        assert_eq!(after.controller_proportional_gain, 42);
         assert_eq!(after.controller_integral_gain, 7);
         // Retuning must not discard the controller's accumulated history; the
         // integral *term* lives on RedemptionPriceState and is untouched here.
@@ -702,6 +702,12 @@ mod tests {
     fn set_controller_gains_rejects_an_oversized_proportional_gain() {
         let kp = i128::try_from(FIXED_POINT_ONE * 1_000).expect("fits i128") + 1;
         set_controller_gains(admin_account(), params(), STABLECOIN_PROGRAM_ID, kp, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "controller_proportional_gain out of band")]
+    fn set_controller_gains_rejects_a_negative_gain() {
+        set_controller_gains(admin_account(), params(), STABLECOIN_PROGRAM_ID, -1, 0);
     }
 
     #[test]

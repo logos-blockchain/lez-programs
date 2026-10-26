@@ -191,7 +191,7 @@ char *stablecoin_set_stability_fee_per_millisecond_plan(const char *request_json
 char *stablecoin_set_minimum_collateralization_ratio_plan(const char *request_json);
 
 /**
- * Builds a paired signed-gain plan for `SetControllerGains`.
+ * Builds a paired gain plan for `SetControllerGains`; both gains must be non-negative.
  *
  * # Safety
  * `request_json` must be null or point to a live NUL-terminated byte string.

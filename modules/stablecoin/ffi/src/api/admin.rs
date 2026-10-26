@@ -1,8 +1,13 @@
 use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
 use lee_core::account::AccountId;
 use stablecoin_core::{
-    compute_stablecoin_master_holding_pda, math::FIXED_POINT_ONE,
-    protocol_parameters::MAXIMUM_STABILITY_FEE_PER_MILLISECOND, Instruction, ProtocolParameters,
+    compute_stablecoin_master_holding_pda,
+    math::FIXED_POINT_ONE,
+    protocol_parameters::{
+        MAXIMUM_CONTROLLER_INTEGRAL_GAIN, MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN,
+        MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
+    },
+    Instruction, ProtocolParameters,
 };
 use twap_oracle_core::OraclePriceAccount;
 
@@ -106,13 +111,13 @@ pub fn set_minimum_collateralization_ratio_plan(
     context.plan(Instruction::SetMinimumCollateralizationRatio { new_ratio })
 }
 
-/// Plan both signed gains in one instruction without resetting redemption state.
+/// Plan both gains in one instruction without resetting redemption state.
 pub fn set_controller_gains_plan(request: SetControllerGainsPlanRequest) -> StablecoinResult {
     let context = ValidatedAdmin::read(&request.context)?;
     let new_proportional_gain = parse_i128(&request.new_proportional_gain)?;
     let new_integral_gain = parse_i128(&request.new_integral_gain)?;
-    if new_proportional_gain.unsigned_abs() > FIXED_POINT_ONE * 1_000
-        || new_integral_gain.unsigned_abs() > FIXED_POINT_ONE
+    if !(0..=MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN).contains(&new_proportional_gain)
+        || !(0..=MAXIMUM_CONTROLLER_INTEGRAL_GAIN).contains(&new_integral_gain)
     {
         return Err(StablecoinApiError::new("controller_gains_out_of_band"));
     }
