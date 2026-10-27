@@ -22,6 +22,13 @@ struct WalletUiState {
     // The funded public account that pays transaction fees (LEZ charges public
     // transactions). Empty when the wallet is closed or no account is funded.
     QString feePayerId;
+    QString syncStatus = QStringLiteral("closed");
+    QString syncError;
+
+    bool canSubmit() const
+    {
+        return isWalletOpen && syncStatus == QStringLiteral("ready");
+    }
 };
 
 class WalletController final : public QObject {
@@ -60,6 +67,7 @@ private:
     QString defaultStoragePath() const;
 
     void openOnStartup();
+    bool beginOpen(const QString& config, const QString& storage);
     void applySnapshot(const WalletSnapshot& snapshot);
     void selectFeePayer(const QVector<WalletAccount>& accounts);
     void checkReachability();
@@ -72,4 +80,5 @@ private:
     QTimer* m_reachabilityTimer;
     bool m_started = false;
     QVector<WalletAccount> m_accounts;
+    quint64 m_operationGeneration = 0;
 };

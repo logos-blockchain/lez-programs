@@ -69,8 +69,6 @@ AmmUiBackend::AmmUiBackend(LogosAPI* logosAPI, QObject* parent)
 
     connect(m_walletController.get(), &WalletController::stateChanged,
             this, &AmmUiBackend::syncWalletState);
-    // Publishes an initial "loading" context (walletStateReady is still false,
-    // so it does not yet reach the module).
     syncWalletState();
     m_walletController->start();
     QTimer::singleShot(0, this, [this]() {
@@ -92,28 +90,22 @@ WalletAccountModel* AmmUiBackend::accountModel() const
 
 QString AmmUiBackend::createNewDefault(QString password)
 {
-    setWalletStateReady(false);
     const QString mnemonic = m_walletController->createDefaultWallet(password);
-    setWalletStateReady(true);
     syncWalletState();
     return mnemonic;
 }
 
 QString AmmUiBackend::createNew(QString configPath, QString storagePath, QString password)
 {
-    setWalletStateReady(false);
     const QString mnemonic =
         m_walletController->createWallet(configPath, storagePath, password);
-    setWalletStateReady(true);
     syncWalletState();
     return mnemonic;
 }
 
 bool AmmUiBackend::openExisting()
 {
-    setWalletStateReady(false);
     const bool opened = m_walletController->open();
-    setWalletStateReady(true);
     syncWalletState();
     return opened;
 }
@@ -121,7 +113,7 @@ bool AmmUiBackend::openExisting()
 void AmmUiBackend::disconnectWallet()
 {
     m_walletController->disconnect();
-    setWalletStateReady(true);
+    syncWalletState();
 }
 
 QString AmmUiBackend::createAccountPublic()
@@ -153,6 +145,8 @@ void AmmUiBackend::syncWalletState()
 {
     const WalletUiState& state = m_walletController->state();
 
+    setWalletStateReady(state.syncStatus != QStringLiteral("opening")
+                        && state.syncStatus != QStringLiteral("syncing"));
     setIsWalletOpen(state.isWalletOpen);
     setWalletExists(state.walletExists);
     setConfigPath(state.configPath);
@@ -163,6 +157,8 @@ void AmmUiBackend::syncWalletState()
     setSequencerAddr(state.sequencerAddress);
     setSequencerReachable(state.sequencerReachable);
     setFeePayerId(state.feePayerId);
+    setSyncError(state.syncError);
+    setSyncStatus(state.syncStatus);
 }
 
 bool AmmUiBackend::setFeePayer(QString accountId)
