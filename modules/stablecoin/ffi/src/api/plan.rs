@@ -20,7 +20,7 @@ use super::{
     parse_stablecoin_program_id,
     position::validated_position,
     projection::clock_timestamp,
-    quote::{redemption_rate_update_quote, validated_market_price_oracle},
+    quote::{redemption_rate_update_quote, usable_market_price_oracle},
     AccrueStabilityFeePlanRequest, DepositCollateralPlanRequest, InitializeProgramPlanRequest,
     OpenPositionPlanRequest, PositionAddressesRequest, RedemptionRateUpdateQuoteRequest,
     RefreshGlobalsPlanRequest, RepayDebtPlanRequest, StablecoinApiError, StablecoinResult,
@@ -43,8 +43,15 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
 
     let (market_price_oracle_id, market_price_oracle) =
         required_account(&request.market_price_oracle)?;
-    let oracle = OraclePriceAccount::try_from(&market_price_oracle.data)
-        .map_err(|_| StablecoinApiError::new("invalid_market_price_oracle"))?;
+    // The oracle may not exist yet (spec §3.2); one that exists must decode.
+    let oracle = if market_price_oracle == lee_core::account::Account::default() {
+        None
+    } else {
+        Some(
+            OraclePriceAccount::try_from(&market_price_oracle.data)
+                .map_err(|_| StablecoinApiError::new("invalid_market_price_oracle"))?,
+        )
+    };
 
     let (clock_id, clock) = required_account(&request.clock)?;
     if clock_id != CLOCK_01_PROGRAM_ACCOUNT_ID
@@ -54,9 +61,10 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
     }
 
     let stablecoin_definition_id = compute_stablecoin_definition_pda(program_id);
-    if oracle.base_asset != stablecoin_definition_id
-        || oracle.quote_asset != collateral_definition_id
-    {
+    if oracle.is_some_and(|oracle| {
+        oracle.base_asset != stablecoin_definition_id
+            || oracle.quote_asset != collateral_definition_id
+    }) {
         return Err(StablecoinApiError::new("oracle_asset_mismatch"));
     }
 
@@ -330,11 +338,12 @@ pub fn repay_debt_plan(request: RepayDebtPlanRequest) -> StablecoinResult {
             position_id,
             definition_id,
             holding_id,
+            compute_stablecoin_master_holding_pda(program_id),
             accumulator_id,
             parameters_id,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        [true, false, false, true, false, false, false],
+        [true, false, false, true, false, false, false, false],
         Instruction::RepayDebt { amount },
     )
 }
@@ -342,7 +351,7 @@ pub fn repay_debt_plan(request: RepayDebtPlanRequest) -> StablecoinResult {
 pub fn accrue_stability_fee_plan(request: AccrueStabilityFeePlanRequest) -> StablecoinResult {
     let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
     let caller = parse_account_id(&request.caller_id)?;
-    validated_protocol_parameters(program_id, &request.protocol_parameters)?;
+    let (_, parameters) = validated_protocol_parameters(program_id, &request.protocol_parameters)?;
     validated_stability_fee_accumulator(program_id, &request.stability_fee_accumulator)?;
     clock_timestamp(&request.clock)?;
 
@@ -352,9 +361,11 @@ pub fn accrue_stability_fee_plan(request: AccrueStabilityFeePlanRequest) -> Stab
             caller,
             compute_protocol_parameters_pda(program_id),
             compute_stability_fee_accumulator_pda(program_id),
+            parameters.stablecoin_definition_id,
+            compute_stablecoin_master_holding_pda(program_id),
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        [true, false, false, false],
+        [true, false, false, false, false, false],
         Instruction::AccrueStabilityFee,
     )
 }
@@ -393,10 +404,8 @@ pub fn refresh_globals_plan(request: RefreshGlobalsPlanRequest) -> StablecoinRes
     let (_, parameters) = validated_protocol_parameters(program_id, &request.protocol_parameters)?;
     validated_stability_fee_accumulator(program_id, &request.stability_fee_accumulator)?;
     validated_redemption_price_state(program_id, &request.redemption_price_state)?;
-    validated_market_price_oracle(
-        &request.market_price_oracle,
-        parameters.market_price_oracle_id,
-    )?;
+    // An oracle with no usable observation only skips the redemption half.
+    usable_market_price_oracle(&request.market_price_oracle, &parameters)?;
     clock_timestamp(&request.clock)?;
 
     plan_response(
@@ -405,11 +414,13 @@ pub fn refresh_globals_plan(request: RefreshGlobalsPlanRequest) -> StablecoinRes
             caller,
             compute_protocol_parameters_pda(program_id),
             compute_stability_fee_accumulator_pda(program_id),
+            parameters.stablecoin_definition_id,
+            compute_stablecoin_master_holding_pda(program_id),
             compute_redemption_price_state_pda(program_id),
             parameters.market_price_oracle_id,
             CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
-        [true, false, false, false, false, false],
+        [true, false, false, false, false, false, false, false],
         Instruction::RefreshGlobals,
     )
 }
@@ -426,6 +437,7 @@ fn require_ready_quote(quote: &Value) -> Result<(), StablecoinApiError> {
         .and_then(|error| error.get("code"))
         .and_then(Value::as_str);
     let code = match blocker {
+        Some("oracle_unavailable") => "oracle_unavailable",
         Some("oracle_stale") => "oracle_stale",
         Some("oracle_price_zero") => "oracle_price_zero",
         Some("rate_update_too_soon") => "rate_update_too_soon",

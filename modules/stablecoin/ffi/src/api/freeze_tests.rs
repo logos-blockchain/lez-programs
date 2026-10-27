@@ -312,7 +312,7 @@ fn related_plans(parameters: &ProtocolParameters) -> Vec<(&'static str, bool, St
         "stablecoinDefinition": read_value(definition_id, TOKEN_PROGRAM, Data::from(&TokenDefinition::Fungible {
             name: String::from("Stablecoin"), total_supply: 0, metadata_id: None, authority: Some(definition_id) })),
         "stabilityFeeAccumulator": read_value(compute_stability_fee_accumulator_pda(PROGRAM), PROGRAM,
-            Data::from(&StabilityFeeAccumulator { accumulated_rate_at_last_accrual: FIXED_POINT_ONE, last_accrued_at: 1_000 })),
+            Data::from(&StabilityFeeAccumulator { accumulated_rate_at_last_accrual: FIXED_POINT_ONE, last_accrued_at: 1_000, total_normalized_debt: 0 })),
         "redemptionPriceState": read_value(compute_redemption_price_state_pda(PROGRAM), PROGRAM,
             Data::from(&RedemptionPriceState { redemption_price_at_last_update: FIXED_POINT_ONE,
                 redemption_rate_per_millisecond: FIXED_POINT_ONE, controller_integral_term: 0, last_updated_at: 1_000 })),

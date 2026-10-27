@@ -143,22 +143,23 @@ pub fn initialize_program(
         "Collateral definition must be Fungible"
     );
 
-    // 6. Market price oracle must be initialized + base/quote match
-    assert_ne!(
-        market_price_oracle.account,
-        Account::default(),
-        "Market price oracle account must be initialized"
-    );
-    let oracle = OraclePriceAccount::try_from(&market_price_oracle.account.data)
-        .expect("Market price oracle must decode as OraclePriceAccount");
-    assert_eq!(
-        oracle.base_asset, stablecoin_definition.account_id,
-        "Oracle base_asset must equal the stablecoin definition's account_id"
-    );
-    assert_eq!(
-        oracle.quote_asset, collateral_definition.account_id,
-        "Oracle quote_asset must equal the collateral definition's account_id"
-    );
+    // 6. Market price oracle: bound by address. It may not exist yet — as RAI
+    // deploys its rate setter against a TWAP feed that is not valid yet, the
+    // admin can bind the address of an oracle that will only exist once the
+    // stablecoin trades (spec §3.2). Until then the controller does not run.
+    // An oracle that already exists must quote the stablecoin in collateral.
+    if market_price_oracle.account != Account::default() {
+        let oracle = OraclePriceAccount::try_from(&market_price_oracle.account.data)
+            .expect("Market price oracle must decode as OraclePriceAccount");
+        assert_eq!(
+            oracle.base_asset, stablecoin_definition.account_id,
+            "Oracle base_asset must equal the stablecoin definition's account_id"
+        );
+        assert_eq!(
+            oracle.quote_asset, collateral_definition.account_id,
+            "Oracle quote_asset must equal the collateral definition's account_id"
+        );
+    }
 
     // 7. Numerical param bounds (spec §8). Shared with the `set_*` instructions
     // so bootstrap and later updates enforce exactly the same bands.
@@ -183,8 +184,9 @@ pub fn initialize_program(
         "maximum_oracle_price_age_milliseconds",
     );
     assert!(
-        params.initial_redemption_price > 0,
-        "initial_redemption_price must be positive"
+        (stablecoin_core::MINIMUM_REDEMPTION_PRICE..=stablecoin_core::MAXIMUM_REDEMPTION_PRICE)
+            .contains(&params.initial_redemption_price),
+        "initial_redemption_price must be within the §8 redemption-price bounds"
     );
     assert!(
         !params.stablecoin_name.is_empty(),
@@ -209,6 +211,7 @@ pub fn initialize_program(
     let accumulator_value = StabilityFeeAccumulator {
         accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
         last_accrued_at: now,
+        total_normalized_debt: 0,
     };
     let redemption_value = RedemptionPriceState {
         redemption_price_at_last_update: params.initial_redemption_price,
@@ -710,9 +713,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Market price oracle account must be initialized")]
-    fn rejects_uninitialized_oracle() {
-        let _ = initialize_program(
+    fn binds_an_oracle_that_does_not_exist_yet() {
+        // RAI deploys its rate setter against a TWAP feed that is not valid yet;
+        // here the admin binds the address of an oracle that will only exist once
+        // the stablecoin trades (spec §3.2).
+        let (post_states, _) = initialize_program(
             admin_account(),
             uninit(protocol_parameters_id()),
             uninit(accumulator_id()),
@@ -725,6 +730,9 @@ mod tests {
             STABLECOIN_PROGRAM_ID,
             ok_params(),
         );
+        let parameters =
+            ProtocolParameters::try_from(post_states[1].post_data()).expect("parameters");
+        assert_eq!(parameters.market_price_oracle_id, oracle_id());
     }
 
     #[test]
@@ -785,9 +793,10 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "initial_stability_fee_per_millisecond above sane upper bound")]
-    fn rejects_stability_fee_above_2x() {
+    fn rejects_stability_fee_above_the_yearly_cap() {
         let mut p = ok_params();
-        p.initial_stability_fee_per_millisecond = FIXED_POINT_ONE * 2 + 1;
+        p.initial_stability_fee_per_millisecond =
+            crate::checks::MAX_STABILITY_FEE_PER_MILLISECOND + 1;
         let _ = invoke(p);
     }
 
@@ -824,10 +833,32 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "initial_redemption_price must be positive")]
+    #[should_panic(
+        expected = "initial_redemption_price must be within the §8 redemption-price bounds"
+    )]
     fn rejects_zero_initial_redemption_price() {
         let mut p = ok_params();
         p.initial_redemption_price = 0;
+        let _ = invoke(p);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "initial_redemption_price must be within the §8 redemption-price bounds"
+    )]
+    fn rejects_initial_redemption_price_below_the_floor() {
+        let mut p = ok_params();
+        p.initial_redemption_price = stablecoin_core::MINIMUM_REDEMPTION_PRICE - 1;
+        let _ = invoke(p);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "initial_redemption_price must be within the §8 redemption-price bounds"
+    )]
+    fn rejects_initial_redemption_price_above_the_ceiling() {
+        let mut p = ok_params();
+        p.initial_redemption_price = stablecoin_core::MAXIMUM_REDEMPTION_PRICE + 1;
         let _ = invoke(p);
     }
 

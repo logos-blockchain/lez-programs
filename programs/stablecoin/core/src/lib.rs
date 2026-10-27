@@ -13,7 +13,10 @@ pub mod redemption_price_state;
 pub mod stability_fee_accumulator;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-pub use controller::{run_controller_tick, ControllerOutput, INTEGRAL_CLAMP, RATE_DELTA_CLAMP};
+pub use controller::{
+    bound_redemption_price, run_controller_tick, ControllerOutput, INTEGRAL_CLAMP,
+    MAXIMUM_REDEMPTION_PRICE, MINIMUM_REDEMPTION_PRICE, RATE_DELTA_CLAMP,
+};
 use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::PdaSeed,
@@ -88,11 +91,12 @@ pub enum Instruction {
         /// rotated post-init via `set_freeze_authority`.
         freeze_authority_account_id: AccountId,
         /// Per-millisecond stability fee multiplier in fixed-point. Bound:
-        /// `FIXED_POINT_ONE <= x <= FIXED_POINT_ONE * 2` (see spec §8).
+        /// `FIXED_POINT_ONE <= x <= MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (about
+        /// 100% a year; see spec §8).
         initial_stability_fee_per_millisecond: u128,
-        /// PI controller `Kp`. Signed. Bound: `|x| <= FIXED_POINT_ONE * 10^3`.
+        /// PI controller `Kp`. Bound: `0 <= x <= MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN`.
         initial_controller_proportional_gain: i128,
-        /// PI controller `Ki`. Signed. Bound: `|x| <= FIXED_POINT_ONE`.
+        /// PI controller `Ki`. Bound: `0 <= x <= MAXIMUM_CONTROLLER_INTEGRAL_GAIN`.
         initial_controller_integral_gain: i128,
         /// Minimum collateralization ratio in fixed-point. Bound:
         /// `FIXED_POINT_ONE * 1.1 <= x <= FIXED_POINT_ONE * 10`.
@@ -392,6 +396,23 @@ pub enum Instruction {
         /// Amount of stablecoin debt to repay (also the amount burned from the user's holding).
         amount: u128,
     },
+    /// Return the redemption-rate controller to rest (spec §10.19).
+    ///
+    /// Re-anchors the redemption price at its current projection (clamped into
+    /// the §8 price bounds), sets the rate to exactly `FIXED_POINT_ONE` and the
+    /// integral term to `0`. The price does not jump, so no position's
+    /// collateralization changes. The recovery path for a wound-up or runaway
+    /// controller. Allowed while frozen. Idempotent.
+    ///
+    /// Declared last so the Borsh tags of the existing variants do not shift.
+    ///
+    /// Required accounts (4), in order:
+    /// 1. `authority` — authorized; must equal `ProtocolParameters.admin_account_id` or
+    ///    `ProtocolParameters.freeze_authority_account_id`.
+    /// 2. `protocol_parameters` — initialized, read-only; at its canonical PDA.
+    /// 3. `redemption_price_state` — initialized, writable; at its canonical PDA.
+    /// 4. `clock` — the system `CLOCK_01` account; read-only.
+    ResetRedemptionRateController,
 }
 
 /// Persistent state held by a Stablecoin [`Position`] account.
@@ -673,6 +694,19 @@ mod instruction_tests {
         let encoded = borsh::to_vec(&Instruction::Unfreeze).expect("serialize");
         let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
         assert!(matches!(decoded, Instruction::Unfreeze));
+    }
+
+    #[test]
+    fn reset_redemption_rate_controller_borsh_roundtrip_with_the_last_tag() {
+        let encoded =
+            borsh::to_vec(&Instruction::ResetRedemptionRateController).expect("serialize");
+        // Appended after RepayDebt (tag 18) so no existing tag moves.
+        assert_eq!(encoded, vec![19]);
+        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
+        assert!(matches!(
+            decoded,
+            Instruction::ResetRedemptionRateController
+        ));
     }
 
     #[test]

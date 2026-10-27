@@ -6,7 +6,7 @@ use stablecoin_core::{
     compute_protocol_parameters_pda, compute_redemption_price_state_pda,
     compute_stability_fee_accumulator_pda, compute_stablecoin_definition_pda,
     math::FIXED_POINT_ONE, Instruction, Position, ProtocolParameters, RedemptionPriceState,
-    StabilityFeeAccumulator, RATE_DELTA_CLAMP,
+    StabilityFeeAccumulator,
 };
 use token_core::TokenHolding;
 
@@ -18,6 +18,11 @@ use crate::{
     account::{account_id_hex, account_read, decode_account},
     AccountRead,
 };
+
+/// The per-millisecond rate step the controller allowed before the spec §8
+/// clamp was tightened. The controller can no longer produce it, but a state
+/// written under it must still be handled, so these tests use it.
+const LEGACY_RATE_DELTA: u128 = FIXED_POINT_ONE / 100_000;
 
 const PROGRAM: AccountId = AccountId::new([0x11; 32]);
 const TOKEN_PROGRAM: AccountId = AccountId::new([0x22; 32]);
@@ -76,6 +81,7 @@ impl Fixture {
             accumulator: StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
                 last_accrued_at: START,
+                total_normalized_debt: 0,
             },
             redemption: RedemptionPriceState {
                 redemption_price_at_last_update: FIXED_POINT_ONE,
@@ -380,13 +386,11 @@ fn withdrawal_does_not_floor_fractional_debt_or_narrow_wide_projections() {
     );
     execute(&fractional, 0);
     let mut wide = Fixture::new(1_000_000_000_000, 1);
-    wide.redemption.redemption_rate_per_millisecond =
-        FIXED_POINT_ONE + RATE_DELTA_CLAMP.unsigned_abs();
+    wide.redemption.redemption_rate_per_millisecond = FIXED_POINT_ONE + LEGACY_RATE_DELTA;
     wide.now = START + 2_700_000;
     execute(&wide, 100_000_000_000);
     let mut saturated = Fixture::new(u128::MAX, 10);
-    saturated.redemption.redemption_rate_per_millisecond =
-        FIXED_POINT_ONE + RATE_DELTA_CLAMP.unsigned_abs();
+    saturated.redemption.redemption_rate_per_millisecond = FIXED_POINT_ONE + LEGACY_RATE_DELTA;
     saturated.now = START + 18_000_000;
     error(
         saturated.request(json!("1")),
@@ -398,16 +402,14 @@ fn withdrawal_does_not_floor_fractional_debt_or_narrow_wide_projections() {
 fn zero_and_zero_debt_skip_projections_but_not_frozen_or_structural_guards() {
     let mut zero = Fixture::new(1, 100);
     zero.now = START + 7_000_000;
-    zero.redemption.redemption_rate_per_millisecond =
-        FIXED_POINT_ONE - RATE_DELTA_CLAMP.unsigned_abs();
+    zero.redemption.redemption_rate_per_millisecond = FIXED_POINT_ONE - LEGACY_RATE_DELTA;
     execute(&zero, 0);
     error(zero.request(json!("1")), "redemption_price_zero");
     zero.parameters.is_frozen = true;
     error(zero.request(json!("0")), "protocol_frozen");
     let mut settled = Fixture::new(50, 0);
     settled.parameters.stability_fee_per_millisecond = FIXED_POINT_ONE * 2;
-    settled.redemption.redemption_rate_per_millisecond =
-        FIXED_POINT_ONE + RATE_DELTA_CLAMP.unsigned_abs();
+    settled.redemption.redemption_rate_per_millisecond = FIXED_POINT_ONE + LEGACY_RATE_DELTA;
     settled.now = START + 60_000_000;
     execute(&settled, 50);
     let mut invalid = settled.request(json!("0"));

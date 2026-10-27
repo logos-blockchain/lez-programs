@@ -92,6 +92,8 @@ mod stablecoin {
         #[account(signer)] caller: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stablecoin_definition: AccountWithMetadata,
+        #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
         clock: AccountWithMetadata,
     ) -> SpelResult {
         let (post_states, chained_calls) =
@@ -99,6 +101,8 @@ mod stablecoin {
                 caller,
                 protocol_parameters,
                 stability_fee_accumulator,
+                stablecoin_definition,
+                stablecoin_master_holding,
                 clock,
                 ctx.self_account_id,
             );
@@ -156,11 +160,17 @@ mod stablecoin {
     /// Returns the host program's panic-converted error if any precondition
     /// fails — see the host fn for the full list.
     #[instruction]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "eight account inputs mirror the host function's ABI"
+    )]
     pub fn refresh_globals(
         ctx: ProgramContext,
         #[account(signer)] caller: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stablecoin_definition: AccountWithMetadata,
+        #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
         #[account(mut)] redemption_price_state: AccountWithMetadata,
         market_price_oracle: AccountWithMetadata,
         clock: AccountWithMetadata,
@@ -169,6 +179,8 @@ mod stablecoin {
             caller,
             protocol_parameters,
             stability_fee_accumulator,
+            stablecoin_definition,
+            stablecoin_master_holding,
             redemption_price_state,
             market_price_oracle,
             clock,
@@ -263,7 +275,7 @@ mod stablecoin {
     /// Mint stablecoins against an existing position (spec §10.7; host fn
     /// `stablecoin_program::generate_debt`).
     ///
-    /// Blocked while frozen. The oracle is a liveness gate only. Wall-clock time
+    /// Blocked while frozen. Never reads the market-price oracle. Wall-clock time
     /// comes from the system `CLOCK_01` account passed as the 9th input.
     ///
     /// # Errors
@@ -280,9 +292,9 @@ mod stablecoin {
         #[account(mut)] position: AccountWithMetadata,
         #[account(mut)] stablecoin_definition: AccountWithMetadata,
         #[account(mut)] user_stablecoin_holding: AccountWithMetadata,
-        stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
+        #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
         redemption_price_state: AccountWithMetadata,
-        market_price_oracle: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         clock: AccountWithMetadata,
         amount: u128,
@@ -292,9 +304,9 @@ mod stablecoin {
             position,
             stablecoin_definition,
             user_stablecoin_holding,
+            stablecoin_master_holding,
             stability_fee_accumulator,
             redemption_price_state,
-            market_price_oracle,
             protocol_parameters,
             clock,
             ctx.self_account_id,
@@ -398,7 +410,8 @@ mod stablecoin {
         #[account(mut)] position: AccountWithMetadata,
         #[account(mut)] stablecoin_definition: AccountWithMetadata,
         #[account(mut, signer)] user_stablecoin_holding: AccountWithMetadata,
-        stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
+        #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
         protocol_parameters: AccountWithMetadata,
         clock: AccountWithMetadata,
         amount: u128,
@@ -408,6 +421,7 @@ mod stablecoin {
             position,
             stablecoin_definition,
             user_stablecoin_holding,
+            stablecoin_master_holding,
             stability_fee_accumulator,
             protocol_parameters,
             clock,
@@ -430,11 +444,17 @@ mod stablecoin {
     /// Returns the host program's panic-converted error if any precondition
     /// fails — see the host fn for the full list.
     #[instruction]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "six account inputs + the new rate mirror the host function's ABI"
+    )]
     pub fn set_stability_fee_per_millisecond(
         ctx: ProgramContext,
         #[account(signer)] admin: AccountWithMetadata,
         #[account(mut)] protocol_parameters: AccountWithMetadata,
         #[account(mut)] stability_fee_accumulator: AccountWithMetadata,
+        #[account(mut)] stablecoin_definition: AccountWithMetadata,
+        #[account(mut)] stablecoin_master_holding: AccountWithMetadata,
         clock: AccountWithMetadata,
         new_rate: u128,
     ) -> SpelResult {
@@ -443,6 +463,8 @@ mod stablecoin {
                 admin,
                 protocol_parameters,
                 stability_fee_accumulator,
+                stablecoin_definition,
+                stablecoin_master_holding,
                 clock,
                 ctx.self_account_id,
                 new_rate,
@@ -650,4 +672,32 @@ mod stablecoin {
         ))
     }
 
+    /// Return the redemption-rate controller to rest (spec §10.19; host fn
+    /// `stablecoin_program::reset_redemption_rate_controller`). Callable by the
+    /// admin or the freeze authority. Idempotent.
+    ///
+    /// # Errors
+    /// Returns the host program's panic-converted error if any precondition
+    /// fails — see the host fn for the full list.
+    #[instruction]
+    pub fn reset_redemption_rate_controller(
+        ctx: ProgramContext,
+        #[account(signer)] authority: AccountWithMetadata,
+        protocol_parameters: AccountWithMetadata,
+        #[account(mut)] redemption_price_state: AccountWithMetadata,
+        clock: AccountWithMetadata,
+    ) -> SpelResult {
+        let (post_states, chained_calls) =
+            stablecoin_program::reset_redemption_rate_controller::reset_redemption_rate_controller(
+                authority,
+                protocol_parameters,
+                redemption_price_state,
+                clock,
+                ctx.self_account_id,
+            );
+        Ok(spel_framework::SpelOutput::execute(
+            post_states,
+            chained_calls,
+        ))
+    }
 }

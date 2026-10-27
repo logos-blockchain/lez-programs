@@ -8,7 +8,7 @@ use stablecoin_core::{
         compute_current_accumulated_rate_wide, compute_current_redemption_price_wide,
         try_project_rate_wide, FIXED_POINT_ONE, MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
     },
-    Position, ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator, RATE_DELTA_CLAMP,
+    Position, ProtocolParameters, RedemptionPriceState, StabilityFeeAccumulator,
 };
 
 use super::{position_health, PositionHealthRequest};
@@ -16,6 +16,11 @@ use crate::{
     account::{account_id_hex, account_read},
     AccountRead,
 };
+
+/// The per-millisecond rate step the controller allowed before the spec §8
+/// clamp was tightened. The controller can no longer produce it, but a state
+/// written under it must still be handled, so these tests use it.
+const LEGACY_RATE_DELTA: u128 = FIXED_POINT_ONE / 100_000;
 
 const PROGRAM: AccountId = AccountId::new([0x11; 32]);
 const START: u64 = 1_000;
@@ -74,6 +79,7 @@ impl Fixture {
             accumulator: StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
                 last_accrued_at: START,
+                total_normalized_debt: 0,
             },
             redemption: RedemptionPriceState {
                 redemption_price_at_last_update: FIXED_POINT_ONE,
@@ -237,8 +243,7 @@ fn health_reads_live_fees_and_allows_exact_projections_above_u128() {
 
     let mut fixture = Fixture::new(u128::MAX, 1);
     fixture.redemption.redemption_price_at_last_update = u128::MAX;
-    fixture.redemption.redemption_rate_per_millisecond =
-        FIXED_POINT_ONE + RATE_DELTA_CLAMP.unsigned_abs();
+    fixture.redemption.redemption_rate_per_millisecond = FIXED_POINT_ONE + LEGACY_RATE_DELTA;
     fixture.now = START + 1;
     let quote = position_health(fixture.request()).expect("wide projection");
     let price: U512 = quote["currentRedemptionPrice"]
@@ -253,8 +258,7 @@ fn health_reads_live_fees_and_allows_exact_projections_above_u128() {
 #[test]
 fn saturated_requirement_is_explicit_and_conservatively_unhealthy() {
     let mut fixture = Fixture::new(u128::MAX, 10);
-    fixture.redemption.redemption_rate_per_millisecond =
-        FIXED_POINT_ONE + RATE_DELTA_CLAMP.unsigned_abs();
+    fixture.redemption.redemption_rate_per_millisecond = FIXED_POINT_ONE + LEGACY_RATE_DELTA;
     fixture.now = START + 18_000_000;
     let quote = position_health(fixture.request())
         .expect("exact wide projection with saturated requirement");
@@ -267,8 +271,7 @@ fn saturated_requirement_is_explicit_and_conservatively_unhealthy() {
 #[test]
 fn health_projection_and_display_overflow_return_stable_errors_without_panics() {
     let mut fixture = Fixture::new(u128::MAX, 10);
-    fixture.redemption.redemption_rate_per_millisecond =
-        FIXED_POINT_ONE + RATE_DELTA_CLAMP.unsigned_abs();
+    fixture.redemption.redemption_rate_per_millisecond = FIXED_POINT_ONE + LEGACY_RATE_DELTA;
     fixture.now = START + 60_000_000;
     error(fixture.request(), "health_projection_overflow");
     let mut fixture = Fixture::new(u128::MAX, u128::MAX);
@@ -285,8 +288,7 @@ fn decayed_zero_price_does_not_hide_nominal_debt_display_overflow() {
         stablecoin_core::compute_stablecoin_definition_pda(PROGRAM);
     fixture.parameters.stability_fee_per_millisecond = FIXED_POINT_ONE * 2;
     fixture.redemption.redemption_price_at_last_update = 1;
-    fixture.redemption.redemption_rate_per_millisecond =
-        FIXED_POINT_ONE - RATE_DELTA_CLAMP.unsigned_abs();
+    fixture.redemption.redemption_rate_per_millisecond = FIXED_POINT_ONE - LEGACY_RATE_DELTA;
     fixture.now = START + 310;
     let accumulator = try_project_rate_wide(
         fixture.accumulator.accumulated_rate_at_last_accrual,

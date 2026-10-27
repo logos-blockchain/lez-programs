@@ -7,13 +7,13 @@
 //! only way to advance both globals in a single transaction.
 
 use lee_core::{
-    account::{AccountId, AccountWithMetadata, BalanceDiff},
+    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
     program::{AccountStateDiff, ChainedCall},
 };
 
 use crate::{
-    accrue_stability_fee::{advance_fee_accumulator, decode_fee_accrual_inputs, read_clock},
-    update_redemption_rate::{advance_redemption_price, decode_oracle, decode_redemption_inputs},
+    accrue_stability_fee::{accrue_fees, decode_fee_accrual_inputs, read_clock},
+    update_redemption_rate::{advance_redemption_price, decode_redemption_inputs, read_oracle},
 };
 
 /// Advance both globals in one instruction, best-effort.
@@ -23,16 +23,23 @@ use crate::{
 ///
 /// Panics ONLY on caller authorization, an uninitialized / foreign-owned /
 /// wrong-PDA global, an oracle id mismatch, or a wrong clock account. A
-/// not-yet-due interval and a stale or zero-price oracle are SOFT — they skip
+/// not-yet-due interval and an oracle that is stale, reports zero, or has no
+/// usable observation at all (e.g. bound before it exists) are SOFT — they skip
 /// the redemption half instead of failing the transaction. Never blocked by the
 /// frozen flag.
 ///
 /// See spec §10.3a for the full account contract.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::too_many_arguments,
+    reason = "the eight account inputs mirror the spec §10.3a ABI"
+)]
 pub fn refresh_globals(
     caller: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     stability_fee_accumulator: AccountWithMetadata,
+    stablecoin_definition: AccountWithMetadata,
+    stablecoin_master_holding: AccountWithMetadata,
     redemption_price_state: AccountWithMetadata,
     market_price_oracle: AccountWithMetadata,
     clock: AccountWithMetadata,
@@ -50,32 +57,42 @@ pub fn refresh_globals(
         &redemption_price_state,
         stablecoin_program_id,
     );
-    let oracle = decode_oracle(&market_price_oracle, &params);
+    let oracle = read_oracle(&market_price_oracle, &params);
     let now = read_clock(&clock);
 
     // Fee half — always runs. It has no throttle and needs no oracle, so it
     // makes progress even during an oracle outage.
-    let accumulator_data = advance_fee_accumulator(&params, &accumulator, now);
+    let accrual = accrue_fees(&params, &accumulator, now);
+    let surplus_mint = crate::checks::surplus_mint_call(
+        &stablecoin_definition,
+        &stablecoin_master_holding,
+        &params,
+        stablecoin_program_id,
+        accrual.accrued_fees,
+    );
 
-    // Redemption half — three soft gates. Failing any one of them leaves the
+    // Redemption half — soft gates. Failing any one of them leaves the
     // redemption state untouched rather than panicking (the asymmetry with
-    // `update_redemption_rate` is intentional; spec §10.3a).
+    // `update_redemption_rate` is intentional; spec §10.3a). An oracle with no
+    // usable observation — including one bound before it exists — is one of them.
     let interval_due = now.saturating_sub(redemption.last_updated_at)
         >= params.minimum_milliseconds_between_rate_updates;
-    let oracle_fresh =
-        now.saturating_sub(oracle.timestamp) <= params.maximum_oracle_price_age_milliseconds;
-    let oracle_price_usable = oracle.price > 0;
+    let usable_price = oracle
+        .filter(|oracle| {
+            now.saturating_sub(oracle.timestamp) <= params.maximum_oracle_price_age_milliseconds
+                && oracle.price > 0
+        })
+        .map(|oracle| oracle.price);
 
     // A soft gate that does not fire now reports the account as genuinely
     // unchanged rather than rewriting identical data.
-    let redemption_diff = if interval_due && oracle_fresh && oracle_price_usable {
-        AccountStateDiff::new(
+    let redemption_diff = match usable_price {
+        Some(oracle_price) if interval_due => AccountStateDiff::new(
             redemption_price_state,
             BalanceDiff::Add(0),
-            advance_redemption_price(&params, &redemption, oracle.price, now),
-        )
-    } else {
-        AccountStateDiff::unchanged(redemption_price_state)
+            advance_redemption_price(&params, &redemption, oracle_price, now),
+        ),
+        _ => AccountStateDiff::unchanged(redemption_price_state),
     };
 
     let state_diffs = vec![
@@ -84,14 +101,16 @@ pub fn refresh_globals(
         AccountStateDiff::new(
             stability_fee_accumulator,
             BalanceDiff::Add(0),
-            accumulator_data,
+            Data::from(&accrual.accumulator),
         ),
+        AccountStateDiff::unchanged(stablecoin_definition),
+        AccountStateDiff::unchanged(stablecoin_master_holding),
         redemption_diff,
         AccountStateDiff::unchanged(market_price_oracle),
         AccountStateDiff::unchanged(clock),
     ];
 
-    (state_diffs, vec![])
+    (state_diffs, surplus_mint.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -138,6 +157,8 @@ mod tests {
             caller_account(),
             protocol_parameters_account(overrides),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             redemption_price_state_account(redemption_last_updated_at),
             oracle_account(oracle_timestamp, oracle_price),
             clock_account(NOW),
@@ -157,7 +178,7 @@ mod tests {
     #[test]
     fn both_halves_run_when_interval_due_and_oracle_fresh() {
         let (post_states, chained_calls) = invoke();
-        assert_eq!(post_states.len(), 6);
+        assert_eq!(post_states.len(), 8);
         assert!(chained_calls.is_empty());
 
         let accumulator = decode_accumulator(&post_states[2]);
@@ -165,7 +186,7 @@ mod tests {
         assert_eq!(accumulator.last_accrued_at, NOW);
 
         // Redemption > market with a positive Kp, so the rate rises above 1.0.
-        let redemption = decode_redemption(&post_states[3]);
+        let redemption = decode_redemption(&post_states[5]);
         assert!(redemption.redemption_rate_per_millisecond > FIXED_POINT_ONE);
         assert_eq!(redemption.last_updated_at, NOW);
     }
@@ -180,6 +201,8 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
@@ -197,7 +220,7 @@ mod tests {
             accrue_only[2].post_account(STABLECOIN_PROGRAM_ID)
         );
         assert_eq!(
-            combined[3].post_account(STABLECOIN_PROGRAM_ID),
+            combined[5].post_account(STABLECOIN_PROGRAM_ID),
             update_only[2].post_account(STABLECOIN_PROGRAM_ID)
         );
     }
@@ -215,7 +238,7 @@ mod tests {
 
         assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
 
-        let redemption = decode_redemption(&post_states[3]);
+        let redemption = decode_redemption(&post_states[5]);
         assert_eq!(redemption.redemption_rate_per_millisecond, FIXED_POINT_ONE);
         assert_eq!(redemption.last_updated_at, recent);
     }
@@ -232,7 +255,7 @@ mod tests {
 
         assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
 
-        let redemption = decode_redemption(&post_states[3]);
+        let redemption = decode_redemption(&post_states[5]);
         assert_eq!(redemption.redemption_rate_per_millisecond, FIXED_POINT_ONE);
         assert_eq!(redemption.last_updated_at, T0);
     }
@@ -242,14 +265,59 @@ mod tests {
         let (post_states, _) = invoke_with(ParameterOverrides::default(), T0, NOW, 0);
 
         assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
-        assert_eq!(decode_redemption(&post_states[3]).last_updated_at, T0);
+        assert_eq!(decode_redemption(&post_states[5]).last_updated_at, T0);
+    }
+
+    /// Refresh with an explicit oracle account in the oracle slot.
+    fn invoke_with_oracle(
+        oracle: AccountWithMetadata,
+    ) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
+        refresh_globals(
+            caller_account(),
+            protocol_parameters_account(ParameterOverrides::default()),
+            accumulator_account(ACCUMULATOR_ANCHOR, T0),
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
+            redemption_price_state_account(T0),
+            oracle,
+            clock_account(NOW),
+            STABLECOIN_PROGRAM_ID,
+        )
+    }
+
+    #[test]
+    fn redemption_half_skips_while_the_bound_oracle_does_not_exist_yet() {
+        // The launch state (spec §3.2): the oracle's address is bound, but nothing
+        // has created it yet. Fees still accrue; the controller waits.
+        let (post_states, _) = invoke_with_oracle(uninitialized(crate::test_support::oracle_id()));
+        assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
+        assert_eq!(
+            post_states[5].post_account(STABLECOIN_PROGRAM_ID),
+            redemption_price_state_account(T0).account
+        );
+    }
+
+    #[test]
+    fn redemption_half_skips_when_the_oracle_quotes_another_pair() {
+        let mut oracle = oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR);
+        let mut decoded =
+            twap_oracle_core::OraclePriceAccount::try_from(&oracle.account.data).unwrap();
+        decoded.base_asset = AccountId::new([0xAB; 32]);
+        oracle.account.data = lee_core::account::Data::from(&decoded);
+
+        let (post_states, _) = invoke_with_oracle(oracle);
+        assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
+        assert_eq!(
+            post_states[5].post_account(STABLECOIN_PROGRAM_ID),
+            redemption_price_state_account(T0).account
+        );
     }
 
     #[test]
     fn a_skipped_redemption_half_leaves_the_account_byte_identical() {
         let (post_states, _) = invoke_with(ParameterOverrides::default(), T0, NOW, 0);
         assert_eq!(
-            post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+            post_states[5].post_account(STABLECOIN_PROGRAM_ID),
             redemption_price_state_account(T0).account
         );
     }
@@ -268,7 +336,7 @@ mod tests {
             ORACLE_PRICE_BELOW_ANCHOR,
         );
         assert_eq!(decode_accumulator(&post_states[2]).last_accrued_at, NOW);
-        assert_eq!(decode_redemption(&post_states[3]).last_updated_at, NOW);
+        assert_eq!(decode_redemption(&post_states[5]).last_updated_at, NOW);
     }
 
     #[test]
@@ -279,15 +347,15 @@ mod tests {
             post_states[2].pre_state.account.program_owner
         );
         assert_eq!(
-            post_states[3].post_owner(STABLECOIN_PROGRAM_ID),
-            post_states[3].pre_state.account.program_owner
+            post_states[5].post_owner(STABLECOIN_PROGRAM_ID),
+            post_states[5].pre_state.account.program_owner
         );
         assert_eq!(
-            post_states[4].post_account(STABLECOIN_PROGRAM_ID),
+            post_states[6].post_account(STABLECOIN_PROGRAM_ID),
             oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR).account
         );
         assert_eq!(
-            post_states[5].post_account(STABLECOIN_PROGRAM_ID),
+            post_states[7].post_account(STABLECOIN_PROGRAM_ID),
             clock_account(NOW).account
         );
     }
@@ -301,6 +369,8 @@ mod tests {
             caller,
             protocol_parameters_account(ParameterOverrides::default()),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             redemption_price_state_account(T0),
             oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
@@ -317,6 +387,8 @@ mod tests {
                 STABLECOIN_PROGRAM_ID,
             )),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             redemption_price_state_account(T0),
             oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
@@ -331,6 +403,8 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             uninitialized(compute_stability_fee_accumulator_pda(STABLECOIN_PROGRAM_ID)),
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             redemption_price_state_account(T0),
             oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
@@ -345,6 +419,8 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             uninitialized(compute_redemption_price_state_pda(STABLECOIN_PROGRAM_ID)),
             oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
@@ -363,6 +439,8 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             accumulator,
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             redemption_price_state_account(T0),
             oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
@@ -383,6 +461,8 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             redemption_price_state_account(T0),
             oracle,
             clock_account(NOW),
@@ -399,6 +479,8 @@ mod tests {
             caller_account(),
             protocol_parameters_account(ParameterOverrides::default()),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             redemption_price_state_account(T0),
             oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR),
             clock,

@@ -6,10 +6,13 @@
 //! means the two can't drift apart.
 
 use alloy_primitives::U512;
-use lee_core::account::{Account, AccountId, AccountWithMetadata, Data};
+use lee_core::{
+    account::{Account, AccountId, AccountWithMetadata, Data},
+    program::ChainedCall,
+};
 use stablecoin_core::{
-    collateralization::collateralization_values, math::FIXED_POINT_ONE, Position,
-    ProtocolParameters,
+    collateralization::collateralization_values, compute_stablecoin_definition_pda_seed,
+    compute_stablecoin_master_holding_pda, math::FIXED_POINT_ONE, Position, ProtocolParameters,
 };
 
 /// Assert that `position` satisfies the collateralization invariant from spec §6.2:
@@ -79,13 +82,12 @@ pub fn assert_position_is_collateralized(
 
 // --- Sane-band constants per spec §8 -----------------------------------------
 
-pub(crate) const MAX_STABILITY_FEE_PER_MILLISECOND: u128 = FIXED_POINT_ONE * 2;
+pub(crate) use stablecoin_core::protocol_parameters::MAXIMUM_STABILITY_FEE_PER_MILLISECOND as MAX_STABILITY_FEE_PER_MILLISECOND;
 pub(crate) const MIN_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 110 / 100; // 1.1x
 pub(crate) const MAX_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 10;
-// Gain magnitude caps (spec §8; placeholders pending the §15 tuning pass):
-// |Kp| <= FIXED_POINT_ONE * 10^3, |Ki| <= FIXED_POINT_ONE.
-pub(crate) const MAX_PROPORTIONAL_GAIN_MAGNITUDE: u128 = FIXED_POINT_ONE * 1_000;
-pub(crate) const MAX_INTEGRAL_GAIN_MAGNITUDE: u128 = FIXED_POINT_ONE;
+pub(crate) use stablecoin_core::protocol_parameters::{
+    MAXIMUM_CONTROLLER_INTEGRAL_GAIN, MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN,
+};
 pub(crate) const MAX_TIMING_MILLISECONDS: u64 = 86_400_000; // 1 day
 
 /// The two-part gate every admin instruction performs: the caller signed, and the
@@ -108,10 +110,12 @@ pub(crate) fn assert_admin_authorized(
     );
 }
 
-/// Spec §8: `FIXED_POINT_ONE <= rate <= 2 x FIXED_POINT_ONE`.
+/// Spec §8: `FIXED_POINT_ONE <= rate <= MAXIMUM_STABILITY_FEE_PER_MILLISECOND`
+/// (about 100% a year).
 ///
-/// The lower bound keeps the fee from decaying debt; the upper bound is an
-/// anti-typo cap, not an overflow guard — that is the compounding-window clamp.
+/// The lower bound keeps the fee from decaying debt. The upper bound is the
+/// overflow guard: it keeps every accrual, including the setter's catch-up at the
+/// old rate, inside `u128` (see the constant's docs).
 pub(crate) fn assert_stability_fee_in_band(rate: u128, label: &str) {
     assert!(rate >= FIXED_POINT_ONE, "{label} below FIXED_POINT_ONE");
     assert!(
@@ -126,15 +130,18 @@ pub(crate) fn assert_collateralization_ratio_in_band(ratio: u128, label: &str) {
     assert!(ratio <= MAX_COLLATERALIZATION_RATIO, "{label} above 10x");
 }
 
-/// Spec §8 magnitude caps on the PI gains. Either sign is legal; only the
-/// magnitude is bounded.
+/// Spec §8 bands on the PI gains: `0 ..= MAXIMUM_CONTROLLER_*_GAIN`.
+///
+/// Negative gains are rejected. The controller embeds the stabilizing direction
+/// (§6.4), so a negative gain would be positive feedback and push the redemption
+/// price away from the market.
 pub(crate) fn assert_controller_gains_in_band(proportional_gain: i128, integral_gain: i128) {
     assert!(
-        proportional_gain.unsigned_abs() <= MAX_PROPORTIONAL_GAIN_MAGNITUDE,
+        (0..=MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN).contains(&proportional_gain),
         "controller_proportional_gain out of band"
     );
     assert!(
-        integral_gain.unsigned_abs() <= MAX_INTEGRAL_GAIN_MAGNITUDE,
+        (0..=MAXIMUM_CONTROLLER_INTEGRAL_GAIN).contains(&integral_gain),
         "controller_integral_gain out of band"
     );
 }
@@ -147,6 +154,68 @@ pub(crate) fn assert_timing_milliseconds_in_band(milliseconds: u64, label: &str)
         milliseconds <= MAX_TIMING_MILLISECONDS,
         "{label} above maximum 86_400_000ms"
     );
+}
+
+/// Validate the accounts a fee accrual mints into and build the chained
+/// `Token::Mint` of `accrued_fees` to the surplus holding (spec §6.6).
+///
+/// The surplus holding is the stablecoin master holding `initialize_program`
+/// created at its PDA. The definition is its own mint authority, so the call is
+/// authorized with the definition's PDA seed, exactly like `generate_debt`'s.
+/// The accounts are validated even when nothing accrued, so a bad account list
+/// fails the same way whatever the clock says. Returns `None` when there is
+/// nothing to mint.
+///
+/// # Panics
+/// - `stablecoin_definition` does not match `ProtocolParameters.stablecoin_definition_id`, or is
+///   uninitialized.
+/// - `stablecoin_master_holding` is not at its canonical PDA, is uninitialized, or is owned by a
+///   different Token Program than the definition.
+pub(crate) fn surplus_mint_call(
+    stablecoin_definition: &AccountWithMetadata,
+    stablecoin_master_holding: &AccountWithMetadata,
+    parameters: &ProtocolParameters,
+    stablecoin_program_id: AccountId,
+    accrued_fees: u128,
+) -> Option<ChainedCall> {
+    assert_eq!(
+        stablecoin_definition.account_id, parameters.stablecoin_definition_id,
+        "Stablecoin definition does not match the one bound at initialize_program"
+    );
+    assert_ne!(
+        stablecoin_definition.account,
+        Account::default(),
+        "Stablecoin definition account must be initialized"
+    );
+    assert_eq!(
+        stablecoin_master_holding.account_id,
+        compute_stablecoin_master_holding_pda(stablecoin_program_id),
+        "Stablecoin master holding account ID does not match expected PDA derivation"
+    );
+    assert_ne!(
+        stablecoin_master_holding.account,
+        Account::default(),
+        "Stablecoin master holding must be initialized"
+    );
+    let token_program_id = stablecoin_definition.account.program_owner;
+    assert_eq!(
+        stablecoin_master_holding.account.program_owner, token_program_id,
+        "Stablecoin master holding must be owned by the same Token Program as the definition"
+    );
+
+    (accrued_fees > 0).then(|| {
+        ChainedCall::new(
+            token_program_id,
+            vec![
+                stablecoin_definition.account_id,
+                stablecoin_master_holding.account_id,
+            ],
+            &token_core::Instruction::Mint {
+                amount_to_mint: accrued_fees,
+            },
+        )
+        .with_pda_seeds(vec![compute_stablecoin_definition_pda_seed()])
+    })
 }
 
 /// Validate a read-only global: initialized, program-owned, and at its canonical
@@ -344,25 +413,36 @@ mod tests {
     }
 
     #[test]
-    fn controller_gain_band_accepts_the_magnitude_limits_in_both_signs() {
-        let kp = i128::try_from(MAX_PROPORTIONAL_GAIN_MAGNITUDE).expect("fits i128");
-        let ki = i128::try_from(MAX_INTEGRAL_GAIN_MAGNITUDE).expect("fits i128");
-        assert_controller_gains_in_band(kp, ki);
-        assert_controller_gains_in_band(-kp, -ki);
+    fn controller_gain_band_accepts_zero_and_the_upper_limits() {
+        assert_controller_gains_in_band(0, 0);
+        assert_controller_gains_in_band(
+            MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN,
+            MAXIMUM_CONTROLLER_INTEGRAL_GAIN,
+        );
     }
 
     #[test]
     #[should_panic(expected = "controller_proportional_gain out of band")]
     fn controller_gain_band_rejects_an_oversized_proportional_gain() {
-        let kp = i128::try_from(MAX_PROPORTIONAL_GAIN_MAGNITUDE).expect("fits i128") + 1;
-        assert_controller_gains_in_band(kp, 0);
+        assert_controller_gains_in_band(MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN + 1, 0);
     }
 
     #[test]
     #[should_panic(expected = "controller_integral_gain out of band")]
     fn controller_gain_band_rejects_an_oversized_integral_gain() {
-        let ki = i128::try_from(MAX_INTEGRAL_GAIN_MAGNITUDE).expect("fits i128") + 1;
-        assert_controller_gains_in_band(0, ki);
+        assert_controller_gains_in_band(0, MAXIMUM_CONTROLLER_INTEGRAL_GAIN + 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "controller_proportional_gain out of band")]
+    fn controller_gain_band_rejects_a_negative_proportional_gain() {
+        assert_controller_gains_in_band(-1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "controller_integral_gain out of band")]
+    fn controller_gain_band_rejects_a_negative_integral_gain() {
+        assert_controller_gains_in_band(0, -1);
     }
 
     #[test]

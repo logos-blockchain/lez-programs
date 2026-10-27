@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use stablecoin_core::{
-    math::{compute_current_redemption_price, oracle_price_to_fixed_point},
+    bound_redemption_price,
+    math::{compute_current_redemption_price_wide, oracle_price_to_fixed_point},
     run_controller_tick, INTEGRAL_CLAMP, RATE_DELTA_CLAMP,
 };
 use twap_oracle_core::OraclePriceAccount;
@@ -19,36 +20,39 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
         validated_protocol_parameters(stablecoin_program_id, &request.protocol_parameters)?;
     let (_, redemption) =
         validated_redemption_price_state(stablecoin_program_id, &request.redemption_price_state)?;
-    let oracle = validated_market_price_oracle(
-        &request.market_price_oracle,
-        parameters.market_price_oracle_id,
-    )?;
+    let oracle = usable_market_price_oracle(&request.market_price_oracle, &parameters)?;
     let now = clock_timestamp(&request.clock)?;
 
     let elapsed_milliseconds = now.saturating_sub(redemption.last_updated_at);
-    let oracle_age_milliseconds = now.saturating_sub(oracle.timestamp);
-    // The oracle publishes Q64.64; the controller compares on the fixed-point scale.
-    let market_price = oracle_price_to_fixed_point(oracle.price);
-    let current_redemption_price = compute_current_redemption_price(
+    // Mirrors the program's re-anchor: a U512 projection clamped into the §8 bounds.
+    let current_redemption_price = bound_redemption_price(compute_current_redemption_price_wide(
         redemption.redemption_price_at_last_update,
         redemption.redemption_rate_per_millisecond,
         redemption.last_updated_at,
         now,
-    );
+    ));
 
     let mut errors = Vec::new();
-    if oracle_age_milliseconds > parameters.maximum_oracle_price_age_milliseconds {
-        errors.push(blocker(
-            "oracle_stale",
-            json!({
-                "oracleAgeMilliseconds": oracle_age_milliseconds.to_string(),
-                "maximumOraclePriceAgeMilliseconds":
-                    parameters.maximum_oracle_price_age_milliseconds.to_string(),
-            }),
-        ));
-    }
-    if oracle.price == 0 {
-        errors.push(blocker("oracle_price_zero", json!({"marketPrice": "0"})));
+    match &oracle {
+        // The bound oracle has no usable observation yet (spec §3.2): the
+        // controller waits, exactly as the program's update panics.
+        None => errors.push(blocker("oracle_unavailable", json!({}))),
+        Some(oracle) => {
+            let oracle_age_milliseconds = now.saturating_sub(oracle.timestamp);
+            if oracle_age_milliseconds > parameters.maximum_oracle_price_age_milliseconds {
+                errors.push(blocker(
+                    "oracle_stale",
+                    json!({
+                        "oracleAgeMilliseconds": oracle_age_milliseconds.to_string(),
+                        "maximumOraclePriceAgeMilliseconds":
+                            parameters.maximum_oracle_price_age_milliseconds.to_string(),
+                    }),
+                ));
+            }
+            if oracle.price == 0 {
+                errors.push(blocker("oracle_price_zero", json!({"marketPrice": "0"})));
+            }
+        }
     }
     if elapsed_milliseconds < parameters.minimum_milliseconds_between_rate_updates {
         errors.push(blocker(
@@ -62,10 +66,12 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
     }
 
     let can_submit = errors.is_empty();
-    let (next_rate, next_integral) = if can_submit {
+    // `can_submit` implies a usable oracle; there is no unusable-oracle path here.
+    let (next_rate, next_integral) = if let (true, Some(oracle)) = (can_submit, &oracle) {
+        // The oracle publishes Q64.64; the controller compares on the fixed-point scale.
         let output = run_controller_tick(
             current_redemption_price,
-            market_price,
+            oracle_price_to_fixed_point(oracle.price),
             redemption.controller_integral_term,
             parameters.controller_proportional_gain,
             parameters.controller_integral_gain,
@@ -83,7 +89,9 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
         "canSubmit": can_submit,
         "code": if can_submit { "ready" } else { "blocked" },
         "currentRedemptionPrice": current_redemption_price.to_string(),
-        "marketPrice": market_price.to_string(),
+        "marketPrice": oracle.map_or(Value::Null, |oracle| {
+            Value::String(oracle_price_to_fixed_point(oracle.price).to_string())
+        }),
         "elapsedMilliseconds": elapsed_milliseconds.to_string(),
         "nextRedemptionRatePerMillisecond": next_rate,
         "nextControllerIntegralTerm": next_integral,
@@ -98,17 +106,30 @@ pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -
     }))
 }
 
-pub(super) fn validated_market_price_oracle(
+/// The bound oracle's observation, or `None` when it has none the program would
+/// use — mirrors the program's `read_oracle`.
+///
+/// A read of a different account is still an error. An account that does not
+/// exist yet (bound before the market exists, spec §3.2), does not decode, or
+/// quotes another pair reads as `None`.
+pub(super) fn usable_market_price_oracle(
     read: &crate::AccountRead,
-    expected_id: lee_core::account::AccountId,
-) -> Result<OraclePriceAccount, StablecoinApiError> {
+    parameters: &stablecoin_core::ProtocolParameters,
+) -> Result<Option<OraclePriceAccount>, StablecoinApiError> {
     let (account_id, account) =
         decode_account(read).map_err(|_| StablecoinApiError::new("account_read_failed"))?;
-    if account_id != expected_id {
+    if account_id != parameters.market_price_oracle_id {
         return Err(StablecoinApiError::new("market_price_oracle_mismatch"));
     }
-    OraclePriceAccount::try_from(&account.data)
-        .map_err(|_| StablecoinApiError::new("invalid_market_price_oracle"))
+    if account == lee_core::account::Account::default() {
+        return Ok(None);
+    }
+    Ok(OraclePriceAccount::try_from(&account.data)
+        .ok()
+        .filter(|oracle| {
+            oracle.base_asset == parameters.stablecoin_definition_id
+                && oracle.quote_asset == parameters.collateral_definition_id
+        }))
 }
 
 fn blocker(code: &'static str, details: Value) -> Value {
@@ -182,8 +203,9 @@ mod tests {
             account(
                 ORACLE_PROGRAM_ID,
                 Data::from(&OraclePriceAccount {
-                    base_asset: id(8),
-                    quote_asset: id(9),
+                    // The stablecoin and collateral bound in `parameters`.
+                    base_asset: id(3),
+                    quote_asset: id(4),
                     price,
                     timestamp,
                     source_id: id(10),
@@ -606,7 +628,11 @@ mod tests {
             .as_mut()
             .expect("account exists")
             .data = String::from("00");
-        assert_error(malformed_oracle, "invalid_market_price_oracle");
+        // Like the program's `read_oracle`, an oracle that does not decode is just
+        // unusable: the quote is blocked, not rejected.
+        let blocked = value(malformed_oracle);
+        assert_eq!(blocked["canSubmit"], false);
+        assert_eq!(blocked["errors"][0]["code"], "oracle_unavailable");
 
         let mut failed_read = base.clone();
         failed_read.market_price_oracle.status = String::from("not_found");
@@ -628,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn oracle_owner_and_asset_pair_are_deliberately_not_pinned() {
+    fn oracle_owner_is_deliberately_not_pinned() {
         let oracle_id = id(5);
         let params = parameters(oracle_id);
         let state = redemption(FIXED_POINT_ONE, 0, 0);
@@ -637,5 +663,26 @@ mod tests {
 
         let quoted = value(request(&params, &state, &observation, 1));
         assert_eq!(quoted["canSubmit"], true);
+    }
+
+    #[test]
+    fn an_oracle_that_does_not_exist_yet_or_quotes_another_pair_blocks_the_quote() {
+        let oracle_id = id(5);
+        let params = parameters(oracle_id);
+        let state = redemption(FIXED_POINT_ONE, 0, 0);
+
+        // Bound before the market exists (spec §3.2).
+        let missing = (oracle_id, Account::default());
+        let quoted = value(request(&params, &state, &missing, 1));
+        assert_eq!(quoted["canSubmit"], false);
+        assert_eq!(quoted["errors"][0]["code"], "oracle_unavailable");
+        assert_eq!(quoted["marketPrice"], Value::Null);
+
+        let mut other_pair = oracle(oracle_id, FIXED_POINT_ONE, 1);
+        let mut decoded = OraclePriceAccount::try_from(&other_pair.1.data).expect("oracle");
+        decoded.base_asset = id(8);
+        other_pair.1.data = Data::from(&decoded);
+        let quoted = value(request(&params, &state, &other_pair, 1));
+        assert_eq!(quoted["errors"][0]["code"], "oracle_unavailable");
     }
 }

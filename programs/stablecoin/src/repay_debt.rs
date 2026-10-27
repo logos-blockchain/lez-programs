@@ -4,7 +4,7 @@ use lee_core::{
 };
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda,
-    math::{compute_current_accumulated_rate, mul_div, FIXED_POINT_ONE},
+    math::{mul_div, FIXED_POINT_ONE},
     verify_position_and_get_seed, Position, ProtocolParameters, StabilityFeeAccumulator,
 };
 use token_core::TokenHolding;
@@ -21,7 +21,12 @@ use token_core::TokenHolding;
 /// The normalized-debt decrement is `⌊amount × FIXED_POINT_ONE /
 /// current_accumulator⌋`, rounded **down** per §6.3, so the position's debt
 /// shrinks by at most what was burned and the rounding remainder stays with the
-/// protocol. The accumulator is projected forward to the clock timestamp (§5.3).
+/// protocol.
+///
+/// Accrues first, like `generate_debt`: the accumulator is persisted at `now`,
+/// the fees accrued on the existing debt are minted to the surplus holding
+/// (§6.6), and the decrement is priced at the persisted accumulator and taken
+/// off `total_normalized_debt`.
 ///
 /// Allowed while the protocol is frozen — repaying only improves the protocol's
 /// position (§7). `stablecoin_definition` is pinned against
@@ -37,19 +42,22 @@ use token_core::TokenHolding;
 ///   not match `stablecoin_definition.account_id`.
 /// - `stablecoin_definition` is uninitialized, or does not match
 ///   `protocol_parameters.stablecoin_definition_id`.
+/// - `stablecoin_master_holding` fails the surplus-account checks of
+///   [`crate::checks::surplus_mint_call`].
 /// - `protocol_parameters` or `stability_fee_accumulator` is uninitialized, wrongly owned, not at
 ///   its canonical PDA, or does not decode.
 /// - `clock` is not the initialized system `CLOCK_01` account.
 /// - The floored decrement exceeds `Position.normalized_debt_amount`.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the seven account inputs mirror the spec §10.8 ABI"
+    reason = "the eight account inputs mirror the spec §10.8 ABI"
 )]
 pub fn repay_debt(
     owner: AccountWithMetadata,
     position: AccountWithMetadata,
     stablecoin_definition: AccountWithMetadata,
     user_stablecoin_holding: AccountWithMetadata,
+    stablecoin_master_holding: AccountWithMetadata,
     stability_fee_accumulator: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     clock: AccountWithMetadata,
@@ -135,12 +143,15 @@ pub fn repay_debt(
     .expect("StabilityFeeAccumulator must decode");
 
     let now = crate::accrue_stability_fee::read_clock(&clock);
-    let current_accumulator = compute_current_accumulated_rate(
-        accumulator.accumulated_rate_at_last_accrual,
-        parameters.stability_fee_per_millisecond,
-        accumulator.last_accrued_at,
-        now,
+    let mut accrual = crate::accrue_stability_fee::accrue_fees(&parameters, &accumulator, now);
+    let surplus_mint = crate::checks::surplus_mint_call(
+        &stablecoin_definition,
+        &stablecoin_master_holding,
+        &parameters,
+        stablecoin_program_id,
+        accrual.accrued_fees,
     );
+    let current_accumulator = accrual.accumulator.accumulated_rate_at_last_accrual;
 
     // Round DOWN (§6.3): the borrower burned exactly `amount`, and their debt
     // shrinks by at most that much. The remainder is fee credit for the protocol.
@@ -149,6 +160,11 @@ pub fn repay_debt(
         .normalized_debt_amount
         .checked_sub(debt_delta)
         .expect("Repay amount exceeds outstanding normalized debt");
+    accrual.accumulator.total_normalized_debt = accrual
+        .accumulator
+        .total_normalized_debt
+        .checked_sub(debt_delta)
+        .expect("Total normalized debt underflow");
 
     let updated_position = Position {
         owner_account_id: position_data.owner_account_id,
@@ -167,7 +183,12 @@ pub fn repay_debt(
         AccountStateDiff::new(position, BalanceDiff::Add(0), Data::from(&updated_position)),
         AccountStateDiff::unchanged(stablecoin_definition),
         AccountStateDiff::unchanged(user_stablecoin_holding),
-        AccountStateDiff::unchanged(stability_fee_accumulator),
+        AccountStateDiff::unchanged(stablecoin_master_holding),
+        AccountStateDiff::new(
+            stability_fee_accumulator,
+            BalanceDiff::Add(0),
+            Data::from(&accrual.accumulator),
+        ),
         AccountStateDiff::unchanged(protocol_parameters),
         AccountStateDiff::unchanged(clock),
     ];
@@ -180,5 +201,8 @@ pub fn repay_debt(
         },
     );
 
-    (state_diffs, vec![burn_call])
+    (
+        state_diffs,
+        surplus_mint.into_iter().chain([burn_call]).collect(),
+    )
 }

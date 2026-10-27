@@ -116,6 +116,7 @@ mod tests {
         let accumulator = StabilityFeeAccumulator {
             accumulated_rate_at_last_accrual,
             last_accrued_at,
+            total_normalized_debt: 0,
         };
         let redemption = RedemptionPriceState {
             redemption_price_at_last_update,

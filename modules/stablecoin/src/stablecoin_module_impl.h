@@ -131,7 +131,7 @@ public:
     /// `adminId` must be the current public wallet admin. Allowed while frozen.
     LogosMap setMinimumCollateralizationRatio(const LogosMap& request);
 
-    /// Sets signed i128 `newProportionalGain` and `newIntegralGain` atomically,
+    /// Sets non-negative i128 `newProportionalGain` and `newIntegralGain` atomically,
     /// without resetting redemption state. Requires the current `adminId`.
     LogosMap setControllerGains(const LogosMap& request);
 

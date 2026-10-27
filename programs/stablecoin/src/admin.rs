@@ -18,18 +18,27 @@ use twap_oracle_core::OraclePriceAccount;
 ///
 /// Accrues the fee accumulator forward at the **old** rate first, so the new rate
 /// applies only from `now` onward and never retroactively to the elapsed gap.
-/// That is why this is the one setter that takes the clock and the accumulator.
+/// That is why this is the one setter that takes the clock, the accumulator, and
+/// the stablecoin definition and master holding the accrued fees are minted to.
 ///
 /// # Panics
 /// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
 /// - `new_rate` is outside the §8 band.
 /// - `protocol_parameters` or `stability_fee_accumulator` is uninitialized, wrongly owned, not at
 ///   its canonical PDA, or does not decode.
+/// - `stablecoin_definition` or `stablecoin_master_holding` fails the surplus-account checks of
+///   [`crate::checks::surplus_mint_call`].
 /// - `clock` is not the initialized system `CLOCK_01` account.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the six account inputs mirror the spec §10.10 ABI"
+)]
 pub fn set_stability_fee_per_millisecond(
     admin: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     stability_fee_accumulator: AccountWithMetadata,
+    stablecoin_definition: AccountWithMetadata,
+    stablecoin_master_holding: AccountWithMetadata,
     clock: AccountWithMetadata,
     stablecoin_program_id: AccountId,
     new_rate: u128,
@@ -53,12 +62,18 @@ pub fn set_stability_fee_per_millisecond(
     .expect("StabilityFeeAccumulator must decode");
 
     let now = crate::accrue_stability_fee::read_clock(&clock);
-    // Accrue *before* the rate is replaced. `advance_fee_accumulator` reads the
-    // rate out of `parameters`, so calling it first is what makes the change
-    // non-retroactive — and it is the same helper `accrue_stability_fee` uses, so
-    // the two can never disagree about how a gap accrues.
-    let accumulator_data =
-        crate::accrue_stability_fee::advance_fee_accumulator(&parameters, &accumulator, now);
+    // Accrue *before* the rate is replaced. `accrue_fees` reads the rate out of
+    // `parameters`, so calling it first is what makes the change non-retroactive
+    // — and it is the same helper `accrue_stability_fee` uses, so the two can
+    // never disagree about how a gap accrues or how much surplus it mints.
+    let accrual = crate::accrue_stability_fee::accrue_fees(&parameters, &accumulator, now);
+    let surplus_mint = crate::checks::surplus_mint_call(
+        &stablecoin_definition,
+        &stablecoin_master_holding,
+        &parameters,
+        stablecoin_program_id,
+        accrual.accrued_fees,
+    );
 
     parameters.stability_fee_per_millisecond = new_rate;
 
@@ -72,12 +87,14 @@ pub fn set_stability_fee_per_millisecond(
         AccountStateDiff::new(
             stability_fee_accumulator,
             BalanceDiff::Add(0),
-            accumulator_data,
+            Data::from(&accrual.accumulator),
         ),
+        AccountStateDiff::unchanged(stablecoin_definition),
+        AccountStateDiff::unchanged(stablecoin_master_holding),
         AccountStateDiff::unchanged(clock),
     ];
 
-    (state_diffs, vec![])
+    (state_diffs, surplus_mint.into_iter().collect())
 }
 
 /// The shape all six simple setters share: validate the parameters account at its
@@ -262,15 +279,17 @@ pub fn set_freeze_authority(
 
 /// Rotate the market-price oracle (spec §10.13).
 ///
-/// Validates the replacement's shape and that its base/quote pair matches the
-/// definitions bound at bootstrap, so the controller cannot be pointed at an
-/// oracle quoting a different market. `program_owner` is deliberately not pinned:
-/// any producer emitting a well-formed `OraclePriceAccount` is acceptable.
+/// The replacement may not exist yet, exactly as at `initialize_program`: the
+/// controller simply does not run until it does (spec §3.2). One that exists must
+/// decode and its base/quote pair must match the definitions bound at bootstrap,
+/// so the controller cannot be pointed at an oracle quoting a different market.
+/// `program_owner` is deliberately not pinned: any producer emitting a
+/// well-formed `OraclePriceAccount` is acceptable.
 ///
 /// # Panics
 /// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
-/// - `new_oracle` is uninitialized, does not decode as an `OraclePriceAccount`, or its `base_asset`
-///   / `quote_asset` do not match the bound definitions.
+/// - `new_oracle` is initialized but does not decode as an `OraclePriceAccount`, or its
+///   `base_asset` / `quote_asset` do not match the bound definitions.
 /// - `protocol_parameters` is invalid.
 pub fn set_market_price_oracle(
     admin: AccountWithMetadata,
@@ -284,21 +303,18 @@ pub fn set_market_price_oracle(
         protocol_parameters,
         stablecoin_program_id,
         |parameters| {
-            assert_ne!(
-                new_oracle.account,
-                Account::default(),
-                "New market price oracle must be initialized"
-            );
-            let oracle = OraclePriceAccount::try_from(&new_oracle.account.data)
-                .expect("New market price oracle must decode as OraclePriceAccount");
-            assert_eq!(
-                oracle.base_asset, parameters.stablecoin_definition_id,
-                "New oracle base_asset must equal the stablecoin definition's account_id"
-            );
-            assert_eq!(
-                oracle.quote_asset, parameters.collateral_definition_id,
-                "New oracle quote_asset must equal the collateral definition's account_id"
-            );
+            if new_oracle.account != Account::default() {
+                let oracle = OraclePriceAccount::try_from(&new_oracle.account.data)
+                    .expect("New market price oracle must decode as OraclePriceAccount");
+                assert_eq!(
+                    oracle.base_asset, parameters.stablecoin_definition_id,
+                    "New oracle base_asset must equal the stablecoin definition's account_id"
+                );
+                assert_eq!(
+                    oracle.quote_asset, parameters.collateral_definition_id,
+                    "New oracle quote_asset must equal the collateral definition's account_id"
+                );
+            }
             parameters.market_price_oracle_id = new_oracle_id;
         },
     );
@@ -355,6 +371,8 @@ mod tests {
             admin,
             parameters,
             accumulator,
+            crate::test_support::stablecoin_definition_account(),
+            crate::test_support::stablecoin_master_holding_account(),
             clock_account(now),
             STABLECOIN_PROGRAM_ID,
             new_rate,
@@ -375,14 +393,15 @@ mod tests {
             NEW_RATE,
         );
 
-        assert_eq!(post_states.len(), 4);
+        assert_eq!(post_states.len(), 6);
+        // No outstanding debt, so the catch-up accrual mints nothing.
         assert!(chained_calls.is_empty());
         assert_eq!(
             decoded(&post_states[1]).stability_fee_per_millisecond,
             NEW_RATE
         );
         assert_eq!(
-            post_states[3].post_account(STABLECOIN_PROGRAM_ID),
+            post_states[5].post_account(STABLECOIN_PROGRAM_ID),
             clock_account(NOW).account
         );
     }
@@ -452,7 +471,10 @@ mod tests {
 
     #[test]
     fn accepts_both_band_endpoints() {
-        for rate in [FIXED_POINT_ONE, FIXED_POINT_ONE * 2] {
+        for rate in [
+            FIXED_POINT_ONE,
+            crate::checks::MAX_STABILITY_FEE_PER_MILLISECOND,
+        ] {
             let (post_states, _) = set_rate(
                 admin_account(),
                 parameters_at(OLD_RATE),
@@ -484,7 +506,7 @@ mod tests {
             parameters_at(OLD_RATE),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
             NOW,
-            FIXED_POINT_ONE * 2 + 1,
+            crate::checks::MAX_STABILITY_FEE_PER_MILLISECOND + 1,
         );
     }
 
@@ -660,10 +682,10 @@ mod tests {
         let integral_term_before = ProtocolParameters::try_from(&parameters.account.data)
             .expect("valid ProtocolParameters");
         let (post_states, _) =
-            set_controller_gains(admin_account(), parameters, STABLECOIN_PROGRAM_ID, -42, 7);
+            set_controller_gains(admin_account(), parameters, STABLECOIN_PROGRAM_ID, 42, 7);
 
         let after = decoded(&post_states[1]);
-        assert_eq!(after.controller_proportional_gain, -42);
+        assert_eq!(after.controller_proportional_gain, 42);
         assert_eq!(after.controller_integral_gain, 7);
         // Retuning must not discard the controller's accumulated history; the
         // integral *term* lives on RedemptionPriceState and is untouched here.
@@ -682,6 +704,12 @@ mod tests {
     fn set_controller_gains_rejects_an_oversized_proportional_gain() {
         let kp = i128::try_from(FIXED_POINT_ONE * 1_000).expect("fits i128") + 1;
         set_controller_gains(admin_account(), params(), STABLECOIN_PROGRAM_ID, kp, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "controller_proportional_gain out of band")]
+    fn set_controller_gains_rejects_a_negative_gain() {
+        set_controller_gains(admin_account(), params(), STABLECOIN_PROGRAM_ID, -1, 0);
     }
 
     #[test]
@@ -799,13 +827,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "New market price oracle must be initialized")]
-    fn set_market_price_oracle_rejects_an_uninitialized_oracle() {
-        set_market_price_oracle(
+    fn set_market_price_oracle_binds_an_oracle_that_does_not_exist_yet() {
+        // Like RAI pointing its rate setter at a feed that is not valid yet: the
+        // controller just does not run until the oracle exists (spec §3.2).
+        let future_oracle = AccountId::new([0x3Au8; 32]);
+        let (post_states, _) = set_market_price_oracle(
             admin_account(),
             params(),
-            uninitialized(AccountId::new([0x3Au8; 32])),
+            uninitialized(future_oracle),
             STABLECOIN_PROGRAM_ID,
+        );
+        assert_eq!(
+            decoded(&post_states[1]).market_price_oracle_id,
+            future_oracle
         );
     }
 

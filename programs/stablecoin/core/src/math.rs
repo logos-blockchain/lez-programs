@@ -170,10 +170,10 @@ pub fn compute_current_redemption_price(
 /// `per_millisecond_rate^milliseconds_elapsed` in `U512`, saturating instead of
 /// panicking.
 ///
-/// [`compound_rate`] works in `u128`, so a rate the controller can legitimately
-/// produce overflows it a few million milliseconds out, and the
-/// [`MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS`] clamp is nowhere near tight
-/// enough to prevent that. Values that are only ever *compared* — the §6.2
+/// [`compound_rate`] works in `u128`, so a rate at the top of a permitted band —
+/// the stability fee's, or the redemption rate's under its old, looser clamp —
+/// overflows it well inside the [`MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS`]
+/// window. Values that are only ever *compared* — the §6.2
 /// collateralization check — do not need to fit `u128`, so this variant keeps
 /// the factor in `U512` and saturates at the ceiling.
 ///
@@ -280,8 +280,9 @@ pub fn compute_current_accumulated_rate_wide(
 }
 
 /// [`compute_current_redemption_price`] widened to `U512`, for the read-side
-/// §6.2 check. A redemption rate at its permitted upper bound overflows the
-/// `u128` projection about 45 minutes out.
+/// §6.2 check and for re-anchoring. The §8 rate clamp and price bounds keep a
+/// fresh projection inside `u128`; this variant also copes with a state written
+/// under the old, looser rate clamp.
 #[must_use]
 pub fn compute_current_redemption_price_wide(
     redemption_price_at_last_update: u128,
