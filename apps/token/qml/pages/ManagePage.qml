@@ -174,9 +174,15 @@ Item {
             if (root.backend && !root.backend.isWalletOpen)
                 root.refreshLiveDefinitions()
         }
+        // Background polls keep syncStatus at "ready"; new blocks show up as a
+        // lastSyncedBlock change. callLater merges the two when both change.
         function onSyncStatusChanged() {
             if (root.walletReady)
-                root.refreshLiveDefinitions()
+                Qt.callLater(root.refreshLiveDefinitions)
+        }
+        function onLastSyncedBlockChanged() {
+            if (root.walletReady)
+                Qt.callLater(root.refreshLiveDefinitions)
         }
     }
 

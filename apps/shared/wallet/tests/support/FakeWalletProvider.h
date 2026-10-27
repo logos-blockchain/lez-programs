@@ -10,10 +10,12 @@ public:
     WalletAccountCreation createAccountResult;
     WalletAccountRead readResult;
     WalletSubmission submissionResult;
+    qint64 blockHeightResult = -1;
 
     int connectCalls = 0;
     int createWalletCalls = 0;
     int snapshotCalls = 0;
+    int blockHeightCalls = 0;
     int clearCalls = 0;
     int createAccountCalls = 0;
     mutable int readCalls = 0;
@@ -67,6 +69,12 @@ public:
             pendingSnapshotCallback = std::move(callback);
         else
             callback(snapshotResult);
+    }
+
+    void currentBlockHeightAsync(HeightCallback callback) override
+    {
+        ++blockHeightCalls;
+        callback(blockHeightResult);
     }
 
     void clearSnapshot() override { ++clearCalls; }

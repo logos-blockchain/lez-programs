@@ -17,16 +17,17 @@ private slots:
     void initTestCase();
     void init();
     void cleanup();
-    void pollingRefreshesQuote_data();
-    void pollingRefreshesQuote();
+    void pollingKeepsQuote_data();
+    void pollingKeepsQuote();
     void inactiveFlowWaitsForActivation();
-    void staleReplyCannotRestoreQuoteDuringPoll_data();
-    void staleReplyCannotRestoreQuoteDuringPoll();
+    void staleReplyCannotRestoreQuoteAcrossReopen_data();
+    void staleReplyCannotRestoreQuoteAcrossReopen();
     void readinessAndActivationRequestOneQuote();
 
 private:
     void openWallet();
     void startPoll();
+    void beginReopen();
     int quoteCalls() const;
 
     QTemporaryDir m_settings;
@@ -152,7 +153,16 @@ void WalletPollingTest::startPoll()
     const int expectedCalls = m_provider->snapshotCalls + 1;
     m_pollTimer->start(1);
     QTRY_COMPARE_WITH_TIMEOUT(m_provider->snapshotCalls, expectedCalls, 1000);
-    QCOMPARE(m_controller->state().syncStatus, QStringLiteral("syncing"));
+    // Background polls never take the wallet out of "ready".
+    QCOMPARE(m_controller->state().syncStatus, QStringLiteral("ready"));
+    QCOMPARE(m_backend->property("walletStateReady").toBool(), true);
+}
+
+void WalletPollingTest::beginReopen()
+{
+    m_controller->disconnect();
+    QVERIFY(m_controller->open());
+    QCOMPARE(m_backend->property("walletStateReady").toBool(), false);
 }
 
 int WalletPollingTest::quoteCalls() const
@@ -160,14 +170,14 @@ int WalletPollingTest::quoteCalls() const
     return m_backend->property("quoteCalls").toInt();
 }
 
-void WalletPollingTest::pollingRefreshesQuote_data()
+void WalletPollingTest::pollingKeepsQuote_data()
 {
     QTest::addColumn<bool>("poolExists");
     QTest::newRow("add-liquidity") << true;
     QTest::newRow("create-pool") << false;
 }
 
-void WalletPollingTest::pollingRefreshesQuote()
+void WalletPollingTest::pollingKeepsQuote()
 {
     QFETCH(bool, poolExists);
     m_backend->setProperty("poolExists", poolExists);
@@ -177,21 +187,19 @@ void WalletPollingTest::pollingRefreshesQuote()
     QCOMPARE(m_flow->property("quoteStale").toBool(), false);
 
     startPoll();
-    QCOMPARE(m_flow->property("quoteStale").toBool(), true);
-    QCOMPARE(m_flow->property("quoteLoading").toBool(), false);
-    QCOMPARE(quoteCalls(), 1);
     m_provider->finishSnapshot();
-    QTRY_COMPARE_WITH_TIMEOUT(quoteCalls(), 2, 1000);
+    QTest::qWait(20);
+    QCOMPARE(quoteCalls(), 1);
     QCOMPARE(m_flow->property("quoteStale").toBool(), false);
     QCOMPARE(m_flow->property("newPositionQuote").value<QJSValue>()
-                 .property(QStringLiteral("expectedLp")).toString(), QStringLiteral("2"));
+                 .property(QStringLiteral("expectedLp")).toString(), QStringLiteral("1"));
 }
 
 void WalletPollingTest::inactiveFlowWaitsForActivation()
 {
     openWallet();
-    startPoll();
-    m_provider->finishSnapshot();
+    beginReopen();
+    m_provider->finishConnect();
     QTest::qWait(20);
     QCOMPARE(quoteCalls(), 0);
 
@@ -200,14 +208,14 @@ void WalletPollingTest::inactiveFlowWaitsForActivation()
     QCOMPARE(m_flow->property("quoteStale").toBool(), false);
 }
 
-void WalletPollingTest::staleReplyCannotRestoreQuoteDuringPoll_data()
+void WalletPollingTest::staleReplyCannotRestoreQuoteAcrossReopen_data()
 {
     QTest::addColumn<bool>("finishOldAfterRecovery");
-    QTest::newRow("during-poll") << false;
+    QTest::newRow("during-reopen") << false;
     QTest::newRow("after-recovery") << true;
 }
 
-void WalletPollingTest::staleReplyCannotRestoreQuoteDuringPoll()
+void WalletPollingTest::staleReplyCannotRestoreQuoteAcrossReopen()
 {
     QFETCH(bool, finishOldAfterRecovery);
     m_root->setProperty("deferQuotes", true);
@@ -216,7 +224,7 @@ void WalletPollingTest::staleReplyCannotRestoreQuoteDuringPoll()
     QTRY_COMPARE_WITH_TIMEOUT(quoteCalls(), 1, 1000);
     QCOMPARE(m_flow->property("quoteLoading").toBool(), true);
 
-    startPoll();
+    beginReopen();
     if (!finishOldAfterRecovery) {
         QVERIFY(QMetaObject::invokeMethod(m_root.get(), "finishQuote",
                                          Q_ARG(QVariant, 0)));
@@ -224,7 +232,7 @@ void WalletPollingTest::staleReplyCannotRestoreQuoteDuringPoll()
     QCOMPARE(m_flow->property("quoteStale").toBool(), true);
     QCOMPARE(m_flow->property("quoteLoading").toBool(), false);
 
-    m_provider->finishSnapshot();
+    m_provider->finishConnect();
     QTRY_COMPARE_WITH_TIMEOUT(quoteCalls(), 2, 1000);
     QCOMPARE(m_flow->property("quoteStale").toBool(), true);
     QCOMPARE(m_flow->property("quoteLoading").toBool(), true);

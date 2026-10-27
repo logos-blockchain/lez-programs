@@ -19,6 +19,7 @@ public:
                                 const QString& password) override;
     WalletSnapshot snapshot(bool forceRefresh = false) override;
     void snapshotAsync(bool forceRefresh, SnapshotCallback callback) override;
+    void currentBlockHeightAsync(HeightCallback callback) override;
     void clearSnapshot() override;
     WalletAccountCreation createAccount(bool isPublic) override;
     WalletAccountRead readPublicAccount(const QString& accountId) const override;

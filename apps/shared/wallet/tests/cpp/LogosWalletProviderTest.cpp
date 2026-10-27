@@ -79,6 +79,8 @@ private slots:
     void controllerRejectsDuplicateOpenWhileStarting();
     void controllerCanRetryAfterOpenFailure();
     void controllerPollsSnapshotsAndRetriesAfterFailure();
+    void controllerPollSkipsSyncWithoutNewBlocks();
+    void providerReadsBlockHeightWithoutSyncing();
     void controllerStopsReachabilityChecksAfterDisconnect();
     void controllerSelectsFundedFeePayer();
 };
@@ -784,42 +786,117 @@ void LogosWalletProviderTest::controllerPollsSnapshotsAndRetriesAfterFailure()
     provider.finishConnect();
     QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncStatus,
                               QStringLiteral("ready"), 1000);
+    QStringList statuses;
+    connect(&controller, &WalletController::stateChanged, this, [&]() {
+        statuses.append(controller.state().syncStatus);
+    });
 
     auto* pollTimer = controller.findChild<QTimer*>(
         QStringLiteral("walletSnapshotPollTimer"));
     QVERIFY(pollTimer);
-    pollTimer->setInterval(1);
-    pollTimer->start();
+    // Unknown height (-1): the poll falls back to a full refresh.
+    pollTimer->start(1);
     QTRY_COMPARE_WITH_TIMEOUT(provider.snapshotCalls, 1, 1000);
-    QCOMPARE(controller.state().syncStatus, QStringLiteral("syncing"));
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("ready"));
 
-    pollTimer->start();
+    pollTimer->start(1);
     QTest::qWait(20);
     QCOMPARE(provider.snapshotCalls, 1);
 
+    // Isolated failures keep the wallet usable; the third in a row reports it.
     provider.snapshotResult.failure = WalletFailure::ReadFailed;
-    provider.finishSnapshot();
-    QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncStatus,
-                              QStringLiteral("error"), 1000);
+    for (int failure = 1; failure <= 3; ++failure) {
+        provider.finishSnapshot();
+        QVERIFY(pollTimer->isActive());
+        if (failure < 3) {
+            QCOMPARE(controller.state().syncStatus, QStringLiteral("ready"));
+            QVERIFY(controller.state().syncError.isEmpty());
+        }
+        pollTimer->setInterval(1);
+        QTRY_COMPARE_WITH_TIMEOUT(provider.snapshotCalls, failure + 1, 1000);
+    }
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("error"));
     QCOMPARE(controller.state().syncError, QStringLiteral("read_failed"));
-    QVERIFY(pollTimer->isActive());
 
     provider.snapshotResult = {};
     provider.snapshotResult.accounts = {
         { ACCOUNT_A, QStringLiteral("9"), true },
     };
-    pollTimer->setInterval(1);
-    QTRY_COMPARE_WITH_TIMEOUT(provider.snapshotCalls, 2, 1000);
-    QCOMPARE(controller.state().syncStatus, QStringLiteral("syncing"));
-
     provider.finishSnapshot();
-    QTRY_COMPARE_WITH_TIMEOUT(controller.state().syncStatus,
-                              QStringLiteral("ready"), 1000);
-    QCOMPARE(provider.snapshotCalls, 2);
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("ready"));
+    QVERIFY(controller.state().syncError.isEmpty());
     QCOMPARE(controller.balance(ACCOUNT_A, true), QStringLiteral("9"));
+    QVERIFY(!statuses.contains(QStringLiteral("syncing")));
 
     controller.disconnect();
     settings.clear();
+}
+
+void LogosWalletProviderTest::controllerPollSkipsSyncWithoutNewBlocks()
+{
+    const QString settingsApplication = QStringLiteral("WalletSnapshotHeightTest");
+    QSettings settings(QStringLiteral("Logos"), settingsApplication);
+    settings.clear();
+
+    FakeWalletProvider provider;
+    provider.connectResult.snapshot.lastSyncedBlock = 7;
+    provider.connectResult.snapshot.currentBlockHeight = 7;
+
+    WalletController controller(provider, settingsApplication);
+    QVERIFY(controller.open());
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("ready"));
+    auto* pollTimer = controller.findChild<QTimer*>(
+        QStringLiteral("walletSnapshotPollTimer"));
+    QVERIFY(pollTimer);
+
+    provider.blockHeightResult = 7;
+    pollTimer->start(1);
+    QTRY_COMPARE_WITH_TIMEOUT(provider.blockHeightCalls, 1, 1000);
+    QCOMPARE(provider.snapshotCalls, 0);
+    QVERIFY(pollTimer->isActive());
+
+    provider.blockHeightResult = 9;
+    provider.snapshotResult.lastSyncedBlock = 9;
+    provider.snapshotResult.currentBlockHeight = 9;
+    pollTimer->start(1);
+    QTRY_COMPARE_WITH_TIMEOUT(provider.snapshotCalls, 1, 1000);
+    QCOMPARE(provider.blockHeightCalls, 2);
+    QCOMPARE(controller.state().lastSyncedBlock, 9);
+
+    // A manual refresh always syncs, whatever the height.
+    controller.refresh();
+    QCOMPARE(provider.snapshotCalls, 2);
+    QCOMPARE(provider.blockHeightCalls, 2);
+
+    controller.disconnect();
+    settings.clear();
+}
+
+void LogosWalletProviderTest::providerReadsBlockHeightWithoutSyncing()
+{
+    qint64 height = 0;
+    {
+        LogosModules modules;
+        LogosWalletProvider provider(&modules);
+        provider.currentBlockHeightAsync([&height](qint64 value) { height = value; });
+        QTRY_COMPARE_WITH_TIMEOUT(height, qint64(-1), 1000);
+    }
+
+    QTemporaryDir directory;
+    QFile storage(directory.filePath(QStringLiteral("storage.json")));
+    QVERIFY(storage.open(QIODevice::WriteOnly));
+    storage.close();
+    LogosModules modules;
+    LogosWalletProvider provider(&modules);
+    QVERIFY(provider.connect({ {}, storage.fileName(), {} }).ok());
+    const int syncs = modules.lez_core.syncCalls;
+    const int saves = modules.lez_core.saveCalls;
+    modules.lez_core.currentBlockHeight = 12;
+    height = 0;
+    provider.currentBlockHeightAsync([&height](qint64 value) { height = value; });
+    QTRY_COMPARE_WITH_TIMEOUT(height, qint64(12), 1000);
+    QCOMPARE(modules.lez_core.syncCalls, syncs);
+    QCOMPARE(modules.lez_core.saveCalls, saves);
 }
 
 void LogosWalletProviderTest::controllerStopsReachabilityChecksAfterDisconnect()

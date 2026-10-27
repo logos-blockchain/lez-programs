@@ -18,6 +18,7 @@ Item {
         QtObject {
             property bool isWalletOpen: true
             property string syncStatus: "ready"
+            property int lastSyncedBlock: 0
             property var liveDefinitions: []
             property int walletDefinitionsCalls: 0
 
@@ -189,6 +190,22 @@ Item {
             })
             compare(fixture.store.allDefinitions[0].id, definitionBase58)
             compare(fixture.runtime.watchCalls, initialWatchCalls + 1)
+        }
+
+        function test_refreshesOnceWhenBackgroundPollSyncsNewBlocks() {
+            const fixture = createFixture()
+            const initialWatchCalls = fixture.runtime.watchCalls
+
+            fixture.backend.lastSyncedBlock = 8
+            tryCompare(fixture.runtime, "watchCalls", initialWatchCalls + 1)
+
+            // A sync that also changes the status reads the definitions once.
+            fixture.backend.syncStatus = "error"
+            fixture.backend.lastSyncedBlock = 9
+            fixture.backend.syncStatus = "ready"
+            tryCompare(fixture.runtime, "watchCalls", initialWatchCalls + 2)
+            wait(20)
+            compare(fixture.runtime.watchCalls, initialWatchCalls + 2)
         }
     }
 }
