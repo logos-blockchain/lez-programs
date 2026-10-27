@@ -19,6 +19,11 @@ const char SETTINGS_ORG[] = "Logos";
 const char DISCONNECTED_KEY[] = "disconnected";
 const char FEE_PAYER_KEY[] = "feePayer";
 const char WALLET_HOME_ENV[] = "LEE_WALLET_HOME_DIR";
+constexpr int SNAPSHOT_POLL_INTERVAL_MS = 10000;
+constexpr int SNAPSHOT_RETRY_INITIAL_MS = 1000;
+constexpr int SNAPSHOT_RETRY_MAX_MS = 10000;
+// Failed background refreshes in a row before the wallet reports an error.
+constexpr int REFRESH_FAILURES_BEFORE_ERROR = 3;
 
 QString toLocalPath(const QString& path)
 {
@@ -36,14 +41,21 @@ WalletController::WalletController(WalletProvider& wallet,
       m_settingsApplication(std::move(settingsApplication)),
       m_accountModel(new WalletAccountModel(this)),
       m_network(new QNetworkAccessManager(this)),
-      m_reachabilityTimer(new QTimer(this))
+      m_reachabilityTimer(new QTimer(this)),
+      m_snapshotPollTimer(new QTimer(this))
 {
     m_state.walletHome = defaultWalletHome();
     m_state.walletExists = QFileInfo::exists(defaultStoragePath());
 
+    m_reachabilityTimer->setObjectName(QStringLiteral("walletReachabilityTimer"));
     m_reachabilityTimer->setInterval(10000);
     connect(m_reachabilityTimer, &QTimer::timeout,
             this, &WalletController::checkReachability);
+
+    m_snapshotPollTimer->setObjectName(QStringLiteral("walletSnapshotPollTimer"));
+    m_snapshotPollTimer->setSingleShot(true);
+    connect(m_snapshotPollTimer, &QTimer::timeout,
+            this, &WalletController::pollSnapshot);
 }
 
 WalletController::~WalletController() = default;
@@ -194,6 +206,9 @@ bool WalletController::open()
 void WalletController::disconnect()
 {
     ++m_operationGeneration;
+    m_snapshotPollTimer->stop();
+    m_refreshInFlight = false;
+    m_refreshFailures = 0;
     m_wallet.disconnect();
     m_state.isWalletOpen = false;
     m_state.feePayerId.clear();
@@ -222,27 +237,33 @@ QString WalletController::createAccount(bool isPublic)
     return creation.accountId;
 }
 
+// Refreshes run in the background: syncStatus keeps its value ("syncing" is only
+// reported while opening), so the UI does not treat every poll as a reconnect.
 void WalletController::refresh()
 {
-    if (!m_state.isWalletOpen || m_state.syncStatus == QStringLiteral("syncing"))
+    if (!m_state.isWalletOpen || m_refreshInFlight)
         return;
 
+    m_snapshotPollTimer->stop();
+    m_refreshInFlight = true;
     const quint64 generation = ++m_operationGeneration;
-    m_state.syncStatus = QStringLiteral("syncing");
-    m_state.syncError.clear();
-    emit stateChanged();
     m_wallet.snapshotAsync(true, [this, generation](WalletSnapshot next) {
         if (generation != m_operationGeneration)
             return;
+        m_refreshInFlight = false;
         if (next.ok()) {
             applySnapshot(next);
-        } else {
-            qWarning() << "WalletController: wallet refresh failed"
-                       << walletFailureCode(next.failure);
+            return;
+        }
+        qWarning() << "WalletController: wallet refresh failed"
+                   << walletFailureCode(next.failure);
+        if (++m_refreshFailures >= REFRESH_FAILURES_BEFORE_ERROR
+            && m_state.syncStatus != QStringLiteral("error")) {
             m_state.syncStatus = QStringLiteral("error");
             m_state.syncError = walletFailureCode(next.failure);
             emit stateChanged();
         }
+        scheduleSnapshotPoll(true);
     });
 }
 
@@ -302,8 +323,43 @@ void WalletController::applySnapshot(const WalletSnapshot& snapshot)
     m_state.sequencerAddress = snapshot.sequencerAddress;
     m_state.syncStatus = QStringLiteral("ready");
     m_state.syncError.clear();
+    m_snapshotRetryDelayMs = SNAPSHOT_RETRY_INITIAL_MS;
+    m_refreshFailures = 0;
     emit stateChanged();
     checkReachability();
+    scheduleSnapshotPoll(false);
+}
+
+// Only a new block can change balances or accounts, so a poll reads the chain
+// height first and skips the full sync (and its wallet save) when nothing is new.
+void WalletController::pollSnapshot()
+{
+    if (!m_state.isWalletOpen || m_refreshInFlight)
+        return;
+
+    const quint64 generation = m_operationGeneration;
+    m_wallet.currentBlockHeightAsync([this, generation](qint64 height) {
+        if (generation != m_operationGeneration || !m_state.isWalletOpen)
+            return;
+        if (height > 0 && height <= m_state.lastSyncedBlock
+            && m_state.syncStatus == QStringLiteral("ready")) {
+            scheduleSnapshotPoll(false);
+            return;
+        }
+        refresh();
+    });
+}
+
+void WalletController::scheduleSnapshotPoll(bool retry)
+{
+    if (!m_state.isWalletOpen)
+        return;
+
+    const int delay = retry ? m_snapshotRetryDelayMs : SNAPSHOT_POLL_INTERVAL_MS;
+    m_snapshotPollTimer->start(delay);
+    if (retry)
+        m_snapshotRetryDelayMs = qMin(m_snapshotRetryDelayMs * 2,
+                                      SNAPSHOT_RETRY_MAX_MS);
 }
 
 void WalletController::checkReachability()

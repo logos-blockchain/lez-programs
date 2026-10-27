@@ -70,6 +70,8 @@ private:
     bool beginOpen(const QString& config, const QString& storage);
     void applySnapshot(const WalletSnapshot& snapshot);
     void selectFeePayer(const QVector<WalletAccount>& accounts);
+    void pollSnapshot();
+    void scheduleSnapshotPoll(bool retry);
     void checkReachability();
 
     WalletProvider& m_wallet;
@@ -78,6 +80,10 @@ private:
     WalletAccountModel* m_accountModel;
     QNetworkAccessManager* m_network;
     QTimer* m_reachabilityTimer;
+    QTimer* m_snapshotPollTimer;
+    int m_snapshotRetryDelayMs = 1000;
+    int m_refreshFailures = 0;
+    bool m_refreshInFlight = false;
     bool m_started = false;
     QVector<WalletAccount> m_accounts;
     quint64 m_operationGeneration = 0;

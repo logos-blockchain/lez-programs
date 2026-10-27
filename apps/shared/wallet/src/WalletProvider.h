@@ -116,6 +116,7 @@ class WalletProvider {
 public:
     using SessionCallback = std::function<void(WalletSession)>;
     using SnapshotCallback = std::function<void(WalletSnapshot)>;
+    using HeightCallback = std::function<void(qint64)>;
 
     virtual ~WalletProvider() = default;
 
@@ -125,6 +126,8 @@ public:
                                         const QString& password) = 0;
     virtual WalletSnapshot snapshot(bool forceRefresh = false) = 0;
     virtual void snapshotAsync(bool forceRefresh, SnapshotCallback callback) = 0;
+    // The sequencer's current block height without syncing the wallet; -1 when unknown.
+    virtual void currentBlockHeightAsync(HeightCallback callback) = 0;
     virtual void clearSnapshot() = 0;
     virtual WalletAccountCreation createAccount(bool isPublic) = 0;
     virtual WalletAccountRead readPublicAccount(const QString& accountId) const = 0;

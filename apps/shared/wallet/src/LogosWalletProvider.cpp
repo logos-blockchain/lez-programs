@@ -378,6 +378,22 @@ void LogosWalletProvider::snapshotAsync(bool forceRefresh, SnapshotCallback call
     loadSnapshotAsync(++m_generation, std::move(callback));
 }
 
+void LogosWalletProvider::currentBlockHeightAsync(HeightCallback callback)
+{
+    if (!m_impl->logos || !m_connected) {
+        QTimer::singleShot(0, m_impl->callbackContext.get(),
+                           [callback = std::move(callback)]() { callback(-1); });
+        return;
+    }
+
+    const QPointer<QObject> alive(m_impl->callbackContext.get());
+    m_impl->logos->lez_core.get_current_block_heightAsync(
+        [alive, callback = std::move(callback)](int height) {
+            if (alive)
+                callback(height > 0 ? height : -1);
+        });
+}
+
 void LogosWalletProvider::clearSnapshot()
 {
     m_snapshot = {};
