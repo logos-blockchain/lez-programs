@@ -19,10 +19,16 @@ class TokenUiBackend
     // public transactions). Empty when none is funded; submits then fail with
     // fee_payer_required. Defaults to the best-funded account.
     PROP(QString feePayerId READONLY)
-    // Wallet startup and refresh state. `isWalletOpen` remains false until the
-    // capability handshake and first snapshot both complete.
+    // Wallet startup and refresh state. `initialSync` blocks use of a newly
+    // opened or created wallet until its first snapshot completes; background
+    // refreshes retain the last usable wallet state.
     PROP(QString syncStatus READONLY)
     PROP(QString syncError READONLY)
+    PROP(bool initialSync READONLY)
+    PROP(bool syncProgressKnown READONLY)
+    PROP(int syncCurrentBlock READONLY)
+    PROP(int syncTargetBlock READONLY)
+    PROP(int syncRemainingBlocks READONLY)
 
     // Account management
     SLOT(QString createAccountPublic())
@@ -43,6 +49,7 @@ class TokenUiBackend
     SLOT(bool openExisting())
     // Close this app's wallet view (lock); does not delete the wallet and, in
     // Basecamp, does not close the wallet other apps share.
+    SLOT(void cancelSync())
     SLOT(void disconnectWallet())
     // Pick the fee payer (persisted per app). False unless it is a funded
     // public account in the open wallet.

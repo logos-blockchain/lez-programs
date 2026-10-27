@@ -24,7 +24,7 @@ Item {
     readonly property var selectedDefinition: store && selectedId.length > 0 ? store.findDefinition(selectedId) : null
     readonly property bool walletReady: root.backend !== null
         && root.backend.isWalletOpen
-        && root.backend.syncStatus === "ready"
+        && root.backend.initialSync !== true
     readonly property bool hasSelection: selectedDefinition !== null
     readonly property bool selectedIsFungible: hasSelection && selectedDefinition.type === "fungible"
     readonly property bool selectedIsNft: hasSelection && selectedDefinition.type === "nonFungible"
@@ -177,7 +177,7 @@ Item {
         // Background polls keep syncStatus at "ready"; new blocks show up as a
         // lastSyncedBlock change. callLater merges the two when both change.
         function onSyncStatusChanged() {
-            if (root.walletReady)
+            if (root.walletReady && root.backend.syncStatus === "ready")
                 Qt.callLater(root.refreshLiveDefinitions)
         }
         function onLastSyncedBlockChanged() {

@@ -186,13 +186,10 @@ nix build .#token-module -L
 ls result/lib/          # token_module_plugin.dylib  libtoken_ffi.dylib
 
 # The wallet module it depends on — the SAME pin the repo-root flake and
-# amm_module use, with its inner monorepo input overridden to the rev the target
-# sequencer runs (415964d7). See apps/amm/README.md for the fuller build notes.
-nix build 'github:gravityblast/logos-execution-zone-module?ref=fix/generic-tx-instruction-bstr' \
-  --override-input logos-execution-zone \
-  'github:logos-blockchain/logos-execution-zone?rev=415964d7f9043a1bfe28da8d0e8b3a6f64abb258' \
+# amm_module use. See apps/amm/README.md for the fuller build notes.
+nix build 'github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2' \
   --out-link result-lez
-ls result-lez/lib/      # logos_execution_zone_plugin.dylib  libwallet_ffi.dylib
+ls result-lez/lib/      # lez_core_plugin.dylib  libwallet_ffi.dylib
 ```
 
 ### 2. Stage a modules directory
@@ -210,7 +207,7 @@ modules/
     variant                     # one line: darwin-arm64-dev
     manifest.json
   lez_core/
-    logos_execution_zone_plugin.dylib
+    lez_core_plugin.dylib
     libwallet_ffi.dylib
     variant
     manifest.json
@@ -256,7 +253,7 @@ Open a wallet configured for the target sequencer, then pass a real account ID:
 
 ```bash
 logoscore call lez_core open \
-  /path/to/wallet_config.json /path/to/storage.json "$WALLET_PASSWORD" --json
+  /path/to/wallet_config.json /path/to/storage.json /path/to/statistics.json --json
 
 logoscore call token_module inspectDefinition \
   7b464ff9dd0d3bc07f7e2e0b0667ccd066d85ad12be4c79fc55687a863910aa6 --json
