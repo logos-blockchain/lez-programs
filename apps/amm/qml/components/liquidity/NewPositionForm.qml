@@ -1002,12 +1002,15 @@ AmmActionCard {
             return root.issueText("amount_exceeds_balance")
         if (field === "amountB" && root.fundingError("B").length > 0)
             return root.issueText("amount_exceeds_balance")
+        // Local errors name display fields; quote errors name canonical ones.
         var collections = [root.localErrors, root.currentQuoteErrors()]
         for (var c = 0; c < collections.length; ++c) {
             for (var i = 0; i < collections[c].length; ++i) {
                 var fields = collections[c][i].blockingFields || []
                 for (var f = 0; f < fields.length; ++f) {
-                    if (root.canonicalFieldToDisplay(fields[f]) === field)
+                    var displayField = c === 0 ? fields[f]
+                                               : root.canonicalFieldToDisplay(fields[f])
+                    if (displayField === field)
                         return root.issueText(collections[c][i].code)
                 }
             }

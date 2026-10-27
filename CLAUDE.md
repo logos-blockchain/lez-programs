@@ -25,6 +25,9 @@ make clippy-guest
 # Run all tests (dev mode skips ZK proof generation)
 make test
 
+# Run the app (wallet, AMM, token) C++ and QML tests
+make test-apps
+
 # Run tests for a single package
 RISC0_DEV_MODE=1 cargo test -p token_program
 RISC0_DEV_MODE=1 cargo test -p amm_program

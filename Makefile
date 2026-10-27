@@ -1,4 +1,4 @@
-.PHONY: build-programs clippy clippy-guest clippy-all check-benchmark test integration-test fmt idl changelog release
+.PHONY: build-programs clippy clippy-guest clippy-all check-benchmark test integration-test test-apps fmt idl changelog release
 
 build-programs:
 	./scripts/build-guests.sh
@@ -22,6 +22,10 @@ test:
 
 integration-test:
 	RISC0_DEV_MODE=1 cargo test -p integration_tests
+
+# Wallet, AMM and token app tests (C++ and QML), with Qt from the flake's nixpkgs.
+test-apps:
+	./scripts/test-apps.sh
 
 fmt:
 	cargo +nightly fmt --all
