@@ -153,6 +153,24 @@ jobs:
         env:
           RISC0_DEV_MODE: 1
 
+  app-tests:
+    name: App Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+            extra-substituters = https://logos-co.cachix.org
+            extra-trusted-public-keys = logos-co.cachix.org-1:12K8609ho1pCt0erUQrOrs/KmOuhWq/EhVwhzQRb35E=
+
+      - name: Wallet, AMM and token C++ and QML tests
+        run: make test-apps
+
   build-programs:
     name: Build Guest Programs
     runs-on: ubuntu-latest

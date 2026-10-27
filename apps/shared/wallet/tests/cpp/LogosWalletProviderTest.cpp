@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
+#include <QScopeGuard>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -811,6 +812,22 @@ void LogosWalletProviderTest::controllerOwnsUiWalletFlow()
     const QString settingsApplication = QStringLiteral("WalletControllerTest");
     QSettings settings(QStringLiteral("Logos"), settingsApplication);
     settings.clear();
+
+    // walletExists checks the default storage, so don't depend on the host's wallet.
+    QTemporaryDir walletHome;
+    QVERIFY(walletHome.isValid());
+    QFile storage(walletHome.filePath(QStringLiteral("storage.json")));
+    QVERIFY(storage.open(QIODevice::WriteOnly));
+    storage.close();
+    const QByteArray previousHome = qgetenv("LEE_WALLET_HOME_DIR");
+    const bool hadPreviousHome = qEnvironmentVariableIsSet("LEE_WALLET_HOME_DIR");
+    qputenv("LEE_WALLET_HOME_DIR", walletHome.path().toLocal8Bit());
+    const auto restoreHome = qScopeGuard([&]() {
+        if (hadPreviousHome)
+            qputenv("LEE_WALLET_HOME_DIR", previousHome);
+        else
+            qunsetenv("LEE_WALLET_HOME_DIR");
+    });
 
     FakeWalletProvider provider;
     provider.connectResult.snapshot.accounts = {

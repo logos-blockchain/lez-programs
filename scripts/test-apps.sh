@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Runs the app test suites: shared wallet C++ and QML, AMM C++ and QML, token QML.
-# Qt comes from this flake's nixpkgs pin. The AMM QML tests also need the Logos
-# design system: set LOGOS_DESIGN_SYSTEM to a built package to skip building it.
+# Runs the app test suites: shared wallet C++ and QML, AMM C++ and QML, token QML,
+# inside the flake's app-tests dev shell (Qt from its nixpkgs pin). The AMM QML
+# tests also need the Logos design system: set LOGOS_DESIGN_SYSTEM to a built
+# package to skip building it.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,9 +12,7 @@ design_system_rev="6176f0d7a5dfeb64a7f0f98e7ca2bf71a4804772"
 if [[ "${1:-}" != "--in-shell" ]]; then
   design_system="${LOGOS_DESIGN_SYSTEM:-$(nix build --no-link --print-out-paths \
     "github:logos-co/logos-design-system/${design_system_rev}")}"
-  exec nix shell --inputs-from "${repo_root}" \
-    nixpkgs#qt6.qtbase nixpkgs#qt6.qtdeclarative nixpkgs#qt6.qtsvg \
-    nixpkgs#qt6.qtremoteobjects nixpkgs#cmake nixpkgs#ninja \
+  exec nix develop "${repo_root}#app-tests" \
     -c env LOGOS_DESIGN_SYSTEM="${design_system}" "$0" --in-shell
 fi
 
