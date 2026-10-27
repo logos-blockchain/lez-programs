@@ -47,3 +47,11 @@ release:
 	git commit -m "chore(release): $$VERSION" && \
 	git tag -a "$$VERSION" -m "$$VERSION" && \
 	echo "Tagged $$VERSION. Push with: git push origin $$(git rev-parse --abbrev-ref HEAD) $$VERSION"
+
+# Build and run the Logos module test suites (amm, token, stablecoin, oracle).
+# Building each *-module-tests package runs its tests; -L prints their output.
+.PHONY: test-modules
+test-modules:
+	nix build --no-link -L \
+		.#amm-module-tests .#token-module-tests \
+		.#stablecoin-module-tests .#oracle-module-tests

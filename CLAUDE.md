@@ -32,6 +32,9 @@ RISC0_DEV_MODE=1 cargo test -p ata_program
 RISC0_DEV_MODE=1 cargo test -p stablecoin_program
 RISC0_DEV_MODE=1 cargo test -p twap_oracle_program
 
+# Build and run the Logos module test suites (amm, token, stablecoin, oracle)
+make test-modules
+
 # Format
 make fmt
 
