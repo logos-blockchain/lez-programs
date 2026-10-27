@@ -1,7 +1,7 @@
 .pragma library
 
 // Shared derivation helpers for a token's display avatar (color + letter).
-// The real token config (see AmmUiBackend::tokenList / TOKENS_CONFIG) only
+// The registry token list (see AmmUiBackend::tokenList) only
 // carries symbol/name/definitionId/holding/decimals — no color/letter — so
 // every place that used to read token.color/token.letter derives them here
 // instead, deterministically from the token's symbol.

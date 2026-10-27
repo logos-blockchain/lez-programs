@@ -4,8 +4,9 @@
 // never appears in one picker and not the other.
 //
 // Two sources have to be reconciled:
-//   * tokenList()     — TOKENS_CONFIG verbatim. Carries the display `symbol`,
-//                       which is the only place a symbol exists. No chain check.
+//   * tokenList()     — the registry snapshot verbatim. Carries the display
+//                       `symbol`, which is the only place a symbol exists. No
+//                       chain check.
 //   * resolveTokens() — the same configured ids PLUS the user's persisted custom
 //                       ids, each read on-chain. Drops any id whose definition
 //                       isn't a readable fungible token owned by the configured
