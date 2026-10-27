@@ -30,6 +30,8 @@ class AmmUiBackend
     // snapshot so QML replicas re-fetch tokenList()/poolList()/resolveTokens().
     // Starts at 0; a fetch that fails without publishing does not bump it.
     PROP(int registryRevision READONLY)
+    // Fences swap confirmations across wallet, sequencer and registry changes.
+    PROP(int swapContextRevision READONLY)
     // The user-configured registry URL, persisted as a global (per-user) setting
     // and edited in Settings. This is the saved value, not necessarily
     // the effective source: nonempty local-file env vars win, then AMM_REGISTRY_URL,
@@ -136,6 +138,12 @@ class AmmUiBackend
     // deadlineDecimal is a decimal-string u64 unix timestamp in MILLISECONDS.
     // Same return contract as swapExactInput (tx hash, empty string on failure).
     SLOT(QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex, QString userOutputHoldingHex, QString amountOutDecimal, QString maxInDecimal, QString deadlineDecimal))
+    // Submits the exact confirmed intent: { contextRevision, swapMode,
+    // sellDefinitionId, buyDefinitionId, sellHoldingId, buyHoldingId, amount,
+    // bound, deadline }. Rejects a changed source-side context even when its
+    // new revision has not reached the QML replica yet. Returns {status, error,
+    // txHash}; swap_context_changed requires a fresh preview and confirmation.
+    SLOT(QVariantMap confirmedSwap(QVariantMap request))
     // Returns the current RegistryLoader token snapshot as QVariantMap entries:
     // { symbol, name, definitionId, holding, decimals }. No file/network/chain read
     // occurs in this slot. Entries need a nonempty definitionId; ids pass through

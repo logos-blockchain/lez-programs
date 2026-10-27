@@ -6,6 +6,7 @@ ColumnLayout {
 
     property var theme
     property var snapshot: ({})
+    readonly property var intent: root.snapshot.intent || ({})
 
     // Exact output guarantees the received amount and caps the spent amount;
     // exact input is the reverse. The wording and which value is the bound flip
@@ -34,14 +35,38 @@ ColumnLayout {
             }
 
             Text {
+                objectName: "swapConfirmedPay"
                 Layout.fillWidth: true
                 text: qsTr("%1 %2")
                     .arg((root.isExactOut ? root.snapshot.boundValue : root.snapshot.sellAmount) || "")
-                    .arg(root.snapshot.sellToken || "")
+                    .arg(root.snapshot.sellToken || qsTr("Token"))
+                textFormat: Text.PlainText
                 color: root.theme.colors.textPrimary
                 font.bold: true
                 font.pixelSize: 18
-                elide: Text.ElideRight
+                wrapMode: Text.WrapAnywhere
+            }
+
+            Text {
+                objectName: "swapConfirmedSellDefinition"
+                Layout.fillWidth: true
+                text: qsTr("Token definition: %1").arg(root.intent.sellDefinitionId || "")
+                textFormat: Text.PlainText
+                color: root.theme.colors.textPrimary
+                font.family: "monospace"
+                font.pixelSize: 12
+                wrapMode: Text.WrapAnywhere
+            }
+
+            Text {
+                objectName: "swapConfirmedSellHolding"
+                Layout.fillWidth: true
+                text: qsTr("From account: %1").arg(root.intent.sellHoldingId || "")
+                textFormat: Text.PlainText
+                color: root.theme.colors.textSecondary
+                font.family: "monospace"
+                font.pixelSize: 12
+                wrapMode: Text.WrapAnywhere
             }
         }
     }
@@ -66,16 +91,48 @@ ColumnLayout {
             }
 
             Text {
+                objectName: "swapConfirmedReceive"
                 Layout.fillWidth: true
                 text: qsTr("%1 %2")
                     .arg((root.isExactOut ? root.snapshot.buyAmount : root.snapshot.boundValue) || "")
-                    .arg(root.snapshot.buyToken || "")
+                    .arg(root.snapshot.buyToken || qsTr("Token"))
+                textFormat: Text.PlainText
                 color: root.theme.colors.textPrimary
                 font.bold: true
                 font.pixelSize: 18
-                elide: Text.ElideRight
+                wrapMode: Text.WrapAnywhere
+            }
+
+            Text {
+                objectName: "swapConfirmedBuyDefinition"
+                Layout.fillWidth: true
+                text: qsTr("Token definition: %1").arg(root.intent.buyDefinitionId || "")
+                textFormat: Text.PlainText
+                color: root.theme.colors.textPrimary
+                font.family: "monospace"
+                font.pixelSize: 12
+                wrapMode: Text.WrapAnywhere
+            }
+
+            Text {
+                objectName: "swapConfirmedBuyHolding"
+                Layout.fillWidth: true
+                text: qsTr("To account: %1").arg(root.intent.buyHoldingId || "")
+                textFormat: Text.PlainText
+                color: root.theme.colors.textSecondary
+                font.family: "monospace"
+                font.pixelSize: 12
+                wrapMode: Text.WrapAnywhere
             }
         }
+    }
+
+    Text {
+        Layout.fillWidth: true
+        text: qsTr("Symbols are registry labels. Verify the token definition IDs.")
+        color: root.theme.colors.textSecondary
+        font.pixelSize: 12
+        wrapMode: Text.WordWrap
     }
 
     SwapSummary {

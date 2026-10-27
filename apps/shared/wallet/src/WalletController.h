@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 #include "WalletProvider.h"
 
@@ -10,6 +11,9 @@ class QTimer;
 class WalletAccountModel;
 
 struct WalletUiState {
+    // Changes on connection lifecycle and observed account-identity changes.
+    // The shared core exposes no notification for unobserved external restores.
+    quint64 sessionRevision = 0;
     bool isWalletOpen = false;
     bool walletExists = false;
     QString configPath;
@@ -74,7 +78,7 @@ private:
 
     void openOnStartup();
     bool beginOpen(const QString& config, const QString& storage);
-    void applySnapshot(const WalletSnapshot& snapshot);
+    void applySnapshot(const WalletSnapshot& snapshot, bool newSession = false);
     void selectFeePayer(const QVector<WalletAccount>& accounts);
     void applySyncProgress(const WalletSyncProgress& progress);
     void refreshSnapshot();
@@ -94,5 +98,6 @@ private:
     bool m_refreshInFlight = false;
     bool m_started = false;
     QVector<WalletAccount> m_accounts;
+    QStringList m_accountIdentities;
     quint64 m_operationGeneration = 0;
 };

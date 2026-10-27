@@ -36,6 +36,8 @@ logos_module(
         src/AmmUiPlugin.cpp
         src/AmmUiBackend.h
         src/AmmUiBackend.cpp
+        src/SwapConfirmation.h
+        src/SwapConfirmation.cpp
         src/RegistryLoader.h
         src/RegistryLoader.cpp
     FIND_PACKAGES

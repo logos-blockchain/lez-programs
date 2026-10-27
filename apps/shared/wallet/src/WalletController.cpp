@@ -165,7 +165,7 @@ bool WalletController::beginOpen(const QString& config, const QString& storage)
             m_state.storagePath = storage;
             m_state.walletExists = QFileInfo::exists(storage) || session.adopted;
             m_state.isWalletOpen = true;
-            applySnapshot(session.snapshot);
+            applySnapshot(session.snapshot, true);
         }, [this, generation](WalletSyncProgress progress) {
             if (generation != m_operationGeneration)
                 return;
@@ -227,7 +227,7 @@ QString WalletController::createWallet(const QString& configPath,
             if (generation != m_operationGeneration)
                 return;
             if (snapshot.ok()) {
-                applySnapshot(snapshot);
+                applySnapshot(snapshot, true);
                 return;
             }
             qWarning() << "WalletController: initial wallet sync failed"
@@ -269,6 +269,8 @@ void WalletController::cancelSync()
     m_refreshFailures = 0;
     m_wallet.disconnect();
     m_state.isWalletOpen = false;
+    ++m_state.sessionRevision;
+    m_accountIdentities.clear();
     m_state.syncProgressKnown = false;
     m_state.syncCurrentBlock = 0;
     m_state.syncTargetBlock = 0;
@@ -289,6 +291,8 @@ void WalletController::disconnect()
     m_refreshFailures = 0;
     m_wallet.disconnect();
     m_state.isWalletOpen = false;
+    ++m_state.sessionRevision;
+    m_accountIdentities.clear();
     m_state.feePayerId.clear();
     m_accounts.clear();
     m_state.syncProgressKnown = false;
@@ -414,8 +418,20 @@ void WalletController::selectFeePayer(const QVector<WalletAccount>& accounts)
     m_state.feePayerId = best ? best->address.toLower() : QString();
 }
 
-void WalletController::applySnapshot(const WalletSnapshot& snapshot)
+void WalletController::applySnapshot(const WalletSnapshot& snapshot, bool newSession)
 {
+    // Balance-only refreshes keep the session; a new one or changed accounts end it.
+    QStringList identities;
+    identities.reserve(snapshot.accounts.size());
+    for (const WalletAccount& account : snapshot.accounts) {
+        identities.append(account.address + (account.isPublic
+            ? QStringLiteral(":public") : QStringLiteral(":private")));
+    }
+    identities.sort();
+    if (newSession || identities != m_accountIdentities)
+        ++m_state.sessionRevision;
+    m_accountIdentities = std::move(identities);
+
     m_accounts = snapshot.accounts;
     selectFeePayer(m_accounts);
     m_accountModel->replaceAccounts(snapshot.accounts);

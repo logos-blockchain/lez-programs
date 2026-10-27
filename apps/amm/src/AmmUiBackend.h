@@ -13,11 +13,11 @@
 #include "rep_AmmUiBackend_source.h"
 
 #include "WalletAccountModel.h"
+#include "WalletController.h"
 
 class LogosAPI;
 struct LogosModules;
 class LogosWalletProvider;
-class WalletController;
 class RegistryLoader;
 
 // Source-side implementation of the AmmUiBackend .rep interface.
@@ -72,6 +72,7 @@ public slots:
     QString swapExactOutput(QString defAHex, QString defBHex, QString userInputHoldingHex,
                              QString userOutputHoldingHex, QString amountOutDecimal,
                              QString maxInDecimal, QString deadlineDecimal) override;
+    QVariantMap confirmedSwap(QVariantMap request) override;
     // Current RegistryLoader token snapshot: local files, fetched registry, disk
     // cache, or no source. See .rep tokenList() for precedence and trust limits;
     // source-provided labels and ids are not checked against chain state here.
@@ -137,6 +138,7 @@ private:
     std::unique_ptr<LogosModules> m_logos;
     std::unique_ptr<LogosWalletProvider> m_wallet;
     std::unique_ptr<WalletController> m_walletController;
+    WalletUiState m_lastWalletState;
     // Known-tokens / known-pools snapshot source (local files now; remote later).
     std::unique_ptr<RegistryLoader> m_registry;
 };
