@@ -111,6 +111,7 @@ struct Fixture {
     OracleModuleImpl module;
     std::string program_response;
     std::string feed_response;
+    std::string plan_response;
 
     Fixture() {
         module._logosCoreSetLogosModulesPtr_(&modules);
@@ -133,6 +134,11 @@ struct Fixture {
     void setInfo(const json& value) {
         program_response = json{{"ok", true}, {"value", value}}.dump();
         context.mockCFunction("oracle_program_info").returns(program_response);
+    }
+    // The C mock stores only the reply's pointer, so the fixture owns it.
+    void planner(const char* name, std::string reply) {
+        plan_response = std::move(reply);
+        context.mockCFunction(name).returns(plan_response);
     }
     void inventory(const std::vector<std::string>& ids) {
         QVariantList accounts;
@@ -507,7 +513,7 @@ json planReply(const Operation& op, const std::string& program = PROGRAM) {
 // Every requirement satisfied: creation targets absent, maintained accounts
 // owned by the oracle program, and the source (when it signs) in the wallet.
 void satisfy(Fixture& f, const Operation& op) {
-    f.context.mockCFunction(op.planner).returns(planReply(op).dump());
+    f.planner(op.planner, planReply(op).dump());
     for (const auto& [id, initialized] : op.requirements)
         f.account(id, initialized ? ownedSnapshot() : accountSnapshot());
     f.inventory({SOURCE});
@@ -609,21 +615,21 @@ LOGOS_TEST(transaction_inputs_and_planner_failures_have_stable_errors) {
 
         for (const auto* code : {"invalid_window", "invalid_numeric_value", "invalid_price",
                                  "invalid_program_id", "invalid_account_id"}) {
-            f.context.mockCFunction(op.planner).returns(json{{"ok", false}, {"error", code}}.dump());
+            f.planner(op.planner, json{{"ok", false}, {"error", code}}.dump());
             assertError(invoke(f, op), code);
         }
         f.context.mockCFunction(op.planner).returns(R"({"ok":false,"error":"guest panic"})");
         assertError(invoke(f, op), "backend_error");
         // A plan for another program, or malformed identities, never submits.
-        f.context.mockCFunction(op.planner).returns(planReply(op, OTHER_PROGRAM).dump());
+        f.planner(op.planner, planReply(op, OTHER_PROGRAM).dump());
         assertError(invoke(f, op), "backend_error");
         auto broken = planReply(op);
         broken["value"]["identities"]["priceSourceIdHex"] = OTHER_PROGRAM;
-        f.context.mockCFunction(op.planner).returns(broken.dump());
+        f.planner(op.planner, broken.dump());
         assertError(invoke(f, op), "backend_error");
         auto missing_plan = planReply(op);
         missing_plan["value"].erase("plan");
-        f.context.mockCFunction(op.planner).returns(missing_plan.dump());
+        f.planner(op.planner, missing_plan.dump());
         assertError(invoke(f, op), "backend_error");
         LOGOS_ASSERT_EQ(
             f.context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
