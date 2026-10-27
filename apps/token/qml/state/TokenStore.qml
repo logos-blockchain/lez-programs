@@ -624,15 +624,191 @@ QtObject {
     property var liveDefinitions: []
     property bool liveDefinitionsLoaded: false
     readonly property var allDefinitions: root.liveDefinitionsLoaded
-        ? root.liveDefinitions.concat(root.draftDefinitions)
-        : root.fixtureDefinitions.concat(root.draftDefinitions)
+        ? root.coalesceDefinitions(root.liveDefinitions, root.draftDefinitions)
+        : root.coalesceDefinitions(root.fixtureDefinitions, root.draftDefinitions)
+
+    function normalizeHex(value) {
+        var text = String(value || "").trim().toLowerCase()
+        return /^[0-9a-f]{64}$/.test(text) ? text : ""
+    }
+
+    function decodeBase58(value) {
+        var text = String(value || "").trim()
+        if (!text.length)
+            return null
+
+        var alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+        var bytes = [0]
+        for (var index = 0; index < text.length; ++index) {
+            var digit = alphabet.indexOf(text.charAt(index))
+            if (digit < 0)
+                return null
+
+            var carry = digit
+            for (var byteIndex = 0; byteIndex < bytes.length; ++byteIndex) {
+                carry += bytes[byteIndex] * 58
+                bytes[byteIndex] = carry % 256
+                carry = Math.floor(carry / 256)
+            }
+            while (carry > 0) {
+                bytes.push(carry % 256)
+                carry = Math.floor(carry / 256)
+            }
+        }
+
+        while (bytes.length > 0 && bytes[bytes.length - 1] === 0)
+            bytes.pop()
+
+        var leadingZeroes = 0
+        while (leadingZeroes < text.length && text.charAt(leadingZeroes) === "1")
+            ++leadingZeroes
+
+        var decoded = []
+        for (var zeroIndex = 0; zeroIndex < leadingZeroes; ++zeroIndex)
+            decoded.push(0)
+        for (var decodedIndex = bytes.length - 1; decodedIndex >= 0; --decodedIndex)
+            decoded.push(bytes[decodedIndex])
+
+        return decoded.length === 32 ? decoded : null
+    }
+
+    function bytesToHex(bytes) {
+        var hex = ""
+        for (var index = 0; index < bytes.length; ++index)
+            hex += (bytes[index] < 16 ? "0" : "") + bytes[index].toString(16)
+        return hex
+    }
+
+    function canonicalIdentifier(value) {
+        var hex = root.normalizeHex(value)
+        if (hex)
+            return "hex:" + hex
+
+        var bytes = root.decodeBase58(value)
+        return bytes ? "hex:" + root.bytesToHex(bytes) : ""
+    }
+
+    function definitionIdentity(definition) {
+        if (!definition)
+            return ""
+
+        var candidates = [
+            definition.definitionHex,
+            definition.definition && definition.definition.hex,
+            definition.definitionId,
+            definition.id
+        ]
+        for (var index = 0; index < candidates.length; ++index) {
+            var identity = root.canonicalIdentifier(candidates[index])
+            if (identity)
+                return identity
+        }
+        return ""
+    }
+
+    function rawIdentifier(definition) {
+        if (!definition)
+            return ""
+        return String(definition.definitionId || definition.id || "").trim()
+    }
+
+    function definitionKey(definition, fallbackIndex) {
+        var identity = root.definitionIdentity(definition)
+        if (identity)
+            return identity
+
+        var transactionId = String(definition && definition.transactionId || "").trim()
+        if (transactionId)
+            return "transaction:" + transactionId
+
+        var rawId = root.rawIdentifier(definition)
+        return rawId ? "raw:" + rawId : "anonymous:" + fallbackIndex
+    }
+
+    function definitionPriority(definition) {
+        var source = String(definition && definition.source || "").toLowerCase()
+        if (source === "network")
+            return 3
+        if (source === "pending")
+            return 2
+        return 1
+    }
+
+    function mergeNested(preferred, fallback) {
+        if (!preferred || typeof preferred !== "object")
+            return fallback
+        if (!fallback || typeof fallback !== "object")
+            return preferred
+
+        var merged = {}
+        var key
+        for (key in fallback)
+            merged[key] = fallback[key]
+        for (key in preferred)
+            merged[key] = preferred[key]
+        return merged
+    }
+
+    function mergeDefinitions(preferred, fallback) {
+        var merged = {}
+        var key
+        for (key in fallback)
+            merged[key] = fallback[key]
+        for (key in preferred)
+            merged[key] = preferred[key]
+
+        if (preferred && preferred.definition && fallback && fallback.definition)
+            merged.definition = root.mergeNested(preferred.definition, fallback.definition)
+        if (preferred && preferred.holding && fallback && fallback.holding)
+            merged.holding = root.mergeNested(preferred.holding, fallback.holding)
+
+        if (!String(merged.transactionId || "") && fallback && fallback.transactionId)
+            merged.transactionId = fallback.transactionId
+        return merged
+    }
+
+    function coalesceDefinitions(primary, secondary) {
+        var definitions = []
+        var keys = {}
+
+        function append(definition, sourceIndex) {
+            if (!definition)
+                return
+
+            var key = root.definitionKey(definition, sourceIndex)
+            if (keys[key] === undefined) {
+                keys[key] = definitions.length
+                definitions.push(definition)
+                return
+            }
+
+            var existingIndex = keys[key]
+            var existing = definitions[existingIndex]
+            if (root.definitionPriority(definition) > root.definitionPriority(existing))
+                definitions[existingIndex] = root.mergeDefinitions(definition, existing)
+            else
+                definitions[existingIndex] = root.mergeDefinitions(existing, definition)
+        }
+
+        for (var primaryIndex = 0; primaryIndex < (primary || []).length; ++primaryIndex)
+            append(primary[primaryIndex], primaryIndex)
+        for (var secondaryIndex = 0; secondaryIndex < (secondary || []).length; ++secondaryIndex)
+            append(secondary[secondaryIndex], primary.length + secondaryIndex)
+
+        return definitions
+    }
 
     function findDefinition(id) {
-        var wantedId = String(id || "")
+        var wantedId = String(id || "").trim()
+        var wantedIdentity = root.canonicalIdentifier(wantedId)
 
         for (var index = 0; index < root.allDefinitions.length; ++index) {
             var definition = root.allDefinitions[index]
-            if (definition.id === wantedId || definition.definitionId === wantedId)
+            if (wantedIdentity && root.definitionIdentity(definition) === wantedIdentity)
+                return definition
+            if (!wantedIdentity
+                    && (String(definition.id || "").trim() === wantedId
+                        || String(definition.definitionId || "").trim() === wantedId))
                 return definition
         }
 
@@ -671,7 +847,7 @@ QtObject {
         if (!draft)
             return null
 
-        root.draftDefinitions = root.draftDefinitions.concat([draft])
+        root.draftDefinitions = root.coalesceDefinitions(root.draftDefinitions, [draft])
         return draft
     }
 
