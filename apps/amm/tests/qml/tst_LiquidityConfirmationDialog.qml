@@ -18,12 +18,14 @@ TestCase {
         }
     }
 
-    function test_protocolActionsUseDisplayLabels() {
+    function test_actionFollowsPoolExistence() {
         var summary = createTemporaryObject(summaryComponent, testCase)
         verify(summary)
 
-        compare(summary.actionText("NewDefinition"), "Create pool")
-        compare(summary.actionText("AddLiquidity"), "Add liquidity")
-        compare(summary.actionText(""), "-")
+        compare(summary.actionText(), "Create pool")
+        summary.snapshot = { "poolExists": false }
+        compare(summary.actionText(), "Create pool")
+        summary.snapshot = { "poolExists": true }
+        compare(summary.actionText(), "Add liquidity")
     }
 }

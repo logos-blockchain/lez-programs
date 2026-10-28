@@ -22,7 +22,8 @@ TestCase {
         Liquidity.NewPositionForm {
             visible: false
             width: 760
-            newPositionContext: testCase.readyContext()
+            tokens: testCase.readyTokens()
+            walletReady: true
         }
     }
 
@@ -37,72 +38,68 @@ TestCase {
         signalName: "quoteRequested"
     }
 
-    function readyContext() {
-        return {
-            "status": "ready",
-            "tokens": [
-                {
-                    "definitionId": tokenLow,
-                    "name": "Low",
-                    "totalSupply": "1000000",
-                    "balanceRaw": "1000",
-                    "selectable": true
-                },
-                {
-                    "definitionId": tokenHigh,
-                    "name": "High",
-                    "totalSupply": "1000000000000",
-                    "balanceRaw": "5000000000",
-                    "selectable": true
-                }
-            ]
-        }
+    function readyTokens() {
+        return [
+            {
+                "definitionId": tokenLow,
+                "name": "Low",
+                "totalSupply": "1000000",
+                "balance": "1000"
+            },
+            {
+                "definitionId": tokenHigh,
+                "name": "High",
+                "totalSupply": "1000000000000",
+                "balance": "5000000000"
+            }
+        ]
     }
 
-    function rawAmountsContext() {
-        return {
-            "status": "ready",
-            "tokens": [
-                {
-                    "definitionId": tokenLow,
-                    "name": "Sir Mints-a-Lot",
-                    "totalSupply": "1000000000000",
-                    "balanceRaw": "1000000000",
-                    "selectable": true
-                },
-                {
-                    "definitionId": tokenHigh,
-                    "name": "Aurora",
-                    "totalSupply": "1000000000000",
-                    "balanceRaw": "1000000000",
-                    "selectable": true
-                }
-            ]
-        }
+    function rawAmountTokens() {
+        return [
+            {
+                "definitionId": tokenLow,
+                "name": "Sir Mints-a-Lot",
+                "totalSupply": "1000000000000",
+                "balance": "1000000000"
+            },
+            {
+                "definitionId": tokenHigh,
+                "name": "Aurora",
+                "totalSupply": "1000000000000",
+                "balance": "1000000000"
+            }
+        ]
     }
 
-    function flowState(quote) {
+    // Pool existence comes from the flow's resolvePool read; default it from the
+    // quote's poolStatus unless a test passes it explicitly.
+    function flowState(quote, poolExists) {
+        var status = quote ? quote.poolStatus : undefined
+        if (poolExists === undefined)
+            poolExists = status === "active_pool" ? true
+                       : status === "missing_pool" ? false : undefined
         return {
             "quote": quote || ({}),
-            "contextLoading": false,
+            "poolExists": poolExists,
             "quoteLoading": false,
             "quoteStale": false,
             "submitting": false
         }
     }
 
-    function createEmptyForm(context) {
+    function createEmptyForm(tokens) {
         var form = createTemporaryObject(formComponent, testCase, {
             "flowState": flowState(({})),
-            "newPositionContext": context || readyContext()
+            "tokens": tokens || readyTokens()
         })
         verify(form)
         wait(0)
         return form
     }
 
-    function createForm(context) {
-        var form = createEmptyForm(context)
+    function createForm(tokens) {
+        var form = createEmptyForm(tokens)
         form.selectToken("A", tokenLow)
         form.selectToken("B", tokenHigh)
         compare(form.selectedTokenAId, tokenLow)
@@ -175,7 +172,7 @@ TestCase {
     }
 
     function test_missingPoolAcceptsLargeDirectAmountsFromEitherSide() {
-        var form = createForm(rawAmountsContext())
+        var form = createForm(rawAmountTokens())
         form.priceAmountA = "15"
         form.priceAmountB = "10"
         form.flowState = flowState({
@@ -210,7 +207,7 @@ TestCase {
     }
 
     function test_missingPoolRoundsPairedRawAmounts() {
-        var form = createForm(rawAmountsContext())
+        var form = createForm(rawAmountTokens())
         form.priceAmountA = "15"
         form.priceAmountB = "10"
         form.flowState = flowState({
@@ -330,22 +327,9 @@ TestCase {
         compare(form.amountA, "3")
 
         form.editMissingAmount("A", "2")
-        form.flowState = {
-            "quote": {
-                "status": "ok",
-                "tokenAId": tokenHigh,
-                "tokenBId": tokenLow,
-                "poolStatus": "missing_pool",
-                "minimumAmountA": "2000000",
-                "minimumAmountB": "3",
-                "actualAmountA": "2000000",
-                "actualAmountB": "3"
-            },
-            "contextLoading": false,
-            "quoteLoading": false,
-            "quoteStale": true,
-            "submitting": false
-        }
+        var staleState = flowState(quote)
+        staleState.quoteStale = true
+        form.flowState = staleState
         wait(0)
 
         compare(form.amountA, "2")
@@ -378,7 +362,6 @@ TestCase {
 
         compare(form.fieldError("amountB"), "")
         compare(form.formErrorText(), "")
-        compare(form.accountPreview().length, 0)
     }
 
     function test_activePoolEditUsesDisplayReserveRatio() {
@@ -421,6 +404,9 @@ TestCase {
 
     function test_activePoolEditRecoversAfterInvalidQuote() {
         var form = createForm()
+        // As in the app, the pool resolves before its first quote lands.
+        form.flowState = flowState(({}), true)
+        wait(0)
         form.flowState = flowState({
             "status": "ok",
             "tokenAId": tokenHigh,
@@ -440,7 +426,7 @@ TestCase {
             "code": "value_must_be_positive",
             "tokenAId": tokenHigh,
             "tokenBId": tokenLow
-        })
+        }, true)
         wait(0)
 
         form.finishActiveAmount("B", "1")
@@ -457,49 +443,63 @@ TestCase {
         quoteRequestedSpy.target = form
         quoteRequestedSpy.clear()
 
-        form.flowState = {
-            "quote": ({}),
-            "contextLoading": false,
-            "quoteLoading": true,
-            "quoteStale": true,
-            "submitting": false
-        }
+        var state = flowState(({}))
+        state.quoteLoading = true
+        state.quoteStale = true
+        form.flowState = state
         wait(0)
 
         compare(quoteRequestedSpy.count, 0)
     }
 
-    function test_contextFailureFinishesTokenResolution() {
+    function test_failedTokenResolutionReportsError() {
         var form = createForm()
         form.resolvingTokenId = tokenThird
         form.resolvingTokenSide = "A"
 
-        form.newPositionContext = {
-            "status": "error",
-            "code": "config_unavailable",
-            "tokens": []
-        }
-        form.finishTokenResolution(true)
+        form.failTokenResolution("token_definition_unreadable")
         wait(0)
 
         compare(form.resolvingTokenId, "")
         compare(form.resolvingTokenSide, "")
-        compare(form.tokenResolutionError, form.issueText("config_unavailable"))
+        compare(form.tokenResolutionError, form.issueText("token_definition_unreadable"))
+        compare(form.tokenResolutionErrorSide, "A")
     }
 
-    function test_staleContextDoesNotFinishNewerTokenResolution() {
+    function test_resolvedTokenIsSelected() {
+        var form = createForm()
+        form.tokens = readyTokens().concat([{
+            "definitionId": tokenThird,
+            "name": "Third",
+            "totalSupply": "1000000",
+            "balance": "100"
+        }])
+        form.resolvingTokenId = tokenThird
+        form.resolvingTokenSide = "B"
+
+        form.finishTokenResolution({
+            "definitionId": tokenThird,
+            "name": "Third",
+            "totalSupply": "1000000"
+        })
+        wait(0)
+
+        compare(form.resolvingTokenId, "")
+        compare(form.selectedTokenBId, tokenThird)
+        compare(form.tokenResolutionError, "")
+    }
+
+    function test_tokenListUpdateDoesNotFinishTokenResolution() {
         var form = createForm()
         form.resolvingTokenId = tokenThird
         form.resolvingTokenSide = "B"
 
-        form.newPositionContext = {
-            "status": "ready",
-            "tokens": [{
-                "definitionId": tokenLow,
-                "name": "Earlier token",
-                "selectable": true
-            }]
-        }
+        form.tokens = [{
+            "definitionId": tokenLow,
+            "name": "Earlier token",
+            "totalSupply": "1000000",
+            "balance": "1000"
+        }]
         wait(0)
 
         compare(form.resolvingTokenId, tokenThird)
@@ -513,27 +513,21 @@ TestCase {
         form.amountB = "34"
         form.minimumAmountA = "12"
         form.minimumAmountB = "34"
-        form.confirmedPoolStatus = "active_pool"
 
-        form.newPositionContext = {
-            "status": "ready",
-            "tokens": [
-                {
-                    "definitionId": tokenHigh,
-                    "name": "High",
-                    "totalSupply": "1000000000000",
-                    "balanceRaw": "5000000000",
-                    "selectable": true
-                },
-                {
-                    "definitionId": tokenThird,
-                    "name": "Third",
-                    "totalSupply": "1000000",
-                    "balanceRaw": "100",
-                    "selectable": true
-                }
-            ]
-        }
+        form.tokens = [
+            {
+                "definitionId": tokenHigh,
+                "name": "High",
+                "totalSupply": "1000000000000",
+                "balance": "5000000000"
+            },
+            {
+                "definitionId": tokenThird,
+                "name": "Third",
+                "totalSupply": "1000000",
+                "balance": "100"
+            }
+        ]
         wait(0)
 
         compare(form.selectedTokenAId, "")
@@ -542,27 +536,21 @@ TestCase {
         compare(form.amountB, "")
         compare(form.minimumAmountA, "")
         compare(form.minimumAmountB, "")
-        compare(form.confirmedPoolStatus, "")
     }
 
-    function test_networkFailurePreservesPairDraft() {
+    function test_refreshedTokenListKeepsPairDraft() {
         var form = createForm()
         form.amountA = "12"
         form.amountB = "34"
-        form.confirmedPoolStatus = "active_pool"
 
-        form.newPositionContext = {
-            "status": "network_mismatch",
-            "tokens": []
-        }
+        // A refresh (e.g. a wallet toggle) republishes the same tokens.
+        form.tokens = readyTokens()
         wait(0)
 
         compare(form.selectedTokenAId, tokenLow)
         compare(form.selectedTokenBId, tokenHigh)
         compare(form.amountA, "12")
         compare(form.amountB, "34")
-        compare(form.confirmedPoolStatus, "active_pool")
-        verify(form.contextBlocksForm())
     }
 
     function test_submittedBase58TransactionIdIsCopied() {

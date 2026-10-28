@@ -5,6 +5,11 @@ syntax, and the complete module build.
 
 ## Commands
 
+`make test-apps` runs the wallet, AMM and token C++ and QML tests without
+building the app (set `LOGOS_DESIGN_SYSTEM` to a built design system to skip
+building it). The commands below also cover the Rust client and the full
+module build.
+
 Run from the repository root:
 
 ```bash

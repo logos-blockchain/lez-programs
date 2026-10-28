@@ -505,10 +505,33 @@
         // (if oracleModSysPkgs ? default then { oracle-module = oracleModSysPkgs.default; } else { })
         // oracleModAliasPkgs
       ) crateOutputs.packages;
+      # Toolchain for scripts/test-apps.sh. A mkShell (unlike `nix shell`) runs the
+      # setup hooks, so CMake finds every input, including the OpenGL that Qt Gui
+      # requires on Linux.
+      mergedDevShells = builtins.mapAttrs (
+        system: shells:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        shells // {
+          app-tests = pkgs.mkShell {
+            packages = with pkgs; [
+              qt6.qtbase
+              qt6.qtdeclarative
+              qt6.qtsvg
+              qt6.qtremoteobjects
+              libGL
+              cmake
+              ninja
+            ];
+          };
+        }
+      ) (appOutputs.devShells or { });
     in
-    (builtins.removeAttrs appOutputs [ "apps" "packages" ])
+    (builtins.removeAttrs appOutputs [ "apps" "packages" "devShells" ])
     // {
       apps = mergedApps;
       packages = mergedPackages;
+      devShells = mergedDevShells;
     };
 }
