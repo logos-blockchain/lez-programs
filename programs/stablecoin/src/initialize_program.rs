@@ -796,7 +796,7 @@ mod tests {
     fn rejects_stability_fee_above_the_yearly_cap() {
         let mut p = ok_params();
         p.initial_stability_fee_per_millisecond =
-            crate::checks::MAX_STABILITY_FEE_PER_MILLISECOND + 1;
+            crate::checks::MAXIMUM_STABILITY_FEE_PER_MILLISECOND + 1;
         let _ = invoke(p);
     }
 

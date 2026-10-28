@@ -1363,6 +1363,7 @@ This design is the input to the writing-plans skill. The plan should:
 3. Include the `idl-gen` regeneration step per the `Makefile` `idl` target.
 4. Include integration test coverage for the multi-step flows (open → generate → repay → close, oracle staleness scenarios, frozen scenarios, admin parameter sweeps).
 5. Lock the actual numerical bounds of § 8 before they're hardcoded into the program (review with operations / risk).
+6. Tune `Ki` against `INTEGRAL_CLAMP`. With `INTEGRAL_CLAMP = RATE_DELTA_CLAMP` (`10^16`), the maximum `Ki` (`FIXED_POINT_ONE`) swings the integral from one bound to the other within an hour on an error of about `5.6 × 10^9` raw units (`≈ 5.6 × 10^-18` of `FIXED_POINT_ONE`). At the gain cap the controller is therefore effectively bang-bang. That is acceptable under the §8 rate clamp, but useful `Ki` values sit many orders of magnitude below the cap.
 
 ## 16. Sample scenarios
 
