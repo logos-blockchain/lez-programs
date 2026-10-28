@@ -23,7 +23,7 @@ use crate::accrue_stability_fee::read_clock;
 /// Permissionless but strict: unlike [`crate::refresh_globals`], every gate here
 /// is hard. It panics when called before
 /// `minimum_milliseconds_between_rate_updates` has elapsed, and when the oracle
-/// is stale or reports a zero price — a keeper may want that as an explicit
+/// is future-dated, stale, or reports a zero price — a keeper may want that as an explicit
 /// failure signal rather than a silent skip. Never blocked by the frozen flag.
 ///
 /// See spec §10.3 for the full account contract and panic conditions.
@@ -56,8 +56,11 @@ pub fn update_redemption_rate(
     // Hard gates. `refresh_globals` treats these same conditions as soft skips;
     // here they are failures (spec §10.3 vs §10.3a), like RAI's
     // `RateSetter.updateRate` reverting on an invalid oracle value.
+    let oracle_age = now
+        .checked_sub(oracle.timestamp)
+        .expect("Market price oracle observation is dated in the future");
     assert!(
-        now.saturating_sub(oracle.timestamp) <= params.maximum_oracle_price_age_milliseconds,
+        oracle_age <= params.maximum_oracle_price_age_milliseconds,
         "Market price oracle observation is stale"
     );
     assert!(oracle.price > 0, "Market price oracle reports zero price");
@@ -555,6 +558,61 @@ mod tests {
             protocol_parameters_account(ParameterOverrides::default()),
             redemption_price_state_account(T0),
             oracle_account(NOW - 1_000_000, ORACLE_PRICE_BELOW_ANCHOR),
+            clock_account(NOW),
+            STABLECOIN_PROGRAM_ID,
+        );
+    }
+
+    #[test]
+    fn rejects_future_observations_including_timestamp_extremes() {
+        // The configured alternative producer can publish any timestamp; unlike
+        // the canonical TWAP producer, it need not use the system clock.
+        for (now, timestamp) in [(NOW, NOW + 1), (NOW, u64::MAX), (0, 1)] {
+            let result = std::panic::catch_unwind(|| {
+                update_redemption_rate(
+                    caller_account(),
+                    protocol_parameters_account(ParameterOverrides::default()),
+                    redemption_price_state_account(T0),
+                    oracle_account(timestamp, ORACLE_PRICE_BELOW_ANCHOR),
+                    clock_account(now),
+                    STABLECOIN_PROGRAM_ID,
+                )
+            });
+            let error = result.expect_err("future observation must fail before controller math");
+            assert_eq!(
+                error.downcast_ref::<String>().map(String::as_str),
+                Some("Market price oracle observation is dated in the future")
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_observations_at_now_and_the_exact_maximum_age() {
+        let maximum_age = crate::test_support::TEST_MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS;
+        for timestamp in [NOW, NOW - maximum_age] {
+            let (post_states, calls) = update_redemption_rate(
+                caller_account(),
+                protocol_parameters_account(ParameterOverrides::default()),
+                redemption_price_state_account(T0),
+                oracle_account(timestamp, ORACLE_PRICE_BELOW_ANCHOR),
+                clock_account(NOW),
+                STABLECOIN_PROGRAM_ID,
+            );
+            assert!(calls.is_empty());
+            let state = RedemptionPriceState::try_from(post_states[2].post_data()).unwrap();
+            assert_eq!(state.last_updated_at, NOW);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Market price oracle observation is stale")]
+    fn rejects_one_millisecond_beyond_the_maximum_age() {
+        let maximum_age = crate::test_support::TEST_MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS;
+        let _ = update_redemption_rate(
+            caller_account(),
+            protocol_parameters_account(ParameterOverrides::default()),
+            redemption_price_state_account(T0),
+            oracle_account(NOW - maximum_age - 1, ORACLE_PRICE_BELOW_ANCHOR),
             clock_account(NOW),
             STABLECOIN_PROGRAM_ID,
         );
