@@ -32,6 +32,8 @@ const std::string CALLER_ID_HEX(64, '9');
 const std::string OTHER_CALLER_ID_HEX(64, 'a');
 const std::string TRANSACTION_ID_HEX(64, 'b');
 const std::string COLLATERAL_ID_HEX(64, '5');
+const std::string STABLECOIN_DEFINITION_ID_HEX(64, '5');
+const std::string MASTER_HOLDING_ID_HEX(64, '6');
 
 const std::string OWNER_ID_HEX(64, '2');
 const std::string POSITION_ID_HEX(64, '3');
@@ -228,14 +230,16 @@ std::vector<std::string> accrueAccounts() {
         CALLER_ID_HEX,
         PROTOCOL_PARAMETERS_ID_HEX,
         ACCUMULATOR_ID_HEX,
+        STABLECOIN_DEFINITION_ID_HEX,
+        MASTER_HOLDING_ID_HEX,
         CLOCK_ID_HEX,
     };
 }
 
 std::vector<std::string> repayDebtAccounts() {
     return {CALLER_ID_HEX, std::string(64, 'c'), COLLATERAL_ID_HEX,
-            OTHER_CALLER_ID_HEX, ACCUMULATOR_ID_HEX, PROTOCOL_PARAMETERS_ID_HEX,
-            CLOCK_ID_HEX};
+            OTHER_CALLER_ID_HEX, MASTER_HOLDING_ID_HEX, ACCUMULATOR_ID_HEX,
+            PROTOCOL_PARAMETERS_ID_HEX, CLOCK_ID_HEX};
 }
 
 LogosMap repayDebtRequest() {
@@ -275,6 +279,8 @@ std::vector<std::string> refreshAccounts() {
         CALLER_ID_HEX,
         PROTOCOL_PARAMETERS_ID_HEX,
         ACCUMULATOR_ID_HEX,
+        STABLECOIN_DEFINITION_ID_HEX,
+        MASTER_HOLDING_ID_HEX,
         REDEMPTION_STATE_ID_HEX,
         ORACLE_ID_HEX,
         CLOCK_ID_HEX,
@@ -1404,7 +1410,7 @@ struct WithdrawReadMocks {
 namespace {
 std::vector<std::string> generateAccounts() {
     return {CALLER_ID_HEX,std::string(64,'c'),COLLATERAL_ID_HEX,OTHER_CALLER_ID_HEX,
-        ACCUMULATOR_ID_HEX,REDEMPTION_STATE_ID_HEX,ORACLE_ID_HEX,PROTOCOL_PARAMETERS_ID_HEX,CLOCK_ID_HEX};
+        MASTER_HOLDING_ID_HEX,ACCUMULATOR_ID_HEX,REDEMPTION_STATE_ID_HEX,PROTOCOL_PARAMETERS_ID_HEX,CLOCK_ID_HEX};
 }
 LogosMap generateRequest() {
     return {{"ownerId",CALLER_ID_HEX},{"positionNonce","7"},{"userStablecoinHoldingId",OTHER_CALLER_ID_HEX},{"amount","1"},{"feePayerId",CALLER_ID_HEX}};
@@ -1412,7 +1418,7 @@ LogosMap generateRequest() {
 struct GenerateReadMocks {
     const std::string info=successEnvelope(programInfoValue());
     const std::string addresses=successEnvelope({{"positionIdHex",std::string(64,'c')}});
-    const std::string parameters=successEnvelope({{"stablecoinDefinitionIdHex",COLLATERAL_ID_HEX},{"marketPriceOracleIdHex",ORACLE_ID_HEX}});
+    const std::string parameters=successEnvelope({{"stablecoinDefinitionIdHex",COLLATERAL_ID_HEX}});
     explicit GenerateReadMocks(LogosTestContext& context) {
         context.mockCFunction("stablecoin_program_info").returns(info);
         context.mockCFunction("stablecoin_position_addresses").returns(addresses);
@@ -1486,13 +1492,16 @@ std::vector<std::string> adminAccounts(const AdminSetterCase& setter) {
     if (setter.oracle) ids.push_back(ORACLE_ID_HEX);
     if (setter.fee) {
         ids.push_back(ACCUMULATOR_ID_HEX);
+        ids.push_back(STABLECOIN_DEFINITION_ID_HEX);
+        ids.push_back(MASTER_HOLDING_ID_HEX);
         ids.push_back(CLOCK_ID_HEX);
     }
     return ids;
 }
 struct AdminReadMocks {
     const std::string info = successEnvelope(programInfoValue());
-    const std::string decoded = successEnvelope({{"adminIdHex", CALLER_ID_HEX}, {"isFrozen", true}});
+    const std::string decoded = successEnvelope({{"adminIdHex", CALLER_ID_HEX},
+        {"stablecoinDefinitionIdHex", STABLECOIN_DEFINITION_ID_HEX}, {"isFrozen", true}});
     explicit AdminReadMocks(LogosTestContext& context) {
         context.mockCFunction("stablecoin_program_info").returns(info);
         context.mockCFunction("stablecoin_decode_protocol_parameters").returns(decoded);
@@ -2050,7 +2059,9 @@ LOGOS_TEST(generate_debt_reads_live_accounts_and_signs_only_owner) {
     const LogosMap response=module.generateDebt(generateRequest());
     LOGOS_ASSERT_EQ(response["status"].get<std::string>(),std::string("ok"));
     LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(),TRANSACTION_ID_HEX);
-    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","get_account_public"),8);
+    // Borrowing does not read the market-price oracle (spec §10.7).
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","get_account_public"),7);
+    LOGOS_ASSERT_TRUE(!context.moduleCalledWith("lez_core","get_account_public",QVariantList{QVariant(QString::fromStdString(ORACLE_ID_HEX))}));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","list_accounts"),1);
     LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core","send_generic_public_transaction",submissionArguments(generateAccounts(),15)));
 }
@@ -2076,7 +2087,7 @@ LOGOS_TEST(generate_debt_passes_stable_preflight_errors_and_validates_requests) 
         LogosTestContext context("stablecoin_module");LogosModules modules(context.api());StablecoinModuleImpl module;attachModules(module,modules);
         LogosMap request=generateRequest();request.erase(field);assertError(module.generateDebt(request),"bad_request");
     }
-    for(const std::string& error:{"oracle_stale","oracle_future","protocol_frozen","debt_pricing_arithmetic_error",
+    for(const std::string& error:{"protocol_frozen","debt_pricing_arithmetic_error",
         "normalized_debt_overflow","stablecoin_supply_overflow","stablecoin_balance_overflow",
         "invalid_stablecoin_mint_authority","redemption_price_zero","position_undercollateralized","invalid_numeric_value"}) {
         LogosTestContext context("stablecoin_module");LogosModules modules(context.api());StablecoinModuleImpl module;attachModules(module,modules);

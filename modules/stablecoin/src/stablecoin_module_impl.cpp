@@ -799,7 +799,10 @@ LogosMap StablecoinModuleImpl::adminPlanAndSubmit(StablecoinOperation planner,
         }
         planner_request["stabilityFeeAccumulator"] = accumulator;
         planner_request["clock"] = clock;
+        // The accrual mints into the surplus holding (stablecoin definition + master holding).
         expected.push_back(accumulator_id);
+        expected.push_back(jsonString(decoded.value, "stablecoinDefinitionIdHex"));
+        expected.push_back(jsonString(info, "stablecoinMasterHoldingIdHex"));
         expected.push_back(clock_id);
     }
     if (!new_oracle_id.empty()) {
@@ -911,7 +914,9 @@ LogosMap StablecoinModuleImpl::generateDebt(const LogosMap& request) {
         const std::string accumulator_id = jsonString(info, "stabilityFeeAccumulatorIdHex");
         const std::string redemption_id = jsonString(info, "redemptionPriceStateIdHex");
         const std::string clock_id = jsonString(info, "clockIdHex");
-        for (const auto& account_id : {position_id, parameters_id, accumulator_id, redemption_id, clock_id}) {
+        const std::string master_holding_id = jsonString(info, "stablecoinMasterHoldingIdHex");
+        for (const auto& account_id : {position_id, parameters_id, accumulator_id, redemption_id, clock_id,
+                 master_holding_id}) {
             if (!stablecoin_module::detail::isValidAccountIdHex(account_id)) return publicError("backend_error");
         }
         const json parameters = readPublicAccount(parameters_id);
@@ -921,19 +926,16 @@ LogosMap StablecoinModuleImpl::generateDebt(const LogosMap& request) {
             {{"stablecoinProgramId", info["programIdHex"]}, {"protocolParameters", parameters}});
         if (!decoded.ok) return publicError(stablecoin_module::detail::stableFfiError(decoded.error));
         const std::string definition_id = jsonString(decoded.value, "stablecoinDefinitionIdHex");
-        const std::string oracle_id = jsonString(decoded.value, "marketPriceOracleIdHex");
-        if (!stablecoin_module::detail::isValidAccountIdHex(definition_id)
-            || !stablecoin_module::detail::isValidAccountIdHex(oracle_id)) return publicError("backend_error");
+        if (!stablecoin_module::detail::isValidAccountIdHex(definition_id)) return publicError("backend_error");
         const json position = readPublicAccount(position_id);
         const json definition = readPublicAccount(definition_id);
         const json destination = readPublicAccount(destination_id);
         const json accumulator = readPublicAccount(accumulator_id);
         const json redemption = readPublicAccount(redemption_id);
-        const json oracle = readPublicAccount(oracle_id);
         const json clock = readPublicAccount(clock_id);
         if (jsonString(position, "status") != "ok" || jsonString(definition, "status") != "ok"
             || jsonString(destination, "status") != "ok" || jsonString(accumulator, "status") != "ok"
-            || jsonString(redemption, "status") != "ok" || jsonString(oracle, "status") != "ok"
+            || jsonString(redemption, "status") != "ok"
             || jsonString(clock, "status") != "ok") return publicError("account_read_failed");
         const FfiResult planned = callStablecoin(stablecoin_generate_debt_plan, {
             {"stablecoinProgramId", info["programIdHex"]}, {"ownerId", owner},
@@ -941,12 +943,12 @@ LogosMap StablecoinModuleImpl::generateDebt(const LogosMap& request) {
             {"userStablecoinHoldingId", destination_id}, {"position", position},
             {"stablecoinDefinition", definition}, {"userStablecoinHolding", destination},
             {"stabilityFeeAccumulator", accumulator}, {"redemptionPriceState", redemption},
-            {"marketPriceOracle", oracle}, {"protocolParameters", parameters}, {"clock", clock},
+            {"protocolParameters", parameters}, {"clock", clock},
         });
         if (!planned.ok) return publicError(stablecoin_module::detail::stableFfiError(planned.error));
         if (jsonString(planned.value, "programId") != jsonString(info, "programIdHex")) return publicError("backend_error");
         const std::vector<std::string> expected = {owner, position_id, definition_id, destination_id,
-            accumulator_id, redemption_id, oracle_id, parameters_id, clock_id};
+            master_holding_id, accumulator_id, redemption_id, parameters_id, clock_id};
         const auto account_ids = planned.value.find("accountIds");
         if (account_ids == planned.value.end() || !account_ids->is_array() || account_ids->size() != expected.size()) {
             return publicError("backend_error");
@@ -1070,9 +1072,11 @@ LogosMap StablecoinModuleImpl::repayDebt(const LogosMap& request) {
         const std::string parameters_id = jsonString(info, "protocolParametersIdHex");
         const std::string accumulator_id = jsonString(info, "stabilityFeeAccumulatorIdHex");
         const std::string clock_id = jsonString(info, "clockIdHex");
+        const std::string master_holding_id = jsonString(info, "stablecoinMasterHoldingIdHex");
         if (!stablecoin_module::detail::isValidAccountIdHex(parameters_id)
             || !stablecoin_module::detail::isValidAccountIdHex(accumulator_id)
-            || !stablecoin_module::detail::isValidAccountIdHex(clock_id)) {
+            || !stablecoin_module::detail::isValidAccountIdHex(clock_id)
+            || !stablecoin_module::detail::isValidAccountIdHex(master_holding_id)) {
             return publicError("backend_error");
         }
         const json parameters = readPublicAccount(parameters_id);
@@ -1129,7 +1133,8 @@ LogosMap StablecoinModuleImpl::repayDebt(const LogosMap& request) {
 
         const auto account_ids = planned.value.find("accountIds");
         const std::vector<std::string> expected_account_ids = {
-            owner, position_id, definition_id, holding_id, accumulator_id, parameters_id, clock_id,
+            owner, position_id, definition_id, holding_id, master_holding_id, accumulator_id,
+            parameters_id, clock_id,
         };
         if (account_ids == planned.value.end() || !account_ids->is_array()
             || account_ids->size() != expected_account_ids.size()) {
@@ -1184,7 +1189,7 @@ LogosMap StablecoinModuleImpl::accrueStabilityFee(const std::string& caller_id,
             },
             jsonString(info, "programIdHex"),
             fee_payer,
-            4);
+            6);
     });
 }
 
@@ -1315,7 +1320,7 @@ LogosMap StablecoinModuleImpl::refreshGlobals(const std::string& caller_id,
             },
             jsonString(info, "programIdHex"),
             fee_payer,
-            6);
+            8);
     });
 }
 
