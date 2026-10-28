@@ -28,7 +28,7 @@ mod stablecoin {
     )]
     pub fn initialize_program(
         ctx: ProgramContext,
-        #[account(signer)] admin: AccountWithMetadata,
+        #[account(signer)] deployment_authority: AccountWithMetadata,
         #[account(init)] protocol_parameters: AccountWithMetadata,
         #[account(init)] stability_fee_accumulator: AccountWithMetadata,
         #[account(init)] redemption_price_state: AccountWithMetadata,
@@ -46,10 +46,11 @@ mod stablecoin {
         maximum_oracle_price_age_milliseconds: u64,
         initial_redemption_price: u128,
         stablecoin_name: String,
+        initial_admin_account_id: nssa_core::account::AccountId,
     ) -> SpelResult {
         let (post_states, chained_calls) =
             stablecoin_program::initialize_program::initialize_program(
-                admin,
+                deployment_authority,
                 protocol_parameters,
                 stability_fee_accumulator,
                 redemption_price_state,
@@ -69,6 +70,7 @@ mod stablecoin {
                     maximum_oracle_price_age_milliseconds,
                     initial_redemption_price,
                     stablecoin_name: &stablecoin_name,
+                    initial_admin_account_id,
                 },
             );
         Ok(spel_framework::SpelOutput::execute(

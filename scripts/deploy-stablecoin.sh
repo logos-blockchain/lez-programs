@@ -39,18 +39,20 @@
 # deployed header, not by its ImageID. Each deploy here writes the binary to fresh
 # segment accounts plus a fresh header (`wallet program-loader deploy`), so every
 # run deploys a new program with new PDAs. Pass *_PROGRAM_ID to reuse a program
-# that is already deployed instead.
+# that is already deployed instead. Reusing an uninitialized stablecoin header
+# requires its authorization key in the wallet; that header signs bootstrap.
 #
 # Prerequisites (managed by you, outside this script):
 #   - `wallet` and `spel` on PATH, matching the LEZ version this repo pins, and `cargo`
 #   - the wallet (LEE_WALLET_HOME_DIR) configured and holding the admin,
-#     oracle-source and fee-payer accounts
+#     oracle-source and fee-payer accounts, plus the header key when reusing an
+#     uninitialized STABLECOIN_PROGRAM_ID
 #   - a funded fee payer: LEZ v0.2.5 charges every public transaction, and the
 #     freshly created deploy accounts hold nothing to pay with
 #   - guest binaries built (`make build-programs`) and IDLs present (`make idl`)
 #
 # Required inputs (each accepts a base58 account id or a wallet account label):
-#   STABLECOIN_ADMIN            signs initialize_program; becomes the admin
+#   STABLECOIN_ADMIN            selected initial admin; need not sign bootstrap
 #   STABLECOIN_ORACLE_SOURCE    signs create_oracle_price_account; owns the price
 #   COLLATERAL_DEFINITION       the fungible collateral token definition
 #
@@ -456,7 +458,7 @@ inspect "$TWAP_IDL" "$MARKET_PRICE_ORACLE" "OraclePriceAccount"
 ###############################################################################
 create_tx "initialize stablecoin program" "$STABLECOIN_IDL" "$PROTOCOL_PARAMETERS" ProtocolParameters -- \
   spel --idl "$STABLECOIN_IDL" --program "$STABLECOIN_PID" --fee-payer "$FEE_PAYER_ID" -- initialize-program \
-    --admin "$ADMIN" \
+    --deployment-authority "$STABLECOIN_PID" \
     --protocol-parameters "$PROTOCOL_PARAMETERS" \
     --stability-fee-accumulator "$STABILITY_FEE_ACCUMULATOR" \
     --redemption-price-state "$REDEMPTION_PRICE_STATE" \
@@ -474,6 +476,7 @@ create_tx "initialize stablecoin program" "$STABLECOIN_IDL" "$PROTOCOL_PARAMETER
     --maximum-oracle-price-age-milliseconds "$STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS" \
     --initial-redemption-price "$STABLECOIN_INITIAL_REDEMPTION_PRICE" \
     --stablecoin-name "$STABLECOIN_NAME" \
+    --initial-admin-account-id "$ADMIN" \
   || die "stablecoin not initialized (see the output above and the sequencer log)"
 
 ###############################################################################
