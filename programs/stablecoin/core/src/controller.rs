@@ -202,9 +202,9 @@ mod tests {
 
     #[test]
     fn a_saturated_integral_unwinds_as_soon_as_the_error_reverses() {
-        // Saturated upward, then one tick of a reversed error. With Ki = 1.0 and
-        // a tiny error held for long enough, the integral moves by more than two
-        // clamps, so it lands at the opposite bound and the rate falls at once.
+        // Saturated upward, then one hour of a reversed error. With Ki = 1.0 the
+        // integral moves by 1e12 × 3.6e6 = 3.6e18, about 360 clamps, so it lands
+        // at the opposite bound and the rate falls at once.
         let output = run_controller_tick(
             FIXED_POINT_ONE,
             FIXED_POINT_ONE + 1_000_000_000_000,
@@ -215,6 +215,31 @@ mod tests {
         );
         assert_eq!(output.controller_integral_term, -INTEGRAL_CLAMP);
         assert!(output.redemption_rate_per_millisecond < FIXED_POINT_ONE);
+    }
+
+    #[test]
+    fn a_saturated_integral_unwinds_smoothly_on_a_small_reversed_error() {
+        // Saturated upward, then one second of a small reversed error: the
+        // integral moves by 1e9 × 1e3 = 1e12 and ends just below the clamp. The
+        // rate must follow on the same tick. With the old 1e33 integral clamp the
+        // term would still sit far above RATE_DELTA_CLAMP and the rate would stay
+        // pinned at the upper bound.
+        let output = run_controller_tick(
+            FIXED_POINT_ONE,
+            FIXED_POINT_ONE + 1_000_000_000,
+            INTEGRAL_CLAMP,
+            0,
+            FIXED_POINT_ONE as i128,
+            1_000,
+        );
+        assert_eq!(
+            output.controller_integral_term,
+            INTEGRAL_CLAMP - 1_000_000_000_000
+        );
+        assert!(
+            output.redemption_rate_per_millisecond < FIXED_POINT_ONE + RATE_DELTA_CLAMP as u128
+        );
+        assert!(output.redemption_rate_per_millisecond > FIXED_POINT_ONE);
     }
 
     #[test]

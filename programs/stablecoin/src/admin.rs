@@ -504,7 +504,7 @@ mod tests {
     fn accepts_both_band_endpoints() {
         for rate in [
             FIXED_POINT_ONE,
-            crate::checks::MAX_STABILITY_FEE_PER_MILLISECOND,
+            crate::checks::MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
         ] {
             let (post_states, _) = set_rate(
                 admin_account(),
@@ -537,7 +537,7 @@ mod tests {
             parameters_at(OLD_RATE),
             accumulator_account(ACCUMULATOR_ANCHOR, T0),
             NOW,
-            crate::checks::MAX_STABILITY_FEE_PER_MILLISECOND + 1,
+            crate::checks::MAXIMUM_STABILITY_FEE_PER_MILLISECOND + 1,
         );
     }
 
