@@ -71,6 +71,9 @@ fn request(amount: Value) -> RepayDebtPlanRequest {
         opened_at: 7,
     };
     let parameters = ProtocolParameters {
+        schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+        minimum_debt_amount: 1,
+        debt_ceiling: u128::MAX,
         admin_account_id: id(1),
         freeze_authority_account_id: id(2),
         stablecoin_definition_id: definition_id,
@@ -113,9 +116,10 @@ fn request(amount: Value) -> RepayDebtPlanRequest {
             compute_stability_fee_accumulator_pda(PROGRAM),
             PROGRAM,
             Data::from(&StabilityFeeAccumulator {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                total_normalized_debt: 100,
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE * 3 / 2,
                 last_accrued_at: NOW,
-                total_normalized_debt: 1 << 100,
             }),
         ),
         protocol_parameters: read(
@@ -320,6 +324,16 @@ fn repay_plan_executes_exact_burn_and_floor_debt_change_while_frozen() {
         let mut expected = position(&request);
         expected.normalized_debt_amount = remaining;
         assert_eq!(updated, expected);
+        let total = StabilityFeeAccumulator::try_from(
+            &post_account(posts.get(5).expect("accumulator post"), PROGRAM).data,
+        )
+        .expect("accumulator");
+        assert_eq!(total.total_normalized_debt, remaining);
+        assert_eq!(
+            total.accumulated_rate_at_last_accrual,
+            FIXED_POINT_ONE * 3 / 2
+        );
+        assert_eq!(total.last_accrued_at, NOW);
         // Any accrued fees are minted to the surplus holding first; the burn is last.
         let call = calls.last().expect("a chained burn");
         assert_eq!(call.program_account_id, TOKEN_PROGRAM);
@@ -376,9 +390,10 @@ fn repay_plan_preserves_full_width_integers_and_rejects_lossy_values() {
         replace_data(
             &mut request.stability_fee_accumulator,
             Data::from(&StabilityFeeAccumulator {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                total_normalized_debt: u128::MAX,
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
                 last_accrued_at: NOW,
-                total_normalized_debt: 1 << 100,
             }),
         );
         let plan = repay_debt_plan(request).expect("full width amount");
@@ -418,6 +433,18 @@ fn repay_plan_projects_current_fees_and_reports_unrepresentable_arithmetic() {
     let mut state = position(&request);
     state.normalized_debt_amount = 1_000_000_000_000;
     replace_data(&mut request.position, Data::from(&state));
+    let mut accumulator = StabilityFeeAccumulator::try_from(
+        &decode_account(&request.stability_fee_accumulator)
+            .expect("account")
+            .1
+            .data,
+    )
+    .expect("accumulator");
+    accumulator.total_normalized_debt = state.normalized_debt_amount;
+    replace_data(
+        &mut request.stability_fee_accumulator,
+        Data::from(&accumulator),
+    );
     error(request.clone(), "repay_amount_exceeds_debt");
     // One millisecond at a permitted fee rate moves this large amount across
     // the overpayment boundary. Using the stored anchor would reject it.
@@ -450,9 +477,10 @@ fn repay_plan_projects_current_fees_and_reports_unrepresentable_arithmetic() {
     replace_data(
         &mut request.stability_fee_accumulator,
         Data::from(&StabilityFeeAccumulator {
+            schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+            total_normalized_debt: state.normalized_debt_amount,
             accumulated_rate_at_last_accrual: u128::MAX,
             last_accrued_at: NOW,
-            total_normalized_debt: 1 << 100,
         }),
     );
     error(request, "repayment_arithmetic_error");
@@ -562,4 +590,58 @@ fn repay_plan_rejects_each_malformed_or_missing_account_and_global_identity() {
     let mut request = self::request(json!("0"));
     request.clock.id = account_id_hex(id(90));
     error(request, "invalid_clock");
+}
+
+#[test]
+fn repayment_floor_uses_exact_products_and_allows_zero_and_complete_repayment() {
+    let mut request = request(json!("149"));
+    let mut parameters = ProtocolParameters::try_from(
+        &decode_account(&request.protocol_parameters)
+            .expect("account")
+            .1
+            .data,
+    )
+    .expect("parameters");
+    parameters.minimum_debt_amount = 2;
+    parameters.debt_ceiling = 2;
+    replace_data(&mut request.protocol_parameters, Data::from(&parameters));
+    // 149 burns 99 normalized units, leaving 1.5 atomic units: below floor 2.
+    error(request.clone(), "debt_below_minimum");
+    for amount in [0, 1, 147, 150, 151] {
+        request.amount = json!(amount.to_string());
+        repay_debt_plan(request.clone()).expect("valid repayment, even above ceiling");
+    }
+    parameters.minimum_debt_amount = 3;
+    parameters.debt_ceiling = 3;
+    replace_data(&mut request.protocol_parameters, Data::from(&parameters));
+    request.amount = json!("147");
+    repay_debt_plan(request.clone()).expect("remaining exact nominal debt equals floor 3");
+    parameters.minimum_debt_amount = 151;
+    parameters.debt_ceiling = 151;
+    replace_data(&mut request.protocol_parameters, Data::from(&parameters));
+    for amount in [0, 1, 150, 151] {
+        request.amount = json!(amount.to_string());
+        repay_debt_plan(request.clone()).expect("zero delta or full repayment after floor raise");
+    }
+    request.amount = json!("3");
+    error(request, "debt_below_minimum");
+}
+
+#[test]
+fn repayment_rejects_corrupt_aggregate_underflow() {
+    let mut request = request(json!("150"));
+    let mut accumulator = StabilityFeeAccumulator::try_from(
+        &decode_account(&request.stability_fee_accumulator)
+            .expect("account")
+            .1
+            .data,
+    )
+    .expect("accumulator");
+    // Intentional aggregate invariant violation, not a constructible protocol state.
+    accumulator.total_normalized_debt = 99;
+    replace_data(
+        &mut request.stability_fee_accumulator,
+        Data::from(&accumulator),
+    );
+    error(request, "total_debt_arithmetic_error");
 }
