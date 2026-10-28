@@ -156,9 +156,11 @@ std::string protocolData(bool frozen = false) {
     return result;
 }
 
-std::string accumulatorData(const std::string& rate, std::uint64_t timestamp) {
+std::string accumulatorData(const std::string& rate, std::uint64_t timestamp,
+                            const std::string& total_normalized_debt = "0") {
     std::string result = u128Le(rate);
     appendU64(result, timestamp);
+    result += u128Le(total_normalized_debt);
     return result;
 }
 
@@ -361,7 +363,7 @@ std::vector<RealAdminCase> realAdminCases() {
         {&StablecoinModuleImpl::setMinimumCollateralizationRatio, stablecoin_set_minimum_collateralization_ratio_plan,
             {{"newRatio", "10000000000000000000000000000"}}, "newRatio", "10000000000000000000000000001", "collateralization_ratio_out_of_band", false},
         {&StablecoinModuleImpl::setControllerGains, stablecoin_set_controller_gains_plan,
-            {{"newProportionalGain", "-9007199254740993"}, {"newIntegralGain", UINT64_MAX}}, "newProportionalGain", 1.5, "invalid_numeric_value", false},
+            {{"newProportionalGain", "9007199254740993"}, {"newIntegralGain", UINT64_MAX}}, "newProportionalGain", 1.5, "invalid_numeric_value", false},
         {&StablecoinModuleImpl::setTimingParameters, stablecoin_set_timing_parameters_plan,
             {{"newMinimumMillisecondsBetweenRateUpdates", "1"}, {"newMaximumOraclePriceAgeMilliseconds", "86400000"}}, "newMaximumOraclePriceAgeMilliseconds", "86400001", "timing_parameters_out_of_band", false},
         {&StablecoinModuleImpl::setAdmin, stablecoin_set_admin_plan,
@@ -424,16 +426,19 @@ LOGOS_TEST(real_ffi_stability_fee_setter_pins_exact_rates_and_canonical_inputs_w
     context.mockModule("lez_core", "account_id_from_base58").returns(CALLER_ID_HEX);
     const std::string admin_base58 = module.protocolParameters()["protocolParameters"]["adminId"];
     const std::vector<std::string> rates = {
-        FIXED_ONE, "2000000000000000000000000000", "1000000000009007199254740993", FIXED_ONE,
+        // Up to MAXIMUM_STABILITY_FEE_PER_MILLISECOND.
+        FIXED_ONE, "1000000000021965000000000000", "1000000000009007199254740993", FIXED_ONE,
     };
     int submissions = 0;
     json previous_instruction;
     for (const auto& rate : rates) {
         const json plan = feePlan(info, parameters, accumulator, START + 2, rate);
         LOGOS_ASSERT_EQ(plan["programId"], json(PROGRAM_ID_HEX));
+        // The accrual mints into the surplus holding: stablecoin definition + master holding.
         LOGOS_ASSERT_EQ(plan["accountIds"], json::array({CALLER_ID_HEX, info["protocolParametersIdHex"],
-            info["stabilityFeeAccumulatorIdHex"], info["clockIdHex"]}));
-        LOGOS_ASSERT_EQ(plan["signingRequirements"], json::array({true, false, false, false}));
+            info["stabilityFeeAccumulatorIdHex"], parameters.substr(128, 64),
+            info["stablecoinMasterHoldingIdHex"], info["clockIdHex"]}));
+        LOGOS_ASSERT_EQ(plan["signingRequirements"], json::array({true, false, false, false, false, false}));
         if (!previous_instruction.is_null()) LOGOS_ASSERT_TRUE(plan["instruction"] != previous_instruction);
         previous_instruction = plan["instruction"];
         const int reads_before = context.moduleCallCount("lez_core", "get_account_public");
@@ -777,12 +782,12 @@ LOGOS_TEST(real_ffi_admin_rotation_rereads_authority_on_the_same_module_and_free
     expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
     context.mockModule("lez_core", "list_accounts").returnsVariant(QVariant(walletAccounts()));
     const LogosMap lost_authority = module.setControllerGains(withPayer({{"adminId", CALLER_ID_HEX},
-        {"newProportionalGain", "-42"}, {"newIntegralGain", "7"}}));
+        {"newProportionalGain", "42"}, {"newIntegralGain", "7"}}));
     LOGOS_ASSERT_EQ(lost_authority["error"].get<std::string>(), std::string("admin_mismatch"));
     LOGOS_ASSERT_TRUE(lost_authority.find("transactionId") == lost_authority.end());
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 2);
     const LogosMap new_success = module.setControllerGains(withPayer({{"adminId", idHex(8)},
-        {"newProportionalGain", "-42"}, {"newIntegralGain", "7"}}));
+        {"newProportionalGain", "42"}, {"newIntegralGain", "7"}}));
     assertOk(new_success);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 3);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 5);
@@ -901,6 +906,9 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
     const std::string redemption_id = info["redemptionPriceStateIdHex"].get<std::string>();
     const std::string clock_id = info["clockIdHex"].get<std::string>();
     const std::string oracle_id = idHex(5);
+    // Fee accruals mint into the surplus holding; protocolData() binds definition idHex(3).
+    const std::string definition_id = idHex(3);
+    const std::string master_holding_id = info["stablecoinMasterHoldingIdHex"].get<std::string>();
 
     // The same module first observes an uninitialized protocol.
     expectMissing(protocol_id);
@@ -969,7 +977,8 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
         "lez_core",
         "send_generic_public_transaction",
         submissionArguments(
-            {CALLER_ID_HEX, protocol_id, accumulator_id, clock_id}, 1, PROGRAM_ID_HEX)));
+            {CALLER_ID_HEX, protocol_id, accumulator_id, definition_id, master_holding_id, clock_id},
+            1, PROGRAM_ID_HEX)));
 
     // Apply the real FFI projection as the persisted post-state seen by the next read.
     expectRead(accumulator_id, PROGRAM_OWNER_HEX,
@@ -1017,7 +1026,8 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
         "lez_core",
         "send_generic_public_transaction",
         submissionArguments(
-            {CALLER_ID_HEX, protocol_id, accumulator_id, redemption_id, oracle_id, clock_id},
+            {CALLER_ID_HEX, protocol_id, accumulator_id, definition_id, master_holding_id,
+             redemption_id, oracle_id, clock_id},
             3,
             PROGRAM_ID_HEX)));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 3);
@@ -1099,7 +1109,7 @@ LOGOS_TEST(real_ffi_journey_opens_position_with_two_wallet_signers) {
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
 }
 
-LOGOS_TEST(real_ffi_borrowing_rechecks_oracle_binding_and_preserves_full_width_amounts) {
+LOGOS_TEST(real_ffi_borrowing_ignores_the_oracle_and_preserves_full_width_amounts) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID",PROGRAM_ID_HEX.c_str());ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN",nullptr);
     LogosTestContext context("stablecoin_module");LogosModules modules(context.api());StablecoinModuleImpl module;attachModules(module,modules);
     const LogosMap info=module.programInfo();assertOk(info);
@@ -1120,11 +1130,10 @@ LOGOS_TEST(real_ffi_borrowing_rechecks_oracle_binding_and_preserves_full_width_a
     const std::string definition=mintDefinitionData(definition_id,"100"),destination=stablecoinHoldingData(definition_id,"5");
     const std::string accumulator=accumulatorData("1500000000000000000000000000",DUE);
     const std::string redemption=redemptionData(FIXED_ONE,FIXED_ONE,"0",DUE),clock=clockData(DUE);
-    std::string oracle=oracleData("0",DUE);oracle.replace(0,64,definition_id);
     expectRead(protocol_id,PROGRAM_OWNER_HEX,parameters);expectRead(position_id,PROGRAM_OWNER_HEX,position);
     expectRead(definition_id,TOKEN_OWNER_HEX,definition);expectRead(destination_id,TOKEN_OWNER_HEX,destination);
     expectRead(accumulator_id,PROGRAM_OWNER_HEX,accumulator);expectRead(redemption_id,PROGRAM_OWNER_HEX,redemption);
-    expectRead(oracle_id,ORACLE_OWNER_HEX,oracle);expectRead(clock_id,PROGRAM_OWNER_HEX,clock);
+    expectRead(clock_id,PROGRAM_OWNER_HEX,clock);
     QVariantMap owner;owner.insert("account_id",QString::fromStdString(CALLER_ID_HEX));owner.insert("is_public",true);
     context.mockModule("lez_core","list_accounts").returnsVariant(QVariant(QVariantList{QVariant(owner)}));
     context.mockModule("lez_core","send_generic_public_transaction").returns(successfulTransaction());
@@ -1138,7 +1147,6 @@ LOGOS_TEST(real_ffi_borrowing_rechecks_oracle_binding_and_preserves_full_width_a
         {"userStablecoinHolding",accountReadValue(destination_id,TOKEN_OWNER_HEX,destination)},
         {"stabilityFeeAccumulator",accountReadValue(accumulator_id,PROGRAM_OWNER_HEX,accumulator)},
         {"redemptionPriceState",accountReadValue(redemption_id,PROGRAM_OWNER_HEX,redemption)},
-        {"marketPriceOracle",accountReadValue(oracle_id,ORACLE_OWNER_HEX,oracle)},
         {"protocolParameters",accountReadValue(protocol_id,PROGRAM_OWNER_HEX,parameters)},
         {"clock",accountReadValue(clock_id,PROGRAM_OWNER_HEX,clock)},
     }.dump();
@@ -1148,28 +1156,19 @@ LOGOS_TEST(real_ffi_borrowing_rechecks_oracle_binding_and_preserves_full_width_a
         submissionArguments(plan,std::vector<std::size_t>{0},PROGRAM_ID_HEX)));
     LOGOS_ASSERT_EQ(plan["signingRequirements"],json::array({true,false,false,false,false,false,false,false,false}));
 
-    // Carry the first mint forward, then rotate the configured oracle. The old
-    // fresh oracle must not authorize borrowing after the rotation.
+    // Carry the first mint forward, then rotate the configured oracle to an account
+    // that does not exist yet. Borrowing does not read the oracle (spec §10.7).
     expectRead(position_id,PROGRAM_OWNER_HEX,positionData(CALLER_ID_HEX,vault_id,UINT64_MAX,"10","3"));
     expectRead(definition_id,TOKEN_OWNER_HEX,mintDefinitionData(definition_id,"104"));
     expectRead(destination_id,TOKEN_OWNER_HEX,stablecoinHoldingData(definition_id,"9"));
     parameters.replace(256,64,rotated_oracle_id);expectRead(protocol_id,PROGRAM_OWNER_HEX,parameters);
-    std::string stale=oracleData("0",DUE);stale.replace(0,64,definition_id);
-    // DUE is below the normal age limit, so use a canonical clock later than
-    // the observation to cross the exact freshness boundary.
-    expectRead(clock_id,PROGRAM_OWNER_HEX,clockData(DUE+900'001));
-    expectRead(rotated_oracle_id,ORACLE_OWNER_HEX,stale);
+    expectMissing(rotated_oracle_id);
     request["amount"]="1";
-    LOGOS_ASSERT_EQ(module.generateDebt(withPayer(request))["error"].get<std::string>(),std::string("oracle_stale"));
-    std::string future=oracleData("0",DUE+900'002);future.replace(0,64,definition_id);
-    expectRead(rotated_oracle_id,ORACLE_OWNER_HEX,future);
-    LOGOS_ASSERT_EQ(module.generateDebt(withPayer(request))["error"].get<std::string>(),std::string("oracle_future"));
-    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),1);
+    assertOk(module.generateDebt(withPayer(request)));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
 
     const std::uint64_t later=DUE+1'000'000;
     const std::string maximum="340282366920938463463374607431768211455";
-    std::string repaired=oracleData("0",later);repaired.replace(0,64,definition_id);
-    expectRead(rotated_oracle_id,ORACLE_OWNER_HEX,repaired);
     expectRead(clock_id,PROGRAM_OWNER_HEX,clockData(later));
     expectRead(position_id,PROGRAM_OWNER_HEX,positionData(CALLER_ID_HEX,vault_id,UINT64_MAX,maximum,"0"));
     expectRead(definition_id,TOKEN_OWNER_HEX,mintDefinitionData(definition_id,"0"));
@@ -1177,13 +1176,16 @@ LOGOS_TEST(real_ffi_borrowing_rechecks_oracle_binding_and_preserves_full_width_a
     expectRead(accumulator_id,PROGRAM_OWNER_HEX,accumulatorData("1500000000000000000000000000",later));
     expectRead(redemption_id,PROGRAM_OWNER_HEX,redemptionData("500000000000000000000000000",FIXED_ONE,"0",later));
     request["amount"]=maximum;assertOk(module.generateDebt(withPayer(request)));
-    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
-    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","get_account_public"),32);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),3);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","get_account_public"),21);
+    for(const std::string& id:{oracle_id,rotated_oracle_id}) {
+        LOGOS_ASSERT_TRUE(!context.moduleCalledWith("lez_core","get_account_public",accountArgs(id)));
+    }
     request["amount"]=1.5;
     LOGOS_ASSERT_EQ(module.generateDebt(withPayer(request))["error"].get<std::string>(),std::string("invalid_numeric_value"));
     request["amount"]="340282366920938463463374607431768211456";
     LOGOS_ASSERT_EQ(module.generateDebt(withPayer(request))["error"].get<std::string>(),std::string("invalid_numeric_value"));
-    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),2);
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),3);
 }
 
 LOGOS_TEST(real_ffi_withdrawal_rechecks_health_and_accepts_external_destination) {

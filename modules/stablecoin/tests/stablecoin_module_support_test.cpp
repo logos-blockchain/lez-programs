@@ -120,6 +120,9 @@ LOGOS_TEST(ffi_error_mapping_preserves_only_public_codes) {
             "redemption_price_state_pda_mismatch"),
         std::string("redemption_price_state_pda_mismatch"));
     LOGOS_ASSERT_EQ(
+        stablecoin_module::detail::stableFfiError("oracle_unavailable"),
+        std::string("oracle_unavailable"));
+    LOGOS_ASSERT_EQ(
         stablecoin_module::detail::stableFfiError("program_binary_mismatch"),
         std::string("program_binary_mismatch"));
     LOGOS_ASSERT_EQ(

@@ -179,13 +179,16 @@ orders:
 
 | Method | Accounts |
 | --- | --- |
-| `accrueStabilityFee` | caller, Protocol Parameters, Stability Fee Accumulator, `CLOCK_01` |
+| `accrueStabilityFee` | caller, Protocol Parameters, Stability Fee Accumulator, stablecoin definition, stablecoin master holding, `CLOCK_01` |
 | `updateRedemptionRate` | caller, Protocol Parameters, Redemption Price State, configured market-price oracle, `CLOCK_01` |
-| `refreshGlobals` | caller, Protocol Parameters, Stability Fee Accumulator, Redemption Price State, configured market-price oracle, `CLOCK_01` |
+| `refreshGlobals` | caller, Protocol Parameters, Stability Fee Accumulator, stablecoin definition, stablecoin master holding, Redemption Price State, configured market-price oracle, `CLOCK_01` |
+
+The stablecoin definition and master holding receive the accrued stability fees,
+which are minted to the protocol's surplus holding.
 
 `updateRedemptionRate` runs the live quote preflight and does not submit when
-the first on-chain gate is `oracle_stale`, `oracle_price_zero`, or
-`rate_update_too_soon`. `refreshGlobals` intentionally submits under those soft
+the first on-chain gate is `oracle_unavailable`, `oracle_stale`,
+`oracle_price_zero`, or `rate_update_too_soon`. `refreshGlobals` intentionally submits under those soft
 gates: its fee-accrual half still runs while the on-chain instruction may skip
 the controller update. A frozen protocol does not block any of the three
 maintenance methods.
@@ -305,7 +308,8 @@ their identities, owners, exact data, and token bindings. Both `ownerId` and
 both sign, including for zero amounts. The source holding must cover `amount`.
 
 Account order is owner, Position, stablecoin definition, source stablecoin
-holding, Stability Fee Accumulator, Protocol Parameters, `CLOCK_01`. The program
+holding, stablecoin master holding, Stability Fee Accumulator, Protocol
+Parameters, `CLOCK_01`. The program
 burns exactly `amount` and reduces normalized debt by
 `floor(amount * FIXED_POINT_ONE / current_accumulator)`. The accumulator uses
 the current canonical clock, saturating elapsed time and the seven-day window
@@ -393,9 +397,9 @@ owner must be a public account in the active wallet and signs. The destination
 holding can be outside that wallet and cannot alias owner or definition.
 
 The module reads current Position, stablecoin definition, destination holding,
-Stability Fee Accumulator, Redemption Price State, configured market-price
-oracle, Protocol Parameters, and canonical `CLOCK_01`. Position and global IDs
-are derived internally; definition and oracle come from validated parameters.
+Stability Fee Accumulator, Redemption Price State, Protocol Parameters, and
+canonical `CLOCK_01`. Position and global IDs are derived internally; the
+definition comes from validated parameters.
 It validates identities, stablecoin ownership, exact data, token bindings,
 the definition's canonical PDA/self-mint authority, and mint balance/supply
 capacity. The stablecoin instruction authorizes its chained Token mint with
@@ -403,14 +407,13 @@ the definition PDA seed; no client-issued mint or wallet authority signer is
 used.
 
 Account order is owner, Position, stablecoin definition, destination stablecoin
-holding, Stability Fee Accumulator, Redemption Price State, market-price
-oracle, Protocol Parameters, `CLOCK_01`. All `init` flags are false.
+holding, stablecoin master holding, Stability Fee Accumulator, Redemption Price
+State, Protocol Parameters, `CLOCK_01`. All `init` flags are false.
 
-Borrowing rejects frozen state. The oracle is a liveness gate only: future
-observations fail, and age equal to `maximumOraclePriceAgeMilliseconds` is
-accepted. Its price is not used in debt/health math; a fresh zero-price oracle
-is allowed. No producer-program, asset-pair or controller-update-interval gate
-is added beyond the native instruction's checks.
+Borrowing rejects frozen state. As in RAI, it does not read the market-price
+oracle (spec §10.7): a missing, stale or zero-price oracle does not block it. No
+producer-program, asset-pair or controller-update-interval gate is added beyond
+the native instruction's checks.
 
 Debt pricing uses the native narrow accumulator algorithm, including each
 `u128` compounding step, saturating elapsed time and seven-day clamp:
@@ -424,12 +427,11 @@ Checked, non-panicking arithmetic reports unrepresentable pricing and debt
 addition through stable errors. The wide projected redemption price must be
 nonzero, and post-mint health uses the shared fractional-debt/U512 requirement
 saturation comparison. No nominal debt is floored before that comparison.
-Zero amounts still require unfrozen state, a fresh oracle, valid pricing,
-nonzero projected redemption price, health, token accounts and authorization.
-Every invocation re-reads current parameters, oracle binding and accounts.
+Zero amounts still require unfrozen state, valid pricing, nonzero projected
+redemption price, health, token accounts and authorization. Every invocation
+re-reads current parameters and accounts.
 
-Stable errors include `protocol_frozen`, `oracle_stale`, `oracle_future`,
-`debt_pricing_arithmetic_error`, `normalized_debt_overflow`,
+Stable errors include `protocol_frozen`, `debt_pricing_arithmetic_error`, `normalized_debt_overflow`,
 `redemption_price_zero`, `position_undercollateralized`,
 `invalid_stablecoin_mint_authority`, `stablecoin_supply_overflow`,
 `stablecoin_balance_overflow` and the existing numeric/identity/token errors.
@@ -490,7 +492,8 @@ the `position`, `vault`, and `protocolParameters` account-read envelopes.
 
 Accepts `adminId` (base58 or hexadecimal account ID) and `newRate` (an exact
 `u128` fixed-point per-millisecond multiplier). The inclusive native band is
-`FIXED_POINT_ONE <= newRate <= 2 * FIXED_POINT_ONE`. Use decimal strings for
+`FIXED_POINT_ONE <= newRate <= MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (about 100%
+a year). Use decimal strings for
 portable integers above `2^53`; lossless JSON integers are also accepted, while
 floating-point values and values outside `u128` are rejected.
 
@@ -508,7 +511,9 @@ with these accounts, all with `init = false`:
 | 1 | Current admin | No | Yes |
 | 2 | Protocol Parameters | Yes | No |
 | 3 | Stability Fee Accumulator | Yes | No |
-| 4 | Canonical `CLOCK_01` | No | No |
+| 4 | Stablecoin definition | Yes | No |
+| 5 | Stablecoin master holding | Yes | No |
+| 6 | Canonical `CLOCK_01` | No | No |
 
 The native instruction first accrues the elapsed interval at the old rate,
 then replaces the rate atomically. Subsequent accrual uses the new rate. The
@@ -549,7 +554,7 @@ including the full `u128`/`i128` domain before the native bands are applied.
 | Method | Additional fields | Native limits / behavior |
 | --- | --- | --- |
 | `setMinimumCollateralizationRatio(request)` | `newRatio` (`u128`) | Inclusive `1.1 * FIXED_POINT_ONE ..= 10 * FIXED_POINT_ONE` |
-| `setControllerGains(request)` | `newProportionalGain`, `newIntegralGain` (`i128`) | Either sign; magnitude caps `1000 * FIXED_POINT_ONE` and `FIXED_POINT_ONE` respectively |
+| `setControllerGains(request)` | `newProportionalGain`, `newIntegralGain` (`i128`) | Non-negative; caps `1000 * FIXED_POINT_ONE` and `FIXED_POINT_ONE` respectively |
 | `setTimingParameters(request)` | `newMinimumMillisecondsBetweenRateUpdates`, `newMaximumOraclePriceAgeMilliseconds` (`u64`) | Each inclusive `1 ..= 86_400_000` milliseconds |
 | `setAdmin(request)` | `newAdminId` (account ID) | Immediate one-step rotation; new holder is an instruction value, not a signer |
 | `setFreezeAuthority(request)` | `newFreezeAuthorityId` (account ID) | Authorized by the admin, not merely the current freeze authority |

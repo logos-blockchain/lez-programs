@@ -179,6 +179,7 @@ std::string stableFfiError(const std::string& error) {
         "market_price_oracle_mismatch",
         "oracle_price_zero",
         "oracle_stale",
+        "oracle_unavailable",
         "oracle_asset_mismatch",
         "position_nonce_mismatch",
         "position_owner_mismatch",
