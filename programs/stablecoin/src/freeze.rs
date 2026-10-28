@@ -6,11 +6,12 @@ use stablecoin_core::{compute_protocol_parameters_pda, ProtocolParameters};
 
 /// Halt the risk-increasing instructions (spec §10.17).
 ///
-/// Sets `ProtocolParameters.is_frozen`. While frozen, `open_position`,
-/// `withdraw_collateral` and `generate_debt` panic; everything that reduces risk
-/// — `deposit_collateral`, `repay_debt`, `close_position` — and the permissionless
-/// pokes keep working (§7). Idempotent: freezing an already-frozen protocol is a
-/// successful no-op.
+/// Sets `ProtocolParameters.is_frozen`. While frozen, `open_position` and
+/// `generate_debt` panic; `withdraw_collateral` is allowed only when the validated
+/// position has exactly zero normalized debt. `deposit_collateral`, `repay_debt`,
+/// `close_position` and the permissionless pokes keep working (§7). A freeze
+/// therefore does not stop debt-free collateral outflows. Idempotent: freezing an
+/// already-frozen protocol is a successful no-op.
 ///
 /// # Panics
 /// - `freeze_authority` is not authorized, or its id does not match
