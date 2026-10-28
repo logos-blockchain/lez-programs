@@ -159,10 +159,17 @@ and market prices, elapsed milliseconds, next redemption rate, next controller
 integral term, and integral/rate clamp bounds. All numeric values are exact
 decimal strings.
 
-A stale oracle, zero oracle price, or not-yet-due update returns a successful
-read-only quote with `canSubmit: false`, `code: "blocked"`, machine-readable
-`errors`, and explicit `null` next-controller values. Multiple blockers are
-reported in on-chain gate order. The frozen flag does not block this operation.
+An unusable oracle, stale oracle, zero oracle price, or not-yet-due update
+returns a successful read-only quote with `canSubmit: false`, `code: "blocked"`,
+machine-readable `errors`, and explicit `null` next-controller values. Multiple
+blockers are reported in on-chain gate order. The frozen flag does not block
+this operation.
+
+The `oracle_unavailable` blocker covers a configured oracle that does not exist
+yet (the stablecoin may launch before its market, spec §3.2), whose data is not
+an `OraclePriceAccount`, or that quotes a different stablecoin/collateral pair.
+It comes first, with a `null` `marketPrice`. A read that fails for any other
+reason still returns `account_read_failed`.
 
 ### Permissionless maintenance transactions
 
@@ -188,9 +195,10 @@ which are minted to the protocol's surplus holding.
 
 `updateRedemptionRate` runs the live quote preflight and does not submit when
 the first on-chain gate is `oracle_unavailable`, `oracle_stale`,
-`oracle_price_zero`, or `rate_update_too_soon`. `refreshGlobals` intentionally submits under those soft
-gates: its fee-accrual half still runs while the on-chain instruction may skip
-the controller update. A frozen protocol does not block any of the three
+`oracle_price_zero`, or `rate_update_too_soon`. `refreshGlobals` intentionally
+submits under those soft gates, including when the configured oracle does not
+exist yet: its fee-accrual half still runs while the on-chain instruction may
+skip the controller update. A frozen protocol does not block any of the three
 maintenance methods.
 
 ### `initializeProgram(request)`
@@ -204,8 +212,8 @@ Required request fields:
 | `collateralDefinitionId` | base58 or 64-character hexadecimal account ID |
 | `marketPriceOracleId` | base58 or 64-character hexadecimal account ID |
 | `initialStabilityFeePerMillisecond` | exact `u128` decimal |
-| `initialControllerProportionalGain` | exact `i128` decimal |
-| `initialControllerIntegralGain` | exact `i128` decimal |
+| `initialControllerProportionalGain` | exact non-negative `i128` decimal |
+| `initialControllerIntegralGain` | exact non-negative `i128` decimal |
 | `initialMinimumCollateralizationRatio` | exact `u128` decimal |
 | `minimumMillisecondsBetweenRateUpdates` | exact `u64` decimal |
 | `maximumOraclePriceAgeMilliseconds` | exact `u64` decimal |
@@ -214,12 +222,20 @@ Required request fields:
 | `feePayerId` | funded public wallet account that pays the transaction fee |
 
 The module verifies all five derived target PDAs are uninitialized, validates
-the collateral definition, oracle asset pair, and clock accounts, then submits
+the collateral definition and clock accounts, then submits
 the exact nine-account instruction. Only `adminId` signs. LEZ charges public
 transactions, so `feePayerId` must name a funded account in the connected
 wallet: the admin itself or a separate account, which co-signs the fee. A
 non-signing participant is rejected with `invalid_fee_payer`. Success adds
 `transactionId` to the response envelope.
+
+The market-price oracle may not exist yet: the stablecoin launches at
+`initialRedemptionPrice` before its market does (spec §3.2), and the controller
+starts once someone writes an `OraclePriceAccount` at the bound address. An
+oracle that does exist must decode as an `OraclePriceAccount` for the
+stablecoin/collateral pair. Its program owner is not checked, so bind the TWAP
+oracle PDA for the intended pool and window rather than an address that anyone
+could initialize.
 
 Pass numeric values as decimal strings. JSON integers are accepted when their
 exact value survives parsing. JSON floating-point values are always rejected.
@@ -515,8 +531,10 @@ with these accounts, all with `init = false`:
 | 5 | Stablecoin master holding | Yes | No |
 | 6 | Canonical `CLOCK_01` | No | No |
 
-The native instruction first accrues the elapsed interval at the old rate,
-then replaces the rate atomically. Subsequent accrual uses the new rate. The
+The native instruction first accrues the elapsed interval at the old rate and
+mints those fees to the master holding (the protocol surplus), then replaces
+the rate atomically. The definition and master holding are written by that
+chained Token mint. Subsequent accrual uses the new rate. The
 module does not submit a preliminary poke. It checks that the old-rate
 projection fits the native `u128` arithmetic before submission, preserving
 saturating elapsed-time subtraction and the seven-day compounding-window
@@ -558,7 +576,7 @@ including the full `u128`/`i128` domain before the native bands are applied.
 | `setTimingParameters(request)` | `newMinimumMillisecondsBetweenRateUpdates`, `newMaximumOraclePriceAgeMilliseconds` (`u64`) | Each inclusive `1 ..= 86_400_000` milliseconds |
 | `setAdmin(request)` | `newAdminId` (account ID) | Immediate one-step rotation; new holder is an instruction value, not a signer |
 | `setFreezeAuthority(request)` | `newFreezeAuthorityId` (account ID) | Authorized by the admin, not merely the current freeze authority |
-| `setMarketPriceOracle(request)` | `newOracleId` (account ID) | Initialized exact `OraclePriceAccount` with the bound stablecoin/collateral asset pair |
+| `setMarketPriceOracle(request)` | `newOracleId` (account ID) | Either not yet existing, or an exact `OraclePriceAccount` with the bound stablecoin/collateral asset pair |
 
 Each invocation reads current Protocol Parameters, verifies canonical PDA,
 stablecoin ownership and exact data, and requires the currently stored admin to
@@ -591,8 +609,10 @@ nonzero restriction to these instruction values.
 Oracle replacement is producer-agnostic. It does not pin the replacement's
 program owner or impose freshness, future-timestamp, nonzero-price or
 controller-update-interval gates. A well-formed matching pair from another
-producer, including a stale or zero observation, is accepted. Wrong asset pairs,
-missing or malformed account data fail preflight.
+producer, including a stale or zero observation, is accepted, and so is an
+oracle that does not exist yet (spec §3.2; the same caution as for
+`initializeProgram` applies). Wrong asset pairs and malformed account data fail
+preflight.
 
 Stable errors include `admin_mismatch`, `collateralization_ratio_out_of_band`,
 `controller_gains_out_of_band`, `timing_parameters_out_of_band`, and existing

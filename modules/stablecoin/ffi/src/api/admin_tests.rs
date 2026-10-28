@@ -228,7 +228,7 @@ fn native_execute(plan: &Value, request: &Value) -> Account {
         Instruction::SetMarketPriceOracle => {
             let read: AccountRead =
                 serde_json::from_value(request["newOracle"].clone()).expect("oracle read");
-            let (oracle_id, oracle) = decode_account(&read).expect("oracle");
+            let (oracle_id, oracle) = plan::optional_account(&read).expect("oracle");
             assert_eq!(ids[2], account_id_hex(oracle_id));
             let result = stablecoin_program::admin::set_market_price_oracle(
                 admin,
@@ -614,8 +614,18 @@ fn oracle_replacement_accepts_other_producers_and_stale_zero_observations_but_re
     request["newOracle"]["account"]["data"] = json!(format!("{raw}00"));
     failure(Setter::Oracle, request, "invalid_market_price_oracle");
     let mut request = fixture.request(Setter::Oracle);
-    request["newOracle"]["status"] = json!("not_found");
+    request["newOracle"]["status"] = json!("backend_error");
     failure(Setter::Oracle, request, "account_read_failed");
+    // An oracle that does not exist yet (spec §3.2), as the module reports it.
+    let mut request = fixture.request(Setter::Oracle);
+    request["newOracle"] = json!({"id": account_id_hex(id(8)), "status": "not_found"});
+    let plan = Setter::Oracle
+        .plan(request.clone())
+        .expect("an oracle that does not exist yet");
+    native_execute(&plan, &request);
+    let mut request = fixture.request(Setter::Oracle);
+    request["newOracle"] = json!({"id": account_id_hex(id(99)), "status": "not_found"});
+    failure(Setter::Oracle, request, "market_price_oracle_mismatch");
     let mut request = fixture.request(Setter::Oracle);
     request["newOracle"]["id"] = json!(account_id_hex(id(99)));
     failure(Setter::Oracle, request, "market_price_oracle_mismatch");

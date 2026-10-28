@@ -16,8 +16,8 @@ use super::{
     decode::{validated_protocol_parameters, validated_stability_fee_accumulator},
     parse_stablecoin_program_id,
     plan::{
-        parse_account_id, parse_account_id_value, parse_i128, parse_u128, parse_u64, plan_response,
-        required_account,
+        optional_account, parse_account_id, parse_account_id_value, parse_i128, parse_u128,
+        parse_u64, plan_response,
     },
     projection::clock_timestamp,
     AdminPlanContext, SetAdminPlanRequest, SetControllerGainsPlanRequest,
@@ -169,7 +169,7 @@ pub fn set_freeze_authority_plan(request: SetFreezeAuthorityPlanRequest) -> Stab
 pub fn set_market_price_oracle_plan(request: SetMarketPriceOraclePlanRequest) -> StablecoinResult {
     let context = ValidatedAdmin::read(&request.context)?;
     let new_oracle_id = parse_account_id(&request.new_oracle_id)?;
-    let (read_id, account) = required_account(&request.new_oracle)?;
+    let (read_id, account) = optional_account(&request.new_oracle)?;
     if read_id != new_oracle_id {
         return Err(StablecoinApiError::new("market_price_oracle_mismatch"));
     }

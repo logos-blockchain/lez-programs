@@ -9,10 +9,10 @@ use twap_oracle_core::OraclePriceAccount;
 use super::{
     decode::{validated_protocol_parameters, validated_redemption_price_state},
     parse_stablecoin_program_id,
+    plan::optional_account,
     projection::clock_timestamp,
     RedemptionRateUpdateQuoteRequest, StablecoinApiError, StablecoinResult,
 };
-use crate::account::decode_account;
 
 pub fn redemption_rate_update_quote(request: RedemptionRateUpdateQuoteRequest) -> StablecoinResult {
     let stablecoin_program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
@@ -116,8 +116,7 @@ pub(super) fn usable_market_price_oracle(
     read: &crate::AccountRead,
     parameters: &stablecoin_core::ProtocolParameters,
 ) -> Result<Option<OraclePriceAccount>, StablecoinApiError> {
-    let (account_id, account) =
-        decode_account(read).map_err(|_| StablecoinApiError::new("account_read_failed"))?;
+    let (account_id, account) = optional_account(read)?;
     if account_id != parameters.market_price_oracle_id {
         return Err(StablecoinApiError::new("market_price_oracle_mismatch"));
     }
@@ -635,9 +634,15 @@ mod tests {
         assert_eq!(blocked["errors"][0]["code"], "oracle_unavailable");
 
         let mut failed_read = base.clone();
-        failed_read.market_price_oracle.status = String::from("not_found");
+        failed_read.market_price_oracle.status = String::from("backend_error");
         failed_read.market_price_oracle.account = None;
         assert_error(failed_read, "account_read_failed");
+
+        let mut missing_with_wrong_id = base.clone();
+        missing_with_wrong_id.market_price_oracle.id = account_id_hex(id(22));
+        missing_with_wrong_id.market_price_oracle.status = String::from("not_found");
+        missing_with_wrong_id.market_price_oracle.account = None;
+        assert_error(missing_with_wrong_id, "market_price_oracle_mismatch");
 
         let mut wrong_clock_id = base.clone();
         wrong_clock_id.clock.id = account_id_hex(id(23));
@@ -677,6 +682,14 @@ mod tests {
         assert_eq!(quoted["canSubmit"], false);
         assert_eq!(quoted["errors"][0]["code"], "oracle_unavailable");
         assert_eq!(quoted["marketPrice"], Value::Null);
+
+        // The module reports an all-zero account as `not_found` with no account.
+        let mut not_found = request(&params, &state, &missing, 1);
+        not_found.market_price_oracle.status = String::from("not_found");
+        not_found.market_price_oracle.account = None;
+        let quoted = value(not_found);
+        assert_eq!(quoted["canSubmit"], false);
+        assert_eq!(quoted["errors"][0]["code"], "oracle_unavailable");
 
         let mut other_pair = oracle(oracle_id, FIXED_POINT_ONE, 1);
         let mut decoded = OraclePriceAccount::try_from(&other_pair.1.data).expect("oracle");
