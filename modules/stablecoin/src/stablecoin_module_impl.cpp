@@ -632,8 +632,11 @@ LogosMap StablecoinModuleImpl::redemptionRateUpdateQuote() {
         if (jsonString(redemption, "status") == "not_found") {
             return publicError("not_initialized");
         }
+        // An oracle that does not exist yet (spec §3.2) reaches the planner, which
+        // reports it as the `oracle_unavailable` blocker.
+        const std::string oracle_status = jsonString(oracle, "status");
         if (jsonString(redemption, "status") != "ok"
-            || jsonString(oracle, "status") != "ok"
+            || (oracle_status != "ok" && oracle_status != "not_found")
             || jsonString(clock, "status") != "ok") {
             return publicError("account_read_failed");
         }
@@ -807,7 +810,11 @@ LogosMap StablecoinModuleImpl::adminPlanAndSubmit(StablecoinOperation planner,
     }
     if (!new_oracle_id.empty()) {
         const json oracle = readPublicAccount(new_oracle_id);
-        if (jsonString(oracle, "status") != "ok") return publicError("account_read_failed");
+        // The new oracle may not exist yet (spec §3.2); the planner checks one that does.
+        const std::string oracle_status = jsonString(oracle, "status");
+        if (oracle_status != "ok" && oracle_status != "not_found") {
+            return publicError("account_read_failed");
+        }
         planner_request["newOracleId"] = new_oracle_id;
         planner_request["newOracle"] = oracle;
         expected.push_back(new_oracle_id);
@@ -933,6 +940,8 @@ LogosMap StablecoinModuleImpl::generateDebt(const LogosMap& request) {
         const json accumulator = readPublicAccount(accumulator_id);
         const json redemption = readPublicAccount(redemption_id);
         const json clock = readPublicAccount(clock_id);
+        // The market price oracle is not read: borrowing values collateral at the
+        // redemption price only, so it works before the oracle exists (spec §3.2).
         if (jsonString(position, "status") != "ok" || jsonString(definition, "status") != "ok"
             || jsonString(destination, "status") != "ok" || jsonString(accumulator, "status") != "ok"
             || jsonString(redemption, "status") != "ok"
@@ -1234,8 +1243,11 @@ LogosMap StablecoinModuleImpl::updateRedemptionRate(const std::string& caller_id
         if (jsonString(redemption, "status") == "not_found") {
             return publicError("not_initialized");
         }
+        // An oracle that does not exist yet (spec §3.2) reaches the planner, which
+        // reports it as the `oracle_unavailable` blocker.
+        const std::string oracle_status = jsonString(oracle, "status");
         if (jsonString(redemption, "status") != "ok"
-            || jsonString(oracle, "status") != "ok"
+            || (oracle_status != "ok" && oracle_status != "not_found")
             || jsonString(clock, "status") != "ok") {
             return publicError("account_read_failed");
         }
@@ -1300,9 +1312,12 @@ LogosMap StablecoinModuleImpl::refreshGlobals(const std::string& caller_id,
             || jsonString(redemption, "status") == "not_found") {
             return publicError("not_initialized");
         }
+        // An oracle that does not exist yet (spec §3.2) only skips the
+        // redemption half of the refresh.
+        const std::string oracle_status = jsonString(oracle, "status");
         if (jsonString(accumulator, "status") != "ok"
             || jsonString(redemption, "status") != "ok"
-            || jsonString(oracle, "status") != "ok"
+            || (oracle_status != "ok" && oracle_status != "not_found")
             || jsonString(clock, "status") != "ok") {
             return publicError("account_read_failed");
         }
@@ -1463,8 +1478,11 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
         const json collateral_read = readPublicAccount(collateral);
         const json oracle_read = readPublicAccount(oracle);
         const json clock_read = readPublicAccount(jsonString(info, "clockIdHex"));
+        // The oracle may not exist yet (spec §3.2): the stablecoin launches before
+        // its market does. The planner checks the shape of one that exists.
+        const std::string oracle_status = jsonString(oracle_read, "status");
         if (jsonString(collateral_read, "status") != "ok"
-            || jsonString(oracle_read, "status") != "ok"
+            || (oracle_status != "ok" && oracle_status != "not_found")
             || jsonString(clock_read, "status") != "ok") {
             return publicError("account_read_failed");
         }

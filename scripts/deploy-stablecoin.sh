@@ -8,8 +8,9 @@
 # sequencer, the AMM test environment (setup-amm-testnet.sh calls it), and
 # testnet.
 #
-# BOOTSTRAP ORDER: `initialize_program` requires an ALREADY-INITIALIZED
-# `OraclePriceAccount` whose base asset is the stablecoin definition — a PDA that
+# BOOTSTRAP ORDER: `initialize_program` accepts an oracle that does not exist
+# yet (spec §3.2), but this script creates it first so the controller runs from
+# the start. Its base asset is the stablecoin definition — a PDA that
 # `initialize_program` itself creates. The PDA is deterministic, so this script
 # derives it first, creates the oracle price account quoting it, and only then
 # initializes the program.
@@ -17,14 +18,14 @@
 # THE ORACLE IS STATIC: `create_oracle_price_account` only requires its price
 # source to sign, so a plain wallet account (STABLECOIN_ORACLE_SOURCE) owns the
 # price. It starts at STABLECOIN_ORACLE_INITIAL_PRICE and never moves.
-# `generate_debt` rejects it once it is older than
-# STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS (default: one day, the §8 maximum). Fine
-# for dev and tests; a production deployment wants an AMM pool as the source.
+# Once it is older than STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS (default: one
+# day, the §8 maximum), `update_redemption_rate` rejects it and `refresh_globals`
+# skips the controller; borrowing never reads it. Fine for dev and tests; a
+# production deployment wants an AMM pool as the source.
 #
-# PRICE SCALE: the initial price is 27-decimal fixed point (1.0 = 10^27) because
-# that is how the stablecoin reads `OraclePriceAccount::price`. Do NOT refresh it
-# with the TWAP oracle's `publish_price`: that writes Q64.64 (1.0 = 2^64), which
-# the stablecoin currently misreads as ~1.8e-8.
+# PRICE SCALE: `OraclePriceAccount::price` is Q64.64 (1.0 = 2^64), the scale the
+# TWAP oracle publishes and the stablecoin reads. It is not the 27-decimal fixed
+# point used by the stablecoin's own parameters.
 #
 # COLLATERAL: with COLLATERAL_HOLDING set, the script creates the collateral token
 # at COLLATERAL_DEFINITION (deploying the token program first, unless
@@ -127,8 +128,10 @@ COLLATERAL_MINT_AUTHORITY="${COLLATERAL_MINT_AUTHORITY:-}"
 # Canonical LEZ system clock.
 CLOCK_ACCOUNT="${CLOCK_ACCOUNT:-4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU}"
 
-# Every rate, ratio and price below is 27-decimal fixed point: 1.0 = 10^27.
+# Every rate, ratio and price below is 27-decimal fixed point (1.0 = 10^27),
+# except the oracle price, which is Q64.64 (1.0 = 2^64).
 FIXED_POINT_ONE="1000000000000000000000000000"
+Q64_64_ONE="18446744073709551616"
 
 # --- initialize_program parameters (§8 bands are enforced on-chain) ---
 # Defaults to the admin when unset.
@@ -146,10 +149,9 @@ STABLECOIN_INITIAL_REDEMPTION_PRICE="${STABLECOIN_INITIAL_REDEMPTION_PRICE:-$FIX
 STABLECOIN_NAME="${STABLECOIN_NAME:-LEZ Stablecoin}"
 
 # --- market price oracle ---
-# Collateral per stablecoin, in the 27-decimal fixed point the stablecoin reads
-# (not the TWAP oracle's Q64.64 — see PRICE SCALE above). Starts at parity with
-# the initial redemption price.
-STABLECOIN_ORACLE_INITIAL_PRICE="${STABLECOIN_ORACLE_INITIAL_PRICE:-$FIXED_POINT_ONE}"
+# Collateral per stablecoin, in Q64.64 (see PRICE SCALE above). Starts at parity
+# with the initial redemption price.
+STABLECOIN_ORACLE_INITIAL_PRICE="${STABLECOIN_ORACLE_INITIAL_PRICE:-$Q64_64_ONE}"
 # Must be >= the TWAP oracle's OBSERVATIONS_CAPACITY (2048).
 STABLECOIN_ORACLE_WINDOW_DURATION="${STABLECOIN_ORACLE_WINDOW_DURATION:-3600000}"
 
@@ -546,7 +548,7 @@ log "${BOLD}Market price oracle${RST}"
 kv "account"                    "$MARKET_PRICE_ORACLE"
 kv "price source"               "$ORACLE_SOURCE"
 kv "window (ms)"                "$STABLECOIN_ORACLE_WINDOW_DURATION"
-kv "initial price"              "$STABLECOIN_ORACLE_INITIAL_PRICE (10^27 = 1.0)"
+kv "initial price"              "$STABLECOIN_ORACLE_INITIAL_PRICE (2^64 = 1.0)"
 kv "stale after (ms)"           "$STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS"
 kv "clock"                      "$CLOCK_ACCOUNT"
 log ""

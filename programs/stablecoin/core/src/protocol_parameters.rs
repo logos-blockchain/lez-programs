@@ -124,38 +124,6 @@ pub fn compute_protocol_parameters_pda(stablecoin_program_id: AccountId) -> Acco
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_maximum_stability_fee_is_about_one_hundred_percent_a_year() {
-        // Compounded one week at a time, as keepers re-anchoring would.
-        let week = crate::math::MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS;
-        let one = crate::math::FIXED_POINT_ONE;
-        let mut accumulator = one;
-        for _ in 0..52 {
-            accumulator = crate::math::compute_current_accumulated_rate(
-                accumulator,
-                MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
-                0,
-                week,
-            );
-        }
-        // 52 weeks is 364 days, so a little under ×2.
-        assert!(accumulator > one / 10 * 19, "got {accumulator}");
-        assert!(accumulator < one * 2, "got {accumulator}");
-    }
-
-    #[test]
-    fn a_full_window_at_the_maximum_fee_cannot_overflow_a_large_accumulator() {
-        let anchor = u128::MAX / 2;
-        let projected = crate::math::compute_current_accumulated_rate(
-            anchor,
-            MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
-            0,
-            crate::math::MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
-        );
-        assert!(projected > anchor);
-        assert!(projected < anchor / 100 * 102);
-    }
     use crate::math::FIXED_POINT_ONE;
 
     fn sample_params() -> ProtocolParameters {
@@ -216,5 +184,36 @@ mod tests {
         let seed_a = compute_protocol_parameters_pda_seed();
         let seed_b = compute_protocol_parameters_pda_seed();
         assert_eq!(seed_a, seed_b);
+    }
+
+    #[test]
+    fn the_maximum_stability_fee_is_about_one_hundred_percent_a_year() {
+        // Compounded one week at a time, as keepers re-anchoring would.
+        let week = crate::math::MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS;
+        let mut accumulator = FIXED_POINT_ONE;
+        for _ in 0..52 {
+            accumulator = crate::math::compute_current_accumulated_rate(
+                accumulator,
+                MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
+                0,
+                week,
+            );
+        }
+        // 52 weeks is 364 days, so a little under ×2.
+        assert!(accumulator > FIXED_POINT_ONE / 10 * 19, "got {accumulator}");
+        assert!(accumulator < FIXED_POINT_ONE * 2, "got {accumulator}");
+    }
+
+    #[test]
+    fn a_full_window_at_the_maximum_fee_cannot_overflow_a_large_accumulator() {
+        let anchor = u128::MAX / 2;
+        let projected = crate::math::compute_current_accumulated_rate(
+            anchor,
+            MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
+            0,
+            crate::math::MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS,
+        );
+        assert!(projected > anchor);
+        assert!(projected < anchor / 100 * 102);
     }
 }

@@ -754,12 +754,12 @@ spel --idl artifacts/twap_oracle-idl.json \
      --clock 4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU \
      --base-asset <STABLECOIN_DEFINITION_PDA> \
      --quote-asset <COLLATERAL_DEF> \
-     --initial-price 1000000000000000000000000000 \
+     --initial-price 18446744073709551616 \
      --window-duration <WINDOW_DURATION>
 ```
 
-> `--initial-price` is **27-decimal fixed point** (`10^27` = 1.0 collateral per stablecoin),
-> the scale the stablecoin reads. `--window-duration` must be `>= 2048`.
+> `--initial-price` is **Q64.64** (`2^64` = 1.0 collateral per stablecoin), the scale the
+> TWAP oracle publishes and the stablecoin reads. `--window-duration` must be `>= 2048`.
 
 ### 15.3 Initialize
 
@@ -826,10 +826,10 @@ spel --idl artifacts/stablecoin-idl.json \
   old pool's LP token.
 - **Same `LEE_WALLET_HOME_DIR` everywhere.** Deploying with one wallet home and running
   spel with another points them at different networks/keys.
-- **Stablecoin: oracle account before `initialize_program`.** Initialization rejects a
-  missing oracle account, or one whose base asset isn't the stablecoin definition PDA.
-- **Stablecoin: never `publish_price` into its oracle account.** The TWAP oracle writes
-  Q64.64 (`2^64` = 1.0); the stablecoin reads 27-decimal fixed point (`10^27` = 1.0), so a
-  published 1.0 reads as ~1.8e-8.
-- **Stablecoin: the oracle price goes stale.** `generate_debt` rejects it once it is older
-  than `maximum_oracle_price_age_milliseconds` (at most one day).
+- **Stablecoin: the oracle may come after `initialize_program`.** Initialization accepts an
+  oracle account that does not exist yet (the controller starts once it does), but rejects
+  one whose base asset isn't the stablecoin definition PDA. Bind the TWAP oracle PDA, not
+  an address anyone could initialize.
+- **Stablecoin: the oracle price goes stale.** Once it is older than
+  `maximum_oracle_price_age_milliseconds` (at most one day), `update_redemption_rate`
+  rejects it and `refresh_globals` skips the controller. Borrowing never reads it.

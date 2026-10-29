@@ -1106,6 +1106,17 @@ fn initialize_plan_accepts_an_oracle_that_does_not_exist_yet() {
     let mut request = initialize_request();
     request.market_price_oracle = account_read(id(11), &Account::default());
     ok(initialize_program_plan(request));
+
+    // The module reports an all-zero account as `not_found` with no account.
+    let mut request = initialize_request();
+    request.market_price_oracle.status = String::from("not_found");
+    request.market_price_oracle.account = None;
+    ok(initialize_program_plan(request));
+
+    let mut request = initialize_request();
+    request.market_price_oracle.status = String::from("backend_error");
+    request.market_price_oracle.account = None;
+    assert_error(initialize_program_plan(request), "account_read_failed");
 }
 
 #[test]
@@ -1215,6 +1226,12 @@ fn refresh_plan_keeps_controller_quote_gates_soft() {
     let mut too_soon = refresh_request(false);
     too_soon.redemption_price_state = poke_redemption_read(POKE_NOW - 49);
     assert!(refresh_globals_plan(too_soon).is_ok());
+
+    // An oracle that does not exist yet (spec §3.2), as the module reports it.
+    let mut missing = refresh_request(false);
+    missing.market_price_oracle.status = String::from("not_found");
+    missing.market_price_oracle.account = None;
+    assert!(refresh_globals_plan(missing).is_ok());
 }
 
 #[test]

@@ -42,7 +42,7 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
     }
 
     let (market_price_oracle_id, market_price_oracle) =
-        required_account(&request.market_price_oracle)?;
+        optional_account(&request.market_price_oracle)?;
     // The oracle may not exist yet (spec §3.2); one that exists must decode.
     let oracle = if market_price_oracle == lee_core::account::Account::default() {
         None
@@ -450,6 +450,20 @@ pub(super) fn required_account(
     read: &AccountRead,
 ) -> Result<(AccountId, lee_core::account::Account), StablecoinApiError> {
     decode_account(read).map_err(|_| StablecoinApiError::new("account_read_failed"))
+}
+
+/// Like [`required_account`], but a `not_found` read is an account that does not
+/// exist yet and decodes as `Account::default()`. Used for the market price
+/// oracle, which may be bound before it exists (spec §3.2).
+pub(super) fn optional_account(
+    read: &AccountRead,
+) -> Result<(AccountId, lee_core::account::Account), StablecoinApiError> {
+    if read.status == "not_found" {
+        let account_id = account_id_from_hex(&read.id, "account id")
+            .map_err(|_| StablecoinApiError::new("account_read_failed"))?;
+        return Ok((account_id, lee_core::account::Account::default()));
+    }
+    required_account(read)
 }
 
 pub(super) fn parse_account_id(value: &str) -> Result<AccountId, StablecoinApiError> {
