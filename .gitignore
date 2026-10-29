@@ -4,3 +4,5 @@ target/
 result
 result-*
 **/*/.DS_Store
+# Token UI e2e screenshots
+apps/token/tests/screenshots/
