@@ -707,8 +707,8 @@ void LogosWalletProviderTest::dispatchesExactGenericTransaction()
     QCOMPARE(modules.lez_core.submittedProgramId, PROGRAM_ID);
     QCOMPARE(modules.lez_core.submittedAccountIds, transaction.accountIds);
     QCOMPARE(modules.lez_core.submittedSigningRequirements,
-             QVariantList({ true, false }));
-    QCOMPARE(modules.lez_core.submittedInstruction.toByteArray(),
+             QList<bool>({ true, false }));
+    QCOMPARE(modules.lez_core.submittedInstruction,
              QByteArray::fromHex("0700000000000000ffffffff"));
 }
 

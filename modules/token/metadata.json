@@ -6,7 +6,7 @@
   "category": "token",
   "description": "Universal Logos core module for LEZ token account reads and transactions",
   "main": "token_module_plugin",
-  "dependencies": ["lez_core"],
+  "dependencies": [{ "name": "lez_core", "version": "0.4.2" }],
   "nix": {
     "packages": {
       "build": [],

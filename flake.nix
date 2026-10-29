@@ -29,7 +29,7 @@
     # path or git-remote reference to this repo is needed (see apps/amm/flake.nix
     # history: a `git+file://` URL pointing at a local checkout is
     # machine-specific and not portable).
-    logos-module-builder.url = "github:logos-co/logos-module-builder";
+    logos-module-builder.url = "github:logos-co/logos-module-builder/0.3.3";
 
     # Core wallet module (the LEZ wallet FFI Qt plugin). The input name must
     # match the metadata.json `dependencies` entry so the builder can resolve it
