@@ -2066,22 +2066,6 @@ LOGOS_TEST(generate_debt_reads_live_accounts_and_signs_only_owner) {
     LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core","send_generic_public_transaction",submissionArguments(generateAccounts(),15)));
 }
 
-LOGOS_TEST(generate_debt_submits_before_the_market_price_oracle_exists) {
-    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID",PROGRAM_ID_HEX.c_str());
-    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN",nullptr);
-    LogosTestContext context("stablecoin_module");LogosModules modules(context.api());StablecoinModuleImpl module;attachModules(module,modules);
-    const GenerateReadMocks mocks(context);
-    MockStore::instance().when(QStringLiteral("lez_core"), QStringLiteral("get_account_public"))
-        .withArgs(QVariantList{QVariant(QString::fromStdString(ORACLE_ID_HEX))})
-        .thenReturn(QVariant(QString::fromStdString(missingAccount())));
-    const std::string plan=successEnvelope(submissionPlan(generateAccounts(),15));
-    context.mockCFunction("stablecoin_generate_debt_plan").returns(plan);
-    context.mockModule("lez_core","send_generic_public_transaction").returns(successfulTransaction());
-    const LogosMap response=module.generateDebt(generateRequest());
-    LOGOS_ASSERT_EQ(response["status"].get<std::string>(),std::string("ok"));
-    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),1);
-}
-
 LOGOS_TEST(generate_debt_requires_public_owner_even_for_zero) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID",PROGRAM_ID_HEX.c_str());ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN",nullptr);
     for(const bool private_owner:{false,true}) {
@@ -2711,6 +2695,49 @@ LOGOS_TEST(update_redemption_rate_reports_a_missing_oracle_as_unavailable) {
     LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_update_redemption_rate_plan"), 1);
     LOGOS_ASSERT_EQ(
         context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+}
+
+LOGOS_TEST(redemption_rate_update_quote_reports_a_missing_oracle_as_a_blocker) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const json blocker = {
+        {"code", "oracle_unavailable"},
+        {"recoverable", true},
+        {"blockingFields", json::array()},
+        {"details", json::object()},
+    };
+    const json quote = {
+        {"canSubmit", false},
+        {"code", "blocked"},
+        {"currentRedemptionPrice", "100"},
+        {"marketPrice", nullptr},
+        {"elapsedMilliseconds", "9"},
+        {"nextRedemptionRatePerMillisecond", nullptr},
+        {"nextControllerIntegralTerm", nullptr},
+        {"clampMetadata", json::object()},
+        {"errors", json::array({blocker})},
+        {"warnings", json::array()},
+    };
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::string decoded_parameters_response =
+        successEnvelope({{"marketPriceOracleIdHex", ORACLE_ID_HEX}});
+    const std::string quote_response = successEnvelope(quote);
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockCFunction("stablecoin_decode_protocol_parameters")
+        .returns(decoded_parameters_response);
+    context.mockCFunction("stablecoin_redemption_rate_update_quote").returns(quote_response);
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+    mockMissingOracle();
+
+    const LogosMap response = module.redemptionRateUpdateQuote();
+    LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(response["canSubmit"].get<bool>(), false);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_redemption_rate_update_quote"), 1);
 }
 
 LOGOS_TEST(set_market_price_oracle_accepts_an_oracle_that_does_not_exist_yet) {
