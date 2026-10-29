@@ -377,7 +377,9 @@
       stablecoinModuleAliases = builtins.mapAttrs (
         system: attrs:
         (if attrs ? lgx then { stablecoin-module-lgx = attrs.lgx; } else { })
+        // (if attrs ? lgx-portable then { stablecoin-module-lgx-portable = attrs.lgx-portable; } else { })
         // (if attrs ? install then { stablecoin-module-install = attrs.install; } else { })
+        // (if attrs ? install-portable then { stablecoin-module-install-portable = attrs.install-portable; } else { })
         // (if attrs ? unit-tests then { stablecoin-module-tests = attrs.unit-tests; } else { })
       ) stablecoinModulePkgs;
 
