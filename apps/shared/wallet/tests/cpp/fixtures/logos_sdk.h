@@ -38,8 +38,8 @@ public:
     QString createdStatistics;
     QString createdPassword;
     QStringList submittedAccountIds;
-    QVariantList submittedSigningRequirements;
-    QVariant submittedInstruction;
+    QList<bool> submittedSigningRequirements;
+    QByteArray submittedInstruction;
     QString submittedProgramId;
 
     int open(const QString& config, const QString& storage, const QString& statistics)
@@ -102,8 +102,8 @@ public:
 
     QString send_generic_public_transaction(
         const QStringList& accountIds,
-        const QVariantList& signingRequirements,
-        const QVariant& instruction,
+        const QList<bool>& signingRequirements,
+        const QByteArray& instruction,
         const QString& programId)
     {
         ++submitCalls;

@@ -270,11 +270,6 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
         }
     }
 
-    QVariantList signingRequirements;
-    signingRequirements.reserve(transaction.signingRequirements.size());
-    for (bool required : transaction.signingRequirements)
-        signingRequirements.append(required);
-
     // `send_generic_public_transaction`'s `instruction` param is a byte string
     // (bstr). Passing a QVariantList<u32> makes the module's QtRO glue mangle it,
     // so the guest reads a garbage Instruction variant. Send the little-endian
@@ -293,8 +288,8 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
     const QString response =
         m_impl->logos->lez_core.send_generic_public_transaction(
             transaction.accountIds,
-            signingRequirements,
-            QVariant::fromValue(instructionBytes),
+            transaction.signingRequirements,
+            instructionBytes,
             transaction.programId);
 
     QJsonParseError parseError;
