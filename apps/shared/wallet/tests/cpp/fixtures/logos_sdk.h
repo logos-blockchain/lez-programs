@@ -67,8 +67,8 @@ public:
     QString createdStatistics;
     QString createdPassword;
     QStringList submittedAccountIds;
-    QVariantList submittedSigningRequirements;
-    QVariant submittedInstruction;
+    QList<bool> submittedSigningRequirements;
+    QByteArray submittedInstruction;
     QString submittedProgramId;
     QString submittedPayerAccountId;
 
@@ -225,8 +225,8 @@ public:
 
     QString send_generic_public_transaction(
         const QStringList& accountIds,
-        const QVariantList& signingRequirements,
-        const QVariant& instruction,
+        const QList<bool>& signingRequirements,
+        const QByteArray& instruction,
         const QString& programId,
         const QString& payerAccountId)
     {

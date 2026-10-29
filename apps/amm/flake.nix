@@ -2,7 +2,7 @@
   description = "Logos AMM QML UI — trade and provide liquidity on the LEZ AMM";
 
   inputs = {
-    logos-module-builder.url = "github:logos-co/logos-module-builder";
+    logos-module-builder.url = "github:logos-co/logos-module-builder/0.3.3";
 
     # Shared C++ wallet access and Logos.Wallet QML sources.
     shared_wallet = {
