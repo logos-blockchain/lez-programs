@@ -8,7 +8,7 @@
   "description": "Core module for the Logos DEX (AMM) — on-chain pool resolution, swaps, and liquidity.",
   "author": "Logos Core Team",
   "main": "amm_module_plugin",
-  "dependencies": ["lez_core"],
+  "dependencies": [{ "name": "lez_core", "version": "0.4.2" }],
 
   "nix": {
     "packages": {
