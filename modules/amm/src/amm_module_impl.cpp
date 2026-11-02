@@ -678,6 +678,13 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
         jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
+    // Both oracle instructions require an existing AMM-owned pool.
+    if (accounts.size() > 1) {
+        const json pool = readPoolAccount(accounts[1], amm_program_id);
+        if (jStr(pool, "status") != "ok")
+            return error("no_pool");
+    }
+
     // A missing public account is returned as Account::default(), not a failed read.
     // The guest rejects every non-default account, including funded empty accounts.
     const size_t target_index = observations ? 3 : 2;
