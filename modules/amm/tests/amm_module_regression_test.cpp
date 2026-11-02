@@ -77,3 +77,34 @@ LOGOS_TEST(oracle_setup_accepts_numeric_windows_and_checks_price_account_target)
     assertError(f.module.createOraclePriceAccount(r), "already_exists");
     LOGOS_ASSERT_EQ(f.modules.lez_core.submissions.size(), 1U);
 }
+
+LOGOS_TEST(foreign_owned_pool_data_is_not_forwarded_for_quotes_or_plans) {
+    MockFixture f;
+    f.modules.lez_core.accounts[POOL] = snapshot(poolData(), OTHER).dump();
+    for (const auto* name : {"amm_swap_exact_in_quote", "amm_swap_exact_out_quote",
+                             "amm_add_liquidity_quote", "amm_remove_liquidity_quote",
+                             "amm_swap_exact_in_plan", "amm_swap_exact_out_plan",
+                             "amm_add_liquidity_plan", "amm_remove_liquidity_plan",
+                             "amm_sync_reserves_plan"})
+        ffi::failure(name, "no_pool");
+    assertError(f.module.swapExactInQuote(TOKEN_A, TOKEN_B, 10, 1), "no_pool");
+    assertError(f.module.swapExactOutQuote(TOKEN_A, TOKEN_B, 10, 1), "no_pool");
+    assertError(f.module.addLiquidityQuote(request()), "no_pool");
+    assertError(f.module.removeLiquidityQuote(request()), "no_pool");
+    LOGOS_ASSERT_TRUE(f.module.swapExactInput(TOKEN_A, TOKEN_B, HOLDING_A, HOLDING_B,
+                                             10, 1, 1000, PAYER).empty());
+    LOGOS_ASSERT_TRUE(f.module.swapExactOutput(TOKEN_A, TOKEN_B, HOLDING_A, HOLDING_B,
+                                              10, 20, 1000, PAYER).empty());
+    assertError(f.module.addLiquidity(request()), "no_pool");
+    assertError(f.module.removeLiquidity(request()), "no_pool");
+    assertError(f.module.syncReserves(request()), "no_pool");
+    for (const auto* name : {"amm_swap_exact_in_quote", "amm_swap_exact_out_quote",
+                             "amm_add_liquidity_quote", "amm_remove_liquidity_quote",
+                             "amm_swap_exact_in_plan", "amm_swap_exact_out_plan",
+                             "amm_add_liquidity_plan", "amm_remove_liquidity_plan",
+                             "amm_sync_reserves_plan"}) {
+        LOGOS_ASSERT_EQ(ffi::calls(name), 1);
+        LOGOS_ASSERT_EQ(ffi::lastRequest(name).at("poolData"), json(""));
+    }
+    LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
+}
