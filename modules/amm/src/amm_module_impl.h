@@ -318,6 +318,10 @@ private:
     // omitted when the read has no data (uninitialized/nonexistent).
     nlohmann::json readPublicAccount(const std::string& account_id);
 
+    // Accept pool contents only from the active AMM program.
+    nlohmann::json readPoolAccount(const std::string& account_id,
+                                   const std::string& amm_program_id);
+
     // The user's own public account reads, fresh each call (empty when the wallet
     // is closed). Each read is a live sequencer round-trip.
     nlohmann::json walletAccountReads(bool wallet_open);
