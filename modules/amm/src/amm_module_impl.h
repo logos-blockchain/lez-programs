@@ -45,7 +45,8 @@ public:
     /// — the A/B fields oriented to the caller's requested order (A is def_a_hex's).
     /// Otherwise `{ status:"error", error:<code> }`: `no_program_bin` (AMM_PROGRAM_ID
     /// unset/unreadable/bad), `amm_not_initialized` (config undecodable), `bad_config`
-    /// (bad ids / internal decode failure), `same_token_pair`, or `no_pool` for the
+    /// (bad ids / internal decode failure), `pool_read_failed` (wallet read failed),
+    /// `same_token_pair`, or `no_pool` for the
     /// ordinary "no pool / no liquidity yet" state (still carries `poolId`).
     LogosMap resolvePoolAccount(const std::string& def_a_hex, const std::string& def_b_hex);
 
