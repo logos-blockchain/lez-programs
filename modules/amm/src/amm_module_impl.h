@@ -90,7 +90,7 @@ public:
     /// submits (chained into the oracle, seeded from validated pool state — nothing signs). On
     /// success `{ status:"ok", error:"", transactionId:<hex> }`; on failure
     /// `{ status:"error", error:<code> }` — `config_missing`, `invalid_token_id`,
-    /// `invalid_window`, `same_token_pair`, `config_unavailable`, `wallet_submission_failed`,
+    /// `invalid_window`, `same_token_pair`, `config_unavailable`, `no_pool`, `wallet_submission_failed`,
     /// `backend_error` (`already_exists` if the target account is already created).
     LogosMap createPriceObservations(const LogosMap& request);
     LogosMap createOraclePriceAccount(const LogosMap& request);

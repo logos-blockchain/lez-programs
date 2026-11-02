@@ -127,3 +127,19 @@ LOGOS_TEST(occupied_pool_address_prevents_resolution_and_creation) {
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
 }
+
+LOGOS_TEST(oracle_setup_requires_an_existing_amm_owned_pool) {
+    for (bool foreign : {false, true}) {
+        MockFixture f;
+        if (foreign)
+            f.modules.lez_core.accounts[POOL] = snapshot(poolData(), OTHER).dump();
+        else
+            f.modules.lez_core.accounts.erase(POOL);
+        const auto p = plan({CONFIG, POOL, OTHER, LP}, {false, false, false, false}, {2});
+        ffi::success("amm_create_price_observations_plan", p);
+        ffi::success("amm_create_oracle_price_account_plan", p);
+        assertError(f.module.createPriceObservations(request()), "no_pool");
+        assertError(f.module.createOraclePriceAccount(request()), "no_pool");
+        LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
+    }
+}
