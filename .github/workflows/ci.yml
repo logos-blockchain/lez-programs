@@ -178,6 +178,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Check guest build context
+        run: python3 scripts/tests/test_guest_build_context.py
+
       - name: Build guest program binaries
         run: make build-programs
 

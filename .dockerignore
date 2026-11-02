@@ -1,4 +1,7 @@
 .git
+.*
+!.cargo
+!.cargo/**
 target
-programs/*/methods/guest/target
+**/target
 node_modules
