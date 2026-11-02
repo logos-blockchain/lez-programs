@@ -338,6 +338,21 @@ nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
     return result;
 }
 
+nlohmann::json AmmModuleImpl::readPoolAccount(const std::string& account_id,
+                                               const std::string& amm_program_id) {
+    json pool = readPublicAccount(account_id);
+    if (jStr(pool, "status") != "ok") return pool;
+
+    std::string owner = jStr(pool.at("account"), "program_owner");
+    std::transform(owner.begin(), owner.end(), owner.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (owner != amm_program_id) {
+        pool["status"] = "read_failed";
+        pool.erase("account");
+    }
+    return pool;
+}
+
 nlohmann::json AmmModuleImpl::walletAccountReads(bool wallet_open) {
     if (!wallet_open)
         return json::array();  // nothing to read while closed
@@ -443,7 +458,7 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
         return failed(code.empty() ? "bad_config" : code);
     }
 
-    const json pool = readPublicAccount(jStr(pairResult.value, "poolId"));
+    const json pool = readPoolAccount(jStr(pairResult.value, "poolId"), amm_program_id);
     // The fee shown for the pool is the instance-wide AmmConfig::swap_fee_bps, so resolve_pool
     // needs the config account to read it (it is no longer a pool field).
     const FfiResult resolveResult = call(amm_resolve_pool, json{{"pool", pool}, {"config", config}});
@@ -732,7 +747,7 @@ LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     const FfiResult quoteResult = call(amm_swap_exact_in_quote, json{
@@ -796,7 +811,7 @@ LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     const FfiResult quoteResult = call(amm_swap_exact_out_quote, json{
@@ -871,7 +886,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         AMM_TRACE("swapExactInput: FAIL amm_pool_id");
         return {};
     }
-    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // amm_swap_exact_in_plan resolves the pool accounts, encodes SwapExactInput,
@@ -968,7 +983,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
         AMM_TRACE("swapExactOutput: FAIL amm_pool_id");
         return {};
     }
-    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // amm_swap_exact_out_plan resolves the pool accounts, encodes SwapExactOutput,
@@ -1185,7 +1200,7 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // slippageBps is a fraction of 100% in basis points; the pricing op uses it to derive
@@ -1267,7 +1282,7 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // amm_add_liquidity_plan resolves the pool accounts (canonicalizing the pair), encodes
@@ -1348,7 +1363,7 @@ LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // slippageBps derives the minimumAmount*Raw floors the submit enforces. Require an integer
@@ -1428,7 +1443,7 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // amm_remove_liquidity_plan resolves the pool accounts, encodes RemoveLiquidity (with the
@@ -1506,7 +1521,7 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPublicAccount(jStr(poolId.value, "poolId"));
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     const FfiResult planResult = call(amm_sync_reserves_plan, json{
