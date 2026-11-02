@@ -188,7 +188,8 @@ public:
     /// `{ status:"ok", error:"", transactionId:<hex tx hash> }`. On failure:
     /// `{ status:"error", error:<code> }` — `config_missing`, `backend_error`,
     /// `invalid_account_id`, `bad_amount` (malformed amount/deadline),
-    /// `wallet_submission_failed`, or a plan code (e.g. `config_unavailable`). Unlike the
+    /// `wallet_submission_failed`, `already_exists` (the pool PDA is occupied), or a plan code
+    /// (e.g. `config_unavailable`). Unlike the
     /// swaps, a submit failure carries a code so the create-pool UI can tell the user why.
     LogosMap createPool(const LogosMap& request);
 
