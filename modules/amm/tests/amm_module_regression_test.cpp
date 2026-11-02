@@ -143,3 +143,19 @@ LOGOS_TEST(oracle_setup_requires_an_existing_amm_owned_pool) {
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
 }
+
+LOGOS_TEST(pool_read_failure_is_distinct_from_an_uninitialized_pool) {
+    MockFixture f;
+    f.modules.lez_core.accounts[POOL] = "";
+    ffi::success("amm_resolve_pool", {{"status", "error"}, {"error", "no_pool"}});
+    const auto p = plan({CONFIG, POOL, OTHER, LP}, {false, false, false, false}, {2});
+    ffi::success("amm_create_price_observations_plan", p);
+    ffi::success("amm_create_oracle_price_account_plan", p);
+    assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_read_failed");
+    assertError(f.module.createPriceObservations(request()), "backend_error");
+    assertError(f.module.createOraclePriceAccount(request()), "backend_error");
+    LOGOS_ASSERT_EQ(ffi::calls("amm_resolve_pool"), 0);
+    LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
+    f.modules.lez_core.accounts.erase(POOL);
+    assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "no_pool");
+}

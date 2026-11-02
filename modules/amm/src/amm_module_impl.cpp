@@ -355,7 +355,7 @@ nlohmann::json AmmModuleImpl::readPoolAccount(const std::string& account_id,
     std::transform(owner.begin(), owner.end(), owner.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (owner != amm_program_id) {
-        pool["status"] = isDefaultAccount(pool.at("account")) ? "read_failed" : "foreign_owner";
+        pool["status"] = isDefaultAccount(pool.at("account")) ? "uninitialized" : "foreign_owner";
         pool.erase("account");
     }
     return pool;
@@ -470,6 +470,9 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
     // A foreign account occupies the PDA; it cannot be treated as a creatable pool.
     if (jStr(pool, "status") == "foreign_owner")
         return failed("bad_config");
+    // A failed read does not establish that the pool PDA is vacant.
+    if (jStr(pool, "status") == "read_failed")
+        return failed("pool_read_failed");
     // The fee shown for the pool is the instance-wide AmmConfig::swap_fee_bps, so resolve_pool
     // needs the config account to read it (it is no longer a pool field).
     const FfiResult resolveResult = call(amm_resolve_pool, json{{"pool", pool}, {"config", config}});
@@ -681,6 +684,8 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     // Both oracle instructions require an existing AMM-owned pool.
     if (accounts.size() > 1) {
         const json pool = readPoolAccount(accounts[1], amm_program_id);
+        if (jStr(pool, "status") == "read_failed")
+            return error("backend_error");
         if (jStr(pool, "status") != "ok")
             return error("no_pool");
     }
