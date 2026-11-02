@@ -3,11 +3,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -623,11 +625,10 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     } else if (window_json.is_number_integer() && window_json.get<int64_t>() > 0) {
         window = window_json.get<uint64_t>();
     } else if (window_json.is_string()) {
-        try {
-            window = std::stoull(window_json.get<std::string>());
-        } catch (...) {
+        const std::string value = window_json.get<std::string>();
+        const auto result = std::from_chars(value.data(), value.data() + value.size(), window);
+        if (result.ec != std::errc() || result.ptr != value.data() + value.size())
             window = 0;
-        }
     }
     if (window == 0)
         return error("invalid_window");
