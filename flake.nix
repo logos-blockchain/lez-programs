@@ -302,7 +302,9 @@
         };
         tests = {
           dir = ./modules/amm/tests;
+          # The mock suite supplies its own stubs; the second suite links the real FFI.
           mockCLibs = [ ];
+          extraCmakeFlags = [ "-DAMM_REAL_FFI_TESTS=ON" ];
         };
       };
       ammModulePkgs = ammModuleOutputs.packages or { };
