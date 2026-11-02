@@ -695,10 +695,10 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     const size_t target_index = observations ? 3 : 2;
     if (accounts.size() > target_index) {
         const json existing = readPublicAccount(accounts[target_index]);
-        if (jStr(existing, "status") == "ok") {
-            if (!isDefaultAccount(existing.at("account")))
-                return error("already_exists");
-        }
+        if (jStr(existing, "status") != "ok")
+            return error("backend_error");
+        if (!isDefaultAccount(existing.at("account")))
+            return error("already_exists");
     }
 
     AMM_TRACE("oracleSetup(" << (observations ? "observations" : "priceAccount")
@@ -1167,7 +1167,9 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     // this check, which remains authoritative if another transaction wins the race.
     if (accounts.size() > 1) {
         const json existing = readPublicAccount(accounts[1]);
-        if (jStr(existing, "status") == "ok" && !isDefaultAccount(existing.at("account")))
+        if (jStr(existing, "status") != "ok")
+            return error("backend_error");
+        if (!isDefaultAccount(existing.at("account")))
             return error("already_exists");
     }
 

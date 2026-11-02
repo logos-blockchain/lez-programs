@@ -159,3 +159,24 @@ LOGOS_TEST(pool_read_failure_is_distinct_from_an_uninitialized_pool) {
     f.modules.lez_core.accounts.erase(POOL);
     assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "no_pool");
 }
+
+LOGOS_TEST(creation_rejects_failed_target_reads_before_submission) {
+    {
+        MockFixture f;
+        f.modules.lez_core.accounts[POOL] = "";
+        ffi::success("amm_create_pool_plan", plan({CONFIG, POOL}, {false, false}, {4}));
+        assertError(f.module.createPool(request()), "backend_error");
+        LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
+    }
+    for (bool observations : {false, true}) {
+        MockFixture f;
+        const auto p = plan({CONFIG, POOL, OTHER, LP}, {false, false, false, false}, {2});
+        ffi::success("amm_create_price_observations_plan", p);
+        ffi::success("amm_create_oracle_price_account_plan", p);
+        f.modules.lez_core.accounts[observations ? LP : OTHER] = "";
+        const auto result = observations ? f.module.createPriceObservations(request())
+                                         : f.module.createOraclePriceAccount(request());
+        assertError(result, "backend_error");
+        LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
+    }
+}
