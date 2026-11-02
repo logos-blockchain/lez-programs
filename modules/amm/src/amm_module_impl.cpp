@@ -759,6 +759,9 @@ LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
     if (!jsonAmountToDecimal(amount_out, amount_out_decimal))
         return error("bad_amount");
 
+    if (slippage_bps < 0 || slippage_bps >= 10000)
+        return error("invalid_slippage");
+
     const std::string amm_program_id = ammProgramId();
     if (amm_program_id.empty())
         return error("config_missing");
