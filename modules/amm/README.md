@@ -24,7 +24,8 @@ methods (the module API is generated from the header) are:
   instance-wide swap fee read from the config, not a pool field; an absent /
   uninitialized pool or one with no liquidity is `{ status: "error", error:
   "no_pool", poolId }` (other codes: `no_program_bin`, `amm_not_initialized`,
-  `bad_config`).
+  `bad_config`, `pool_read_failed`). A failed read or an occupied foreign-owned
+  pool address is not treated as a creatable pool.
 - `configAccount()` — decodes the AMM instance's config (authority, the
   token/oracle program ids it was initialized with, `swapFeeBps` — the
   instance-wide swap fee — and `protocolFeeBps` — the fraction of that swap fee
