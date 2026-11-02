@@ -55,6 +55,45 @@ TestCase {
         }
     }
 
+    Component {
+        id: detailBackendComponent
+        QtObject {
+            property bool isWalletOpen: false
+            property string poolError: ""
+            function resolvePoolAccount(a, b) { return { status: "error", error: poolError } }
+        }
+    }
+
+    Component {
+        id: detailPageComponent
+        Pages.PoolDetailPage { visible: false; width: 800; height: 600 }
+    }
+
+    function test_detailReportsPoolFailure_data() {
+        return [
+            { tag: "read", code: "pool_read_failed",
+              message: "Could not read the pool account. Check the connection and retry." },
+            { tag: "configuration", code: "bad_config",
+              message: "The AMM configuration is invalid or the pool address is occupied." }
+        ]
+    }
+
+    function test_detailReportsPoolFailure(data) {
+        var backend = createTemporaryObject(detailBackendComponent, testCase, { poolError: data.code })
+        var runtime = createTemporaryObject(runtimeComponent, testCase)
+        var page = createTemporaryObject(detailPageComponent, testCase, {
+            backend: backend,
+            runtime: runtime,
+            pool: { tokenADefinitionId: "A", tokenBDefinitionId: "B" }
+        })
+        verify(page)
+        page.loadPoolState()
+        compare(page.chainResolved, true)
+        compare(page.poolExists, false)
+        compare(page.poolError, data.message)
+        compare(page.canSwap, false)
+    }
+
     function test_rowsAreDrivenByBackendPoolList() {
         var backend = createTemporaryObject(backendComponent, testCase)
         var runtime = createTemporaryObject(runtimeComponent, testCase)

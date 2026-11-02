@@ -19,9 +19,9 @@ unsafe_code = "deny"
 # style/pedantic lints default to warn so toolchain upgrades don't break the
 # build unexpectedly — they can be evaluated and addressed at our own pace.
 correctness = { level = "deny", priority = -1 }
-suspicious  = { level = "deny", priority = -1 }
-perf        = { level = "deny", priority = -1 }
-style       = { level = "warn", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+style = { level = "warn", priority = -1 }
 
 # Generated-code / placeholder blockers.
 dbg_macro = "deny"
