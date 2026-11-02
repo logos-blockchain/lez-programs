@@ -86,6 +86,14 @@ std::string jStr(const json& obj, const char* key) {
     return (it != obj.end() && it->is_string()) ? it->get<std::string>() : std::string();
 }
 
+// The guest's #[account(init)] requires every field of Account::default().
+bool isDefaultAccount(const json& account) {
+    return jStr(account, "program_owner") == std::string(64, '0')
+        && jStr(account, "balance") == std::string(32, '0')
+        && jStr(account, "nonce") == std::string(32, '0')
+        && jStr(account, "data").empty();
+}
+
 // Coerce a swap amount arg — arriving as EITHER a JSON number (bare `1000` on
 // the CLI) or a decimal string ("1000", a big u128 the UI passes, or a
 // quote-wrapped big value on the CLI) — to its canonical decimal-string form.
@@ -347,7 +355,7 @@ nlohmann::json AmmModuleImpl::readPoolAccount(const std::string& account_id,
     std::transform(owner.begin(), owner.end(), owner.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (owner != amm_program_id) {
-        pool["status"] = "read_failed";
+        pool["status"] = isDefaultAccount(pool.at("account")) ? "read_failed" : "foreign_owner";
         pool.erase("account");
     }
     return pool;
@@ -459,6 +467,9 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
     }
 
     const json pool = readPoolAccount(jStr(pairResult.value, "poolId"), amm_program_id);
+    // A foreign account occupies the PDA; it cannot be treated as a creatable pool.
+    if (jStr(pool, "status") == "foreign_owner")
+        return failed("bad_config");
     // The fee shown for the pool is the instance-wide AmmConfig::swap_fee_bps, so resolve_pool
     // needs the config account to read it (it is no longer a pool field).
     const FfiResult resolveResult = call(amm_resolve_pool, json{{"pool", pool}, {"config", config}});
@@ -673,11 +684,7 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     if (accounts.size() > target_index) {
         const json existing = readPublicAccount(accounts[target_index]);
         if (jStr(existing, "status") == "ok") {
-            const json& account = existing.at("account");
-            if (jStr(account, "program_owner") != std::string(64, '0')
-                || jStr(account, "balance") != std::string(32, '0')
-                || jStr(account, "nonce") != std::string(32, '0')
-                || !jStr(account, "data").empty())
+            if (!isDefaultAccount(existing.at("account")))
                 return error("already_exists");
         }
     }
@@ -1143,6 +1150,14 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
+
+    // A fresh pool PDA must still be default at submission time. The guest repeats
+    // this check, which remains authoritative if another transaction wins the race.
+    if (accounts.size() > 1) {
+        const json existing = readPublicAccount(accounts[1]);
+        if (jStr(existing, "status") == "ok" && !isDefaultAccount(existing.at("account")))
+            return error("already_exists");
+    }
 
     AMM_TRACE("createPool: SUBMIT programId=" << program_id
               << " instrBytes=" << instruction.size() << " accounts=" << accounts.size());
