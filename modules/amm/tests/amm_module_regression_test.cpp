@@ -108,3 +108,22 @@ LOGOS_TEST(foreign_owned_pool_data_is_not_forwarded_for_quotes_or_plans) {
     }
     LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
 }
+
+LOGOS_TEST(occupied_pool_address_prevents_resolution_and_creation) {
+    for (const auto* field : {"program_owner", "balance", "nonce", "data"}) {
+        MockFixture f;
+        auto occupied = snapshot("", std::string(64, '0'));
+        if (std::string(field) == "program_owner")
+            occupied[field] = OTHER;
+        else if (std::string(field) == "data")
+            occupied[field] = "00";
+        else
+            occupied[field] = "01" + std::string(30, '0');
+        f.modules.lez_core.accounts[POOL] = occupied.dump();
+        ffi::success("amm_resolve_pool", {{"status", "error"}, {"error", "no_pool"}});
+        ffi::success("amm_create_pool_plan", plan({CONFIG, POOL}, {false, false}, {4}));
+        assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "bad_config");
+        assertError(f.module.createPool(request()), "already_exists");
+        LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
+    }
+}
