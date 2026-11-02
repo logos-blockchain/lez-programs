@@ -1,8 +1,26 @@
 #include "mock_support.h"
 
+#include <cstdint>
+#include <initializer_list>
 #include <limits>
+#include <string>
+#include <utility>
+#include <vector>
 
 using namespace amm_test;
+namespace {
+std::vector<std::uint8_t> encoded(std::uint8_t tag,
+                                  std::initializer_list<std::pair<std::uint64_t, int>> fields) {
+    std::vector<std::uint8_t> bytes{tag};
+    for (auto [value, size] : fields) {
+        for (int i = 0; i < size; ++i) {
+            bytes.push_back(static_cast<std::uint8_t>(value & 0xff));
+            value >>= 8;
+        }
+    }
+    return bytes;
+}
+}  // namespace
 
 LOGOS_TEST(exact_output_rejects_invalid_slippage_before_account_reads) {
     MockFixture f;
@@ -27,4 +45,35 @@ LOGOS_TEST(oracle_setup_rejects_invalid_windows_without_planning_or_submission) 
         LOGOS_ASSERT_EQ(ffi::calls("amm_create_oracle_price_account_plan"), 0);
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
+}
+
+LOGOS_TEST(oracle_setup_forwards_full_width_windows_and_refuses_existing_targets) {
+    MockFixture f;
+    const auto p = plan({CONFIG, POOL, OTHER, LP, TOKEN_A}, {false, false, false, false, false},
+                        encoded(2, {{std::numeric_limits<std::uint64_t>::max(), 8}}));
+    ffi::success("amm_create_price_observations_plan", p);
+    auto r = request();
+    r["windowDurationMs"] = "18446744073709551615";
+    assertOk(f.module.createPriceObservations(r));
+    LOGOS_ASSERT_EQ(ffi::lastRequest("amm_create_price_observations_plan")["windowDurationMs"],
+                    json(std::numeric_limits<std::uint64_t>::max()));
+    f.modules.lez_core.accounts[LP] = snapshot().dump();
+    assertError(f.module.createPriceObservations(r), "already_exists");
+    LOGOS_ASSERT_EQ(f.modules.lez_core.submissions.size(), 1U);
+}
+
+LOGOS_TEST(oracle_setup_accepts_numeric_windows_and_checks_price_account_target) {
+    MockFixture f;
+    const auto p =
+        plan({CONFIG, POOL, OTHER, TOKEN_A}, {false, false, false, false}, encoded(3, {{2048, 8}}));
+    ffi::success("amm_create_oracle_price_account_plan", p);
+    auto r = request();
+    r["windowDurationMs"] = std::uint64_t(2048);
+    assertOk(f.module.createOraclePriceAccount(r));
+    LOGOS_ASSERT_EQ(ffi::lastRequest("amm_create_oracle_price_account_plan")["windowDurationMs"],
+                    json(2048));
+    assertSubmission(f.modules.lez_core.submissions.back(), p);
+    f.modules.lez_core.accounts[OTHER] = snapshot().dump();
+    assertError(f.module.createOraclePriceAccount(r), "already_exists");
+    LOGOS_ASSERT_EQ(f.modules.lez_core.submissions.size(), 1U);
 }
