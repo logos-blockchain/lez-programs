@@ -652,12 +652,19 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
         jsonInstructionBytes(plan.value("instruction", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
-    // Surface a stable error code when the target PDA already exists instead of failing at submit.
+    // A missing public account is returned as Account::default(), not a failed read.
+    // The guest rejects every non-default account, including funded empty accounts.
     const size_t target_index = observations ? 3 : 2;
     if (accounts.size() > target_index) {
         const json existing = readPublicAccount(accounts[target_index]);
-        if (jStr(existing, "status") == "ok")
-            return error("already_exists");
+        if (jStr(existing, "status") == "ok") {
+            const json& account = existing.at("account");
+            if (jStr(account, "program_owner") != std::string(64, '0')
+                || jStr(account, "balance") != std::string(32, '0')
+                || jStr(account, "nonce") != std::string(32, '0')
+                || !jStr(account, "data").empty())
+                return error("already_exists");
+        }
     }
 
     AMM_TRACE("oracleSetup(" << (observations ? "observations" : "priceAccount")
