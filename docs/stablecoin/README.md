@@ -786,7 +786,7 @@ fn initialize_program(
 
 `initial_admin_account_id` selects the stored admin independently of the header and freeze authority. It may equal the header itself without adding a duplicate account input. After bootstrap, the header has no extra admin rights: admin instructions require the stored admin's authorization.
 
-Bootstrap requires control of the deployed header's authorization capability, including when reusing an uninitialized deployment. A factory may authorize its header PDA through the existing delegated PDA mechanism. An initialized instance cannot be initialized again. Deploy the fixed binary, matching IDL, and updated clients together: the appended admin argument changes the initialization payload, and old payloads are rejected. Other instruction encodings, stored account layouts, and PDA seeds remain unchanged. Existing immutable deployments retain their original code; this change does not recover a previously selected or hijacked admin.
+Bootstrap requires control of the deployed header's authorization capability, including when reusing an uninitialized deployment. A factory may authorize its header PDA through the existing delegated PDA mechanism. An initialized instance cannot be initialized again.
 
 **Inputs (9 accounts):**
 
@@ -1181,7 +1181,7 @@ Every settable thing in the protocol, what it starts as, and who/how it can chan
 
 | Field | Init source | Modifiable later? |
 |---|---|---|
-| `admin_account_id` | the `admin` account that signed init | yes — `set_admin` (one-step rotation) |
+| `admin_account_id` | `initial_admin_account_id` parameter to init | yes — `set_admin` (one-step rotation) |
 | `freeze_authority_account_id` | param to init | yes — `set_freeze_authority` |
 | `stablecoin_definition_id` | PDA claimed at init | **NO — immutable** (changing breaks supply accounting) |
 | `collateral_definition_id` | param to init | **NO — immutable** (changing orphans every vault) |
