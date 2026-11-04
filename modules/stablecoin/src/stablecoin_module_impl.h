@@ -80,7 +80,8 @@ public:
     /// `minimumMillisecondsBetweenRateUpdates`,
     /// `maximumOraclePriceAgeMilliseconds`, `initialRedemptionPrice`, and
     /// `stablecoinName`. Integer values accept exact decimal strings or JSON
-    /// integers; JSON floats are rejected. Only `adminId` signs.
+    /// integers; JSON floats are rejected. The deployed program header signs
+    /// initialization; `adminId` selects the initial administrator.
     LogosMap initializeProgram(const LogosMap& request);
 
     /// Opens a collateral-only position. `ownerId`, `userCollateralHoldingId`,

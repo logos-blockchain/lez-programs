@@ -728,7 +728,9 @@ definition. Its address is a deterministic PDA, so derive it first.
 
 Deploy `stablecoin` and `twap_oracle` (step 1), and have a fungible collateral token (step 3).
 Every stablecoin PDA derives from the stablecoin's header account id, so a redeploy means
-new PDAs and a fresh initialization. Then:
+new PDAs and a fresh initialization, even with identical bytecode. Retain the stablecoin
+header key in the wallet: that header authorizes bootstrap, including when reusing an
+uninitialized `STABLECOIN_PROGRAM_ID`. Then:
 
 ```bash
 cargo run -q -p stablecoin_program --example stablecoin_pdas -- "<STABLECOIN_PROGRAM_ID>" globals
@@ -763,12 +765,18 @@ spel --idl artifacts/twap_oracle-idl.json \
 
 ### 15.3 Initialize
 
+The deployed header signs initialization and selects `<ADMIN>` as the stored admin.
+The selected admin need not sign unless it is also the fee payer. Header data and
+ownership stay unchanged; normal signer nonces and transaction fees still apply.
+Use matching updated bytecode, IDL, and clients: initialization requires the appended
+`initial_admin_account_id` argument, and an old payload is rejected.
+
 ```bash
 spel --idl artifacts/stablecoin-idl.json \
      --program <STABLECOIN_PROGRAM_ID> \
      --fee-payer <FEE_PAYER> \
      -- initialize-program \
-     --admin <ADMIN> \
+     --deployment-authority <STABLECOIN_PROGRAM_ID> \
      --protocol-parameters <PROTOCOL_PARAMETERS_PDA> \
      --stability-fee-accumulator <STABILITY_FEE_ACCUMULATOR_PDA> \
      --redemption-price-state <REDEMPTION_PRICE_STATE_PDA> \
@@ -785,7 +793,8 @@ spel --idl artifacts/stablecoin-idl.json \
      --minimum-milliseconds-between-rate-updates 60000 \
      --maximum-oracle-price-age-milliseconds 86400000 \
      --initial-redemption-price 1000000000000000000000000000 \
-     --stablecoin-name "LEZ Stablecoin"
+     --stablecoin-name "LEZ Stablecoin" \
+     --initial-admin-account-id <ADMIN>
 ```
 
 > Rates, ratios and prices are 27-decimal fixed point. The values above are the script's
