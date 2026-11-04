@@ -107,7 +107,8 @@ public:
     /// Withdraws recorded collateral after a native-compatible health preflight.
     /// Requires `ownerId`, `positionNonce`, `userCollateralHoldingId`, and
     /// `amount`. Only the Position owner must be a public wallet signer;
-    /// the destination holding need not belong to the wallet. Frozen calls fail.
+    /// the destination holding need not belong to the wallet. While frozen,
+    /// withdrawal requires the position to have zero normalized debt.
     LogosMap withdrawCollateral(const LogosMap& request);
 
     /// Borrows stablecoins after upward-rounded debt pricing, oracle freshness
