@@ -1463,7 +1463,7 @@ Computation in raw units:
 | Account | Field | Before (token units) | After (token units) |
 |---|---|---|---|
 | `position` | normalized_debt_amount | 200 | 0 |
-| `stablecoin_definition` | total_supply | S + 200 | S − 10.26 (net) |
+| `stablecoin_definition` | total_supply | S + 210.26 | S |
 | Alice's stablecoin holding | balance | 211 | 0.74 |
 
 The unused 0.74 stays in Alice's holding: the program burns 210.26 from her
