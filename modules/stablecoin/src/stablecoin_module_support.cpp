@@ -171,7 +171,6 @@ std::string stableFfiError(const std::string& error) {
         "invalid_user_stablecoin_holding",
         "insufficient_stablecoin_balance",
         "stablecoin_definition_mismatch",
-        "repay_amount_exceeds_debt",
         "repayment_arithmetic_error",
         "invalid_user_collateral_holding",
         "insufficient_collateral_balance",

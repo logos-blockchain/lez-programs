@@ -97,11 +97,12 @@ public:
     /// both sign, including for zero-amount reconciliation.
     LogosMap depositCollateral(const LogosMap& request);
 
-    /// Burns the requested stablecoins and reduces normalized debt using the
-    /// current fee accumulator, rounding down. Requires `ownerId`,
-    /// `positionNonce`, `userStablecoinHoldingId`, and `amount`; use decimal
-    /// strings for exact integers. Owner and source holding both sign.
-    /// Repayment remains available while frozen, including zero amounts.
+    /// Burns at most `amount` stablecoins, capped at the execution-time cost to
+    /// clear the position. Partial repayments reduce normalized debt with downward
+    /// rounding. Requires `ownerId`, `positionNonce`, `userStablecoinHoldingId`,
+    /// and `amount`; use decimal strings for exact integers. The original maximum
+    /// is signed unchanged. Owner and source holding both sign. Repayment remains
+    /// available while frozen, including zero amounts; reread debt after execution.
     LogosMap repayDebt(const LogosMap& request);
 
     /// Withdraws recorded collateral after a native-compatible health preflight.

@@ -733,6 +733,274 @@ fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
     }
 }
 
+/// A repayment fixture with matching token balance and total supply. Positions
+/// and globals are seeded like the existing repayment tests. The clock stays at
+/// the accumulator's anchor: nothing accrues, so no surplus mint is needed.
+fn repayment_state(normalized_debt: u128, balance: u128, accumulator: u128) -> V03State {
+    let mut state = state_for_stablecoin_repay_tests();
+    let mut position_account = state.get_account_by_id(Ids::position());
+    let mut position = Position::try_from(&position_account.data).expect("valid position");
+    position.normalized_debt_amount = normalized_debt;
+    position_account.data = Data::from(&position);
+    state.force_insert_account(Ids::position(), position_account);
+    state.force_insert_account(
+        Ids::user_stablecoin_holding(),
+        Account {
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: Ids::stablecoin_definition(),
+                balance,
+            }),
+            ..Accounts::user_stablecoin_holding_init()
+        },
+    );
+    state.force_insert_account(
+        Ids::stablecoin_definition(),
+        Account {
+            data: Data::from(&TokenDefinition::Fungible {
+                name: String::from("DAI"),
+                total_supply: balance,
+                metadata_id: None,
+                authority: None,
+            }),
+            ..Accounts::stablecoin_definition_init()
+        },
+    );
+    state.force_insert_account(
+        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+        Account {
+            data: Data::from(&stablecoin_core::StabilityFeeAccumulator {
+                accumulated_rate_at_last_accrual: accumulator,
+                last_accrued_at: OPEN_POSITION_NOW,
+                total_normalized_debt: normalized_debt,
+            }),
+            ..Accounts::stability_fee_accumulator_init()
+        },
+    );
+    state
+}
+
+fn submit_repayment(state: &mut V03State, maximum: u128, now: u64) -> Result<(), LeeError> {
+    try_submit(
+        state,
+        &mut 0,
+        now,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::stablecoin_definition(),
+            Ids::user_stablecoin_holding(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![
+            (&Keys::owner(), Ids::owner()),
+            (
+                &Keys::user_stablecoin_holding(),
+                Ids::user_stablecoin_holding(),
+            ),
+        ],
+        stablecoin_core::Instruction::RepayDebt { amount: maximum },
+    )
+}
+
+#[test]
+fn stablecoin_repay_debt_caps_burn_and_preserves_unused_maximum() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    for (debt, accumulator, maximum, balance, expected_balance) in [
+        (100, FIXED_POINT_ONE, 101, 101, 1),
+        (100, FIXED_POINT_ONE * 3 / 2, u128::MAX, 150, 0),
+        (0, FIXED_POINT_ONE, u128::MAX, 0, 0),
+    ] {
+        let mut state = repayment_state(debt, balance, accumulator);
+        let before = read_position(&state);
+        submit_repayment(&mut state, maximum, OPEN_POSITION_NOW)
+            .expect("only the capped burn must fit the holding");
+        let after = read_position(&state);
+        assert_eq!(after.normalized_debt_amount, 0);
+        assert_eq!(
+            after,
+            Position {
+                normalized_debt_amount: 0,
+                ..before
+            }
+        );
+        assert_fungible_balance_of(
+            &state,
+            Ids::user_stablecoin_holding(),
+            Ids::stablecoin_definition(),
+            expected_balance,
+        );
+        assert_eq!(
+            read_total_supply(&state, Ids::stablecoin_definition()),
+            expected_balance,
+            "total supply must fall by actual burn, not by the signed maximum"
+        );
+    }
+}
+
+#[test]
+fn stablecoin_repay_debt_insufficient_capped_burn_rolls_back() {
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let mut state = repayment_state(100, 149, FIXED_POINT_ONE * 3 / 2);
+    let unchanged_accounts = [
+        Ids::position(),
+        Ids::stablecoin_definition(),
+        Ids::user_stablecoin_holding(),
+    ]
+    .map(|id| (id, state.get_account_by_id(id)));
+    assert_rejected_with(
+        submit_repayment(&mut state, u128::MAX, OPEN_POSITION_NOW),
+        "Insufficient balance to burn",
+        "repayment short by one token unit",
+    );
+    for (id, before) in unchanged_accounts {
+        assert_eq!(
+            state.get_account_by_id(id),
+            before,
+            "failed burn must roll back every write"
+        );
+    }
+}
+
+/// A bootstrapped protocol whose owner opened a position and borrowed
+/// `LIFECYCLE_BORROW` at `start`, so the position holds the only debt.
+fn borrowed_owner_state(start: u64) -> V03State {
+    let mut state = bootstrapped_owner_state(start);
+    let mut block = 1u64;
+    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            Ids::collateral_definition(),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![
+            (&Keys::owner(), Ids::owner()),
+            (&Keys::user_holding(), Ids::user_holding()),
+        ],
+        stablecoin_core::Instruction::OpenPosition {
+            position_nonce: Ids::position_nonce(),
+            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
+        },
+        "open_position",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::stablecoin_definition_pda(),
+            Ids::user_stablecoin_holding(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            compute_redemption_price_state_pda(Ids::stablecoin_program()),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![(&Keys::owner(), Ids::owner())],
+        stablecoin_core::Instruction::GenerateDebt {
+            amount: LIFECYCLE_BORROW,
+        },
+        "generate_debt",
+    );
+    state
+}
+
+/// Repaying a millisecond after borrowing: the accrual first mints the
+/// position's fees to the surplus holding, and the signed maximum still bounds
+/// the burn against the execution-time debt.
+#[test]
+fn stablecoin_repay_debt_uses_execution_time_debt_within_signed_maximum() {
+    use stablecoin_core::math::{
+        compute_current_accumulated_rate, mul_div, mul_div_ceil, FIXED_POINT_ONE,
+    };
+
+    let start: u64 = 1_700_000_000_000;
+    let now = start + 1;
+    let accumulator = compute_current_accumulated_rate(
+        FIXED_POINT_ONE,
+        protocol_config::STABILITY_FEE_PER_MILLISECOND,
+        start,
+        now,
+    );
+    let fees = mul_div(
+        LIFECYCLE_BORROW,
+        accumulator - FIXED_POINT_ONE,
+        FIXED_POINT_ONE,
+    );
+    let full_debt = mul_div_ceil(LIFECYCLE_BORROW, accumulator, FIXED_POINT_ONE);
+    assert!(
+        full_debt > LIFECYCLE_BORROW,
+        "a millisecond of fees must raise the debt"
+    );
+    for (maximum, expected_burn, remaining_debt) in [
+        (full_debt, full_debt, 0),
+        (
+            LIFECYCLE_BORROW,
+            LIFECYCLE_BORROW,
+            LIFECYCLE_BORROW - mul_div(LIFECYCLE_BORROW, FIXED_POINT_ONE, accumulator),
+        ),
+    ] {
+        let mut state = borrowed_owner_state(start);
+        let balance = LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW;
+        let supply = read_total_supply(&state, Ids::stablecoin_definition_pda());
+        submit(
+            &mut state,
+            &mut 3,
+            now,
+            vec![
+                Ids::owner(),
+                Ids::position(),
+                Ids::stablecoin_definition_pda(),
+                Ids::user_stablecoin_holding(),
+                compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+                compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+                compute_protocol_parameters_pda(Ids::stablecoin_program()),
+                CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ],
+            vec![
+                (&Keys::owner(), Ids::owner()),
+                (
+                    &Keys::user_stablecoin_holding(),
+                    Ids::user_stablecoin_holding(),
+                ),
+            ],
+            stablecoin_core::Instruction::RepayDebt { amount: maximum },
+            "repay_debt a millisecond after borrowing",
+        );
+        assert_eq!(read_position(&state).normalized_debt_amount, remaining_debt);
+        assert_fungible_balance_of(
+            &state,
+            Ids::user_stablecoin_holding(),
+            Ids::stablecoin_definition_pda(),
+            balance - expected_burn,
+        );
+        assert_fungible_balance_of(
+            &state,
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+            Ids::stablecoin_definition_pda(),
+            fees,
+        );
+        assert_eq!(
+            read_total_supply(&state, Ids::stablecoin_definition_pda()),
+            supply + fees - expected_burn,
+        );
+    }
+}
+
 /// Seeds the three read-only globals and the clock that the fee-aware position
 /// instructions read. The privacy tests build their state by hand rather than via
 /// `initialize_program`, so they need these inserted explicitly.
@@ -1302,7 +1570,7 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
 
     let position_collateral = Balances::collateral_deposit();
     let initial_debt = Balances::initial_debt();
-    let repay_amount = Balances::debt_repay_amount();
+    let repay_amount = initial_debt;
 
     let position_account = Account {
         program_owner: Ids::stablecoin_program(),
@@ -1358,9 +1626,7 @@ fn stablecoin_repay_debt_private_stablecoin_holding() {
         stablecoin_holding_id,
     );
 
-    let instruction = stablecoin_core::Instruction::RepayDebt {
-        amount: repay_amount,
-    };
+    let instruction = stablecoin_core::Instruction::RepayDebt { amount: u128::MAX };
 
     let (output, proof) = execute_and_prove(
         [
@@ -1459,7 +1725,7 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
 
     let position_collateral = Balances::collateral_deposit();
     let initial_debt = Balances::initial_debt();
-    let repay_amount = Balances::debt_repay_amount();
+    let repay_amount = initial_debt;
 
     let position_account = Account {
         program_owner: Ids::stablecoin_program(),
@@ -1512,9 +1778,7 @@ fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
     );
     let holding_pre = AccountWithMetadata::new(holding_account.clone(), true, holding_id);
 
-    let instruction = stablecoin_core::Instruction::RepayDebt {
-        amount: repay_amount,
-    };
+    let instruction = stablecoin_core::Instruction::RepayDebt { amount: u128::MAX };
 
     let (output, proof) = execute_and_prove(
         [
@@ -2079,7 +2343,8 @@ fn stablecoin_full_position_lifecycle() {
         "supply {supply_backing_debt} must match the nominal debt {nominal_debt_now}"
     );
 
-    // 5. Repay the whole debt. It costs more than was minted — that gap is the fee.
+    // 5. Authorize a maximum above the holding balance. The execution-time burn
+    // is capped at the full debt, which costs more than was minted.
     let current_accumulator = compute_current_accumulated_rate(
         accumulator.accumulated_rate_at_last_accrual,
         protocol_config::STABILITY_FEE_PER_MILLISECOND,
@@ -2116,9 +2381,7 @@ fn stablecoin_full_position_lifecycle() {
                 Ids::user_stablecoin_holding(),
             ),
         ],
-        stablecoin_core::Instruction::RepayDebt {
-            amount: nominal_debt,
-        },
+        stablecoin_core::Instruction::RepayDebt { amount: u128::MAX },
         "repay_debt",
     );
     assert_eq!(read_position(&state).normalized_debt_amount, 0);
