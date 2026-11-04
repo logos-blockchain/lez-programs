@@ -45,7 +45,10 @@ impl TryFrom<&Data> for StabilityFeeAccumulator {
     type Error = std::io::Error;
 
     fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        if data.as_ref().len() == 24 {
+        // Earlier layouts contain either the rate and timestamp alone or
+        // those fields followed by total normalized debt, without a version.
+        // A truncated versioned value of either length is indistinguishable.
+        if matches!(data.as_ref().len(), 24 | 40) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "Legacy stablecoin global account schema is unsupported",
@@ -152,13 +155,15 @@ mod tests {
         expected.extend_from_slice(&123_u128.to_le_bytes());
         assert_eq!(bytes.len(), 41);
         assert_eq!(bytes, expected);
-        let legacy = Data::try_from(bytes[1..25].to_vec()).expect("data");
-        assert_eq!(
-            StabilityFeeAccumulator::try_from(&legacy)
-                .expect_err("legacy")
-                .kind(),
-            std::io::ErrorKind::Unsupported
-        );
+        for legacy_bytes in [&bytes[1..25], &bytes[1..]] {
+            let legacy = Data::try_from(legacy_bytes.to_vec()).expect("data");
+            assert_eq!(
+                StabilityFeeAccumulator::try_from(&legacy)
+                    .expect_err("legacy")
+                    .kind(),
+                std::io::ErrorKind::Unsupported
+            );
+        }
         let mut unsupported = bytes.clone();
         unsupported[0] = 1;
         assert_eq!(
@@ -176,5 +181,12 @@ mod tests {
             &Data::try_from(bytes[..40].to_vec()).expect("data")
         )
         .is_err());
+        let malformed = Data::try_from(bytes[..39].to_vec()).expect("data");
+        assert_ne!(
+            StabilityFeeAccumulator::try_from(&malformed)
+                .expect_err("truncated")
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
     }
 }

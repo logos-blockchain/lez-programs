@@ -15,6 +15,8 @@ validation, and `stablecoin_core::Instruction` serialization.
 Version 0.2 targets fresh deployments with global account schema version 2.
 Protocol Parameters and Stability Fee Accumulator include `schemaVersion`;
 legacy or unsupported schemas fail with `unsupported_account_schema`. The
+24-byte and 40-byte accumulator lengths also match truncated version 2 data;
+the module reports `unsupported_account_schema` for both lengths. The
 initialization ABI now requires explicit debt limits. Existing deployments need
 their matching older client; there is no automatic in-place migration or safe
 way to infer aggregate normalized debt from token supply. Rebuild the program

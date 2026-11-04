@@ -432,7 +432,11 @@ fn health_validates_every_live_account_identity_owner_and_exact_data() {
                 }
                 1 => {
                     read.account.as_mut().expect("account").data.pop();
-                    expected_data_errors[index]
+                    if index == 2 {
+                        "unsupported_account_schema"
+                    } else {
+                        expected_data_errors[index]
+                    }
                 }
                 2 => {
                     read.account.as_mut().expect("account").data.push_str("ff");

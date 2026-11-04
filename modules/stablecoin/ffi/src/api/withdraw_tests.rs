@@ -583,7 +583,11 @@ fn withdrawal_validates_all_required_reads_even_without_health_projections() {
                 1 => {
                     let data = &mut read.account.as_mut().expect("account").data;
                     data.truncate(data.len() - 2);
-                    data_errors[index]
+                    if index == 3 {
+                        "unsupported_account_schema"
+                    } else {
+                        data_errors[index]
+                    }
                 }
                 2 => {
                     read.account.as_mut().expect("account").data.push_str("ff");

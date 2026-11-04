@@ -372,7 +372,7 @@ limits, and aggregate counter; numeric account values are decimal strings in the
 
 This is a **fresh-deployment** schema and initialization ABI. The initializer
 requires both debt limits; old initializer payloads are rejected. Existing
-instruction tags remain unchanged, with `SetDebtLimits` appended at Borsh tag 19.
+instruction tags remain unchanged, with `SetDebtLimits` appended at Borsh tag 20.
 There is no automatic in-place migration: token supply cannot reconstruct the
 sum of historical normalized position debts, and an unaudited caller-provided
 total must not reset that accounting. Keep clients for existing deployments on
@@ -861,7 +861,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 | 14 | `set_timing_parameters` | admin | Update the two timing fields atomically. |
 | 15 | `set_admin` | admin | One-step admin rotation. |
 | 16 | `set_freeze_authority` | admin | One-step freeze authority rotation. |
-| 19 | `set_debt_limits` | admin | Update the debt floor and ceiling atomically; no scan or rewrite of positions. |
+| 20 | `set_debt_limits` | admin | Update the debt floor and ceiling atomically; no scan or rewrite of positions. |
 
 ### 9.5 Emergency
 

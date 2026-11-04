@@ -687,7 +687,11 @@ fn borrowing_validates_all_seven_reads_even_for_zero_amount() {
                 1 => {
                     let data = &mut read.account.as_mut().expect("account").data;
                     data.truncate(data.len() - 2);
-                    data_errors[index]
+                    if index == 3 {
+                        "unsupported_account_schema"
+                    } else {
+                        data_errors[index]
+                    }
                 }
                 2 => {
                     read.account.as_mut().expect("account").data.push_str("ff");

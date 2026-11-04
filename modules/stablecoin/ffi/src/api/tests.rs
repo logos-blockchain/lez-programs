@@ -718,11 +718,20 @@ fn stability_fee_accumulator_decode_rejects_truncated_and_trailing_data() {
     let account_id = compute_stability_fee_accumulator_pda(STABLECOIN_PROGRAM_ID);
     let encoded = Data::from(&accumulator).as_ref().to_vec();
 
-    for malformed in [encoded[..encoded.len() - 1].to_vec(), {
-        let mut trailing = encoded.clone();
-        trailing.push(0);
-        trailing
-    }] {
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    for (malformed, expected) in [
+        // One missing byte has the same length as the previous layout.
+        (
+            encoded[..encoded.len() - 1].to_vec(),
+            "unsupported_account_schema",
+        ),
+        (
+            encoded[..encoded.len() - 2].to_vec(),
+            "invalid_stability_fee_accumulator_data",
+        ),
+        (trailing, "invalid_stability_fee_accumulator_data"),
+    ] {
         let request = DecodeStabilityFeeAccumulatorRequest {
             stablecoin_program_id: program_id_hex(),
             stability_fee_accumulator: account_read(
@@ -730,10 +739,7 @@ fn stability_fee_accumulator_decode_rejects_truncated_and_trailing_data() {
                 &account(STABLECOIN_PROGRAM_ID, ok(Data::try_from(malformed))),
             ),
         };
-        assert_error(
-            decode_stability_fee_accumulator(request),
-            "invalid_stability_fee_accumulator_data",
-        );
+        assert_error(decode_stability_fee_accumulator(request), expected);
     }
 }
 
@@ -1780,6 +1786,8 @@ fn global_account_decoders_reject_legacy_and_unsupported_schema() {
     // Strip version and appended fields to reconstruct the exact legacy layouts.
     let legacy_parameters = encoded_parameters[1..encoded_parameters.len() - 32].to_vec();
     let legacy_accumulator = encoded_accumulator[1..encoded_accumulator.len() - 16].to_vec();
+    // Current main stores the total as well, but has no version byte.
+    let current_legacy_accumulator = encoded_accumulator[1..].to_vec();
     let mut future_parameters = encoded_parameters;
     future_parameters[0] = 3;
     let mut future_accumulator = encoded_accumulator;
@@ -1797,7 +1805,11 @@ fn global_account_decoders_reject_legacy_and_unsupported_schema() {
             "unsupported_account_schema",
         );
     }
-    for data in [legacy_accumulator, future_accumulator] {
+    for data in [
+        legacy_accumulator,
+        current_legacy_accumulator,
+        future_accumulator,
+    ] {
         let mut request = accumulator_request(&accumulator);
         request
             .stability_fee_accumulator
