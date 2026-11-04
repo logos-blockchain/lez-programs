@@ -1570,7 +1570,7 @@ Effect:
 |---|---|---|---|
 | `ProtocolParameters` | market_price_oracle_id | bad_oracle | new_good_oracle |
 
-Validates the new oracle's `base_asset` / `quote_asset` match the stablecoin/collateral. The redemption price isn't reset (no admin escape hatch by design). The freeze authority then calls `reset_redemption_rate_controller()` (§10.19): the price stays where it projects now, but the wound-up integral goes to `0` and the rate to `1.0`.
+Validates the new oracle's `base_asset` / `quote_asset` match the stablecoin/collateral. The redemption price isn't reset (no admin escape hatch by design). The freeze authority then calls `reset_redemption_rate_controller()` (§10.19): the price stays where it projects now and the rate returns to `1.0`. The integral is already zero in this example.
 
 **Step 5 — The freeze authority calls `unfreeze()`**
 
@@ -1578,11 +1578,11 @@ Validates the new oracle's `base_asset` / `quote_asset` match the stablecoin/col
 |---|---|---|---|
 | `ProtocolParameters` | is_frozen | true | false |
 
-Trading resumes. A keeper calls `update_redemption_rate()`, which now reads the correct oracle price and walks the redemption rate / price back to a stable regime from a clean controller state. Without the reset, the integral term would still sit at the windup clamp and the recovery would lag.
+Trading resumes. A keeper calls `update_redemption_rate()`, which now reads the correct oracle price and updates the redemption rate from the reset controller state. Without the reset, the earlier rate would continue to apply until another controller update.
 
 **What this scenario doesn't fix:**
 
-The attacker still holds the stablecoin they minted during the attack. The position's collateral is now far below what its debt should be backing. Recovery requires the **liquidation engine of RFP-014** — until that lands, the surplus holding (§6.6) is the only buffer, and if it's not enough, the protocol is effectively under-collateralized in aggregate. This is the inherent limit of "freeze without liquidation" — the freeze stops the bleeding mid-attack but doesn't undo prior damage.
+The proposed borrow failed, so it minted no stablecoin. Freezing and resetting the controller do not reverse redemption-price drift that occurred before those actions. Any positions that become under-collateralized still need the **liquidation engine of RFP-014**; the surplus holding (§6.6) is a separate buffer.
 
 ### 16.3 Redemption price & controller walkthrough
 
