@@ -37,6 +37,8 @@ use crate::{
 
 const STABLECOIN_PROGRAM_ID: AccountId = AccountId::new([0x11_u8; 32]);
 const TOKEN_PROGRAM_ID: AccountId = AccountId::new([0x22_u8; 32]);
+// An admin-configured alternative producer using the canonical oracle layout.
+// It may publish invalid timestamps; canonical TWAP clock behavior is not assumed.
 const ORACLE_PROGRAM_ID: AccountId = AccountId::new([0x33_u8; 32]);
 const CLOCK_PROGRAM_ID: AccountId = AccountId::new([0x44_u8; 32]);
 
@@ -424,6 +426,8 @@ fn exercise_soft_blocker(
     repair: impl FnOnce(&mut JourneyState),
 ) -> JourneyState {
     let redemption_before = state.redemption.clone();
+    let mut standalone = state.clone();
+    standalone.execute_instruction(Instruction::AccrueStabilityFee);
     let quote = redemption_rate_update_quote(state.quote_request())
         .expect("a blocked quote is still a successful read");
     assert_eq!(quote["canSubmit"], false);
@@ -455,6 +459,7 @@ fn exercise_soft_blocker(
     );
     state.execute_instruction(decode_instruction(&refresh));
     assert_eq!(state.accumulator.last_accrued_at, state.clock.timestamp);
+    assert_eq!(state.accumulator, standalone.accumulator);
     assert_eq!(state.redemption, redemption_before);
 
     repair(&mut state);
@@ -725,6 +730,20 @@ fn journey_quotes_and_persists_successive_controller_updates() {
 
 #[test]
 fn journey_recovers_from_blocked_updates_with_fee_only_refreshes() {
+    for timestamp in [DUE + 1, u64::MAX] {
+        let future = exercise_soft_blocker(
+            {
+                let mut state = JourneyState::new();
+                state.oracle.timestamp = timestamp;
+                state
+            },
+            "oracle_future",
+            |state| state.oracle.timestamp = state.clock.timestamp,
+        );
+        assert!(future.accumulator.accumulated_rate_at_last_accrual > FIXED_POINT_ONE);
+        assert_eq!(future.redemption.last_updated_at, DUE);
+    }
+
     let stale = exercise_soft_blocker(
         {
             let mut state = JourneyState::new();

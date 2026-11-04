@@ -2,7 +2,7 @@
 //!
 //! Best-effort combined poke: ALWAYS advances the stability-fee accumulator
 //! (§10.2); advances the redemption price (§10.3 / §6.4) ONLY when its interval
-//! is due and the oracle is fresh and non-zero, skipping rather than panicking
+//! is due and the oracle is not future-dated, fresh, and non-zero, skipping rather than panicking
 //! otherwise. A LEZ transaction carries exactly one instruction, so this is the
 //! only way to advance both globals in a single transaction.
 
@@ -23,8 +23,8 @@ use crate::{
 ///
 /// Panics ONLY on caller authorization, an uninitialized / foreign-owned /
 /// wrong-PDA global, an oracle id mismatch, or a wrong clock account. A
-/// not-yet-due interval and an oracle that is stale, reports zero, or has no
-/// usable observation at all (e.g. bound before it exists) are SOFT — they skip
+/// not-yet-due interval and an oracle that is future-dated, stale, reports zero,
+/// or has no usable observation at all (e.g. bound before it exists) are SOFT — they skip
 /// the redemption half instead of failing the transaction. Never blocked by the
 /// frozen flag.
 ///
@@ -79,7 +79,8 @@ pub fn refresh_globals(
         >= params.minimum_milliseconds_between_rate_updates;
     let usable_price = oracle
         .filter(|oracle| {
-            now.saturating_sub(oracle.timestamp) <= params.maximum_oracle_price_age_milliseconds
+            now.checked_sub(oracle.timestamp)
+                .is_some_and(|age| age <= params.maximum_oracle_price_age_milliseconds)
                 && oracle.price > 0
         })
         .map(|oracle| oracle.price);
@@ -258,6 +259,83 @@ mod tests {
         let redemption = decode_redemption(&post_states[5]);
         assert_eq!(redemption.redemption_rate_per_millisecond, FIXED_POINT_ONE);
         assert_eq!(redemption.last_updated_at, T0);
+    }
+
+    #[test]
+    fn future_observations_preserve_redemption_and_match_standalone_fee_accrual() {
+        // The configured alternative producer, not the canonical TWAP, supplies
+        // these deliberately invalid future observations.
+        for (now, timestamp) in [(NOW, NOW + 1), (NOW, u64::MAX), (0, 1)] {
+            for is_frozen in [false, true] {
+                let (post_states, calls) = refresh_globals(
+                    caller_account(),
+                    protocol_parameters_account(ParameterOverrides {
+                        is_frozen,
+                        ..ParameterOverrides::default()
+                    }),
+                    accumulator_account(ACCUMULATOR_ANCHOR, T0),
+                    crate::test_support::stablecoin_definition_account(),
+                    crate::test_support::stablecoin_master_holding_account(),
+                    redemption_price_state_account(T0),
+                    oracle_account(timestamp, ORACLE_PRICE_BELOW_ANCHOR),
+                    clock_account(now),
+                    STABLECOIN_PROGRAM_ID,
+                );
+                let (fee_only, _) = crate::accrue_stability_fee::accrue_stability_fee(
+                    caller_account(),
+                    protocol_parameters_account(ParameterOverrides {
+                        is_frozen,
+                        ..ParameterOverrides::default()
+                    }),
+                    accumulator_account(ACCUMULATOR_ANCHOR, T0),
+                    crate::test_support::stablecoin_definition_account(),
+                    crate::test_support::stablecoin_master_holding_account(),
+                    clock_account(now),
+                    STABLECOIN_PROGRAM_ID,
+                );
+                assert!(calls.is_empty());
+                assert_eq!(
+                    post_states[2].post_account(STABLECOIN_PROGRAM_ID),
+                    fee_only[2].post_account(STABLECOIN_PROGRAM_ID)
+                );
+                assert_eq!(
+                    post_states[5].post_account(STABLECOIN_PROGRAM_ID),
+                    redemption_price_state_account(T0).account
+                );
+                if now > T0 {
+                    assert!(
+                        decode_accumulator(&post_states[2]).accumulated_rate_at_last_accrual
+                            > ACCUMULATOR_ANCHOR
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn observation_age_boundaries_control_only_the_redemption_half() {
+        let maximum_age = crate::test_support::TEST_MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS;
+        for (timestamp, eligible) in [
+            (NOW, true),
+            (NOW - maximum_age, true),
+            (NOW - maximum_age - 1, false),
+        ] {
+            let (post_states, calls) = invoke_with(
+                ParameterOverrides::default(),
+                T0,
+                timestamp,
+                ORACLE_PRICE_BELOW_ANCHOR,
+            );
+            assert!(calls.is_empty());
+            assert!(
+                decode_accumulator(&post_states[2]).accumulated_rate_at_last_accrual
+                    > ACCUMULATOR_ANCHOR
+            );
+            assert_eq!(
+                decode_redemption(&post_states[5]).last_updated_at,
+                if eligible { NOW } else { T0 }
+            );
+        }
     }
 
     #[test]
