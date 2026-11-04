@@ -146,14 +146,14 @@ These two are usually run by keeper bots. A LEZ transaction carries a single ins
 **Time passes; debt grows; users adjust.** As keepers advance the fee multiplier, every position's debt grows even though no per-position write happens (the RAI accumulator approach, §6.1). Users can:
 
 - `deposit_collateral` (§10.5) to add more collateral and improve the ratio.
-- `withdraw_collateral` (§10.6) to take some back — only allowed if the position still meets the safety ratio afterwards.
+- `withdraw_collateral` (§10.6) to take some back — indebted positions must still meet the safety ratio afterwards and cannot withdraw while frozen. Positions with exactly zero normalized debt may withdraw while frozen.
 - `repay_debt` (§10.8) to burn stablecoin and lower the debt. To pay off accrued interest, users may need to buy extra stablecoin on the market.
 
 **Closing out.** When a position's debt and collateral are both zero, `close_position` (§10.9) clears the `Position` account. This does **not** free the nonce for reuse: the vault PDA at `hash(position_id)` lingers (the Token Program has no `CloseHolding`), so reopening at the same `(owner, nonce)` always fails `open_position`'s vault-uninitialized check — the user must pick a fresh nonce. See §11 and §14.
 
 **Admin tunes parameters.** The admin can change the stability fee (which auto-applies any pending interest first so the new rate doesn't apply retroactively), tighten or loosen the collateralization ratio, change the controller gains, point at a different oracle, adjust the timing intervals, or rotate the admin / freeze-authority handles. None of these touch any position directly. The admin CANNOT touch a position, mint or burn stablecoin, reset the redemption price, or change the stablecoin / collateral definitions — those are fixed at setup. The admin or the freeze authority CAN return the controller to rest (`reset_redemption_rate_controller`, §10.19): the rate goes back to `1.0` and the integral to `0`, but the price stays where it currently projects.
 
-**Emergency.** If something goes wrong (a broken oracle, an exploit in progress), the freeze authority calls `freeze` (§10.17). That sets `is_frozen = true` in `ProtocolParameters`. After that, operations that increase risk (`open_position`, `generate_debt`, `withdraw_collateral`) fail; operations that reduce risk (`deposit_collateral`, `repay_debt`, `close_position`), keeper updates, and admin changes still work so users can pay down debt and operators can fix the problem. The admin may point at a clean oracle via `set_market_price_oracle`, and the freeze authority calls `unfreeze` to resume normal operation.
+**Emergency.** If something goes wrong (a broken oracle, an exploit in progress), the freeze authority calls `freeze` (§10.17). That sets `is_frozen = true` in `ProtocolParameters`. After that, `open_position`, `generate_debt`, and withdrawals from positions with nonzero normalized debt fail. An authenticated owner whose position has exactly zero normalized debt may still withdraw some or all collateral, subject to the usual account, token, and balance checks. `deposit_collateral`, `repay_debt`, `close_position`, keeper updates, and admin changes remain available so users can pay down debt, exit debt-free positions, and operators can fix the problem. This policy deliberately permits debt-free collateral transfers during an emergency: the freeze authority stops debt-increasing paths and withdrawals backing debt, but cannot hold a debt-free owner's collateral until unfreeze. The admin may point at a clean oracle via `set_market_price_oracle`, and the freeze authority calls `unfreeze` to resume normal operation.
 
 ### 3.1 Program-owned global singletons (created by `initialize_program`)
 
@@ -272,7 +272,8 @@ pub struct ProtocolParameters {
     pub minimum_milliseconds_between_rate_updates: u64,
     /// Reject oracle observations older than this (RFP R3 staleness gate).
     pub maximum_oracle_price_age_milliseconds: u64,
-    /// `true` blocks `open_position`, `generate_debt`, `withdraw_collateral`.
+    /// `true` blocks `open_position`, `generate_debt`, and `withdraw_collateral`
+    /// from positions with nonzero normalized debt. Debt-free withdrawals and
     /// `deposit_collateral` / `repay_debt` / `close_position` / pokes / admin / freeze ops
     /// remain available so users can deleverage out and operators can re-tune.
     pub is_frozen: bool,
@@ -688,7 +689,7 @@ These are properties the protocol maintains across every state-changing instruct
 
 7. **Supply tracks total debt (RFP R1).** `stablecoin_definition.total_supply` = (minted to users) − (burned by users) + (fees minted to the surplus holding). After every accrual, `total_supply` equals `Σ nominal_debt` at the persisted accumulator, up to integer dust that always favours the protocol (§6.3, §6.6). Between accruals, the projected nominal debt runs ahead of supply by the fees not yet accrued, exactly as in RAI. `total_normalized_debt` equals `Σ position.normalized_debt_amount` after every instruction.
 
-8. **Frozen ⇒ debt-extending ops blocked.** `is_frozen = true` implies `open_position`, `generate_debt`, `withdraw_collateral` all panic. Other ops continue to work.
+8. **Frozen ⇒ debt-extending ops and withdrawals backing debt blocked.** `is_frozen = true` implies `open_position` and `generate_debt` panic. `withdraw_collateral` panics when the authenticated position has nonzero `normalized_debt_amount`, including for a zero-amount withdrawal. Exactly zero normalized debt permits partial, full, or zero-amount withdrawals with all ordinary account, token, and balance checks. Other ops continue to work.
 
 ## 8. Bound choices
 
@@ -736,7 +737,7 @@ All bounds enforced in `initialize_program` and the corresponding `set_*` instru
 |---|---|---|---|---|
 | 4 | `open_position` | owner | blocked | Claim Position PDA + vault PDA, deposit initial collateral. |
 | 5 | `deposit_collateral` | owner | ok | Add collateral to an existing position. |
-| 6 | `withdraw_collateral` | owner | blocked | Remove collateral, subject to collateralization. |
+| 6 | `withdraw_collateral` | owner | allowed only with zero normalized debt | Remove collateral, subject to collateralization when debt remains. |
 | 7 | `generate_debt` | owner | blocked | Accrue, then mint stablecoin and increase normalized debt, subject to collateralization. Does not read the oracle. |
 | 8 | `repay_debt` | owner | ok | Burn stablecoin, decrease normalized debt. |
 | 9 | `close_position` | owner | ok | Clear Position PDA when debt = 0 and collateral = 0. Vault lingers (see § 14). |
@@ -1037,7 +1038,11 @@ flowchart TD
 
 **Chained calls:** `Token::Transfer { amount }` · accounts: `[vault (auth via vault PDA seed), user_collateral_holding]` · pda_seeds: `[vault_seed]`.
 
-**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch; vault doesn't match `position.vault_account_id`; user holding's `definition_id` mismatch or different Token Program; `protocol_parameters.is_frozen = true`; `amount > position.collateral_amount`; the redemption price projects to **zero** (§6.2); collateralization check (§ 6.2) fails post-decrement. With `amount = 0` the projections and the check are skipped entirely — the position is unchanged, so there is nothing to re-examine (§11).
+**Panics if:** `owner.is_authorized = false`; position uninit / wrong owner / PDA mismatch / stored owner mismatch; vault doesn't match `position.vault_account_id`; vault or destination holding is invalid or has the wrong collateral definition / Token Program; a global account is uninitialized, wrongly owned, at the wrong PDA, or invalid; the clock is not the initialized system `CLOCK_01` account; `protocol_parameters.is_frozen = true` **and** `position.normalized_debt_amount != 0`; `amount > position.collateral_amount`; or, for a nonzero withdrawal from an indebted position, the redemption price projects to **zero** (§6.2) or the collateralization check (§6.2) fails post-decrement. The chained Token transfer also rejects insufficient vault balance or destination balance overflow; failure rolls back the whole transaction.
+
+The frozen exception uses the authenticated position's stored `normalized_debt_amount == 0`, never a floored nominal-debt quote or caller-supplied assertion. It permits partial, full, and zero-amount withdrawals; even one normalized debt unit keeps every withdrawal blocked while frozen. Global and position validation precede the freeze gate, so malformed inputs can fail their own checks before `Protocol is frozen`.
+
+With `amount = 0` or exactly zero normalized debt, both financial projections and the health check are skipped (§11). This remains true while frozen, even if valid historical rates would project the redemption price to zero or saturate the fee projection. Withdrawal reads no market oracle, so oracle staleness adds no gate. Account, owner-signature, token, clock, and balance checks still apply; normalized debt, globals, clock, and the freeze flag remain unchanged.
 
 ```mermaid
 flowchart TD
@@ -1265,6 +1270,8 @@ flowchart TD
 
 **Output:** `protocol_parameters.is_frozen` ← `true` (freeze) or `false` (unfreeze). Idempotent.
 
+While frozen, `open_position` and `generate_debt` are blocked, as is every `withdraw_collateral` call from a position with nonzero normalized debt. An authenticated owner may still withdraw partial, full, or zero amounts from a position with exactly zero normalized debt, then close it once both recorded collateral and the actual vault balance are zero. All ordinary validation remains in force. Freeze therefore permits these debt-free collateral outflows during an emergency; unfreeze is required to restore withdrawals backing debt. Deposits, repayment, closure, keeper updates, and admin changes remain available under their own preconditions.
+
 **Panics if:** auth check fails; protocol_parameters uninit / wrong owner.
 
 ```mermaid
@@ -1321,13 +1328,13 @@ flowchart TD
 
 - **Empty position** (`collateral_amount = 0`, `normalized_debt_amount = 0`) — valid intermediate state. `withdraw_collateral` with `amount = 0` is a no-op. `close_position` is the only path that clears the account.
 - **Long time since last poke.** `compound_rate` handles large `dt` via exponentiation by squaring (O(log dt)), but the result is NOT self-bounding: at extreme `dt` any rate > `FIXED_POINT_ONE` overflows. Callers therefore clamp `dt` to `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` (§5.3). The trade-off is that fee accrual and redemption drift pause beyond the window if no one pokes for that long; permissionless, cheap pokes make this a catastrophic-neglect-only scenario.
-- **Stale or missing oracle but unfrozen.** `update_redemption_rate` panics and `refresh_globals` skips the controller, so the rate stops changing at whatever it last was (RFP R3: a stale price never moves the rate). As in RAI, every position instruction — including `generate_debt` — continues, since none of them reads the market price. Withdrawing requires the collateralization check, which uses the projected redemption price from the OLD rate — operationally fine.
-- **Frozen + stale oracle.** `withdraw_collateral` and `generate_debt` blocked (frozen). `deposit_collateral`, `repay_debt`, `close_position` work. Anyone can still call `accrue_stability_fee` (rate-independent).
+- **Stale or missing oracle but unfrozen.** `update_redemption_rate` panics and `refresh_globals` skips the controller, so the rate stops changing at whatever it last was (RFP R3: a stale price never moves the rate). As in RAI, every position instruction — including `generate_debt` — continues, since none of them reads the market price. Nonzero withdrawals from indebted positions require the collateralization check, which uses the projected redemption price from the OLD rate — operationally fine. Zero-debt or zero-amount withdrawals skip both projections and the health check.
+- **Frozen + stale oracle.** `generate_debt` is blocked (frozen). `withdraw_collateral` is blocked for any nonzero normalized debt, including a one-unit residue or a zero withdrawal amount. Exactly zero normalized debt permits an authenticated owner to withdraw all recorded collateral and close while still frozen, with no oracle read or financial projections; valid global accounts and the system clock are still required. `deposit_collateral`, `repay_debt`, `close_position` work. Anyone can still call `accrue_stability_fee` (rate-independent).
 - **Admin tightens `minimum_collateralization_ratio`.** Existing positions with healthy-old-ratio but underwater-new-ratio cannot `generate_debt` or `withdraw_collateral`. They CAN `deposit_collateral` to recover, or `repay_debt` to reduce their debt.
 - **Position re-open at same nonce after close.** Fails — the vault PDA at `hash(position_id)` lingers from before. By design — pick a fresh nonce (intentional limitation). See § 14.
 - **Overrepay on `repay_debt`.** Panics via `checked_sub`; protects against user error sending more burn than nominal debt at this instant.
 - **Dust on full repay.** Because the decrement is rounded down (§6.3), burning exactly the current nominal debt may leave a tiny `normalized_debt_amount` residue (≤ one accumulator unit). To fully clear, users overpay by a tiny amount (≤ accumulator × 1 raw unit). Off-chain SDK computes the right number; if it picks too small, `repay_debt` still succeeds but the position isn't closeable until another small repay.
-- **Zero-amount instructions.** `deposit_collateral(0)`, `withdraw_collateral(0)`, `generate_debt(0)`, `repay_debt(0)`: all valid no-ops at the protocol level (chained Token call is also a no-op). Saves the caller from having to short-circuit.
+- **Zero-amount instructions.** Zero amounts do not bypass instruction preconditions. In particular, `withdraw_collateral(0)` is permitted while frozen only with exactly zero normalized debt, and `generate_debt(0)` remains blocked while frozen. A zero withdrawal leaves collateral and debt unchanged and skips the financial projections and health check; its account, token, clock, signature, and freeze-policy checks still apply.
 
 ## 12. Out of scope (per RFP)
 
@@ -1505,7 +1512,7 @@ The attacker dumps the 500 stablecoin on the market for collateral, walking away
 
 Effect:
 - `generate_debt` — BLOCKED ✓ (no more attacker mints).
-- `withdraw_collateral` — BLOCKED ✓ (attacker can't pull collateral against the bad price).
+- `withdraw_collateral` — BLOCKED for indebted positions (the attacker can't pull collateral backing debt against the bad price); allowed for authenticated owners with exactly zero normalized debt, subject to the usual account, token, and balance checks.
 - `deposit_collateral` — allowed (Alice and Bob can shore up).
 - `repay_debt` — allowed (Alice and Bob can deleverage).
 - `close_position` — allowed.

@@ -2654,6 +2654,171 @@ fn stablecoin_freeze_blocks_risky_ops() {
     assert_eq!(position.normalized_debt_amount, LIFECYCLE_BORROW / 2);
 }
 
+/// Open a real zero-debt position and freeze through the authorized public instruction.
+fn frozen_debt_free_owner_state(start: u64) -> (V03State, u64) {
+    let mut state = bootstrapped_owner_state(start);
+    let mut block = 1;
+    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            Ids::user_holding(),
+            Ids::collateral_definition(),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![
+            (&Keys::owner(), Ids::owner()),
+            (&Keys::user_holding(), Ids::user_holding()),
+        ],
+        stablecoin_core::Instruction::OpenPosition {
+            position_nonce: Ids::position_nonce(),
+            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
+        },
+        "open debt-free position",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![Ids::freeze_authority(), params_pda],
+        vec![(&Keys::freeze_authority(), Ids::freeze_authority())],
+        stablecoin_core::Instruction::Freeze,
+        "freeze debt-free position",
+    );
+    assert_position(&state, LIFECYCLE_OPEN_COLLATERAL);
+    assert!(read_parameters(&state).is_frozen);
+    (state, block)
+}
+
+fn frozen_withdraw_accounts() -> Vec<AccountId> {
+    vec![
+        Ids::owner(),
+        Ids::position(),
+        Ids::vault(),
+        Ids::user_holding(),
+        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+        compute_redemption_price_state_pda(Ids::stablecoin_program()),
+        compute_protocol_parameters_pda(Ids::stablecoin_program()),
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+    ]
+}
+
+#[test]
+fn stablecoin_freeze_allows_debt_free_withdrawal_and_close_with_stale_oracle() {
+    let start = 1_700_000_000_000;
+    let (mut state, mut block) = frozen_debt_free_owner_state(start);
+    // Withdrawal has no oracle input. Even an observation older than the configured
+    // freshness bound cannot prevent an authenticated zero-debt owner from exiting.
+    let now = start + protocol_config::MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS + 1;
+    seed_clock(&mut state, now);
+    let read_only_ids = [
+        compute_protocol_parameters_pda(Ids::stablecoin_program()),
+        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+        compute_redemption_price_state_pda(Ids::stablecoin_program()),
+        CLOCK_01_PROGRAM_ACCOUNT_ID,
+        Ids::oracle(),
+    ];
+    let before_globals = read_only_ids.map(|id| state.get_account_by_id(id));
+    submit(
+        &mut state,
+        &mut block,
+        now,
+        frozen_withdraw_accounts(),
+        vec![(&Keys::owner(), Ids::owner())],
+        stablecoin_core::Instruction::WithdrawCollateral {
+            amount: LIFECYCLE_OPEN_COLLATERAL,
+        },
+        "full debt-free withdrawal while frozen",
+    );
+    assert_position(&state, 0);
+    assert_fungible_balance(&state, Ids::vault(), 0);
+    assert_fungible_balance(&state, Ids::user_holding(), Balances::user_holding_init());
+    assert_eq!(
+        read_only_ids.map(|id| state.get_account_by_id(id)),
+        before_globals
+    );
+    assert!(read_parameters(&state).is_frozen);
+
+    submit(
+        &mut state,
+        &mut block,
+        now,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::vault(),
+            compute_protocol_parameters_pda(Ids::stablecoin_program()),
+        ],
+        vec![(&Keys::owner(), Ids::owner())],
+        stablecoin_core::Instruction::ClosePosition,
+        "close debt-free position while frozen",
+    );
+    let closed = state.get_account_by_id(Ids::position());
+    assert_eq!(closed.data, Data::default());
+    assert_eq!(closed.program_owner, Ids::stablecoin_program());
+    assert_fungible_balance(&state, Ids::vault(), 0);
+    assert_fungible_balance(&state, Ids::user_holding(), Balances::user_holding_init());
+    assert_eq!(
+        read_only_ids.map(|id| state.get_account_by_id(id)),
+        before_globals
+    );
+    assert!(read_parameters(&state).is_frozen);
+}
+
+#[test]
+fn stablecoin_freeze_debt_free_token_transfer_failure_is_atomic() {
+    let start = 1_700_000_000_000;
+    let (mut state, mut block) = frozen_debt_free_owner_state(start);
+    let vault = state.get_account_by_id(Ids::vault());
+    let destination = state.get_account_by_id(Ids::user_holding());
+    // Deliberately violate the collateral backing / token supply invariants to
+    // exercise downstream Token::Transfer failures. Ordinary program operations
+    // cannot produce either balance mismatch; these are rollback boundary tests.
+    for (corrupted_id, balance, expected_error) in [
+        (Ids::vault(), 0, "Insufficient balance"),
+        (Ids::user_holding(), u128::MAX, "Recipient balance overflow"),
+    ] {
+        state.force_insert_account(Ids::vault(), vault.clone());
+        state.force_insert_account(Ids::user_holding(), destination.clone());
+        let mut corrupted = state.get_account_by_id(corrupted_id);
+        corrupted.data = Data::from(&TokenHolding::Fungible {
+            definition_id: Ids::collateral_definition(),
+            balance,
+        });
+        state.force_insert_account(corrupted_id, corrupted);
+        let accounts = frozen_withdraw_accounts();
+        let before: Vec<_> = accounts
+            .iter()
+            .map(|id| state.get_account_by_id(*id))
+            .collect();
+        assert_rejected_with(
+            try_submit(
+                &mut state,
+                &mut block,
+                start,
+                accounts.clone(),
+                vec![(&Keys::owner(), Ids::owner())],
+                stablecoin_core::Instruction::WithdrawCollateral { amount: 1 },
+            ),
+            expected_error,
+            "frozen debt-free withdrawal with corrupted token balance",
+        );
+        let after: Vec<_> = accounts
+            .iter()
+            .map(|id| state.get_account_by_id(*id))
+            .collect();
+        assert_eq!(after, before, "failed chained transfer must be atomic");
+        assert_position(&state, LIFECYCLE_OPEN_COLLATERAL);
+        assert!(read_parameters(&state).is_frozen);
+    }
+}
+
 /// Spec §10.18: `unfreeze` restores the blocked instructions, and is idempotent.
 #[test]
 fn stablecoin_unfreeze_resumes_normal_operation() {
@@ -2683,6 +2848,31 @@ fn stablecoin_unfreeze_resumes_normal_operation() {
             initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
         },
         "open_position",
+    );
+    submit(
+        &mut state,
+        &mut block,
+        start,
+        vec![
+            Ids::owner(),
+            Ids::position(),
+            Ids::stablecoin_definition_pda(),
+            Ids::user_stablecoin_holding(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
+            compute_redemption_price_state_pda(Ids::stablecoin_program()),
+            params_pda,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        vec![owner],
+        stablecoin_core::Instruction::GenerateDebt {
+            amount: LIFECYCLE_BORROW,
+        },
+        "generate debt before freeze",
+    );
+    assert_eq!(
+        read_position(&state).normalized_debt_amount,
+        LIFECYCLE_BORROW
     );
     let withdraw_accounts = vec![
         Ids::owner(),
@@ -2754,6 +2944,10 @@ fn stablecoin_unfreeze_resumes_normal_operation() {
     assert_eq!(
         read_position(&state).collateral_amount,
         LIFECYCLE_OPEN_COLLATERAL - 1
+    );
+    assert_eq!(
+        read_position(&state).normalized_debt_amount,
+        LIFECYCLE_BORROW
     );
 
     // Unfreezing twice is a successful no-op.

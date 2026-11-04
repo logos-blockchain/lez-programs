@@ -28,15 +28,15 @@ pub fn withdraw_collateral_plan(request: WithdrawCollateralPlanRequest) -> Stabl
     let destination_id = parse_account_id(&request.user_collateral_holding_id)?;
     let (parameters_id, parameters) =
         validated_protocol_parameters(program_id, &request.protocol_parameters)?;
-    if parameters.is_frozen {
-        return Err(StablecoinApiError::new("protocol_frozen"));
-    }
     let (accumulator_id, accumulator) =
         validated_stability_fee_accumulator(program_id, &request.stability_fee_accumulator)?;
     let (redemption_id, redemption) =
         validated_redemption_price_state(program_id, &request.redemption_price_state)?;
     let now = clock_timestamp(&request.clock)?;
     let (position_id, position) = validated_position(program_id, owner, nonce, &request.position)?;
+    if parameters.is_frozen && position.normalized_debt_amount != 0 {
+        return Err(StablecoinApiError::new("protocol_frozen"));
+    }
     let expected_vault = compute_position_vault_pda(program_id, position_id);
     if position.vault_account_id != expected_vault {
         return Err(StablecoinApiError::new("position_vault_mismatch"));
