@@ -74,6 +74,7 @@ public:
 
     /// Initializes the stablecoin protocol. Request fields are `adminId`,
     /// `freezeAuthorityId`, `collateralDefinitionId`, `marketPriceOracleId`,
+    /// `marketPriceOracleProgramId` (trusted deployed oracle program),
     /// `initialStabilityFeePerMillisecond`,
     /// `initialControllerProportionalGain`, `initialControllerIntegralGain`,
     /// `initialMinimumCollateralizationRatio`,
@@ -148,8 +149,9 @@ public:
     /// The existing freeze authority is not sufficient to authorize rotation.
     LogosMap setFreezeAuthority(const LogosMap& request);
 
-    /// Replaces the oracle with `newOracleId`, whose exact data must match the
-    /// bound asset pair. No producer, price-freshness or nonzero-price gate.
+    /// Binds `newOracleId` and the trusted `newOracleProgramId` together.
+    /// An existing oracle must have that owner and the bound asset pair.
+    /// A missing oracle is accepted. No freshness or nonzero-price gate.
     /// Only the current `adminId` signs; frozen state does not block the setter.
     LogosMap setMarketPriceOracle(const LogosMap& request);
 

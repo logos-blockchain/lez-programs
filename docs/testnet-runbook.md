@@ -776,6 +776,7 @@ spel --idl artifacts/stablecoin-idl.json \
      --stablecoin-master-holding <STABLECOIN_MASTER_HOLDING_PDA> \
      --collateral-definition <COLLATERAL_DEF> \
      --market-price-oracle <ORACLE_PRICE_ACCOUNT_PDA> \
+     --market-price-oracle-program-id <TWAP_PROGRAM_ID> \
      --clock 4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU \
      --freeze-authority-account-id <FREEZE_AUTHORITY> \
      --initial-stability-fee-per-millisecond 1000000000001500000000000000 \
@@ -826,10 +827,14 @@ spel --idl artifacts/stablecoin-idl.json \
   old pool's LP token.
 - **Same `LEE_WALLET_HOME_DIR` everywhere.** Deploying with one wallet home and running
   spel with another points them at different networks/keys.
-- **Stablecoin: the oracle may come after `initialize_program`.** Initialization accepts an
-  oracle account that does not exist yet (the controller starts once it does), but rejects
-  one whose base asset isn't the stablecoin definition PDA. Bind the TWAP oracle PDA, not
-  an address anyone could initialize.
+- **Stablecoin: configure the oracle address and trusted program together.**
+  `--market-price-oracle-program-id` is the deployed oracle program header ID.
+  Initialization accepts a missing oracle. Once the oracle exists, its owner must
+  match that ID and its assets must match the stablecoin and collateral.
+  An empty address, including a PDA, is not reserved: another program can occupy
+  it. Such an account cannot supply a price. If this occurs, create a valid oracle
+  at another address, then use `set-market-price-oracle` with that address and
+  `--new-oracle-program-id <TWAP_PROGRAM_ID>`. Fee accrual remains available.
 - **Stablecoin: the oracle price goes stale.** Once it is older than
   `maximum_oracle_price_age_milliseconds` (at most one day), `update_redemption_rate`
   rejects it and `refresh_globals` skips the controller. Borrowing never reads it.

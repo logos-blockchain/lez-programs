@@ -110,6 +110,8 @@ pub enum Instruction {
         initial_redemption_price: u128,
         /// Name baked into the stablecoin's `TokenDefinition::Fungible`.
         stablecoin_name: String,
+        /// Expected program owner of the market price oracle.
+        market_price_oracle_program_id: AccountId,
     },
     /// Advance the stability-fee accumulator to the clock's timestamp.
     /// Permissionless and idempotent — there is no minimum-interval throttle;
@@ -277,13 +279,15 @@ pub enum Instruction {
     },
     /// Rotate the market-price oracle (spec §10.13).
     ///
-    /// Validates the replacement's shape and base/quote pair against the
-    /// definitions bound at bootstrap. Its `program_owner` is deliberately not
-    /// pinned, so any producer emitting a well-formed `OraclePriceAccount` works.
+    /// Binds the replacement address and expected producer together. An existing
+    /// oracle must have that owner and quote the definitions bound at bootstrap.
     ///
     /// Required accounts (3), in order: `admin`, `protocol_parameters` (writable),
-    /// and `new_oracle` (initialized, read-only).
-    SetMarketPriceOracle,
+    /// and `new_oracle` (read-only; may not exist yet).
+    SetMarketPriceOracle {
+        /// Expected program owner, including when the oracle does not exist yet.
+        new_oracle_program_id: AccountId,
+    },
     /// Retune both timing parameters (spec §10.14). Bundled.
     ///
     /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
@@ -649,7 +653,9 @@ mod instruction_tests {
                 new_proportional_gain: -1,
                 new_integral_gain: 2,
             },
-            Instruction::SetMarketPriceOracle,
+            Instruction::SetMarketPriceOracle {
+                new_oracle_program_id: AccountId::new([4; 32]),
+            },
             Instruction::SetTimingParameters {
                 new_minimum_milliseconds_between_rate_updates: 4,
                 new_maximum_oracle_price_age_milliseconds: 5,
@@ -728,6 +734,7 @@ mod instruction_tests {
             maximum_oracle_price_age_milliseconds: 900_000,
             initial_redemption_price: FIXED_POINT_ONE / 2,
             stablecoin_name: "test-stable".to_owned(),
+            market_price_oracle_program_id: AccountId::new([4; 32]),
         };
         let encoded = borsh::to_vec(&original).expect("serialize");
         let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
@@ -742,6 +749,7 @@ mod instruction_tests {
                 maximum_oracle_price_age_milliseconds,
                 initial_redemption_price,
                 stablecoin_name,
+                market_price_oracle_program_id,
             } => {
                 assert_eq!(freeze_authority_account_id, AccountId::new([0xFF; 32]));
                 assert_eq!(
@@ -758,6 +766,7 @@ mod instruction_tests {
                 assert_eq!(maximum_oracle_price_age_milliseconds, 900_000);
                 assert_eq!(initial_redemption_price, FIXED_POINT_ONE / 2);
                 assert_eq!(stablecoin_name, "test-stable");
+                assert_eq!(market_price_oracle_program_id, AccountId::new([4; 32]));
             }
             _ => panic!("decoded into wrong variant"),
         }

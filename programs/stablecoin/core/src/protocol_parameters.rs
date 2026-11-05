@@ -60,9 +60,7 @@ pub struct ProtocolParameters {
     /// The single accepted collateral's `TokenDefinition`. IMMUTABLE —
     /// changing it would orphan every position vault.
     pub collateral_definition_id: AccountId,
-    /// Producer of the market price observation used by
-    /// `update_redemption_rate` and the oracle staleness gate in
-    /// `generate_debt`.
+    /// Address of the market price observation used by the controller.
     pub market_price_oracle_id: AccountId,
     /// Per-millisecond stability fee multiplier in fixed-point, stored as
     /// `(1 + r_per_millisecond) * FIXED_POINT_ONE`.
@@ -78,6 +76,9 @@ pub struct ProtocolParameters {
     pub minimum_milliseconds_between_rate_updates: u64,
     /// Reject oracle observations older than this (RFP R3 staleness gate).
     pub maximum_oracle_price_age_milliseconds: u64,
+    /// Expected owner of the bound oracle. Set with its address by the admin,
+    /// including when the oracle account does not exist yet.
+    pub market_price_oracle_program_id: AccountId,
     /// `true` blocks `open_position`, `generate_debt`, `withdraw_collateral`.
     pub is_frozen: bool,
 }
@@ -133,6 +134,7 @@ mod tests {
             stablecoin_definition_id: AccountId::new([0x01; 32]),
             collateral_definition_id: AccountId::new([0x02; 32]),
             market_price_oracle_id: AccountId::new([0x03; 32]),
+            market_price_oracle_program_id: AccountId::new([4; 32]),
             stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000, /* ε ≈ 1.5×10^15 → ~5% annual */
             controller_proportional_gain: -123_456_789,
             controller_integral_gain: 987_654_321,
@@ -149,6 +151,18 @@ mod tests {
         let data: Data = (&params).into();
         let decoded = ProtocolParameters::try_from(&data).expect("decode");
         assert_eq!(decoded, params);
+    }
+
+    #[test]
+    fn previous_layout_without_the_trusted_owner_is_rejected() {
+        let mut bytes = borsh::to_vec(&sample_params()).expect("encode");
+        assert_eq!(bytes.len(), 273);
+        // The old layout ended with is_frozen immediately after the timing fields.
+        bytes.drain(240..272);
+        assert_eq!(bytes.len(), 241);
+        assert!(
+            ProtocolParameters::try_from(&Data::try_from(bytes).expect("old layout fits")).is_err()
+        );
     }
 
     #[test]

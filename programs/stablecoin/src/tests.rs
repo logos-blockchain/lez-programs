@@ -96,6 +96,7 @@ fn protocol_parameters_account_for(
                 stablecoin_definition_id: stablecoin_definition_id(),
                 collateral_definition_id,
                 market_price_oracle_id: crate::test_support::oracle_id(),
+                market_price_oracle_program_id: crate::test_support::ORACLE_PROGRAM_ID,
                 stability_fee_per_millisecond: FIXED_POINT_ONE,
                 controller_proportional_gain: 0,
                 controller_integral_gain: 0,

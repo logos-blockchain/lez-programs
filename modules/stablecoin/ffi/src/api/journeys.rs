@@ -129,6 +129,7 @@ impl JourneyState {
                 stablecoin_definition_id: id(3),
                 collateral_definition_id: id(4),
                 market_price_oracle_id: id(5),
+                market_price_oracle_program_id: ORACLE_PROGRAM_ID,
                 stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000,
                 controller_proportional_gain: FIXED_POINT_ONE as i128,
                 controller_integral_gain: FIXED_POINT_ONE as i128 / 100,

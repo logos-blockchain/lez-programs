@@ -105,6 +105,7 @@ mod tests {
             stablecoin_definition_id: id(3),
             collateral_definition_id: id(4),
             market_price_oracle_id: id(5),
+            market_price_oracle_program_id: id(0x33),
             stability_fee_per_millisecond,
             controller_proportional_gain: 0,
             controller_integral_gain: 0,

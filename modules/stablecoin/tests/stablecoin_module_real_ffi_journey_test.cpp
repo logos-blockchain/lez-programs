@@ -152,6 +152,7 @@ std::string protocolData(bool frozen = false) {
     result += u128Le("1500000000000000000000000000");
     appendU64(result, 300'000);
     appendU64(result, 900'000);
+    result += ORACLE_OWNER_HEX;
     result += frozen ? "01" : "00";
     return result;
 }
@@ -259,7 +260,7 @@ void expectMissing(const std::string& account_id) {
     MockStore::instance()
         .when(QStringLiteral("lez_core"), QStringLiteral("get_account_public"))
         .withArgs(accountArgs(account_id))
-        .thenReturn(QVariant(QString()));
+        .thenReturn(QVariant(QString::fromStdString(accountResponse(std::string(64, '0'), ""))));
 }
 
 QVariantList walletAccounts() {
@@ -371,7 +372,7 @@ std::vector<RealAdminCase> realAdminCases() {
         {&StablecoinModuleImpl::setFreezeAuthority, stablecoin_set_freeze_authority_plan,
             {{"newFreezeAuthorityId", CALLER_ID_HEX}}, "newFreezeAuthorityId", "invalid-id", "invalid_account_id", false},
         {&StablecoinModuleImpl::setMarketPriceOracle, stablecoin_set_market_price_oracle_plan,
-            {{"newOracleId", idHex(8)}}, nullptr, nullptr, "oracle_asset_mismatch", true},
+            {{"newOracleId", idHex(8)}, {"newOracleProgramId", TOKEN_OWNER_HEX}}, nullptr, nullptr, "oracle_asset_mismatch", true},
     };
 }
 QVariantList singleWalletAccount(const std::string& account_id) {
@@ -735,6 +736,10 @@ LOGOS_TEST(real_ffi_all_six_admin_setters_use_exact_plans_while_frozen_and_fail_
             submissionArguments(plan, std::vector<std::size_t>{0}, PROGRAM_ID_HEX)));
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
         if (setter.oracle) {
+            expectRead(idHex(8), ORACLE_OWNER_HEX, oracle);
+            const LogosMap wrong_owner = module.setMarketPriceOracle(request);
+            LOGOS_ASSERT_EQ(wrong_owner["error"].get<std::string>(), std::string("oracle_program_mismatch"));
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
             // Same initialized producer; change only the bound quote asset.
             oracle.replace(64, 64, idHex(99));
             expectRead(idHex(8), TOKEN_OWNER_HEX, oracle);
@@ -945,6 +950,8 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
     assertOk(parameters);
     LOGOS_ASSERT_EQ(parameters["protocolParameters"]["marketPriceOracleIdHex"].get<std::string>(),
                     oracle_id);
+    LOGOS_ASSERT_EQ(parameters["protocolParameters"]["marketPriceOracleProgramIdHex"].get<std::string>(),
+                    ORACLE_OWNER_HEX);
     const LogosMap accumulator_snapshot = module.stabilityFeeAccumulator();
     assertOk(accumulator_snapshot);
     LOGOS_ASSERT_EQ(
@@ -969,6 +976,14 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
     LOGOS_ASSERT_EQ(quote["code"].get<std::string>(), std::string("ready"));
     LOGOS_ASSERT_EQ(quote["elapsedMilliseconds"].get<std::string>(), std::string("600000"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+
+    expectRead(oracle_id, TOKEN_OWNER_HEX, oracle);
+    const LogosMap untrusted_quote = module.redemptionRateUpdateQuote();
+    assertOk(untrusted_quote);
+    LOGOS_ASSERT_EQ(untrusted_quote["canSubmit"].get<bool>(), false);
+    LOGOS_ASSERT_EQ(untrusted_quote["errors"][0]["code"].get<std::string>(), std::string("oracle_unavailable"));
+    LOGOS_ASSERT_TRUE(untrusted_quote["marketPrice"].is_null());
+    expectRead(oracle_id, ORACLE_OWNER_HEX, oracle);
 
     const LogosMap accrued = module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX);
     assertOk(accrued);

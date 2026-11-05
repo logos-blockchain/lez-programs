@@ -283,19 +283,21 @@ pub fn set_freeze_authority(
 /// controller simply does not run until it does (spec §3.2). One that exists must
 /// decode and its base/quote pair must match the definitions bound at bootstrap,
 /// so the controller cannot be pointed at an oracle quoting a different market.
-/// `program_owner` is deliberately not pinned: any producer emitting a
-/// well-formed `OraclePriceAccount` is acceptable.
+/// The admin selects the expected program owner with the address. An existing
+/// account must have that owner. Future observations must have the same owner.
 ///
 /// # Panics
 /// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
 /// - `new_oracle` is initialized but does not decode as an `OraclePriceAccount`, or its
 ///   `base_asset` / `quote_asset` do not match the bound definitions.
+/// - The expected program is the default owner, or an existing oracle has a different owner.
 /// - `protocol_parameters` is invalid.
 pub fn set_market_price_oracle(
     admin: AccountWithMetadata,
     protocol_parameters: AccountWithMetadata,
     new_oracle: AccountWithMetadata,
     stablecoin_program_id: AccountId,
+    new_oracle_program_id: AccountId,
 ) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
     let new_oracle_id = new_oracle.account_id;
     let (mut state_diffs, chained_calls) = update_parameters(
@@ -304,6 +306,10 @@ pub fn set_market_price_oracle(
         stablecoin_program_id,
         |parameters| {
             if new_oracle.account != Account::default() {
+                assert_eq!(
+                    new_oracle.account.program_owner, new_oracle_program_id,
+                    "New market price oracle program owner does not match"
+                );
                 let oracle = OraclePriceAccount::try_from(&new_oracle.account.data)
                     .expect("New market price oracle must decode as OraclePriceAccount");
                 assert_eq!(
@@ -316,6 +322,12 @@ pub fn set_market_price_oracle(
                 );
             }
             parameters.market_price_oracle_id = new_oracle_id;
+            assert_ne!(
+                new_oracle_program_id,
+                AccountId::default(),
+                "Market price oracle program must not be the default owner"
+            );
+            parameters.market_price_oracle_program_id = new_oracle_program_id;
         },
     );
     state_diffs.push(AccountStateDiff::unchanged(new_oracle));
@@ -782,6 +794,7 @@ mod tests {
             params(),
             new_oracle_account(),
             STABLECOIN_PROGRAM_ID,
+            crate::test_support::ORACLE_PROGRAM_ID,
         );
 
         assert_eq!(post_states.len(), 3);
@@ -808,7 +821,13 @@ mod tests {
             source_id: crate::test_support::oracle_source_id(),
             confidence_interval: 0,
         });
-        set_market_price_oracle(admin_account(), params(), oracle, STABLECOIN_PROGRAM_ID);
+        set_market_price_oracle(
+            admin_account(),
+            params(),
+            oracle,
+            STABLECOIN_PROGRAM_ID,
+            crate::test_support::ORACLE_PROGRAM_ID,
+        );
     }
 
     #[test]
@@ -823,7 +842,13 @@ mod tests {
             source_id: crate::test_support::oracle_source_id(),
             confidence_interval: 0,
         });
-        set_market_price_oracle(admin_account(), params(), oracle, STABLECOIN_PROGRAM_ID);
+        set_market_price_oracle(
+            admin_account(),
+            params(),
+            oracle,
+            STABLECOIN_PROGRAM_ID,
+            crate::test_support::ORACLE_PROGRAM_ID,
+        );
     }
 
     #[test]
@@ -836,10 +861,39 @@ mod tests {
             params(),
             uninitialized(future_oracle),
             STABLECOIN_PROGRAM_ID,
+            crate::test_support::ORACLE_PROGRAM_ID,
         );
         assert_eq!(
             decoded(&post_states[1]).market_price_oracle_id,
             future_oracle
+        );
+        assert_eq!(
+            decoded(&post_states[1]).market_price_oracle_program_id,
+            crate::test_support::ORACLE_PROGRAM_ID
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "New market price oracle program owner does not match")]
+    fn set_market_price_oracle_rejects_an_untrusted_owner() {
+        set_market_price_oracle(
+            admin_account(),
+            params(),
+            new_oracle_account(),
+            STABLECOIN_PROGRAM_ID,
+            AccountId::new([99; 32]),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Market price oracle program must not be the default owner")]
+    fn set_market_price_oracle_rejects_a_default_trusted_program() {
+        set_market_price_oracle(
+            admin_account(),
+            params(),
+            uninitialized(new_oracle_account().account_id),
+            STABLECOIN_PROGRAM_ID,
+            AccountId::default(),
         );
     }
 
@@ -903,6 +957,7 @@ mod tests {
             params(),
             new_oracle_account(),
             STABLECOIN_PROGRAM_ID,
+            crate::test_support::ORACLE_PROGRAM_ID,
         );
     }
 }

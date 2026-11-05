@@ -753,10 +753,16 @@ LogosMap StablecoinModuleImpl::setFreezeAuthority(const LogosMap& request) {
 
 LogosMap StablecoinModuleImpl::setMarketPriceOracle(const LogosMap& request) {
     return guarded([&]() -> LogosMap {
-        if (!hasString(request, "newOracleId")) return publicError("bad_request");
+        if (!hasString(request, "newOracleId") || !hasString(request, "newOracleProgramId")) {
+            return publicError("bad_request");
+        }
         const std::string oracle_id = normalizeAccountId(jsonString(request, "newOracleId"));
         if (oracle_id.empty()) return publicError("invalid_account_id");
-        return adminPlanAndSubmit(stablecoin_set_market_price_oracle_plan, request, oracle_id);
+        const std::string oracle_program_id = normalizeAccountId(jsonString(request, "newOracleProgramId"));
+        if (oracle_program_id.empty()) return publicError("invalid_account_id");
+        LogosMap normalized = request;
+        normalized["newOracleProgramId"] = oracle_program_id;
+        return adminPlanAndSubmit(stablecoin_set_market_price_oracle_plan, normalized, oracle_id);
     });
 }
 
@@ -1430,6 +1436,7 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
                  "freezeAuthorityId",
                  "collateralDefinitionId",
                  "marketPriceOracleId",
+                 "marketPriceOracleProgramId",
                  "stablecoinName",
                  "feePayerId",
              }) {
@@ -1458,7 +1465,10 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
             normalizeAccountId(jsonString(request, "collateralDefinitionId"));
         const std::string oracle =
             normalizeAccountId(jsonString(request, "marketPriceOracleId"));
-        if (admin.empty() || freeze_authority.empty() || collateral.empty() || oracle.empty()) {
+        const std::string oracle_program =
+            normalizeAccountId(jsonString(request, "marketPriceOracleProgramId"));
+        if (admin.empty() || freeze_authority.empty() || collateral.empty() || oracle.empty()
+            || oracle_program.empty()) {
             return publicError("invalid_account_id");
         }
         // LEZ v0.2.5 charges public transactions; the payer is always explicit.
@@ -1493,6 +1503,7 @@ LogosMap StablecoinModuleImpl::initializeProgram(const LogosMap& request) {
             {"freezeAuthorityId", freeze_authority},
             {"collateralDefinition", collateral_read},
             {"marketPriceOracle", oracle_read},
+            {"marketPriceOracleProgramId", oracle_program},
             {"clock", clock_read},
             {"initialStabilityFeePerMillisecond",
              request["initialStabilityFeePerMillisecond"]},

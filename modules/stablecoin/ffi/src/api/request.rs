@@ -137,6 +137,7 @@ pub struct InitializeProgramPlanRequest {
     pub maximum_oracle_price_age_milliseconds: Value,
     pub initial_redemption_price: Value,
     pub stablecoin_name: String,
+    pub market_price_oracle_program_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -246,6 +247,7 @@ pub struct SetMarketPriceOraclePlanRequest {
     #[serde(flatten)]
     pub context: AdminPlanContext,
     pub new_oracle_id: String,
+    pub new_oracle_program_id: String,
     pub new_oracle: AccountRead,
 }
 
