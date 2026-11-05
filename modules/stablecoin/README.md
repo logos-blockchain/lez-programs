@@ -12,6 +12,14 @@ The Qt-free C++ adapter handles live wallet reads and transaction submission.
 `stablecoin_ffi` owns exact account decoding, PDA derivation, request
 validation, and `stablecoin_core::Instruction` serialization.
 
+## Compatibility
+
+Version 0.2.0 requires the matching stablecoin program and IDL. Protocol
+Parameters now include the trusted oracle program ID and occupy 273 bytes,
+instead of 241 bytes. Old account data is rejected. Initialization and oracle
+replacement also require the new program-ID argument. Deploy a fresh protocol
+and update clients together; this change provides no in-place account migration.
+
 ## API
 
 Every method returns a stable envelope. Success starts with:
@@ -159,10 +167,17 @@ and market prices, elapsed milliseconds, next redemption rate, next controller
 integral term, and integral/rate clamp bounds. All numeric values are exact
 decimal strings.
 
-A stale oracle, zero oracle price, or not-yet-due update returns a successful
-read-only quote with `canSubmit: false`, `code: "blocked"`, machine-readable
-`errors`, and explicit `null` next-controller values. Multiple blockers are
-reported in on-chain gate order. The frozen flag does not block this operation.
+An unusable oracle, stale oracle, zero oracle price, or not-yet-due update
+returns a successful read-only quote with `canSubmit: false`, `code: "blocked"`,
+machine-readable `errors`, and explicit `null` next-controller values. Multiple
+blockers are reported in on-chain gate order. The frozen flag does not block
+this operation.
+
+The `oracle_unavailable` blocker covers a configured oracle that does not exist
+yet (the stablecoin may launch before its market, spec §3.2), whose data is not
+an `OraclePriceAccount`, or that quotes a different stablecoin/collateral pair.
+It comes first, with a `null` `marketPrice`. A read that fails for any other
+reason still returns `account_read_failed`.
 
 ### Permissionless maintenance transactions
 
@@ -188,9 +203,10 @@ which are minted to the protocol's surplus holding.
 
 `updateRedemptionRate` runs the live quote preflight and does not submit when
 the first on-chain gate is `oracle_unavailable`, `oracle_stale`,
-`oracle_price_zero`, or `rate_update_too_soon`. `refreshGlobals` intentionally submits under those soft
-gates: its fee-accrual half still runs while the on-chain instruction may skip
-the controller update. A frozen protocol does not block any of the three
+`oracle_price_zero`, or `rate_update_too_soon`. `refreshGlobals` intentionally
+submits under those soft gates, including when the configured oracle does not
+exist yet: its fee-accrual half still runs while the on-chain instruction may
+skip the controller update. A frozen protocol does not block any of the three
 maintenance methods.
 
 ### `initializeProgram(request)`
@@ -203,9 +219,10 @@ Required request fields:
 | `freezeAuthorityId` | base58 or 64-character hexadecimal account ID |
 | `collateralDefinitionId` | base58 or 64-character hexadecimal account ID |
 | `marketPriceOracleId` | base58 or 64-character hexadecimal account ID |
+| `marketPriceOracleProgramId` | nonzero deployed oracle program header ID, base58 or 64-character hexadecimal |
 | `initialStabilityFeePerMillisecond` | exact `u128` decimal |
-| `initialControllerProportionalGain` | exact `i128` decimal |
-| `initialControllerIntegralGain` | exact `i128` decimal |
+| `initialControllerProportionalGain` | exact non-negative `i128` decimal |
+| `initialControllerIntegralGain` | exact non-negative `i128` decimal |
 | `initialMinimumCollateralizationRatio` | exact `u128` decimal |
 | `minimumMillisecondsBetweenRateUpdates` | exact `u64` decimal |
 | `maximumOraclePriceAgeMilliseconds` | exact `u64` decimal |
@@ -214,12 +231,31 @@ Required request fields:
 | `feePayerId` | funded public wallet account that pays the transaction fee |
 
 The module verifies all five derived target PDAs are uninitialized, validates
-the collateral definition, oracle asset pair, and clock accounts, then submits
+the collateral definition and clock accounts, then submits
 the exact nine-account instruction. Only `adminId` signs. LEZ charges public
 transactions, so `feePayerId` must name a funded account in the connected
 wallet: the admin itself or a separate account, which co-signs the fee. A
 non-signing participant is rejected with `invalid_fee_payer`. Success adds
 `transactionId` to the response envelope.
+
+The market-price oracle may not exist yet. The stablecoin launches at
+`initialRedemptionPrice` before its market does (spec §3.2). Configure the
+trusted oracle program in `marketPriceOracleProgramId`, even when the oracle is
+missing. An existing oracle must belong to this program and decode as an
+`OraclePriceAccount` for the stablecoin/collateral pair. The controller checks
+the stored owner on every use. Protocol reads expose this binding as
+`marketPriceOracleProgramId` and `marketPriceOracleProgramIdHex`.
+
+An empty address, including a PDA, is not reserved. Another program can occupy
+it. The controller rejects that program's prices, but the intended producer
+may then be unable to initialize the account. To recover, create a valid oracle
+at another address and call `setMarketPriceOracle` with the new address and
+trusted program ID. Fee accrual remains available. Freeze the protocol if the
+incident requires a pause in borrowing.
+
+Only a successful read of the default account means that the oracle is missing.
+An empty backend response or a failed read returns `account_read_failed` and
+submits no transaction.
 
 Pass numeric values as decimal strings. JSON integers are accepted when their
 exact value survives parsing. JSON floating-point values are always rejected.
@@ -515,8 +551,10 @@ with these accounts, all with `init = false`:
 | 5 | Stablecoin master holding | Yes | No |
 | 6 | Canonical `CLOCK_01` | No | No |
 
-The native instruction first accrues the elapsed interval at the old rate,
-then replaces the rate atomically. Subsequent accrual uses the new rate. The
+The native instruction first accrues the elapsed interval at the old rate and
+mints those fees to the master holding (the protocol surplus), then replaces
+the rate atomically. The definition and master holding are written by that
+chained Token mint. Subsequent accrual uses the new rate. The
 module does not submit a preliminary poke. It checks that the old-rate
 projection fits the native `u128` arithmetic before submission, preserving
 saturating elapsed-time subtraction and the seven-day compounding-window
@@ -558,7 +596,7 @@ including the full `u128`/`i128` domain before the native bands are applied.
 | `setTimingParameters(request)` | `newMinimumMillisecondsBetweenRateUpdates`, `newMaximumOraclePriceAgeMilliseconds` (`u64`) | Each inclusive `1 ..= 86_400_000` milliseconds |
 | `setAdmin(request)` | `newAdminId` (account ID) | Immediate one-step rotation; new holder is an instruction value, not a signer |
 | `setFreezeAuthority(request)` | `newFreezeAuthorityId` (account ID) | Authorized by the admin, not merely the current freeze authority |
-| `setMarketPriceOracle(request)` | `newOracleId` (account ID) | Initialized exact `OraclePriceAccount` with the bound stablecoin/collateral asset pair |
+| `setMarketPriceOracle(request)` | `newOracleId`, `newOracleProgramId` (account IDs) | Nonzero trusted program; oracle is missing or has that owner and the bound stablecoin/collateral pair |
 
 Each invocation reads current Protocol Parameters, verifies canonical PDA,
 stablecoin ownership and exact data, and requires the currently stored admin to
@@ -568,8 +606,9 @@ state. They do not automatically advance globals.
 
 Account order for the first five setters is admin (read-only, signer), Protocol
 Parameters (writable, nonsigner). Oracle replacement appends the replacement
-oracle as the third read-only, nonsigner account and uses the zero-argument
-`SetMarketPriceOracle` instruction, not an oracle-ID payload. Every `init` flag
+oracle as the third read-only, nonsigner account. The
+`SetMarketPriceOracle` payload contains `new_oracle_program_id`; the oracle
+address comes from that third account. Every `init` flag
 is false. A replacement oracle cannot alias the admin input because public
 transaction account IDs must be distinct.
 
@@ -588,11 +627,12 @@ an incorrect or unusable handle can permanently remove control. Native role
 setters accept the all-zero account-ID value too; the module does not add a
 nonzero restriction to these instruction values.
 
-Oracle replacement is producer-agnostic. It does not pin the replacement's
-program owner or impose freshness, future-timestamp, nonzero-price or
-controller-update-interval gates. A well-formed matching pair from another
-producer, including a stale or zero observation, is accepted. Wrong asset pairs,
-missing or malformed account data fail preflight.
+Oracle replacement binds the address and trusted program atomically. The admin
+can select a different producer or aggregator. An existing oracle must have
+the supplied owner and asset pair. A missing oracle is also accepted. There
+are no freshness, future-timestamp, nonzero-price or controller-interval gates
+on this setter. Wrong owners return `oracle_program_mismatch`; wrong asset
+pairs and malformed data also fail preflight.
 
 Stable errors include `admin_mismatch`, `collateralization_ratio_out_of_band`,
 `controller_gains_out_of_band`, `timing_parameters_out_of_band`, and existing

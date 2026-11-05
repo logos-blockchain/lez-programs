@@ -115,6 +115,8 @@ fn parameters_value(
         "collateralDefinitionIdHex": account_id_hex(parameters.collateral_definition_id),
         "marketPriceOracleId": parameters.market_price_oracle_id.to_string(),
         "marketPriceOracleIdHex": account_id_hex(parameters.market_price_oracle_id),
+        "marketPriceOracleProgramId": parameters.market_price_oracle_program_id.to_string(),
+        "marketPriceOracleProgramIdHex": account_id_hex(parameters.market_price_oracle_program_id),
         "stabilityFeePerMillisecond": parameters.stability_fee_per_millisecond.to_string(),
         "controllerProportionalGain": parameters.controller_proportional_gain.to_string(),
         "controllerIntegralGain": parameters.controller_integral_gain.to_string(),

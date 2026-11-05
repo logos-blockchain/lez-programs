@@ -74,6 +74,20 @@ LOGOS_TEST(public_account_response_validation_distinguishes_state_and_corruption
     const auto missing = stablecoin_module::detail::publicAccountRead(account_id, empty.dump());
     LOGOS_ASSERT_EQ(missing["status"].get<std::string>(), std::string("not_found"));
 
+    const auto failed = stablecoin_module::detail::publicAccountRead(account_id, "");
+    LOGOS_ASSERT_EQ(failed["status"].get<std::string>(), std::string("backend_error"));
+
+    for (const nlohmann::json& invalid_data : {nlohmann::json(nullptr), nlohmann::json(0)}) {
+        auto malformed = empty;
+        malformed["data"] = invalid_data;
+        const auto result = stablecoin_module::detail::publicAccountRead(account_id, malformed.dump());
+        LOGOS_ASSERT_EQ(result["status"].get<std::string>(), std::string("backend_error"));
+    }
+    auto incomplete = empty;
+    incomplete.erase("data");
+    LOGOS_ASSERT_EQ(stablecoin_module::detail::publicAccountRead(account_id, incomplete.dump())["status"].get<std::string>(),
+        std::string("backend_error"));
+
     auto malformed = validAccount();
     malformed["nonce"] = "short";
     const auto invalid =

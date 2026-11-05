@@ -82,11 +82,11 @@ pub fn assert_position_is_collateralized(
 
 // --- Sane-band constants per spec §8 -----------------------------------------
 
-pub(crate) use stablecoin_core::protocol_parameters::MAXIMUM_STABILITY_FEE_PER_MILLISECOND as MAX_STABILITY_FEE_PER_MILLISECOND;
 pub(crate) const MIN_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 110 / 100; // 1.1x
 pub(crate) const MAX_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 10;
 pub(crate) use stablecoin_core::protocol_parameters::{
     MAXIMUM_CONTROLLER_INTEGRAL_GAIN, MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN,
+    MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
 };
 pub(crate) const MAX_TIMING_MILLISECONDS: u64 = 86_400_000; // 1 day
 
@@ -119,7 +119,7 @@ pub(crate) fn assert_admin_authorized(
 pub(crate) fn assert_stability_fee_in_band(rate: u128, label: &str) {
     assert!(rate >= FIXED_POINT_ONE, "{label} below FIXED_POINT_ONE");
     assert!(
-        rate <= MAX_STABILITY_FEE_PER_MILLISECOND,
+        rate <= MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
         "{label} above sane upper bound"
     );
 }
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn stability_fee_band_accepts_both_endpoints() {
         assert_stability_fee_in_band(FIXED_POINT_ONE, "rate");
-        assert_stability_fee_in_band(MAX_STABILITY_FEE_PER_MILLISECOND, "rate");
+        assert_stability_fee_in_band(MAXIMUM_STABILITY_FEE_PER_MILLISECOND, "rate");
     }
 
     #[test]
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "rate above sane upper bound")]
     fn stability_fee_band_rejects_above_two() {
-        assert_stability_fee_in_band(MAX_STABILITY_FEE_PER_MILLISECOND + 1, "rate");
+        assert_stability_fee_in_band(MAXIMUM_STABILITY_FEE_PER_MILLISECOND + 1, "rate");
     }
 
     #[test]

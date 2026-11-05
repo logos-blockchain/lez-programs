@@ -123,6 +123,7 @@ pub(crate) fn protocol_parameters_account(overrides: ParameterOverrides) -> Acco
                 stablecoin_definition_id: stablecoin_definition_id(),
                 collateral_definition_id: collateral_definition_id(),
                 market_price_oracle_id: oracle_id(),
+                market_price_oracle_program_id: ORACLE_PROGRAM_ID,
                 stability_fee_per_millisecond: overrides.stability_fee_per_millisecond,
                 controller_proportional_gain: overrides.controller_proportional_gain,
                 controller_integral_gain: overrides.controller_integral_gain,

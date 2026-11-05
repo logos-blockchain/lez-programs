@@ -107,6 +107,7 @@ impl Fixture {
             stablecoin_definition_id: compute_stablecoin_definition_pda(PROGRAM),
             collateral_definition_id: id(4),
             market_price_oracle_id: id(5),
+            market_price_oracle_program_id: id(0x33),
             stability_fee_per_millisecond: FIXED_POINT_ONE,
             controller_proportional_gain: 0,
             controller_integral_gain: 0,
@@ -143,6 +144,7 @@ impl Fixture {
             Setter::Admin => json!({"newAdminId": account_id_hex(id(6))}),
             Setter::FreezeAuthority => json!({"newFreezeAuthorityId": account_id_hex(id(1))}),
             Setter::Oracle => json!({"newOracleId": account_id_hex(id(8)),
+                "newOracleProgramId": account_id_hex(OTHER_PRODUCER),
                 "newOracle": read_value(id(8), OTHER_PRODUCER, Data::from(&self.oracle))}),
         };
         request
@@ -225,16 +227,19 @@ fn native_execute(plan: &Value, request: &Value) -> Account {
             PROGRAM,
             new_freeze_authority_account_id,
         ),
-        Instruction::SetMarketPriceOracle => {
+        Instruction::SetMarketPriceOracle {
+            new_oracle_program_id,
+        } => {
             let read: AccountRead =
                 serde_json::from_value(request["newOracle"].clone()).expect("oracle read");
-            let (oracle_id, oracle) = decode_account(&read).expect("oracle");
+            let (oracle_id, oracle) = plan::optional_account(&read).expect("oracle");
             assert_eq!(ids[2], account_id_hex(oracle_id));
             let result = stablecoin_program::admin::set_market_price_oracle(
                 admin,
                 parameters,
                 AccountWithMetadata::new(oracle.clone(), signs[2], oracle_id),
                 PROGRAM,
+                new_oracle_program_id,
             );
             assert_eq!(
                 post_account(result.0.get(2).expect("oracle post"), PROGRAM),
@@ -335,9 +340,15 @@ fn all_setters_pin_arguments_account_order_and_guest_flags_and_match_native_muta
                 }
                 Setter::Oracle => {
                     expected.market_price_oracle_id = id(8);
-                    assert_eq!(words.len(), 1);
-                    assert_eq!(entry["args"], json!([]));
-                    Instruction::SetMarketPriceOracle
+                    expected.market_price_oracle_program_id = OTHER_PRODUCER;
+                    assert_eq!(words.len(), 33);
+                    assert_eq!(
+                        entry["args"],
+                        json!([{"name": "new_oracle_program_id", "type": "account_id"}])
+                    );
+                    Instruction::SetMarketPriceOracle {
+                        new_oracle_program_id: OTHER_PRODUCER,
+                    }
                 }
             };
             assert_eq!(words, borsh::to_vec(&instruction).expect("encode"));
@@ -614,8 +625,18 @@ fn oracle_replacement_accepts_other_producers_and_stale_zero_observations_but_re
     request["newOracle"]["account"]["data"] = json!(format!("{raw}00"));
     failure(Setter::Oracle, request, "invalid_market_price_oracle");
     let mut request = fixture.request(Setter::Oracle);
-    request["newOracle"]["status"] = json!("not_found");
+    request["newOracle"]["status"] = json!("backend_error");
     failure(Setter::Oracle, request, "account_read_failed");
+    // An oracle that does not exist yet (spec §3.2), as the module reports it.
+    let mut request = fixture.request(Setter::Oracle);
+    request["newOracle"] = json!({"id": account_id_hex(id(8)), "status": "not_found"});
+    let plan = Setter::Oracle
+        .plan(request.clone())
+        .expect("an oracle that does not exist yet");
+    native_execute(&plan, &request);
+    let mut request = fixture.request(Setter::Oracle);
+    request["newOracle"] = json!({"id": account_id_hex(id(99)), "status": "not_found"});
+    failure(Setter::Oracle, request, "market_price_oracle_mismatch");
     let mut request = fixture.request(Setter::Oracle);
     request["newOracle"]["id"] = json!(account_id_hex(id(99)));
     failure(Setter::Oracle, request, "market_price_oracle_mismatch");
@@ -660,4 +681,17 @@ fn all_six_c_boundaries_roundtrip_flat_requests_and_reject_null_or_incomplete_js
             unsafe { crate::ffi::stablecoin_free(response_pointer) };
         }
     }
+}
+
+#[test]
+fn oracle_setter_requires_the_configured_owner_even_before_initialization() {
+    let fixture = Fixture::new(false);
+    let mut request = fixture.request(Setter::Oracle);
+    request["newOracleProgramId"] = json!(account_id_hex(id(42)));
+    failure(Setter::Oracle, request, "oracle_program_mismatch");
+
+    let mut request = fixture.request(Setter::Oracle);
+    request["newOracle"] = json!({"id": account_id_hex(id(8)), "status": "not_found"});
+    request["newOracleProgramId"] = json!(account_id_hex(AccountId::default()));
+    failure(Setter::Oracle, request, "invalid_account_id");
 }

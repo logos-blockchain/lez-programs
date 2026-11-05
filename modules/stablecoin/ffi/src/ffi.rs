@@ -416,7 +416,7 @@ pub unsafe extern "C" fn stablecoin_set_freeze_authority_plan(
 }
 
 #[unsafe(no_mangle)]
-/// Builds a zero-argument oracle-replacement plan with the replacement as account three.
+/// Builds an oracle-replacement plan with the trusted program ID in its payload.
 ///
 /// # Safety
 /// `request_json` must be null or point to a live NUL-terminated byte string.

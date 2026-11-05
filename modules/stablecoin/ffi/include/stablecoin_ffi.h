@@ -223,7 +223,7 @@ char *stablecoin_set_admin_plan(const char *request_json);
 char *stablecoin_set_freeze_authority_plan(const char *request_json);
 
 /**
- * Builds a zero-argument oracle-replacement plan with the replacement as account three.
+ * Builds an oracle-replacement plan with the trusted program ID in its payload.
  *
  * # Safety
  * `request_json` must be null or point to a live NUL-terminated byte string.

@@ -311,6 +311,7 @@ impl Accounts {
                 stablecoin_definition_id: Ids::stablecoin_definition(),
                 collateral_definition_id: Ids::collateral_definition(),
                 market_price_oracle_id: Ids::oracle(),
+                market_price_oracle_program_id: AccountId::new([9; 32]),
                 stability_fee_per_millisecond: protocol_config::STABILITY_FEE_PER_MILLISECOND,
                 controller_proportional_gain: 0,
                 controller_integral_gain: 0,
@@ -1779,6 +1780,7 @@ fn initialize_protocol_with_oracle(
             protocol_config::MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS,
         initial_redemption_price: protocol_config::INITIAL_REDEMPTION_PRICE,
         stablecoin_name: String::from("test-stable"),
+        market_price_oracle_program_id: AccountId::new([9; 32]),
     };
 
     let message = public_transaction::Message::try_new(
@@ -3137,6 +3139,113 @@ fn stablecoin_launches_before_the_market_price_oracle_exists() {
     )
     .expect("update_redemption_rate must run once the oracle exists");
     assert_eq!(read_redemption_price_state(&state).last_updated_at, later);
+}
+
+/// A write that the runtime accepts at an empty bound address must not become
+/// an oracle observation unless its owner is the configured trusted producer.
+#[test]
+fn stablecoin_rejects_an_occupied_oracle_and_recovers_by_admin_rotation() {
+    use lee_core::{
+        account::BalanceDiff,
+        program::{post_state, validate_execution, AccountStateDiff},
+    };
+    use stablecoin_core::math::FIXED_POINT_ONE;
+
+    let start = 1_700_000_000_000;
+    let now = start + 600_000;
+    let mut state = initialize_protocol_with_oracle(
+        start,
+        i128::try_from(FIXED_POINT_ONE).expect("fixed-point one fits"),
+        false,
+    );
+    let parameters = compute_protocol_parameters_pda(Ids::stablecoin_program());
+    let accumulator = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
+    let redemption = compute_redemption_price_state_pda(Ids::stablecoin_program());
+    let genuine = Accounts::oracle_with(
+        Ids::stablecoin_definition_pda(),
+        Ids::collateral_definition(),
+        1 << 62,
+        now,
+    );
+    let attacker = AccountId::new([99; 32]);
+    let diff = AccountStateDiff::new(
+        AccountWithMetadata::new(Account::default(), false, Ids::oracle()),
+        BalanceDiff::Add(0),
+        genuine.data.clone(),
+    );
+    validate_execution(std::slice::from_ref(&diff), attacker).expect("valid runtime write");
+    state.force_insert_account(
+        Ids::oracle(),
+        post_state(&diff, attacker).expect("attacker write"),
+    );
+
+    assert_rejected_with(
+        submit_poke(
+            &mut state,
+            now,
+            1,
+            stablecoin_core::Instruction::UpdateRedemptionRate,
+            vec![
+                parameters,
+                redemption,
+                Ids::oracle(),
+                CLOCK_01_PROGRAM_ACCOUNT_ID,
+            ],
+        ),
+        "Market price oracle must be an OraclePriceAccount quoting the stablecoin in collateral",
+        "untrusted oracle owner",
+    );
+    submit_poke(
+        &mut state,
+        now,
+        2,
+        stablecoin_core::Instruction::RefreshGlobals,
+        vec![
+            parameters,
+            accumulator,
+            Ids::stablecoin_definition_pda(),
+            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
+            redemption,
+            Ids::oracle(),
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+    )
+    .expect("fees remain available");
+    assert_eq!(read_accumulator(&state).last_accrued_at, now);
+    assert_eq!(read_redemption_price_state(&state).last_updated_at, start);
+    assert_eq!(
+        read_redemption_price_state(&state).redemption_rate_per_millisecond,
+        FIXED_POINT_ONE
+    );
+
+    let replacement = AccountId::new([98; 32]);
+    let trusted_program = genuine.program_owner;
+    state.force_insert_account(replacement, genuine);
+    submit_poke(
+        &mut state,
+        now,
+        3,
+        stablecoin_core::Instruction::SetMarketPriceOracle {
+            new_oracle_program_id: trusted_program,
+        },
+        vec![parameters, replacement],
+    )
+    .expect("admin can replace the occupied address");
+    submit_poke(
+        &mut state,
+        now,
+        4,
+        stablecoin_core::Instruction::UpdateRedemptionRate,
+        vec![
+            parameters,
+            redemption,
+            replacement,
+            CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+    )
+    .expect("trusted replacement resumes the controller");
+    assert_eq!(read_redemption_price_state(&state).last_updated_at, now);
+    assert!(read_redemption_price_state(&state).redemption_rate_per_millisecond > FIXED_POINT_ONE);
 }
 
 #[test]

@@ -404,7 +404,7 @@ LOGOS_TEST(stability_fee_accumulator_maps_missing_account_to_not_initialized) {
 
     const std::string program_info_response = successEnvelope(programInfoValue());
     context.mockCFunction("stablecoin_program_info").returns(program_info_response);
-    context.mockModule("lez_core", "get_account_public").returns("");
+    context.mockModule("lez_core", "get_account_public").returns(missingAccount());
 
     const LogosMap response = module.stabilityFeeAccumulator();
 
@@ -692,7 +692,7 @@ LOGOS_TEST(redemption_price_state_maps_missing_account_to_not_initialized) {
 
     const std::string program_info_response = successEnvelope(programInfoValue());
     context.mockCFunction("stablecoin_program_info").returns(program_info_response);
-    context.mockModule("lez_core", "get_account_public").returns("");
+    context.mockModule("lez_core", "get_account_public").returns(missingAccount());
 
     const LogosMap response = module.redemptionPriceState();
 
@@ -799,7 +799,7 @@ LOGOS_TEST(current_global_state_maps_missing_globals_to_not_initialized) {
 
     const std::string program_info_response = successEnvelope(programInfoValue());
     context.mockCFunction("stablecoin_program_info").returns(program_info_response);
-    context.mockModule("lez_core", "get_account_public").returns("");
+    context.mockModule("lez_core", "get_account_public").returns(missingAccount());
 
     const LogosMap response = module.currentGlobalState();
 
@@ -972,7 +972,7 @@ LOGOS_TEST(redemption_rate_update_quote_maps_missing_globals_and_hard_ffi_errors
         const std::string program_info_response = successEnvelope(programInfoValue());
         context.mockCFunction("stablecoin_program_info")
             .returns(program_info_response);
-        context.mockModule("lez_core", "get_account_public").returns("");
+        context.mockModule("lez_core", "get_account_public").returns(missingAccount());
 
         assertError(module.redemptionRateUpdateQuote(), "not_initialized");
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 1);
@@ -1108,7 +1108,7 @@ LOGOS_TEST(open_position_maps_planner_gates_and_checks_derived_accounts) {
         context.mockModule("lez_core", "list_accounts")
             .returnsVariant(QVariant(walletAccounts(
                 std::vector<std::string>{CALLER_ID_HEX, OTHER_CALLER_ID_HEX})));
-        context.mockModule("lez_core", "get_account_public").returns("");
+        context.mockModule("lez_core", "get_account_public").returns(missingAccount());
 
         const LogosMap response = module.openPosition(openPositionRequest());
         LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_program_info"), 1);
@@ -1478,7 +1478,7 @@ std::vector<AdminSetterCase> adminSetterCases() {
         {&StablecoinModuleImpl::setFreezeAuthority, "stablecoin_set_freeze_authority_plan",
             {{"newFreezeAuthorityId", CALLER_ID_HEX}}, "invalid_account_id", false},
         {&StablecoinModuleImpl::setMarketPriceOracle, "stablecoin_set_market_price_oracle_plan",
-            {{"newOracleId", ORACLE_ID_HEX}}, "oracle_asset_mismatch", true},
+            {{"newOracleId", ORACLE_ID_HEX}, {"newOracleProgramId", PROGRAM_ID_HEX}}, "oracle_asset_mismatch", true},
     };
 }
 LogosMap adminRequest(const AdminSetterCase& setter) {
@@ -1619,12 +1619,12 @@ LOGOS_TEST(freeze_operations_preserve_preflight_errors_and_refuse_bad_parameter_
             assertError((module.*operation.method)(freezeRequest()), error);
             LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
         }
-        for (const std::string& read : {std::string(), std::string("malformed"), UniversalLezCore::transportErrorSentinel()}) {
+        for (const std::string& read : {missingAccount(), std::string(), std::string("malformed"), UniversalLezCore::transportErrorSentinel()}) {
             LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
             StablecoinModuleImpl module; attachModules(module, modules);
             const FreezeReadMocks mocks(context);
             context.mockModule("lez_core", "get_account_public").returns(read);
-            assertError((module.*operation.method)(freezeRequest()), read.empty() ? "not_initialized" : "account_read_failed");
+            assertError((module.*operation.method)(freezeRequest()), (read == missingAccount()) ? "not_initialized" : "account_read_failed");
             LOGOS_ASSERT_EQ(context.cFunctionCallCount(operation.planner), 0);
             LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
         }
@@ -1749,14 +1749,14 @@ LOGOS_TEST(all_admin_setters_validate_current_admin_and_parameter_reads_before_p
             LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 1);
             LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
         }
-        for (const std::string& read : {std::string(), std::string("malformed"), UniversalLezCore::transportErrorSentinel()}) {
+        for (const std::string& read : {missingAccount(), std::string(), std::string("malformed"), UniversalLezCore::transportErrorSentinel()}) {
             LogosTestContext context("stablecoin_module");
             LogosModules modules(context.api());
             StablecoinModuleImpl module;
             attachModules(module, modules);
             const AdminReadMocks mocks(context);
             context.mockModule("lez_core", "get_account_public").returns(read);
-            assertError((module.*setter.method)(adminRequest(setter)), read.empty() ? "not_initialized" : "account_read_failed");
+            assertError((module.*setter.method)(adminRequest(setter)), (read == missingAccount()) ? "not_initialized" : "account_read_failed");
             LOGOS_ASSERT_EQ(context.cFunctionCallCount(setter.planner), 0);
             LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
         }
@@ -1856,7 +1856,7 @@ LOGOS_TEST(stability_fee_setter_rejects_missing_or_unreadable_fee_state_before_p
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
     for (const auto& id : {ACCUMULATOR_ID_HEX, CLOCK_ID_HEX}) {
-        for (const auto& read : {std::string(), std::string("malformed"), UniversalLezCore::transportErrorSentinel()}) {
+        for (const auto& read : {missingAccount(), std::string(), std::string("malformed"), UniversalLezCore::transportErrorSentinel()}) {
             LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
             StablecoinModuleImpl module; attachModules(module, modules);
             const AdminReadMocks mocks(context);
@@ -1865,14 +1865,14 @@ LOGOS_TEST(stability_fee_setter_rejects_missing_or_unreadable_fee_state_before_p
                 .thenReturn(QVariant(QString::fromStdString(read)));
             assertError(module.setStabilityFeePerMillisecond({{"adminId", CALLER_ID_HEX},
                 {"newRate", "1000000000000000000000000000"}, {"feePayerId", CALLER_ID_HEX}}),
-                id == ACCUMULATOR_ID_HEX && read.empty() ? "not_initialized" : "account_read_failed");
+                id == ACCUMULATOR_ID_HEX && (read == missingAccount()) ? "not_initialized" : "account_read_failed");
             LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_set_stability_fee_per_millisecond_plan"), 0);
             LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
         }
     }
 }
 
-LOGOS_TEST(stability_fee_setter_preserves_fee_errors_and_rejects_replaced_accumulator_or_clock_in_plan) {
+LOGOS_TEST(stability_fee_setter_preserves_fee_errors_and_rejects_replaced_fee_accounts_in_plan) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
     const LogosMap request = {{"adminId", CALLER_ID_HEX}, {"newRate", "1000000000000000000000000000"},
@@ -1887,7 +1887,7 @@ LOGOS_TEST(stability_fee_setter_preserves_fee_errors_and_rejects_replaced_accumu
         assertError(module.setStabilityFeePerMillisecond(request), error);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
-    for (const std::size_t index : {2, 3}) {
+    for (const std::size_t index : {2, 3, 4, 5}) {
         LogosTestContext context("stablecoin_module"); LogosModules modules(context.api());
         StablecoinModuleImpl module; attachModules(module, modules);
         const AdminReadMocks mocks(context);
@@ -1989,7 +1989,7 @@ LOGOS_TEST(close_position_validates_requests_and_preserves_preflight_errors) {
         assertError(module.closePosition(closeRequest()), error);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
-    for (const std::string& read : {std::string(), std::string("malformed"),
+    for (const std::string& read : {missingAccount(), std::string(), std::string("malformed"),
         UniversalLezCore::transportErrorSentinel()}) {
         LogosTestContext context("stablecoin_module");
         LogosModules modules(context.api());
@@ -1997,7 +1997,7 @@ LOGOS_TEST(close_position_validates_requests_and_preserves_preflight_errors) {
         attachModules(module, modules);
         const CloseReadMocks mocks(context);
         context.mockModule("lez_core", "get_account_public").returns(read);
-        assertError(module.closePosition(closeRequest()), read.empty() ? "not_initialized" : "account_read_failed");
+        assertError(module.closePosition(closeRequest()), (read == missingAccount()) ? "not_initialized" : "account_read_failed");
         LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_close_position_plan"), 0);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
@@ -2096,10 +2096,10 @@ LOGOS_TEST(generate_debt_passes_stable_preflight_errors_and_validates_requests) 
         assertError(module.generateDebt(generateRequest()),error);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core","send_generic_public_transaction"),0);
     }
-    for(const std::string& read:{std::string(),std::string("malformed")}) {
+    for(const std::string& read:{missingAccount(),std::string(),std::string("malformed")}) {
         LogosTestContext context("stablecoin_module");LogosModules modules(context.api());StablecoinModuleImpl module;attachModules(module,modules);
         const GenerateReadMocks mocks(context);context.mockModule("lez_core","get_account_public").returns(read);
-        assertError(module.generateDebt(generateRequest()),read.empty()?"not_initialized":"account_read_failed");
+        assertError(module.generateDebt(generateRequest()),(read == missingAccount())?"not_initialized":"account_read_failed");
         LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_generate_debt_plan"),0);
     }
 }
@@ -2198,14 +2198,14 @@ LOGOS_TEST(withdraw_collateral_validates_request_reads_and_preflight_errors) {
         assertError(module.withdrawCollateral(withdrawRequest()), error);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
-    for (const std::string& read : {std::string(), std::string("malformed")}) {
+    for (const std::string& read : {missingAccount(), std::string(), std::string("malformed")}) {
         LogosTestContext context("stablecoin_module");
         LogosModules modules(context.api());
         StablecoinModuleImpl module;
         attachModules(module, modules);
         const WithdrawReadMocks mocks(context);
         context.mockModule("lez_core", "get_account_public").returns(read);
-        assertError(module.withdrawCollateral(withdrawRequest()), read.empty() ? "not_initialized" : "account_read_failed");
+        assertError(module.withdrawCollateral(withdrawRequest()), (read == missingAccount()) ? "not_initialized" : "account_read_failed");
         LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_withdraw_collateral_plan"), 0);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
@@ -2275,7 +2275,7 @@ LOGOS_TEST(position_health_reads_live_state_without_signers_or_submission) {
 LOGOS_TEST(position_health_preserves_absent_position_identity_and_read_errors) {
     ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
     ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
-    for (const std::string& read : {std::string(), std::string("corrupt")}) {
+    for (const std::string& read : {missingAccount(), std::string(), std::string("corrupt")}) {
         LogosTestContext context("stablecoin_module");
         LogosModules modules(context.api());
         StablecoinModuleImpl module;
@@ -2286,8 +2286,8 @@ LOGOS_TEST(position_health_preserves_absent_position_identity_and_read_errors) {
         context.mockCFunction("stablecoin_position_addresses").returns(addresses);
         context.mockModule("lez_core", "get_account_public").returns(read);
         const LogosMap response = module.positionHealth({{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"}});
-        assertError(response, read.empty() ? "position_not_found" : "account_read_failed");
-        if (read.empty()) {
+        assertError(response, (read == missingAccount()) ? "position_not_found" : "account_read_failed");
+        if ((read == missingAccount())) {
             LOGOS_ASSERT_EQ(response["positionIdHex"].get<std::string>(), std::string(64, 'c'));
             LOGOS_ASSERT_EQ(response["vaultIdHex"].get<std::string>(), std::string(64, 'd'));
         }
@@ -2399,14 +2399,14 @@ LOGOS_TEST(repay_debt_rejects_bad_requests_reads_and_planner_errors) {
         assertError(module.repayDebt(repayDebtRequest()), error);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
-    for (const std::string& read : {std::string(), std::string("malformed")}) {
+    for (const std::string& read : {missingAccount(), std::string(), std::string("malformed")}) {
         LogosTestContext context("stablecoin_module");
         LogosModules modules(context.api());
         StablecoinModuleImpl module;
         attachModules(module, modules);
         const RepayReadMocks read_mocks(context);
         context.mockModule("lez_core", "get_account_public").returns(read);
-        assertError(module.repayDebt(repayDebtRequest()), read.empty() ? "not_initialized" : "account_read_failed");
+        assertError(module.repayDebt(repayDebtRequest()), (read == missingAccount()) ? "not_initialized" : "account_read_failed");
         LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_repay_debt_plan"), 0);
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
@@ -2560,7 +2560,7 @@ LOGOS_TEST(poke_methods_map_missing_globals_and_oracle_mismatch) {
         context.mockCFunction("stablecoin_program_info").returns(program_info_response);
         context.mockModule("lez_core", "list_accounts")
             .returnsVariant(QVariant(walletAccounts(CALLER_ID_HEX)));
-        context.mockModule("lez_core", "get_account_public").returns("");
+        context.mockModule("lez_core", "get_account_public").returns(missingAccount());
 
         assertError(module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX), "not_initialized");
         LOGOS_ASSERT_EQ(
@@ -2625,5 +2625,252 @@ LOGOS_TEST(poke_submission_maps_wallet_rejection_and_transport_failure) {
             module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX), "wallet_submission_failed");
         LOGOS_ASSERT_EQ(
             context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+    }
+}
+
+// RAI-style launch (spec §3.2): the bound market-price oracle may not exist yet.
+// The module reports an all-zero account as `not_found`, which must reach the
+// planner instead of failing as `account_read_failed`.
+namespace {
+void mockMissingOracle() {
+    MockStore::instance().when(QStringLiteral("lez_core"), QStringLiteral("get_account_public"))
+        .withArgs(QVariantList{QVariant(QString::fromStdString(ORACLE_ID_HEX))})
+        .thenReturn(QVariant(QString::fromStdString(missingAccount())));
+}
+}  // namespace
+
+LOGOS_TEST(refresh_globals_submits_before_the_market_price_oracle_exists) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::string decoded_parameters_response =
+        successEnvelope({{"marketPriceOracleIdHex", ORACLE_ID_HEX}});
+    const std::string refresh_plan_response =
+        successEnvelope(submissionPlan(refreshAccounts(), 3));
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockCFunction("stablecoin_decode_protocol_parameters")
+        .returns(decoded_parameters_response);
+    context.mockCFunction("stablecoin_refresh_globals_plan").returns(refresh_plan_response);
+    context.mockModule("lez_core", "list_accounts")
+        .returnsVariant(QVariant(walletAccounts(CALLER_ID_HEX)));
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+    mockMissingOracle();
+    context.mockModule("lez_core", "send_generic_public_transaction")
+        .returns(successfulTransaction());
+
+    const LogosMap refreshed = module.refreshGlobals(CALLER_ID_HEX, CALLER_ID_HEX);
+    LOGOS_ASSERT_EQ(refreshed["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_refresh_globals_plan"), 1);
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith(
+        "lez_core", "send_generic_public_transaction", submissionArguments(refreshAccounts(), 3)));
+}
+
+LOGOS_TEST(update_redemption_rate_reports_a_missing_oracle_as_unavailable) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::string decoded_parameters_response =
+        successEnvelope({{"marketPriceOracleIdHex", ORACLE_ID_HEX}});
+    const std::string plan_response = failureEnvelope("oracle_unavailable");
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockCFunction("stablecoin_decode_protocol_parameters")
+        .returns(decoded_parameters_response);
+    context.mockCFunction("stablecoin_update_redemption_rate_plan").returns(plan_response);
+    context.mockModule("lez_core", "list_accounts")
+        .returnsVariant(QVariant(walletAccounts(CALLER_ID_HEX)));
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+    mockMissingOracle();
+
+    assertError(module.updateRedemptionRate(CALLER_ID_HEX, CALLER_ID_HEX), "oracle_unavailable");
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_update_redemption_rate_plan"), 1);
+    LOGOS_ASSERT_EQ(
+        context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+}
+
+LOGOS_TEST(redemption_rate_update_quote_reports_a_missing_oracle_as_a_blocker) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const json blocker = {
+        {"code", "oracle_unavailable"},
+        {"recoverable", true},
+        {"blockingFields", json::array()},
+        {"details", json::object()},
+    };
+    const json quote = {
+        {"canSubmit", false},
+        {"code", "blocked"},
+        {"currentRedemptionPrice", "100"},
+        {"marketPrice", nullptr},
+        {"elapsedMilliseconds", "9"},
+        {"nextRedemptionRatePerMillisecond", nullptr},
+        {"nextControllerIntegralTerm", nullptr},
+        {"clampMetadata", json::object()},
+        {"errors", json::array({blocker})},
+        {"warnings", json::array()},
+    };
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::string decoded_parameters_response =
+        successEnvelope({{"marketPriceOracleIdHex", ORACLE_ID_HEX}});
+    const std::string quote_response = successEnvelope(quote);
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockCFunction("stablecoin_decode_protocol_parameters")
+        .returns(decoded_parameters_response);
+    context.mockCFunction("stablecoin_redemption_rate_update_quote").returns(quote_response);
+    context.mockModule("lez_core", "get_account_public").returns(initializedAccount());
+    mockMissingOracle();
+
+    const LogosMap response = module.redemptionRateUpdateQuote();
+    LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(response["canSubmit"].get<bool>(), false);
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_redemption_rate_update_quote"), 1);
+}
+
+LOGOS_TEST(set_market_price_oracle_accepts_an_oracle_that_does_not_exist_yet) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const AdminReadMocks mocks(context);
+    mockMissingOracle();
+    const AdminSetterCase setter = adminSetterCases().back();
+    const std::string plan = successEnvelope(submissionPlan(adminAccounts(setter), 18));
+    context.mockCFunction(setter.planner).returns(plan);
+    context.mockModule("lez_core", "send_generic_public_transaction")
+        .returns(successfulTransaction());
+
+    const LogosMap response = module.setMarketPriceOracle(adminRequest(setter));
+    LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount(setter.planner), 1);
+    LOGOS_ASSERT_EQ(
+        context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+}
+
+LOGOS_TEST(initialize_program_submits_before_the_market_price_oracle_exists) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    // Distinct from the stablecoin definition PDA, which must still be missing.
+    const std::string INIT_COLLATERAL_ID_HEX(64, 'e');
+    const std::string program_info_response = successEnvelope(programInfoValue());
+    const std::vector<std::string> accounts = {
+        CALLER_ID_HEX, PROTOCOL_PARAMETERS_ID_HEX, ACCUMULATOR_ID_HEX, REDEMPTION_STATE_ID_HEX,
+        STABLECOIN_DEFINITION_ID_HEX, MASTER_HOLDING_ID_HEX, INIT_COLLATERAL_ID_HEX, ORACLE_ID_HEX,
+        CLOCK_ID_HEX,
+    };
+    const std::string plan = successEnvelope(submissionPlan(accounts, 0));
+    context.mockCFunction("stablecoin_program_info").returns(program_info_response);
+    context.mockCFunction("stablecoin_initialize_program_plan").returns(plan);
+    context.mockModule("lez_core", "list_accounts")
+        .returnsVariant(QVariant(walletAccounts(CALLER_ID_HEX)));
+    // Every derived PDA and the oracle are missing; only the collateral
+    // definition and the clock exist.
+    context.mockModule("lez_core", "get_account_public").returns(missingAccount());
+    for (const auto& id : {INIT_COLLATERAL_ID_HEX, CLOCK_ID_HEX}) {
+        MockStore::instance().when(QStringLiteral("lez_core"), QStringLiteral("get_account_public"))
+            .withArgs(QVariantList{QVariant(QString::fromStdString(id))})
+            .thenReturn(QVariant(QString::fromStdString(initializedAccount())));
+    }
+    context.mockModule("lez_core", "send_generic_public_transaction")
+        .returns(successfulTransaction());
+
+    const LogosMap response = module.initializeProgram({
+        {"adminId", CALLER_ID_HEX},
+        {"freezeAuthorityId", CALLER_ID_HEX},
+        {"collateralDefinitionId", INIT_COLLATERAL_ID_HEX},
+        {"marketPriceOracleId", ORACLE_ID_HEX},
+        {"marketPriceOracleProgramId", PROGRAM_ID_HEX},
+        {"initialStabilityFeePerMillisecond", "1000000000000000000000000000"},
+        {"initialControllerProportionalGain", "0"},
+        {"initialControllerIntegralGain", "0"},
+        {"initialMinimumCollateralizationRatio", "1500000000000000000000000000"},
+        {"minimumMillisecondsBetweenRateUpdates", "1"},
+        {"maximumOraclePriceAgeMilliseconds", "86400000"},
+        {"initialRedemptionPrice", "1000000000000000000000000000"},
+        {"stablecoinName", "Coin"},
+        {"feePayerId", CALLER_ID_HEX},
+    });
+    LOGOS_ASSERT_EQ(response["status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(context.cFunctionCallCount("stablecoin_initialize_program_plan"), 1);
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith(
+        "lez_core", "get_account_public",
+        QVariantList{QVariant(QString::fromStdString(ORACLE_ID_HEX))}));
+    LOGOS_ASSERT_EQ(
+        context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
+}
+
+LOGOS_TEST(empty_oracle_backend_responses_block_all_oracle_paths_before_planning) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    for (const std::string& operation : {std::string("quote"), std::string("update"),
+             std::string("refresh"), std::string("replace"), std::string("initialize")}) {
+        LogosTestContext context("stablecoin_module");
+        LogosModules modules(context.api());
+        StablecoinModuleImpl module;
+        attachModules(module, modules);
+        const std::string info = successEnvelope(programInfoValue());
+        const std::string parameters = successEnvelope({{"adminIdHex", CALLER_ID_HEX},
+            {"marketPriceOracleIdHex", ORACLE_ID_HEX}, {"isFrozen", false}});
+        context.mockCFunction("stablecoin_program_info").returns(info);
+        context.mockCFunction("stablecoin_decode_protocol_parameters").returns(parameters);
+        context.mockModule("lez_core", "list_accounts")
+            .returnsVariant(QVariant(walletAccounts(CALLER_ID_HEX)));
+        context.mockModule("lez_core", "get_account_public")
+            .returns(operation == "initialize" ? missingAccount() : initializedAccount());
+        const std::string collateral_id(64, 'e');
+        for (const auto& id : {collateral_id, CLOCK_ID_HEX}) {
+            MockStore::instance().when(QStringLiteral("lez_core"), QStringLiteral("get_account_public"))
+                .withArgs(QVariantList{QVariant(QString::fromStdString(id))})
+                .thenReturn(QVariant(QString::fromStdString(initializedAccount())));
+        }
+        MockStore::instance().when(QStringLiteral("lez_core"), QStringLiteral("get_account_public"))
+            .withArgs(QVariantList{QVariant(QString::fromStdString(ORACLE_ID_HEX))})
+            .thenReturn(QVariant(QString()));
+
+        LogosMap response;
+        if (operation == "quote") response = module.redemptionRateUpdateQuote();
+        else if (operation == "update") response = module.updateRedemptionRate(CALLER_ID_HEX, CALLER_ID_HEX);
+        else if (operation == "refresh") response = module.refreshGlobals(CALLER_ID_HEX, CALLER_ID_HEX);
+        else if (operation == "replace") response = module.setMarketPriceOracle(adminRequest(adminSetterCases().back()));
+        else response = module.initializeProgram({
+            {"adminId", CALLER_ID_HEX}, {"freezeAuthorityId", CALLER_ID_HEX},
+            {"collateralDefinitionId", collateral_id}, {"marketPriceOracleId", ORACLE_ID_HEX},
+            {"marketPriceOracleProgramId", PROGRAM_ID_HEX},
+            {"initialStabilityFeePerMillisecond", "1000000000000000000000000000"},
+            {"initialControllerProportionalGain", "0"}, {"initialControllerIntegralGain", "0"},
+            {"initialMinimumCollateralizationRatio", "1500000000000000000000000000"},
+            {"minimumMillisecondsBetweenRateUpdates", "1"},
+            {"maximumOraclePriceAgeMilliseconds", "86400000"},
+            {"initialRedemptionPrice", "1000000000000000000000000000"},
+            {"stablecoinName", "Coin"}, {"feePayerId", CALLER_ID_HEX},
+        });
+        assertError(response, "account_read_failed");
+        for (const char* planner : {"stablecoin_redemption_rate_update_quote",
+                 "stablecoin_update_redemption_rate_plan", "stablecoin_refresh_globals_plan",
+                 "stablecoin_set_market_price_oracle_plan", "stablecoin_initialize_program_plan"}) {
+            LOGOS_ASSERT_EQ(context.cFunctionCallCount(planner), 0);
+        }
+        LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
     }
 }

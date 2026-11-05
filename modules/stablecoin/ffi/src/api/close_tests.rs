@@ -56,6 +56,7 @@ impl Fixture {
                 stablecoin_definition_id: compute_stablecoin_definition_pda(PROGRAM),
                 collateral_definition_id: id(4),
                 market_price_oracle_id: id(5),
+                market_price_oracle_program_id: id(0x33),
                 stability_fee_per_millisecond: FIXED_POINT_ONE,
                 controller_proportional_gain: 0,
                 controller_integral_gain: 0,

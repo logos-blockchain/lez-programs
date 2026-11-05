@@ -16,8 +16,8 @@ use super::{
     decode::{validated_protocol_parameters, validated_stability_fee_accumulator},
     parse_stablecoin_program_id,
     plan::{
-        parse_account_id, parse_account_id_value, parse_i128, parse_u128, parse_u64, plan_response,
-        required_account,
+        optional_account, parse_account_id, parse_account_id_value, parse_i128, parse_u128,
+        parse_u64, plan_response,
     },
     projection::clock_timestamp,
     AdminPlanContext, SetAdminPlanRequest, SetControllerGainsPlanRequest,
@@ -163,18 +163,24 @@ pub fn set_freeze_authority_plan(request: SetFreezeAuthorityPlanRequest) -> Stab
     })
 }
 
-/// Plan oracle replacement by the admin. Producer identity, price, observation
-/// age, the frozen flag, and whether the oracle exists yet are intentionally not
-/// gates for this native setter.
+/// Plan oracle replacement by the admin. Bind the expected producer with the
+/// address. Price, observation age, and the frozen flag do not block replacement.
 pub fn set_market_price_oracle_plan(request: SetMarketPriceOraclePlanRequest) -> StablecoinResult {
     let context = ValidatedAdmin::read(&request.context)?;
     let new_oracle_id = parse_account_id(&request.new_oracle_id)?;
-    let (read_id, account) = required_account(&request.new_oracle)?;
+    let new_oracle_program_id = parse_account_id(&request.new_oracle_program_id)?;
+    if new_oracle_program_id == lee_core::account::AccountId::default() {
+        return Err(StablecoinApiError::new("invalid_account_id"));
+    }
+    let (read_id, account) = optional_account(&request.new_oracle)?;
     if read_id != new_oracle_id {
         return Err(StablecoinApiError::new("market_price_oracle_mismatch"));
     }
     // Like initialize_program, the new oracle may not exist yet (spec §3.2).
     if account != lee_core::account::Account::default() {
+        if account.program_owner != new_oracle_program_id {
+            return Err(StablecoinApiError::new("oracle_program_mismatch"));
+        }
         let oracle = OraclePriceAccount::try_from(&account.data)
             .map_err(|_| StablecoinApiError::new("invalid_market_price_oracle"))?;
         if oracle.base_asset != context.parameters.stablecoin_definition_id
@@ -192,6 +198,8 @@ pub fn set_market_price_oracle_plan(request: SetMarketPriceOraclePlanRequest) ->
         context.program_id,
         [context.admin, context.parameters_id, new_oracle_id],
         [true, false, false],
-        Instruction::SetMarketPriceOracle,
+        Instruction::SetMarketPriceOracle {
+            new_oracle_program_id,
+        },
     )
 }

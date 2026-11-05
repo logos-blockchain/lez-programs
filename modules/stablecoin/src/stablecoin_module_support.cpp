@@ -94,12 +94,11 @@ bool isValidAccountIdHex(const std::string& value) {
 
 nlohmann::json publicAccountRead(const std::string& account_id,
                                  const std::string& raw_response) {
-    json read = {{"id", account_id}, {"status", "not_found"}};
+    json read = {{"id", account_id}, {"status", "backend_error"}};
     if (raw_response.empty()) return read;
 
     const json account = json::parse(raw_response, nullptr, false);
-    if (!account.is_object()) {
-        read["status"] = "backend_error";
+    if (!account.is_object() || !account.contains("data") || !account["data"].is_string()) {
         return read;
     }
 
@@ -109,11 +108,11 @@ nlohmann::json publicAccountRead(const std::string& account_id,
     std::string data = lowercase(jsonString(account, "data"));
     if (!isHexLength(owner, 64) || !isHexLength(balance, 32)
         || !isHexLength(nonce, 32) || !isEvenHex(data)) {
-        read["status"] = "backend_error";
         return read;
     }
 
     if (isZeroId(owner) && isAllZero(balance) && isAllZero(nonce) && data.empty()) {
+        read["status"] = "not_found";
         return read;
     }
 
@@ -157,6 +156,7 @@ std::string stableFfiError(const std::string& error) {
         "invalid_clock",
         "invalid_collateral_definition",
         "invalid_market_price_oracle",
+        "oracle_program_mismatch",
         "invalid_numeric_value",
         "invalid_position_data",
         "invalid_program_binary",

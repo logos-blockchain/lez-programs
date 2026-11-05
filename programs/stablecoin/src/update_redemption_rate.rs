@@ -131,8 +131,9 @@ pub(crate) fn decode_redemption_inputs(
 /// decode as an `OraclePriceAccount`, and one that does not quote the stablecoin
 /// in collateral all read as `None`.
 ///
-/// `program_owner` is deliberately NOT pinned, so a future aggregator or an
-/// alternative producer can replace the TWAP oracle without a code change here.
+/// The stored expected program owner authenticates the producer, including after
+/// an empty address is initialized. An account written by another program is
+/// unavailable. The admin can select a different producer with the oracle setter.
 /// Shared with [`crate::refresh_globals`].
 pub(crate) fn read_oracle(
     market_price_oracle: &AccountWithMetadata,
@@ -142,7 +143,9 @@ pub(crate) fn read_oracle(
         market_price_oracle.account_id, params.market_price_oracle_id,
         "Market price oracle account_id does not match ProtocolParameters.market_price_oracle_id"
     );
-    if market_price_oracle.account == Account::default() {
+    if market_price_oracle.account == Account::default()
+        || market_price_oracle.account.program_owner != params.market_price_oracle_program_id
+    {
         return None;
     }
     let oracle = OraclePriceAccount::try_from(&market_price_oracle.account.data).ok()?;
@@ -300,6 +303,22 @@ mod tests {
             oracle_price_to_fixed_point(ORACLE_PRICE_ABOVE_ANCHOR),
             REDEMPTION_PRICE_ANCHOR * 2
         );
+    }
+
+    #[test]
+    fn oracle_written_by_an_untrusted_program_is_unavailable() {
+        let parameters = protocol_parameters_account(ParameterOverrides::default());
+        let params = ProtocolParameters::try_from(&parameters.account.data).unwrap();
+        let mut oracle = oracle_account(NOW, ORACLE_PRICE_BELOW_ANCHOR);
+        // The runtime permits a program to write a default-owned address, even
+        // when that address is the intended producer's PDA. The payload alone
+        // cannot authenticate the producer after an empty address was bound.
+        let attacker = AccountId::new([99; 32]);
+        let empty = AccountWithMetadata::new(Account::default(), false, oracle.account_id);
+        let diff = AccountStateDiff::new(empty, BalanceDiff::Add(0), oracle.account.data.clone());
+        lee_core::program::validate_execution(std::slice::from_ref(&diff), attacker).unwrap();
+        oracle.account = lee_core::program::post_state(&diff, attacker).unwrap();
+        assert!(read_oracle(&oracle, &params).is_none());
     }
 
     #[test]
