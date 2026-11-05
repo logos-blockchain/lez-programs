@@ -129,7 +129,9 @@ pub(super) fn usable_market_price_oracle(
     if account_id != parameters.market_price_oracle_id {
         return Err(StablecoinApiError::new("market_price_oracle_mismatch"));
     }
-    if account == lee_core::account::Account::default() {
+    if account == lee_core::account::Account::default()
+        || account.program_owner != parameters.market_price_oracle_program_id
+    {
         return Ok(None);
     }
     Ok(OraclePriceAccount::try_from(&account.data)
@@ -189,6 +191,7 @@ mod tests {
             stablecoin_definition_id: id(3),
             collateral_definition_id: id(4),
             market_price_oracle_id: oracle_id,
+            market_price_oracle_program_id: ORACLE_PROGRAM_ID,
             stability_fee_per_millisecond: FIXED_POINT_ONE,
             controller_proportional_gain: FIXED_POINT_ONE as i128,
             controller_integral_gain: 0,
@@ -745,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn oracle_owner_is_deliberately_not_pinned() {
+    fn oracle_from_an_untrusted_program_blocks_the_quote() {
         let oracle_id = id(5);
         let params = parameters(oracle_id);
         let state = redemption(FIXED_POINT_ONE, 0, 0);
@@ -753,7 +756,10 @@ mod tests {
         observation.1.program_owner = AccountId::new([0xFF; 32]);
 
         let quoted = value(request(&params, &state, &observation, 1));
-        assert_eq!(quoted["canSubmit"], true);
+        assert_eq!(quoted["canSubmit"], false);
+        assert_eq!(quoted["errors"][0]["code"], "oracle_unavailable");
+        assert!(quoted["marketPrice"].is_null());
+        assert!(quoted["nextRedemptionRatePerMillisecond"].is_null());
     }
 
     #[test]

@@ -477,8 +477,8 @@ for v in PROTOCOL_PARAMETERS STABILITY_FEE_ACCUMULATOR REDEMPTION_PRICE_STATE \
 done
 
 ###############################################################################
-# 5. Create the market price oracle account — BEFORE initialize_program, which
-#    requires it to exist and to quote the stablecoin definition derived above.
+# 5. Create the market price oracle account before initialization so the
+#    controller can use it immediately. Initialization also permits a missing oracle.
 ###############################################################################
 create_tx "create market price oracle account" "$TWAP_IDL" "$MARKET_PRICE_ORACLE" OraclePriceAccount -- \
   spel --idl "$TWAP_IDL" --program "$TWAP_PID" --fee-payer "$FEE_PAYER_ID" -- create-oracle-price-account \
@@ -519,6 +519,7 @@ create_tx "initialize stablecoin program" "$STABLECOIN_IDL" "$PROTOCOL_PARAMETER
     --initial-admin-account-id "$ADMIN" \
     --minimum-debt-amount "$STABLECOIN_MINIMUM_DEBT_AMOUNT" \
     --debt-ceiling "$STABLECOIN_DEBT_CEILING" \
+    --market-price-oracle-program-id "$TWAP_PID" \
   || die "stablecoin not initialized (see the output above and the sequencer log)"
 
 ###############################################################################
@@ -557,6 +558,7 @@ cat > "$STABLECOIN_MANIFEST_OUT" <<JSON
   "collateralHolding": "$COLLATERAL_HOLDING_ID",
   "collateralMintAuthority": "$COLLATERAL_MINT_AUTHORITY_ID",
   "marketPriceOracle": "$MARKET_PRICE_ORACLE",
+  "marketPriceOracleProgramId": "$TWAP_PID",
   "marketPriceOracleSource": "$ORACLE_SOURCE",
   "marketPriceOracleWindowDuration": $STABLECOIN_ORACLE_WINDOW_DURATION,
   "clock": "$CLOCK_ACCOUNT"

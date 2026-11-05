@@ -33,6 +33,10 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
     let program_id = parse_stablecoin_program_id(&request.stablecoin_program_id)?;
     let admin = parse_account_id(&request.admin_id)?;
     let freeze_authority = parse_account_id(&request.freeze_authority_id)?;
+    let market_price_oracle_program_id = parse_account_id(&request.market_price_oracle_program_id)?;
+    if market_price_oracle_program_id == AccountId::default() {
+        return Err(StablecoinApiError::new("invalid_account_id"));
+    }
 
     let (collateral_definition_id, collateral_definition) =
         required_account(&request.collateral_definition)?;
@@ -48,6 +52,9 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
     let oracle = if market_price_oracle == lee_core::account::Account::default() {
         None
     } else {
+        if market_price_oracle.program_owner != market_price_oracle_program_id {
+            return Err(StablecoinApiError::new("oracle_program_mismatch"));
+        }
         Some(
             OraclePriceAccount::try_from(&market_price_oracle.data)
                 .map_err(|_| StablecoinApiError::new("invalid_market_price_oracle"))?,
@@ -103,6 +110,7 @@ pub fn initialize_program_plan(request: InitializeProgramPlanRequest) -> Stablec
         initial_admin_account_id: admin,
         minimum_debt_amount,
         debt_ceiling,
+        market_price_oracle_program_id,
     };
 
     plan_response(

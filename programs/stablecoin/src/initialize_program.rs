@@ -40,6 +40,7 @@ pub struct InitializeProgramParams<'a> {
     pub minimum_debt_amount: u128,
     /// Explicit raw atomic-unit borrowing ceiling; must be at least the floor.
     pub debt_ceiling: u128,
+    pub market_price_oracle_program_id: AccountId,
 }
 
 // --- Host function ----------------------------------------------------------
@@ -74,6 +75,11 @@ pub fn initialize_program(
     assert_eq!(
         deployment_authority.account_id, stablecoin_program_id,
         "Deployment authority must be the executing program header"
+    );
+    assert_ne!(
+        params.market_price_oracle_program_id,
+        AccountId::default(),
+        "Market price oracle program must not be the default owner"
     );
 
     // 2. Target PDAs must be uninitialized
@@ -161,6 +167,10 @@ pub fn initialize_program(
     // stablecoin trades (spec §3.2). Until then the controller does not run.
     // An oracle that already exists must quote the stablecoin in collateral.
     if market_price_oracle.account != Account::default() {
+        assert_eq!(
+            market_price_oracle.account.program_owner, params.market_price_oracle_program_id,
+            "Market price oracle program owner does not match"
+        );
         let oracle = OraclePriceAccount::try_from(&market_price_oracle.account.data)
             .expect("Market price oracle must decode as OraclePriceAccount");
         assert_eq!(
@@ -223,6 +233,7 @@ pub fn initialize_program(
         stablecoin_definition_id: stablecoin_definition.account_id,
         collateral_definition_id: collateral_definition.account_id,
         market_price_oracle_id: market_price_oracle.account_id,
+        market_price_oracle_program_id: params.market_price_oracle_program_id,
         stability_fee_per_millisecond: params.initial_stability_fee_per_millisecond,
         controller_proportional_gain: params.initial_controller_proportional_gain,
         controller_integral_gain: params.initial_controller_integral_gain,
@@ -456,6 +467,7 @@ mod tests {
             initial_admin_account_id: admin_id(),
             minimum_debt_amount: 10,
             debt_ceiling: 1_000_000,
+            market_price_oracle_program_id: ORACLE_PROGRAM_ID,
         }
     }
 
@@ -806,6 +818,48 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "Market price oracle program owner does not match")]
+    fn rejects_an_oracle_from_an_untrusted_program() {
+        let mut oracle = oracle_account();
+        oracle.account.program_owner = AccountId::new([99; 32]);
+        let params = ok_params();
+        initialize_program(
+            deployment_authority_account(),
+            uninit(protocol_parameters_id()),
+            uninit(accumulator_id()),
+            uninit(redemption_id()),
+            uninit(stablecoin_def_id()),
+            uninit(master_holding_id()),
+            collateral_definition_account(),
+            oracle,
+            clock_account(),
+            STABLECOIN_PROGRAM_ID,
+            params,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Market price oracle program must not be the default owner")]
+    fn rejects_a_default_trusted_oracle_program() {
+        let oracle = uninit(oracle_id());
+        let mut params = ok_params();
+        params.market_price_oracle_program_id = AccountId::default();
+        initialize_program(
+            deployment_authority_account(),
+            uninit(protocol_parameters_id()),
+            uninit(accumulator_id()),
+            uninit(redemption_id()),
+            uninit(stablecoin_def_id()),
+            uninit(master_holding_id()),
+            collateral_definition_account(),
+            oracle,
+            clock_account(),
+            STABLECOIN_PROGRAM_ID,
+            params,
+        );
+    }
+
+    #[test]
     fn binds_an_oracle_that_does_not_exist_yet() {
         // RAI deploys its rate setter against a TWAP feed that is not valid yet;
         // here the admin binds the address of an oracle that will only exist once
@@ -826,6 +880,7 @@ mod tests {
         let parameters =
             ProtocolParameters::try_from(post_states[1].post_data()).expect("parameters");
         assert_eq!(parameters.market_price_oracle_id, oracle_id());
+        assert_eq!(parameters.market_price_oracle_program_id, ORACLE_PROGRAM_ID);
     }
 
     #[test]
