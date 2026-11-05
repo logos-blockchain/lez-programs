@@ -452,6 +452,18 @@ pub unsafe extern "C" fn stablecoin_unfreeze_plan(request_json: *const c_char) -
     unsafe { call::<api::FreezeAuthorityPlanRequest>(request_json, api::unfreeze_plan) }
 }
 
+#[unsafe(no_mangle)]
+/// Builds the current-admin plan for an atomic debt-limit update.
+///
+/// # Safety
+/// `request_json` must be null or point to a live NUL-terminated byte string.
+pub unsafe extern "C" fn stablecoin_set_debt_limits_plan(
+    request_json: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Forwarded from this function's caller contract.
+    unsafe { call::<api::SetDebtLimitsPlanRequest>(request_json, api::set_debt_limits_plan) }
+}
+
 /// Releases a string returned by a `stablecoin_*` operation.
 ///
 /// # Safety

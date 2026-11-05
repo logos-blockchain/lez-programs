@@ -710,6 +710,8 @@ header):
 ```bash
 STABLECOIN_ADMIN=<ADMIN> STABLECOIN_ORACLE_SOURCE=<ORACLE_SOURCE> \
   COLLATERAL_DEFINITION=<COLLATERAL_DEF> COLLATERAL_HOLDING=<COLLATERAL_HOLDING> \
+  STABLECOIN_MINIMUM_DEBT_AMOUNT=<MINIMUM_DEBT_ATOMIC_UNITS> \
+  STABLECOIN_DEBT_CEILING=<DEBT_CEILING_ATOMIC_UNITS> \
   scripts/deploy-stablecoin.sh
 ```
 
@@ -718,7 +720,15 @@ STABLECOIN_ADMIN=<ADMIN> STABLECOIN_ORACLE_SOURCE=<ORACLE_SOURCE> \
 - `TOKEN_PROGRAM_ID` / `TWAP_PROGRAM_ID` / `STABLECOIN_PROGRAM_ID`: reuse programs that
   are already deployed (their header account ids) instead of deploying them.
 - `FEE_PAYER`: the funded account that pays every fee; defaults to `STABLECOIN_ADMIN`.
-- Writes every id and PDA to `target/stablecoin-deployment.json`.
+- Both debt limits are required operator choices: exact unsigned `u128` decimals
+  in raw stablecoin atomic units, with `0 < minimum <= ceiling`. They have no defaults.
+- Writes every id and PDA, schema version 2, and both debt limits to
+  `target/stablecoin-deployment.json`.
+
+The isolated AMM test setup (`apps/amm/tests/testnet/setup-amm-testnet.sh`) supplies
+explicit smoke-test fixtures of 10 and 1,000,000 raw atomic units, respectively.
+Override its `STABLECOIN_MINIMUM_DEBT_AMOUNT` and `STABLECOIN_DEBT_CEILING` for
+other test scenarios; these fixture amounts are not production recommendations.
 
 **Order matters.** `initialize_program` needs an oracle price account that already quotes
 the stablecoin definition as its base asset — but `initialize_program` is what creates that
@@ -728,7 +738,9 @@ definition. Its address is a deterministic PDA, so derive it first.
 
 Deploy `stablecoin` and `twap_oracle` (step 1), and have a fungible collateral token (step 3).
 Every stablecoin PDA derives from the stablecoin's header account id, so a redeploy means
-new PDAs and a fresh initialization. Then:
+new PDAs and a fresh initialization. Schema version 2 rejects older global accounts
+and initializer payloads; keep old deployments on their matching clients. Rebuild
+the release binary and IDL and refresh module configuration with the new header ID. Then:
 
 ```bash
 cargo run -q -p stablecoin_program --example stablecoin_pdas -- "<STABLECOIN_PROGRAM_ID>" globals
@@ -785,11 +797,17 @@ spel --idl artifacts/stablecoin-idl.json \
      --minimum-milliseconds-between-rate-updates 60000 \
      --maximum-oracle-price-age-milliseconds 86400000 \
      --initial-redemption-price 1000000000000000000000000000 \
-     --stablecoin-name "LEZ Stablecoin"
+     --stablecoin-name "LEZ Stablecoin" \
+     --minimum-debt-amount <MINIMUM_DEBT_ATOMIC_UNITS> \
+     --debt-ceiling <DEBT_CEILING_ATOMIC_UNITS>
 ```
 
 > Rates, ratios and prices are 27-decimal fixed point. The values above are the script's
-> defaults: ~5%/year fee, 150% ratio, 1.0 redemption price. `init`, so run it **once**.
+> defaults: ~5%/year fee, 150% ratio, 1.0 redemption price. Debt limits use raw atomic
+> units, not fixed point, and must be chosen explicitly. `init`, so run it **once**.
+> The floor applies when normalized debt changes (zero debt is allowed). The ceiling
+> admits new borrowing against aggregate accrued debt; interest may exceed it and
+> repayment remains available subject to the floor.
 
 ---
 

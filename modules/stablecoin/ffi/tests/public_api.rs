@@ -14,6 +14,8 @@ use stablecoin_ffi::{
 
 #[test]
 fn crate_root_reexports_stablecoin_surface() {
+    let _debt_limits: fn(stablecoin_ffi::SetDebtLimitsPlanRequest) -> StablecoinResult =
+        stablecoin_ffi::set_debt_limits_plan;
     let _set_fee: fn(stablecoin_ffi::SetStabilityFeePerMillisecondPlanRequest) -> StablecoinResult =
         stablecoin_ffi::set_stability_fee_per_millisecond_plan;
     let _freeze: fn(stablecoin_ffi::FreezeAuthorityPlanRequest) -> StablecoinResult =

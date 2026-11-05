@@ -49,10 +49,14 @@
 #     freshly created deploy accounts hold nothing to pay with
 #   - guest binaries built (`make build-programs`) and IDLs present (`make idl`)
 #
-# Required inputs (each accepts a base58 account id or a wallet account label):
+# Required account inputs (base58 account id or wallet account label):
 #   STABLECOIN_ADMIN            signs initialize_program; becomes the admin
 #   STABLECOIN_ORACLE_SOURCE    signs create_oracle_price_account; owns the price
 #   COLLATERAL_DEFINITION       the fungible collateral token definition
+# Required debt limits (raw stablecoin atomic units, exact decimal u128 values):
+#   STABLECOIN_MINIMUM_DEBT_AMOUNT   positive minimum debt per position
+#   STABLECOIN_DEBT_CEILING          global accrued-debt admission ceiling, >= minimum
+# These economic parameters have no defaults. Use freeze to stop all borrowing.
 #
 # Optional:
 #   COLLATERAL_HOLDING          create the collateral token, minting its supply
@@ -68,12 +72,15 @@
 #   # create (or reuse) a collateral token held by wallet accounts:
 #   STABLECOIN_ADMIN=admin STABLECOIN_ORACLE_SOURCE=oracle-source \
 #     COLLATERAL_DEFINITION=collateral-def COLLATERAL_HOLDING=collateral-holding \
+#     STABLECOIN_MINIMUM_DEBT_AMOUNT=<minimum> STABLECOIN_DEBT_CEILING=<ceiling> \
 #     scripts/deploy-stablecoin.sh
 #   # use an existing collateral token:
 #   STABLECOIN_ADMIN=admin STABLECOIN_ORACLE_SOURCE=oracle-source \
-#     COLLATERAL_DEFINITION=<base58> scripts/deploy-stablecoin.sh
+#     COLLATERAL_DEFINITION=<base58> \
+#     STABLECOIN_MINIMUM_DEBT_AMOUNT=<minimum> STABLECOIN_DEBT_CEILING=<ceiling> \
+#     scripts/deploy-stablecoin.sh
 #
-# Everything else has a default; see CONFIG below. A re-run deploys a new
+# Other economic inputs have defaults; see CONFIG below. A re-run deploys a new
 # stablecoin program and initializes it. With STABLECOIN_PROGRAM_ID pointing at an
 # initialized program it fails at the oracle / initialize step instead (those
 # PDAs already exist). The collateral step alone is safe to repeat.
@@ -144,6 +151,9 @@ STABLECOIN_MINIMUM_MS_BETWEEN_RATE_UPDATES="${STABLECOIN_MINIMUM_MS_BETWEEN_RATE
 STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS="${STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS:-86400000}"
 STABLECOIN_INITIAL_REDEMPTION_PRICE="${STABLECOIN_INITIAL_REDEMPTION_PRICE:-$FIXED_POINT_ONE}"
 STABLECOIN_NAME="${STABLECOIN_NAME:-LEZ Stablecoin}"
+# Required operator choices in raw atomic units, not RAY-scaled values.
+STABLECOIN_MINIMUM_DEBT_AMOUNT="${STABLECOIN_MINIMUM_DEBT_AMOUNT:-}"
+STABLECOIN_DEBT_CEILING="${STABLECOIN_DEBT_CEILING:-}"
 
 # --- market price oracle ---
 # Collateral per stablecoin, in the 27-decimal fixed point the stablecoin reads
@@ -176,6 +186,31 @@ die() { printf '%s\n' "${RED}✗ $*${RST}" >&2; exit 1; }
 require_cmd()  { command -v "$1" >/dev/null 2>&1 || die "required command not found on PATH: $1"; }
 require_file() { [ -f "$1" ] || die "required file not found: $1 (cwd=$(pwd))"; }
 require_var()  { [ -n "${!1:-}" ] || die "$1 is required (a base58 account id or a wallet label) — see the header"; }
+
+# Compare canonical nonnegative decimals without overflowing shell integers.
+decimal_le() {
+  [ "${#1}" -lt "${#2}" ] || {
+    [ "${#1}" -eq "${#2}" ] && [[ "$1" == "$2" || "$1" < "$2" ]]
+  }
+}
+
+validate_debt_limits() {
+  local name value
+  local maximum="340282366920938463463374607431768211455"
+  for name in STABLECOIN_MINIMUM_DEBT_AMOUNT STABLECOIN_DEBT_CEILING; do
+    value="${!name}"
+    [ -n "$value" ] || die "$name is required (raw stablecoin atomic units, decimal u128)"
+    [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be an unsigned decimal u128"
+    # Normalize leading zeros before comparing or recording the manifest.
+    value="${value#"${value%%[!0]*}"}"
+    value="${value:-0}"
+    decimal_le "$value" "$maximum" || die "$name exceeds u128::MAX"
+    [ "$value" != "0" ] || die "$name must be positive"
+    printf -v "$name" '%s' "$value"
+  done
+  decimal_le "$STABLECOIN_MINIMUM_DEBT_AMOUNT" "$STABLECOIN_DEBT_CEILING" \
+    || die "STABLECOIN_DEBT_CEILING must be at least STABLECOIN_MINIMUM_DEBT_AMOUNT"
+}
 
 # Run a transaction command, streaming its output: 0 if spel printed its
 # sequencer confirmation, 1 otherwise. Sets TRY_TX_SUBMITTED=1 if spel got as far
@@ -296,6 +331,7 @@ field() { printf '%s' "$2" | awk -v k="$1" '$1==k {print $2; exit}'; }
 # 0. Preflight
 ###############################################################################
 sec "Preflight"
+validate_debt_limits
 require_cmd wallet
 require_cmd spel
 require_cmd cargo
@@ -306,6 +342,8 @@ require_var COLLATERAL_DEFINITION
 [ -n "$TWAP_PROGRAM_ID" ] || require_file "$TWAP_BIN"
 require_file "$STABLECOIN_IDL"; require_file "$TWAP_IDL"; require_file "$TOKEN_IDL"
 if [ -n "$COLLATERAL_HOLDING" ] && [ -z "$TOKEN_PROGRAM_ID" ]; then require_file "$TOKEN_BIN"; fi
+kv "minimum debt (atomic units)" "$STABLECOIN_MINIMUM_DEBT_AMOUNT"
+kv "debt ceiling (atomic units)" "$STABLECOIN_DEBT_CEILING"
 kv "repo root"       "$REPO_ROOT"
 kv "wallet home"     "${LEE_WALLET_HOME_DIR:-<wallet default>}"
 [ -n "$STABLECOIN_PROGRAM_ID" ] || kv "stablecoin bin" "$STABLECOIN_BIN"
@@ -474,6 +512,8 @@ create_tx "initialize stablecoin program" "$STABLECOIN_IDL" "$PROTOCOL_PARAMETER
     --maximum-oracle-price-age-milliseconds "$STABLECOIN_MAXIMUM_ORACLE_PRICE_AGE_MS" \
     --initial-redemption-price "$STABLECOIN_INITIAL_REDEMPTION_PRICE" \
     --stablecoin-name "$STABLECOIN_NAME" \
+    --minimum-debt-amount "$STABLECOIN_MINIMUM_DEBT_AMOUNT" \
+    --debt-ceiling "$STABLECOIN_DEBT_CEILING" \
   || die "stablecoin not initialized (see the output above and the sequencer log)"
 
 ###############################################################################
@@ -491,6 +531,9 @@ sec "Write deployment manifest -> $STABLECOIN_MANIFEST_OUT"
 mkdir -p "$(dirname "$STABLECOIN_MANIFEST_OUT")"
 cat > "$STABLECOIN_MANIFEST_OUT" <<JSON
 {
+  "schemaVersion": 2,
+  "minimumDebtAmount": "$STABLECOIN_MINIMUM_DEBT_AMOUNT",
+  "debtCeiling": "$STABLECOIN_DEBT_CEILING",
   "stablecoinBin": "$STABLECOIN_BIN",
   "stablecoinIdl": "$STABLECOIN_IDL",
   "stablecoinProgramId": "$STABLECOIN_PID",

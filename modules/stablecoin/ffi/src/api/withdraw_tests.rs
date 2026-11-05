@@ -65,6 +65,9 @@ impl Fixture {
                 opened_at: START,
             },
             parameters: ProtocolParameters {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                minimum_debt_amount: 1,
+                debt_ceiling: u128::MAX,
                 admin_account_id: id(1),
                 freeze_authority_account_id: id(2),
                 stablecoin_definition_id: compute_stablecoin_definition_pda(PROGRAM),
@@ -79,9 +82,10 @@ impl Fixture {
                 is_frozen: false,
             },
             accumulator: StabilityFeeAccumulator {
+                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+                total_normalized_debt: debt,
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
                 last_accrued_at: START,
-                total_normalized_debt: 0,
             },
             redemption: RedemptionPriceState {
                 redemption_price_at_last_update: FIXED_POINT_ONE,
@@ -579,7 +583,11 @@ fn withdrawal_validates_all_required_reads_even_without_health_projections() {
                 1 => {
                     let data = &mut read.account.as_mut().expect("account").data;
                     data.truncate(data.len() - 2);
-                    data_errors[index]
+                    if index == 3 {
+                        "unsupported_account_schema"
+                    } else {
+                        data_errors[index]
+                    }
                 }
                 2 => {
                     read.account.as_mut().expect("account").data.push_str("ff");

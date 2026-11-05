@@ -29,6 +29,8 @@ use token_core::TokenHolding;
 /// accumulator and redemption price projected forward to the clock timestamp.
 /// The market-price oracle is not an input: as in RAI, borrowing never reads the
 /// market price, which only steers the redemption rate (spec §10.3).
+/// A positive mint must meet the exact accrued position floor and global ceiling,
+/// both checked at the freshly accrued accumulator.
 ///
 /// # Panics
 /// - `owner` is not authorized.
@@ -44,7 +46,8 @@ use token_core::TokenHolding;
 /// - `stablecoin_master_holding` fails the surplus-account checks of
 ///   [`crate::checks::surplus_mint_call`].
 /// - `clock` is not the initialized system `CLOCK_01` account.
-/// - The debt addition overflows, or §6.2 fails post-mint.
+/// - Position or aggregate debt addition overflows, or §6.2 fails post-mint.
+/// - A positive mint leaves debt below the floor or aggregate debt above the ceiling.
 #[allow(
     clippy::too_many_arguments,
     reason = "the nine account inputs mirror the spec §10.7 ABI"
@@ -163,6 +166,26 @@ pub fn generate_debt(
         .checked_add(debt_delta)
         .expect("Total normalized debt overflow");
 
+    if debt_delta != 0 {
+        assert!(
+            stablecoin_core::debt_limits::meets_debt_floor(
+                new_debt,
+                current_accumulator,
+                parameters.minimum_debt_amount,
+            ),
+            "Position debt is below minimum_debt_amount"
+        );
+    }
+    if amount != 0 {
+        assert!(
+            stablecoin_core::debt_limits::within_debt_ceiling(
+                accrual.accumulator.total_normalized_debt,
+                current_accumulator,
+                parameters.debt_ceiling,
+            ),
+            "Global debt ceiling exceeded"
+        );
+    }
     let updated_position = Position {
         normalized_debt_amount: new_debt,
         ..position_data

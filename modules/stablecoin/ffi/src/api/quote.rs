@@ -173,6 +173,9 @@ mod tests {
 
     fn parameters(oracle_id: AccountId) -> ProtocolParameters {
         ProtocolParameters {
+            schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+            minimum_debt_amount: 1,
+            debt_ceiling: u128::MAX,
             admin_account_id: id(1),
             freeze_authority_account_id: id(2),
             stablecoin_definition_id: id(3),
