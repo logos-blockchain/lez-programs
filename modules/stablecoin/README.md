@@ -335,8 +335,10 @@ burns exactly `amount` and reduces normalized debt by
 `floor(amount * FIXED_POINT_ONE / current_accumulator)`. The accumulator uses
 the current canonical clock, saturating elapsed time and the seven-day window
 clamp. The floored reduction must not exceed remaining normalized debt.
-The writable accumulator total decreases by the same normalized delta as the
-position, without changing its rate anchor or timestamp. A nonzero debt change
+Repayment first accrues fees and stores the current accumulator anchor and clock
+timestamp. It uses that anchor to calculate the normalized debt reduction. The
+writable accumulator total decreases by the same normalized delta as the
+position. A nonzero debt change
 must leave zero debt or satisfy the exact floor
 `newNormalizedDebt * currentAccumulator >= minimumDebtAmount * FIXED_POINT_ONE`.
 Repayment may reduce debt while aggregate accrued debt exceeds the ceiling.
@@ -454,9 +456,11 @@ newTotalNormalizedDebt = oldTotalNormalizedDebt + normalizedDebtDelta
 Positive borrowing must meet both exact U256 comparisons:
 `newNormalizedDebt * currentAccumulator >= minimumDebtAmount * FIXED_POINT_ONE`
 and `newTotalNormalizedDebt * currentAccumulator <= debtCeiling * FIXED_POINT_ONE`.
-The writable accumulator total changes atomically with position debt; its anchor
-and timestamp stay unchanged. The ceiling includes accrued debt and normalization
-rounding. Interest may raise existing accrued debt above the ceiling, after which
+Borrowing first accrues fees and stores the current accumulator anchor and clock
+timestamp. It uses that anchor to calculate the normalized debt increase. The
+writable accumulator total changes atomically with position debt. The ceiling
+includes accrued debt and normalization rounding. Interest may raise existing
+accrued debt above the ceiling, after which
 new borrowing fails until debt falls or the admin raises the ceiling.
 
 Checked, non-panicking arithmetic reports unrepresentable pricing and debt
