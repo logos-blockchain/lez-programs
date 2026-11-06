@@ -1,30 +1,32 @@
 [workspace]
 members = [
-    "modules/amm/ffi",
-    "modules/oracle/ffi",
-    "modules/stablecoin/ffi",
-    "modules/token/ffi",
     "programs/token/core",
     "programs/token",
     "programs/token/methods",
-    "programs/amm/core",
-    "programs/amm",
-    "programs/amm/methods",
-    "programs/ata/core",
-    "programs/ata",
-    "programs/ata/methods",
-    "programs/twap_oracle/core",
-    "programs/twap_oracle",
-    "programs/twap_oracle/methods",
-    "programs/stablecoin/core",
-    "programs/stablecoin",
-    "programs/stablecoin/methods",
-    "programs/token_mint_authority/core",
-    "programs/token_mint_authority",
-    "programs/token_mint_authority/methods",
     "programs/integration_tests",
-    "tools/idl-gen",
     "tools/risc0-packager",
+    # Not yet ported to LEZ's actor model (docs/lez-actor-model-upgrade-plan.md §5).
+    # Each returns to the workspace with its port:
+    # "modules/amm/ffi",
+    # "modules/oracle/ffi",
+    # "modules/stablecoin/ffi",
+    # "modules/token/ffi",
+    # "programs/amm/core",
+    # "programs/amm",
+    # "programs/amm/methods",
+    # "programs/ata/core",
+    # "programs/ata",
+    # "programs/ata/methods",
+    # "programs/twap_oracle/core",
+    # "programs/twap_oracle",
+    # "programs/twap_oracle/methods",
+    # "programs/stablecoin/core",
+    # "programs/stablecoin",
+    # "programs/stablecoin/methods",
+    # "programs/token_mint_authority/core",
+    # "programs/token_mint_authority",
+    # "programs/token_mint_authority/methods",
+    # "tools/idl-gen",
 ]
 exclude = [
     "programs/token/methods/guest",
@@ -40,8 +42,9 @@ exclude = [
 resolver = "2"
 
 [workspace.dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
-lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["test-utils"] }
+# LEZ actor model (v0.4.0), pinned to `moudy/lez-books` until a release is tagged.
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "616256b9c9efd2c28d4f7683b7b5d2348df7314e", features = ["host"] }
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "616256b9c9efd2c28d4f7683b7b5d2348df7314e", features = ["test-utils"] }
 token_core = { path = "programs/token/core" }
 token_program = { path = "programs/token" }
 amm_core = { path = "programs/amm/core" }

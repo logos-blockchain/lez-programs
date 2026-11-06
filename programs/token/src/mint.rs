@@ -1,153 +1,242 @@
+//! `Mint`: at the definition when it is its own authority, otherwise through the authority's
+//! own actor, which forwards `IncreaseSupply` (`token.md` §3.6).
+
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::AccountStateDiff,
+    account::{AccountId, Actor},
+    program::{ReceiveInput, Response},
 };
-use token_core::{TokenDefinition, TokenHolding};
+use token_core::{
+    event::{Minted, TokenEvent as _},
+    Internal, TokenDefinition, TokenState,
+};
 
-/// Mint additional supply under **self/PDA authority**: the definition account
-/// itself is the current mint authority and proves it by being authorized in
-/// this transaction (a signer, or a PDA authorized under its seeds — e.g. the
-/// AMM minting its own LP token via a chained call).
-pub fn mint(
-    definition_account: AccountWithMetadata,
-    user_holding_account: AccountWithMetadata,
-    amount_to_mint: u128,
-    token_program_id: AccountId,
-) -> Vec<AccountStateDiff> {
-    mint_inner(
-        definition_account,
-        user_holding_account,
-        None,
-        amount_to_mint,
-        token_program_id,
-    )
-}
+use crate::{assert_authority, definition_state, forward_as_authority, token_actor};
 
-/// Mint additional supply under an **external authority**: a distinct account
-/// (e.g. an owner key the authority was rotated to) proves authority by signing.
-/// The definition account is still mutated but does not authorize the mint,
-/// which is what lets a rotated authority mint without the definition's key.
-pub fn mint_with_authority(
-    definition_account: AccountWithMetadata,
-    user_holding_account: AccountWithMetadata,
-    authority_account: AccountWithMetadata,
-    amount_to_mint: u128,
-    token_program_id: AccountId,
-) -> Vec<AccountStateDiff> {
-    mint_inner(
-        definition_account,
-        user_holding_account,
-        Some(authority_account),
-        amount_to_mint,
-        token_program_id,
-    )
-}
-
-/// Shared minting core for both authority modes. `authority_account` is the
-/// external authority when `Some`; when `None` the definition account itself is
-/// treated as the authority (self/PDA authority). Post-state order mirrors the
-/// pre-state account order for each mode.
-fn mint_inner(
-    definition_account: AccountWithMetadata,
-    user_holding_account: AccountWithMetadata,
-    authority_account: Option<AccountWithMetadata>,
-    amount_to_mint: u128,
-    token_program_id: AccountId,
-) -> Vec<AccountStateDiff> {
-    assert_eq!(
-        definition_account.account.program_owner, token_program_id,
-        "Token definition must be owned by token program"
-    );
-
-    let mut definition = TokenDefinition::try_from(&definition_account.account.data)
-        .expect("Token Definition account must be valid");
-
-    // Minting is gated on the definition's stored mint authority: the account
-    // that proves authority must be authorized AND its id must match the stored
-    // authority. That account is the explicit external authority when present,
-    // otherwise the definition account itself (self/PDA authority).
-    if let TokenDefinition::Fungible { authority, .. } = &definition {
-        // `None` means the supply is permanently fixed (renounced) — minting is rejected.
-        let mint_authority =
-            authority.expect("Mint authority check failed: authority revoked, supply is fixed");
-        let authority_ref = authority_account.as_ref().unwrap_or(&definition_account);
+/// At the definition (self authority) or at the authority's actor.
+pub(crate) fn mint(
+    input: &ReceiveInput,
+    definition: AccountId,
+    to: AccountId,
+    amount: u128,
+) -> Response {
+    if definition == input.receiver.account_id {
         assert!(
-            authority_ref.is_authorized,
-            "Mint authority must authorize the transaction"
+            input.is_authorized,
+            "definition must authorize minting as its own authority"
+        );
+        let state = definition_state(input);
+        assert_authority(&state, definition);
+        raise_supply(input, state, to, amount)
+    } else {
+        forward_as_authority(input, definition, &Internal::IncreaseSupply { to, amount })
+    }
+}
+
+/// At the definition, from its authority's actor.
+pub(crate) fn increase_supply(
+    input: &ReceiveInput,
+    from: Actor,
+    to: AccountId,
+    amount: u128,
+) -> Response {
+    let definition = definition_state(input);
+    assert_authority(&definition, from.account_id);
+    raise_supply(input, definition, to, amount)
+}
+
+fn raise_supply(
+    input: &ReceiveInput,
+    mut definition: TokenDefinition,
+    to: AccountId,
+    amount: u128,
+) -> Response {
+    definition.total_supply = definition
+        .total_supply
+        .checked_add(amount)
+        .expect("total supply overflow");
+    let definition_id = input.receiver.account_id;
+    Response::set_state(TokenState::Definition(definition).encode())
+        .send_async(
+            token_actor(input, to),
+            &Internal::IncreaseBalance {
+                definition: definition_id,
+                amount,
+            },
+        )
+        .event(
+            Minted {
+                definition: definition_id,
+                to,
+                amount,
+            }
+            .to_program_event(),
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::*;
+
+    fn message(amount: u128) -> Message {
+        Message::Mint {
+            definition: DEFINITION,
+            to: RECIPIENT,
+            amount,
+        }
+    }
+
+    fn increase_balance(amount: u128) -> Internal {
+        Internal::IncreaseBalance {
+            definition: DEFINITION,
+            amount,
+        }
+    }
+
+    fn minted(amount: u128) -> ProgramEvent {
+        Minted {
+            definition: DEFINITION,
+            to: RECIPIENT,
+            amount,
+        }
+        .to_program_event()
+    }
+
+    #[test]
+    fn a_self_authority_definition_mints() {
+        let response = run(
+            DEFINITION,
+            None,
+            true,
+            Some(&definition(1_000, Some(DEFINITION))),
+            &message(50),
         );
         assert_eq!(
-            authority_ref.account_id, mint_authority,
-            "Mint authority check failed: signer is not the current authority"
+            response,
+            write(&definition(1_050, Some(DEFINITION)))
+                .send_async(token(RECIPIENT), &increase_balance(50))
+                .event(minted(50))
         );
     }
 
-    let mut holding = if user_holding_account.account == Account::default() {
-        TokenHolding::zeroized_from_definition(definition_account.account_id, &definition)
-    } else {
-        TokenHolding::try_from(&user_holding_account.account.data)
-            .expect("Token Holding account must be valid")
-    };
-
-    assert_eq!(
-        definition_account.account_id,
-        holding.definition_id(),
-        "Mismatch Token Definition and Token Holding"
-    );
-
-    match (&mut definition, &mut holding) {
-        (
-            TokenDefinition::Fungible {
-                name: _,
-                metadata_id: _,
-                total_supply,
-                authority: _,
-            },
-            TokenHolding::Fungible {
-                definition_id: _,
-                balance,
-            },
-        ) => {
-            *balance = balance
-                .checked_add(amount_to_mint)
-                .expect("Balance overflow on minting");
-
-            *total_supply = total_supply
-                .checked_add(amount_to_mint)
-                .expect("Total supply overflow");
-        }
-        (
-            TokenDefinition::NonFungible { .. },
-            TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. },
-        ) => {
-            panic!("Cannot mint additional supply for Non-Fungible Tokens");
-        }
-        _ => panic!("Mismatched Token Definition and Token Holding types"),
+    #[test]
+    #[should_panic(expected = "definition must authorize minting as its own authority")]
+    fn a_self_authority_definition_must_be_authorized() {
+        let _ = run(
+            DEFINITION,
+            None,
+            false,
+            Some(&definition(1_000, Some(DEFINITION))),
+            &message(50),
+        );
     }
 
-    // Deliberately no `is_authorized` check on an uninitialized holding: crediting a
-    // recipient who has not participated is a supported flow (see the private foreign-init
-    // path, where the recipient is known only by `npk`/`vpk`). v0.2.4 expressed the claim as
-    // `Claim::Authorized`, but logos-execution-zone PR #621 made foreign-init pre-states carry
-    // `is_authorized = true` as a circuit artifact rather than as recipient consent, so that
-    // claim never actually gated this path. v0.2.5 makes it honest — `is_authorized` now
-    // matches whether a credential was supplied — and acquires ownership on any data write.
-    // A guard here cannot distinguish an unauthorized public recipient from a legitimate
-    // private foreign init, so squatting on unowned accounts is the runtime's to prevent.
-    // Diffs must match pre-state order and count: [definition, holding]
-    // for self authority, plus the read-only authority account when external.
-    let mut state_diffs = Vec::with_capacity(3);
-    state_diffs.push(AccountStateDiff::new(
-        definition_account,
-        BalanceDiff::Add(0),
-        Data::from(&definition),
-    ));
-    state_diffs.push(AccountStateDiff::new(
-        user_holding_account,
-        BalanceDiff::Add(0),
-        Data::from(&holding),
-    ));
-    if let Some(authority) = authority_account {
-        state_diffs.push(AccountStateDiff::unchanged(authority));
+    #[test]
+    #[should_panic(expected = "sender is not the mint authority")]
+    fn a_definition_with_an_external_authority_does_not_mint_itself() {
+        let _ = run(
+            DEFINITION,
+            None,
+            true,
+            Some(&definition(1_000, Some(AUTHORITY))),
+            &message(50),
+        );
     }
-    state_diffs
+
+    #[test]
+    #[should_panic(expected = "mint authority is renounced")]
+    fn a_fixed_supply_definition_does_not_mint() {
+        let _ = run(
+            DEFINITION,
+            None,
+            true,
+            Some(&definition(1_000, None)),
+            &message(50),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "total supply overflow")]
+    fn refuses_a_supply_overflow() {
+        let _ = run(
+            DEFINITION,
+            None,
+            true,
+            Some(&definition(u128::MAX, Some(DEFINITION))),
+            &message(1),
+        );
+    }
+
+    /// The authority's actor keeps its state, whatever it is, and forwards.
+    #[test]
+    fn the_authority_actor_forwards() {
+        for pre in [None, Some(holding(OTHER_DEFINITION, 3))] {
+            let response = run(AUTHORITY, None, true, pre.as_ref(), &message(50));
+            assert_eq!(
+                response,
+                Response::keep_state().send_sync(
+                    token(DEFINITION),
+                    &Internal::IncreaseSupply {
+                        to: RECIPIENT,
+                        amount: 50,
+                    }
+                )
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "mint authority must authorize")]
+    fn the_authority_actor_must_be_authorized() {
+        let _ = run(AUTHORITY, None, false, None, &message(50));
+    }
+
+    #[test]
+    fn the_definition_mints_for_its_authority() {
+        let response = run(
+            DEFINITION,
+            Some(token(AUTHORITY)),
+            false,
+            Some(&definition(1_000, Some(AUTHORITY))),
+            &Internal::IncreaseSupply {
+                to: RECIPIENT,
+                amount: 50,
+            },
+        );
+        assert_eq!(
+            response,
+            write(&definition(1_050, Some(AUTHORITY)))
+                .send_async(token(RECIPIENT), &increase_balance(50))
+                .event(minted(50))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "sender is not the mint authority")]
+    fn the_definition_refuses_another_token_actor() {
+        let _ = run(
+            DEFINITION,
+            Some(token(NEW_AUTHORITY)),
+            false,
+            Some(&definition(1_000, Some(AUTHORITY))),
+            &Internal::IncreaseSupply {
+                to: RECIPIENT,
+                amount: 50,
+            },
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "mint authority is renounced")]
+    fn the_definition_refuses_after_renouncing() {
+        let _ = run(
+            DEFINITION,
+            Some(token(AUTHORITY)),
+            false,
+            Some(&definition(1_000, None)),
+            &Internal::IncreaseSupply {
+                to: RECIPIENT,
+                amount: 50,
+            },
+        );
+    }
 }

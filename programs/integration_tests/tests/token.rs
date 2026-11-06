@@ -1,2164 +1,676 @@
-use integration_tests::{
-    private_authorized_init_identity, private_authorized_update_identity,
-    private_foreign_init_identity, GroupOwner,
-};
-use lee::{
-    execute_and_prove,
-    privacy_preserving_transaction::{Message, PrivacyPreservingTransaction, WitnessSet},
-    program::Program,
-    public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
-};
+//! Token Program integration tests: the real guest, run through LEZ's public execution.
+//!
+//! Each handler's own tests (in `programs/token/src`) cover one message; these cover the
+//! conversations between token actors.
+
+use integration_tests::{account, assert_refused, deploy, deploy_at, key, submit};
+use lee::{error::LeeError, PrivateKey, V03State};
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    encryption::ViewingPublicKey,
-    AuthorizationSecretKey, Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey,
-    NullifierSecretKey,
+    account::{AccountId, Actor},
+    program::TransactionEvent,
 };
-use token_core::{TokenDefinition, TokenHolding};
+use token_core::{
+    event::{self, TokenEvent},
+    Message, TokenDefinition, TokenHolding, TokenState,
+};
 
-struct Keys;
-struct Ids;
-struct Accounts;
-
-impl Keys {
-    fn def_key() -> PrivateKey {
-        PrivateKey::try_new([10; 32]).expect("valid private key")
-    }
-
-    fn holder_key() -> PrivateKey {
-        PrivateKey::try_new([11; 32]).expect("valid private key")
-    }
-
-    fn recipient_key() -> PrivateKey {
-        PrivateKey::try_new([12; 32]).expect("valid private key")
-    }
-
-    fn authority_key() -> PrivateKey {
-        PrivateKey::try_new([13; 32]).expect("valid private key")
-    }
+struct Chain {
+    state: V03State,
+    token: AccountId,
 }
 
-impl Ids {
-    /// The program's account id: since v0.2.5 a program is addressed by its deployed
-    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
-    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
-    fn token_program() -> AccountId {
-        AccountId::from(token_methods::TOKEN_ID)
+impl Chain {
+    fn new() -> Self {
+        let (state, ids) = deploy(&[token_methods::TOKEN_ELF]);
+        let [token] = ids[..] else {
+            panic!("one program deployed")
+        };
+        Self { state, token }
     }
 
-    /// A program that was never deployed here, for "owned by someone else" fixtures.
-    fn foreign_token_program() -> AccountId {
-        AccountId::new([0xfe; 32])
-    }
-
-    fn token_definition() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(&Keys::def_key()))
-    }
-
-    fn holder() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(&Keys::holder_key()))
-    }
-
-    fn recipient() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(&Keys::recipient_key()))
-    }
-
-    fn authority() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(&Keys::authority_key()))
-    }
-}
-
-impl Accounts {
-    fn token_definition_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_000_000_u128,
-                metadata_id: None,
-                authority: Some(Ids::token_definition()),
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    fn token_definition_foreign_owner() -> Account {
-        Account {
-            program_owner: Ids::foreign_token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_000_000_u128,
-                metadata_id: None,
-                authority: Some(Ids::token_definition()),
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    fn holder_init() -> Account {
-        Self::token_holding(1_000_000_u128, Nonce(0))
-    }
-
-    fn recipient_init() -> Account {
-        Self::token_holding(0_u128, Nonce(0))
-    }
-
-    fn authority_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::default(),
-            nonce: Nonce(0),
-        }
-    }
-
-    /// A token holding account for the canonical `Ids::token_definition()`, at the given
-    /// balance and nonce. Covers every private and public token-holding shape in this file —
-    /// the `program_owner`/`definition_id` are fixed for this test module.
-    fn token_holding(balance: u128, nonce: Nonce) -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: Ids::token_definition(),
-                balance,
-            }),
-            nonce,
-        }
-    }
-}
-
-// v0.2.5 deleted `ProgramDeploymentTransaction`; deployment is now the `program_loader`
-// pseudo-program's WriteSegment/CreateHeader flow. `with_programs` seeds each program in the
-// shape that flow produces — a loader-owned header plus its segment — without making every
-// test drive a deployment. The header lands at `AccountId::from(program.id())`, so a program's
-// account id stays derivable from its ELF here.
-fn deploy_token(state: &mut V03State) {
-    *state = std::mem::take(state)
-        .with_programs([
-            Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF")
+    /// A chain with the token program deployed twice: `token`, and a copy at `copy`.
+    fn with_copy() -> (Self, AccountId) {
+        let (token, copy) = (AccountId::new([0xa0; 32]), AccountId::new([0xb0; 32]));
+        let state = deploy_at(&[
+            (token, token_methods::TOKEN_ELF),
+            (copy, token_methods::TOKEN_ELF),
         ]);
-}
-
-fn state_for_token_tests() -> V03State {
-    let mut state = V03State::new();
-    deploy_token(&mut state);
-    state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
-    state.force_insert_account(Ids::holder(), Accounts::holder_init());
-    state.force_insert_account(Ids::recipient(), Accounts::recipient_init());
-    state.force_insert_account(Ids::authority(), Accounts::authority_init());
-    state
-}
-
-fn state_for_token_tests_without_recipient() -> V03State {
-    let mut state = V03State::new();
-    deploy_token(&mut state);
-    state.force_insert_account(Ids::token_definition(), Accounts::token_definition_init());
-    state.force_insert_account(Ids::holder(), Accounts::holder_init());
-    state.force_insert_account(Ids::authority(), Accounts::authority_init());
-    state
-}
-
-#[test]
-fn token_new_fungible_definition() {
-    let mut state = V03State::new();
-    deploy_token(&mut state);
-
-    let instruction = token_core::Instruction::NewFungibleDefinition {
-        name: String::from("Gold"),
-        total_supply: 1_000_000_u128,
-        mint_authority: None,
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::def_key(), &Keys::holder_key()],
-    );
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_000_000_u128,
-                metadata_id: None,
-                authority: None,
-            }),
-            nonce: Nonce(1),
-        }
-    );
-
-    assert_eq!(
-        state.get_account_by_id(Ids::holder()),
-        Accounts::token_holding(1_000_000_u128, Nonce(1))
-    );
-}
-
-#[test]
-fn token_initialize_account_succeeds_for_canonical_definition() {
-    let mut state = state_for_token_tests_without_recipient();
-
-    let instruction = token_core::Instruction::InitializeAccount;
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
-        vec![Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::recipient_key()]);
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Accounts::token_definition_init()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::recipient()),
-        Accounts::token_holding(0_u128, Nonce(1))
-    );
-}
-
-#[test]
-fn token_initialize_account_rejects_foreign_owned_definition() {
-    let mut state = state_for_token_tests_without_recipient();
-    state.force_insert_account(
-        Ids::token_definition(),
-        Accounts::token_definition_foreign_owner(),
-    );
-
-    let instruction = token_core::Instruction::InitializeAccount;
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
-        vec![Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::recipient_key()]);
-
-    let tx = PublicTransaction::new(message, witness_set);
-    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Accounts::token_definition_foreign_owner()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::recipient()),
-        Account::default()
-    );
-}
-
-#[test]
-fn token_transfer() {
-    let mut state = state_for_token_tests();
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: 500_000_u128,
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::holder(), Ids::recipient()],
-        vec![Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::holder_key()]);
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::holder()),
-        Accounts::token_holding(500_000_u128, Nonce(1))
-    );
-
-    assert_eq!(
-        state.get_account_by_id(Ids::recipient()),
-        Accounts::token_holding(500_000_u128, Nonce(0))
-    );
-}
-
-/// REGRESSION MARKER (LEZ v0.2.5). Under v0.2.4 this was rejected: crediting a fresh account
-/// required claiming it, and `Claim::Authorized` made the runtime demand the recipient's
-/// signature. v0.2.5 acquires ownership implicitly on any data write and authenticates
-/// nothing, so the transfer now succeeds and binds the recipient address to the token program
-/// without its consent.
-///
-/// The token program cannot restore the guard itself: the same unauthenticated write is what
-/// legitimate private foreign-init credits rely on (see `token_mint_private_unauthorized`),
-/// and a guest cannot tell the two apart. If LEZ re-authenticates first-write ownership, this
-/// test fails and should go back to asserting rejection.
-#[test]
-fn token_transfer_fresh_public_recipient_is_unauthenticated_since_v0_2_5() {
-    let mut state = state_for_token_tests_without_recipient();
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: 500_000_u128,
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::holder(), Ids::recipient()],
-        vec![Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::holder_key()]);
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state
-        .transition_from_public_transaction(&tx, 0, 0)
-        .expect("v0.2.5 accepts a credit to an unauthorized fresh recipient");
-
-    // The balance moved and the recipient is now token-program-owned, with no signature
-    // from it anywhere in the transaction.
-    assert_eq!(
-        state.get_account_by_id(Ids::recipient()),
-        Accounts::token_holding(500_000_u128, Nonce(0))
-    );
-}
-
-#[test]
-fn token_transfer_fresh_authorized_public_recipient() {
-    let mut state = state_for_token_tests_without_recipient();
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: 500_000_u128,
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::holder(), Ids::recipient()],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::holder_key(), &Keys::recipient_key()],
-    );
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::holder()),
-        Accounts::token_holding(500_000_u128, Nonce(1))
-    );
-
-    assert_eq!(
-        state.get_account_by_id(Ids::recipient()),
-        Accounts::token_holding(500_000_u128, Nonce(1))
-    );
-}
-
-#[test]
-fn token_burn() {
-    let mut state = state_for_token_tests();
-
-    let instruction = token_core::Instruction::Burn {
-        amount_to_burn: 200_000_u128,
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
-        vec![Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::holder_key()]);
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 800_000_u128,
-                metadata_id: None,
-                authority: Some(Ids::token_definition()),
-            }),
-            nonce: Nonce(0),
-        }
-    );
-
-    assert_eq!(
-        state.get_account_by_id(Ids::holder()),
-        Accounts::token_holding(800_000_u128, Nonce(1))
-    );
-}
-
-#[test]
-fn token_mint() {
-    let mut state = state_for_token_tests();
-
-    let instruction = token_core::Instruction::Mint {
-        amount_to_mint: 500_000_u128,
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
-        vec![Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_500_000_u128,
-                metadata_id: None,
-                authority: Some(Ids::token_definition()),
-            }),
-            nonce: Nonce(1),
-        }
-    );
-
-    assert_eq!(
-        state.get_account_by_id(Ids::holder()),
-        Accounts::token_holding(1_500_000_u128, Nonce(0))
-    );
-}
-
-#[test]
-fn token_mint_rejects_foreign_owned_definition() {
-    let mut state = state_for_token_tests_without_recipient();
-    state.force_insert_account(
-        Ids::token_definition(),
-        Accounts::token_definition_foreign_owner(),
-    );
-
-    let instruction = token_core::Instruction::Mint {
-        amount_to_mint: 500_000_u128,
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::def_key(), &Keys::recipient_key()],
-    );
-
-    let tx = PublicTransaction::new(message, witness_set);
-    assert!(state.transition_from_public_transaction(&tx, 0, 0).is_err());
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Accounts::token_definition_foreign_owner()
-    );
-    assert_eq!(
-        state.get_account_by_id(Ids::recipient()),
-        Account::default()
-    );
-}
-
-/// REGRESSION MARKER (LEZ v0.2.5) — the mint counterpart of
-/// `token_transfer_fresh_public_recipient_is_unauthenticated_since_v0_2_5`; see that test for
-/// why the program cannot guard this itself.
-#[test]
-fn token_mint_fresh_public_recipient_is_unauthenticated_since_v0_2_5() {
-    let mut state = state_for_token_tests_without_recipient();
-
-    let instruction = token_core::Instruction::Mint {
-        amount_to_mint: 500_000_u128,
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
-        vec![Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state
-        .transition_from_public_transaction(&tx, 0, 0)
-        .expect("v0.2.5 accepts a mint into an unauthorized fresh holding");
-
-    assert_ne!(
-        state.get_account_by_id(Ids::recipient()),
-        Account::default(),
-        "the fresh holding was materialized without its consent"
-    );
-}
-
-#[test]
-fn token_mint_fresh_authorized_public_recipient() {
-    let mut state = state_for_token_tests_without_recipient();
-
-    let instruction = token_core::Instruction::Mint {
-        amount_to_mint: 500_000_u128,
-    };
-
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::recipient()],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::def_key(), &Keys::recipient_key()],
-    );
-
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_500_000_u128,
-                metadata_id: None,
-                authority: Some(Ids::token_definition()),
-            }),
-            nonce: Nonce(1),
-        }
-    );
-
-    assert_eq!(
-        state.get_account_by_id(Ids::recipient()),
-        Accounts::token_holding(500_000_u128, Nonce(1))
-    );
-}
-
-struct PrivateKeys;
-
-impl PrivateKeys {
-    /// The authorization key is the root credential under v0.2.5: the circuit takes an
-    /// `ask` and derives the `nsk` from it, so the fixture roots here.
-    fn holder_ask() -> AuthorizationSecretKey {
-        AuthorizationSecretKey([42; 32])
+        (Self { state, token }, copy)
     }
 
-    fn holder_nsk() -> NullifierSecretKey {
-        NullifierSecretKey::from(&Self::holder_ask())
+    /// Submits `message` to `(root, token)`, declaring `declared` token actors.
+    fn submit(
+        &mut self,
+        root: AccountId,
+        declared: &[AccountId],
+        signers: &[&PrivateKey],
+        message: &Message,
+    ) -> Result<Vec<TransactionEvent>, LeeError> {
+        self.submit_to(self.token, root, declared, signers, message)
     }
 
-    fn holder_npk() -> NullifierPublicKey {
-        NullifierPublicKey::from(&Self::holder_nsk())
-    }
-
-    // `ViewingPublicKey::from_seed` needs two 32-byte halves `(d, z)`. We reuse the
-    // legacy viewing scalar as `d` and pick a fixed distinct `z`.
-    fn holder_vpk() -> ViewingPublicKey {
-        ViewingPublicKey::from_seed(&[73; 32], &[74; 32])
-    }
-
-    fn holder_id() -> AccountId {
-        AccountId::for_regular_private_account(&Self::holder_npk(), &Self::holder_vpk(), 0)
-    }
-
-    /// The authorization key is the root credential under v0.2.5: the circuit takes an
-    /// `ask` and derives the `nsk` from it, so the fixture roots here.
-    fn recipient_ask() -> AuthorizationSecretKey {
-        AuthorizationSecretKey([84; 32])
-    }
-
-    fn recipient_nsk() -> NullifierSecretKey {
-        NullifierSecretKey::from(&Self::recipient_ask())
-    }
-
-    fn recipient_npk() -> NullifierPublicKey {
-        NullifierPublicKey::from(&Self::recipient_nsk())
-    }
-
-    fn recipient_vpk() -> ViewingPublicKey {
-        ViewingPublicKey::from_seed(&[48; 32], &[49; 32])
-    }
-
-    fn recipient_id() -> AccountId {
-        AccountId::for_regular_private_account(&Self::recipient_npk(), &Self::recipient_vpk(), 0)
-    }
-}
-
-fn token_program() -> Program {
-    Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF")
-}
-
-/// Performs a shielded transfer (public → private) of `amount` tokens from
-/// `Ids::holder()` to a new private account keyed by `PrivateKeys::recipient_*`.
-/// Returns the resulting private recipient account.
-#[cfg(test)]
-fn shielded_token_transfer(
-    amount: u128,
-    state: &mut V03State,
-    recipient_is_authorized: bool,
-    recipient_identity: InputAccountIdentity,
-) -> Account {
-    let sender_id = Ids::holder();
-    let sender_account = state.get_account_by_id(sender_id);
-    let sender_nonce = sender_account.nonce;
-
-    let recipient_id = PrivateKeys::recipient_id();
-
-    let sender = AccountWithMetadata::new(sender_account, true, sender_id);
-    let recipient =
-        AccountWithMetadata::new(Account::default(), recipient_is_authorized, recipient_id);
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: amount,
-    };
-    let (output, proof) = execute_and_prove(
-        vec![sender, recipient],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![InputAccountIdentity::Public, recipient_identity],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![sender_nonce], output);
-
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::holder_key()]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    Accounts::token_holding(amount, Nonce::private_account_nonce_init(&recipient_id))
-}
-
-#[test]
-fn token_shielded_transfer() {
-    let mut state = state_for_token_tests();
-    let amount = 500_000_u128;
-
-    let recipient_npk = PrivateKeys::recipient_npk();
-    let recipient_vpk = PrivateKeys::recipient_vpk();
-    let commitment_root = state.commitment_root();
-    let recipient_account = shielded_token_transfer(
-        amount,
-        &mut state,
-        false,
-        private_foreign_init_identity(recipient_npk, &recipient_vpk, commitment_root),
-    );
-
-    assert_eq!(
-        state.get_account_by_id(Ids::holder()),
-        Accounts::token_holding(1_000_000 - amount, Nonce(1))
-    );
-
-    let recipient_commitment = Commitment::new(&PrivateKeys::recipient_id(), &recipient_account);
-    assert!(state
-        .get_proof_for_commitment(&recipient_commitment)
-        .is_some());
-}
-
-/// Shielded transaction to a private account using the account's `nsk`.
-/// `token_shielded_transfer` only uses the account's `npk`; thus, `PrivateUnauthorized` private.
-#[test]
-fn token_shielded_transfer_authorized_private_init() {
-    let mut state = state_for_token_tests();
-    let amount = 500_000_u128;
-
-    let commitment_root = state.commitment_root();
-    let recipient_account = shielded_token_transfer(
-        amount,
-        &mut state,
-        true,
-        private_authorized_init_identity(
-            PrivateKeys::recipient_ask(),
-            &PrivateKeys::recipient_vpk(),
-            commitment_root,
-        ),
-    );
-
-    assert_eq!(
-        state.get_account_by_id(Ids::holder()),
-        Accounts::token_holding(1_000_000 - amount, Nonce(1))
-    );
-
-    let recipient_commitment = Commitment::new(&PrivateKeys::recipient_id(), &recipient_account);
-    assert!(state
-        .get_proof_for_commitment(&recipient_commitment)
-        .is_some());
-}
-
-#[test]
-fn token_private_transfer() {
-    let mut state = state_for_token_tests();
-    let shielded_amount = 500_000_u128;
-    let transfer_amount = 200_000_u128;
-
-    // Shield tokens into a private account (becomes the sender for the private transfer).
-    let commitment_root = state.commitment_root();
-    let sender_account = shielded_token_transfer(
-        shielded_amount,
-        &mut state,
-        false,
-        private_foreign_init_identity(
-            PrivateKeys::recipient_npk(),
-            &PrivateKeys::recipient_vpk(),
-            commitment_root,
-        ),
-    );
-    let sender_ask = PrivateKeys::recipient_ask();
-    let sender_nsk = NullifierSecretKey::from(&sender_ask);
-    let sender_vpk = PrivateKeys::recipient_vpk();
-    let sender_id = PrivateKeys::recipient_id();
-
-    let new_recipient_npk = PrivateKeys::holder_npk();
-    let new_recipient_vpk = PrivateKeys::holder_vpk();
-    let new_recipient_id = PrivateKeys::holder_id();
-
-    let sender_commitment = Commitment::new(&sender_id, &sender_account);
-    let membership_proof = state
-        .get_proof_for_commitment(&sender_commitment)
-        .expect("sender's commitment must be in the set");
-
-    let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, sender_id);
-    let new_recipient_pre = AccountWithMetadata::new(Account::default(), false, new_recipient_id);
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: transfer_amount,
-    };
-    let (output, proof) = execute_and_prove(
-        vec![sender_pre, new_recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            // Distinct `output_index` per private output keeps the encapsulated secrets
-            // reproducible.
-            private_authorized_update_identity(sender_ask, &sender_vpk, membership_proof),
-            private_foreign_init_identity(
-                new_recipient_npk,
-                &new_recipient_vpk,
-                state.commitment_root(),
-            ),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![], output);
-
-    let witness_set = WitnessSet::for_message(&message, proof, &[]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    let sender_nonce_after =
-        Nonce::private_account_nonce_init(&sender_id).private_account_nonce_increment(&sender_nsk);
-    let new_sender_account =
-        Accounts::token_holding(shielded_amount - transfer_amount, sender_nonce_after);
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&sender_id, &new_sender_account))
-        .is_some());
-
-    let new_recipient_account = Accounts::token_holding(
-        transfer_amount,
-        Nonce::private_account_nonce_init(&new_recipient_id),
-    );
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&new_recipient_id, &new_recipient_account))
-        .is_some());
-}
-
-#[test]
-fn token_deshielded_transfer() {
-    let mut state = state_for_token_tests();
-    let shielded_amount = 500_000_u128;
-    let deshield_amount = 300_000_u128;
-
-    // Shield tokens into a private account, then deshield some back to a public account.
-    let commitment_root = state.commitment_root();
-    let sender_account = shielded_token_transfer(
-        shielded_amount,
-        &mut state,
-        false,
-        private_foreign_init_identity(
-            PrivateKeys::recipient_npk(),
-            &PrivateKeys::recipient_vpk(),
-            commitment_root,
-        ),
-    );
-    let sender_ask = PrivateKeys::recipient_ask();
-    let sender_nsk = NullifierSecretKey::from(&sender_ask);
-    let sender_vpk = PrivateKeys::recipient_vpk();
-    let sender_id = PrivateKeys::recipient_id();
-
-    let public_recipient_id = Ids::recipient();
-    let sender_commitment = Commitment::new(&sender_id, &sender_account);
-    let membership_proof = state
-        .get_proof_for_commitment(&sender_commitment)
-        .expect("sender's commitment must be in the set");
-
-    let public_recipient_pre = AccountWithMetadata::new(
-        state.get_account_by_id(public_recipient_id),
-        false,
-        public_recipient_id,
-    );
-    let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, sender_id);
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: deshield_amount,
-    };
-    let (output, proof) = execute_and_prove(
-        vec![sender_pre, public_recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            private_authorized_update_identity(sender_ask, &sender_vpk, membership_proof),
-            InputAccountIdentity::Public,
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![], output);
-
-    let witness_set = WitnessSet::for_message(&message, proof, &[]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(public_recipient_id),
-        Accounts::token_holding(deshield_amount, Nonce(0))
-    );
-
-    let sender_nonce_after =
-        Nonce::private_account_nonce_init(&sender_id).private_account_nonce_increment(&sender_nsk);
-    let new_sender_account =
-        Accounts::token_holding(shielded_amount - deshield_amount, sender_nonce_after);
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&sender_id, &new_sender_account))
-        .is_some());
-}
-
-/// Mints directly to a new recipient private holding (`PrivateUnauthorized`).
-/// The recipient's cooperation is unnecessary; only known of the recipient's `npk`, `vpk`.
-#[test]
-fn token_mint_private_unauthorized() {
-    let mut state = state_for_token_tests_without_recipient();
-    let amount_to_mint = 500_000_u128;
-
-    let recipient_npk = PrivateKeys::recipient_npk();
-    let recipient_vpk = PrivateKeys::recipient_vpk();
-    let recipient_id = PrivateKeys::recipient_id();
-
-    let definition_account = state.get_account_by_id(Ids::token_definition());
-    let definition_nonce = definition_account.nonce;
-    let definition_pre =
-        AccountWithMetadata::new(definition_account, true, Ids::token_definition());
-    let recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
-
-    let instruction = token_core::Instruction::Mint { amount_to_mint };
-    let (output, proof) = execute_and_prove(
-        vec![definition_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(recipient_npk, &recipient_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![definition_nonce], output);
-
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::def_key()]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_000_000_u128 + amount_to_mint,
-                metadata_id: None,
-                authority: Some(Ids::token_definition()),
-            }),
-            nonce: Nonce(1),
-        }
-    );
-
-    let recipient_account = Accounts::token_holding(
-        amount_to_mint,
-        Nonce::private_account_nonce_init(&recipient_id),
-    );
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&recipient_id, &recipient_account))
-        .is_some());
-}
-
-/// Mints directly to a new recipient private holding (`PrivateAuthorizedInit`).
-/// This requires the recipient's secret key `nsk`.
-#[test]
-fn token_mint_authorized_private_init() {
-    let mut state = state_for_token_tests_without_recipient();
-    let amount_to_mint = 500_000_u128;
-
-    let recipient_ask = PrivateKeys::recipient_ask();
-    let recipient_vpk = PrivateKeys::recipient_vpk();
-    let recipient_id = PrivateKeys::recipient_id();
-
-    let definition_account = state.get_account_by_id(Ids::token_definition());
-    let definition_nonce = definition_account.nonce;
-    let definition_pre =
-        AccountWithMetadata::new(definition_account, true, Ids::token_definition());
-    let recipient_pre = AccountWithMetadata::new(Account::default(), true, recipient_id);
-
-    let instruction = token_core::Instruction::Mint { amount_to_mint };
-    let (output, proof) = execute_and_prove(
-        vec![definition_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(
-                recipient_ask,
-                &recipient_vpk,
-                state.commitment_root(),
-            ),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![definition_nonce], output);
-
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::def_key()]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_000_000_u128 + amount_to_mint,
-                metadata_id: None,
-                authority: Some(Ids::token_definition()),
-            }),
-            nonce: Nonce(1),
-        }
-    );
-
-    let recipient_account = Accounts::token_holding(
-        amount_to_mint,
-        Nonce::private_account_nonce_init(&recipient_id),
-    );
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&recipient_id, &recipient_account))
-        .is_some());
-}
-
-/// Mints directly to a pre-existing recipient private holding
-/// This requires the recipient's secret key `nsk`.
-#[test]
-fn token_mint_into_existing_private_holding() {
-    let mut state = state_for_token_tests_without_recipient();
-    let pre_balance = 500_000_u128;
-    let amount_to_mint = 250_000_u128;
-
-    let recipient_ask = PrivateKeys::recipient_ask();
-    let recipient_nsk = NullifierSecretKey::from(&recipient_ask);
-    let recipient_vpk = PrivateKeys::recipient_vpk();
-    let recipient_id = PrivateKeys::recipient_id();
-
-    let recipient_pre = Accounts::token_holding(
-        pre_balance,
-        Nonce::private_account_nonce_init(&recipient_id),
-    );
-    let recipient_commitment = Commitment::new(&recipient_id, &recipient_pre);
-    state = state.with_private_accounts([(
-        recipient_commitment,
-        Nullifier::for_account_initialization(&recipient_id),
-    )]);
-
-    let membership_proof = state
-        .get_proof_for_commitment(&recipient_commitment)
-        .expect("seeded recipient's commitment must be in the set");
-
-    let definition_account = state.get_account_by_id(Ids::token_definition());
-    let definition_nonce = definition_account.nonce;
-    let definition_pre =
-        AccountWithMetadata::new(definition_account, true, Ids::token_definition());
-    let existing_recipient_pre =
-        AccountWithMetadata::new(recipient_pre.clone(), true, recipient_id);
-
-    let (output, second_proof) = execute_and_prove(
-        vec![definition_pre, existing_recipient_pre],
-        Program::serialize_instruction(token_core::Instruction::Mint { amount_to_mint }).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(recipient_ask, &recipient_vpk, membership_proof),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![definition_nonce], output);
-    let witness = WitnessSet::for_message(&message, second_proof, &[&Keys::def_key()]);
-    state
-        .transition_from_privacy_preserving_transaction(
-            &PrivacyPreservingTransaction::new(message, witness),
-            0,
-            0,
+    /// [`Self::submit`] to the token program deployed at `program`.
+    fn submit_to(
+        &mut self,
+        program: AccountId,
+        root: AccountId,
+        declared: &[AccountId],
+        signers: &[&PrivateKey],
+        message: &Message,
+    ) -> Result<Vec<TransactionEvent>, LeeError> {
+        let declared: Vec<Actor> = declared.iter().map(|id| Actor::new(*id, program)).collect();
+        submit(
+            &mut self.state,
+            Actor::new(root, program),
+            &declared,
+            signers,
+            message,
         )
-        .unwrap();
+    }
 
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_000_000_u128 + amount_to_mint,
-                metadata_id: None,
-                authority: Some(Ids::token_definition()),
-            }),
-            nonce: Nonce(1),
+    fn token_state(&self, id: AccountId) -> Option<TokenState> {
+        self.token_state_in(self.token, id)
+    }
+
+    /// The state of `id`'s actor under the token program deployed at `program`.
+    fn token_state_in(&self, program: AccountId, id: AccountId) -> Option<TokenState> {
+        TokenState::decode(self.state.get_account_by_id(id).data.actor_state(program))
+    }
+
+    fn holding(&self, id: AccountId) -> Option<TokenHolding> {
+        match self.token_state(id) {
+            Some(TokenState::Holding(holding)) => Some(holding),
+            Some(TokenState::Definition(_)) | None => None,
         }
-    );
+    }
 
-    let recipient_nonce_after = Nonce::private_account_nonce_init(&recipient_id)
-        .private_account_nonce_increment(&recipient_nsk);
-    let recipient_after_second_mint =
-        Accounts::token_holding(pre_balance + amount_to_mint, recipient_nonce_after);
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(
-            &recipient_id,
-            &recipient_after_second_mint
-        ))
-        .is_some());
-}
+    fn balance(&self, id: AccountId) -> u128 {
+        self.holding(id).expect("a token holding").balance
+    }
 
-/// Burns from an existing private holding (`PrivateAuthorizedUpdate`).
-#[test]
-fn token_private_burn() {
-    let mut state = state_for_token_tests();
-    let holding_balance = 500_000_u128;
-    let burn_amount = 200_000_u128;
-
-    let holder_ask = PrivateKeys::recipient_ask();
-    let holder_nsk = NullifierSecretKey::from(&holder_ask);
-    let holder_vpk = PrivateKeys::recipient_vpk();
-    let holder_id = PrivateKeys::recipient_id();
-
-    // Predefined holding account to burn from.
-    let holder_account = Accounts::token_holding(
-        holding_balance,
-        Nonce::private_account_nonce_init(&holder_id),
-    );
-    let holder_commitment = Commitment::new(&holder_id, &holder_account);
-    state = state.with_private_accounts([(
-        holder_commitment,
-        Nullifier::for_account_initialization(&holder_id),
-    )]);
-    let membership_proof = state
-        .get_proof_for_commitment(&holder_commitment)
-        .expect("holder's commitment must be in the set");
-
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
-    );
-    let holder_pre = AccountWithMetadata::new(holder_account.clone(), true, holder_id);
-
-    let instruction = token_core::Instruction::Burn {
-        amount_to_burn: burn_amount,
-    };
-    let (output, proof) = execute_and_prove(
-        vec![definition_pre, holder_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(holder_ask, &holder_vpk, membership_proof),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![], output);
-
-    let witness_set = WitnessSet::for_message(&message, proof, &[]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_000_000_u128 - burn_amount,
-                metadata_id: None,
-                authority: Some(Ids::token_definition()),
-            }),
-            nonce: Nonce(0),
+    fn definition(&self, id: AccountId) -> TokenDefinition {
+        match self.token_state(id) {
+            Some(TokenState::Definition(definition)) => definition,
+            other => panic!("expected a definition, got {other:?}"),
         }
-    );
+    }
 
-    let new_holder_account = Accounts::token_holding(
-        holding_balance - burn_amount,
-        Nonce::private_account_nonce_init(&holder_id).private_account_nonce_increment(&holder_nsk),
-    );
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&holder_id, &new_holder_account))
-        .is_some());
-}
-
-/// Token transfer into a pre-existing Token holding account. This requires
-/// the account's `nsk`; `PrivateAuthorizedUpdate`.
-#[test]
-fn token_transfer_into_existing_private_holding() {
-    let mut state = state_for_token_tests();
-    let init_balance = 500_000_u128;
-    let second_amount = 100_000_u128;
-
-    let recipient_ask = PrivateKeys::recipient_ask();
-    let recipient_nsk = NullifierSecretKey::from(&recipient_ask);
-    let recipient_vpk = PrivateKeys::recipient_vpk();
-    let recipient_id = PrivateKeys::recipient_id();
-
-    let recipient_account = Accounts::token_holding(
-        init_balance,
-        Nonce::private_account_nonce_init(&recipient_id),
-    );
-    let recipient_commitment = Commitment::new(&recipient_id, &recipient_account);
-    state = state.with_private_accounts([(
-        recipient_commitment,
-        Nullifier::for_account_initialization(&recipient_id),
-    )]);
-    let membership_proof = state
-        .get_proof_for_commitment(&recipient_commitment)
-        .expect("recipient's commitment must be in the set after seeding");
-
-    let sender_id = Ids::holder();
-    let sender_account = state.get_account_by_id(sender_id);
-    let sender_nonce = sender_account.nonce;
-
-    let sender_pre = AccountWithMetadata::new(sender_account, true, sender_id);
-    let recipient_pre = AccountWithMetadata::new(recipient_account.clone(), true, recipient_id);
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: second_amount,
-    };
-    let (output, proof) = execute_and_prove(
-        vec![sender_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(recipient_ask, &recipient_vpk, membership_proof),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![sender_nonce], output);
-
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::holder_key()]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(sender_id),
-        // `first_amount` was seeded directly into the recipient, never debited from the
-        // sender — only the real transfer (`second_amount`) actually happened.
-        Accounts::token_holding(1_000_000 - second_amount, Nonce(1))
-    );
-
-    let recipient_nonce_after = Nonce::private_account_nonce_init(&recipient_id)
-        .private_account_nonce_increment(&recipient_nsk);
-    let new_recipient_account =
-        Accounts::token_holding(init_balance + second_amount, recipient_nonce_after);
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&recipient_id, &new_recipient_account))
-        .is_some());
-}
-
-/// Private Token transfer into a pre-existing Token holding account. This requires
-/// the account's `nsk`; `PrivateAuthorizedUpdate`.
-#[test]
-fn token_private_transfer_into_existing_private_holding() {
-    let mut state = state_for_token_tests();
-    let sender_initial_balance = 500_000_u128;
-    let recipient_initial_balance = 300_000_u128;
-    let transfer_amount = 200_000_u128;
-
-    let sender_ask = PrivateKeys::recipient_ask();
-    let sender_nsk = NullifierSecretKey::from(&sender_ask);
-    let sender_vpk = PrivateKeys::recipient_vpk();
-    let sender_id = PrivateKeys::recipient_id();
-
-    let recipient_ask = PrivateKeys::holder_ask();
-    let recipient_nsk = NullifierSecretKey::from(&recipient_ask);
-    let recipient_vpk = PrivateKeys::holder_vpk();
-    let recipient_id = PrivateKeys::holder_id();
-
-    // Seed both sides directly — neither needs a real prior transaction to exist.
-    let sender_account = Accounts::token_holding(
-        sender_initial_balance,
-        Nonce::private_account_nonce_init(&sender_id),
-    );
-    let recipient_account = Accounts::token_holding(
-        recipient_initial_balance,
-        Nonce::private_account_nonce_init(&recipient_id),
-    );
-    let sender_commitment = Commitment::new(&sender_id, &sender_account);
-    let recipient_commitment = Commitment::new(&recipient_id, &recipient_account);
-    state = state.with_private_accounts([
-        (
-            sender_commitment,
-            Nullifier::for_account_initialization(&sender_id),
-        ),
-        (
-            recipient_commitment,
-            Nullifier::for_account_initialization(&recipient_id),
-        ),
-    ]);
-
-    let sender_membership_proof = state
-        .get_proof_for_commitment(&sender_commitment)
-        .expect("sender's commitment must be in the set");
-    let recipient_membership_proof = state
-        .get_proof_for_commitment(&recipient_commitment)
-        .expect("recipient's commitment must be in the set");
-
-    let sender_pre = AccountWithMetadata::new(sender_account.clone(), true, sender_id);
-    let recipient_pre = AccountWithMetadata::new(recipient_account.clone(), true, recipient_id);
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: transfer_amount,
-    };
-    let (output, proof) = execute_and_prove(
-        vec![sender_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            private_authorized_update_identity(sender_ask, &sender_vpk, sender_membership_proof),
-            private_authorized_update_identity(
-                recipient_ask,
-                &recipient_vpk,
-                recipient_membership_proof,
-            ),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[]);
-    state
-        .transition_from_privacy_preserving_transaction(
-            &PrivacyPreservingTransaction::new(message, witness_set),
-            0,
-            0,
+    /// Creates a token with `supply` held by `holder`.
+    fn create(
+        &mut self,
+        definition: &PrivateKey,
+        holder: &PrivateKey,
+        supply: u128,
+        mint_authority: Option<AccountId>,
+    ) -> Vec<TransactionEvent> {
+        self.submit(
+            account(definition),
+            &[account(definition), account(holder)],
+            &[definition, holder],
+            &Message::NewDefinition {
+                name: "Test".to_owned(),
+                total_supply: supply,
+                mint_authority,
+                holding: account(holder),
+            },
         )
-        .unwrap();
+        .expect("token creation succeeds")
+    }
 
-    let sender_nonce_after =
-        Nonce::private_account_nonce_init(&sender_id).private_account_nonce_increment(&sender_nsk);
-    let new_sender_account =
-        Accounts::token_holding(sender_initial_balance - transfer_amount, sender_nonce_after);
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&sender_id, &new_sender_account))
-        .is_some());
-
-    let recipient_nonce_after = Nonce::private_account_nonce_init(&recipient_id)
-        .private_account_nonce_increment(&recipient_nsk);
-    let new_recipient_account = Accounts::token_holding(
-        recipient_initial_balance + transfer_amount,
-        recipient_nonce_after,
-    );
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&recipient_id, &new_recipient_account))
-        .is_some());
+    fn initialize(
+        &mut self,
+        holder: &PrivateKey,
+        definition: AccountId,
+    ) -> Result<Vec<TransactionEvent>, LeeError> {
+        self.submit(
+            account(holder),
+            &[account(holder), definition],
+            &[holder],
+            &Message::InitializeHolding { definition },
+        )
+    }
 }
 
-/// Initializes a private holding account directly (private account secret keys are known).
-/// `InitializeAccount` requires `account_to_initialize` to be authorized. E.g., for private
-/// accounts must be `PrivateAuthorizedInit` and not `PrivateUnauthorized`; the account owner
-/// must supply their own `nsk`.
-#[test]
-fn token_initialize_private_account_succeeds_for_canonical_definition() {
-    let mut state = state_for_token_tests_without_recipient();
-
-    let owner_ask = PrivateKeys::recipient_ask();
-    let owner_vpk = PrivateKeys::recipient_vpk();
-    let owner_id = PrivateKeys::recipient_id();
-
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
-    );
-    let account_to_init_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
-
-    let instruction = token_core::Instruction::InitializeAccount;
-    let (output, proof) = execute_and_prove(
-        vec![definition_pre, account_to_init_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(owner_ask, &owner_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![], output);
-
-    let witness_set = WitnessSet::for_message(&message, proof, &[]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    let expected_account = Accounts::token_holding(0, Nonce::private_account_nonce_init(&owner_id));
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&owner_id, &expected_account))
-        .is_some());
+fn events_of<E: TokenEvent + borsh::BorshDeserialize>(events: &[TransactionEvent]) -> Vec<E> {
+    let selector = event::selector(E::NAME);
+    events
+        .iter()
+        .filter(|record| record.event.selector == selector)
+        .map(|record| borsh::from_slice(&record.event.data).expect("the event decodes"))
+        .collect()
 }
 
-/// The `InitializeAccount` counterpart of
-/// `token_new_fungible_definition_foreign_init_holder_is_refused`: PR #621 briefly made this
-/// expressible under v0.2.4, and v0.2.5 refuses it again because a foreign-init pre-state now
-/// correctly carries `is_authorized == false`. Initializing an account requires its key.
 #[test]
-fn token_initialize_private_account_via_foreign_init_is_refused() {
-    let state = state_for_token_tests_without_recipient();
+fn token_creating_a_token_writes_the_definition_and_the_initial_holding() {
+    let (mut chain, definition, alice) = (Chain::new(), key(1), key(2));
 
-    let recipient_npk = PrivateKeys::recipient_npk();
-    let recipient_vpk = PrivateKeys::recipient_vpk();
-    let recipient_id = PrivateKeys::recipient_id();
+    let events = chain.create(&definition, &alice, 1_000, None);
 
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
+    assert_eq!(chain.definition(account(&definition)).total_supply, 1_000);
+    assert_eq!(
+        chain.holding(account(&alice)),
+        Some(TokenHolding {
+            definition_id: account(&definition),
+            balance: 1_000,
+        })
     );
-    let account_to_init_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
+    assert_eq!(
+        events_of::<event::NewDefinition>(&events),
+        vec![event::NewDefinition {
+            definition: account(&definition),
+            holding: account(&alice),
+            name: "Test".to_owned(),
+            total_supply: 1_000,
+            authority: None,
+        }]
+    );
+}
 
-    let error = execute_and_prove(
-        vec![definition_pre, account_to_init_pre],
-        Program::serialize_instruction(token_core::Instruction::InitializeAccount).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(recipient_npk, &recipient_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
-    )
-    .expect_err("a foreign-init target cannot satisfy the signer requirement");
+#[test]
+fn token_creating_a_token_needs_the_holding_to_sign() {
+    let (mut chain, definition, alice) = (Chain::new(), key(1), key(2));
 
+    let result = chain.submit(
+        account(&definition),
+        &[account(&definition), account(&alice)],
+        &[&definition],
+        &Message::NewDefinition {
+            name: "Test".to_owned(),
+            total_supply: 1_000,
+            mint_authority: None,
+            holding: account(&alice),
+        },
+    );
+
+    assert!(result.is_err(), "alice did not sign: {result:?}");
+    assert_eq!(chain.token_state(account(&definition)), None);
+}
+
+/// H → D → H: the holding asks the definition, which answers with `InitHolding`.
+#[test]
+fn token_initializing_a_holding_round_trips_through_the_definition() {
+    let (mut chain, definition, alice, bob) = (Chain::new(), key(1), key(2), key(3));
+    chain.create(&definition, &alice, 1_000, None);
+
+    chain
+        .initialize(&bob, account(&definition))
+        .expect("initialization succeeds");
+
+    assert_eq!(
+        chain.holding(account(&bob)),
+        Some(TokenHolding {
+            definition_id: account(&definition),
+            balance: 0,
+        })
+    );
+}
+
+#[test]
+fn token_initializing_twice_is_a_no_op() {
+    let (mut chain, definition, alice, bob) = (Chain::new(), key(1), key(2), key(3));
+    chain.create(&definition, &alice, 1_000, None);
+    chain.initialize(&bob, account(&definition)).expect("first");
+
+    chain
+        .initialize(&bob, account(&definition))
+        .expect("second");
+
+    assert_eq!(chain.balance(account(&bob)), 0);
+}
+
+#[test]
+fn token_initializing_against_a_non_definition_fails_and_writes_nothing() {
+    let (mut chain, definition, alice, bob) = (Chain::new(), key(1), key(2), key(3));
+    chain.create(&definition, &alice, 1_000, None);
+
+    // Alice's account holds a holding, not a definition.
+    let result = chain.initialize(&bob, account(&alice));
+
+    assert_refused(&result, "receiver is not a token definition");
+    assert_eq!(chain.token_state(account(&bob)), None);
+}
+
+#[test]
+fn token_initializing_without_declaring_the_definition_fails() {
+    let (mut chain, definition, alice, bob) = (Chain::new(), key(1), key(2), key(3));
+    chain.create(&definition, &alice, 1_000, None);
+
+    let result = chain.submit(
+        account(&bob),
+        &[account(&bob)],
+        &[&bob],
+        &Message::InitializeHolding {
+            definition: account(&definition),
+        },
+    );
+
+    assert!(result.is_err(), "the definition is undeclared: {result:?}");
+    assert_eq!(chain.token_state(account(&bob)), None);
+}
+
+#[test]
+fn token_a_transfer_credits_an_initialized_recipient() {
+    let (mut chain, definition, alice, bob) = (Chain::new(), key(1), key(2), key(3));
+    chain.create(&definition, &alice, 1_000, None);
+    chain.initialize(&bob, account(&definition)).expect("init");
+
+    let events = chain
+        .submit(
+            account(&alice),
+            &[account(&alice), account(&bob)],
+            &[&alice],
+            &Message::Transfer {
+                to: account(&bob),
+                amount: 300,
+            },
+        )
+        .expect("the transfer succeeds");
+
+    assert_eq!(chain.balance(account(&alice)), 700);
+    assert_eq!(chain.balance(account(&bob)), 300);
+    assert_eq!(
+        events_of::<event::Transferred>(&events),
+        vec![event::Transferred {
+            definition: account(&definition),
+            from: account(&alice),
+            to: account(&bob),
+            amount: 300,
+        }]
+    );
+}
+
+/// `token.md` §3.7: no credit creates a holding, so a junk token can't occupy an account.
+#[test]
+fn token_a_transfer_to_an_uninitialized_account_fails_and_debits_nothing() {
+    let (mut chain, definition, alice, carol) = (Chain::new(), key(1), key(2), key(4));
+    chain.create(&definition, &alice, 1_000, None);
+
+    let result = chain.submit(
+        account(&alice),
+        &[account(&alice), account(&carol)],
+        &[&alice, &carol],
+        &Message::Transfer {
+            to: account(&carol),
+            amount: 300,
+        },
+    );
+
+    assert_refused(
+        &result,
+        "recipient has no token holding; initialize it first",
+    );
+    assert_eq!(chain.balance(account(&alice)), 1_000);
+    assert_eq!(chain.token_state(account(&carol)), None);
+}
+
+#[test]
+fn token_a_transfer_of_another_token_fails() {
+    let (mut chain, usdc, junk, alice, mallory) = (Chain::new(), key(1), key(5), key(2), key(6));
+    chain.create(&usdc, &alice, 1_000, None);
+    chain.create(&junk, &mallory, 1_000, None);
+
+    let result = chain.submit(
+        account(&mallory),
+        &[account(&mallory), account(&alice)],
+        &[&mallory],
+        &Message::Transfer {
+            to: account(&alice),
+            amount: 1,
+        },
+    );
+
+    assert_refused(&result, "recipient holds another token");
+    assert_eq!(chain.balance(account(&alice)), 1_000);
+    assert_eq!(chain.balance(account(&mallory)), 1_000);
+}
+
+#[test]
+fn token_a_transfer_needs_the_sender_signature() {
+    let (mut chain, definition, alice, bob) = (Chain::new(), key(1), key(2), key(3));
+    chain.create(&definition, &alice, 1_000, None);
+    chain.initialize(&bob, account(&definition)).expect("init");
+
+    let result = chain.submit(
+        account(&alice),
+        &[account(&alice), account(&bob)],
+        &[&bob],
+        &Message::Transfer {
+            to: account(&bob),
+            amount: 300,
+        },
+    );
+
+    assert_refused(&result, "sender holding must authorize the transfer");
+    assert_eq!(chain.balance(account(&alice)), 1_000);
+}
+
+#[test]
+fn token_a_burn_reduces_the_holding_and_the_supply() {
+    let (mut chain, definition, alice) = (Chain::new(), key(1), key(2));
+    chain.create(&definition, &alice, 1_000, None);
+
+    let events = chain
+        .submit(
+            account(&alice),
+            &[account(&alice), account(&definition)],
+            &[&alice],
+            &Message::Burn { amount: 100 },
+        )
+        .expect("the burn succeeds");
+
+    assert_eq!(chain.balance(account(&alice)), 900);
+    assert_eq!(chain.definition(account(&definition)).total_supply, 900);
+    assert_eq!(
+        events_of::<event::Burned>(&events),
+        vec![event::Burned {
+            definition: account(&definition),
+            holding: account(&alice),
+            amount: 100,
+        }]
+    );
+}
+
+#[test]
+fn token_an_external_authority_mints_through_its_own_actor() {
+    let (mut chain, definition, alice, minter) = (Chain::new(), key(1), key(2), key(7));
+    chain.create(&definition, &alice, 1_000, Some(account(&minter)));
+
+    let events = chain
+        .submit(
+            account(&minter),
+            &[account(&minter), account(&definition), account(&alice)],
+            &[&minter],
+            &Message::Mint {
+                definition: account(&definition),
+                to: account(&alice),
+                amount: 50,
+            },
+        )
+        .expect("the mint succeeds");
+
+    assert_eq!(chain.definition(account(&definition)).total_supply, 1_050);
+    assert_eq!(chain.balance(account(&alice)), 1_050);
+    assert_eq!(
+        events_of::<event::Minted>(&events),
+        vec![event::Minted {
+            definition: account(&definition),
+            to: account(&alice),
+            amount: 50,
+        }]
+    );
     assert!(
-        format!("{error:?}").contains("must be a signer"),
-        "expected the init target's signer requirement to reject this, got: {error:?}"
+        events_of::<event::Transferred>(&events).is_empty(),
+        "a mint is not a transfer"
     );
+    // The forwarding actor's state is untouched.
+    assert_eq!(chain.token_state(account(&minter)), None);
 }
 
 #[test]
-fn token_new_fungible_definition_private_initial_holder() {
-    let mut state = V03State::new();
-    deploy_token(&mut state);
+fn token_a_self_authority_definition_mints() {
+    let (mut chain, definition, alice) = (Chain::new(), key(1), key(2));
+    chain.create(&definition, &alice, 1_000, Some(account(&definition)));
 
-    let holder_ask = PrivateKeys::holder_ask();
-    let holder_vpk = PrivateKeys::holder_vpk();
-    let holder_id = PrivateKeys::holder_id();
-
-    let definition_nonce = state.get_account_by_id(Ids::token_definition()).nonce;
-    let definition_pre =
-        AccountWithMetadata::new(Account::default(), true, Ids::token_definition());
-    let holder_pre = AccountWithMetadata::new(Account::default(), true, holder_id);
-
-    let instruction = token_core::Instruction::NewFungibleDefinition {
-        name: String::from("Gold"),
-        total_supply: 1_000_000_u128,
-        mint_authority: None,
-    };
-    let (output, proof) = execute_and_prove(
-        vec![definition_pre, holder_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(holder_ask, &holder_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![definition_nonce], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::def_key()]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_000_000_u128,
-                metadata_id: None,
-                authority: None,
-            }),
-            nonce: Nonce(1),
-        }
-    );
-
-    let holder_account = Accounts::token_holding(
-        1_000_000_u128,
-        Nonce::private_account_nonce_init(&holder_id),
-    );
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&holder_id, &holder_account))
-        .is_some());
-}
-
-/// Foreign init cannot drive a signer-gated instruction, and the round trip is worth
-/// recording: PR #621 made this expressible under v0.2.4 by giving a foreign-init pre-state
-/// `is_authorized == true`, which satisfied `NewFungibleDefinition`'s signer requirement
-/// without the holder ever consenting. v0.2.5 makes `is_authorized` mean what it says — it
-/// must equal whether a credential was supplied — so the flag is `false` here and the
-/// instruction is correctly refused. Creating a holding for someone requires their key; use
-/// `private_authorized_init_identity`.
-#[test]
-fn token_new_fungible_definition_foreign_init_holder_is_refused() {
-    let mut state = V03State::new();
-    deploy_token(&mut state);
-
-    let holder_npk = PrivateKeys::holder_npk();
-    let holder_vpk = PrivateKeys::holder_vpk();
-    let holder_id = PrivateKeys::holder_id();
-
-    let definition_pre =
-        AccountWithMetadata::new(Account::default(), true, Ids::token_definition());
-    let holder_pre = AccountWithMetadata::new(Account::default(), false, holder_id);
-
-    let instruction = token_core::Instruction::NewFungibleDefinition {
-        name: String::from("Gold"),
-        total_supply: 1_000_000_u128,
-        mint_authority: None,
-    };
-    let error = execute_and_prove(
-        vec![definition_pre, holder_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(holder_npk, &holder_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
-    )
-    .expect_err("a foreign-init holder cannot satisfy the signer requirement");
-
-    assert!(
-        format!("{error:?}").contains("must be a signer"),
-        "expected the holding target's signer requirement to reject this, got: {error:?}"
-    );
-}
-
-/// Two independent parties (Alice and Bob) control a private Token holding (via `GroupKeyHolder`).
-/// Alice initializes the private Token account, and Bob burns tokens from the shared account.
-#[test]
-fn token_group_owned_holding_shared_control_burn() {
-    let mut state = state_for_token_tests();
-    let shield_amount = 500_000_u128;
-    let burn_amount = 200_000_u128;
-
-    // Alice creates the group and derives the shared account's keys; Bob is admitted via the
-    // real seal/unseal handshake and independently re-derives the same keys.
-    let alice = GroupOwner::new([7_u8; 32]);
-    let bob_ask = alice.admit_member();
-    let bob_nsk = NullifierSecretKey::from(&bob_ask);
-    let group_npk = alice.npk;
-    let group_vpk = alice.vpk;
-    let group_id = alice.id;
-
-    // Alice shields tokens into the group-owned holding (mirrors `shielded_token_transfer`,
-    // parameterized by the group's npk/vpk instead of a personal one).
-    let sender_id = Ids::holder();
-    let sender_account = state.get_account_by_id(sender_id);
-    let sender_nonce = sender_account.nonce;
-    let sender_pre = AccountWithMetadata::new(sender_account, true, sender_id);
-    let group_pre_shield = AccountWithMetadata::new(Account::default(), false, group_id);
-
-    let shield_instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: shield_amount,
-    };
-    let (shield_output, shield_proof) = execute_and_prove(
-        vec![sender_pre, group_pre_shield],
-        Program::serialize_instruction(shield_instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(group_npk, &group_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-    let shield_message = Message::from_circuit_output(vec![sender_nonce], shield_output);
-    let shield_witness =
-        WitnessSet::for_message(&shield_message, shield_proof, &[&Keys::holder_key()]);
-    let shield_tx = PrivacyPreservingTransaction::new(shield_message, shield_witness);
-    state
-        .transition_from_privacy_preserving_transaction(&shield_tx, 0, 0)
-        .unwrap();
-
-    let group_account =
-        Accounts::token_holding(shield_amount, Nonce::private_account_nonce_init(&group_id));
-    let group_commitment = Commitment::new(&group_id, &group_account);
-    assert!(state.get_proof_for_commitment(&group_commitment).is_some());
-
-    // Bob — who never touched Alice's `GroupKeyHolder` object, only the sealed GMS — burns
-    // from the group-owned holding using his independently derived nsk.
-    let membership_proof = state
-        .get_proof_for_commitment(&group_commitment)
-        .expect("group holding's commitment must be in the set");
-
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
-    );
-    let group_pre_burn = AccountWithMetadata::new(group_account, true, group_id);
-
-    let burn_instruction = token_core::Instruction::Burn {
-        amount_to_burn: burn_amount,
-    };
-    let (burn_output, burn_proof) = execute_and_prove(
-        vec![definition_pre, group_pre_burn],
-        Program::serialize_instruction(burn_instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(bob_ask, &group_vpk, membership_proof),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let burn_message = Message::from_circuit_output(vec![], burn_output);
-    let burn_witness = WitnessSet::for_message(&burn_message, burn_proof, &[]);
-    let burn_tx = PrivacyPreservingTransaction::new(burn_message, burn_witness);
-    state
-        .transition_from_privacy_preserving_transaction(&burn_tx, 0, 0)
-        .unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_000_000_u128 - burn_amount,
-                metadata_id: None,
-                authority: Some(Ids::token_definition()),
-            }),
-            nonce: Nonce(0),
-        }
-    );
-
-    let group_nonce_after =
-        Nonce::private_account_nonce_init(&group_id).private_account_nonce_increment(&bob_nsk);
-    let new_group_account = Accounts::token_holding(shield_amount - burn_amount, group_nonce_after);
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&group_id, &new_group_account))
-        .is_some());
-}
-
-/// Two independent parties (Alice and Bob) control a private Token holding (via `GroupKeyHolder`).
-/// Alice initializes the private Token account, and Bob transfers tokens from the shared account.
-#[test]
-fn token_group_owned_holding_shared_control_transfer() {
-    let mut state = state_for_token_tests();
-    let shield_amount = 500_000_u128;
-    let transfer_amount = 200_000_u128;
-
-    // Alice creates the group and derives the shared account's keys; Bob is admitted via the
-    // real seal/unseal handshake and independently re-derives the same keys.
-    let alice = GroupOwner::new([7_u8; 32]);
-    let bob_ask = alice.admit_member();
-    let bob_nsk = NullifierSecretKey::from(&bob_ask);
-    let group_vpk = alice.vpk;
-    let group_id = alice.id;
-
-    let group_account =
-        Accounts::token_holding(shield_amount, Nonce::private_account_nonce_init(&group_id));
-    let group_commitment = Commitment::new(&group_id, &group_account);
-    state = state.with_private_accounts([(
-        group_commitment,
-        Nullifier::for_account_initialization(&group_id),
-    )]);
-
-    // Bob spends via Transfer — not Burn — sending to a fresh private recipient.
-    let membership_proof = state
-        .get_proof_for_commitment(&group_commitment)
-        .expect("group holding's commitment must be in the set");
-
-    let recipient_npk = PrivateKeys::holder_npk();
-    let recipient_vpk = PrivateKeys::holder_vpk();
-    let recipient_id = PrivateKeys::holder_id();
-
-    let group_pre = AccountWithMetadata::new(group_account, true, group_id);
-    let recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
-
-    let instruction = token_core::Instruction::Transfer {
-        amount_to_transfer: transfer_amount,
-    };
-    let (output, proof) = execute_and_prove(
-        vec![group_pre, recipient_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            private_authorized_update_identity(bob_ask, &group_vpk, membership_proof),
-            private_foreign_init_identity(recipient_npk, &recipient_vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[]);
-    state
-        .transition_from_privacy_preserving_transaction(
-            &PrivacyPreservingTransaction::new(message, witness_set),
-            0,
-            0,
+    chain
+        .submit(
+            account(&definition),
+            &[account(&definition), account(&alice)],
+            &[&definition],
+            &Message::Mint {
+                definition: account(&definition),
+                to: account(&alice),
+                amount: 50,
+            },
         )
-        .unwrap();
+        .expect("the mint succeeds");
 
-    let group_nonce_after =
-        Nonce::private_account_nonce_init(&group_id).private_account_nonce_increment(&bob_nsk);
-    let new_group_account =
-        Accounts::token_holding(shield_amount - transfer_amount, group_nonce_after);
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&group_id, &new_group_account))
-        .is_some());
-
-    let new_recipient_account = Accounts::token_holding(
-        transfer_amount,
-        Nonce::private_account_nonce_init(&recipient_id),
-    );
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&recipient_id, &new_recipient_account))
-        .is_some());
+    assert_eq!(chain.balance(account(&alice)), 1_050);
 }
 
-/// Two independent parties (Alice and Bob) control a private Token holding (via `GroupKeyHolder`).
-/// Alice initializes the private Token account (`InitializeAccount` with `PrivateAuthorizedInit`)/
 #[test]
-fn token_group_owned_holding_shared_control_initialize() {
-    let mut state = state_for_token_tests_without_recipient();
+fn token_only_the_authority_mints() {
+    let (mut chain, definition, alice, minter, mallory) =
+        (Chain::new(), key(1), key(2), key(7), key(6));
+    chain.create(&definition, &alice, 1_000, Some(account(&minter)));
 
-    // Alice creates the group and derives the shared account's keys; Bob is admitted via the
-    // real seal/unseal handshake and independently re-derives the same keys.
-    let alice = GroupOwner::new([7_u8; 32]);
-    let group_id = alice.id;
-    let bob_ask = alice.admit_member();
-
-    // Bob — who never created the group — self-initializes the shared holding directly.
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
+    let result = chain.submit(
+        account(&mallory),
+        &[account(&mallory), account(&definition), account(&alice)],
+        &[&mallory],
+        &Message::Mint {
+            definition: account(&definition),
+            to: account(&alice),
+            amount: 50,
+        },
     );
-    let group_pre = AccountWithMetadata::new(Account::default(), true, group_id);
 
-    let instruction = token_core::Instruction::InitializeAccount;
-    let (output, proof) = execute_and_prove(
-        vec![definition_pre, group_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
+    assert_refused(&result, "sender is not the mint authority");
+    assert_eq!(chain.definition(account(&definition)).total_supply, 1_000);
+}
 
-    let message = Message::from_circuit_output(vec![], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[]);
-    state
-        .transition_from_privacy_preserving_transaction(
-            &PrivacyPreservingTransaction::new(message, witness_set),
-            0,
-            0,
+#[test]
+fn token_a_mint_to_an_uninitialized_account_fails_and_mints_nothing() {
+    let (mut chain, definition, alice, minter, carol) =
+        (Chain::new(), key(1), key(2), key(7), key(4));
+    chain.create(&definition, &alice, 1_000, Some(account(&minter)));
+
+    let result = chain.submit(
+        account(&minter),
+        &[account(&minter), account(&definition), account(&carol)],
+        // Carol signs only to admit her fresh account; unadmitted, the engine refuses the
+        // delivery before the token program runs (`UnadmittedPublicActor`).
+        &[&minter, &carol],
+        &Message::Mint {
+            definition: account(&definition),
+            to: account(&carol),
+            amount: 10,
+        },
+    );
+
+    assert_refused(
+        &result,
+        "recipient has no token holding; initialize it first",
+    );
+    assert_eq!(chain.definition(account(&definition)).total_supply, 1_000);
+    assert_eq!(chain.token_state(account(&carol)), None);
+}
+
+#[test]
+fn token_a_rotated_authority_replaces_the_old_one() {
+    let (mut chain, definition, alice, minter, next) =
+        (Chain::new(), key(1), key(2), key(7), key(8));
+    chain.create(&definition, &alice, 1_000, Some(account(&minter)));
+
+    let events = chain
+        .submit(
+            account(&minter),
+            &[account(&minter), account(&definition)],
+            &[&minter],
+            &Message::SetAuthority {
+                definition: account(&definition),
+                new_authority: Some(account(&next)),
+            },
         )
-        .unwrap();
+        .expect("the rotation succeeds");
+    assert_eq!(
+        events_of::<event::AuthorityChanged>(&events),
+        vec![event::AuthorityChanged {
+            definition: account(&definition),
+            old: Some(account(&minter)),
+            new: Some(account(&next)),
+        }]
+    );
 
-    let expected_account = Accounts::token_holding(0, Nonce::private_account_nonce_init(&group_id));
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&group_id, &expected_account))
-        .is_some());
+    let old = chain.submit(
+        account(&minter),
+        &[account(&minter), account(&definition), account(&alice)],
+        &[&minter],
+        &Message::Mint {
+            definition: account(&definition),
+            to: account(&alice),
+            amount: 1,
+        },
+    );
+    assert_refused(&old, "sender is not the mint authority");
+
+    chain
+        .submit(
+            account(&next),
+            &[account(&next), account(&definition), account(&alice)],
+            &[&next],
+            &Message::Mint {
+                definition: account(&definition),
+                to: account(&alice),
+                amount: 1,
+            },
+        )
+        .expect("the new authority mints");
+    assert_eq!(chain.balance(account(&alice)), 1_001);
+    assert_eq!(chain.definition(account(&definition)).total_supply, 1_001);
 }
 
 #[test]
-fn token_new_fungible_definition_with_authority() {
-    let mut state = V03State::new();
-    deploy_token(&mut state);
-    let authority_key: [u8; 32] = Ids::token_definition()
-        .as_ref()
-        .try_into()
-        .expect("AccountId is always 32 bytes");
-    let instruction = token_core::Instruction::NewFungibleDefinition {
-        name: String::from("AuthCoin"),
-        total_supply: 1_000_000_u128,
-        mint_authority: Some(AccountId::new(authority_key)),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::def_key(), &Keys::holder_key()],
-    );
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+fn token_a_renounced_authority_can_no_longer_mint() {
+    let (mut chain, definition, alice, minter) = (Chain::new(), key(1), key(2), key(7));
+    chain.create(&definition, &alice, 1_000, Some(account(&minter)));
+
+    let events = chain
+        .submit(
+            account(&minter),
+            &[account(&minter), account(&definition)],
+            &[&minter],
+            &Message::SetAuthority {
+                definition: account(&definition),
+                new_authority: None,
+            },
+        )
+        .expect("renouncing succeeds");
     assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("AuthCoin"),
-                total_supply: 1_000_000_u128,
-                metadata_id: None,
-                authority: Some(AccountId::new(authority_key)),
-            }),
-            nonce: Nonce(1),
-        }
+        events_of::<event::AuthorityChanged>(&events),
+        vec![event::AuthorityChanged {
+            definition: account(&definition),
+            old: Some(account(&minter)),
+            new: None,
+        }]
     );
+    assert_eq!(chain.definition(account(&definition)).authority, None);
+
+    let result = chain.submit(
+        account(&minter),
+        &[account(&minter), account(&definition), account(&alice)],
+        &[&minter],
+        &Message::Mint {
+            definition: account(&definition),
+            to: account(&alice),
+            amount: 1,
+        },
+    );
+    assert_refused(&result, "mint authority is renounced");
+    assert_eq!(chain.definition(account(&definition)).total_supply, 1_000);
 }
 
 #[test]
-fn token_set_authority_revoke() {
-    let mut state = V03State::new();
-    deploy_token(&mut state);
-    let authority_key: [u8; 32] = Ids::token_definition()
-        .as_ref()
-        .try_into()
-        .expect("AccountId is always 32 bytes");
-    // Create token with authority
-    let instruction = token_core::Instruction::NewFungibleDefinition {
-        name: String::from("AuthCoin"),
-        total_supply: 1_000_000_u128,
-        mint_authority: Some(AccountId::new(authority_key)),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::def_key(), &Keys::holder_key()],
-    );
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+fn token_a_failing_credit_rolls_back_the_debit() {
+    let (mut chain, definition, alice, bob) = (Chain::new(), key(1), key(2), key(3));
+    chain.create(&definition, &alice, 1_000, None);
+    chain.initialize(&bob, account(&definition)).expect("init");
 
-    // Seed the authority account so it can sign the revoke
-    state.force_insert_account(Ids::authority(), Accounts::authority_init());
-
-    // Revoke authority
-    let instruction = token_core::Instruction::SetAuthority {
-        new_authority: None,
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition()],
-        vec![Nonce(1)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("AuthCoin"),
-                total_supply: 1_000_000_u128,
-                metadata_id: None,
-                authority: None,
-            }),
-            nonce: Nonce(2),
-        }
+    let result = chain.submit(
+        account(&alice),
+        &[account(&alice), account(&bob)],
+        &[&alice],
+        &Message::Transfer {
+            to: account(&bob),
+            amount: 1_001,
+        },
     );
+
+    assert_refused(&result, "insufficient balance");
+    assert_eq!(chain.balance(account(&alice)), 1_000);
+    assert_eq!(chain.balance(account(&bob)), 0);
 }
 
-/// After the authority is rotated to an external key, that external key can rotate
-/// or revoke again via `SetAuthorityWithAuthority` — signing as a distinct authority
-/// account while the definition account does not sign.
+/// The same code deployed twice is two programs: the copy's definition is not a definition
+/// to the original, so it cannot back a holding of it.
 #[test]
-fn token_set_authority_with_authority_revokes() {
-    let mut state = V03State::new();
-    deploy_token(&mut state);
+fn token_a_definition_of_another_deployment_is_not_a_definition() {
+    let ((mut chain, copy), definition, mallory, bob) =
+        (Chain::with_copy(), key(5), key(6), key(3));
+    chain
+        .submit_to(
+            copy,
+            account(&definition),
+            &[account(&definition), account(&mallory)],
+            &[&definition, &mallory],
+            &Message::NewDefinition {
+                name: "Copy".to_owned(),
+                total_supply: 1_000,
+                mint_authority: None,
+                holding: account(&mallory),
+            },
+        )
+        .expect("the copy creates its own token");
 
-    // Create with self-authority (definition is the initial mint authority).
-    let instruction = token_core::Instruction::NewFungibleDefinition {
-        name: String::from("RotCoin"),
-        total_supply: 1_000_000_u128,
-        mint_authority: Some(Ids::token_definition()),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::def_key(), &Keys::holder_key()],
-    );
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
+    let result = chain.initialize(&bob, account(&definition));
 
-    // Rotate to the external authority via self-authority (def_key signs).
-    let instruction = token_core::Instruction::SetAuthority {
-        new_authority: Some(Ids::authority()),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition()],
-        vec![Nonce(1)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    // Seed the external authority so it can sign.
-    state.force_insert_account(Ids::authority(), Accounts::authority_init());
-
-    // The external authority revokes via SetAuthorityWithAuthority. Accounts:
-    // [definition, authority]; only the authority signs.
-    let instruction = token_core::Instruction::SetAuthorityWithAuthority {
-        new_authority: None,
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::authority()],
-        vec![Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    let def = state.get_account_by_id(Ids::token_definition());
-    let stored = match TokenDefinition::try_from(&def.data).unwrap() {
-        TokenDefinition::Fungible { authority, .. } => authority,
-        _ => None,
-    };
-    assert_eq!(stored, None, "authority must be permanently revoked");
+    assert_refused(&result, "receiver is not a token definition");
+    assert_eq!(chain.token_state(account(&bob)), None);
 }
 
-/// Integration test for RFP-001 authority rotation flow:
-/// 1. Create a token where `Ids::token_definition()` is the initial mint authority
-///    (self-authority).
-/// 2. Rotate the mint authority to `Ids::authority()` (an external key).
-/// 3. Verify that the new external authority can mint by presenting itself as a rest account.
-/// 4. Verify that the OLD authority (def key) can no longer mint after rotation.
+/// A holding under the copy is no holding to the original: a transfer to it is refused.
 #[test]
-fn token_rotate_authority_then_new_authority_can_mint() {
-    let mut state = V03State::new();
-    deploy_token(&mut state);
+fn token_a_holding_of_another_deployment_cannot_receive() {
+    let ((mut chain, copy), definition, alice, copy_definition, bob) =
+        (Chain::with_copy(), key(1), key(2), key(5), key(3));
+    chain.create(&definition, &alice, 1_000, None);
+    chain
+        .submit_to(
+            copy,
+            account(&copy_definition),
+            &[account(&copy_definition), account(&bob)],
+            &[&copy_definition, &bob],
+            &Message::NewDefinition {
+                name: "Copy".to_owned(),
+                total_supply: 1_000,
+                mint_authority: None,
+                holding: account(&bob),
+            },
+        )
+        .expect("bob holds the copy's token");
 
-    let authority_key: [u8; 32] = Ids::authority()
-        .as_ref()
-        .try_into()
-        .expect("AccountId is always 32 bytes");
-
-    // Step 1: Create token with self-authority (def account is initial mint authority).
-    let instruction = token_core::Instruction::NewFungibleDefinition {
-        name: String::from("RotCoin"),
-        total_supply: 1_000_000_u128,
-        mint_authority: Some(AccountId::new(
-            Ids::token_definition()
-                .as_ref()
-                .try_into()
-                .expect("AccountId is always 32 bytes"),
-        )),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::def_key(), &Keys::holder_key()],
-    );
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    // Step 2: Rotate mint authority from def_key to Ids::authority() (external key).
-    // Self-authority path: no rest accounts; def_key signs.
-    let instruction = token_core::Instruction::SetAuthority {
-        new_authority: Some(AccountId::new(authority_key)),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition()],
-        vec![Nonce(1)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    // Verify the authority slot now holds Ids::authority().
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("RotCoin"),
-                total_supply: 1_000_000_u128,
-                metadata_id: None,
-                authority: Some(AccountId::new(authority_key)),
-            }),
-            nonce: Nonce(2),
-        }
+    let result = chain.submit(
+        account(&alice),
+        &[account(&alice), account(&bob)],
+        &[&alice],
+        &Message::Transfer {
+            to: account(&bob),
+            amount: 300,
+        },
     );
 
-    // Seed the external authority account and the holder so they exist in state.
-    state.force_insert_account(Ids::authority(), Accounts::authority_init());
-    state.force_insert_account(Ids::holder(), Accounts::holder_init());
-
-    // Step 3: New external authority mints via MintWithAuthority, signing as a
-    // distinct authority account. Accounts: [definition, holder, authority].
-    let instruction = token_core::Instruction::MintWithAuthority {
-        amount_to_mint: 500_000_u128,
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder(), Ids::authority()],
-        vec![Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set =
-        public_transaction::WitnessSet::for_message(&message, &[&Keys::authority_key()]);
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    // Verify total_supply increased and holder balance reflects the mint.
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("RotCoin"),
-                total_supply: 1_500_000_u128,
-                metadata_id: None,
-                authority: Some(AccountId::new(authority_key)),
-            }),
-            nonce: Nonce(2),
-        }
+    assert_refused(
+        &result,
+        "recipient has no token holding; initialize it first",
     );
-    assert_eq!(
-        state.get_account_by_id(Ids::holder()),
-        Accounts::token_holding(1_500_000_u128, Nonce(0))
-    );
-
-    // Step 4: OLD authority (def_key self-authority path) must be rejected after rotation.
-    let instruction = token_core::Instruction::Mint {
-        amount_to_mint: 1_u128,
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
-        vec![Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::def_key()]);
-    let tx = PublicTransaction::new(message, witness_set);
-    let result = state.transition_from_public_transaction(&tx, 0, 0);
-    assert!(
-        result.is_err(),
-        "Old authority must be rejected after rotation"
-    );
+    assert_eq!(chain.balance(account(&alice)), 1_000);
+    assert!(matches!(
+        chain.token_state_in(copy, account(&bob)),
+        Some(TokenState::Holding(TokenHolding { balance: 1_000, .. }))
+    ));
 }
 
+/// A root call has no sender, so there is nobody to reply to.
 #[test]
-fn token_mint_with_authority_to_private_holding() {
-    let mut state = V03State::new();
-    deploy_token(&mut state);
+fn token_read_state_as_a_root_call_fails() {
+    let (mut chain, definition, alice) = (Chain::new(), key(1), key(2));
+    chain.create(&definition, &alice, 1_000, None);
 
-    let authority_key: [u8; 32] = Ids::authority()
-        .as_ref()
-        .try_into()
-        .expect("AccountId is always 32 bytes");
-
-    // Create the definition with an external mint authority from the start — the rotation
-    // dance itself is already covered by `token_rotate_authority_then_new_authority_can_mint`.
-    let instruction = token_core::Instruction::NewFungibleDefinition {
-        name: String::from("Gold"),
-        total_supply: 1_000_000_u128,
-        mint_authority: Some(AccountId::new(authority_key)),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![Ids::token_definition(), Ids::holder()],
-        vec![Nonce(0), Nonce(0)],
-        instruction,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::def_key(), &Keys::holder_key()],
-    );
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, 0, 0).unwrap();
-
-    state.force_insert_account(Ids::authority(), Accounts::authority_init());
-
-    let amount_to_mint = 500_000_u128;
-    let recipient_npk = PrivateKeys::recipient_npk();
-    let recipient_vpk = PrivateKeys::recipient_vpk();
-    let recipient_id = PrivateKeys::recipient_id();
-
-    // Definition is `#[account(mut)]` only under external authority — it does not itself
-    // authorize the mint, so it goes in as an ordinary (unauthorized) public account.
-    let definition_pre = AccountWithMetadata::new(
-        state.get_account_by_id(Ids::token_definition()),
-        false,
-        Ids::token_definition(),
-    );
-    let recipient_pre = AccountWithMetadata::new(Account::default(), false, recipient_id);
-    let authority_account = state.get_account_by_id(Ids::authority());
-    let authority_nonce = authority_account.nonce;
-    let authority_pre = AccountWithMetadata::new(authority_account, true, Ids::authority());
-
-    let instruction = token_core::Instruction::MintWithAuthority { amount_to_mint };
-    let (output, proof) = execute_and_prove(
-        vec![definition_pre, recipient_pre, authority_pre],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(recipient_npk, &recipient_vpk, state.commitment_root()),
-            InputAccountIdentity::Public,
-        ],
-        &token_program().into(),
-    )
-    .unwrap();
-
-    // `public_account_ids` carries every public account for post-state zipping (definition,
-    // then authority — their `execute_and_prove` input order); `nonces` carries only the
-    // signer(s), positionally matched to the witness keys below (just `authority` here).
-    let message = Message::from_circuit_output(vec![authority_nonce], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::authority_key()]);
-    let tx = PrivacyPreservingTransaction::new(message, witness_set);
-    state
-        .transition_from_privacy_preserving_transaction(&tx, 0, 0)
-        .unwrap();
-
-    assert_eq!(
-        state.get_account_by_id(Ids::token_definition()),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: 1_000_000_u128 + amount_to_mint,
-                metadata_id: None,
-                authority: Some(AccountId::new(authority_key)),
-            }),
-            nonce: Nonce(1),
-        }
+    let result = chain.submit(
+        account(&alice),
+        &[account(&alice)],
+        &[],
+        &Message::ReadState,
     );
 
-    let recipient_account = Accounts::token_holding(
-        amount_to_mint,
-        Nonce::private_account_nonce_init(&recipient_id),
-    );
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&recipient_id, &recipient_account))
-        .is_some());
+    assert_refused(&result, "ReadState needs a sender to reply to");
 }

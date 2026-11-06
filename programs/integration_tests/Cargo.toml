@@ -2,24 +2,20 @@
 name = "integration_tests"
 version = "0.1.0"
 edition = "2021"
+# Each program's test file returns as a target with its port to the actor model
+# (docs/lez-actor-model-upgrade-plan.md §5); until then it stays in tests/ unbuilt.
+autotests = false
 
 [lints]
 workspace = true
 
+[[test]]
+name = "token"
+path = "tests/token.rs"
+
 [dependencies]
+borsh = { workspace = true }
 lee = { workspace = true }
 lee_core = { workspace = true, features = ["host", "test_utils"] }
-clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2" }
-key_protocol = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2" }
-amm_core = { workspace = true }
 token_core = { workspace = true }
-ata_core = { workspace = true }
-stablecoin_core = { workspace = true }
-twap_oracle_core = { workspace = true }
-token_mint_authority_core = { workspace = true }
 token-methods = { path = "../token/methods" }
-amm-methods = { path = "../amm/methods" }
-ata-methods = { path = "../ata/methods" }
-stablecoin-methods = { path = "../stablecoin/methods" }
-twap-oracle-methods = { path = "../twap_oracle/methods" }
-token-mint-authority-methods = { path = "../token_mint_authority/methods" }

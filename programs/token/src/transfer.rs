@@ -1,117 +1,265 @@
+//! `Transfer`: the sender debits itself and credits the recipient asynchronously. The credit
+//! carries no authorization (a seed grant on the sender stays behind), and for a private
+//! recipient later it can wait in the mailbox (`token.md` §3.5).
+
 use lee_core::{
-    account::{Account, AccountWithMetadata, BalanceDiff, Data},
-    program::AccountStateDiff,
+    account::{AccountId, Actor},
+    program::{ReceiveInput, Response},
 };
-use token_core::TokenHolding;
+use token_core::{
+    event::{TokenEvent as _, Transferred},
+    Internal, TokenState,
+};
 
-pub fn transfer(
-    sender: AccountWithMetadata,
-    recipient: AccountWithMetadata,
-    balance_to_move: u128,
-) -> Vec<AccountStateDiff> {
-    assert!(sender.is_authorized, "Sender authorization is missing");
+use crate::{holding_state, token_actor};
 
-    let mut sender_holding =
-        TokenHolding::try_from(&sender.account.data).expect("Invalid sender data");
-
-    let mut recipient_holding = if recipient.account == Account::default() {
-        TokenHolding::zeroized_clone_from(&sender_holding)
-    } else {
-        TokenHolding::try_from(&recipient.account.data).expect("Invalid recipient data")
-    };
-
-    assert_eq!(
-        sender_holding.definition_id(),
-        recipient_holding.definition_id(),
-        "Sender and recipient definition id mismatch"
+/// At the sender's holding.
+pub(crate) fn transfer(input: &ReceiveInput, to: AccountId, amount: u128) -> Response {
+    assert!(
+        input.is_authorized,
+        "sender holding must authorize the transfer"
     );
+    let mut holding = holding_state(input);
+    holding.balance = holding
+        .balance
+        .checked_sub(amount)
+        .expect("insufficient balance");
+    let definition = holding.definition_id;
+    Response::set_state(TokenState::Holding(holding).encode()).send_async(
+        token_actor(input, to),
+        &Internal::IncreaseBalance { definition, amount },
+    )
+}
 
-    match (&mut sender_holding, &mut recipient_holding) {
-        (
-            TokenHolding::Fungible {
-                definition_id: _,
-                balance: sender_balance,
-            },
-            TokenHolding::Fungible {
-                definition_id: _,
-                balance: recipient_balance,
-            },
-        ) => {
-            *sender_balance = sender_balance
-                .checked_sub(balance_to_move)
-                .expect("Insufficient balance");
-
-            *recipient_balance = recipient_balance
-                .checked_add(balance_to_move)
-                .expect("Recipient balance overflow");
-        }
-        (
-            TokenHolding::NftMaster {
-                definition_id: _,
-                print_balance: sender_print_balance,
-            },
-            TokenHolding::NftMaster {
-                definition_id: _,
-                print_balance: recipient_print_balance,
-            },
-        ) => {
-            assert_eq!(
-                *recipient_print_balance, 0,
-                "Invalid balance in recipient account for NFT transfer"
-            );
-
-            assert_eq!(
-                *sender_print_balance, balance_to_move,
-                "Invalid balance for NFT Master transfer"
-            );
-
-            std::mem::swap(sender_print_balance, recipient_print_balance);
-        }
-        (
-            TokenHolding::NftPrintedCopy {
-                definition_id: _,
-                owned: sender_owned,
-            },
-            TokenHolding::NftPrintedCopy {
-                definition_id: _,
-                owned: recipient_owned,
-            },
-        ) => {
-            assert_eq!(
-                balance_to_move, 1,
-                "Invalid balance for NFT Printed Copy transfer"
-            );
-
-            assert!(*sender_owned, "Sender does not own the NFT Printed Copy");
-
-            assert!(
-                !*recipient_owned,
-                "Recipient already owns the NFT Printed Copy"
-            );
-
-            *sender_owned = false;
-            *recipient_owned = true;
-        }
-        _ => {
-            panic!("Mismatched token holding types for transfer");
-        }
+/// At the recipient, for a transfer or a mint. Lands only on an existing holding of the same
+/// definition, so nobody can occupy an account's token actor with a token its owner didn't
+/// choose (`token.md` §3.7).
+pub(crate) fn increase_balance(
+    input: &ReceiveInput,
+    from: Actor,
+    definition: AccountId,
+    amount: u128,
+) -> Response {
+    let mut holding = match TokenState::decode(&input.pre_state) {
+        Some(TokenState::Holding(holding)) => holding,
+        None => panic!("recipient has no token holding; initialize it first"),
+        Some(TokenState::Definition(_)) => panic!("recipient is a token definition"),
     };
+    assert!(
+        holding.definition_id == definition,
+        "recipient holds another token"
+    );
+    holding.balance = holding
+        .balance
+        .checked_add(amount)
+        .expect("balance overflow");
 
-    // Deliberately no `is_authorized` check on an uninitialized recipient: crediting a
-    // recipient who has not participated is a supported flow (see the private foreign-init
-    // path, where the recipient is known only by `npk`/`vpk`). v0.2.4 expressed the claim as
-    // `Claim::Authorized`, but logos-execution-zone PR #621 made foreign-init pre-states carry
-    // `is_authorized = true` as a circuit artifact rather than as recipient consent, so that
-    // claim never actually gated this path. v0.2.5 makes it honest — `is_authorized` now
-    // matches whether a credential was supplied — and acquires ownership on any data write.
-    // A guard here cannot distinguish an unauthorized public recipient from a legitimate
-    // private foreign init, so squatting on unowned accounts is the runtime's to prevent.
-    vec![
-        AccountStateDiff::new(sender, BalanceDiff::Add(0), Data::from(&sender_holding)),
-        AccountStateDiff::new(
-            recipient,
-            BalanceDiff::Add(0),
-            Data::from(&recipient_holding),
-        ),
-    ]
+    let response = Response::set_state(TokenState::Holding(holding).encode());
+    // A credit from the definition is a mint, which the definition announced as `Minted`.
+    if from.account_id == definition {
+        return response;
+    }
+    response.event(
+        Transferred {
+            definition,
+            from: from.account_id,
+            to: input.receiver.account_id,
+            amount,
+        }
+        .to_program_event(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    mod transfer {
+        use crate::test_utils::*;
+
+        fn message(amount: u128) -> Message {
+            Message::Transfer {
+                to: RECIPIENT,
+                amount,
+            }
+        }
+
+        #[test]
+        fn debits_and_credits_the_recipient_async() {
+            let response = run(
+                HOLDING,
+                None,
+                true,
+                Some(&holding(DEFINITION, 100)),
+                &message(40),
+            );
+            let expected = write(&holding(DEFINITION, 60)).send_async(
+                token(RECIPIENT),
+                &Internal::IncreaseBalance {
+                    definition: DEFINITION,
+                    amount: 40,
+                },
+            );
+            assert_eq!(response, expected);
+            assert!(
+                response.sync_messages.is_empty(),
+                "no grant may travel with the credit"
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "sender holding must authorize the transfer")]
+        fn refuses_an_unauthorized_sender() {
+            let _ = run(
+                HOLDING,
+                None,
+                false,
+                Some(&holding(DEFINITION, 100)),
+                &message(40),
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "insufficient balance")]
+        fn refuses_more_than_the_balance() {
+            let _ = run(
+                HOLDING,
+                None,
+                true,
+                Some(&holding(DEFINITION, 100)),
+                &message(101),
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "receiver is not a token holding")]
+        fn fails_at_a_definition() {
+            let _ = run(
+                DEFINITION,
+                None,
+                true,
+                Some(&definition(100, None)),
+                &message(1),
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "receiver is not a token holding")]
+        fn fails_at_an_empty_actor() {
+            let _ = run(HOLDING, None, true, None, &message(1));
+        }
+    }
+
+    mod increase_balance {
+        use crate::test_utils::*;
+
+        fn message(definition: AccountId, amount: u128) -> Internal {
+            Internal::IncreaseBalance { definition, amount }
+        }
+
+        fn transferred(amount: u128) -> ProgramEvent {
+            Transferred {
+                definition: DEFINITION,
+                from: HOLDING,
+                to: RECIPIENT,
+                amount,
+            }
+            .to_program_event()
+        }
+
+        #[test]
+        fn credits_an_existing_holding() {
+            let response = run(
+                RECIPIENT,
+                Some(token(HOLDING)),
+                false,
+                Some(&holding(DEFINITION, 5)),
+                &message(DEFINITION, 40),
+            );
+            assert_eq!(
+                response,
+                write(&holding(DEFINITION, 45)).event(transferred(40))
+            );
+        }
+
+        /// A mint: the definition already announced it as `Minted`.
+        #[test]
+        fn a_credit_from_the_definition_emits_no_transfer() {
+            let response = run(
+                RECIPIENT,
+                Some(token(DEFINITION)),
+                false,
+                Some(&holding(DEFINITION, 5)),
+                &message(DEFINITION, 40),
+            );
+            assert_eq!(response, write(&holding(DEFINITION, 45)));
+        }
+
+        #[test]
+        #[should_panic(expected = "recipient has no token holding; initialize it first")]
+        fn refuses_an_empty_recipient() {
+            let _ = run(
+                RECIPIENT,
+                Some(token(HOLDING)),
+                false,
+                None,
+                &message(DEFINITION, 40),
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "recipient holds another token")]
+        fn refuses_a_holding_of_another_definition() {
+            let _ = run(
+                RECIPIENT,
+                Some(token(HOLDING)),
+                false,
+                Some(&holding(OTHER_DEFINITION, 0)),
+                &message(DEFINITION, 40),
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "recipient is a token definition")]
+        fn refuses_a_definition() {
+            let _ = run(
+                OTHER_DEFINITION,
+                Some(token(HOLDING)),
+                false,
+                Some(&definition(0, None)),
+                &message(DEFINITION, 40),
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "balance overflow")]
+        fn refuses_an_overflow() {
+            let _ = run(
+                RECIPIENT,
+                Some(token(HOLDING)),
+                false,
+                Some(&holding(DEFINITION, u128::MAX)),
+                &message(DEFINITION, 1),
+            );
+        }
+
+        /// Supply conservation (`token.md` §3.3): outside programs can't get a credit decoded.
+        #[test]
+        fn is_never_decoded_from_an_outside_program() {
+            let result = std::panic::catch_unwind(|| {
+                run(
+                    RECIPIENT,
+                    Some(outsider(HOLDING)),
+                    true,
+                    Some(&holding(DEFINITION, 0)),
+                    &message(DEFINITION, 40),
+                )
+            });
+            if let Ok(response) = result {
+                assert_ne!(
+                    response.post_state,
+                    Some(ActorState::from(holding(DEFINITION, 40).encode())),
+                    "an outside program must not be able to credit a holding"
+                );
+            }
+        }
+    }
 }
