@@ -1,316 +1,128 @@
-//! This crate contains core data structures and utilities for the Token Program.
+//! Core types for the fungible Token Program: actor state, messages and events.
+//!
+//! Design: `docs/actor-model/token.md`.
+//!
+//! State and messages outlive code (state stays on accounts, async messages in mailboxes),
+//! and Borsh encodes an enum variant as a leading tag byte. Every enum here is therefore
+//! append-only: a changed layout is a new variant, never an edit of an existing one.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use lee_core::account::{AccountId, Data};
+use lee_core::account::AccountId;
 use serde::{Deserialize, Serialize};
-use spel_framework_macros::account_type;
 
-/// Token Program Instruction.
+pub mod event;
+
+/// Longest token name, in bytes of UTF-8. Every later message to a definition loads it.
+pub const MAX_NAME_LEN: usize = 64;
+
+/// The token program's state on one account: a definition or a holding.
 ///
-/// Borsh is the instruction wire format LEZ reads, and deliberately the *only* encoding
-/// this type derives.
-///
-/// `#[lez_program]` generates its guest-side counterpart with serde derives alongside
-/// Borsh, "for IDL/tooling". Nothing uses them: `idl-gen` parses the guest source, the
-/// framework's runtime IDL path deserializes its own types, and `spel-cli` encodes Borsh
-/// straight from the IDL. Carrying them here would only mean a type that accepts either
-/// encoder, which is how the v0.2.5 port silently rotted every instruction-encoding site in
-/// `modules/*/ffi` -- `risc0_zkvm::serde::to_vec` kept compiling and kept producing bytes
-/// the runtime rejects. Without a serde impl that is a compile error instead.
-///
-/// Account-data types below keep serde; the FFI renders them as JSON. This applies to the
-/// instruction enum alone.
-///
-/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
-/// inserting one shifts the encoding of every variant after it.
-#[derive(BorshSerialize, BorshDeserialize)]
-pub enum Instruction {
-    /// Transfer tokens from sender to recipient.
-    ///
-    /// Required accounts:
-    /// - Sender's Token Holding account (initialized, authorized),
-    /// - Recipient's Token Holding account (initialized, or uninitialized with recipient
-    ///   authorization in the same transaction).
-    Transfer { amount_to_transfer: u128 },
-
-    /// Create a new fungible token definition without metadata.
-    ///
-    /// `mint_authority` decides the supply model:
-    /// - `Some(id)` — `id` may mint additional supply and rotate/renounce the authority,
-    /// - `None` — supply is permanently fixed at `total_supply`.
-    ///
-    /// Required accounts:
-    /// - Token Definition account (uninitialized, authorized),
-    /// - Token Holding account (uninitialized, authorized).
-    NewFungibleDefinition {
-        name: String,
-        total_supply: u128,
-        mint_authority: Option<AccountId>,
-    },
-
-    /// Create a new fungible or non-fungible token definition with metadata.
-    ///
-    /// Required accounts:
-    /// - Token Definition account (uninitialized, authorized),
-    /// - Token Holding account (uninitialized, authorized),
-    /// - Token Metadata account (uninitialized, authorized).
-    NewDefinitionWithMetadata {
-        new_definition: NewTokenDefinition,
-        /// Boxed to avoid large enum variant size
-        metadata: Box<NewTokenMetadata>,
-    },
-
-    /// Initialize a token holding account for a given token definition.
-    ///
-    /// Required accounts:
-    /// - Token Definition account (initialized),
-    /// - Token Holding account (uninitialized, authorized),
-    InitializeAccount,
-
-    /// Burn tokens from the holder's account.
-    ///
-    /// Required accounts:
-    /// - Token Definition account (initialized),
-    /// - Token Holding account (authorized).
-    Burn { amount_to_burn: u128 },
-
-    /// Mint new tokens to the holder's account under **self/PDA authority**: the
-    /// Token Definition account itself is the current mint authority and must be
-    /// authorized in this transaction (signer, or a PDA authorized under its
-    /// seeds). A definition with no authority has a fixed supply and rejects
-    /// minting.
-    ///
-    /// Required accounts:
-    /// - Token Definition account (initialized, authorized as the current mint authority),
-    /// - Token Holding account (uninitialized or authorized and initialized).
-    Mint { amount_to_mint: u128 },
-
-    /// Mint new tokens under an **external authority**: a distinct authority
-    /// account (the account the mint authority was rotated to) authorizes the
-    /// mint by signing, while the Token Definition account is mutated but does
-    /// not sign. Its account id must match the definition's stored authority.
-    ///
-    /// Required accounts:
-    /// - Token Definition account (initialized),
-    /// - Token Holding account (uninitialized or authorized and initialized),
-    /// - Authority account (authorized as the current mint authority).
-    MintWithAuthority { amount_to_mint: u128 },
-
-    /// Print a new NFT from the master copy.
-    ///
-    /// Required accounts:
-    /// - NFT Master Token Holding account (authorized),
-    /// - NFT Printed Copy Token Holding account (uninitialized, authorized).
-    PrintNft,
-
-    /// Rotate or renounce the mint authority under **self/PDA authority**: the
-    /// Token Definition account itself is the current authority and must be
-    /// authorized in this transaction. Pass `new_authority: None` to permanently
-    /// renounce minting (fixed supply).
-    ///
-    /// Required accounts:
-    /// - Token Definition account (initialized, authorized as the current mint authority).
-    SetAuthority { new_authority: Option<AccountId> },
-
-    /// Rotate or renounce the mint authority under an **external authority**: a
-    /// distinct authority account (the account the authority was rotated to)
-    /// authorizes the change by signing, while the Token Definition account is
-    /// mutated but does not sign. Pass `new_authority: None` to permanently renounce.
-    ///
-    /// Required accounts:
-    /// - Token Definition account (initialized),
-    /// - Authority account (authorized as the current mint authority).
-    SetAuthorityWithAuthority { new_authority: Option<AccountId> },
+/// An empty actor state means "nothing here yet" and is not a `TokenState`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub enum TokenState {
+    Definition(TokenDefinition),
+    Holding(TokenHolding),
 }
 
-#[derive(Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub enum NewTokenDefinition {
-    Fungible {
-        name: String,
-        total_supply: u128,
-        /// Mint authority. `Some(id)` makes the token mintable by `id`; `None`
-        /// fixes the supply.
-        mint_authority: Option<AccountId>,
-    },
-    NonFungible {
-        name: String,
-        printable_supply: u128,
-    },
-}
-
-#[account_type]
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub enum TokenDefinition {
-    Fungible {
-        name: String,
-        total_supply: u128,
-        metadata_id: Option<AccountId>,
-        /// Mint authority slot. `Some(id)` may mint and rotate/renounce;
-        /// `None` means the supply is permanently fixed.
-        ///
-        /// Stored directly as `Option<AccountId>` (Borsh-identical to a custom
-        /// authority newtype) so account state stays decodable by `spel inspect`.
-        /// The require/rotate/renounce guard logic lives inline in the `mint` and
-        /// `set_authority` handlers.
-        authority: Option<AccountId>,
-    },
-    NonFungible {
-        name: String,
-        printable_supply: u128,
-        metadata_id: AccountId,
-    },
-}
-
-impl TryFrom<&Data> for TokenDefinition {
-    type Error = std::io::Error;
-
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        TokenDefinition::try_from_slice(data.as_ref())
-    }
-}
-
-impl From<&TokenDefinition> for Data {
-    fn from(definition: &TokenDefinition) -> Self {
-        // Using size_of_val as size hint for Vec allocation
-        let mut data = Vec::with_capacity(std::mem::size_of_val(definition));
-
-        BorshSerialize::serialize(definition, &mut data)
-            .expect("Serialization to Vec should not fail");
-
-        Data::try_from(data).expect("Token definition encoded data should fit into Data")
-    }
-}
-
-#[account_type]
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub enum TokenHolding {
-    Fungible {
-        definition_id: AccountId,
-        balance: u128,
-    },
-    NftMaster {
-        definition_id: AccountId,
-        /// The amount of printed copies left - 1 (1 reserved for master copy itself).
-        print_balance: u128,
-    },
-    NftPrintedCopy {
-        definition_id: AccountId,
-        /// Whether nft is owned by the holder.
-        owned: bool,
-    },
-}
-
-impl TokenHolding {
-    pub fn zeroized_clone_from(other: &Self) -> Self {
-        match other {
-            TokenHolding::Fungible { definition_id, .. } => TokenHolding::Fungible {
-                definition_id: *definition_id,
-                balance: 0,
-            },
-            TokenHolding::NftMaster { definition_id, .. } => TokenHolding::NftMaster {
-                definition_id: *definition_id,
-                print_balance: 0,
-            },
-            TokenHolding::NftPrintedCopy { definition_id, .. } => TokenHolding::NftPrintedCopy {
-                definition_id: *definition_id,
-                owned: false,
-            },
+impl TokenState {
+    /// Decodes an actor state; `None` for an empty one.
+    ///
+    /// # Panics
+    /// If the bytes are not a `TokenState`. Only token code writes token actor state.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.is_empty() {
+            return None;
         }
+        Some(borsh::from_slice(bytes).expect("token actor state must decode"))
     }
 
-    pub fn zeroized_from_definition(
-        definition_id: AccountId,
-        definition: &TokenDefinition,
-    ) -> Self {
-        match definition {
-            TokenDefinition::Fungible { .. } => TokenHolding::Fungible {
-                definition_id,
-                balance: 0,
-            },
-            TokenDefinition::NonFungible { .. } => TokenHolding::NftPrintedCopy {
-                definition_id,
-                owned: false,
-            },
-        }
-    }
-
-    pub fn definition_id(&self) -> AccountId {
-        match self {
-            TokenHolding::Fungible { definition_id, .. } => *definition_id,
-            TokenHolding::NftMaster { definition_id, .. } => *definition_id,
-            TokenHolding::NftPrintedCopy { definition_id, .. } => *definition_id,
-        }
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        borsh::to_vec(self).expect("borsh serialization is infallible")
     }
 }
 
-impl TryFrom<&Data> for TokenHolding {
-    type Error = std::io::Error;
-
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        TokenHolding::try_from_slice(data.as_ref())
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct TokenDefinition {
+    pub name: String,
+    pub total_supply: u128,
+    /// `Some(id)` may mint and rotate or renounce the authority; `None` fixes the supply.
+    pub authority: Option<AccountId>,
 }
 
-impl From<&TokenHolding> for Data {
-    fn from(holding: &TokenHolding) -> Self {
-        // Using size_of_val as size hint for Vec allocation
-        let mut data = Vec::with_capacity(std::mem::size_of_val(holding));
-
-        BorshSerialize::serialize(holding, &mut data)
-            .expect("Serialization to Vec should not fail");
-
-        Data::try_from(data).expect("Token holding encoded data should fit into Data")
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub struct NewTokenMetadata {
-    /// Metadata standard.
-    pub standard: MetadataStandard,
-    /// Pointer to off-chain metadata
-    pub uri: String,
-    /// Creators of the token.
-    pub creators: String,
-}
-
-#[account_type]
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub struct TokenMetadata {
-    /// Token Definition account id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct TokenHolding {
     pub definition_id: AccountId,
-    /// Metadata standard .
-    pub standard: MetadataStandard,
-    /// Pointer to off-chain metadata.
-    pub uri: String,
-    /// Creators of the token.
-    pub creators: String,
-    /// Block id of primary sale.
-    pub primary_sale_date: u64,
+    pub balance: u128,
 }
 
-/// Metadata standard defining the expected format of JSON located off-chain.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub enum MetadataStandard {
-    Simple,
-    Expanded,
+/// Messages anyone may send: a transaction author or another program.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Message {
+    /// Create a fungible token.
+    ///
+    /// Sent to the empty definition actor, which must be authorized. The initial supply
+    /// goes to `holding`, which must be empty and authorized too.
+    NewDefinition {
+        name: String,
+        total_supply: u128,
+        /// `Some(id)` makes the token mintable by `id`; `None` fixes the supply.
+        mint_authority: Option<AccountId>,
+        holding: AccountId,
+    },
+
+    /// Create a zero holding of `definition`.
+    ///
+    /// Sent to the empty, authorized holding actor, which asks the definition to
+    /// initialize it. A holding of the same definition makes this a no-op.
+    InitializeHolding { definition: AccountId },
+
+    /// Move `amount` from the receiving holding (authorized) to the holding at `to`,
+    /// which must already hold the same token.
+    Transfer { to: AccountId, amount: u128 },
+
+    /// Destroy `amount` from the receiving holding (authorized).
+    Burn { amount: u128 },
+
+    /// Mint `amount` of `definition` into the holding at `to`.
+    ///
+    /// Sent to the definition when it is its own authority (and authorized), otherwise to
+    /// the authority's actor (authorized), which forwards it.
+    Mint {
+        definition: AccountId,
+        to: AccountId,
+        amount: u128,
+    },
+
+    /// Rotate (`Some`) or renounce (`None`) the mint authority. Routed like `Mint`.
+    SetAuthority {
+        definition: AccountId,
+        new_authority: Option<AccountId>,
+    },
+
+    /// Reply to the sender with this actor's state, as a `lee_core::program::StateReply`.
+    ReadState,
 }
 
-impl TryFrom<&Data> for TokenMetadata {
-    type Error = std::io::Error;
-
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        TokenMetadata::try_from_slice(data.as_ref())
-    }
-}
-
-impl From<&TokenMetadata> for Data {
-    fn from(metadata: &TokenMetadata) -> Self {
-        // Using size_of_val as size hint for Vec allocation
-        let mut data = Vec::with_capacity(std::mem::size_of_val(metadata));
-
-        BorshSerialize::serialize(metadata, &mut data)
-            .expect("Serialization to Vec should not fail");
-
-        Data::try_from(data).expect("Token metadata encoded data should fit into Data")
-    }
+/// Messages only token actors send each other, named for what they do at the receiver.
+/// The guest decodes these only when the sender is the token program itself, so each is
+/// trusted because only token code can have produced it.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Internal {
+    /// To a holding of `definition`: add `amount`. Sent async by a holding that debited
+    /// the same amount, or by the definition after raising its supply.
+    IncreaseBalance { definition: AccountId, amount: u128 },
+    /// To the definition an empty holding names: reply with `InitHolding` (amount 0).
+    RequestHolding,
+    /// To an empty holding, from its definition: write a holding of `amount`, the initial
+    /// supply at creation or 0 in reply to `RequestHolding`.
+    InitHolding { definition: AccountId, amount: u128 },
+    /// To a holding's own definition, after the holding burned `amount`.
+    DecreaseSupply { amount: u128 },
+    /// To the definition, from its authority's actor: raise the supply by `amount` and
+    /// credit it to `to`.
+    IncreaseSupply { to: AccountId, amount: u128 },
+    /// To the definition, from its authority's actor: rotate or renounce the authority.
+    ChangeAuthority { new_authority: Option<AccountId> },
 }

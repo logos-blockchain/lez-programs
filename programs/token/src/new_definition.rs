@@ -1,175 +1,202 @@
+//! `NewDefinition`: the definition writes itself and initializes the holding of its supply.
+
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::AccountStateDiff,
+    account::AccountId,
+    program::{ReceiveInput, Response},
 };
 use token_core::{
-    NewTokenDefinition, NewTokenMetadata, TokenDefinition, TokenHolding, TokenMetadata,
+    event::{NewDefinition, TokenEvent as _},
+    Internal, TokenDefinition, TokenState, MAX_NAME_LEN,
 };
 
-/// Validate the mint authority for a freshly created fungible definition.
-///
-/// `Some(id)` makes the token mintable by `id`; `None` fixes the supply.
-/// An all-zero authority id is rejected as it cannot be a real signer.
-fn validate_mint_authority(mint_authority: Option<AccountId>) -> Option<AccountId> {
-    if let Some(id) = &mint_authority {
-        assert!(
-            id.value() != &[0u8; 32],
-            "Mint authority must be a valid non-zero account ID"
-        );
-    }
-    mint_authority
-}
+use crate::{assert_not_zero, token_actor};
 
-pub fn new_fungible_definition(
-    definition_target_account: AccountWithMetadata,
-    holding_target_account: AccountWithMetadata,
+/// Any sender: the AMM creates its LP definition on a PDA it authorizes with a seed.
+pub(crate) fn new_definition(
+    input: &ReceiveInput,
     name: String,
     total_supply: u128,
     mint_authority: Option<AccountId>,
-) -> Vec<AccountStateDiff> {
-    assert_eq!(
-        definition_target_account.account,
-        Account::default(),
-        "Definition target account must have default values"
-    );
-
-    assert_eq!(
-        holding_target_account.account,
-        Account::default(),
-        "Holding target account must have default values"
+    holding: AccountId,
+) -> Response {
+    assert!(
+        input.pre_state.is_empty(),
+        "definition account must be empty"
     );
     assert!(
-        definition_target_account.is_authorized,
-        "Definition target account must be authorized"
+        input.is_authorized,
+        "definition account must authorize its creation"
     );
     assert!(
-        holding_target_account.is_authorized,
-        "Holding target account must be authorized"
+        !name.is_empty() && name.len() <= MAX_NAME_LEN,
+        "token name must be 1 to {MAX_NAME_LEN} bytes"
+    );
+    assert_not_zero(mint_authority);
+    let definition = input.receiver.account_id;
+    assert!(
+        holding != definition,
+        "the initial holding must be another account than the definition"
     );
 
-    let token_definition = TokenDefinition::Fungible {
+    let event = NewDefinition {
+        definition,
+        holding,
+        name: name.clone(),
+        total_supply,
+        authority: mint_authority,
+    };
+    let state = TokenState::Definition(TokenDefinition {
         name,
         total_supply,
-        metadata_id: None,
-        authority: validate_mint_authority(mint_authority),
-    };
-    let token_holding = TokenHolding::Fungible {
-        definition_id: definition_target_account.account_id,
-        balance: total_supply,
-    };
-
-    // Both accounts are claimed by these writes. The `is_authorized` asserts above are
-    // now the sole guard — v0.2.5 acquires ownership on a data write and no longer checks
-    // the claim's authorization itself.
-    vec![
-        AccountStateDiff::new(
-            definition_target_account,
-            BalanceDiff::Add(0),
-            Data::from(&token_definition),
-        ),
-        AccountStateDiff::new(
-            holding_target_account,
-            BalanceDiff::Add(0),
-            Data::from(&token_holding),
-        ),
-    ]
+        authority: mint_authority,
+    });
+    Response::set_state(state.encode())
+        .send_sync(
+            token_actor(input, holding),
+            &Internal::InitHolding {
+                definition,
+                amount: total_supply,
+            },
+        )
+        .event(event.to_program_event())
 }
 
-pub fn new_definition_with_metadata(
-    definition_target_account: AccountWithMetadata,
-    holding_target_account: AccountWithMetadata,
-    metadata_target_account: AccountWithMetadata,
-    new_definition: NewTokenDefinition,
-    metadata: NewTokenMetadata,
-) -> Vec<AccountStateDiff> {
-    assert_eq!(
-        definition_target_account.account,
-        Account::default(),
-        "Definition target account must have default values"
-    );
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::*;
 
-    assert_eq!(
-        holding_target_account.account,
-        Account::default(),
-        "Holding target account must have default values"
-    );
-
-    assert_eq!(
-        metadata_target_account.account,
-        Account::default(),
-        "Metadata target account must have default values"
-    );
-    assert!(
-        definition_target_account.is_authorized,
-        "Definition target account must be authorized"
-    );
-    assert!(
-        holding_target_account.is_authorized,
-        "Holding target account must be authorized"
-    );
-    assert!(
-        metadata_target_account.is_authorized,
-        "Metadata target account must be authorized"
-    );
-
-    let (token_definition, token_holding) = match new_definition {
-        NewTokenDefinition::Fungible {
-            name,
-            total_supply,
+    fn message(name: &str, mint_authority: Option<AccountId>, holding: AccountId) -> Message {
+        Message::NewDefinition {
+            name: name.to_owned(),
+            total_supply: 1_000,
             mint_authority,
-        } => (
-            TokenDefinition::Fungible {
-                name,
-                total_supply,
-                metadata_id: Some(metadata_target_account.account_id),
-                authority: validate_mint_authority(mint_authority),
-            },
-            TokenHolding::Fungible {
-                definition_id: definition_target_account.account_id,
-                balance: total_supply,
-            },
-        ),
-        NewTokenDefinition::NonFungible {
-            name,
-            printable_supply,
-        } => (
-            TokenDefinition::NonFungible {
-                name,
-                printable_supply,
-                metadata_id: metadata_target_account.account_id,
-            },
-            TokenHolding::NftMaster {
-                definition_id: definition_target_account.account_id,
-                print_balance: printable_supply,
-            },
-        ),
-    };
+            holding,
+        }
+    }
 
-    let token_metadata = TokenMetadata {
-        definition_id: definition_target_account.account_id,
-        standard: metadata.standard,
-        uri: metadata.uri,
-        creators: metadata.creators,
-        primary_sale_date: 0u64,
-    };
+    #[test]
+    fn writes_the_definition_and_initializes_the_holding_with_the_supply() {
+        let response = run(
+            DEFINITION,
+            None,
+            true,
+            None,
+            &message("Test", Some(AUTHORITY), HOLDING),
+        );
+        let expected = write(&definition(1_000, Some(AUTHORITY)))
+            .send_sync(
+                token(HOLDING),
+                &Internal::InitHolding {
+                    definition: DEFINITION,
+                    amount: 1_000,
+                },
+            )
+            .event(
+                NewDefinition {
+                    definition: DEFINITION,
+                    holding: HOLDING,
+                    name: "Test".to_owned(),
+                    total_supply: 1_000,
+                    authority: Some(AUTHORITY),
+                }
+                .to_program_event(),
+            );
+        assert_eq!(response, expected);
+    }
 
-    // All three accounts are claimed by these writes; the `is_authorized` asserts above
-    // are the sole guard, as v0.2.5 no longer checks a claim's authorization.
-    vec![
-        AccountStateDiff::new(
-            definition_target_account,
-            BalanceDiff::Add(0),
-            Data::from(&token_definition),
-        ),
-        AccountStateDiff::new(
-            holding_target_account,
-            BalanceDiff::Add(0),
-            Data::from(&token_holding),
-        ),
-        AccountStateDiff::new(
-            metadata_target_account,
-            BalanceDiff::Add(0),
-            Data::from(&token_metadata),
-        ),
-    ]
+    /// The AMM creates its LP definition on a PDA it authorizes with a seed.
+    #[test]
+    fn may_be_sent_by_another_program() {
+        let response = run(
+            DEFINITION,
+            Some(outsider(AUTHORITY)),
+            true,
+            None,
+            &message("Test", None, HOLDING),
+        );
+        assert_eq!(
+            response.post_state,
+            Some(ActorState::from(definition(1_000, None).encode()))
+        );
+    }
+
+    #[test]
+    fn accepts_a_name_of_the_maximum_length() {
+        let name = "a".repeat(MAX_NAME_LEN);
+        let response = run(DEFINITION, None, true, None, &message(&name, None, HOLDING));
+        assert!(response.post_state.is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "token name must be 1 to 64 bytes")]
+    fn refuses_an_empty_name() {
+        let _ = run(DEFINITION, None, true, None, &message("", None, HOLDING));
+    }
+
+    #[test]
+    #[should_panic(expected = "token name must be 1 to 64 bytes")]
+    fn refuses_a_name_one_byte_too_long() {
+        let name = "a".repeat(MAX_NAME_LEN + 1);
+        let _ = run(DEFINITION, None, true, None, &message(&name, None, HOLDING));
+    }
+
+    #[test]
+    #[should_panic(expected = "definition account must authorize its creation")]
+    fn refuses_an_unauthorized_definition() {
+        let _ = run(
+            DEFINITION,
+            None,
+            false,
+            None,
+            &message("Test", None, HOLDING),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "definition account must be empty")]
+    fn refuses_an_existing_definition() {
+        let _ = run(
+            DEFINITION,
+            None,
+            true,
+            Some(&definition(1, None)),
+            &message("Test", None, HOLDING),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "definition account must be empty")]
+    fn refuses_an_existing_holding() {
+        let _ = run(
+            DEFINITION,
+            None,
+            true,
+            Some(&holding(OTHER_DEFINITION, 0)),
+            &message("Test", None, HOLDING),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "mint authority must not be the zero account id")]
+    fn refuses_the_zero_account_as_authority() {
+        let _ = run(
+            DEFINITION,
+            None,
+            true,
+            None,
+            &message("Test", Some(ZERO), HOLDING),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "the initial holding must be another account than the definition")]
+    fn refuses_the_definition_as_its_own_holding() {
+        let _ = run(
+            DEFINITION,
+            None,
+            true,
+            None,
+            &message("Test", None, DEFINITION),
+        );
+    }
 }

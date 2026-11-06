@@ -1,98 +1,220 @@
-use lee_core::{
-    account::{AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::AccountStateDiff,
-};
-use token_core::TokenDefinition;
+//! `SetAuthority`: rotate or renounce the mint authority, routed like `Mint`.
 
-/// Rotate or revoke the mint authority under **self/PDA authority**: the definition
-/// account itself is the current authority and proves it by being authorized in this
-/// transaction (a signer, or a PDA authorized under its seeds).
-pub fn set_authority(
-    definition_account: AccountWithMetadata,
+use lee_core::{
+    account::{AccountId, Actor},
+    program::{ReceiveInput, Response},
+};
+use token_core::{
+    event::{AuthorityChanged, TokenEvent as _},
+    Internal, TokenDefinition, TokenState,
+};
+
+use crate::{assert_authority, assert_not_zero, definition_state, forward_as_authority};
+
+/// At the definition (self authority) or at the authority's actor.
+pub(crate) fn set_authority(
+    input: &ReceiveInput,
+    definition: AccountId,
     new_authority: Option<AccountId>,
-    token_program_id: AccountId,
-) -> Vec<AccountStateDiff> {
-    set_authority_inner(definition_account, None, new_authority, token_program_id)
+) -> Response {
+    assert_not_zero(new_authority);
+    if definition == input.receiver.account_id {
+        assert!(
+            input.is_authorized,
+            "definition must authorize changing its own authority"
+        );
+        let state = definition_state(input);
+        assert_authority(&state, definition);
+        replace_authority(input, state, new_authority)
+    } else {
+        forward_as_authority(
+            input,
+            definition,
+            &Internal::ChangeAuthority { new_authority },
+        )
+    }
 }
 
-/// Rotate or revoke the mint authority under an **external authority**: a distinct
-/// account (the account the authority was previously rotated to) proves authority by
-/// signing, so a rotated authority can rotate or revoke again without the definition's
-/// key. The definition account is mutated but does not authorize the change.
-pub fn set_authority_with_authority(
-    definition_account: AccountWithMetadata,
-    authority_account: AccountWithMetadata,
+/// At the definition, from its authority's actor.
+pub(crate) fn change_authority(
+    input: &ReceiveInput,
+    from: Actor,
     new_authority: Option<AccountId>,
-    token_program_id: AccountId,
-) -> Vec<AccountStateDiff> {
-    set_authority_inner(
-        definition_account,
-        Some(authority_account),
-        new_authority,
-        token_program_id,
+) -> Response {
+    assert_not_zero(new_authority);
+    let definition = definition_state(input);
+    assert_authority(&definition, from.account_id);
+    replace_authority(input, definition, new_authority)
+}
+
+fn replace_authority(
+    input: &ReceiveInput,
+    mut definition: TokenDefinition,
+    new_authority: Option<AccountId>,
+) -> Response {
+    let old = definition.authority;
+    definition.authority = new_authority;
+    Response::set_state(TokenState::Definition(definition).encode()).event(
+        AuthorityChanged {
+            definition: input.receiver.account_id,
+            old,
+            new: new_authority,
+        }
+        .to_program_event(),
     )
 }
 
-/// Shared rotation/revocation core for both authority modes. `authority_account` is
-/// the external authority when `Some`; when `None` the definition account itself is
-/// treated as the authority (self/PDA authority). Only mutates state after all checks
-/// pass, so a rejected call leaves the prior authority intact. Post-state order mirrors
-/// the pre-state account order for each mode.
-fn set_authority_inner(
-    definition_account: AccountWithMetadata,
-    authority_account: Option<AccountWithMetadata>,
-    new_authority: Option<AccountId>,
-    token_program_id: AccountId,
-) -> Vec<AccountStateDiff> {
-    assert_eq!(
-        definition_account.account.program_owner, token_program_id,
-        "Token definition must be owned by token program"
-    );
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::*;
 
-    let mut definition = TokenDefinition::try_from(&definition_account.account.data)
-        .expect("Token Definition account must be valid");
-
-    match &mut definition {
-        TokenDefinition::Fungible { authority, .. } => {
-            // The account that proves authority must be authorized AND its id must
-            // match the stored authority. That account is the explicit external
-            // authority when present, otherwise the definition account itself.
-            // `None` means the authority was renounced and can no longer be set.
-            let current = authority.expect("SetAuthority failed: authority already revoked");
-            let authority_ref = authority_account.as_ref().unwrap_or(&definition_account);
-            assert!(
-                authority_ref.is_authorized,
-                "Mint authority must authorize the transaction"
-            );
-            assert_eq!(
-                authority_ref.account_id, current,
-                "SetAuthority failed: signer is not the current authority"
-            );
-
-            if let Some(new) = &new_authority {
-                assert!(
-                    new.value() != &[0u8; 32],
-                    "New mint authority must be a valid non-zero account ID"
-                );
-            }
-            // Rotate to the new authority, or renounce with `None`.
-            *authority = new_authority;
-        }
-        TokenDefinition::NonFungible { .. } => {
-            panic!("SetAuthority is not supported for Non-Fungible Tokens");
+    fn message(new_authority: Option<AccountId>) -> Message {
+        Message::SetAuthority {
+            definition: DEFINITION,
+            new_authority,
         }
     }
 
-    // Diffs must match pre-state order and count: [definition] for self
-    // authority, plus the read-only authority account when external.
-    let mut state_diffs = Vec::with_capacity(2);
-    state_diffs.push(AccountStateDiff::new(
-        definition_account,
-        BalanceDiff::Add(0),
-        Data::from(&definition),
-    ));
-    if let Some(authority) = authority_account {
-        state_diffs.push(AccountStateDiff::unchanged(authority));
+    fn changed(old: Option<AccountId>, new: Option<AccountId>) -> ProgramEvent {
+        AuthorityChanged {
+            definition: DEFINITION,
+            old,
+            new,
+        }
+        .to_program_event()
     }
-    state_diffs
+
+    #[test]
+    fn a_self_authority_definition_rotates() {
+        let response = run(
+            DEFINITION,
+            None,
+            true,
+            Some(&definition(1, Some(DEFINITION))),
+            &message(Some(NEW_AUTHORITY)),
+        );
+        assert_eq!(
+            response,
+            write(&definition(1, Some(NEW_AUTHORITY)))
+                .event(changed(Some(DEFINITION), Some(NEW_AUTHORITY)))
+        );
+    }
+
+    #[test]
+    fn a_self_authority_definition_renounces() {
+        let response = run(
+            DEFINITION,
+            None,
+            true,
+            Some(&definition(1, Some(DEFINITION))),
+            &message(None),
+        );
+        assert_eq!(
+            response,
+            write(&definition(1, None)).event(changed(Some(DEFINITION), None))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "definition must authorize changing its own authority")]
+    fn a_self_authority_definition_must_be_authorized() {
+        let _ = run(
+            DEFINITION,
+            None,
+            false,
+            Some(&definition(1, Some(DEFINITION))),
+            &message(None),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "mint authority is renounced")]
+    fn a_renounced_authority_is_final() {
+        let _ = run(
+            DEFINITION,
+            None,
+            true,
+            Some(&definition(1, None)),
+            &message(Some(DEFINITION)),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "mint authority must not be the zero account id")]
+    fn refuses_the_zero_account() {
+        let _ = run(
+            DEFINITION,
+            None,
+            true,
+            Some(&definition(1, Some(DEFINITION))),
+            &message(Some(ZERO)),
+        );
+    }
+
+    #[test]
+    fn the_authority_actor_forwards() {
+        let response = run(AUTHORITY, None, true, None, &message(Some(NEW_AUTHORITY)));
+        assert_eq!(
+            response,
+            Response::keep_state().send_sync(
+                token(DEFINITION),
+                &Internal::ChangeAuthority {
+                    new_authority: Some(NEW_AUTHORITY),
+                }
+            )
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "mint authority must authorize")]
+    fn the_authority_actor_must_be_authorized() {
+        let _ = run(AUTHORITY, None, false, None, &message(Some(NEW_AUTHORITY)));
+    }
+
+    #[test]
+    fn the_definition_rotates_for_its_authority() {
+        let response = run(
+            DEFINITION,
+            Some(token(AUTHORITY)),
+            false,
+            Some(&definition(1, Some(AUTHORITY))),
+            &Internal::ChangeAuthority {
+                new_authority: Some(NEW_AUTHORITY),
+            },
+        );
+        assert_eq!(
+            response,
+            write(&definition(1, Some(NEW_AUTHORITY)))
+                .event(changed(Some(AUTHORITY), Some(NEW_AUTHORITY)))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "sender is not the mint authority")]
+    fn the_old_authority_loses_its_rights() {
+        let _ = run(
+            DEFINITION,
+            Some(token(AUTHORITY)),
+            false,
+            Some(&definition(1, Some(NEW_AUTHORITY))),
+            &Internal::IncreaseSupply {
+                to: RECIPIENT,
+                amount: 1,
+            },
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "mint authority must not be the zero account id")]
+    fn the_definition_refuses_the_zero_account() {
+        let _ = run(
+            DEFINITION,
+            Some(token(AUTHORITY)),
+            false,
+            Some(&definition(1, Some(AUTHORITY))),
+            &Internal::ChangeAuthority {
+                new_authority: Some(ZERO),
+            },
+        );
+    }
 }

@@ -262,7 +262,7 @@ dependencies = [
  "ata_core",
  "ata_program",
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2)",
  "risc0-zkvm",
  "ruint",
  "serde",
@@ -275,7 +275,7 @@ name = "ata_core"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2)",
  "risc0-zkvm",
 ]
 
@@ -284,7 +284,7 @@ name = "ata_program"
 version = "0.1.0"
 dependencies = [
  "ata_core",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2)",
  "token_core",
 ]
 
@@ -527,6 +527,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
+name = "convert_case"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -681,6 +690,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
+ "convert_case",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -1104,6 +1114,22 @@ dependencies = [
  "borsh",
  "bytesize",
  "chacha20",
+ "ml-kem",
+ "risc0-zkvm",
+ "serde",
+ "serde_with",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "lee_core"
+version = "0.1.0"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?rev=616256b9c9efd2c28d4f7683b7b5d2348df7314e#616256b9c9efd2c28d4f7683b7b5d2348df7314e"
+dependencies = [
+ "base58",
+ "borsh",
+ "chacha20",
+ "derive_more",
  "ml-kem",
  "risc0-zkvm",
  "serde",
@@ -1857,7 +1883,7 @@ version = "0.7.0"
 source = "git+https://github.com/logos-co/spel.git?rev=c6f73ce21e4805f8430f03afdbdedf0b7e479a5e#c6f73ce21e4805f8430f03afdbdedf0b7e479a5e"
 dependencies = [
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2)",
  "serde_json",
  "spel-framework-core",
  "spel-framework-macros",
@@ -1870,7 +1896,7 @@ source = "git+https://github.com/logos-co/spel.git?rev=c6f73ce21e4805f8430f03afd
 dependencies = [
  "base58",
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.2.5-rc2)",
  "proc-macro2",
  "serde",
  "serde_json",
@@ -2044,9 +2070,9 @@ name = "token_core"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "lee_core",
+ "lee_core 0.1.0 (git+https://github.com/logos-blockchain/logos-execution-zone.git?rev=616256b9c9efd2c28d4f7683b7b5d2348df7314e)",
+ "risc0-zkvm",
  "serde",
- "spel-framework-macros",
 ]
 
 [[package]]
@@ -2179,6 +2205,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-xid"
