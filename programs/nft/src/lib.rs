@@ -3,11 +3,10 @@
 //! A handler sees one actor: a definition, a master, a copy, or an empty one. Operations
 //! that touch several (creation, initialization, transfer, print, burn) are short
 //! conversations between NFT actors; each operation's module holds all of its steps.
-//! Design: `docs/actor-model/nft.md`.
 //!
 //! The supply invariant, `printable_supply == Σ master.print_balance + count(owned
 //! copies)`, rests on [`Internal`] messages being decoded only when an NFT actor sent them,
-//! and on every NFT code path that emits one upholding it (`nft.md` §6):
+//! and on every NFT code path that emits one upholding it:
 //!
 //! - a definition sends `InitMaster` only at creation, with its whole supply;
 //! - a definition sends `InitHolding` only to the holding that asked, and it holds nothing;
@@ -91,9 +90,8 @@ fn definition_state(input: &ReceiveInput) -> NftDefinition {
 }
 
 /// Panics unless the receiver is a holding of `definition` that holds nothing. Shared by the
-/// two credits, `Receive` and `ReceivePrint`: either value lands only on such a holding
-/// (`nft.md` §2.2), so nobody can occupy an account's NFT actor with an NFT its owner didn't
-/// choose.
+/// two credits, `Receive` and `ReceivePrint`: either value lands only on such a holding, so
+/// nobody can occupy an account's NFT actor with an NFT its owner didn't choose.
 fn assert_holds_nothing_of(input: &ReceiveInput, definition: AccountId) {
     let (definition_id, holds_nothing) = match NftState::decode(&input.pre_state) {
         Some(NftState::Master(master)) => (master.definition_id, master.print_balance == 0),

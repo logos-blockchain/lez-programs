@@ -1,4 +1,4 @@
-//! `ReadState`: other programs can't read NFT state, so they ask (`token.md` §3.9).
+//! `ReadState`: other programs can't read NFT state, so they ask.
 
 use lee_core::program::{ReceiveInput, Response, StateReply};
 

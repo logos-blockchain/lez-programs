@@ -1,5 +1,5 @@
 //! `PrintNft`: the master lowers its print balance by one and credits a new copy to an
-//! initialized holding, like a token mint (`nft.md` §2.3). The recipient doesn't sign.
+//! initialized holding, like a token mint. The recipient doesn't sign.
 
 use lee_core::{
     account::{AccountId, Actor},

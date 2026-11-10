@@ -162,7 +162,7 @@ impl Chain {
         )
     }
 
-    /// Panics unless the supply invariant holds over `holdings` (`nft.md` §6).
+    /// Panics unless the supply invariant holds over `holdings`.
     fn assert_supply(&self, definition: AccountId, holdings: &[AccountId]) {
         let held: u128 = holdings
             .iter()
@@ -426,7 +426,7 @@ fn nft_a_copy_moves_to_an_initialized_holding() {
     );
 }
 
-/// `nft.md` §2.2: initialization writes a copy, and it can still become the master.
+/// Initialization writes a copy, and it can still become the master.
 #[test]
 fn nft_the_master_moves_to_an_initialized_holding() {
     let (mut chain, art, alice, bob) = (Chain::new(), key(1), key(2), key(3));

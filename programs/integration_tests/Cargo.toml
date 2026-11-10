@@ -2,8 +2,8 @@
 name = "integration_tests"
 version = "0.1.0"
 edition = "2021"
-# Each program's test file returns as a target with its port to the actor model
-# (docs/lez-actor-model-upgrade-plan.md §5); until then it stays in tests/ unbuilt.
+# Each program's test file returns as a target with its port to the actor model; until
+# then it stays in tests/ unbuilt.
 autotests = false
 
 [lints]

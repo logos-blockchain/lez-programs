@@ -1,9 +1,7 @@
-//! `InitializeHolding`: holding → definition → holding, as in the token program
-//! (`docs/actor-model/initialize-holding.md`), so a holding only ever exists for a definition
-//! that does.
+//! `InitializeHolding`: holding → definition → holding, as in the token program, so a holding
+//! only ever exists for a definition that does.
 //!
-//! The holding is written as a copy that holds nothing; it can still receive a master
-//! (`nft.md` §2.2).
+//! The holding is written as a copy that holds nothing; it can still receive a master.
 
 use lee_core::{
     account::{AccountId, Actor},

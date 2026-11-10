@@ -195,7 +195,7 @@ mod tests {
             );
         }
 
-        /// `nft.md` §2.2: initialization writes a copy, which can still become the master.
+        /// Initialization writes a copy, which can still become the master.
         #[test]
         fn an_empty_copy_takes_a_master() {
             let response = run(

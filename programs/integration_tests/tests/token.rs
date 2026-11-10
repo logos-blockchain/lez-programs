@@ -279,7 +279,7 @@ fn token_a_transfer_credits_an_initialized_recipient() {
     );
 }
 
-/// `token.md` §3.7: no credit creates a holding, so a junk token can't occupy an account.
+/// No credit creates a holding, so a junk token can't occupy an account.
 #[test]
 fn token_a_transfer_to_an_uninitialized_account_fails_and_debits_nothing() {
     let (mut chain, definition, alice, carol) = (Chain::new(), key(1), key(2), key(4));

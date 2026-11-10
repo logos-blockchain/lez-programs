@@ -85,7 +85,7 @@ mod tests {
             );
         }
 
-        /// v0.2.5 behaviour (`nft.md` Q10): a master may burn its own unit too.
+        /// v0.2.5 behaviour: a master may burn its own unit too.
         #[test]
         fn a_master_burns_its_whole_balance() {
             let response = run(
