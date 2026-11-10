@@ -19,9 +19,9 @@ unsafe_code = "deny"
 # style/pedantic lints default to warn so toolchain upgrades don't break the
 # build unexpectedly — they can be evaluated and addressed at our own pace.
 correctness = { level = "deny", priority = -1 }
-suspicious  = { level = "deny", priority = -1 }
-perf        = { level = "deny", priority = -1 }
-style       = { level = "warn", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+style = { level = "warn", priority = -1 }
 
 # Generated-code / placeholder blockers.
 dbg_macro = "deny"
@@ -56,11 +56,6 @@ name = "amm"
 path = "src/bin/amm.rs"
 
 [dependencies]
-spel-framework = { git = "https://github.com/logos-co/spel.git", rev = "c6f73ce21e4805f8430f03afdbdedf0b7e479a5e", package = "spel-framework" }
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", package = "lee_core" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "616256b9c9efd2c28d4f7683b7b5d2348df7314e" }
+amm_program = { path = "../.." }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
-amm_core = { path = "../../core" }
-amm_program = { path = "../..", package = "amm_program" }
-token_core = { path = "../../../token/core" }
-serde = { version = "1.0", features = ["derive"] }
-borsh = "1.5"
